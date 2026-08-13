@@ -677,6 +677,14 @@ impl Plugin for Agent {
                 let note = interruption.describe();
                 return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
             }
+            // AND THEY FINISHED. The step is spent on having waited — nothing was typed, so nothing
+            // is charged — and the next one asks the barrier again against whatever they left. For
+            // THIS plugin that matters twice over: the reply capture arms below, after the barrier,
+            // so a prompt sent in the same step as a handback would publish the tail of the
+            // person's own turn as the model's answer.
+            Reached::HandedBack(handover) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()));
+            }
         }
 
         // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode

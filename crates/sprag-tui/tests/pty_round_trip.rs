@@ -8979,3 +8979,216 @@ fn a_client_too_narrow_for_a_pane_reads_the_whole_line_re_wrapped() {
         "...with nothing wrapped onto the row below it",
     );
 }
+
+/// A peer whose work CANNOT FINISH until a person has reached into the pane themselves — byte 88,
+/// and one more turn after it.
+///
+/// The same shape `sprag-plugin`'s handback gates use, restated here because a fixture in another
+/// crate's `#[cfg(test)]` is not reachable from this one. What matters is the property: a run that
+/// stops on the interruption cannot converge no matter how fast it is, and a run that gets the pane
+/// back cannot fail to, however slow — so neither reading below is a race.
+///
+/// ⚠ The one-second pause is on the pre-handback path only, and it is what stops a forty-turn
+/// budget from being spent in the time it takes a person to reach the keyboard.
+const WORK_NEEDING_A_PERSON: &str = "stty -icanon -echo 2>/dev/null\n\
+     printf 'AT REST\\r\\n'\n\
+     handed=0\n\
+     turns=0\n\
+     while :; do\n\
+       k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n')\n\
+       [ -n \"$k\" ] || exit 0\n\
+       case \"$k\" in\n\
+         88) handed=1; printf 'HANDED BACK\\r\\n' ;;\n\
+         13|10)\n\
+           turns=$((turns+1))\n\
+           if [ \"$handed\" = 1 ]; then printf 'WORK DONE\\r\\n'; else sleep 1; printf 'TURN %s\\r\\n' \"$turns\"; fi ;;\n\
+         *) printf 'SAW %s\\r\\n' \"$k\" ;;\n\
+       esac\n\
+     done\n";
+
+/// Submit one `orchestrator` run over the wire against `pane`, watched by a person, and say whether
+/// a pane they take ever comes back (`still` in milliseconds, or [`None`] for *never*).
+///
+/// Returns immediately — the run is asynchronous, and the whole point of these gates is what
+/// happens to it WHILE somebody types.
+fn submit_supervised_run(conn: &mut HostConn, session: &str, pane: u64, still: Option<u64>) {
+    let mut args = json!({
+        "plugin": "orchestrator",
+        "pane": pane,
+        "stimulus": "ping",
+        "sentinel": "WORK DONE",
+        sprag_host::wire::PluginGrammar::AWAIT_PERSON.name: 30_000,
+        // ⚠⚠ SIXTY TURNS, AND THE NUMBER IS THE POINT: the ceiling must not be what ends either
+        // reading. Each turn before the person acts costs the peer a second, so a tight budget is
+        // spent waiting for a keyboard rather than by the run doing anything — measured, at twelve:
+        // under a whole-workspace load the subject read `exhausted` after burning its budget before
+        // the person's key landed. That is a red about arithmetic wearing the shape of a red about
+        // the feature, which this file's sibling gate in `sprag-host` records having paid once
+        // already. Sixty turns is a minute of peer time against a person who types in seconds.
+        "guardrails": { "max_iterations": 60, "max_seconds": 120 },
+    });
+    if let Some(still) = still {
+        args[sprag_host::wire::PluginGrammar::HANDBACK_STILL.name] = still.into();
+    }
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": args,
+        }),
+    )
+    .expect("the run is submitted");
+}
+
+/// Wait for the session's last run to finish and hand back its outcome.
+fn finished_outcome(conn: &mut HostConn, session: &str) -> Value {
+    let mut last = Value::Null;
+    wait_bounded(
+        Duration::from_secs(120),
+        "the supervised run to finish",
+        || {
+            last = conn
+                .call(
+                    "scene/query",
+                    json!({
+                        "session": session,
+                        "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+                    }),
+                )
+                .unwrap_or(Value::Null);
+            if last
+                .as_array()
+                .and_then(|runs| runs.last().cloned())
+                .is_some_and(|run| run["state"]["status"] == "done")
+            {
+                Ok(())
+            } else {
+                Err(format!("the runs slot holds {last}"))
+            }
+        },
+        String::new,
+    );
+    last.as_array()
+        .and_then(|runs| runs.last().cloned())
+        .expect("the run's entry")["state"]["outcome"]
+        .clone()
+}
+
+/// Wait for `needle` to appear in pane 0's text.
+fn pane_showing(conn: &mut HostConn, session: &str, needle: &str) {
+    wait_bounded(
+        DEADLINE,
+        &format!("the pane to show {needle:?}"),
+        || {
+            let held = pane_text(conn, session);
+            if held.contains(needle) {
+                Ok(())
+            } else {
+                Err(format!("the pane holds {held:?}"))
+            }
+        },
+        String::new,
+    );
+}
+
+/// ⚠⚠⚠ **A PERSON AT A REAL KEYBOARD TAKES A PANE A RUN IS DRIVING, FINISHES, AND THE RUN GETS IT
+/// BACK** — through the one door in this product that stamps a person's hand.
+///
+/// # ⚠⚠⚠ What no other gate in this workspace can say
+///
+/// Every unit gate for this contract writes the person's bytes with
+/// `PanePtyHandle::write(.., Hand::APerson)` — the pane's own door, chosen deliberately because the
+/// RUN's door would erase the very distinction under test. But that is a fixture naming the hand,
+/// and the register has carried the gap since the hand existed: **no test went through
+/// `HostClient::send_key`, which is what actually stamps `APerson` in production.** It is not
+/// reachable from a request connection at all — the wire's own `text`/`key` actions are
+/// `Hand::AProgram`, correctly, because an RPC caller is a program. The only way to be a PERSON here
+/// is to be an ATTACHED CLIENT with a keyboard, which is exactly what this file has.
+///
+/// So the byte below travels: this test's pty → the real `sprag-tui` client → its key decoder →
+/// `HostClient::send_key` → `Hand::APerson` → the pane's watermark → the barrier every injecting
+/// plugin passes through. Nothing in that path is a double, and the run is a real one submitted over
+/// the wire with `handback_still_ms` on it.
+///
+/// ⚠ Its control is the test below, which is the same everything MINUS that one argument.
+#[test]
+fn a_person_at_a_real_keyboard_hands_the_pane_back_and_the_run_finishes() {
+    let (_daemon, sock) = spawn_daemon_running(&["sh", "-c", WORK_NEEDING_A_PERSON]);
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+    let mut tui = Tui::attach(&sock, &session);
+    // ⚠ BOTH ENDS, and each says something the other cannot. The DAEMON's read says the peer is up
+    // and has settled; the CLIENT's says this attachment is painting that pane, which is what makes
+    // a keystroke typed at it a keystroke a person could have typed.
+    pane_showing(&mut conn, &session, "AT REST");
+    tui.wait_for("the client to paint the peer's readiness marker", || {
+        painted(&tui, "AT REST")
+    });
+
+    submit_supervised_run(&mut conn, &session, 0, Some(500));
+    // ⚠ THE BEHAVIOURAL TRIGGER: the person reaches in once the run is plainly DRIVING, not after a
+    // clock. `TURN 1` is a line only the run's own keystroke can have produced.
+    pane_showing(&mut conn, &session, "TURN 1");
+    tui.type_bytes(b"X");
+
+    let outcome = finished_outcome(&mut conn, &session);
+    assert_eq!(
+        outcome["state"], "converged",
+        "⚠⚠⚠ a person typed into the pane through a real client, the run stopped for them, their \
+         hand went still, and the run took the pane back and finished. A daemon that swallowed \
+         `handback_still_ms` reports `taken_over` here — see the control below, which is this same \
+         run without that one argument: {outcome}",
+    );
+    let held = pane_text(&mut conn, &session);
+    assert!(
+        held.contains("HANDED BACK") && held.contains("WORK DONE"),
+        "⚠⚠ AND THE PANE IS THE WITNESS: the person's own byte reached the peer, and the goal it \
+         unlocked was reached by a stimulus the RUN typed afterwards: {held:?}",
+    );
+}
+
+/// ⚠⚠⚠ **AND THE CONTROL: THE SAME PERSON, THE SAME KEYBOARD, WITHOUT THE ARGUMENT — THE PANE
+/// STAYS THEIRS.**
+///
+/// Without this the gate above passes against two products it must not: one that never noticed the
+/// person (this peer converges for a run that types straight over them, because it is THEIR byte
+/// that unlocks the sentinel), and one that ignores `handback_still_ms` and waits by default.
+///
+/// ⚠ It is also the only place `taken_over` has ever been driven by a real keyboard rather than by
+/// a fixture writing at the pane's own door.
+#[test]
+fn a_person_at_a_real_keyboard_who_is_not_waited_for_keeps_the_pane() {
+    let (_daemon, sock) = spawn_daemon_running(&["sh", "-c", WORK_NEEDING_A_PERSON]);
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+    let mut tui = Tui::attach(&sock, &session);
+    // ⚠ BOTH ENDS, and each says something the other cannot. The DAEMON's read says the peer is up
+    // and has settled; the CLIENT's says this attachment is painting that pane, which is what makes
+    // a keystroke typed at it a keystroke a person could have typed.
+    pane_showing(&mut conn, &session, "AT REST");
+    tui.wait_for("the client to paint the peer's readiness marker", || {
+        painted(&tui, "AT REST")
+    });
+
+    submit_supervised_run(&mut conn, &session, 0, None);
+    pane_showing(&mut conn, &session, "TURN 1");
+    tui.type_bytes(b"X");
+
+    let outcome = finished_outcome(&mut conn, &session);
+    assert_eq!(
+        outcome["state"], "taken_over",
+        "⚠⚠⚠ with no handback declared the pane is theirs and the run ends saying so. Anything \
+         else here means the daemon waits for a person by DEFAULT, which would make the argument \
+         above unmeasured — and `converged` in particular would mean it never noticed them: \
+         {outcome}",
+    );
+    pane_showing(&mut conn, &session, "HANDED BACK");
+    let held = pane_text(&mut conn, &session);
+    assert!(
+        !held.contains("WORK DONE"),
+        "⚠⚠⚠ AND THE PANE IS THE WITNESS: their byte reached the peer, so the goal was ONE turn \
+         away — and the run did not take it. That is the whole difference the argument buys, and \
+         it is measured here rather than argued: {held:?}",
+    );
+}

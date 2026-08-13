@@ -319,6 +319,59 @@ pub(crate) mod grammar {
     /// scalar `row:int` and every surface here takes the composite `send` payload. **A registration
     /// whose reason is a guess is unmeasured**, which this project has now recorded four times.
     ///
+    /// **EVERY SURFACE THIS WINDOW HANGS, PINNED AGAINST ONE NUMBER, IN ONE PLACE.**
+    ///
+    /// # ⚠⚠⚠ Why this exists: a pin that was three call sites cost twelve hand-edits in four rounds
+    ///
+    /// The claim was born as a helper each surface's own test called with its own copy of the
+    /// protocol number. Every wire bump then cost THREE hand-edits — and the register recorded that
+    /// as a prediction, then as a measurement: R371 paid three, R372 paid three, R372b paid three,
+    /// and R373 arrived owing three more, **for changes no GUI surface published, served or read**.
+    /// The daemon's own pin never has this problem because it DERIVES its surfaces from the served
+    /// scene; these hang in a window, so the derivation has to be written down, and this is it.
+    ///
+    /// ⚠⚠ **AND THE COUNT IS HALF THE CLAIM.** The register's other half was that *a fourth GUI
+    /// surface is pinned by nobody* — a real gap, because nothing about adding one makes anybody
+    /// notice this list. The gate asserts how many surfaces it drove, so a fourth arrives red until
+    /// somebody puts it here with its shapes.
+    ///
+    /// ⚠ The surfaces are BUILT rather than described: each entry constructs the same External the
+    /// shell mounts and asks it for `ACTION_GRAMMAR_SLOT`, which is R320's rule (*a ratchet over a
+    /// declaration is not a ratchet over the product*) applied to a window instead of a daemon.
+    #[cfg(test)]
+    const WINDOW_SHAPES: (u32, &[(&str, &[&str])]) = (
+        // ⚠ ONE number for every surface below. R373 is the first bump this pin costs a SINGLE
+        // edit, and the reason it moved is `handback_still_ms` on the daemon's three looping run
+        // forms — which, like the three bumps before it, no surface here takes any part in.
+        33,
+        &[
+            (
+                "the command palette",
+                // ⚠ MEASURED, not guessed: it is `select` that carries the row, and `execute` acts
+                // on the palette's own armed request — which is exactly why five of these eight
+                // verbs are nullary and why a pin over the shapes is worth having.
+                &[
+                    "open[nullary]:",
+                    "execute[nullary]:",
+                    "select[scalar]:row:int",
+                    "send[scalar]:event:string",
+                ],
+            ),
+            (
+                "the confirmation prompt",
+                &[
+                    "accept[nullary]:",
+                    "dismiss[nullary]:",
+                    "send[scalar]:event:string",
+                ],
+            ),
+            (
+                "a pane's hyperlink oracle",
+                &["activate[nullary]:", "send[scalar]:event:string"],
+            ),
+        ],
+    );
+
     /// # Errors
     ///
     /// Panics — it is a test helper, and the caller reads the finding.
@@ -352,6 +405,70 @@ pub(crate) mod grammar {
              when some other part of the wire moved, and a mistake when this pin was simply not \
              re-stamped.",
         );
+    }
+
+    /// Ask a live External for what it publishes at [`ACTION_GRAMMAR_SLOT`], the way a client
+    /// driving this window would.
+    ///
+    /// [`ACTION_GRAMMAR_SLOT`]: sprag_host::wire::ACTION_GRAMMAR_SLOT
+    #[cfg(test)]
+    fn served_grammar_of(
+        surface: &dyn pinion_core::external::ExternalIntrospect,
+        named: &str,
+    ) -> serde_json::Value {
+        let served = surface
+            .query(sprag_host::wire::ACTION_GRAMMAR_SLOT)
+            .unwrap_or_else(|refused| panic!("{named} serves its grammar: {refused:?}"));
+        let pinion_core::external::IntrospectValue::Json(served) = served else {
+            panic!("{named}'s grammar slot answers JSON: {served:?}");
+        };
+        served
+    }
+
+    /// ⚠⚠⚠ **THE ONE PLACE A WIRE BUMP IS PAID FOR IN THIS WINDOW** — see [`WINDOW_SHAPES`] for
+    /// what twelve hand-edits in four rounds bought.
+    #[test]
+    fn every_window_surface_pins_its_shapes_to_one_protocol_number() {
+        pinion_core::reactive::Owner::new().run(|| {
+            let (at, surfaces) = WINDOW_SHAPES;
+            // ⚠⚠⚠ THE ROSTER IS DERIVED, NOT DECLARED — and this is what closes the register's
+            // other half. `SURFACES` is the audited list of everything this window hangs, and
+            // `main.rs`'s own audit already fails when a REGISTERED surface is missing from it. So
+            // a fourth surface sprag writes reaches this pin through that chain: registration →
+            // `SURFACES` → here. A literal `3` would have been a number nobody would think to move.
+            let sprag_own: Vec<&str> = SURFACES
+                .iter()
+                .filter(|surface| surface.author == SurfaceAuthor::Sprag)
+                .map(|surface| surface.name)
+                .collect();
+            let pinned_names: Vec<&str> = surfaces.iter().map(|(name, _)| *name).collect();
+            assert_eq!(
+                pinned_names, sprag_own,
+                "⚠⚠⚠ EVERY SURFACE SPRAG WROTE IN THIS WINDOW IS PINNED HERE, in the audit's own \
+                 order. A surface sprag adds and does not pin is the gap the register named — its \
+                 argument shapes would then be free to move under a protocol number nobody raised.",
+            );
+            for (named, pinned) in surfaces {
+                // ⚠ BY NAME, never by position: an entry paired with a probe by INDEX fails a
+                // dropped surface with `index out of bounds`, which is a gate that cannot say what
+                // is wrong. Measured — the first form of this loop did exactly that.
+                // ⚠⚠ AND IT IS BUILT, not described. Each arm constructs the External the shell
+                // mounts and asks it the question a client would; a table of strings compared
+                // against another table of strings passes with every surface deleted.
+                let probe = match *named {
+                    "the command palette" => crate::palette::shape_probe(),
+                    "the confirmation prompt" => crate::confirm::shape_probe(),
+                    "a pane's hyperlink oracle" => crate::hyperlink::shape_probe(),
+                    unbuilt => panic!(
+                        "{unbuilt:?} is pinned here and NOTHING BUILDS IT. A surface reaches this \
+                         list through the audit, so the shapes beside it would be held against a \
+                         table rather than against what the window serves.",
+                    ),
+                };
+                let served = served_grammar_of(probe.as_ref(), named);
+                shapes_are_pinned_to_the_protocol(&served, named, at, pinned);
+            }
+        });
     }
 
     /// A surface sprag REGISTERS and pinion WROTE — listed, never described.

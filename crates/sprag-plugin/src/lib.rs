@@ -73,7 +73,8 @@ pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Cost, Plugin, Step, Verdict};
 pub use readiness::{
-    Attended, Attention, DEFAULT_READY_TIMEOUT, Interruption, Reached, Readiness, ReadyWhen,
+    Attended, Attention, DEFAULT_READY_TIMEOUT, Handback, Handover, Interruption, Reached,
+    Readiness, ReadyWhen,
 };
 pub use reply::{AgentReply, parse_claude_json};
 pub use run::{RunContext, Waited, poll_until};

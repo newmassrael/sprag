@@ -44,6 +44,7 @@ type SharedEchoTrail = Arc<Mutex<Vec<u8>>>;
 /// How many times each hand has written into a pane, shared by every writer — see [`Hands`].
 type SharedHands = Arc<Mutex<Hands>>;
 
+sprag_vt::closed_set! {
 /// **WHOSE HAND PUT BYTES INTO A PANE.**
 ///
 /// # ⚠⚠⚠ Why the one door had to start asking who was at it
@@ -63,17 +64,64 @@ type SharedHands = Arc<Mutex<Hands>>;
 /// # ⚠⚠ Why it is a PARAMETER and cannot be inferred
 ///
 /// Nothing at this layer can see who is at the other end. The RPC surface carries a person's
-/// keystrokes as faithfully as a program's, and the in-process display client is a person's
-/// keyboard by construction — so the fact is the CALLER's, in exactly the way
-/// `sprag_plugin::Attended`'s patience is, and for the same reason: a default here would be a
-/// guess wearing the shape of an answer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Hand {
-    /// **A PERSON AT A KEYBOARD** — a display client's key path. Somebody is at this pane, now.
-    APerson,
-    /// **A PROGRAM** — a plugin's injection, an RPC caller, a device or clipboard reply. The
-    /// default a caller should reach for when it is driving rather than being driven.
-    AProgram,
+/// keystrokes as faithfully as a program's, and a display client is a person's keyboard by
+/// construction — so the fact is the CALLER's, in exactly the way `sprag_plugin::Attended`'s
+/// patience is, and for the same reason: a default here would be a guess wearing the shape of an
+/// answer.
+///
+/// # ⚠⚠⚠ And the caller can be on the far side of a socket
+///
+/// The paragraph above said *"the in-process display client is a person's keyboard by
+/// construction"*, and that sentence was a premise nothing checked. **There is no in-process
+/// display client in production.** Both frontends attach over a socket through
+/// `sprag_client::WireHost`, whose `send_key` is a `scene/invoke` on the pane's own input surface —
+/// so every keystroke a person typed at `sprag-tui` or `sprag-gui` arrived at the one door stamped
+/// [`AProgram`], and a run driving that pane never learnt a person had taken it. Measured end to
+/// end through a real client before it was fixed: a run whose pane somebody typed into converged as
+/// though it had been alone.
+///
+/// That is why this reaches the wire. The DAEMON still cannot infer it — an RPC caller may be an
+/// agent or a keyboard — so the argument is the caller's word, absent means [`AProgram`], and only
+/// a client that IS carrying a person's keystrokes says otherwise.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Hand {
+        /// **A PERSON AT A KEYBOARD** — a display client's key path. Somebody is at this pane, now.
+        APerson,
+        /// **A PROGRAM** — a plugin's injection, an RPC caller, a device or clipboard reply. The
+        /// default a caller should reach for when it is driving rather than being driven, and the
+        /// one an absent argument means.
+        AProgram,
+    }
+}
+
+impl Hand {
+    /// The argument a caller declares this with, in ONE place so every mouth spells it alike.
+    pub const WIRE_KEY: &'static str = "hand";
+
+    /// The closed vocabulary this argument admits, one word per variant.
+    ///
+    /// ⚠ Its LENGTH is [`ALL`](Self::ALL)'s, so a third hand added to the type fails to compile
+    /// here rather than reaching the wire as a word no client was told about.
+    pub const WIRE_WORDS: [&'static str; Self::ALL.len()] = ["person", "program"];
+
+    /// What this hand is called on the wire.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::APerson => "person",
+            Self::AProgram => "program",
+        }
+    }
+
+    /// The hand `word` names, or [`None`] for a word outside the vocabulary.
+    ///
+    /// ⚠ Derived from [`ALL`](Self::ALL) rather than matched by hand, so the set this accepts and
+    /// the set [`WIRE_WORDS`](Self::WIRE_WORDS) publishes cannot drift — R353's rule, which this
+    /// workspace has paid for twice in encoder/decoder pairs each documented as the other's twin.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|hand| hand.word() == word)
+    }
 }
 
 /// How many writes each hand has made into a pane, since it was spawned.
@@ -1620,6 +1668,39 @@ impl PanePty {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    /// ⚠⚠ **EVERY HAND THE TYPE HAS IS A WORD THE WIRE PUBLISHES, AND BACK.**
+    ///
+    /// Driven from [`Hand::ALL`] rather than from a literal list, so a third hand added to the type
+    /// fails here rather than reaching the wire as a word no client was told about — R353's rule,
+    /// which this workspace has paid for twice in encoder/decoder pairs each documented as the
+    /// other's twin and compared by nothing.
+    #[test]
+    fn every_hand_round_trips_through_its_published_word() {
+        for hand in Hand::ALL {
+            assert_eq!(
+                Hand::parse(hand.word()),
+                Some(hand),
+                "{hand:?} publishes a word its own parser refuses",
+            );
+            assert!(
+                Hand::WIRE_WORDS.contains(&hand.word()),
+                "{hand:?}'s word is not in the vocabulary the wire advertises",
+            );
+        }
+        assert!(
+            Hand::parse("human").is_none(),
+            "⚠⚠ and a word OUTSIDE the set is refused rather than defaulted. A caller who writes \
+             `hand: \"human\"` believes they said something, and a parser that shrugged would give \
+             them a program while their call said a person",
+        );
+        assert_eq!(
+            Hand::AProgram.word(),
+            "program",
+            "⚠ the word an ABSENT argument means, pinned because it is the safe half: a caller \
+             cannot pass for a person by omission",
+        );
+    }
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 

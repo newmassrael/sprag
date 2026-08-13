@@ -425,6 +425,76 @@ pub(crate) fn two_question_peer() -> (WorkspacePaneAccess, PaneId) {
     (access, pane)
 }
 
+/// The script for a peer whose work CANNOT FINISH until a person has reached into the pane
+/// themselves.
+///
+/// # ⚠⚠⚠ Why the fixture is built this way rather than with a turn count
+///
+/// The claim under test is *a run comes back after the person lets go*, and the obvious fixture —
+/// a peer that converges on its Nth turn, with a person typing somewhere in the middle — is a RACE:
+/// whether the run reaches N before or after the person's key decides the reading, so a green is a
+/// statement about this machine's scheduler. Here the sentinel is unreachable until byte 88 has
+/// arrived from a person's hand, and it takes ONE MORE TURN after that. A run that stops on the
+/// interruption cannot converge no matter how fast it was, and a run that comes back cannot fail to,
+/// no matter how slow.
+///
+/// ⚠ `HANDED BACK` ends its own row, and the sentinel is printed only on the Enter AFTER it — so a
+/// gate cannot pass on the echo of the person's own keystroke. Neither marker is anything a caller
+/// types, which is [`ReadyWhen::Prints`](crate::readiness::ReadyWhen::Prints)'s rule applied to a
+/// convergence sentinel.
+///
+/// ⚠⚠⚠ **HOW LONG A TURN TAKES IS THE CALLER'S, AND BOTH ANSWERS ARE LOAD-BEARING.** `slow_turns`
+/// puts a whole second on every turn BEFORE the person acts, and nothing after it:
+///
+/// * **A gate about a run that STOPS wants it.** Without it a run with a budget of forty can burn
+///   the whole budget in the time the person's thread takes to notice the run started, and the
+///   control reads `exhausted` — green for the wrong reason.
+/// * **A gate about what a run does WHILE somebody types must not have it**, and this was measured
+///   rather than reasoned about: with second-long turns the run's own step cadence is longer than a
+///   person's pauses, so a build that resumed the instant it noticed stillness had NO CHANCE to
+///   type into one. The mutation that removes the whole stillness rule passed. A brisk peer gives
+///   it ten chances per pause, and the same mutation goes red.
+fn work_needing_a_person_script(slow_turns: bool) -> String {
+    let pause = if slow_turns { "sleep 1; " } else { "" };
+    format!(
+        "stty -icanon -echo 2>/dev/null\n\
+         printf 'AT REST\\r\\n'\n\
+         handed=0\n\
+         turns=0\n\
+         while :; do\n\
+           k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n')\n\
+           [ -n \"$k\" ] || exit 0\n\
+           case \"$k\" in\n\
+             88) handed=1; printf 'HANDED BACK\\r\\n' ;;\n\
+             13|10)\n\
+               turns=$((turns+1))\n\
+               if [ \"$handed\" = 1 ]; then printf 'WORK DONE\\r\\n'; else {pause}printf 'TURN %s\\r\\n' \"$turns\"; fi ;;\n\
+             *) printf 'SAW %s\\r\\n' \"$k\" ;;\n\
+           esac\n\
+         done\n"
+    )
+}
+
+/// A pane running that peer, settled at its readiness marker and asking nothing.
+pub(crate) fn work_needing_a_person(slow_turns: bool) -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane) = peer_running(work_needing_a_person_script(slow_turns));
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(10)
+        && !access
+            .pane_collapsed(pane)
+            .is_some_and(|text| text.contains("AT REST"))
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        crate::readiness::peer_asking(&access, pane).is_none(),
+        "⚠⚠ the peer must read as NOT asking, or a gate about a person TAKING the pane is about a \
+         dialog instead: {:?}",
+        access.pane_collapsed(pane),
+    );
+    (access, pane)
+}
+
 /// **A PERSON, AT THE KEYBOARD OF THE PANE THEY ARE WATCHING** — bytes put in through the door a
 /// display client writes through, which is not the door a run writes through.
 ///

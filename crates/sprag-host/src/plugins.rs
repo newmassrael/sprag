@@ -32,8 +32,8 @@ use pinion_core::external::{
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Attended, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec, DoneWhen,
-    Driver, Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec,
-    Plugin, ReadyWhen, ReplyFormat, RunContext, WorkspacePaneAccess,
+    Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe,
+    PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -931,10 +931,36 @@ fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consents>, InvokeEr
 /// arithmetic (a deadline already past, a config that defaulted to 0) silently get the other.
 /// [`Attended::of`] owns the predicate, so the parser and the type cannot drift.
 fn opt_attended(map: &Map<String, Value>) -> Result<Attended, InvokeError> {
+    let handback = opt_handback(map)?;
     let Some(patience) = opt_millis(map, Attended::WIRE_KEY)? else {
-        return Ok(Attended::NoOne);
+        // ⚠⚠⚠ A HANDBACK WITH NOBODY WATCHING IS MALFORMED, NOT A QUIET `NoOne`. The pair is one
+        // request — *"a person is at this pane, and here is when a pane they take comes back"* —
+        // and the caller who sends only the second half has plainly asked for a run that waits.
+        // Answering `NoOne` would give them a run that ENDS on the first keystroke, which is the
+        // opposite, and the type they are addressing cannot even express what they sent
+        // ([`Handback`] lives inside [`Attended::APerson`]). So they are told.
+        return if handback == Handback::Never {
+            Ok(Attended::NoOne)
+        } else {
+            Err(InvokeError::TypeMismatch)
+        };
     };
-    Attended::of(patience).ok_or(InvokeError::TypeMismatch)
+    Attended::of(patience, handback).ok_or(InvokeError::TypeMismatch)
+}
+
+/// Read the optional `handback_still_ms` — WHEN A PANE THIS RUN'S PERSON TAKES BECOMES THIS RUN'S
+/// AGAIN. Absent (or `null`) is [`Handback::Never`]: the run ends when somebody takes the pane,
+/// which is what every run did before the key existed and is the conservative half.
+///
+/// ⚠⚠ **ZERO IS MALFORMED**, [`opt_attended`]'s rule and [`Handback::of`]'s predicate: *"the pane is
+/// mine again the instant they pause"* is not something a caller can mean, since every person pauses
+/// between keystrokes, and one who reached zero by arithmetic would get a run that typed into the
+/// gap between their words.
+fn opt_handback(map: &Map<String, Value>) -> Result<Handback, InvokeError> {
+    let Some(still) = opt_millis(map, Handback::WIRE_KEY)? else {
+        return Ok(Handback::Never);
+    };
+    Handback::of(still).ok_or(InvokeError::TypeMismatch)
 }
 
 /// Parse the `agent` form's optional `done_when` — WHAT MAKES THE TURN OVER. Absent (or `null`)
@@ -1348,6 +1374,66 @@ mod tests {
     use sprag_plugin::PaneAccess;
     use sprag_terminal::CommandBuilder;
     use std::time::Instant;
+
+    /// ⚠⚠⚠ **HALF OF A PAIRED REQUEST IS MALFORMED — `handback_still_ms` WITH NOBODY WATCHING.**
+    ///
+    /// A caller who sends it alone has plainly asked for a run that waits for a person. There is no
+    /// `Attended` value that can carry their request ([`Handback`] lives inside `APerson`), and the
+    /// two answers a daemon could give instead are both worse than a refusal: `NoOne` hands them a
+    /// run that ENDS on the first keystroke — the opposite of what they sent, silently — and
+    /// inventing a patience would be a bound nobody chose, on a run somebody may be waiting on.
+    ///
+    /// # ⚠⚠ Why no per-argument harness could have caught this
+    ///
+    /// The three conformance sweeps this surface runs drive ONE argument at a time: at the wrong
+    /// type, declined as `null`, absent. This rule is about a PAIR — well-typed, well-spelt, and
+    /// wrong only in what it is missing — so it is the shape those sweeps are blind to by
+    /// construction, and it needs a gate of its own.
+    #[test]
+    fn a_handback_for_a_run_nobody_is_watching_is_malformed() {
+        let paired = json!({
+            sprag_plugin::Attended::WIRE_KEY: 20_000,
+            sprag_plugin::Handback::WIRE_KEY: 400,
+        });
+        assert!(
+            matches!(
+                opt_attended(paired.as_object().expect("an object")),
+                Ok(Attended::APerson { .. }),
+            ),
+            "⚠ THE CONTROL FIRST: the pair this key exists in is accepted, or the refusal below is \
+             about a parser that refuses everything",
+        );
+        let alone = json!({ sprag_plugin::Handback::WIRE_KEY: 400 });
+        assert!(
+            matches!(
+                opt_attended(alone.as_object().expect("an object")),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠⚠ and the half-request is REFUSED rather than quietly answered `NoOne`, which would \
+             give the caller a run that ends on the first keystroke while their call asked the \
+             daemon to wait",
+        );
+        let zero = json!({
+            sprag_plugin::Attended::WIRE_KEY: 20_000,
+            sprag_plugin::Handback::WIRE_KEY: 0,
+        });
+        assert!(
+            matches!(
+                opt_attended(zero.as_object().expect("an object")),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠ and a stillness of ZERO is malformed too — `await_person_ms`'s own rule, for its \
+             reason: every person pauses between keystrokes, so a run given zero would type into \
+             the gap between their words",
+        );
+        assert!(
+            matches!(
+                opt_attended(json!({}).as_object().expect("an object")),
+                Ok(Attended::NoOne),
+            ),
+            "⚠ and neither key is still `NoOne`, which is what every run did before either existed",
+        );
+    }
 
     /// No settle window at all — the injected policy this path takes as a parameter, so a test of a
     /// TIMED transition is not asserting about a timing the developer's `config.toml` chose.
@@ -2243,10 +2329,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            49,
+            52,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠ The THREE newest are `await_person_ms` on each \
+             malformed rather than declined. ⚠⚠⚠ The THREE newest are `handback_still_ms` on each \
+             LOOPING form, and its declinability is the default that keeps every existing caller \
+             working: a run that names no stillness ends when somebody takes its pane, which is \
+             what every run did before the key existed. ⚠ Declinable ALONE is all this drives; that \
+             it may not be SENT alone is a rule about a PAIR, which no per-argument sweep can see \
+             — see `a_handback_for_a_run_nobody_is_watching_is_malformed`. ⚠⚠ The THREE before \
+             them are `await_person_ms` on each \
              LOOPING form, and its declinability is the whole default in the same way the \
              consent's is: a run that names no patience is unattended and ends when its peer asks \
              something no clause covers, which is what every run did before the key existed. \
@@ -2266,10 +2358,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            80,
-            "one probe per declared argument of every FORM, nesting included: SEVENTEEN for an \
-             orchestrator, SIXTEEN for a pipe, TWENTY for an agent, sixteen for a dialogue, TEN \
-             to answer a pane, and one to cancel. ⚠⚠ The newest THREE are `await_person_ms`, on \
+            83,
+            "one probe per declared argument of every FORM, nesting included: EIGHTEEN for an \
+             orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
+             TEN to answer a pane, and one to cancel. ⚠⚠⚠ The newest THREE are \
+             `handback_still_ms`, on each form that LOOPS and on none that does not — the second \
+             half of `turn.interrupted`, which shipped with only the first: a run learnt to STOP \
+             for a person and had no way to be given the pane back. It is not on the `answer` \
+             form for its neighbour's reason, doubled: that form is CALLED BY the person, so a run \
+             waiting for their hand to go still would be waiting for its own caller to stop \
+             calling it. ⚠⚠ The THREE before them are `await_person_ms`, on \
              each form that LOOPS and on none that does not — the other half of the answering \
              contract: what the run may answer itself, and who answers what it may not. The \
              `answer` form is the one injecting form without it, because its caller IS the person \

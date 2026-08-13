@@ -3574,6 +3574,7 @@ impl HostClient for WireHost {
             "alt": mods.alt,
             "shift": mods.shift,
             "super": mods.sup,
+            sprag_terminal::Hand::WIRE_KEY: sprag_terminal::Hand::APerson.word(),
         });
         self.request(
             "scene/invoke",
@@ -3584,7 +3585,13 @@ impl HostClient for WireHost {
     }
 
     fn send_text(&self, id: PaneId, text: &str) -> bool {
-        let params = invoke(&pane_input_path(id.0, TEXT_ACTION), json!({ "text": text }));
+        let params = invoke(
+            &pane_input_path(id.0, TEXT_ACTION),
+            json!({
+                "text": text,
+                sprag_terminal::Hand::WIRE_KEY: sprag_terminal::Hand::APerson.word(),
+            }),
+        );
         self.request("scene/invoke", params, "send_text").is_some()
     }
 
@@ -3594,7 +3601,10 @@ impl HostClient for WireHost {
         // modes, so the bracketing decision stays at the PTY boundary.
         let params = invoke(
             &pane_input_path(id.0, PASTE_ACTION),
-            json!({ "text": text }),
+            json!({
+                "text": text,
+                sprag_terminal::Hand::WIRE_KEY: sprag_terminal::Hand::APerson.word(),
+            }),
         );
         self.request("scene/invoke", params, "paste").is_some()
     }

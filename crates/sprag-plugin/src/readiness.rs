@@ -279,9 +279,92 @@ pub enum Attended {
     /// **NOBODY IS WATCHING.** A question this run cannot answer ends it — the behaviour every run
     /// had before this contract existed, and the default.
     NoOne,
-    /// A person is at this pane. Wait up to this long for them to deal with the dialog, then carry
-    /// on from wherever they left the peer.
-    APerson(Duration),
+    /// A person is at this pane, with `patience` to spare for a question this run may not answer.
+    /// `handback` says what becomes of a pane they TAKE — see [`Handback`].
+    APerson {
+        /// How long to wait for them to deal with a dialog, before carrying on from wherever they
+        /// left the peer.
+        patience: Duration,
+        /// Whether a pane this person takes for themselves ever becomes this run's again.
+        handback: Handback,
+    },
+}
+
+/// **WHEN IS A PANE A PERSON TOOK THIS RUN'S AGAIN?** — the other half of
+/// [`Reached::Interrupted`], and the half `ai_loop.scxml` has always asked for.
+///
+/// # ⚠⚠⚠ Why this lives INSIDE [`Attended::APerson`] rather than beside it
+///
+/// A handback is only meaningful where somebody is expected: it is the question *"the person you
+/// told me to wait for has taken the pane — do I wait for that too?"*. Declared as its own
+/// top-level argument it would have a value nobody could act on whenever
+/// [`Attended::NoOne`] was chosen, and a caller who arrived at that pair by arithmetic — a config
+/// that set one and not the other — would be silently given a run that ends on the first keystroke
+/// while their request plainly asked otherwise. That is the shape [`Attended::of`] already refuses
+/// one level down for a patience of zero. Nested, the combination cannot be spelt.
+///
+/// # ⚠⚠⚠ Why a STILLNESS and not a resume signal
+///
+/// `ai_loop.scxml`'s `awaiting_human` leaves for `working` on an event — *"the person looked and
+/// waved it on"*. An SCXML document may name an event and leave who raises it to the driver; the
+/// driver has to answer it. The only thing this product can HONESTLY see about a person is what
+/// [`sprag_terminal::Hands`] counts: writes at the pane's own door, whose hand each came from. So
+/// the question a run can actually ask is *has their hand been still long enough*, and how long
+/// that is nobody but the caller knows — a supervisor answering one dialog is a second, one editing
+/// a file by hand is a minute. **R372 refused to invent this number and it was right to; this makes
+/// the caller say it**, which is [`Attended`]'s own reasoning about patience, one door over.
+///
+/// ⚠ The stillness is measured from the last write this barrier OBSERVED, not from the keystroke
+/// itself — a poll cannot see between its own looks. That rounds the wait UP, never down, so a run
+/// resumes later than a person let go and never earlier.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Handback {
+    /// **THE PANE IS THEIRS NOW.** The run reports [`Verdict::TakenOver`] and ends, which is what
+    /// every run did before this existed and is still the right answer for most of them: a person
+    /// who reaches into a pane a machine is driving has usually done so to STOP it.
+    ///
+    /// [`Verdict::TakenOver`]: crate::plugin::Verdict::TakenOver
+    Never,
+    /// **WAIT FOR THEM TO FINISH.** The pane is this run's again once the person's hand has been
+    /// still for this long, and the run carries on from wherever they left the peer.
+    ///
+    /// ⚠ Bounded by the [`patience`](Attended::APerson::patience) beside it: a pane still theirs
+    /// when that runs out ends the run exactly as [`Never`](Self::Never) would have, with the same
+    /// word and the whole episode's writes counted. The bound is deliberately the SAME number the
+    /// caller already gave for a dialog, because `ai_loop.scxml` gives `awaiting_human` ONE
+    /// `unattended` exit no matter which door the run came in by.
+    WhenStill(Duration),
+}
+
+impl Handback {
+    /// The argument this is declared with, in ONE place — [`Attended::WIRE_KEY`]'s rule.
+    ///
+    /// ⚠ It names the ACT and its UNIT, like its neighbour: *"the pane is mine again once their
+    /// hand has been still this many milliseconds"*.
+    pub const WIRE_KEY: &'static str = "handback_still_ms";
+
+    /// A handback after `still`, or [`None`] for a stillness of zero.
+    ///
+    /// ⚠ Zero is REFUSED for [`Attended::of`]'s reason exactly: *"the pane is mine again the
+    /// instant they pause"* is not a thing a caller can mean — every person pauses between
+    /// keystrokes — and a caller who reached zero by arithmetic needs telling rather than a run
+    /// that types into the gap between their words.
+    #[must_use]
+    pub const fn of(still: Duration) -> Option<Self> {
+        if still.is_zero() {
+            return None;
+        }
+        Some(Self::WhenStill(still))
+    }
+
+    /// How long a still hand means they are done, or [`None`] when the pane stays theirs.
+    #[must_use]
+    pub const fn stillness(self) -> Option<Duration> {
+        match self {
+            Self::Never => None,
+            Self::WhenStill(still) => Some(still),
+        }
+    }
 }
 
 impl Attended {
@@ -295,7 +378,8 @@ impl Attended {
     /// [`Consents::WIRE_KEY`]: crate::consent::Consents::WIRE_KEY
     pub const WIRE_KEY: &'static str = "await_person_ms";
 
-    /// A run watched by somebody with `patience` to spare, or [`None`] for a patience of zero.
+    /// A run watched by somebody with `patience` to spare, who gets the pane back on `handback`'s
+    /// terms — or [`None`] for a patience of zero.
     ///
     /// ⚠ Zero is REFUSED rather than accepted as a no-op, for [`Consents::of`]'s reason one level
     /// up: *"wait for a person for no time at all"* and *"nobody is watching"* would be two
@@ -303,13 +387,19 @@ impl Attended {
     /// deadline already passed, a config that defaulted to 0 — is precisely the one who needs to be
     /// told rather than silently given the other.
     ///
+    /// ⚠⚠ BOTH FACTS AT ONCE, and deliberately: a watching person cannot be declared without
+    /// deciding what becomes of a pane they take. The alternative was a second constructor with a
+    /// default, and the default would have been *"the run ends"* for every caller who never read
+    /// this far — which is the answer `ai_loop.scxml` spent a whole state saying is wrong for a
+    /// supervised loop.
+    ///
     /// [`Consents::of`]: crate::consent::Consents::of
     #[must_use]
-    pub const fn of(patience: Duration) -> Option<Self> {
+    pub const fn of(patience: Duration, handback: Handback) -> Option<Self> {
         if patience.is_zero() {
             return None;
         }
-        Some(Self::APerson(patience))
+        Some(Self::APerson { patience, handback })
     }
 
     /// How long a person is given, or [`None`] when nobody is expected.
@@ -317,7 +407,17 @@ impl Attended {
     pub const fn patience(self) -> Option<Duration> {
         match self {
             Self::NoOne => None,
-            Self::APerson(patience) => Some(patience),
+            Self::APerson { patience, .. } => Some(patience),
+        }
+    }
+
+    /// What becomes of a pane this run's person takes — [`Handback::Never`] when nobody is
+    /// expected, because a run nobody is watching has nobody to give it back.
+    #[must_use]
+    pub const fn handback(self) -> Handback {
+        match self {
+            Self::NoOne => Handback::Never,
+            Self::APerson { handback, .. } => handback,
         }
     }
 }
@@ -418,6 +518,46 @@ impl Interruption {
     }
 }
 
+/// **A PERSON TOOK THIS PANE AND GAVE IT BACK** — what [`Reached::HandedBack`] carries.
+///
+/// It holds what an ending run would have reported ([`Interruption`]) plus how long the pane was
+/// theirs, for [`Attention`]'s reason: a loop that was interrupted six times is one whose prompts
+/// keep asking for something its supervisor would rather do by hand, and a journal that only said
+/// *"continued"* would hide the whole pattern.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Handover {
+    /// What they did while they had it — the same fact a [`Reached::Interrupted`] run ends on,
+    /// counted over the WHOLE episode rather than only the write that stopped the run.
+    took: Interruption,
+    /// How long the run waited between noticing them and getting the pane back.
+    held: Duration,
+}
+
+impl Handover {
+    /// What the person did while the pane was theirs.
+    #[must_use]
+    pub const fn took(&self) -> Interruption {
+        self.took
+    }
+
+    /// How long this run waited for the pane to come back.
+    #[must_use]
+    pub const fn held(&self) -> Duration {
+        self.held
+    }
+
+    /// The line a run's journal carries for the turn it spent waiting for a person to finish.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "a person had this pane for {:.1}s ({} write(s)) and their hand went still; it is this \
+             run's again",
+            self.held.as_secs_f32(),
+            self.took.writes(),
+        )
+    }
+}
+
 /// How a [`Readiness`] wait ended, for the endings that are not an error.
 /// ⚠ NOT `Copy` since two arms carry the peer's question — [`Verdict`]'s reason, and the same one:
 /// an answer that cannot say WHAT the peer is asking is not worth returning.
@@ -486,6 +626,17 @@ pub enum Reached {
     /// typing is a pane whose screen is changing under the dialog parser, so the question read
     /// there is the least trustworthy reading this barrier ever takes.
     Interrupted(Interruption),
+    /// **A PERSON TOOK THIS PANE AND HAS FINISHED WITH IT** — they went still for as long as the
+    /// caller's [`Handback::WhenStill`] says means *done*, and the pane is this run's again.
+    ///
+    /// # ⚠⚠ Not `Yes`, for [`Attended`](Self::Attended)'s reason exactly
+    ///
+    /// The pane a person hands back is not the pane they took: they may have answered a dialog,
+    /// started a different program, or left one of their own up. So the wait ENDS the step and the
+    /// NEXT one meets this barrier again — where *is it asking*, *has it started* and *has somebody
+    /// reached in* are all asked afresh against whatever the pane became. This run never learns what
+    /// they did and has no business knowing.
+    HandedBack(Handover),
 }
 
 /// WHICH QUESTION a readiness marker is asking — the distinction the argument used to hide.
@@ -834,6 +985,84 @@ impl Readiness {
         Some(Interruption { writes })
     }
 
+    /// **WAIT FOR THE PERSON TO FINISH, AND TAKE THE PANE BACK WHEN THEY DO** — what a
+    /// [`Handback::WhenStill`] run does with an interruption instead of ending on it.
+    ///
+    /// # ⚠⚠⚠ What ends the wait, and why it is the HAND and not the SCREEN
+    ///
+    /// A screen that has stopped changing is not a person who has stopped: an agent thinking about
+    /// what they just typed paints nothing for a minute, and a pane running a clock paints for
+    /// ever. The only thing that answers *is this person still working here* is the thing that
+    /// counts THEIR acts — [`sprag_terminal::Hands`], the same watermark that noticed them — so the
+    /// wait watches that and nothing else.
+    ///
+    /// ⚠⚠ AND THE BARRIER'S OWN ORDER DOES THE REST. Whatever they left behind — a dialog they
+    /// opened and did not answer, a program they started — is met by the NEXT step's pass through
+    /// [`reached`](Self::reached), which asks *is it asking* and *has it started* in the order it
+    /// always did. Folding those questions in here would be a second door to a blocked pane, which
+    /// is the shape this crate keeps finding defects in.
+    ///
+    /// # ⚠ Why the watermark is re-armed on the way out, and only there
+    ///
+    /// [`interrupted`](Self::interrupted) reports a DELTA against `hands_at`. Left where it was,
+    /// every look after a handback would report the same writes again and the run would hand the
+    /// pane back for ever without driving it once. Re-arming is what makes the answer *an episode
+    /// that is over* rather than *a person who once typed*, and it happens only on the arm where
+    /// the episode really did end.
+    fn await_the_handback(
+        &mut self,
+        panes: &dyn PaneAccess,
+        pane: PaneId,
+        took: Interruption,
+        run: &RunContext,
+    ) -> Reached {
+        let (Some(patience), Some(still)) = (
+            self.attended.patience(),
+            self.attended.handback().stillness(),
+        ) else {
+            return Reached::Interrupted(took);
+        };
+        let began = Instant::now();
+        // The count the interruption was read from, and the moment this barrier last saw it move. A
+        // poll cannot see between its own looks, so `since` is the last time the run OBSERVED
+        // stillness begin — later than the keystroke, never earlier. See [`Handback`].
+        let mut seen = took.writes();
+        let mut since = Instant::now();
+        let waited = poll_until(run, patience, || {
+            let now = panes
+                .hands()
+                .and_then(|hands| hands.pane_hands(pane))
+                .map_or(seen, |hands| {
+                    hands
+                        .by_a_person()
+                        .saturating_sub(self.hands_at.unwrap_or_default())
+                });
+            if now != seen {
+                seen = now;
+                since = Instant::now();
+                return false;
+            }
+            since.elapsed() >= still
+        });
+        let took = Interruption::of(seen);
+        match waited {
+            Waited::Ready => {
+                // ⚠ The whole episode is now behind the watermark, so the next look starts clean.
+                self.hands_at = self.hands_at.map(|armed| armed + seen);
+                Reached::HandedBack(Handover {
+                    took,
+                    held: began.elapsed(),
+                })
+            }
+            // ⚠⚠⚠ THE PANE IS STILL THEIRS, so the run ends exactly as `Handback::Never` would —
+            // with the word that says a person has it and the writes of the whole episode, rather
+            // than `RunEnded`. `await_the_person`'s rule, for its reason: a run's clock running out
+            // underneath does not put the pane back in this run's hands, and reporting the ending
+            // instead of the finding would tell a supervisor to raise a budget.
+            Waited::TimedOut | Waited::Stopped => Reached::Interrupted(took),
+        }
+    }
+
     /// **HAND THE PANE TO THE PERSON WHO IS WATCHING IT, AND WAIT** — what an
     /// [`Attended::APerson`] run does with a refusal instead of ending on it.
     ///
@@ -1154,7 +1383,10 @@ impl Readiness {
         // Asked every time and before the latch, for the question below's reason: *has somebody
         // reached in* is not answered once and for all, it is answered again on every step.
         if let Some(interruption) = self.interrupted(panes, pane) {
-            return Ok(Reached::Interrupted(interruption));
+            // ⚠⚠ THE WAIT WRAPS THE ENDING RATHER THAN REPLACING IT — `await_the_person`'s shape.
+            // A caller who declared no handback gets `Interrupted` straight back out of this call,
+            // so the arm above stays exactly the run-ending answer R372 built.
+            return Ok(self.await_the_handback(panes, pane, interruption, run));
         }
         // ⚠⚠⚠ ASKED EVERY TIME, BEFORE THE LATCH AND BEFORE THE CONDITION. *Has it started* is
         // answered once; *is it waiting on a question of its own* is not, and this is the only
@@ -1972,7 +2204,9 @@ mod tests {
             None,
             Some(Duration::from_millis(200)),
             consent,
-            Attended::of(patience).expect("a positive patience"),
+            // ⚠ `Handback::Never` and not the round's new arm: these gates are about waiting for a
+            // person to ANSWER, and a handback would add a second wait to every one of them.
+            Attended::of(patience, Handback::Never).expect("a positive patience"),
         )
     }
 
@@ -2261,18 +2495,52 @@ mod tests {
     #[test]
     fn a_watch_with_no_patience_cannot_be_built() {
         assert!(
-            Attended::of(Duration::ZERO).is_none(),
+            Attended::of(Duration::ZERO, Handback::Never).is_none(),
             "⚠⚠ zero patience must be unrepresentable, not a quiet `NoOne`",
         );
         assert_eq!(
-            Attended::of(Duration::from_millis(1)),
-            Some(Attended::APerson(Duration::from_millis(1))),
+            Attended::of(Duration::from_millis(1), Handback::Never),
+            Some(Attended::APerson {
+                patience: Duration::from_millis(1),
+                handback: Handback::Never,
+            }),
             "and any positive patience is a person",
         );
         assert_eq!(
             Attended::NoOne.patience(),
             None,
             "nobody watching has no patience to spend",
+        );
+        // ⚠⚠⚠ AND THE SAME RULE ONE LEVEL IN, for the argument that joined this one. A stillness of
+        // zero is *"the pane is mine again the instant they pause"*, and every person pauses between
+        // keystrokes — so it is not a spelling of `Never`, it is a request nobody can have meant.
+        assert!(
+            Handback::of(Duration::ZERO).is_none(),
+            "⚠⚠ zero stillness must be unrepresentable, not a quiet `Never`",
+        );
+        assert_eq!(
+            Handback::of(Duration::from_millis(1)),
+            Some(Handback::WhenStill(Duration::from_millis(1))),
+            "and any positive stillness is a handback",
+        );
+        // ⚠⚠⚠ THE STRUCTURAL CLAIM THIS TYPE EXISTS FOR: a handback cannot be declared for a run
+        // nobody is watching. There is no `Attended` value carrying one without a patience, so the
+        // combination is not refused at runtime — it cannot be SPELT. This asserts the consequence
+        // callers see, which is that the absent person's handback is `Never` and nothing else.
+        assert_eq!(
+            Attended::NoOne.handback(),
+            Handback::Never,
+            "⚠⚠⚠ a run nobody is watching has nobody to give the pane back to, and the type is why: \
+             `Handback` lives inside `APerson`, so `NoOne` has no room to carry one",
+        );
+        assert_eq!(
+            Attended::of(
+                Duration::from_secs(1),
+                Handback::WhenStill(Duration::from_secs(2))
+            )
+            .map(Attended::handback),
+            Some(Handback::WhenStill(Duration::from_secs(2))),
+            "and a declared one comes back out of the pair it was declared with",
         );
     }
 

@@ -347,12 +347,18 @@ impl SpragPaneExternal {
         let Some((key, mods)) = parse_key_args(args)? else {
             return Ok(IntrospectValue::Null); // suppressed key-up edge
         };
-        // ⚠⚠ THE WIRE IS A PROGRAM. A caller reaching this surface is driving the pane through an
-        // API — a plugin, `sprag send-keys`, an MCP tool — and even when a person set that call in
-        // motion, they are not AT this pane the way a display client's keyboard is. Stamping the
-        // wire as a person would make every scripted keystroke read as *"somebody has taken this
-        // pane"*, which is the reading that would stop every supervised run the moment it worked.
-        send_key(&self.pty, &key, mods, Hand::AProgram)
+        // ⚠⚠⚠ THE WIRE IS A PROGRAM UNLESS THE CALLER SAYS OTHERWISE, and the second half of that
+        // sentence is what was missing. The first half is right and unchanged: a caller reaching
+        // this surface is usually driving the pane through an API — a plugin, `sprag send-keys`, an
+        // MCP tool — and stamping all of them as a person would make every scripted keystroke read
+        // as *"somebody has taken this pane"*, stopping every supervised run the moment it worked.
+        //
+        // What the old form got wrong was the case it excluded by assumption: **a display client is
+        // on the far side of this same socket.** `sprag_client::WireHost::send_key` — the key path
+        // of both frontends — lands here, so `Hand::AProgram` unconditionally meant a person at a
+        // real keyboard was recorded as a program and no run could ever see them. See [`Hand`],
+        // which carried the false premise in its own doc.
+        send_key(&self.pty, &key, mods, parse_hand(args)?)
             .map(|written| injected(&self.pty, &written))
             .map_err(refused)
     }
@@ -365,7 +371,10 @@ impl SpragPaneExternal {
     /// [`InvokeError::Rejected`].
     fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
-        if send_text(&self.pty, &text, Hand::AProgram) {
+        // ⚠ THE SAME QUESTION AS [`Self::inject_key`]'s, and it matters here for a reason of its
+        // own: an IME commit is a person's word finished, and a display client sends it down this
+        // door rather than the key one.
+        if send_text(&self.pty, &text, parse_hand(args)?) {
             Ok(injected(&self.pty, text.as_bytes()))
         } else {
             Err(refused(NOT_WRITTEN))
@@ -378,7 +387,9 @@ impl SpragPaneExternal {
     /// a no-op success. A write failure is an [`InvokeError::Rejected`].
     fn inject_paste(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
-        if paste(&self.pty, &text, Hand::AProgram) {
+        // ⚠ AND THE SAME AGAIN: somebody pressing paste at a display client is a person acting on
+        // this pane, and a program relaying a buffer into it is not.
+        if paste(&self.pty, &text, parse_hand(args)?) {
             // The BRACKETS are not consulted: they wrap the text, they do not shield it. The line
             // discipline sits below this device and raises its signals from the bytes whatever
             // markers surround them, which is exactly why a pasted `0x03` surprises people.
@@ -771,6 +782,33 @@ fn parse_clipboard_answer_args(
 /// bare string (`"한"`) or an object `{text: "한"}` (the AI/JSON wire). A
 /// missing/non-string `text`, or a non-string/non-object arg, is an
 /// [`InvokeError::TypeMismatch`]. Empty is allowed (the caller no-ops it).
+/// Read the optional `hand` — **WHOSE KEYSTROKES THESE ARE**. Absent (or a scalar form, which has
+/// nowhere to carry it) is [`Hand::AProgram`]: what this surface did before the argument existed,
+/// and the conservative half.
+///
+/// # ⚠⚠⚠ Why the safe default is the one that cannot be claimed by accident
+///
+/// Reading a person's presence where there is none stops runs that should carry on, and reading a
+/// program where a person is at the keyboard lets a run type over them. Both are wrong and only one
+/// is reachable by silence — so silence means the program, and a caller who is genuinely carrying
+/// somebody's keystrokes has to say so. An unauthenticated caller cannot pretend to be a person by
+/// omission, which is the direction the mobile-transport work needs this to fail in.
+///
+/// ⚠ A word outside the vocabulary is MALFORMED, not a quiet default: `{"hand": "human"}` is a
+/// caller who believes they said something.
+fn parse_hand(args: &IntrospectValue) -> Result<Hand, InvokeError> {
+    let IntrospectValue::Json(Value::Object(map)) = args else {
+        return Ok(Hand::AProgram);
+    };
+    if declined(map, Hand::WIRE_KEY) {
+        return Ok(Hand::AProgram);
+    }
+    match &map[Hand::WIRE_KEY] {
+        Value::String(word) => Hand::parse(word).ok_or(InvokeError::TypeMismatch),
+        _ => Err(InvokeError::TypeMismatch),
+    }
+}
+
 fn parse_text_args(args: &IntrospectValue) -> Result<String, InvokeError> {
     match args {
         IntrospectValue::Text(text) => Ok(text.clone()),
@@ -1554,8 +1592,8 @@ mod tests {
     /// filler for a required open string is not an encodable key name. `TypeMismatch` is the
     /// discriminator — the GRAMMAR's refusal — so a call the parser read and the pane declined to
     /// perform answers the question exactly as well as one that wrote bytes.
-    /// ⚠⚠ **EVERY WORD THE PANE SURFACE PUBLISHES IS A WORD IT ACCEPTS** — sixteen of them, none of
-    /// which a client could discover at all before R353.
+    /// ⚠⚠ **EVERY WORD THE PANE SURFACE PUBLISHES IS A WORD IT ACCEPTS** — none of which a client
+    /// could discover at all before R353.
     #[test]
     fn every_published_word_is_a_word_the_pane_accepts() {
         let (_workspace, mut external) = surface();
@@ -1565,9 +1603,13 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            16,
+            22,
             "one call per published word: the two key edges, the eight mouse buttons, the four \
-             pointer edges, and the two clipboard selections",
+             pointer edges, the two clipboard selections, and the TWO HANDS on each of the three \
+             verbs that write. ⚠⚠ The six newest are the vocabulary that made a person visible at \
+             all: this surface is where both frontends' keyboards land, so `program` had been the \
+             only answer it could give and a person's keystroke was indistinguishable from an \
+             agent's",
         );
     }
 
@@ -1608,10 +1650,12 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            8,
+            11,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
-             declined",
+             declined. ⚠⚠ The newest THREE are `hand` on the three verbs that WRITE, and its \
+             declinability is the whole default: an absent hand is a PROGRAM, which is every \
+             existing caller's behaviour unchanged and the half nobody can claim by silence",
         );
     }
 
@@ -1624,10 +1668,14 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            22,
-            "one probe per declared argument of every FORM: seven across `key`'s two forms, two \
+            25,
+            "one probe per declared argument of every FORM: EIGHT across `key`'s two forms, THREE \
              each for `text` and `paste`, seven for a mouse report, one focus edge, and three for a \
-             clipboard answer",
+             clipboard answer. ⚠⚠ The newest THREE are `hand` on each verb that WRITES — whose \
+             keystrokes these are. It is on the object forms only (a bare string has nowhere to \
+             carry it) and on none of the verbs that do not write: `mouse` and `focus` are a \
+             program by a decision written at their own call sites, and a clipboard answer is a \
+             device replying",
         );
     }
 
@@ -1698,12 +1746,24 @@ mod tests {
                 "object" => {
                     let mut map = serde_json::Map::new();
                     for arg in args {
+                        // ⚠⚠ A CONSTRAINED ARGUMENT IS FILLED FROM ITS OWN PUBLISHED VOCABULARY,
+                        // which is what "as an agent that has read this and nothing else would"
+                        // actually means. The first form of this filled every member with the same
+                        // arbitrary string, which worked only while no member of this verb had a
+                        // closed set — and the day one did (`hand`), the gate failed claiming the
+                        // published object form was a call the surface would not read. It reads it;
+                        // what it refuses is a word outside the set, correctly.
+                        let value = arg
+                            .get(crate::wire::ArgGrammar::ONE_OF_KEY)
+                            .and_then(Value::as_array)
+                            .and_then(|words| words.first().cloned())
+                            .unwrap_or_else(|| json!("한"));
                         map.insert(
                             arg[crate::wire::ArgGrammar::NAME_KEY]
                                 .as_str()
                                 .expect("an argument is named")
                                 .to_owned(),
-                            json!("한"),
+                            value,
                         );
                     }
                     json_args(Value::Object(map))

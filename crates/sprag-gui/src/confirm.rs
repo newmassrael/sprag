@@ -872,6 +872,25 @@ const BUTTON_FONT_PX: u32 = 13;
 /// buttons can never both read as actions.
 const DISMISS_LABEL: &str = "Cancel";
 
+/// The External as [`create_confirm_externals`] builds it — same captured handles, so a test drives
+/// the real thing rather than a look-alike.
+///
+#[cfg(test)]
+fn external() -> ConfirmExternal {
+    ConfirmExternal {
+        armed: use_armed(),
+        choice: use_choice(),
+        pending_intents: Vec::new(),
+    }
+}
+
+/// The same External as a trait object — see [`crate::palette::shape_probe`] for why the type
+/// above stays private.
+#[cfg(test)]
+pub(crate) fn shape_probe() -> Box<dyn pinion_core::external::ExternalIntrospect> {
+    Box::new(external())
+}
+
 #[cfg(test)]
 mod tests {
     use sprag_host::Host;
@@ -1011,38 +1030,11 @@ mod tests {
                  which a caller may qualify",
             );
 
-            // ⚠⚠⚠ AND THE SHAPES, against the protocol number — the pin the daemon has and cannot
-            // point at this window. See `wire_claim::grammar::shapes_are_pinned_to_the_protocol`.
-            let served = surface
-                .query(sprag_host::wire::ACTION_GRAMMAR_SLOT)
-                .expect("the prompt serves its grammar");
-            let pinion_core::external::IntrospectValue::Json(served) = served else {
-                panic!("the grammar slot answers JSON: {served:?}");
-            };
-            crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
-                &served,
-                "the confirmation prompt",
-                // R371: re-stamped for a bump this surface's own shapes had no part in — see the
-                // command palette's copy of this note for the cost three call sites carry.
-                // R372: and again, one round later, for the same reason. See that note.
-                32,
-                &[
-                    "accept[nullary]:",
-                    "dismiss[nullary]:",
-                    "send[scalar]:event:string",
-                ],
-            );
+            // ⚠⚠⚠ AND THE SHAPES ARE PINNED, with every other surface this window hangs and
+            // against ONE protocol number — see
+            // `wire_claim::grammar::every_window_surface_pins_its_shapes_to_one_protocol_number`
+            // for what three copies of that number cost across four rounds.
         });
-    }
-
-    /// The External as [`create_confirm_externals`] builds it — same captured handles, so a test
-    /// drives the real thing rather than a look-alike.
-    fn external() -> ConfirmExternal {
-        ConfirmExternal {
-            armed: use_armed(),
-            choice: use_choice(),
-            pending_intents: Vec::new(),
-        }
     }
 
     /// Drain `external`'s emitted intents through the reducer hook, which is what the shell does —

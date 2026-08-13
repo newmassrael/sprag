@@ -1214,6 +1214,30 @@ const MAX_VISIBLE_ROWS: usize = 10;
 /// What an empty result set says.
 const NO_MATCH_LABEL: &str = "No matching command";
 
+/// The External as [`create_palette_externals`] builds it — same captured handles, so a test drives
+/// the real thing rather than a look-alike.
+#[cfg(test)]
+fn external() -> PaletteExternal {
+    PaletteExternal {
+        catalog: use_frozen_catalog(),
+        cursor: use_cursor(),
+        text: use_text_edit_state(PALETTE_FIELD_TAG),
+        pending_intents: Vec::new(),
+    }
+}
+
+/// The same External, as the ONE driver that pins every window surface's shapes can hold it.
+///
+/// ⚠ A trait object, and the type above stays PRIVATE. Widening a product type's visibility so a
+/// test in another module can name it is paying for a gate with the shape of the code — the thing
+/// this crate refuses one level up when it says a constant only a test reads is not a constant the
+/// product enforces. The pin reads what this surface SERVES, so serving is all it needs to be
+/// handed.
+#[cfg(test)]
+pub(crate) fn shape_probe() -> Box<dyn pinion_core::external::ExternalIntrospect> {
+    Box::new(external())
+}
+
 #[cfg(test)]
 mod tests {
     use sprag_host::Host;
@@ -1333,55 +1357,17 @@ mod tests {
                  an argument no declaration mentions",
             );
 
-            // ⚠⚠⚠ AND THE SHAPES, against the protocol number — the pin the daemon has and cannot
-            // point at this window. See `wire_claim::grammar::shapes_are_pinned_to_the_protocol`.
-            let served = surface
-                .query(sprag_host::wire::ACTION_GRAMMAR_SLOT)
-                .expect("the palette serves its grammar");
-            let pinion_core::external::IntrospectValue::Json(served) = served else {
-                panic!("the grammar slot answers JSON: {served:?}");
-            };
-            crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
-                &served,
-                "the command palette",
-                // R371: re-stamped for a bump this surface's own shapes had no part in — an
-                // argument added to the plugin host's three looping run forms. ⚠ THE THIRD OF
-                // THREE HAND-EDITS FOR ONE BUMP, which is the cost the register predicted when
-                // this pin became three call sites: the daemon DERIVES its surfaces from the
-                // served scene and cannot be left out of a re-stamp; these hang in a window and
-                // are pinned by whoever remembers all three.
-                // ⚠⚠⚠ R372: AND AGAIN, THE VERY NEXT BUMP — three hand-edits for a widened ANSWER
-                // vocabulary (`taken_over`) that no GUI surface publishes, serves or reads. Twice
-                // in consecutive rounds is no longer a prediction: the price is being paid every
-                // time the wire moves for ANY reason, which is the argument for the driver that
-                // builds all three externals in one test rather than three copies of this number.
-                // ⚠⚠⚠ R372: A THIRD TIME, IN THREE CONSECUTIVE ROUNDS. Nine hand-edits across
-                // R371/R372 for changes no GUI surface took part in. The register's prediction is
-                // now a measured RATE, and it is the strongest argument this debt has produced.
-                32,
-                &[
-                    // ⚠ MEASURED, not guessed: it is `select` that carries the row, and `execute`
-                    // acts on the palette's own armed request — which is exactly why five of these
-                    // eight verbs are nullary and why a pin over the shapes is worth having.
-                    "open[nullary]:",
-                    "execute[nullary]:",
-                    "select[scalar]:row:int",
-                    "send[scalar]:event:string",
-                ],
-            );
+            // ⚠⚠⚠ AND THE SHAPES ARE PINNED — but NOT HERE. R371, R372 and R372b each paid three
+            // hand-edits because this surface, the confirmation prompt and the hyperlink oracle
+            // held three copies of one protocol number, and every wire bump moved all three for
+            // reasons no GUI surface took any part in. They are pinned together now, against ONE
+            // number, by a driver that BUILDS all three:
+            // `wire_claim::grammar::every_window_surface_pins_its_shapes_to_one_protocol_number`.
         });
     }
 
     /// The External as [`create_palette_externals`] builds it — same captured handles, so a test
     /// drives the real thing rather than a look-alike.
-    fn external() -> PaletteExternal {
-        PaletteExternal {
-            catalog: use_frozen_catalog(),
-            cursor: use_cursor(),
-            text: use_text_edit_state(PALETTE_FIELD_TAG),
-            pending_intents: Vec::new(),
-        }
-    }
 
     /// Drain `external`'s emitted intents through the reducer hook, which is what the shell does —
     /// the step that actually RUNS an armed command. Returns how many the palette claimed.

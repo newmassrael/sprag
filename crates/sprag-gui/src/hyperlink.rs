@@ -829,6 +829,24 @@ impl Drop for RecordedOpener {
     }
 }
 
+/// The oracle for pane `slot`, holding the same hover handle the shell's own mounting captures.
+#[cfg(test)]
+fn external(slot: usize) -> HyperlinkOracle {
+    HyperlinkOracle {
+        state: use_pane_hover(slot),
+    }
+}
+
+/// The same oracle as a trait object — see [`crate::palette::shape_probe`] for why the type above
+/// stays private.
+///
+/// ⚠ It feeds NO screen. An oracle with no hover still SERVES its grammar, which is all the shape
+/// pin reads, and a probe that painted one would make the pin depend on a fixture's geometry.
+#[cfg(test)]
+pub(crate) fn shape_probe() -> Box<dyn pinion_core::external::ExternalIntrospect> {
+    Box::new(external(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1367,23 +1385,10 @@ mod tests {
                 "two calls for `activate`, whose subject is the link `hover_index` names",
             );
 
-            // ⚠⚠⚠ AND THE SHAPES, against the protocol number — the pin the daemon has and cannot
-            // point at this window. See `wire_claim::grammar::shapes_are_pinned_to_the_protocol`.
-            let served = surface
-                .query(sprag_host::wire::ACTION_GRAMMAR_SLOT)
-                .expect("the oracle serves its grammar");
-            let pinion_core::external::IntrospectValue::Json(served) = served else {
-                panic!("the grammar slot answers JSON: {served:?}");
-            };
-            crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
-                &served,
-                "a pane's hyperlink oracle",
-                // R371: re-stamped for a bump this surface's own shapes had no part in — see the
-                // command palette's copy of this note for the cost three call sites carry.
-                // R372: and again, one round later, for the same reason. See that note.
-                32,
-                &["activate[nullary]:", "send[scalar]:event:string"],
-            );
+            // ⚠⚠⚠ AND THE SHAPES ARE PINNED, with every other surface this window hangs and
+            // against ONE protocol number — see
+            // `wire_claim::grammar::every_window_surface_pins_its_shapes_to_one_protocol_number`
+            // for what three copies of that number cost across four rounds.
         });
     }
 
@@ -1395,9 +1400,7 @@ mod tests {
             sprag_vt::VtPort::palette(&screen),
         );
         feed(slot, &buffer, proto);
-        HyperlinkOracle {
-            state: use_pane_hover(slot),
-        }
+        crate::hyperlink::external(slot)
     }
 
     /// Under button-event tracking (1002) a captured LEFT press then a cell-changing move reports a

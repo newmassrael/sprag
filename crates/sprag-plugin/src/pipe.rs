@@ -233,6 +233,13 @@ impl Plugin for Pipe {
                 let note = interruption.describe();
                 return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
             }
+            // AND THEY GAVE IT BACK. Nothing is relayed this step, and nothing is lost by that for
+            // the `Attended` arm's reason exactly: the SOURCE is read after this barrier, so
+            // everything it produced while the person had the destination is still unread and goes
+            // in on the next step, in order.
+            Reached::HandedBack(handover) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()));
+            }
         }
 
         // ⚠⚠ WHAT THE SOURCE PRODUCED, BY LINE NUMBER — not what its grid looks like. A row is

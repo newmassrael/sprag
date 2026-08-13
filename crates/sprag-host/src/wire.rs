@@ -1125,6 +1125,37 @@ impl PluginGrammar {
     pub const AWAIT_PERSON: ArgGrammar =
         ArgGrammar::open(sprag_plugin::Attended::WIRE_KEY, "int").optional();
 
+    /// WHEN A PANE THIS RUN'S PERSON TAKES BECOMES THIS RUN'S AGAIN, in milliseconds of a still
+    /// hand. Absent is *"never"* — the run ends, which is what every run did before this key.
+    ///
+    /// # ⚠⚠⚠ The other half of `taken_over`, and the half the loop document always asked for
+    ///
+    /// R372 taught a run to notice a person typing into a pane it was driving and to stop. That is
+    /// half of `ai_loop.scxml`, whose `awaiting_human` is a WAITING state with four exits and only
+    /// one of them ends the run. Measured before this key existed: a supervisor who typed ONE key
+    /// into a pane a loop was driving, finished, and let go, left a run holding **thirty-seven of
+    /// its forty iterations unspent** with its goal one turn away. Somebody had to restart it by
+    /// hand.
+    ///
+    /// ⚠⚠ **IT IS READ ONLY BESIDE `await_person_ms`, AND A CALL THAT SENDS IT ALONE IS MALFORMED.**
+    /// The pair is one request, and the type says so —
+    /// [`Handback`](sprag_plugin::Handback) lives INSIDE
+    /// [`Attended::APerson`](sprag_plugin::Attended::APerson), so *"give the pane back to a run
+    /// nobody is watching"* cannot be constructed. A daemon that answered `NoOne` to half a request
+    /// would give the caller a run that ENDS on the first keystroke, which is the opposite of what
+    /// they sent.
+    ///
+    /// ⚠ **Zero is malformed**, not a quiet *"never"* —
+    /// [`Handback::of`](sprag_plugin::Handback::of) owns the predicate, `Attended::of`'s rule: every
+    /// person pauses between keystrokes, so *"the pane is mine again the instant they pause"* is not
+    /// a thing a caller can mean.
+    ///
+    /// ⚠ NOT on the `answer` form, for [`AWAIT_PERSON`](Self::AWAIT_PERSON)'s reason exactly: that
+    /// form is called BY the person, and a run that waited for their hand to go still would be
+    /// waiting for the caller to stop calling it.
+    pub const HANDBACK_STILL: ArgGrammar =
+        ArgGrammar::open(sprag_plugin::Handback::WIRE_KEY, "int").optional();
+
     /// The SAME consent, REQUIRED — the `answer` form, whose whole content it is.
     ///
     /// # ⚠⚠⚠ Why the one argument that is optional everywhere else is mandatory here
@@ -1160,6 +1191,7 @@ impl PluginGrammar {
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
         Self::AWAIT_PERSON,
+        Self::HANDBACK_STILL,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1177,6 +1209,7 @@ impl PluginGrammar {
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
         Self::AWAIT_PERSON,
+        Self::HANDBACK_STILL,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1194,6 +1227,7 @@ impl PluginGrammar {
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
         Self::AWAIT_PERSON,
+        Self::HANDBACK_STILL,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1283,6 +1317,35 @@ impl PaneGrammar {
     /// [`NAMED_KEYS`](sprag_input::NAMED_KEYS)).
     const KEY_ARG: ArgGrammar = ArgGrammar::open("key", "string");
 
+    /// **WHOSE KEYSTROKES THESE ARE** — on the OBJECT form of every input verb that writes.
+    ///
+    /// # ⚠⚠⚠ The argument a display client on a socket could not do without
+    ///
+    /// A pane records whose hand wrote each input ([`sprag_terminal::Hand`]) so a run can stop
+    /// driving a pane a person has taken. That worked for everything except the case it was built
+    /// for: **both frontends attach over this socket**, so a person's keystroke arrived at the one
+    /// door that stamped *a program*, and a supervised run never saw them. Measured end to end
+    /// through a real `sprag-tui` before this key existed — the run converged as though nobody had
+    /// touched the pane.
+    ///
+    /// ⚠ **ABSENT MEANS A PROGRAM**, which is every existing caller's behaviour unchanged and the
+    /// half that cannot be claimed by silence: an unauthenticated caller cannot pass for a person by
+    /// omitting an argument. A word outside the vocabulary is malformed.
+    ///
+    /// ⚠ **NOT ON THE SCALAR FORMS.** A bare string has nowhere to carry a second argument, and
+    /// that is the right shape rather than a limitation: the scalar spellings are the cheap answer
+    /// to *"how do I press `a`"*, and a client faithful enough to say whose hand it holds is
+    /// sending the object form already.
+    ///
+    /// ⚠ Not on `mouse` or `focus`. Those are stamped a program even when a person moved the
+    /// mouse — a hover would make a false positive of the whole signal, and a focus edge is raised
+    /// by the window system, which has no hand at all.
+    const HAND_ARG: ArgGrammar = ArgGrammar::one_of(
+        sprag_terminal::Hand::WIRE_KEY,
+        "string",
+        &sprag_terminal::Hand::WIRE_WORDS,
+    );
+
     /// [`KEY_ACTION`] — a keystroke, either spelling.
     ///
     /// ⚠ The SCALAR form first, because it is the shorter answer to *"how do I press `a`"*, and a
@@ -1303,6 +1366,7 @@ impl PaneGrammar {
             // [`Modifiers`](sprag_input::Modifiers), which is why the key is written here rather than
             // derived from the field.
             ArgGrammar::open("super", "bool").optional(),
+            Self::HAND_ARG.optional(),
         ]),
     ];
 
@@ -1314,7 +1378,7 @@ impl PaneGrammar {
     /// shape).
     pub const TEXT: &'static [CallForm] = &[
         CallForm::scalar(&Self::TEXT_ARG),
-        CallForm::object(&[Self::TEXT_ARG]),
+        CallForm::object(&[Self::TEXT_ARG, Self::HAND_ARG.optional()]),
     ];
 
     /// [`PASTE_ACTION`] — [`TEXT`](Self::TEXT)'s grammar exactly, and deliberately the same
@@ -7236,7 +7300,12 @@ mod tests {
             // pin here covers it.** Recorded rather than papered over: the honest fix would be a
             // pin over what each declared address ANSWERS WITH (a value / which fault), and this
             // round did not build one.
-            32,
+            // ⚠ R373: re-stamped with not one ARM moved, and this time that is the DESIGN rather
+            // than a gap. A pane coming back from a person is `continue` with a journal note, on
+            // R369's ruling about the sixth outcome word: a run that spelt a human's act with a
+            // word of its own would let a reader count it among the decisions the RUN took.
+            // `taken_over` still means what it meant — the person still has it.
+            33,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7488,7 +7557,19 @@ mod tests {
             // ⚠ R372: re-stamped with every published REQUEST vocabulary unchanged. Eleven
             // parametric families started REFUSING a malformed member instead of answering `null`,
             // and not one word a caller may SEND changed to do it.
-            32,
+            // ⚠⚠ R373: re-stamped for an ADDED REQUEST ARGUMENT (`handback_still_ms`) with no
+            // published vocabulary moving — R371's case exactly, and for its reason: the argument is
+            // a DURATION, so there is no closed set for a client to pick from. ⚠ THE SHAPE PIN
+            // BESIDE THIS ONE WENT RED AGAIN, by name, which is the second time it has covered this
+            // pin's designed blind spot.
+            // ⚠⚠⚠ R373 AGAIN, AND THIS TIME THIS PIN IS THE ONE THAT SEES IT: a NEW CLOSED
+            // VOCABULARY on the three pane-input verbs that write (`hand=person,program`). It is
+            // the argument that made version 31's whole feature reachable — both frontends attach
+            // over this socket, so until it existed a person's keystroke was stamped `program` and
+            // no supervised run could see them. A widened value space usually leaves the number
+            // standing (R342); this one moved it, because it arrived with the ARGUMENT that
+            // carries it and an added argument is a bump on this wire.
+            33,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7532,11 +7613,11 @@ mod tests {
                 // wire, in two crates, with nothing comparing the lists.
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer:sel=c,p",
                 "sprag_workspace/pane_<id>/sprag_input/focus:",
-                "sprag_workspace/pane_<id>/sprag_input/key:state=down,up",
+                "sprag_workspace/pane_<id>/sprag_input/key:hand=person,program state=down,up",
                 "sprag_workspace/pane_<id>/sprag_input/mouse:button=left,middle,right,wheelup,\
                  wheeldown,wheelleft,wheelright,none kind=press,release,drag,motion",
-                "sprag_workspace/pane_<id>/sprag_input/paste:",
-                "sprag_workspace/pane_<id>/sprag_input/text:",
+                "sprag_workspace/pane_<id>/sprag_input/paste:hand=person,program",
+                "sprag_workspace/pane_<id>/sprag_input/text:hand=person,program",
                 // THE PLUGIN HOST, whose two verbs published nothing until R353. ⚠ `plugin` appears
                 // FIVE TIMES because each form publishes only the word that SELECTS it — the union is
                 // the whole vocabulary, and a client can tell which key set goes with which plugin.
@@ -7703,16 +7784,30 @@ mod tests {
             // nothing to opt into.
             // ⚠ R372: re-stamped with every argument SHAPE unchanged. The eleven families take the
             // arguments they always took; what changed is the answer when one is malformed.
-            32,
+            // ⚠⚠⚠ R373 IS THIS PIN'S SECOND MOVE AND ITS SECOND OF THE SAME KIND: the same three
+            // LOOPING forms gained `handback_still_ms:int?`, and it went red by NAME before the
+            // number was touched. Same grounds as R371's, and the silence is worse here: an older
+            // daemon swallows the key and reports a run that ENDED ON THE FIRST KEYSTROKE using the
+            // same word (`taken_over`) it would use for a run that waited and gave up. ⚠ The pair
+            // is one request — `handback_still_ms` without `await_person_ms` is malformed — and NO
+            // per-argument pin can see that, which is why it has a gate of its own
+            // (`a_handback_for_a_run_nobody_is_watching_is_malformed`).
+            // ⚠⚠⚠ AND A SECOND MOVE IN THE SAME ROUND, on a surface no round had touched in a
+            // while: `hand:string?` on `key`, `text` and `paste`'s OBJECT forms. It is the
+            // argument that made `taken_over` reachable in production at all — a display client
+            // attaches over this socket, so its keystrokes came through the door stamped *a
+            // program*. ⚠ The SCALAR spellings did not move, deliberately: a bare string has
+            // nowhere to carry a second argument, and that is the right shape rather than a gap.
+            33,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
-                "sprag_workspace/pane_<id>/sprag_input/key[object]:key:string state:string? ctrl:bool? alt:bool? shift:bool? super:bool?",
+                "sprag_workspace/pane_<id>/sprag_input/key[object]:key:string state:string? ctrl:bool? alt:bool? shift:bool? super:bool? hand:string?",
                 "sprag_workspace/pane_<id>/sprag_input/key[scalar]:key:string",
                 "sprag_workspace/pane_<id>/sprag_input/mouse[object]:button:string kind:string col:int row:int ctrl:bool? alt:bool? shift:bool?",
-                "sprag_workspace/pane_<id>/sprag_input/paste[object]:text:string",
+                "sprag_workspace/pane_<id>/sprag_input/paste[object]:text:string hand:string?",
                 "sprag_workspace/pane_<id>/sprag_input/paste[scalar]:text:string",
-                "sprag_workspace/pane_<id>/sprag_input/text[object]:text:string",
+                "sprag_workspace/pane_<id>/sprag_input/text[object]:text:string hand:string?",
                 "sprag_workspace/pane_<id>/sprag_input/text[scalar]:text:string",
                 "sprag_workspace/sprag_mux/break_pane[object]:pane:int name:string? detached:bool? opened_by:int?",
                 "sprag_workspace/sprag_mux/close[object]:id:int?",
@@ -7765,9 +7860,9 @@ mod tests {
                 // hand-written counts. An argument ADDED is the case its doc predicts: a client
                 // built against the old shape is unaffected, and an older DAEMON swallows the key
                 // and reports a run that will never wait, which is why the number rises.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
             ],
         );
 
@@ -8202,7 +8297,11 @@ mod tests {
         // ADDED, the eleventh family's empty member finally declared. An addition alone does not
         // move the number — what moved it is a behaviour NONE of these four can see, a `null` that
         // became a `-32602` on eleven families. See `WIRE_PROTOCOL`'s own entry for 32.
-        32,
+        // ⚠ R373: re-stamped with the SURFACE unchanged. `handback_still_ms` is an ARGUMENT inside
+        // three forms the daemon already served at addresses that did not move — this pin's named
+        // blind spot, covered by the shape pin, which went red by name before the number was
+        // touched.
+        33,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

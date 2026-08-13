@@ -1581,6 +1581,10 @@ const NOT_A_PANE: &[&str] = &[
     // `sprag-plugin` only as a dev-dependency and the published form is the one definition both
     // sides of this file already read.
     sprag_host::wire::PluginGrammar::AWAIT_PERSON.name,
+    // ⚠ A STILLNESS, in milliseconds — how long that person's hand must be still before the pane
+    // they took is the run's again. The same kind of number as its neighbour above and classified
+    // for the same reason, spelled through the same one definition.
+    sprag_host::wire::PluginGrammar::HANDBACK_STILL.name,
     "cols",
     "rows",
     "opened_by",
@@ -1933,6 +1937,21 @@ fn argument_help(name: &str) -> &'static str {
              keyboard, minutes for somebody who checks in. If nobody comes the run ends \
              `unattended`, which names them rather than blaming your consents. Zero is refused — \
              say nothing at all to mean nobody is watching."
+        }
+        "handback_still_ms" => {
+            "GIVE THE PANE BACK when that person has taken it and finished — how long their hand \
+             must be STILL before the run starts driving again. Leave it out and a person who \
+             types into a pane this run is driving keeps it: the run stops, reports `taken_over`, \
+             and somebody has to start a new one. That is right when their keystroke MEANT stop, \
+             and wrong when they were fixing one thing in a loop you want to carry on. Measured: a \
+             supervisor typed one key, finished, let go — and the run ended holding 37 of its 40 \
+             iterations, its goal one turn away. ⚠ Only alongside `await_person_ms`, and a call \
+             that sends it without one is refused: waiting for a person to finish is meaningless \
+             on a run you have told nobody is watching. ⚠ Set it to how long that person pauses \
+             while working, not to how fast you want the loop back: too short and the run types \
+             into the gap between their words. Zero is refused for that reason. ⚠ Nothing is \
+             typed while the pane is theirs, and when it comes back the run reads whatever they \
+             left — a dialog they opened is met by `may_answer` and `await_person_ms` as usual."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
@@ -8191,13 +8210,13 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 12,
+            seen, 13,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
-             ready_timeout_ms, await_person_ms, cols, rows, max_iterations, max_seconds, \
-             max_bytes and max_tokens — MERGED across the forms, so the agent form's readiness \
-             pair adds no new name. ⚠ `await_person_ms` is the newest, and it is the second int \
-             on this wire that is a DURATION wearing a number's clothes: the classification above \
-             is what stops this tool resolving it as somebody's pane",
+             ready_timeout_ms, await_person_ms, handback_still_ms, cols, rows, max_iterations, \
+             max_seconds, max_bytes and max_tokens — MERGED across the forms, so the agent form's \
+             readiness pair adds no new name. ⚠ `handback_still_ms` is the newest, and it is the \
+             THIRD int on this wire that is a DURATION wearing a number's clothes: the \
+             classification above is what stops this tool resolving it as somebody's pane",
         );
         // ⚠ AND THE EXEMPTION LIST IS PRUNED TOO — an entry naming an argument no form publishes
         // any more is a stale decision, which is the half R353's exemption rule adds.

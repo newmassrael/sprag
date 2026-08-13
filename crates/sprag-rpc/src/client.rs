@@ -806,7 +806,67 @@ impl ScopeAsk {
 ///   answered a VALUE, so a caller on a destroyed session asking `session_activity.zzz` was told
 ///   *"no session named …"* — sending them to re-attach over a typo. It now falls through only on
 ///   `UnknownIntrospectPath`, the one answer that means *not mine*.
-pub const WIRE_PROTOCOL: u32 = 32;
+/// * **33 — A PANE A PERSON TOOK CAN COME BACK.** The three LOOPING run forms (`orchestrator`,
+///   `pipe`, `agent`) gained an optional `handback_still_ms`: how long a person's hand must be
+///   STILL before the pane they took is the run's again. Absent is version 31's behaviour exactly —
+///   the run reports `taken_over` and ends.
+///
+///   ⚠⚠⚠ **AN ADDED ARGUMENT, WHICH IS THIS WIRE'S SECOND-COMMONEST BUMP CAUSE AND THE ONE MOST
+///   EASILY TALKED OUT OF.** This surface IGNORES an undeclared key and the run SUCCEEDS (measured
+///   live at R371), so a client that sends this to a version-32 daemon does not get an error — it
+///   gets a run that ends on the first keystroke while its request plainly asked the daemon to wait.
+///   The failure is silent, it is in the direction of doing LESS than asked, and the caller cannot
+///   see it in the result: the outcome word for *"a person took it and I gave up"* is the same word
+///   as for *"a person took it and I never had permission to wait"*.
+///
+///   ⚠⚠⚠ **WHAT EARNED IT: `turn.interrupted` WAS BUILT AT 31 AND ONLY HALF OF IT.**
+///   `ai_loop.scxml`'s `awaiting_human` is a WAITING state with four exits, of which one ends the
+///   run; version 31 had the ending and no waiting. Measured before this was built, against the
+///   shipped barrier: a supervisor typed ONE key into a pane a run was driving, finished, and let
+///   go — and the run ended holding **thirty-seven of its forty iterations unspent**, its goal one
+///   turn away, with `HANDED BACK` on the screen and nothing after it.
+///
+///   ⚠⚠ **AND VERSION 31's REFUSAL TO GUESS IS WHAT THIS KEY IS.** 31 says above: *taking that edge
+///   automatically needs a measured answer to "when has somebody stopped typing", and this version
+///   did not guess.* It still does not. Nobody but the caller knows how long a still hand means
+///   done — a supervisor answering one dialog is a second, one editing a file by hand is a minute —
+///   so the caller says it, which is `await_person_ms`'s own argument one door over.
+///
+///   ⚠ **THE PAIR IS ONE REQUEST.** `handback_still_ms` without `await_person_ms` is MALFORMED
+///   (`-32602`), not a quiet *"nobody is watching"*: the type puts `Handback` inside
+///   `Attended::APerson`, so a handback for a run nobody watches cannot be constructed, and
+///   answering `NoOne` would hand the caller the opposite of what they sent. **Zero is malformed**
+///   too, `await_person_ms`'s rule — every person pauses between keystrokes.
+///
+///   ⚠ **NO ANSWER WORD MOVED.** A pane coming back is not a decision this run made, so it is
+///   `continue` with a journal note, exactly as a person's ANSWER is (version 30's ruling: a run
+///   that counted a human's answer as its own would lose the distinction that makes an approval
+///   traceable). `taken_over` still means what it meant — the person still has it.
+///
+///   ⚠⚠⚠ **AND THE SAME VERSION CARRIES A SECOND ADDED ARGUMENT, WHICH IS WHAT MADE VERSION 31
+///   WORK AT ALL.** The three pane-input verbs that WRITE (`key`, `text`, `paste`) gained an
+///   optional `hand: "person" | "program"` on their OBJECT forms. Absent is `program` — every
+///   existing caller unchanged.
+///
+///   Version 31 taught a pane to record whose hand wrote each input, and its own note said the
+///   display client's path was the one stamped `person`. **That was a premise nothing checked:
+///   there is no in-process display client in production.** Both frontends attach over this socket
+///   through `sprag_client::WireHost`, whose `send_key` is a `scene/invoke` on the pane's input
+///   surface — the door stamped `program`. So a person typing at `sprag-tui` or `sprag-gui` was
+///   recorded as a program and no supervised run could ever see them. Measured end to end through a
+///   real client, in the round that added the handback: the control run — the one that must report
+///   `taken_over` — **converged**, because the person it was meant to notice was invisible.
+///
+///   ⚠⚠ **A NEW CLOSED VOCABULARY ON THIS WIRE**, `sprag_terminal::Hand::WIRE_WORDS`, which the
+///   value-space pin walks. The daemon cannot infer this: an RPC caller may be an agent or a
+///   keyboard, and only the caller knows which. Absent means `program` because that is the half
+///   that cannot be claimed by silence — an unauthenticated caller may not pass for a person by
+///   omitting an argument.
+///
+///   ⚠ NOT on the scalar spellings (a bare string has nowhere to put it) and not on `mouse` or
+///   `focus`, which stay `program` by version 31's reasoning: a hover would make a false positive
+///   of the whole signal, and a focus edge is raised by the window system, which has no hand.
+pub const WIRE_PROTOCOL: u32 = 33;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

@@ -195,6 +195,17 @@ impl Plugin for Orchestrator {
                 let note = interruption.describe();
                 return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
             }
+            // AND THEY GAVE IT BACK. Nothing was injected and nothing is charged; the step is spent
+            // on the wait, and the next one meets the barrier again — so a dialog they left up, or
+            // a program they started, is read by the questions that already exist rather than by
+            // this arm guessing.
+            //
+            // ⚠⚠ `Continue`, NOT a verdict of its own, and for `Attended`'s reason one door over: a
+            // journal in which a person's act and a machine's decision read alike has lost the
+            // distinction that makes an approval traceable. The note says what happened.
+            Reached::HandedBack(handover) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()));
+            }
         }
 
         // Baseline before acting, so observe() waits for this step's reply.
@@ -263,6 +274,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState};
+    use crate::readiness::Handback;
     use crate::testing::{STANDIN_READS_TTY, started};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
@@ -1694,6 +1706,12 @@ mod tests {
              means it went on typing and only the word changed: {outcome:?}",
             outcome.iterations,
         );
+        // ⚠⚠ WAIT FOR THE PERSON'S OWN BYTE TO BE ON THE SCREEN BEFORE READING THE WITNESS. The
+        // run ends the moment it NOTICES their write, and the peer echoes it whenever it next gets
+        // round to reading — so a witness taken at the run's end is a race with the pty, and this
+        // gate lost it once in two runs on a loaded machine. It is not a weaker claim: if `SAW 88`
+        // never arrives the wait ends anyway and the split still answers `None`.
+        crate::testing::screen_showing(&access, pane, "SAW 88");
         let witness = access.pane_full_text(pane).unwrap_or_default();
         let after = witness
             .split_once("SAW 88")
@@ -1703,6 +1721,353 @@ mod tests {
             Some(0),
             "⚠⚠⚠ AND THE PANE IS THE WITNESS: not one stimulus reached it after the person's key. \
              The outcome word is a claim; this is the evidence: {witness:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **THE MEASUREMENT: A PERSON TAKES THE PANE, FINISHES, LETS GO — AND THE RUN NEVER COMES
+    /// BACK.**
+    ///
+    /// R372 taught a run to STOP for a person, which was half of what `ai_loop.scxml` asks for. The
+    /// document's `awaiting_human` is a WAITING state with four ways out and only one of them ends
+    /// the run; the product had one way out and it was the ending. A supervisor who typed one key
+    /// into a pane a loop was driving had to restart the loop by hand.
+    ///
+    /// This is that gap with a number on it, taken before anything was built for it: **the goal was
+    /// one turn away, the person had let go, and the run ended holding THIRTY-SEVEN of its forty
+    /// iterations unspent** — `"…TURN 2HANDED BACK"` and nothing after it.
+    ///
+    /// ⚠⚠ It is kept as the CONTROL for [`Handback::Never`], which is still the default and still
+    /// the right answer for a run nobody is watching. What used to be the whole behaviour is now one
+    /// of two, and this gate is what says the other one had to be asked for.
+    #[test]
+    fn a_person_who_lets_go_of_the_pane_does_not_get_the_run_back() {
+        // ⚠ SLOW TURNS: this reading must not be able to end `exhausted`, or the measurement below
+        // is about a budget rather than about a person.
+        let (access, pane) = crate::testing::work_needing_a_person(true);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("WORK DONE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: None,
+                attended: Attended::NoOne,
+            },
+        );
+
+        // The person reaches in as soon as the run has plainly started, does their one thing, and
+        // stops. From that instant the pane is theirs and nobody is typing into it.
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access, pane, "SAW 112");
+                crate::testing::person_types(&access, pane, b"X");
+            });
+            let outcome = run(
+                &access,
+                &mut orch,
+                Guardrails {
+                    max_iterations: 40,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+            );
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        assert!(
+            matches!(outcome.state, OutcomeState::TakenOver(_)),
+            "the pre-condition of the measurement: the run stopped for them (R372): {outcome:?}",
+        );
+        let screen = crate::testing::screen_showing(&access, pane, "HANDED BACK");
+        assert!(
+            screen.contains("HANDED BACK"),
+            "⚠ and the person's own act reached the peer, so the only thing between this run and \
+             its goal is ONE more turn: {screen:?}",
+        );
+        assert!(
+            !screen.contains("WORK DONE"),
+            "⚠⚠⚠ THE MEASUREMENT: the goal is one turn away, the run holds {} unspent iterations \
+             of 40, the person has let go — and the sentinel is not there and never will be. A \
+             supervisor restarts this loop by hand: {screen:?}",
+            40 - outcome.iterations,
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND THE FIX: A PERSON TAKES THE PANE, FINISHES, AND THE RUN GETS IT BACK.**
+    ///
+    /// The sibling of the measurement above, against the same peer and the same person, with the
+    /// one thing added that the caller has to say: how long a still hand means they are done
+    /// ([`Handback::WhenStill`]). `ai_loop.scxml`'s `awaiting_human` → `working` edge, taken.
+    ///
+    /// # ⚠⚠⚠ The three assertions, and why NONE of them alone would do
+    ///
+    /// The peer cannot converge until a person's byte has reached it, so a run that NEVER NOTICED
+    /// the interruption — one that typed straight over them — converges here too. `Converged` alone
+    /// would therefore be green for the product that has no handback at all, and green for the one
+    /// that had no interruption check either. So:
+    ///
+    /// * **it converged** — the goal the measurement could not reach;
+    /// * **a step was SPENT on the wait, and says so in the journal** — this is the one that
+    ///   separates a run that waited from a run that never stopped. The note is the barrier's own
+    ///   sentence, so a build that reported the handback without waiting for it would have to lie in
+    ///   the journal to pass;
+    /// * **it drove the pane EXACTLY ONCE between their letting go and the goal** — the screen is
+    ///   the witness, so the sentinel this run converged on is one its own keystroke produced,
+    ///   rather than a burst catching up for the turns it missed.
+    ///
+    /// ⚠ The claim is bounded to the span BETWEEN the two markers on purpose. This peer answers a
+    /// stimulus with five lines, and the orchestrator judges its sentinel once the pane has
+    /// REACTED — so the step that produced `WORK DONE` can be judged off `SAW 112` and one more
+    /// stimulus goes in before the next look converges. That is this plugin's own observe/judge
+    /// seam, visible here because the fixture prints more than one line, and it has nothing to do
+    /// with a handback: measured identically on a run nobody ever interrupted.
+    #[test]
+    fn a_person_who_lets_go_hands_the_pane_back_and_the_run_finishes() {
+        // ⚠ SLOW TURNS, exactly as the control above — the two readings differ in the handback and
+        // in nothing else.
+        let (access, pane) = crate::testing::work_needing_a_person(true);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("WORK DONE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: None,
+                // ⚠ A stillness of 400 ms and a patience of twenty seconds — the two are different
+                // questions and this gate is about neither number: what it needs is a stillness the
+                // person's ONE key is plainly on the far side of, and a patience so generous that
+                // whatever ends this wait, it is not the bound.
+                attended: Attended::of(
+                    Duration::from_secs(20),
+                    Handback::of(Duration::from_millis(400)).expect("a positive stillness"),
+                )
+                .expect("a positive patience"),
+            },
+        );
+
+        let cell = crate::driver::ProgressCell::default();
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access, pane, "SAW 112");
+                crate::testing::person_types(&access, pane, b"X");
+            });
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 40,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&cell))
+            .run(&mut orch, &access, &crate::run::RunContext::uncancellable());
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        assert!(
+            matches!(outcome.state, OutcomeState::Converged),
+            "⚠⚠⚠ the person finished and let go, so the run must have carried on and reached the \
+             goal it was one turn from. This is the measurement's number closed: {outcome:?}",
+        );
+        let notes: Vec<String> = cell
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("their hand went still")),
+            "⚠⚠⚠ AND A STEP WAS SPENT WAITING FOR THEM. Without this the gate is satisfied by a run \
+             that never noticed the person at all — this peer converges for one that types straight \
+             over them, because it is their BYTE that unlocks the sentinel: {notes:?}",
+        );
+        let witness = access.pane_full_text(pane).unwrap_or_default();
+        let between = witness
+            .split_once("HANDED BACK")
+            .and_then(|(_, rest)| rest.split_once("WORK DONE"))
+            .map(|(drove, _)| drove.matches("SAW 112").count());
+        assert_eq!(
+            between,
+            Some(1),
+            "⚠⚠⚠ AND THE PANE IS THE WITNESS: between the person letting go and the goal, EXACTLY \
+             ONE stimulus. Not a burst catching up for the turns it missed, and not zero — the \
+             sentinel this run converged on is one its OWN keystroke produced. The outcome word is \
+             a claim; this is the evidence: {witness:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A PERSON WHO NEVER LETS GO KEEPS THE PANE, AND THE RUN ENDS EXACTLY AS IT WOULD HAVE.**
+    ///
+    /// [`Handback::WhenStill`]'s doc says a pane still theirs when the patience runs out ends the
+    /// run *"exactly as `Never` would have, with the same word and the whole episode's writes
+    /// counted"*. A comment stating a premise is a claim, and this is the third of the three the
+    /// handback contract makes — the one that says waiting is BOUNDED.
+    ///
+    /// ⚠⚠ It was written because a mutation asked for it: replacing the timed-out arm with a
+    /// handback left every other gate here green. The two gates above both have a person who
+    /// FINISHES, so neither can see what happens to one who does not.
+    #[test]
+    fn a_person_who_keeps_the_pane_past_the_patience_keeps_it() {
+        let (access, pane) = crate::testing::work_needing_a_person(true);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("WORK DONE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: None,
+                attended: Attended::of(
+                    // ⚠ ONE SECOND of patience against somebody who types for three, and a
+                    // stillness they never reach. The wait is meant to run out here, which is what
+                    // no other gate in this file arranges.
+                    Duration::from_secs(1),
+                    Handback::of(Duration::from_secs(5)).expect("a positive stillness"),
+                )
+                .expect("a positive patience"),
+            },
+        );
+
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access, pane, "SAW 112");
+                for _ in 0..15 {
+                    crate::testing::person_types(&access, pane, b"X");
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            });
+            let outcome = run(
+                &access,
+                &mut orch,
+                Guardrails {
+                    max_iterations: 40,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+            );
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        let Some(interruption) = (match &outcome.state {
+            OutcomeState::TakenOver(interruption) => *interruption,
+            other => panic!(
+                "⚠⚠⚠ the patience ran out with the pane STILL THEIRS, so the run must end on the \
+                 word that says so. {other:?} means a run that gave up waiting and then typed \
+                 underneath somebody who had not stopped — which is worse than never having \
+                 offered to wait: {outcome:?}",
+            ),
+        }) else {
+            panic!("⚠ and it carries what they did: {outcome:?}");
+        };
+        assert!(
+            interruption.writes() >= 2,
+            "⚠⚠ AND THE WHOLE EPISODE IS COUNTED, not just the write that first stopped the run. A \
+             report of `1` here would be the number read before the wait, which would make a run \
+             that waited a second indistinguishable from one that never waited at all: \
+             {interruption:?}",
+        );
+        assert!(
+            outcome.iterations < 40,
+            "⚠ and it stopped early rather than driving to its ceiling: {outcome:?}",
+        );
+        let witness = access.pane_full_text(pane).unwrap_or_default();
+        assert!(
+            !witness.contains("WORK DONE"),
+            "⚠⚠⚠ AND THE PANE IS THE WITNESS: the goal was one turn away the whole time and the \
+             run did not take it. Reaching it here would mean the run typed into a pane whose \
+             person was mid-sentence: {witness:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND THE RUN DOES NOT TYPE INTO THE GAP BETWEEN THEIR WORDS.**
+    ///
+    /// The sibling gate above has the person type ONCE, which is the case a handback exists for and
+    /// is also the case a build that ignored the stillness entirely would pass: one keystroke, then
+    /// silence, so *"resume the moment you notice"* and *"resume once their hand is still"* give the
+    /// same answer. This is the reading that tells them apart — somebody WORKING in the pane, whose
+    /// keystrokes come with ordinary human pauses between them.
+    ///
+    /// [`Handback::WhenStill`] and [`Handback::of`] both say in prose that a stillness too short
+    /// means a run that types between a person's words. A comment stating a premise is a claim, and
+    /// this is the claim's gate: five keystrokes 100 ms apart against a two-second stillness, and
+    /// **not one stimulus may land between the first and the last**.
+    #[test]
+    fn a_person_still_typing_does_not_lose_the_pane_between_keystrokes() {
+        // ⚠⚠⚠ BRISK TURNS, and this is the gate's whole discriminator. A peer that takes a second
+        // per turn makes the RUN's step cadence longer than a person's pauses, so a build with no
+        // stillness rule at all cannot type into one and the gate passes over it — measured, on
+        // this gate's first form.
+        let (access, pane) = crate::testing::work_needing_a_person(false);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("WORK DONE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: None,
+                attended: Attended::of(
+                    Duration::from_secs(20),
+                    // ⚠ TWO SECONDS against gaps of 100 ms — an order of magnitude, so what this
+                    // gate reads is the RULE and not a race with the machine it runs on.
+                    Handback::of(Duration::from_secs(2)).expect("a positive stillness"),
+                )
+                .expect("a positive patience"),
+            },
+        );
+
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access, pane, "SAW 112");
+                for _ in 0..5 {
+                    crate::testing::person_types(&access, pane, b"X");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            });
+            let outcome = run(
+                &access,
+                &mut orch,
+                Guardrails {
+                    max_iterations: 40,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+            );
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        assert!(
+            matches!(outcome.state, OutcomeState::Converged),
+            "⚠ they finished and the run carried on, as in the gate above: {outcome:?}",
+        );
+        let witness = access.pane_full_text(pane).unwrap_or_default();
+        let typing = witness
+            .split_once("HANDED BACK")
+            .and_then(|(_, rest)| rest.rsplit_once("HANDED BACK"))
+            .map(|(during, _)| during.matches("SAW 112").count());
+        assert_eq!(
+            typing,
+            Some(0),
+            "⚠⚠⚠ NOT ONE STIMULUS WHILE THEY WERE STILL TYPING. Between their first keystroke and \
+             their last the pane is theirs, and a run that resumed in a 100 ms pause typed into \
+             the middle of somebody's sentence — which is the defect `Handback::of` refuses a \
+             stillness of zero to prevent, asserted here instead of promised: {witness:?}",
+        );
+        assert_eq!(
+            witness.matches("HANDED BACK").count(),
+            5,
+            "⚠⚠ AND THE CONTROL: all five keystrokes reached the peer, so the span above is the \
+             whole of their typing rather than a window that closed early: {witness:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
@@ -1734,7 +2099,11 @@ mod tests {
                     )
                     .expect("two needles"),
                 ]),
-                attended: Attended::of(Duration::from_secs(20)).expect("a positive patience"),
+                // ⚠ `Handback::Never`: this gate is about a person ANSWERING a question the run
+                // stopped on, which is the opposite direction from one TAKING the pane, and a
+                // handback declared here would put a second wait in front of the one it measures.
+                attended: Attended::of(Duration::from_secs(20), Handback::Never)
+                    .expect("a positive patience"),
             },
         );
 

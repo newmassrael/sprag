@@ -155,6 +155,15 @@ impl Plugin for Answer {
                 let note = interruption.describe();
                 Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note))
             }
+            // ⚠⚠ UNREACHABLE HERE, and for a reason worth stating rather than the one above it.
+            // This door is built with `Attended::NoOne`, whose `handback()` is `Handback::Never` by
+            // construction, so the wait this arm reports cannot be entered from this plugin at all.
+            // ⚠ The type still forces the arm, and `Continue` is the honest landing: a person who
+            // took the pane and gave it back has changed nothing about the answer this tool was
+            // asked to give, and the next step meets the same barrier.
+            Reached::HandedBack(handover) => {
+                Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()))
+            }
             // Asking, and the consent did not name one option on it. Terminal, carrying the
             // question and the reason — which for this plugin is the whole answer the caller
             // wanted, since the reason is what they can act on.
