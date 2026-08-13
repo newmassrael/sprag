@@ -8401,6 +8401,30 @@ mod tests {
                 .is_some(),
             "and so must the readiness barrier's own question",
         );
+        // ⚠⚠ **THE TWO ARRAYS PUBLISH DIFFERENT ITEMS**, which is the branch that arrived when a
+        // list of OBJECTS joined a wire whose only list was an argv. Both declare `"array"`, and a
+        // schema that gave them the same `items` would tell an agent's validator that a consent
+        // clause is a string — or that a dialogue's command line is an object. Asserted as a PAIR,
+        // because either one alone passes for a build that hard-codes the other.
+        assert_eq!(
+            properties["endpoint_a"]["items"]["type"], "string",
+            "an argv is a list of words: {}",
+            properties["endpoint_a"],
+        );
+        let clause = &properties[sprag_plugin::Consents::WIRE_KEY];
+        assert_eq!(clause["type"], "array");
+        assert_eq!(
+            clause["items"]["type"], "object",
+            "⚠⚠⚠ and a consent is a list of CLAUSES — an agent told these were strings would send \
+             the one shape the daemon refuses: {clause}",
+        );
+        assert!(
+            clause["items"]["required"]
+                .as_array()
+                .is_some_and(|it| it.len() == 2),
+            "with both needles required INSIDE one entry, which is what makes an incomplete \
+             clause a refusal rather than a default: {clause}",
+        );
     }
 
     /// ⚠⚠ **AN AGENT CANNOT SAY WHO ASKED FOR A RUN** — the authority decision, driven.
