@@ -397,10 +397,26 @@ const fn literal_prefix_of(template: &'static str) -> &'static str {
 ///
 /// Both directions, because they fail differently and each is a real defect:
 ///
-/// * ANSWERED and not DECLARED — the address is unreachable through a daemon whose boundary gates
+/// * OWNED and not DECLARED — the address is unreachable through a daemon whose boundary gates
 ///   on the declaration (pinion R1637 onward), and the surface's own doc is a false statement.
-/// * DECLARED and not ANSWERED — `$schema` advertises an address that errors, which is worse than
-///   silence: a client enumerating the schema to build a call builds one that cannot work.
+/// * DECLARED and not OWNED — `$schema` advertises an address the surface disclaims, so a client
+///   enumerating the schema to build a call builds one the daemon says it has never heard of.
+///
+/// # ⚠⚠⚠ R372: THE QUESTION IS OWNERSHIP, AND IT USED TO BE *"answers with a value"*
+///
+/// That predicate was right for exactly as long as an empty member answered `Null`. R372 gave every
+/// parametric family its own refusal, so `events.` now answers `QueryTypeMismatch` — *a declared
+/// family whose argument is not the declared type, **including an empty one*** (pinion R1667's
+/// definition, which made that the SURFACE's call rather than the matcher's).
+///
+/// So all eleven flipped to *"refuses"* at once and the gate went red for the change that made it
+/// correct. **A refusal naming the type is not the surface disclaiming the address — it is the
+/// surface owning it and saying what is wrong**, which is the whole point of declaring it: without
+/// the declaration the boundary answers `UnknownIntrospectPath` (*"not in my schema"*, false) and
+/// the caller never reaches the sentence that would have helped them.
+///
+/// The one answer that still means *not mine* is [`ReadRefusal::UnknownPath`], so that is what this
+/// asks about.
 ///
 /// Placed here, beside the declarations, rather than in either surface's test module, because ONE
 /// rule over TWO published schemas is exactly the duplication this module exists to prevent — and a
@@ -426,12 +442,12 @@ pub(crate) fn assert_empty_members_are_declared(
             declared,
             answered,
             "`{surface}` disagrees with itself about `{empty}`, the EMPTY member of \
-             `{}`: the schema {} it and the surface {} it. An address a surface answers and does \
+             `{}`: the schema {} it and the surface {} it. An address a surface owns and does \
              not declare is unreachable through the declaration gate and its doc is false; one it \
-             declares and does not answer is advertised to every client that reads `$schema`.",
+             declares and disclaims is advertised to every client that reads `$schema`.",
             family.path,
             if declared { "declares" } else { "omits" },
-            if answered { "answers" } else { "refuses" },
+            if answered { "owns" } else { "disclaims" },
         );
     }
     assert!(
@@ -1773,11 +1789,19 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
     SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
     SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
-    // ⚠ `PROJECT_FIELD` has NO empty member below, and that is the measurement rather than an
-    // omission: it is the one parametric family of the eleven whose surface answers `None` for an
-    // empty argument, so declaring one would publish an address this daemon does not serve. The
-    // gate over this array reads both directions, so the day it starts answering, it must declare.
+    // ⚠⚠⚠ R372: `PROJECT_FIELD` NOW HAS ITS EMPTY MEMBER, AND THE NOTE THAT USED TO STAND HERE
+    // WAS READING A DEFECT AS A DESIGN. It said this was *"the one parametric family of the eleven
+    // whose surface answers `None` for an empty argument, so declaring one would publish an address
+    // this daemon does not serve"* — true as a symptom, wrong as a decision. `project.` was the
+    // CATCH-ALL arm of its surface's reading match, and its two `?` did different jobs onto one
+    // `None`: *not my prefix* (correct, the fallthrough) and *`project.zzz` is malformed* (a lie —
+    // `PROJECT_FIELD` is right here in the schema). It was not the family that opted out; it was
+    // the one nobody came back to after R155 corrected `cells.`.
+    // ⚠ That note also stated the condition that retires it — *"the day it starts answering, it
+    // must declare"* — and this is that day: the member now answers `QueryTypeMismatch`, the same
+    // real answer the other ten give.
     PROJECT_FIELD,
+    empty_member_of(&PROJECT_FIELD),
     NEIGHBORS_FIELD,
     empty_member_of(&NEIGHBORS_FIELD),
     EVENTS_FIELD,
@@ -7204,7 +7228,15 @@ mod tests {
             // every other outcome's. `blocked` says answer the question, `failed` says fix
             // something, `exhausted` says raise a budget — and this one says do NOTHING, because
             // the pane already belongs to somebody who is using it.
-            31,
+            // ⚠⚠⚠ R372: RE-STAMPED WITH NOT ONE ARM MOVED, AND THAT IS THE ROUND'S FINDING. Eleven
+            // parametric families turned a `null` ANSWER into a `-32602 QueryTypeMismatch` REFUSAL,
+            // which is as wire-visible a change as this workspace has shipped — and this pin cannot
+            // see it, because `QueryTypeMismatch` is PINION's word rather than one of sprag's own
+            // closed vocabularies. **A value that becomes a refusal is a fourth bump cause, and no
+            // pin here covers it.** Recorded rather than papered over: the honest fix would be a
+            // pin over what each declared address ANSWERS WITH (a value / which fault), and this
+            // round did not build one.
+            32,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7453,7 +7485,10 @@ mod tests {
             // words a CALLER may send — a run's outcome is not one of them. The pin that owns that
             // half went red first and named both arms, which is the division of labour these four
             // pins exist for.
-            31,
+            // ⚠ R372: re-stamped with every published REQUEST vocabulary unchanged. Eleven
+            // parametric families started REFUSING a malformed member instead of answering `null`,
+            // and not one word a caller may SEND changed to do it.
+            32,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7666,7 +7701,9 @@ mod tests {
             // run is TOLD, not something a caller asks for — it took no argument on any form,
             // deliberately: typing over somebody was never a behaviour a caller chose, so there was
             // nothing to opt into.
-            31,
+            // ⚠ R372: re-stamped with every argument SHAPE unchanged. The eleven families take the
+            // arguments they always took; what changed is the answer when one is malformed.
+            32,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -8161,7 +8198,11 @@ mod tests {
         // action — a run reports it through the outcome key it already had, on the forms it
         // already served. This pin walking addresses is why it is silent, and the
         // answer-vocabulary pin going red is why the number moved.
-        31,
+        // ⚠⚠ R372 AGAIN, AND THIS TIME THIS PIN IS THE ONLY ONE THAT SAW ANYTHING: `project.` is
+        // ADDED, the eleventh family's empty member finally declared. An addition alone does not
+        // move the number — what moved it is a behaviour NONE of these four can see, a `null` that
+        // became a `-32602` on eleven families. See `WIRE_PROTOCOL`'s own entry for 32.
+        32,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -8226,6 +8267,11 @@ mod tests {
             "panes",
             "paste",
             "plugins",
+            // ⚠ R372: the eleventh family's EMPTY member, ADDED. An addition leaves an older
+            // client's requests working — nothing it used to send stops being served — so this name
+            // does not by itself move the number. What moves it is the ANSWER a malformed member
+            // now gets; see `PINNED_VALUES`.
+            "project.",
             "project.<pane>",
             "prompt_marks",
             "regex.",
@@ -8359,19 +8405,32 @@ mod tests {
                 if let Some(introspect) = node.handle.introspect() {
                     let under = tagged(&node.tag);
                     for field in introspect.schema().fields {
-                        // ⚠ `.ok()` COLLAPSES THE REFUSAL BACK TO AN ABSENCE, deliberately: this
-                        // ratchet's claim is *a declared field answers something*, which is what
-                        // the pre-R1674 `Option` said and what these surfaces still mean — they
-                        // refuse only with `UnknownPath`, the arm pinion maps onto the very fault a
-                        // `None` produced. A ratchet that started reading the richer arms would be
-                        // pinning refusal sentences this workspace has not derived yet.
-                        let answered = introspect.query(field.path).ok();
+                        // ⚠⚠⚠ R372: `answers` IS NOW OWNERSHIP, AND THE NOTE THAT STOOD HERE SAID
+                        // WHY IT COULD NOT BE. It read: *"they refuse only with `UnknownPath` … a
+                        // ratchet that started reading the richer arms would be pinning refusal
+                        // sentences this workspace has not derived yet."* This round derived them,
+                        // so the collapse is no longer honest: the eleven parametric families now
+                        // refuse their EMPTY member with `QueryTypeMismatch`, and reading that as
+                        // *answers nothing* would report the whole read surface as broken for the
+                        // change that made it correct.
+                        //
+                        // The claim this ratchet actually makes is *a declared read is not met with
+                        // the same refusal a daemon too old to know the name would give* — and that
+                        // refusal is `UnknownPath` alone. Every other arm names the address and
+                        // tells the caller what is wrong with the CALL, which is the surface owning
+                        // it.
+                        let reached = introspect.query(field.path);
+                        let owned = !matches!(
+                            reached,
+                            Err(pinion_core::external::ReadRefusal::UnknownPath)
+                        );
+                        let answered = reached.ok();
                         found.push(ServedField {
                             under: under.clone(),
                             path: field.path.to_owned(),
                             channel: field.channel,
                             args: field.args,
-                            answers: answered.is_some(),
+                            answers: owned,
                             // Only the JSON arm: every slot this ratchet reads answers a
                             // document, and a scalar arm coerced into one would let a gate about a
                             // structure pass over something that is not one.

@@ -3667,28 +3667,28 @@ fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
         "a change is delivered ONCE, to the cursor that had not seen it: {after}",
     );
 
-    // A malformed member of an ADVERTISED family is present-but-empty, never absent: `None` becomes
-    // `UnknownIntrospectPath`, meaning "not in its schema", and `events.zzz` IS in the schema. The
-    // taxonomy `cells.<offset>` was corrected into by R155's review.
+    // ⚠⚠⚠ **A MALFORMED MEMBER GETS ITS OWN REFUSAL, AND THAT IS THE WHOLE OF R372.**
     //
-    // ⚠⚠⚠ **AND `Null` IS NOW KNOWN TO BE THE WRONG THIRD ANSWER, MEASURED (R371d).** At every
-    // parametric family on this wire the SAME `Null` is also what a serialisation failure degrades
-    // to (`encoded_answer(..).unwrap_or(IntrospectValue::Null)`), so ONE answer carries two facts
-    // with opposite remedies — *fix your argument* and *this daemon could not encode its own
-    // reading* — and nothing lets a client tell which it was told. R155 reached for `Null` because
-    // `query` answered an `Option` and there was no third thing to say; pinion R1667/R1674 built
-    // it, and `QueryTypeMismatch` is this case by definition. **Driven live before this note was
-    // written: the daemon answers `Null`.** Adopting it is registered as owed — it is a per-path
-    // decision across TEN families and two `Option`-shaped surfaces, and it moves the wire.
-    let malformed: Value = conn
+    // It used to answer `Null`, and that was measured (R371d) as carrying TWO facts with opposite
+    // remedies: at every parametric family the same `Null` was also what a serialisation failure
+    // degraded to (`encoded_answer(..).unwrap_or(Null)`), so *fix your argument* and *this daemon
+    // could not encode its own reading* reached a client as one answer it could not tell apart.
+    //
+    // R155 chose `Null` correctly against the API it had — `query` answered an `Option` and there
+    // was no third thing to say. pinion R1667/R1674 built the third thing, and `QueryTypeMismatch`
+    // is this case by its own definition (*"including an argument that is empty"*).
+    let refused = conn
         .call(
             "scene/query",
             json!({ "path": mux_action_path("events.zzz") }),
         )
-        .expect("a malformed member is answered, not refused");
+        .expect_err("a malformed member is REFUSED, not answered with a value");
+    let refused = refused.to_string();
     assert!(
-        malformed.is_null() || malformed["value"].is_null(),
-        "`events.zzz` belongs to a declared family and is malformed, not unknown: {malformed}",
+        refused.contains("QueryTypeMismatch"),
+        "⚠⚠⚠ `events.zzz` is a declared family's member with an argument that is not a cursor, and \
+         the caller is the one who can fix it — so the refusal has to SAY so rather than hand back \
+         a value that also means this daemon failed to serialise: {refused}",
     );
 }
 

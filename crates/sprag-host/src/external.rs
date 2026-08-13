@@ -14,7 +14,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use pinion_core::external::{IntrospectValue, InvokeError};
+use pinion_core::external::{IntrospectValue, InvokeError, RawJson, ReadRefusal};
 use serde_json::{Map, Value};
 use sprag_terminal::PaneId;
 
@@ -89,6 +89,47 @@ pub fn refused(reason: impl std::fmt::Display) -> InvokeError {
     let reason = reason.to_string();
     tracing::debug!(target: "sprag_host", %reason, "refused an action");
     InvokeError::rejected(reason)
+}
+
+/// **THE TWO WAYS A PARAMETRIC FAMILY'S MEMBER FAILS, AND WHY THEY ARE NOT ONE ANSWER.**
+///
+/// Every parametric family on this wire (`cells.<offset>`, `events.<since>`, `project.<pane>`, …)
+/// resolves a member in two steps, and each step has its own failure with its own remedy:
+///
+/// | what failed | who fixes it | the refusal |
+/// |---|---|---|
+/// | the argument is not the declared type (`events.zzz`, or an EMPTY `events.`) | the CALLER | [`ReadRefusal::QueryTypeMismatch`] |
+/// | this daemon could not serialise its own reading | the DAEMON | [`ReadRefusal::Unavailable`] |
+///
+/// # ⚠⚠⚠ Why this exists at all: one `Null` was carrying both
+///
+/// Until pinion R1667/R1674 a `query` answered an `Option`, so there was no third thing to say and
+/// R155 chose `IntrospectValue::Null` — *present-but-empty* — which was the right call against that
+/// API. But the encode failure degraded to the SAME `Null`
+/// (`encoded_answer(..).unwrap_or(Null)`), so **one answer carried two facts with opposite
+/// remedies** and no client could tell which it had been told. Driven live against the shipped
+/// daemon before this was written: `scene/query {"path": "…/events.zzz"}` answered `Null`, exactly
+/// as a daemon that had failed to encode a perfectly good reading would have.
+///
+/// ⚠ [`ReadRefusal::NoSuchMember`] is deliberately NOT here. *"The index addresses nothing"*
+/// (`row 99 of 0..12`) is a genuine per-path decision about what a surface knows, and folding it
+/// into a shared helper would be inventing eleven sentences nobody derived.
+pub(crate) fn encoded_member<T: ?Sized + serde::Serialize>(
+    value: &T,
+    subject: &str,
+) -> Result<IntrospectValue, ReadRefusal> {
+    RawJson::encode(value)
+        .map(IntrospectValue::Raw)
+        .map_err(|error| {
+            // ⚠ LOGGED as well as refused, because the two readers are different people: the
+            // refusal reaches a CLIENT who can only retry or report it, and the log reaches whoever
+            // runs this daemon and is the only one who can act. `encoded_answer` logged and told
+            // the client nothing; this tells both.
+            tracing::error!(target: "sprag_host", %error, subject, "answer failed to serialise");
+            ReadRefusal::unavailable(format!(
+                "this daemon could not serialise its own {subject} reading"
+            ))
+        })
 }
 
 /// Unwrap invoke args as a JSON object (`{...}`), else [`InvokeError::TypeMismatch`].

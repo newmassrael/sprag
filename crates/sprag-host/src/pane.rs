@@ -48,7 +48,7 @@ use sprag_input::{KeyEdge, Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_terminal::{Hand, PanePtyHandle, SignalKey};
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
-use crate::external::{declined, refused, rpc_external_impl};
+use crate::external::{declined, encoded_member, refused, rpc_external_impl};
 use crate::host::PaneScrollFacts;
 
 /// The refusal every write to a pane's terminal shares: the bytes were formed and the child would
@@ -497,92 +497,97 @@ impl fmt::Debug for SpragPaneExternal {
 rpc_external_impl!(SpragPaneExternal);
 
 impl SpragPaneExternal {
-    fn read(&self, path: &str) -> Option<IntrospectValue> {
-        // The parametric family goes FIRST, before the exact-path arms: its argument rides
-        // the path, so it is matched by prefix rather than by equality. Every frame read —
-        // live and history alike — is a READ, so no client can wake the waiter it is
-        // parked on merely by looking (the R152 livelock, and the wheel-tick bump that
+    /// **THIS SURFACE'S PARAMETRIC FAMILIES** — `None` when `path` is not one of their prefixes,
+    /// which is what keeps [`query`](Self::query)'s fallthrough to [`read`](Self::read) intact.
+    ///
+    /// # ⚠⚠⚠ Why they live OUTSIDE the reading chain now
+    ///
+    /// [`read`](Self::read) answers an `Option`, and a family has to answer three things: here is
+    /// your member, your ARGUMENT is wrong, and I could not encode MY OWN reading. Squeezed into an
+    /// `Option` the last two collapse onto one `Null` — see
+    /// [`encoded_member`] for what that cost.
+    ///
+    /// Lifting them out rather than turning `read` into a `Result` is deliberate: a `None` from the
+    /// reading chain still means *"not an address of mine"*, unchanged, and the surfaces that hang
+    /// scope / dead-scope arms off exactly that meaning cannot be broken by an edit here.
+    fn parametric(&self, path: &str) -> Option<Result<IntrospectValue, ReadRefusal>> {
+        // Every frame read — live and history alike — is a READ, so no client can wake the waiter
+        // it is parked on merely by looking (the R152 livelock, and the wheel-tick bump that
         // outlived it).
         if let Some(arg) = path.strip_prefix(CELLS_FIELD.literal_prefix()) {
-            // Stripping the DECLARED prefix is what makes a path a MEMBER of the family —
-            // the same question `SchemaField::addresses` answers, and the reason a malformed
-            // member is `Null` (present-but-empty) rather than `None`. `None` here becomes
-            // `UnknownIntrospectPath`, whose definition is "not in its schema" — and
-            // `cells.zzz` IS in the schema. pinion states the model on `addresses`
-            // ("`width.zzz` belongs to `width` and is malformed, not unknown") and the
-            // remedy on `at_index` ("reports `Null` … never absence").
-            //
-            // R155's review caught the first draft answering `None` and defending it as
-            // "`query` has no error channel, and answering a plausible frame is the quiet
-            // wrong answer" — a false dichotomy that skipped the third option pinion
-            // specifies. Absence was the quiet wrong answer: it denied the surface owned an
-            // address it advertises.
-            // ENCODED ONCE, not built as a DOM and re-encoded. `IntrospectValue::raw` (pinion
-            // R1480, delivering PINION-PR79) carries JSON TEXT the producer already holds, and
-            // `scene/query` splices those bytes into the reply instead of walking a tree — so a
-            // frame is serialized exactly once, here. The wire bytes are UNCHANGED; only the way
-            // they are produced is. `Null` on a serialization failure is the same degradation
-            // `to_value(..).map_or(Null, Json)` had, so the answer taxonomy above still holds.
-            //
-            // This is the answer R222 measured at 297 -> 5 B/cell; the DOM this removes was the
-            // 25-30% of the request that survived that round, and the reason it could not be
-            // removed then was upstream, not here.
-            return Some(cells_offset(arg).map_or(IntrospectValue::Null, |offset| {
-                IntrospectValue::raw(&self.frame_at(offset))
-            }));
+            // Stripping the DECLARED prefix is what makes a path a MEMBER of the family — the same
+            // question `SchemaField::addresses` answers. An argument that is not an offset is the
+            // CALLER's to fix, and `QueryTypeMismatch` is pinion's word for it (R1667 made the
+            // empty argument this surface's call rather than the matcher's, so `cells.` lands here
+            // too).
+            let Some(offset) = cells_offset(arg) else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            // ENCODED ONCE, not built as a DOM and re-encoded. `RawJson` (pinion R1480, delivering
+            // PINION-PR79) carries JSON TEXT the producer already holds, and `scene/query` splices
+            // those bytes into the reply instead of walking a tree — so a frame is serialized
+            // exactly once, here. This is the answer R222 measured at 297 -> 5 B/cell.
+            return Some(encoded_member(&self.frame_at(offset), "cell frame"));
         }
         // Every literal match of a needle in the pane's retained output, read ON DEMAND (a find
         // bar's keystroke, never per frame). A READ — searching a pane changes nothing about it, so
         // a client that re-queries as the user types cannot wake the waiters it is parked beside
         // (the R152 lesson `cells` was moved off an invoke for). The needle rides the path verbatim;
-        // an EMPTY one is a malformed member and answers `Null`, the same taxonomy `cells.<off>`
-        // reports (present-but-empty, never absence — the path IS in the schema).
+        // an EMPTY one is not a needle, which is the caller's to fix.
         if let Some(needle) = path.strip_prefix(FIND_FIELD.literal_prefix()) {
             if needle.is_empty() {
-                return Some(IntrospectValue::Null);
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
             }
             let found = self
                 .pty
                 .with_screen(|screen| search_literal(screen, needle));
             // Serialized from the SHARED wire type, not a hand-built object: the client
-            // deserializes that same type, so the keys are symmetric by construction. Encoded
-            // once and spliced, for the reason the `cells` arm above states.
-            return Some(IntrospectValue::raw(&found));
+            // deserializes that same type, so the keys are symmetric by construction.
+            return Some(encoded_member(&found, "find result"));
         }
         // The same search over a REGULAR EXPRESSION — a separate address because a needle and a
         // pattern are separate languages, so one string cannot be allowed to mean both depending on
-        // a mode carried somewhere other than the address (see `REGEX_FIELD`). An EMPTY pattern is a
-        // malformed member and answers `Null` exactly as an empty needle does; an INVALID one is
-        // not malformed addressing but a rejected VALUE, so it answers the normal shape carrying
-        // the engine's message — `Null` there would read as "no such pane".
+        // a mode carried somewhere other than the address (see `REGEX_FIELD`). An EMPTY pattern is
+        // the caller's to fix exactly as an empty needle is; an INVALID one is not malformed
+        // ADDRESSING but a rejected VALUE, so it answers the normal shape carrying the engine's
+        // message — a refusal there would read as "no such address".
         if let Some(pattern) = path.strip_prefix(REGEX_FIELD.literal_prefix()) {
             if pattern.is_empty() {
-                return Some(IntrospectValue::Null);
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
             }
             let found = self
                 .pty
                 .with_screen(|screen| search_pattern(screen, pattern));
-            return Some(IntrospectValue::raw(&found));
+            return Some(encoded_member(&found, "regex result"));
         }
         // One inline image's RGBA as base64, fetched ON DEMAND (R1404 Stage 5) — the RGBA can be
-        // megabytes, so it does not ride the per-poll panes slot (only the `{id,seq}` summary
-        // does). `Null` (present-but-empty, a member of the family) for an id the pane is not
-        // showing or a malformed id — the same shape a malformed `cells.<off>` reports.
+        // megabytes, so it does not ride the per-poll panes slot (only the `{id,seq}` summary does).
         if let Some(arg) = path.strip_prefix(IMAGE_DATA_FIELD.literal_prefix()) {
-            return Some(
-                arg.parse::<u32>()
-                    .ok()
-                    .and_then(|id| {
-                        self.pty.with_screen(|s| {
-                            s.images()
-                                .iter()
-                                .find(|im| im.id == id)
-                                .map(|im| STANDARD.encode(&im.rgba))
-                        })
-                    })
-                    .map_or(IntrospectValue::Null, IntrospectValue::Text),
-            );
+            let Ok(id) = arg.parse::<u32>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            // ⚠ AND AN ID THE PANE IS NOT SHOWING STAYS `Null`, deliberately. That is
+            // `NoSuchMember`'s case — *the argument is well typed and addresses nothing* — and it
+            // is a per-path decision about what this surface knows rather than the shared rule
+            // above. Moving it would mean authoring a sentence nobody derived; see
+            // [`encoded_member`].
+            return Some(Ok(self
+                .pty
+                .with_screen(|s| {
+                    s.images()
+                        .iter()
+                        .find(|im| im.id == id)
+                        .map(|im| STANDARD.encode(&im.rgba))
+                })
+                .map_or(IntrospectValue::Null, IntrospectValue::Text)));
         }
+        None
+    }
+
+    /// The FIXED slots. Every parametric family left this chain — see
+    /// [`parametric`](Self::parametric) — so a `None` here means *"not an address of mine"* and
+    /// nothing else.
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             // The count that bounds `cells.<offset>` (`IndexOf(FRAMES_SLOT)`): the live view
             // plus one per retained history line. An agent reads this scalar to learn where
@@ -672,12 +677,17 @@ impl ExternalIntrospect for SpragPaneExternal {
     /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
     /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
     ///
-    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
-    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
-    /// what this surface knows, and several of them supersede reasoning this file already wrote
-    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
-    /// derived. Registered as owed rather than guessed.
+    /// ⚠⚠ **AND THE RICHER ARMS ARE NOW ADOPTED, for the parametric families.** `QueryTypeMismatch`
+    /// and `Unavailable` split the one `Null` that used to carry both *your argument is wrong* and
+    /// *this daemon could not encode its own reading* — see
+    /// `crate::external::encoded_member`.
+    ///
+    /// ⚠ `NoSuchMember` is still not adopted: *"well typed, addresses nothing"* is a per-path
+    /// decision about what this surface knows, and `image_data.<id>` keeps its `Null` for it.
     fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        if let Some(answer) = self.parametric(path) {
+            return answer;
+        }
         self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
@@ -1130,7 +1140,9 @@ mod tests {
         crate::wire::assert_empty_members_are_declared(
             crate::wire::PANE_SCHEMA,
             "the pane surface",
-            |path| external.query(path).ok().is_some(),
+            // OWNERSHIP, not a value — `QueryTypeMismatch` is this surface owning the address and
+            // naming what is wrong with the argument. See the helper's own doc.
+            |path| !matches!(external.query(path), Err(ReadRefusal::UnknownPath)),
         );
     }
 

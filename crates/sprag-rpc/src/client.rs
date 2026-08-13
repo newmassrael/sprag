@@ -772,7 +772,41 @@ impl ScopeAsk {
 ///   taking it automatically needs a measured answer to *when has somebody stopped typing*. This
 ///   version does not have one and did not guess: the run reports and ends, and a supervisor starts
 ///   the next one, exactly as they do for `blocked`.
-pub const WIRE_PROTOCOL: u32 = 31;
+/// * **32 — A MALFORMED MEMBER GETS ITS OWN REFUSAL.** All ELEVEN parametric families
+///   (`cells.` `find.` `regex.` `image_data.` · `session_activity.` `pane_processes.` `doctor.`
+///   `pane_resources.` · `events.` `neighbors.` `project.`) answered `null` for an argument that is
+///   not the declared type. They now refuse with `QueryTypeMismatch` (`-32602`).
+///
+///   ⚠⚠⚠ **A VALUE THAT BECAME A REFUSAL — this wire's third bump cause, and the first time NO PIN
+///   COULD SEE IT.** The address did not move, the argument shapes did not move, and the answer
+///   ENUMS did not move: `QueryTypeMismatch` is pinion's word, not one of sprag's own closed
+///   vocabularies, so `PINNED_VALUES` never carried it. What changed is that a path which used to
+///   hand back a document now hands back a fault — invisible to all four pins by construction, and
+///   the reason this entry exists rather than a re-stamp.
+///
+///   ⚠⚠⚠ **WHAT EARNED IT: ONE `null` WAS CARRYING TWO FACTS WITH OPPOSITE REMEDIES.** At every one
+///   of the eleven, the same `null` was also what a serialisation failure degraded to
+///   (`encoded_answer(..).unwrap_or(Null)`). So *fix your argument* and *this daemon could not
+///   encode its own reading* reached a client as one answer it could not tell apart. Driven live
+///   against the shipped daemon before any of this was built: `scene/query` on `…/events.zzz`
+///   answered `null`. R155 chose that correctly against the API it had — `query` returned an
+///   `Option`, and there was no third thing to say. pinion R1667/R1674 built the third thing.
+///
+///   ⚠ **AND THE ELEVENTH FAMILY WAS LYING ABOUT ITS OWN ADDRESS.** `project.` was the catch-all
+///   arm of its surface, where `strip_prefix(..)?` (*not my address* — correct) and
+///   `.parse().ok()?` (*malformed member* — a lie) both fell to one `None`, so `project.zzz`
+///   answered `UnknownIntrospectPath` about a path `$schema` publishes. `project.` now joins the
+///   ten declared empty members: an ADDED name, which alone would not move the number.
+///
+///   ⚠ **`NoSuchMember` IS NOT ADOPTED.** *"Well typed, addresses nothing"* (`image_data.<id>` for
+///   an image the pane is not showing) is a per-path decision about what a surface knows, and
+///   inventing eleven sentences for it is not this round's to do.
+///
+///   ⚠ **A DEAD SCOPE STOPPED SWALLOWING THE NEW REFUSAL.** The registry-only door served only what
+///   answered a VALUE, so a caller on a destroyed session asking `session_activity.zzz` was told
+///   *"no session named …"* — sending them to re-attach over a typo. It now falls through only on
+///   `UnknownIntrospectPath`, the one answer that means *not mine*.
+pub const WIRE_PROTOCOL: u32 = 32;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

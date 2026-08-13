@@ -657,6 +657,20 @@ fn scope_unresolved(state: &HostState, request: &Request, error: &ScopeError) ->
 /// ones it can and the rest fall through, so a slot added to either surface cannot leave a second
 /// list stale — there is no second list.
 ///
+/// # ⚠⚠⚠ R372: A REFUSAL THE REGISTRY SURFACE **OWNED** IS SERVED, NOT DISCARDED
+///
+/// The paragraph above was written when a registry-subject read could fail only one way: the
+/// surface did not serve the address. R372 gave the four parametric families here their own
+/// refusals, so `session_activity.zzz` on a dead scope is now a surface that OWNS the address and
+/// objects to the ARGUMENT — and discarding that told the caller *"no session named `work`"* when
+/// their session had nothing to do with it. They would have gone and re-attached over a typo.
+///
+/// So the discard is narrowed to what it always meant: **fall through only when the registry scene
+/// disclaimed the address.** `UnknownIntrospectPath` is that answer and the only one; a
+/// `QueryTypeMismatch`, a `NoSuchMember` or a `READ_UNAVAILABLE` are all the surface saying *this
+/// address is mine and here is what is wrong with your call*, which is strictly better than the
+/// scope refusal and is what the caller can act on.
+///
 /// **Reads only.** `scene/invoke` acts, and an act needs a session to act on; `scene/revision` and
 /// the waits park on a per-session token; `scene/snapshot` reads panes. Each of those is refused for
 /// its own reason, and gating on the method here says so once rather than relying on the registry
@@ -673,9 +687,17 @@ fn registry_only(state: &HostState, request: &Request) -> Option<String> {
     let revision = state.revision(lock(state.registry()).default_session().name());
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, &revision);
     let response = dispatch_parsed(&mut ctx, request.clone())?;
-    let answered = serde_json::from_str::<Value>(&response)
-        .is_ok_and(|value| value.get("error").is_none() && value.get("result").is_some());
-    answered.then_some(response)
+    let owned = serde_json::from_str::<Value>(&response).is_ok_and(|value| {
+        match value.get("error") {
+            // A result is the plain case: the registry scene served it.
+            None => value.get("result").is_some(),
+            // ⚠ THE ONE WORD THAT MEANS *NOT MINE*. Everything else this scene can answer with is
+            // a refusal ABOUT THE CALL, and a caller is better served by it than by being told
+            // their session is gone — see this function's own doc.
+            Some(error) => error["data"] != "UnknownIntrospectPath",
+        }
+    });
+    owned.then_some(response)
 }
 
 /// Answer `request` against the session `scope` already names — the dispatch body, split from
@@ -4684,18 +4706,29 @@ mod tests {
             } else {
                 format!("{}0", field.literal_prefix())
             };
-            // THE CONTROL, and it runs first: a slot that answers nothing on a LIVE scope would
-            // sort as "needs a session" for the wrong reason entirely.
+            // ⚠⚠⚠ R372: THE QUESTION IS WHETHER A SURFACE OWNED THE ADDRESS, NOT WHETHER IT HANDED
+            // BACK A VALUE — the same correction this round made to every other gate that used the
+            // second as a proxy for the first.
+            //
+            // An EMPTY member (`doctor.`) is a declared address whose argument is missing, so it
+            // now answers `QueryTypeMismatch` on EVERY scope. Read as "an error", that sorts the
+            // stem away from its own family and splits the pair the assertion below exists to keep
+            // together. Read as what it is — *this surface owns the address and objects to the
+            // call* — it sorts with the family, which is the truth: a caller who can reach
+            // `doctor.<window_ms>` can reach `doctor.`, and both tell them the same thing about
+            // whose session it needs.
+            let owned = |answer: &serde_json::Value| {
+                answer.get("error").is_none() || answer["error"]["data"] == "QueryTypeMismatch"
+            };
+            // THE CONTROL, and it runs first: a slot no surface owns on a LIVE scope would sort as
+            // "needs a session" for the wrong reason entirely.
             let live = query(r#""session":"0","#, &address);
             assert!(
-                live.get("error").is_none(),
-                "{address} must answer on a scope that resolves, or its row below means nothing: \
+                owned(&live),
+                "{address} must be owned on a scope that resolves, or its row below means nothing: \
                  {live}",
             );
-            if query(r#""session":"ghost","#, &address)
-                .get("error")
-                .is_none()
-            {
+            if owned(&query(r#""session":"ghost","#, &address)) {
                 registry_subject.push(field.path);
             } else {
                 session_subject.push(field.path);
@@ -4716,11 +4749,13 @@ mod tests {
                 // whose session has gone is exactly the one that may need to look a verb up.
                 "action_grammar",
                 // ⚠ EACH FAMILY IS FOLLOWED BY ITS EMPTY MEMBER, and the pairing is the decision
-                // this ratchet asked for rather than a line to copy: an empty argument answers
-                // `Null` without consulting anything, so it can only ever be at least as reachable
-                // as the family it belongs to. A pair that SPLIT across these two lists would mean
-                // a caller could reach `doctor.<window_ms>` and not `doctor.`, which is the
-                // three-way taxonomy collapsing by another route.
+                // this ratchet asked for rather than a line to copy: an empty argument is refused
+                // on its ARGUMENT without consulting any session, so it can only ever be at least
+                // as reachable as the family it belongs to. A pair that SPLIT across these two
+                // lists would mean a caller could reach `doctor.<window_ms>` and not `doctor.`,
+                // which is the three-way taxonomy collapsing by another route.
+                // ⚠ R372 kept this claim by fixing the CLASSIFIER rather than by skipping the
+                // stems — see `owned` above. Skipping them would have retired the pairing quietly.
                 "session_activity.<max_age_ms>",
                 "session_activity.",
                 "pane_processes.<max_age_ms>",
@@ -4742,6 +4777,10 @@ mod tests {
                 "windows",
                 "window_size",
                 "project.<pane>",
+                // ⚠ R372: `project.` JOINS ITS FAMILY HERE, the eleventh and last stem to be
+                // declared. It was the one family whose malformed member answered "no such
+                // address" — a lie, since `project.<pane>` is right above it in the same schema.
+                "project.",
                 "neighbors.<pane>",
                 "neighbors.",
                 "events.<since>",
@@ -5235,17 +5274,16 @@ mod tests {
             "a pane with no scrollback addresses exactly the live frame: {frames}",
         );
 
-        // A member the argument makes malformed: present-but-empty, NOT absent.
+        // A member the argument makes malformed: REFUSED as a type mismatch (R372), never as an
+        // unknown path and never with a value. `-32602` is the caller's fault code, which is the
+        // point — the offset is theirs to fix.
         for malformed in ["cells.zzz", "cells.-1", "cells.+1", "cells.007"] {
             let answer = query_pane0(&state, malformed);
-            assert!(
-                answer.get("error").is_none(),
-                "`{malformed}` is a MEMBER of a declared family — denying the path exists \
-                 tells an agent something false about the surface: {answer}",
-            );
-            assert!(
-                answer["result"].is_null(),
-                "...and a malformed argument answers Null, never a plausible frame: {answer}",
+            assert_eq!(
+                answer["error"]["data"], "QueryTypeMismatch",
+                "`{malformed}` is a MEMBER of a declared family whose OFFSET is malformed — \
+                 denying the path exists tells an agent something false about the surface, and a \
+                 `Null` would be the answer a daemon that failed to encode also gives: {answer}",
             );
         }
 
@@ -5300,12 +5338,13 @@ mod tests {
             "a needle containing the separator and a space addresses ONE search: {dotted}",
         );
 
-        // The family taxonomy, same as `cells`: an EMPTY argument is a malformed MEMBER
-        // (present-but-empty), while the bare stem carries no argument and is absent.
+        // The family taxonomy, same as `cells`: an EMPTY argument is a malformed MEMBER and is
+        // REFUSED as a type mismatch (R372 — pinion R1667 makes the empty argument the SURFACE's
+        // call by definition), while the bare stem carries no argument and is absent.
         let empty = query_pane0(&state, "find.");
-        assert!(
-            empty.get("error").is_none() && empty["result"].is_null(),
-            "an empty needle is a malformed member -> Null, not an error: {empty}",
+        assert_eq!(
+            empty["error"]["data"], "QueryTypeMismatch",
+            "an empty needle is a malformed member, and the caller is who can fix it: {empty}",
         );
         assert!(
             query_pane0(&state, "find").get("error").is_some(),
@@ -5362,11 +5401,18 @@ mod tests {
             "a successful search carries no error key: {pattern}",
         );
 
-        // Same taxonomy as `find`: an EMPTY pattern is a malformed member, the bare stem is absent.
+        // Same taxonomy as `find`: an EMPTY pattern is a malformed member and is refused as a type
+        // mismatch; the bare stem is absent.
+        //
+        // ⚠ AND THE CONTRAST WITH THE ARM ABOVE IS THE WHOLE DISTINCTION R372 IS ABOUT. An INVALID
+        // pattern (`a(b`) is well-formed ADDRESSING carrying a bad VALUE, so it still answers the
+        // normal shape with the engine's message. An EMPTY one is not a pattern at all, so it never
+        // reaches the engine. Two different faults, two different answers — where before both this
+        // and a failed encode came back as the same thing.
         let empty = query_pane0(&state, "regex.");
-        assert!(
-            empty.get("error").is_none() && empty["result"].is_null(),
-            "an empty pattern is a malformed member -> Null: {empty}",
+        assert_eq!(
+            empty["error"]["data"], "QueryTypeMismatch",
+            "an empty pattern is a malformed member, not a search that found nothing: {empty}",
         );
         assert!(
             query_pane0(&state, "regex").get("error").is_some(),

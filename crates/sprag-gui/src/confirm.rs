@@ -1025,7 +1025,7 @@ mod tests {
                 // R371: re-stamped for a bump this surface's own shapes had no part in — see the
                 // command palette's copy of this note for the cost three call sites carry.
                 // R372: and again, one round later, for the same reason. See that note.
-                31,
+                32,
                 &[
                     "accept[nullary]:",
                     "dismiss[nullary]:",

@@ -1355,7 +1355,10 @@ mod tests {
                 // in consecutive rounds is no longer a prediction: the price is being paid every
                 // time the wire moves for ANY reason, which is the argument for the driver that
                 // builds all three externals in one test rather than three copies of this number.
-                31,
+                // ⚠⚠⚠ R372: A THIRD TIME, IN THREE CONSECUTIVE ROUNDS. Nine hand-edits across
+                // R371/R372 for changes no GUI surface took part in. The register's prediction is
+                // now a measured RATE, and it is the strongest argument this debt has produced.
+                32,
                 &[
                     // ⚠ MEASURED, not guessed: it is `select` that carries the row, and `execute`
                     // acts on the palette's own armed request — which is exactly why five of these

@@ -70,7 +70,7 @@ use sprag_terminal::{
 use crate::attach::ClientSize;
 use crate::bump_on_dirty;
 use crate::external::{
-    as_object, declined, lock, opt_dim, refused, require_pane_id, rpc_external_impl,
+    as_object, declined, encoded_member, lock, opt_dim, refused, require_pane_id, rpc_external_impl,
 };
 use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
@@ -83,13 +83,13 @@ use crate::wire::{
     GLOBAL_COMMANDS_SLOT, GRANT_PANE_ACTION, GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
     MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
-    PANE_RESOURCES_FIELD, PANES_SLOT, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION,
-    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION, SWAP_PANE_ACTION,
-    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef,
-    ZOOM_PANE_ACTION,
+    PANE_RESOURCES_FIELD, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire, PaneResourcesWire,
+    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION,
+    SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    WindowRef, ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -154,30 +154,48 @@ impl RegistryView<'_> {
     /// `None` is what makes this total without lying: [`WorkspaceExternal::query`] falls through to
     /// its own scoped arms, and the dead-scope door turns it back into the scope refusal the reader
     /// had coming. Neither caller has to know which addresses are in here.
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
-        // The parametric families go FIRST, before the exact-path arms: their argument rides the
-        // path, so they are matched by prefix rather than by equality (`cells.<offset>`'s shape, and
-        // the reason a malformed member answers `Null` rather than `None` — `session_activity.zzz`
-        // IS in this surface's schema, so denying the address exists would be the wrong refusal).
+    /// **THE REGISTRY-SUBJECT PARAMETRIC FAMILIES** — `None` when `path` is not one of their
+    /// prefixes, so both callers keep falling through exactly as they did.
+    ///
+    /// # ⚠⚠⚠ Why these left [`query`](Self::query) rather than changing its return type
+    ///
+    /// That `None` is load-bearing in a way nothing else on this surface is:
+    /// [`WorkspaceExternal::query`] reads it as *"not a registry address — try my scoped arms"*, and
+    /// the DEAD-SCOPE door turns it into the scope refusal a reader whose session has gone has
+    /// coming. Turn this into a `Result` and that fallthrough has to be rebuilt at every caller —
+    /// silently, since a dead-scope read would start receiving a TYPE refusal and no gate watches
+    /// that pairing.
+    ///
+    /// So the families lift out, `None` keeps its one meaning, and only the members answer refusals.
+    fn parametric(&self, path: &str) -> Option<Result<IntrospectValue, ReadRefusal>> {
+        // Each of these took `<max_age>` in milliseconds and answered ONE `Null` for two facts: an
+        // argument that is not a number (the CALLER's to fix) and a reading this daemon could not
+        // serialise (the DAEMON's). See `encoded_member`.
         if let Some(arg) = path.strip_prefix(SESSION_ACTIVITY_FIELD.literal_prefix()) {
-            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
-                let reading = self
-                    .samplers
-                    .activity
-                    .read(self.registry, Duration::from_millis(max_age));
-                encoded_answer(&ActivityWire::from(reading), "session activity")
-                    .unwrap_or(IntrospectValue::Null)
-            }));
+            let Ok(max_age) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            let reading = self
+                .samplers
+                .activity
+                .read(self.registry, Duration::from_millis(max_age));
+            return Some(encoded_member(
+                &ActivityWire::from(reading),
+                "session activity",
+            ));
         }
         if let Some(arg) = path.strip_prefix(PANE_PROCESSES_FIELD.literal_prefix()) {
-            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
-                let reading = self
-                    .samplers
-                    .processes
-                    .read(self.registry, Duration::from_millis(max_age));
-                encoded_answer(&PaneProcessesWire::from(reading), "pane processes")
-                    .unwrap_or(IntrospectValue::Null)
-            }));
+            let Ok(max_age) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            let reading = self
+                .samplers
+                .processes
+                .read(self.registry, Duration::from_millis(max_age));
+            return Some(encoded_member(
+                &PaneProcessesWire::from(reading),
+                "pane processes",
+            ));
         }
         // What is WRONG with the machine, as opposed to what each pane is taking of it. Served
         // HERE, on the registry-subject door, because a machine is not divided by session and
@@ -186,27 +204,37 @@ impl RegistryView<'_> {
         // on this surface that SLEEPS, and a bare slot would be walked by every whole-surface
         // snapshot. See `DOCTOR_FIELD`.
         if let Some(arg) = path.strip_prefix(DOCTOR_FIELD.literal_prefix()) {
-            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |window| {
-                let subject = sprag_terminal::doctor::Subject::of(self.registry);
-                let readings = sprag_terminal::doctor::Readings::capture(
-                    &subject,
-                    &sprag_terminal::doctor::Sources::default(),
-                    Duration::from_millis(window),
-                );
-                encoded_answer(&sprag_terminal::Diagnosis::of(&readings), "doctor")
-                    .unwrap_or(IntrospectValue::Null)
-            }));
+            let Ok(window) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            let subject = sprag_terminal::doctor::Subject::of(self.registry);
+            let readings = sprag_terminal::doctor::Readings::capture(
+                &subject,
+                &sprag_terminal::doctor::Sources::default(),
+                Duration::from_millis(window),
+            );
+            return Some(encoded_member(
+                &sprag_terminal::Diagnosis::of(&readings),
+                "doctor",
+            ));
         }
         if let Some(arg) = path.strip_prefix(PANE_RESOURCES_FIELD.literal_prefix()) {
-            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
-                let reading = self
-                    .samplers
-                    .resources
-                    .read(self.registry, Duration::from_millis(max_age));
-                encoded_answer(&PaneResourcesWire::from(reading), "pane resources")
-                    .unwrap_or(IntrospectValue::Null)
-            }));
+            let Ok(max_age) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            let reading = self
+                .samplers
+                .resources
+                .read(self.registry, Duration::from_millis(max_age));
+            return Some(encoded_member(
+                &PaneResourcesWire::from(reading),
+                "pane resources",
+            ));
         }
+        None
+    }
+
+    fn query(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             // What is WRONG with the machine, as opposed to what each pane is taking of it. Served
             // HERE, on the registry-subject door, because a machine is not divided by session and
@@ -351,14 +379,17 @@ impl fmt::Debug for RegistryExternal {
 rpc_external_impl!(RegistryExternal);
 
 impl RegistryExternal {
-    fn read(&self, path: &str) -> Option<IntrospectValue> {
+    fn registry_view(&self) -> RegistryView<'_> {
         RegistryView {
             registry: &self.registry,
             attachments: self.attachments.as_deref(),
             agents: self.agents.as_deref(),
             samplers: &self.samplers,
         }
-        .query(path)
+    }
+
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
+        self.registry_view().query(path)
     }
 }
 
@@ -380,12 +411,13 @@ impl ExternalIntrospect for RegistryExternal {
     /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
     /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
     ///
-    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
-    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
-    /// what this surface knows, and several of them supersede reasoning this file already wrote
-    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
-    /// derived. Registered as owed rather than guessed.
+    /// ⚠⚠ **AND THE RICHER ARMS ARE NOW ADOPTED for this door's four parametric families** —
+    /// `session_activity.` `pane_processes.` `doctor.` `pane_resources.`, served through
+    /// `RegistryView::parametric`. `NoSuchMember` is still not: it is a per-path decision.
     fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        if let Some(answer) = self.registry_view().parametric(path) {
+            return answer;
+        }
         self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
@@ -2969,37 +3001,74 @@ impl WorkspaceExternal {
             // What has CHANGED in the scoped session since a cursor — parametric like the project
             // slot, and a QUERY so that reading the log cannot advance the token the log is keyed
             // by (see `EVENTS_FIELD`).
-            path if path.starts_with(EVENTS_FIELD.literal_prefix()) => {
-                let arg = path
-                    .strip_prefix(EVENTS_FIELD.literal_prefix())
-                    .expect("the guard just matched this prefix");
-                // A malformed member of a family this surface ADVERTISES is `Null`
-                // (present-but-empty), never `None`: `None` becomes `UnknownIntrospectPath`, whose
-                // meaning is "not in its schema", and `events.zzz` IS in the schema. The same
-                // taxonomy `cells.<offset>` had to be corrected into by R155's review.
-                let Ok(since) = arg.parse::<u64>() else {
-                    return Some(IntrospectValue::Null);
-                };
-                Some(events_value(&self.channels, self.scope.session(), since))
-            }
-            // What is ADJACENT to one pane. Parametric like the two above, and answered from the
-            // ARRANGEMENT rather than from any client's rectangles — see `NEIGHBORS_FIELD`.
-            path if path.starts_with(NEIGHBORS_FIELD.literal_prefix()) => {
-                let arg = path
-                    .strip_prefix(NEIGHBORS_FIELD.literal_prefix())
-                    .expect("the guard just matched this prefix");
-                // Present-but-empty for a malformed member of a family this surface ADVERTISES,
-                // never `None` — `events.<since>` states the taxonomy.
-                let Ok(pane) = arg.parse::<u64>() else {
-                    return Some(IntrospectValue::Null);
-                };
-                Some(neighbors_value(&self.registry, &self.scope, PaneId(pane)))
-            }
-            path => {
-                let pane = path.strip_prefix("project.")?.parse::<u64>().ok()?;
-                Some(project_value(self.workspace(), PaneId(pane)))
-            }
+            _ => None,
         }
+    }
+
+    /// **THIS SURFACE'S OWN PARAMETRIC FAMILIES**, plus the registry-subject ones it serves through
+    /// [`RegistryView`]. `None` when `path` belongs to none of them.
+    ///
+    /// # ⚠⚠⚠ `project.` IS THE CATCH-ALL, AND THAT IS WHY ITS TWO `?`s WERE ONE ANSWER
+    ///
+    /// It used to be the final arm of the reading match:
+    ///
+    /// ```ignore
+    /// path => {
+    ///     let pane = path.strip_prefix("project.")?.parse::<u64>().ok()?;
+    ///     Some(project_value(self.workspace(), PaneId(pane)))
+    /// }
+    /// ```
+    ///
+    /// Two `?`, doing different jobs, both landing on `None`. The first — *not my prefix* — is
+    /// correct and is the fallthrough for every unknown path on this surface. **The second was a
+    /// lie**: `project.zzz` IS a member of `project.`, and `PROJECT_FIELD` is in
+    /// [`MUX_SCHEMA`](crate::wire::MUX_SCHEMA), so answering `UnknownPath` told a client this
+    /// daemon does not own an address it publishes. That is the exact defect R155's review
+    /// corrected `cells.` out of, and which `crate::wire`'s own note records four `query` slots
+    /// carrying a FALSE comment about.
+    ///
+    /// ⚠ It read as deliberate because the note beside `PROJECT_FIELD` said this was *"the one
+    /// parametric family of the eleven whose surface answers `None` for an empty argument, so
+    /// declaring an empty member would publish an address this daemon does not serve"* — a symptom
+    /// read as a decision. That note also stated the condition that retires it: *"the day it starts
+    /// answering, it must declare."* It answers now, so it declares now.
+    fn parametric(&self, path: &str) -> Option<Result<IntrospectValue, ReadRefusal>> {
+        if let Some(answer) = self.registry_view().parametric(path) {
+            return Some(answer);
+        }
+        // What has CHANGED in the scoped session since a cursor — a QUERY so that reading the log
+        // cannot advance the token the log is keyed by (see `EVENTS_FIELD`).
+        if let Some(arg) = path.strip_prefix(EVENTS_FIELD.literal_prefix()) {
+            let Ok(since) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            return Some(Ok(events_value(
+                &self.channels,
+                self.scope.session(),
+                since,
+            )));
+        }
+        // What is ADJACENT to one pane. Parametric like the one above, and answered from the
+        // ARRANGEMENT rather than from any client's rectangles — see `NEIGHBORS_FIELD`.
+        if let Some(arg) = path.strip_prefix(NEIGHBORS_FIELD.literal_prefix()) {
+            let Ok(pane) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            return Some(Ok(neighbors_value(
+                &self.registry,
+                &self.scope,
+                PaneId(pane),
+            )));
+        }
+        // The project governing ONE pane: the commands its `.sprag.toml` declares. See
+        // `PROJECT_FIELD` for why this lives on the mux external rather than the pane's own.
+        if let Some(arg) = path.strip_prefix(PROJECT_FIELD.literal_prefix()) {
+            let Ok(pane) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            return Some(Ok(project_value(self.workspace(), PaneId(pane))));
+        }
+        None
     }
 }
 
@@ -3019,12 +3088,13 @@ impl ExternalIntrospect for WorkspaceExternal {
     /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
     /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
     ///
-    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
-    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
-    /// what this surface knows, and several of them supersede reasoning this file already wrote
-    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
-    /// derived. Registered as owed rather than guessed.
+    /// ⚠⚠ **AND THE RICHER ARMS ARE NOW ADOPTED for the seven parametric families this surface
+    /// serves** — its own `events.` `neighbors.` `project.`, plus the four registry-subject ones —
+    /// see `Self::parametric`. `NoSuchMember` is still not: it is a per-path decision.
     fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        if let Some(answer) = self.parametric(path) {
+            return answer;
+        }
         self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
@@ -3360,7 +3430,8 @@ mod tests {
         crate::wire::assert_empty_members_are_declared(
             crate::wire::MUX_SCHEMA,
             "the mux surface",
-            |path| scoped.query(path).ok().is_some(),
+            // OWNERSHIP, not a value — see the helper's own doc.
+            |path| !matches!(scoped.query(path), Err(ReadRefusal::UnknownPath)),
         );
     }
 
@@ -5812,71 +5883,73 @@ mod tests {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
-            matches!(ext.query("doctor.zzz").ok(), Some(IntrospectValue::Null)),
-            "a malformed window is a malformed MEMBER, not an unknown path",
+            matches!(ext.query("doctor.zzz"), Err(ReadRefusal::QueryTypeMismatch)),
+            "a malformed window is a malformed MEMBER whose argument the CALLER can fix",
         );
         assert!(
-            ext.query("doctor").ok().is_none(),
+            matches!(ext.query("doctor"), Err(ReadRefusal::UnknownPath)),
             "and the bare name is not an address — which is what keeps a sleeping read off every \
              whole-surface snapshot",
         );
     }
 
-    /// A malformed tolerance on the RESOURCES family answers `Null` too, and the family's bare name
-    /// is not an address — the same taxonomy as its two neighbours, stated once per family because
-    /// a family added without it is a family whose malformed member 404s instead.
+    /// A malformed tolerance on the RESOURCES family is refused the same way, and the family's bare
+    /// name is not an address — the same taxonomy as its two neighbours, stated once per family
+    /// because a family added without it is a family whose malformed member 404s instead.
     #[test]
     fn a_malformed_resource_tolerance_is_empty_not_absent() {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
             matches!(
-                ext.query("pane_resources.zzz").ok(),
-                Some(IntrospectValue::Null)
+                ext.query("pane_resources.zzz"),
+                Err(ReadRefusal::QueryTypeMismatch)
             ),
-            "a malformed tolerance is a malformed MEMBER, not an unknown path",
+            "a malformed tolerance is a malformed MEMBER whose argument the CALLER can fix",
         );
         assert!(
-            ext.query("pane_resources").ok().is_none(),
+            matches!(ext.query("pane_resources"), Err(ReadRefusal::UnknownPath)),
             "and the family's bare name is not itself an address",
         );
     }
 
-    /// A malformed tolerance on the PROCESSES family answers `Null` too — one taxonomy for every
-    /// parametric address on this surface, not one per family.
+    /// A malformed tolerance on the PROCESSES family is refused the same way — one taxonomy for
+    /// every parametric address on this surface, not one per family.
     #[test]
     fn a_malformed_process_tolerance_is_empty_not_absent() {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
             matches!(
-                ext.query("pane_processes.zzz").ok(),
-                Some(IntrospectValue::Null)
+                ext.query("pane_processes.zzz"),
+                Err(ReadRefusal::QueryTypeMismatch)
             ),
-            "a malformed tolerance is a malformed MEMBER, not an unknown path",
+            "a malformed tolerance is a malformed MEMBER whose argument the CALLER can fix",
         );
         assert!(
-            ext.query("pane_processes").ok().is_none(),
+            matches!(ext.query("pane_processes"), Err(ReadRefusal::UnknownPath)),
             "and the family's bare name is not itself an address",
         );
     }
 
-    /// A malformed member of the activity family answers `Null` — present-but-empty — rather than
-    /// absence, the taxonomy `cells.<offset>` established: `session_activity.zzz` IS in this
-    /// surface's schema, so denying the address exists would be the wrong refusal.
+    /// A malformed member of the activity family is REFUSED as a type mismatch — not as an unknown
+    /// path, and no longer with the `Null` it used to share with a failed encode (R372).
+    /// `session_activity.zzz` IS in this surface's schema, so denying the address exists would be
+    /// the wrong refusal; answering a VALUE would be the ambiguous one.
     #[test]
     fn a_malformed_activity_tolerance_is_empty_not_absent() {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
             matches!(
-                ext.query("session_activity.zzz").ok(),
-                Some(IntrospectValue::Null)
+                ext.query("session_activity.zzz"),
+                Err(ReadRefusal::QueryTypeMismatch)
             ),
-            "a malformed tolerance is a malformed MEMBER, not an unknown path",
+            "a malformed tolerance is a malformed MEMBER whose argument the CALLER can fix — not an \
+             unknown path, and not the `Null` it used to share with a daemon that failed to encode",
         );
         assert!(
-            ext.query("session_activity").ok().is_none(),
+            matches!(ext.query("session_activity"), Err(ReadRefusal::UnknownPath)),
             "and the family's bare name is not itself an address",
         );
     }
@@ -8692,9 +8765,13 @@ mod tests {
             "THE CONTROL: its old neighbour lost it too, so this is the live tiling and not a \
              cached one",
         );
-        // A malformed member of a family the schema ADVERTISES is present-but-empty, never an
-        // unknown path (the taxonomy `events.<since>` states).
-        assert_eq!(ext.query("neighbors.zzz").ok(), Some(IntrospectValue::Null));
+        // A malformed member of a family the schema ADVERTISES is a TYPE MISMATCH — never an
+        // unknown path, and never the `Null` that also meant "this daemon could not encode its own
+        // reading" (R372, the taxonomy `events.<since>` states).
+        assert!(matches!(
+            ext.query("neighbors.zzz"),
+            Err(ReadRefusal::QueryTypeMismatch)
+        ));
     }
 
     /// The sentence `SPLIT_ACTION`'s docs used to carry — *"`pane` is REQUIRED, because the daemon
