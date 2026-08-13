@@ -2712,6 +2712,34 @@ fn the_cli_reports_which_pane_an_agent_is_waiting_in() {
         "a named pane says which rule fired and what to edit: {:?}",
         explained.stdout,
     );
+    // ⚠⚠⚠ **AND WHAT IT IS ASKING.** This gate asserted the rule and the remedy and NOT the
+    // question, so the shell mouth published `blocked` and threw away a menu the daemon had
+    // already parsed — for a whole round after R367 put it on this very surface for the agent
+    // mouth. A gate that checks the diagnosis and not the content is how a silence survives.
+    assert!(
+        explained.stdout.contains("it is asking:")
+            && explained.stdout.contains("1. Yes")
+            && explained.stdout.contains("2. No"),
+        "⚠⚠⚠ a person told their agent is WAITING must be told what for, or they go and read the \
+         pane themselves — which is the re-derivation this key exists to end: {:?}",
+        explained.stdout,
+    );
+    assert!(
+        explained
+            .stdout
+            .lines()
+            .any(|line| line.contains("->") && line.contains("1. Yes")),
+        "and WHICH option a bare Enter would take, marked — on a permission dialog that is the \
+         difference between confirming a command and declining it: {:?}",
+        explained.stdout,
+    );
+    assert!(
+        explained.stdout.contains("sprag answer-pane 0"),
+        "⚠⚠ ...and the verb that answers it, naming this pane. A surface that shows a question and \
+         no way to answer it sends the reader to `send-keys`, which is the one act the consent \
+         contract exists to stop: {:?}",
+        explained.stdout,
+    );
 
     // ...and the pane with no agent, when NAMED, says so — the answer D3 requires to be
     // distinguishable from `idle`, rather than the silence the list gives it.
@@ -6590,6 +6618,12 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             // the stop reaches its shell, which is what a `Ctrl-C` at a prompt reaches and what a
             // shell answers by redrawing it. That leaves the pane exactly as it was, which is what
             // this ratchet needs of a verb it drives against a LIVE pane.
+            // ⚠ `answer-pane` against a pane that is NOT asking, deliberately: no agent manifest
+            // claims a shell one window over, so the run converges having typed nothing and the
+            // pane is left exactly as it was — which is what this ratchet needs of a verb it
+            // drives against a LIVE pane. What it measures here is the ADDRESSING: that a pane
+            // NAME reaches a window over, on the newest verb that takes one.
+            "answer-pane" => vec!["--asked", "marker", "--answer", "marker"],
             "run" | "break-pane" | "processes" | "resources" | "kill-pane" | "zoom-pane"
             | "capture-pane" | "agent" | "release-agent" | "events" | "stop-job" => vec![],
             other => panic!(
@@ -7504,7 +7538,9 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // R355: three more, and they are the door onto the LOOP the README leads with. Each was
         // DRIVEN here before the count moved: the binary answers for `orchestrate`, `runs` and
         // `cancel-run` against a live daemon, which is what this sweep is for.
-        (57, 5, 3),
+        // ⚠ R369: `answer-pane` is the 58th, and it was DRIVEN here before the count moved —
+        // against a live daemon, addressing a pane one window over by NAME, in the sweep above.
+        (58, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7673,7 +7709,10 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // `orchestrate` (its whole content is the words) and `runs` (it answers) join the third,
         // and `cancel-run` is the SECOND entry in the fourth — a key could mean "cancel the runs I
         // started" and nobody has built that verb, which is a gap rather than a refusal.
-        (15, 10, 37, 3),
+        // ⚠ R369: `answer-pane` joins the THIRD column — refused with a rule. Its whole content
+        // is the two needles a caller quotes off a dialog they just read, so a binding would fix
+        // one question and one option forever, which is the one shape a consent must never take.
+        (15, 10, 38, 3),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 
@@ -8636,4 +8675,192 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     );
     drop(conn);
     drop(guard);
+}
+
+/// ⚠⚠⚠ **A PERSON ANSWERS A BLOCKED AGENT FROM THE COMMAND LINE, IN THE AGENT'S OWN WORDS** —
+/// R369's claim at the shell, where `sprag agent` had been able to SHOW the dialog for a round and
+/// the only thing to do about it was `sprag send-keys`.
+///
+/// # ⚠⚠ Why the peer must report which BYTE moved it
+///
+/// The claim is about which keystrokes the daemon sent, so a gate reading only the outcome would
+/// pass for a run that typed a digit it did not need. This peer prints `took <option> via <byte>`,
+/// and it prints nothing at all if no key reaches it — so the pane is the witness for both halves.
+///
+/// ⚠ The words are built by `printf`'s FORMAT rather than written out: this script is the pane's
+/// argv, and a literal `took 3 via 51` in it would sit in the pane's own text where an assertion
+/// could read it instead of the behaviour.
+///
+/// # ⚠⚠⚠ The safety claim
+///
+/// The peer's marker starts on option 1 (`Yes`). The person authorises option 3. A machine that
+/// answered by pressing the one key with a known landing place — Enter — would APPROVE what they
+/// declined. `via 51` is the digit `3`, and `via 10` would be that approval.
+#[test]
+fn the_cli_answers_a_blocked_agent_in_the_agents_own_words() {
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "stty -icanon -echo; printf '\\033]2;\\342\\234\\263 Claude Code\\007'; sel=1; \
+         d() { printf '\\033[2J\\033[H'; printf 'Do you want to proceed?\\r\\n'; i=1; \
+         for l in 'Yes' 'Yes, and do not ask again' 'No, and tell me why'; do \
+         if [ \"$i\" = \"$sel\" ]; then printf '\\342\\235\\257 '; else printf '  '; fi; \
+         printf '%s. %s\\r\\n' \"$i\" \"$l\"; i=$((i+1)); done; }; d; \
+         while :; do k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'); \
+         [ -n \"$k\" ] || exit 0; case \"$k\" in 49|50|51) sel=$((k-48));; esac; \
+         printf '\\033[2J\\033[H'; printf 'took %s via %s\\r\\n' \"$sel\" \"$k\"; exec cat; done",
+    ]);
+    wait_for_pane_text(&sock, "3. No, and tell me why");
+
+    // ⚠ THE READING FIRST, because that is the state a person is in when they reach for this verb:
+    // `agent` says the pane is blocked and shows the menu, and until R369 that was the end of what
+    // the shell could do about it.
+    let seen = sprag(&sock, &["agent", "0"]);
+    assert!(
+        seen.ok && seen.stdout.contains("Do you want to proceed?"),
+        "the verb that reports a blocked agent shows the question: {:?}",
+        seen.stdout,
+    );
+
+    // ⚠⚠⚠ THE REFUSAL GOES FIRST because it types NOTHING, which leaves the dialog up for the
+    // answer below. `and` is carried by `Yes, and do not ask again` AND by `No, and tell me why` —
+    // a grant and a refusal — so a first-match policy would pick between opposites for the person.
+    let ambiguous = sprag(
+        &sock,
+        &["answer-pane", "0", "--asked", "proceed", "--answer", "and"],
+    );
+    assert!(
+        ambiguous.ok,
+        "a consent that authorises nothing is a REPORT, not a command-line error: {}",
+        ambiguous.stderr,
+    );
+    assert!(
+        ambiguous
+            .stdout
+            .contains("more than one option carries the authorised answer"),
+        "⚠⚠⚠ and it says WHICH of the six reasons it was, as the sentence that names the remedy — \
+         a person who cannot tell `my words matched nothing` from `they matched twice` cannot fix \
+         either: {:?}",
+        ambiguous.stdout,
+    );
+    let untouched = sprag(&sock, &["capture-pane", "0", "-p"]);
+    assert!(
+        !untouched.stdout.contains("via 4")
+            && !untouched.stdout.contains("via 5")
+            && !untouched.stdout.contains("via 1"),
+        "⚠⚠⚠ AND NOT ONE KEY REACHED THE PANE. The peer prints `took <option> via <byte>` for \
+         anything it receives, and a refusal that typed first would be the product deciding and \
+         then apologising: {:?}",
+        untouched.stdout,
+    );
+
+    // ...AND THE ANSWER, which is what the verb exists for.
+    let answered = sprag(
+        &sock,
+        &[
+            "answer-pane",
+            "0",
+            "--asked",
+            "Do you want to proceed?",
+            "--answer",
+            "No, and tell me why",
+        ],
+    );
+    assert!(answered.ok, "answer-pane succeeded: {}", answered.stderr);
+    assert!(
+        answered.stdout.contains("converged") && answered.stdout.contains("No, and tell me why"),
+        "⚠⚠ the run is over in one answer and the record names the option in WORDS — a number \
+         cannot be audited once the dialog is gone: {:?}",
+        answered.stdout,
+    );
+
+    wait_for_pane_text(&sock, "took 3 via 51");
+    let witness = sprag(&sock, &["capture-pane", "0", "-p"]);
+    assert!(
+        witness.stdout.contains("took 3 via 51"),
+        "⚠⚠⚠ THE PEER TOOK OPTION 3, MOVED BY ITS DIGIT. Its own marker was on `Yes`, so a machine \
+         that pressed the key with the known landing place would have approved the command this \
+         person declined: {:?}",
+        witness.stdout,
+    );
+    assert!(
+        !witness.stdout.contains("via 10"),
+        "⚠⚠⚠ AND NO ENTER FOLLOWED IT — the peer left the question on the digit alone, so an Enter \
+         sent anyway would land on whatever it shows next: {:?}",
+        witness.stdout,
+    );
+
+    // ⚠ BOTH NEEDLES ARE THE SHELL'S TO DEMAND TOO, and each refusal says what the needle is FOR
+    // rather than only that it is missing.
+    let no_question = sprag(&sock, &["answer-pane", "0", "--answer", "Yes"]);
+    assert!(!no_question.ok);
+    assert!(
+        no_question.stderr.contains("WHICH QUESTION"),
+        "a consent with no question answers whatever the pane happens to be showing: {}",
+        no_question.stderr,
+    );
+    let no_option = sprag(&sock, &["answer-pane", "0", "--asked", "proceed"]);
+    assert!(!no_option.ok);
+    assert!(
+        no_option.stderr.contains("WHICH OPTION"),
+        "and one with no option makes every real menu ambiguous: {}",
+        no_option.stderr,
+    );
+}
+
+/// ⚠⚠ **A PANE BLOCKED ON SOMETHING THIS DAEMON CANNOT READ AS A MENU STILL SAYS SO, AND SAYS THE
+/// REMEDY IS A PERSON** — the branch beside the one above, and the one an absence would hide.
+///
+/// # ⚠⚠⚠ Why silence here would be the worst answer available
+///
+/// `blocked` with no question is a REAL state with a real remedy: an agent can stop on a free-text
+/// prompt, a paged view, or a confirmation drawn as prose, and no consent can name an option a
+/// screen does not offer. Said nothing about, it is indistinguishable from a daemon too old to look
+/// — which is exactly the reading `WIRE_PROTOCOL` 28 exists to make impossible, and the sentence is
+/// how this mouth keeps its side of that.
+///
+/// ⚠ The state is REPORTED rather than scraped, because that is the only way to be blocked with no
+/// menu on purpose: the screen rule that produces `blocked` is the choice-list one, so a scraped
+/// verdict always has a question behind it. A report outranks the screen, which is what lets this
+/// gate build the state at all.
+#[test]
+fn the_cli_says_a_blocked_pane_it_cannot_read_needs_a_person() {
+    let (_host, sock) = spawn_host_running(&["cat"]);
+    let reported = sprag(
+        &sock,
+        &[
+            "report-agent",
+            "blocked",
+            "--pane",
+            "0",
+            "--source",
+            "hook",
+            "--name",
+            "claude",
+        ],
+    );
+    assert!(reported.ok, "report-agent succeeded: {}", reported.stderr);
+
+    let said = sprag(&sock, &["agent", "0"]);
+    assert!(said.ok, "agent 0 succeeded: {}", said.stderr);
+    assert!(
+        said.stdout.contains("blocked"),
+        "the verdict is the reported one: {:?}",
+        said.stdout,
+    );
+    assert!(
+        said.stdout.contains("could not read as a menu")
+            && said.stdout.contains("look at the pane yourself"),
+        "⚠⚠⚠ a blocked pane with no readable question must SAY that the daemon looked and could \
+         not read one, and that the remedy is a person. Silence would read as `nothing more is \
+         known`, which is what an older daemon says: {:?}",
+        said.stdout,
+    );
+    assert!(
+        !said.stdout.contains("answer-pane"),
+        "⚠⚠ and it must NOT offer the answering verb: there is no option for a consent to name, \
+         so the only thing that advice could produce is a caller writing needles that cannot \
+         match: {:?}",
+        said.stdout,
+    );
 }

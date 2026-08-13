@@ -300,6 +300,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Runs => runs(args.collect()),
         Verb::CancelRun => cancel_run(args.collect()),
         Verb::Agent => agent(args.collect()),
+        Verb::AnswerPane => answer_pane(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
         Verb::ReportAgent => report_agent(args.collect()),
         Verb::ReleaseAgent => release_agent(args.collect()),
@@ -4077,6 +4078,132 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// `answer-pane PANE --asked TEXT --answer TEXT`: answer the question a pane's agent is asking.
+///
+/// # ⚠⚠⚠ The verb `sprag agent` had no counterpart to
+///
+/// `sprag agent 3` can say a pane is `blocked` and — since R367 — print the dialog it is showing,
+/// option by option, marking the one a bare Enter would take. The only thing a person could then do
+/// about it was `sprag send-keys 3 2 Enter`, which is two raw keystrokes at a menu: the number is
+/// read off a screen that may have re-rendered, the Enter lands wherever the peer has got to, and
+/// nothing checks that either was taken.
+///
+/// This verb is the same act with the evidence attached. It names the question and the option **in
+/// the agent's own words**, the daemon re-reads the screen at the moment it answers, and the
+/// keystrokes it sends are the ones the peer's own marker justifies — see
+/// [`sprag_plugin::Consent`] and [`sprag_plugin::Taken`].
+///
+/// # ⚠⚠ It WAITS, always, and there is no `--wait` flag
+///
+/// `orchestrate` returns a run id because a loop outlives the call that started it. An answer does
+/// not: it is over in a keystroke and the peer's reaction to it, so a caller that got an id back
+/// would have to poll to learn the one thing they asked. The run underneath is bounded by its own
+/// guardrails exactly as every other run is — this waits for it, it does not invent a second bound.
+///
+/// # Errors
+///
+/// A malformed command line, no daemon, or a refusal from the plugin surface — a pane it does not
+/// hold, or a consent it will not read.
+fn answer_pane(args: Vec<String>) -> io::Result<()> {
+    const USAGE: &str = "answer-pane PANE --asked TEXT --answer TEXT [-t SESSION]\n  \
+         --asked   text the QUESTION must carry, so a `Yes` for one dialog cannot answer another\n  \
+         --answer  text the OPTION must carry; it must name exactly one, or nothing is typed";
+    let (session, args) = scope_and_rest(args, "answer-pane")?;
+    let mut pane = None;
+    let mut asked = None;
+    let mut answer = None;
+    let mut rest = args.into_iter();
+    while let Some(arg) = rest.next() {
+        // BOTH SPELLINGS, `orchestrate`'s rule (R350): `--asked=…` is the only way to pass a needle
+        // that begins with a dash, and an agent's options frequently do.
+        let (name, inline) = match arg.strip_prefix("--") {
+            Some(spelled) => match spelled.split_once('=') {
+                Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
+                None => (spelled.to_owned(), None),
+            },
+            None if pane.is_none() => {
+                pane = Some(arg);
+                continue;
+            }
+            None => {
+                return Err(bad_input(&format!(
+                    "answer-pane: unexpected argument {arg:?}\n{USAGE}"
+                )));
+            }
+        };
+        let slot = match name.as_str() {
+            n if sprag_rpc::call::same_name(n, sprag_host::plugins::CONSENT_ASKED_KEY) => {
+                &mut asked
+            }
+            n if sprag_rpc::call::same_name(n, sprag_host::plugins::CONSENT_ANSWER_KEY) => {
+                &mut answer
+            }
+            _ => {
+                return Err(bad_input(&format!(
+                    "answer-pane: unknown flag --{name}\n{USAGE}"
+                )));
+            }
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => rest.next().ok_or_else(|| {
+                bad_input(&format!("answer-pane: --{name} needs its text\n{USAGE}"))
+            })?,
+        };
+        *slot = Some(value);
+    }
+    let pane = pane.ok_or_else(|| bad_input(&format!("answer-pane: which pane?\n{USAGE}")))?;
+    // ⚠ REFUSED HERE AND AGAIN AT THE DAEMON, and neither is redundant. This one is the shell's
+    // usage; the daemon's is the wire's grammar, which a client that is not this binary also meets.
+    let asked = asked.ok_or_else(|| {
+        bad_input(&format!(
+            "answer-pane: --asked names WHICH QUESTION this answers. Without it a `Yes` written \
+             for one dialog would answer whatever the pane happens to be showing.\n{USAGE}"
+        ))
+    })?;
+    let answer = answer.ok_or_else(|| {
+        bad_input(&format!(
+            "answer-pane: --answer names WHICH OPTION, in the agent's own words. A number would \
+             mean something different on every screen.\n{USAGE}"
+        ))
+    })?;
+
+    let mut conn = connect()?;
+    // ⚠ THE CALL IS BUILT FROM THE DAEMON'S OWN PUBLICATION, `orchestrate`'s discipline: this
+    // binary holds no second list of the `answer` form's argument names, and the two nested needles
+    // are offered one flag at a time because the wire declares them as fields
+    // (`the_plugin_hosts_nested_arguments_flatten_without_collision` is what makes that safe).
+    let forms = published_forms(
+        &mut conn,
+        session.as_deref(),
+        sprag_host::plugins::RUN_ACTION,
+    )?;
+    let call = sprag_rpc::build_call(
+        &forms,
+        &[
+            Flag::new("plugin", sprag_host::plugins::PluginName::Answer.wire_str()),
+            Flag::new("pane", pane),
+            Flag::new(sprag_host::plugins::CONSENT_ASKED_KEY, asked),
+            Flag::new(sprag_host::plugins::CONSENT_ANSWER_KEY, answer),
+        ],
+    )
+    .map_err(|error| bad_input(&format!("answer-pane: {error}\n{USAGE}")))?;
+    let started = invoke_action(
+        &mut conn,
+        scoped_call(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            call,
+        ),
+    )?;
+    let id = started
+        .as_u64()
+        .ok_or_else(|| bad_input("answer-pane: the daemon's answer was not a run id"))?;
+    let finished = wait_for_run(&mut conn, session.as_deref(), id)?;
+    print!("{}", render_run(&finished));
+    Ok(())
+}
+
 /// WHICH SURFACE `show-grammar` is asking, and the flag that names it.
 ///
 /// # ⚠⚠ The plugin host was unreachable from this verb for two rounds
@@ -4319,20 +4446,41 @@ fn render_asking(outcome: &Value) -> String {
     };
     // ⚠ Through the host's projection, so this mouth and the agent-facing one say the SAME
     // sentence for the same word — and a word this build does not know still prints, as itself.
-    let sentence = sprag_host::plugins::refusal_sentence(why);
-    let mut said = format!("\n  {sentence}");
+    format!(
+        "\n  {}{}",
+        sprag_host::plugins::refusal_sentence(why),
+        render_question(asking, "    "),
+    )
+}
+
+/// THE QUESTION A PEER IS ASKING, as a person reads it — its own lines, then every option with the
+/// one a bare Enter would take marked.
+///
+/// # ⚠⚠ One renderer, because two surfaces publish the SAME question
+///
+/// A run's `blocked` outcome carries it and — since R367 — so does a PANE's `agent` object, off the
+/// same parse in the same instant. They were rendered in one place and read in one, so
+/// `sprag agent 3` printed `blocked`, named the rule, and threw the menu away: a person was told
+/// their agent was waiting and had to go look at the pane to find out what for. R369 gave the shell
+/// a verb to ANSWER with, which made that silence worse — you cannot quote an option you were never
+/// shown.
+///
+/// `indent` is the caller's: a run nests its question under an outcome line and a pane under its
+/// own row, and a block that chose its own would be misaligned on one of them.
+fn render_question(asking: &Value, indent: &str) -> String {
+    let mut said = String::new();
     for line in asking[sprag_host::plugins::RUN_ASKED_KEY]
         .as_array()
         .unwrap_or(&Vec::new())
     {
-        said.push_str(&format!("\n    {}", line.as_str().unwrap_or_default()));
+        said.push_str(&format!("\n{indent}{}", line.as_str().unwrap_or_default()));
     }
     for choice in asking[sprag_host::plugins::RUN_CHOICES_KEY]
         .as_array()
         .unwrap_or(&Vec::new())
     {
         said.push_str(&format!(
-            "\n    {} {}. {}",
+            "\n{indent}{} {}. {}",
             // ⚠ WHICH ONE A BARE ENTER TAKES, marked rather than left to be inferred: on a
             // tool-permission dialog that is the difference between confirming a command and
             // declining it, and it is the one fact a person cannot read off the option text.
@@ -4685,6 +4833,33 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                      edit up on its own.",
                     rule.unwrap_or("(none)"),
                 ),
+            }
+            // ⚠⚠⚠ AND WHAT IT IS ASKING, when it is asking. R367 put the question on this surface
+            // and only the agent-facing mouth read it, so a person was told their agent was
+            // waiting and had to go stare at the pane to learn what for — the exact re-derivation
+            // of an already-parsed menu that R367 closed one mouth over. It matters more since
+            // R369: `answer-pane` quotes the option back in the agent's own words, and a person
+            // cannot quote what they were never shown.
+            if state == sprag_host::wire::AGENT_BLOCKED_STATE {
+                match agent.get(sprag_host::wire::ASKING_KEY) {
+                    Some(asking) if !asking.is_null() => {
+                        println!("    it is asking:{}", render_question(asking, "      "));
+                        println!(
+                            "    answer it with `sprag answer-pane {id} --asked TEXT --answer \
+                             TEXT`, quoting the question and the option above. Do NOT send-keys \
+                             the number: that skips the check that exactly one option carries \
+                             what you meant."
+                        );
+                    }
+                    // ⚠ THE ABSENCE IS A CLAIM, and saying so is the whole reason the key is
+                    // published. This daemon looked at that screen and could not read a menu on
+                    // it, whose remedy is a person — silence here would be indistinguishable from
+                    // a build that never looks.
+                    _ => println!(
+                        "    it is waiting on something this daemon could not read as a menu, so \
+                         no consent can name an option on it — look at the pane yourself."
+                    ),
+                }
             }
         }
     }

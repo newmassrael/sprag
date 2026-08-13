@@ -168,6 +168,17 @@ pub enum Verb {
     PaneImages,
     /// `agent` — what the AI in a pane is doing.
     Agent,
+    /// `answer-pane` — ANSWER the question the AI in a pane has stopped to ask.
+    ///
+    /// The other half of [`Agent`](Self::Agent), and the half that did not exist. That verb can say
+    /// a pane is `blocked` and — since R367 — what it is asking, option by option, including which
+    /// one a bare Enter would take. Answering it was reachable only by declaring a consent in
+    /// advance on a LOOP, which a person or an agent reading a neighbour's screen has not got.
+    ///
+    /// ⚠ What they had instead was `send-keys`: a digit and an Enter, with none of the guarantees
+    /// [`sprag_plugin::Consent`] exists for. **The unsafe act was the reachable one and the safe
+    /// act was not expressible**, on the one surface that publishes the question.
+    AnswerPane,
     /// `report-agent` — an agent says what it is doing.
     ReportAgent,
     /// `release-agent` — an agent stops claiming a pane.
@@ -543,7 +554,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 65] = [
+    pub const ALL: [Self; 66] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -584,6 +595,7 @@ impl Verb {
         Self::PaneLinks,
         Self::PaneImages,
         Self::Agent,
+        Self::AnswerPane,
         Self::ReportAgent,
         Self::ReleaseAgent,
         Self::DisplayMessage,
@@ -981,6 +993,18 @@ impl Verb {
                 Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["agent_state", "agent_explain"]),
+            ),
+            // ⚠⚠ NOT `Keystroke::NeedsWords` BY REFLEX — it is, and for a sharper reason than
+            // `send-keys`'s. A binding would fix ONE question and ONE option forever, and a
+            // consent that outlives the dialog it was written from is the exact shape
+            // `sprag_plugin::Consent` refuses: it authorises an answer to a question somebody read
+            // once, not to whatever is on the screen when a key is pressed.
+            Self::AnswerPane => (
+                "answer-pane",
+                Group::Agent,
+                Shell::Runs("PANE --asked TEXT --answer TEXT [-t SESSION]"),
+                Keystroke::Cannot(NotAKeystroke::NeedsWords),
+                Agent::Tools(&["answer_pane"]),
             ),
             Self::ReportAgent => (
                 "report-agent",
@@ -1584,11 +1608,15 @@ mod tests {
             // R353: `show-grammar` is the 21st refusal — an MCP client learns how to call ITS
             // OWN mouth from `tools/list`, so a tool here would be a second authority on one
             // question and a wronger one (it describes the raw wire's verbs, not the agent's tools).
+            // ⚠ R369: `answer-pane` is the 38th, and this mouth is the reason it exists. An agent
+            // watching a sibling can READ what it is asking (R367) and had nothing to answer it
+            // with but `send_keys` — a raw digit at a menu, which is the act the consent contract
+            // was built to stop a machine performing.
             // R355: three more served, and this is the mouth they matter most on — an agent that
             // wanted a bounded loop against a sibling had to hand-roll one in its own turns,
             // without the iteration ceiling, the typed cost ceiling, the wall-clock deadline or
             // the cancel flag that exist.
-            (37, 7, 21),
+            (38, 7, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1735,10 +1763,13 @@ mod tests {
             .count();
         assert_eq!(
             (runs, not_built, refused),
+            // ⚠ R369: `answer-pane` is the 58th, and the count is a CLAIM about `sprag.rs` —
+            // `every_shell_verb_this_table_claims_is_one_the_binary_dispatches` is what holds it,
+            // so a verb declared here and unwired there is a red rather than a boast.
             // R353: `show-grammar` is the 53rd shell verb — the door onto the wire's own grammar.
             // R355: three more, and they are the door onto the LOOP the README leads with —
             // `orchestrate`, `runs` and `cancel-run`.
-            (57, 3, 5),
+            (58, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1823,7 +1854,11 @@ mod tests {
             // R355: `orchestrate` needs words and `runs` answers, so both are refused with a
             // reason; `cancel-run` is the second `NotBuilt` — a key COULD mean "cancel the runs I
             // started" and nobody has built that verb.
-            (25, 3, 37),
+            // ⚠ R369: `answer-pane` is the 38th refusal — its whole content is the two needles
+            // a caller quotes off the dialog, and a binding would fix one question and one option
+            // forever. That is `send-keys`'s rule with a sharper reason: a consent is about a
+            // question somebody READ, never about whatever is on the screen when a key is pressed.
+            (25, 3, 38),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

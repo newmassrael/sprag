@@ -1229,9 +1229,11 @@ fn the_agent_tools_report_the_daemons_own_verdict() {
          declining it, and it must be the one the agent's own marker is on: {one}"
     );
     assert!(
-        one.contains("may_answer") && one.contains("Do NOT type the number yourself"),
-        "...and the mouth must name the honest next moves rather than invite an agent to route \
-         around the consent contract with send_keys: {one}"
+        one.contains("answer_pane") && one.contains("Do NOT type the number with send_keys"),
+        "⚠⚠⚠ ...and the mouth must name the tool that ANSWERS IT HERE. Until R369 this sentence \
+         pointed at a run argument — a consent declared before a loop — so the surface that \
+         publishes the question named the one act its reader could not perform, and the act it \
+         could perform was the forbidden one: {one}"
     );
 
     // A pane nobody has is an ERROR even though the whole-set form takes no argument: a caller who
@@ -2519,6 +2521,11 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
             // far pane is somebody else's and the authorship refusal below is what proves the
             // request reached it.
             "plugin" => json!("orchestrator"),
+            // The consent's two needles (R369). Any words will do here: the far pane belongs to
+            // somebody else, so the authorship refusal fires before a question is ever read — and
+            // that refusal is the evidence the request REACHED a pane a window over, which is all
+            // this ratchet is about.
+            "asked" | "answer" => json!("zz"),
             _ => return None,
         })
     };
@@ -3979,6 +3986,10 @@ fn a_tool_against_an_older_daemon_says_so() {
             "orchestrate" => json!({ "plugin": "orchestrator", "pane": 1, "stimulus": "x" }),
             "list_runs" => json!({}),
             "cancel_run" => json!({ "run": 0 }),
+            // ⚠ R369. It resolves the pane through this surface's own addressing before it builds
+            // a call, so an old daemon is met on THAT read — which is the same door `orchestrate`
+            // meets it at, and the reason neither needs an exemption.
+            "answer_pane" => json!({ "pane": 1, "asked": "x", "answer": "x" }),
             _ => return None,
         })
     };
@@ -5335,5 +5346,270 @@ fn a_loop_that_ended_before_the_first_wait_is_reported_by_it() {
     assert!(
         woke.contains("run_finished") && woke.contains("run 0"),
         "the wait must report a change that landed before it was called, naming the run: {woke}",
+    );
+}
+
+// ----- answering a blocked peer, from the surface that publishes the question (R369) -----
+
+/// Open a pane of this agent's own that draws a REAL tool-permission dialog and reports which key
+/// moved it, and return once the daemon reads it as `blocked`.
+///
+/// # ⚠⚠⚠ Why the peer has to say WHICH KEY it acted on
+///
+/// Every claim below is about which keystrokes the daemon SENT, and a fixture that watched only the
+/// outcome would pass for a run that typed a digit it did not need — the exact over-typing the
+/// consent contract exists to prevent. So the pane is the witness: it prints
+/// `took <option> via <byte>` when a key moves it, and prints nothing at all when none does.
+///
+/// ⚠ The words are assembled by `printf`'s FORMAT rather than written out, and that is not style.
+/// The script is TYPED into a shell, so a literal `took 3 via 51` in it would be echoed onto the
+/// pane's own scrollback and every assertion below would read the fixture's source instead of its
+/// behaviour. `took %s via %s` in the command line cannot be mistaken for `took 3 via 51` in the
+/// output.
+///
+/// ⚠⚠ Three options, and the middle one is the measured hazard: `Yes` / `Yes, and do not ask again`
+/// is what a real permission dialog offers, and `and` is on two of them. That is what makes the
+/// ambiguity refusal below a claim rather than a degenerate case.
+fn open_asking_pane(server: &mut McpServer, name: &str) {
+    server.call_tool("open_pane", json!({ "name": name }));
+    server.call_tool(
+        "write_pane",
+        json!({
+            "pane": name,
+            // The OSC 2 title is `claude`'s resting fingerprint — without it no agent manifest
+            // claims the pane and the daemon consults no rule at all, which is a different state
+            // from `blocked` and would make this gate about nothing.
+            "text": "stty -icanon -echo; printf '\\033]2;\\342\\234\\263 Claude Code\\007'; \
+                     sel=1; \
+                     d() { printf '\\033[2J\\033[H'; printf 'Do you want to proceed?\\r\\n'; i=1; \
+                     for l in 'Yes' 'Yes, and do not ask again' 'No, and tell me why'; do \
+                     if [ \"$i\" = \"$sel\" ]; then printf '\\342\\235\\257 '; else printf '  '; fi; \
+                     printf '%s. %s\\r\\n' \"$i\" \"$l\"; i=$((i+1)); done; }; d; \
+                     while :; do \
+                     k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'); \
+                     [ -n \"$k\" ] || exit 0; \
+                     case \"$k\" in 49|50|51) sel=$((k-48));; esac; \
+                     printf '\\033[2J\\033[H'; printf 'took %s via %s\\r\\n' \"$sel\" \"$k\"; \
+                     exec cat; done"
+        }),
+    );
+    server.wait_for_tool("agent_state", json!({ "pane": name }), "state=blocked");
+}
+
+/// ⚠⚠⚠ **AN AGENT ANSWERS ITS PEER'S DIALOG FROM THE SURFACE THAT SHOWED IT THE DIALOG** — R369's
+/// whole claim, driven end to end through a real daemon, a real pty and a real menu.
+///
+/// # What only a live run can prove, and what both unit sides missed before
+///
+/// R366b's lesson is that a unit gate on each side of this supplies the other side's half: the
+/// plugin's gates hand it a fixture screen, and the mouth's gates hand it a hand-built outcome. The
+/// first end-to-end run through a real daemon found two defects both sets had passed. So this
+/// drives the whole path — `tools/call` → the wire → a run on its own thread → a keystroke into a
+/// pty → the detector re-reading that pane's screen → the outcome back out — and the assertions are
+/// about what the PANE received.
+///
+/// # ⚠⚠⚠ The safety claim is the second half, and it is the one worth the fixture
+///
+/// The peer's marker is on option 1 (`Yes`). The caller authorises option 3 (`No, and tell me why`).
+/// A machine that answered by pressing Enter — the one key whose landing place is known — would
+/// APPROVE the command the caller declined. The pane says which byte moved it, so this gate can
+/// tell those apart, and `via 51` is the digit `3`.
+///
+/// ⚠ REVERT-PROOF: make the answering act send Enter when the marker is elsewhere and the pane
+/// reports `took 1 via 10` — a `Yes` nobody authorised.
+#[test]
+fn an_agent_answers_a_blocked_peer_in_the_agents_own_words() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    open_asking_pane(&mut server, "asker");
+
+    // ⚠⚠ THE SURFACE THAT SHOWS THE QUESTION POINTS AT THIS TOOL. The debt R369 pays is exactly
+    // this sentence: a pane surface that could say what a peer was asking and named a RUN argument
+    // as the remedy — which a supervisor reading a neighbour's screen has no run to declare on.
+    let seen = server.call_tool("list_panes", json!({}));
+    assert!(
+        seen.contains("Do you want to proceed?") && seen.contains("answer_pane"),
+        "the question, and the tool that answers it, in the same answer: {seen}",
+    );
+
+    // ⚠⚠⚠ FIRST, THE REFUSAL — and it goes first because it types NOTHING, which leaves the dialog
+    // standing for the second half. `and` is carried by `Yes, and do not ask again` AND by
+    // `No, and tell me why`: a grant and a refusal. A first-match policy would pick one of two
+    // opposites on the caller's behalf.
+    let ambiguous = server.call_tool(
+        "answer_pane",
+        json!({ "pane": "asker", "asked": "proceed", "answer": "and" }),
+    );
+    assert!(
+        ambiguous.contains("blocked")
+            && ambiguous.contains("more than one option carries the authorised answer"),
+        "⚠⚠⚠ two options carry the authorised words, so NOTHING is answered and the run says which \
+         of the six reasons it was — a reader who cannot tell `my needle matched nothing` from `it \
+         matched twice` cannot fix either. ⚠ Asserted as the SENTENCE and not the wire word \
+         `ambiguous`, because the sentence is what this mouth owes a reader: a reason with no \
+         remedy in it is a diagnostic: {ambiguous}",
+    );
+    let untouched = server.call_tool("read_pane", json!({ "pane": "asker" }));
+    assert!(
+        !untouched.contains("via 4")
+            && !untouched.contains("via 5")
+            && !untouched.contains("via 1"),
+        "⚠⚠⚠ AND THE PANE IS THE WITNESS: it prints `took <option> via <byte>` for any key it \
+         receives, and it must have received none. A refusal that typed something first would be \
+         the product deciding and then apologising: {untouched}",
+    );
+    assert!(
+        untouched.contains("Do you want to proceed?"),
+        "the dialog is still up, which is what makes the answer below a real second act: \
+         {untouched}",
+    );
+
+    // ...AND NOW THE ANSWER, naming the option the caller wants in the agent's own words.
+    let answered = server.call_tool(
+        "answer_pane",
+        json!({
+            "pane": "asker",
+            "asked": "Do you want to proceed?",
+            "answer": "No, and tell me why",
+        }),
+    );
+    assert!(
+        answered.contains("converged"),
+        "the run's whole job was one answer, so it converges rather than looping: {answered}",
+    );
+    assert!(
+        answered.contains("It answered 1 of its peer's questions under your consent"),
+        "⚠⚠ and it SAYS a decision was taken on somebody's behalf. A count of approvals is what \
+         makes an answer given by a machine auditable rather than merely convenient: {answered}",
+    );
+    assert!(
+        answered.contains("No, and tell me why"),
+        "⚠ and the journal names the option in WORDS, not only by number — a number cannot be \
+         audited once the dialog is gone: {answered}",
+    );
+
+    let witness = server.wait_for_tool("read_pane", json!({ "pane": "asker" }), "took 3 via 51");
+    assert!(
+        witness.contains("took 3 via 51"),
+        "⚠⚠⚠ THE PEER TOOK OPTION 3, MOVED BY THE DIGIT — and the digit is 51, which is `3`. This \
+         is the claim the whole contract is for: the peer's own marker was on `Yes`, so a machine \
+         that pressed the one key with a known landing place would have APPROVED the command this \
+         caller declined: {witness}",
+    );
+    assert!(
+        !witness.contains("via 10"),
+        "⚠⚠⚠ AND NO ENTER FOLLOWED IT. The peer left the question on the digit alone, so an Enter \
+         sent anyway would have landed on whatever it showed next — which after an approval is \
+         frequently a second dialog: {witness}",
+    );
+}
+
+/// ⚠⚠ **A PERSON'S PANE IS REFUSED, and answering is refused for the reason every other writing
+/// tool is** — R340's rule, applied to the door this round opened.
+///
+/// A new tool on this surface inherits the surface's promises including the ones it does not
+/// mention. Answering a dialog TYPES into a pane, so a tool that skipped the ownership check would
+/// be a laundering path around `write_pane` and `send_keys`: an agent refused a keystroke could
+/// press the person's approval button instead, which is the single most consequential key on the
+/// screen.
+#[test]
+fn answering_a_pane_the_agent_did_not_open_is_refused() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let theirs = add_pane(&sock, &["cat"]);
+
+    let refused = server.call_tool_error(
+        "answer_pane",
+        json!({ "pane": 2, "asked": "proceed", "answer": "Yes" }),
+    );
+    assert!(
+        refused.contains("opened by a person, not by you")
+            && refused.contains("Only a pane you opened yourself"),
+        "the refusal is the surface's ownership rule, in the words every other writing tool \
+         refuses in — not a parse error and not a sentence written for this tool alone: {refused}",
+    );
+    assert!(
+        refused.contains("tell them what you would answer"),
+        "⚠⚠ and it says the honest alternative. A refusal that leaves an agent with nothing to do \
+         is how the next one gets routed around with send_keys: {refused}",
+    );
+    let _ = theirs;
+}
+
+/// ⚠⚠ **BOTH NEEDLES ARE REQUIRED, AND AN INCOMPLETE CONSENT IS REFUSED RATHER THAN DROPPED.**
+///
+/// The failure this closes is R366's, one surface up: a unit read field-by-field goes MISSING
+/// rather than malformed, so a caller who sent half of one would have had the half silently
+/// discarded. Here the two needles are flat — the tool has exactly one unit, so there is nothing to
+/// group against — and what makes that safe is that neither has a default to fall back to.
+///
+/// ⚠ The QUESTION needle is the one an agent will be tempted to leave out, and it is the one that
+/// matters most: without it a `Yes` written for *"overwrite the draft?"* answers *"delete the
+/// production database?"*.
+#[test]
+fn answering_without_naming_the_question_is_refused() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_pane", json!({ "name": "quiet" }));
+
+    let no_question =
+        server.call_tool_error("answer_pane", json!({ "pane": "quiet", "answer": "Yes" }));
+    assert!(
+        no_question.contains("WHICH QUESTION"),
+        "⚠⚠⚠ a consent with no question is a consent to whatever is on the screen: {no_question}",
+    );
+    let no_option = server.call_tool_error(
+        "answer_pane",
+        json!({ "pane": "quiet", "asked": "proceed" }),
+    );
+    assert!(
+        no_option.contains("WHICH OPTION"),
+        "and one with no option authorises every option, which makes every real menu ambiguous: \
+         {no_option}",
+    );
+    // ⚠ A NUMBER IS NOT A CONSENT, and the tool refuses it rather than reading it as words: the
+    // needles are declared as strings, so `answer: 2` never becomes a selection.
+    let numbered = server.call_tool_error(
+        "answer_pane",
+        json!({ "pane": "quiet", "asked": "proceed", "answer": 2 }),
+    );
+    assert!(
+        numbered.contains("WHICH OPTION"),
+        "a digit is refused where words are asked for — a number means something different on \
+         every screen: {numbered}",
+    );
+}
+
+/// ⚠⚠ **A PANE THAT IS NOT ASKING IS LEFT ALONE, and the answer says so rather than claiming a
+/// success.**
+///
+/// The race this tool lives inside: an agent reads `blocked`, decides, and calls — and by then the
+/// person sitting there may have answered it. A tool that typed the caller's option into whatever
+/// the pane had become would be the worst available outcome, and one that reported `converged` with
+/// no further word would hide it.
+#[test]
+fn answering_a_pane_that_is_not_asking_types_nothing_and_says_so() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    open_echo_pane(&mut server, "at-rest");
+
+    let answered = server.call_tool(
+        "answer_pane",
+        json!({ "pane": "at-rest", "asked": "proceed", "answer": "Yes" }),
+    );
+    assert!(
+        answered.contains("is not asking anything"),
+        "⚠⚠⚠ the run says WHICH of the two zero-answer endings this is. `converged` alone reads as \
+         `your answer went in`, and this pane was never asked a thing: {answered}",
+    );
+    assert!(
+        !answered.contains("It answered 1"),
+        "⚠⚠ and the tally does not claim a decision nobody took: {answered}",
+    );
+    let untouched = server.call_tool("read_pane", json!({ "pane": "at-rest" }));
+    assert!(
+        !untouched.contains("Yes"),
+        "⚠⚠⚠ AND NOT ONE BYTE REACHED THE PANE — it echoes what is typed into it, so the \
+         caller's authorised words would be plainly there: {untouched}",
     );
 }

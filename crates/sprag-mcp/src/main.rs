@@ -113,7 +113,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::events::EventFilter;
@@ -324,7 +324,15 @@ fn handle_initialize(message: &Value) -> Value {
             `wait_for_output` for a pane PRINTING text you name, which is how you run something \
             over there and are told the moment it says what you were waiting for. \
             About a sibling AI: `agent_state` says whether it is working, waiting for a human, \
-            or at rest, and `agent_explain` says why. \
+            or at rest, and `agent_explain` says why. When one is WAITING FOR A HUMAN it is \
+            usually sitting on a numbered dialog, and `list_panes` prints that dialog — the \
+            question, every option, and which one a bare Enter would take. `answer_pane` is how \
+            you answer it: name the question and the option in the agent's OWN WORDS, and the \
+            daemon re-reads the screen, refuses if your words fit two options or none, and sends \
+            only the keys the pane's own marker justifies. Do not answer one with `send_keys` and \
+            a digit — the number is a screen fact a redraw invalidates, and the Enter after it \
+            lands on whatever came next, which after an approval is often a second dialog. If you \
+            cannot write words that name exactly one option, the question is a person's. \
             For your OWN work, `open_pane` gives you a new pane to run things in without taking \
             over one a person is reading — name it there, and address it by that name afterwards \
             — `rename_pane` changes that name later, `swap_pane` moves it to a different place in \
@@ -377,11 +385,17 @@ fn handle_initialize(message: &Value) -> Value {
 /// The count is deliberately not stated here: it was wrong (it said seven while there were nine),
 /// which is what a number maintained in prose does. The roster itself is below and the crate-root doc
 /// names the tools rather than counting them.
-fn tools_list() -> Value {
-    // A NUMBER or a NAME, and the JSON type is what tells them apart — see `pane_target`. The
-    // description leads with the hazard rather than with the syntax, because the hazard is what a
-    // caller cannot discover: a number that worked a moment ago can silently name a different pane.
-    let pane_arg = json!({
+/// THE PANE ARGUMENT every tool that names one advertises.
+///
+/// A NUMBER or a NAME, and the JSON type is what tells them apart — see `pane_target`. The
+/// description leads with the hazard rather than with the syntax, because the hazard is what a
+/// caller cannot discover: a number that worked a moment ago can silently name a different pane.
+///
+/// ⚠ A function rather than a local, because the roster is built in two places now: the main list
+/// and [`orchestration_tools`]. A second copy of this paragraph would be a second answer to *what
+/// is a pane here*, and the first tool to drift would be the newest one.
+fn pane_arg() -> Value {
+    json!({
         "type": ["integer", "string"],
         "minimum": 1,
         "description": "Which pane. A NUMBER is the 1-based position in list_panes (1 = the \
@@ -390,7 +404,11 @@ fn tools_list() -> Value {
             the write will succeed against the wrong one. A STRING is the pane's NAME, which \
             never moves. Name a pane you will come back to (open_pane's `name`, or \
             rename_pane) and address it by that."
-    });
+    })
+}
+
+fn tools_list() -> Value {
+    let pane_arg = pane_arg();
     let mut roster = json!({
         "tools": [
             {
@@ -1474,6 +1492,45 @@ fn orchestration_tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
+            "name": "answer_pane",
+            "description": "ANSWER the question a pane's agent has stopped to ask, when \
+                list_panes or agent_state shows it `blocked` and prints a menu. Name the question \
+                and the option IN THE AGENT'S OWN WORDS, copied off that menu — never the number. \
+                The daemon re-reads the screen at the moment it answers, checks that exactly ONE \
+                option carries your words (two, or none, and it types nothing and tells you \
+                which), and sends only the keystrokes the pane's own marker justifies. This is the \
+                ONLY safe way to answer a dialog: send_keys with a digit and an Enter skips every \
+                one of those checks — the number is a screen fact that a redraw invalidates, and \
+                the Enter lands on whatever the pane shows by the time it arrives, which after an \
+                approval is often a SECOND dialog. It waits for the answer to land and tells you \
+                what happened. The pane must be one YOU opened.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pane": pane_arg(),
+                    sprag_host::plugins::CONSENT_ASKED_KEY: {
+                        "type": "string",
+                        "description": "Text the QUESTION must carry, copied from the pane. \
+                            Without it a `Yes` written for one dialog would answer whatever the \
+                            pane happens to be showing when this lands."
+                    },
+                    sprag_host::plugins::CONSENT_ANSWER_KEY: {
+                        "type": "string",
+                        "description": "Text the OPTION must carry. It must name exactly one: if \
+                            two options carry it — `Yes` and `Yes, and don't ask again` — nothing \
+                            is answered, because one of those turns off every future question. \
+                            Quote an option's WHOLE label to mean that one exactly."
+                    }
+                },
+                "required": [
+                    "pane",
+                    sprag_host::plugins::CONSENT_ASKED_KEY,
+                    sprag_host::plugins::CONSENT_ANSWER_KEY,
+                ],
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "cancel_run",
             "description": "Ask one of YOUR runs to stop. It stops at its next step rather than \
                 being killed mid-write, so the pane it was driving is left in a state somebody can \
@@ -1716,10 +1773,12 @@ fn orchestrate_schema() -> Value {
 fn argument_help(name: &str) -> &'static str {
     match name {
         "plugin" => {
-            "Which loop to run. `agent` prompts the AI in a pane and collects its reply; \
+            "Which plugin to run. `agent` prompts the AI in a pane and collects its reply; \
              `orchestrator` retypes one stimulus until a sentinel appears; `pipe` relays one \
              pane's output into another's input; `dialogue` runs two commands against each other, \
-             turn by turn."
+             turn by turn. `answer` is the one that is NOT a loop: it answers the question a \
+             pane's agent has stopped to ask, once, and stops — you will normally want the \
+             answer_pane tool, which is this plugin with the waiting done for you."
         }
         "pane" => {
             "Which pane to drive, as a number from list_panes (orchestrator, agent). It must be a \
@@ -2234,9 +2293,10 @@ fn render_asking(outcome: &Value) -> String {
         .is_some_and(|choices| !choices.is_empty())
     {
         said.push_str(
-            "\nTo let a run answer this, start it again with may_answer naming the question and \
-             the option in the agent's own words. Do NOT type the number yourself: that skips the \
-             check that exactly one option carries what you authorised.",
+            "\nAnswer it with answer_pane, naming the question and the option in the agent's own \
+             words — or, to let the LOOP answer questions like it, start the run again with \
+             may_answer. Do NOT type the number with send_keys: that skips the check that exactly \
+             one option carries what you authorised.",
         );
     }
     said
@@ -2332,6 +2392,133 @@ fn tool_cancel_run(args: &Value) -> Result<String, String> {
         "Run {wanted} was asked to stop. It ends at its next step, so the pane it was driving is \
          left readable. list_runs says when it has.\n"
     ))
+}
+
+/// How long [`tool_answer_pane`] waits for its own run before handing the id back.
+///
+/// # ⚠⚠ A bound on the WAIT, and deliberately NOT a bound on the run
+///
+/// The run is bounded by its own guardrails, as every run is, and the answering act inside it is
+/// bounded by a mechanism constant sized from the detector's settle window. This number exists for
+/// a different reason: an MCP call that never returns is a turn an agent cannot get out of. So the
+/// wait gives up and says the run id, and the run goes on being a run — `list_runs` answers it,
+/// `cancel_run` stops it, and nothing has been lost but this call's patience.
+///
+/// ⚠ Generous against the act it covers (two keystrokes and the peer's reaction to them, twice the
+/// settle window at worst), because the failure it guards against is a hung call and not a slow
+/// pane — and reporting a slow pane as unanswered would be a false statement about the peer.
+const ANSWER_WAIT: Duration = Duration::from_secs(30);
+
+/// How often that wait re-reads the run — the CLI's `RUN_POLL`, for its reason: a run's outcome is
+/// a LEVEL, so a missed edge costs nothing and a subscription would buy nothing.
+const ANSWER_POLL: Duration = Duration::from_millis(100);
+
+/// `answer_pane`: answer the question a pane's agent is asking, on words the caller quotes.
+///
+/// # ⚠⚠⚠ Why this tool exists on the surface that PUBLISHES the question
+///
+/// `list_panes` and `agent_state` have been able to say what a blocked peer is asking since R367 —
+/// the sentences, the options, and which one a bare Enter would take. What they told an agent to do
+/// about it was *start a run with `may_answer`*, which is a consent declared before a loop, and a
+/// supervisor reading its neighbour's screen has no loop to declare one on. So the reachable act
+/// was `send_keys` with a digit, which is precisely the act `sprag_plugin::Consent` exists to stop
+/// a machine performing: **the unsafe door was open and the safe one was not built.**
+///
+/// # What this adds over the wire's own `run`, and why each is the MOUTH's job
+///
+/// [`tool_orchestrate`]'s three, for its reasons — the pane must be the agent's own, the run
+/// carries who asked, and the guardrails are the daemon's. Plus one of its own: **it waits.** An
+/// answer is over in a keystroke, so handing back a run id would make an agent poll for the one
+/// fact it asked for.
+///
+/// ⚠ The two needles are FLAT here where `orchestrate` nests them under `may_answer`, and the
+/// reason the nesting exists does not apply: a unit is nested so a malformed one cannot be read
+/// field-by-field and silently DROPPED, leaving the run to start without it. Both needles are
+/// `required` on this tool, so an incomplete consent is a refusal rather than a default — there is
+/// nothing here for a dropped field to fall back to.
+fn tool_answer_pane(args: &Value) -> Result<String, String> {
+    let pane = resolve_pane_ref_at(args, "pane")?;
+    require_own_pane(
+        &pane,
+        "answer_pane",
+        "Answering a dialog types into the pane exactly as write_pane and send_keys do, so it is \
+         refused for the same reason. A person's agent asked a person's question — tell them what \
+         you would answer and why, and let them press it.",
+    )?;
+    let needle = |key: &str, missing: &str| -> Result<String, String> {
+        match args.get(key) {
+            Some(Value::String(text)) if !text.is_empty() => Ok(text.clone()),
+            _ => Err(missing.to_owned()),
+        }
+    };
+    let asked = needle(
+        sprag_host::plugins::CONSENT_ASKED_KEY,
+        "'asked' names WHICH QUESTION you are answering — copy a phrase from the question the \
+         pane is showing. Without it, a 'Yes' meant for one dialog would answer whatever that \
+         pane happens to be asking when this lands.",
+    )?;
+    let answer = needle(
+        sprag_host::plugins::CONSENT_ANSWER_KEY,
+        "'answer' names WHICH OPTION, in the agent's own words — copy the option's label from the \
+         menu. A number is not accepted: it means a different thing on every screen, and a list \
+         that has scrolled does not start at one.",
+    )?;
+    let mine = own_pane().ok_or_else(|| {
+        "answer_pane needs to know which pane you are in, and this process is not inside one — so \
+         the run it starts could not be told apart from anybody else's."
+            .to_owned()
+    })?;
+    // ⚠ BEFORE the invoke, `tool_orchestrate`'s rule: a run submitted first can finish first, and
+    // an anchor taken afterwards would sit past its own `run_finished` record.
+    anchor_change_cursor();
+    let started = host_call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": sprag_host::plugins::PluginName::Answer.wire_str(),
+                "pane": pane.id(),
+                sprag_host::plugins::CONSENT_KEY: {
+                    sprag_host::plugins::CONSENT_ASKED_KEY: asked,
+                    sprag_host::plugins::CONSENT_ANSWER_KEY: answer,
+                },
+                OPENED_BY: mine,
+            },
+        }),
+    )?;
+    let id = started
+        .as_u64()
+        .ok_or_else(|| "the daemon's answer was not a run id".to_owned())?;
+    let deadline = Instant::now() + ANSWER_WAIT;
+    loop {
+        let run = own_runs()?
+            .into_iter()
+            .find(|run| run["id"].as_u64() == Some(id));
+        match run {
+            Some(run) if run["state"]["status"].as_str() != Some("running") => {
+                return Ok(render_run(&run));
+            }
+            // ⚠ A run that is GONE is not a run that failed. The registry sweeps finished threads,
+            // and saying so is better than reporting an outcome nobody read.
+            None => {
+                return Err(format!(
+                    "Run {id} answered this pane and is no longer in the daemon's list, so what it \
+                     did cannot be reported. Read the pane to see where it got to."
+                ));
+            }
+            Some(_) if Instant::now() >= deadline => {
+                return Ok(format!(
+                    "Run {id} is still answering pane {} after {} seconds. It is bounded and will \
+                     stop on its own — call list_runs for the outcome rather than answering \
+                     again, because a second answer into a dialog that has not taken the first is \
+                     how a loop comes to type at a menu.\n",
+                    pane.id(),
+                    ANSWER_WAIT.as_secs(),
+                ));
+            }
+            Some(_) => std::thread::sleep(ANSWER_POLL),
+        }
+    }
 }
 
 /// The refusal for a call carrying an argument the tool's own published schema does not declare,
@@ -2458,6 +2645,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "move_pane" => tool_move_pane(&args),
         "resize_window" => tool_resize_window(&args),
         "orchestrate" => tool_orchestrate(&args),
+        "answer_pane" => tool_answer_pane(&args),
         "list_runs" => tool_list_runs(),
         "cancel_run" => tool_cancel_run(&args),
         other => Err(no_such_tool(other)),
@@ -2713,9 +2901,10 @@ fn asking_block(agent: &AgentInfo, indent: &str) -> String {
         ));
     }
     said.push_str(&format!(
-        "{indent}Answer it by starting a run with may_answer naming the question and the option in \
-         the agent's own words, or hand the pane to a person. Do NOT type the number yourself: \
-         that skips the check that exactly one option carries what you authorised.\n",
+        "{indent}Answer it with answer_pane, naming the question and the option in the agent's own \
+         words — or hand the pane to a person. Do NOT type the number with send_keys: that skips \
+         the check that exactly one option carries what you authorised, and the digit you read \
+         here is a screen fact that a redraw invalidates.\n",
     ));
     said
 }
@@ -7533,11 +7722,13 @@ mod tests {
             "⚠⚠ and WHY, as the sentence — the agent's next move depends on which reason: {said}",
         );
         assert!(
-            said.contains("may_answer"),
-            "⚠⚠ and the argument that lets a run answer it, named: {said}",
+            said.contains("answer_pane") && said.contains("may_answer"),
+            "⚠⚠ BOTH next moves, because they are different acts: `answer_pane` answers THIS \
+             question now, and `may_answer` authorises the LOOP to answer ones like it. A reader \
+             told only the second has to restart a run to say one word: {said}",
         );
         assert!(
-            said.contains("Do NOT type the number yourself"),
+            said.contains("Do NOT type the number with send_keys"),
             "⚠⚠⚠ and the move that must NOT be suggested, refused out loud. `send_keys` with the \
              digit skips the whole consent check: {said}",
         );
@@ -7841,7 +8032,7 @@ mod tests {
         );
         // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
         // the register's estimate was, so a later round reads a measured number.
-        assert_eq!(advertised.len(), 40, "the agent surface's roster");
+        assert_eq!(advertised.len(), 41, "the agent surface's roster");
     }
 
     /// ⚠⚠ **EVERY `int` ARGUMENT OF A RUN IS CLASSIFIED AS A PANE OR AS NOT ONE** — the gate that
@@ -9758,9 +9949,23 @@ mod tests {
              the first would confirm what this dialog declines: {said}",
         );
         assert!(
-            said.contains("may_answer") && said.contains("Do NOT type the number yourself"),
-            "the two honest next moves, and the prohibition that keeps the consent contract from \
-             being routed around: {said}",
+            said.contains("answer_pane"),
+            "⚠⚠⚠ THE ACT MUST BE REACHABLE FROM WHERE THE QUESTION IS PUBLISHED. This surface \
+             could say what a peer was asking a whole round before it could say how to answer it, \
+             and what it pointed at was a RUN argument — a consent declared before a loop, which \
+             an agent reading its neighbour's screen has not got. It named the one thing the \
+             reader could not do: {said}",
+        );
+        assert!(
+            said.contains("hand the pane to a person"),
+            "and the other honest move, since a consent nobody can write is a question for a \
+             person: {said}",
+        );
+        assert!(
+            said.contains("Do NOT type the number with send_keys"),
+            "⚠⚠⚠ and the prohibition, NAMING THE TOOL it is about. `send_keys` with the digit is \
+             what a reader does when the safe act is not offered, and it routes around every \
+             check the consent contract makes: {said}",
         );
 
         // A BLOCKED PANE WITH NO READABLE MENU still says something, and says the remedy. Silence
