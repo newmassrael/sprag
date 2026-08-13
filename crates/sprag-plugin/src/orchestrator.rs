@@ -14,6 +14,7 @@ use sprag_terminal::PaneId;
 #[cfg(test)]
 use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
+use crate::completion::{Completion, Turn};
 use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
@@ -58,6 +59,20 @@ pub struct OrchestrationSpec {
     /// of [`may_answer`](Self::may_answer): what this run may answer itself, and who answers what
     /// it may not.
     pub attended: Attended,
+    /// WHAT MAKES THE PEER'S TURN OVER, and how long it may take — see [`Turn`].
+    ///
+    /// # ⚠⚠⚠ `None` is a step that ends on a 500 ms clock, which is what this plugin always did
+    ///
+    /// And it is the defect [`Turn`] carries the measurement for: without a contract the step's
+    /// wait is a private half-second constant, so a peer slower than that is typed at again, and
+    /// again, for as long as it takes to think. **Absent stays exactly that behaviour** — an added
+    /// argument whose absence changed what a run did would make every existing caller's run mean
+    /// something they did not ask for, and it would do it silently.
+    ///
+    /// ⚠⚠ Which is also what keeps the measurement honest: the gate that measures the defect goes
+    /// on measuring it, because the old behaviour is still a declared option rather than a deleted
+    /// one. R372's rule, and this is the third round it has paid.
+    pub turn: Option<Turn>,
 }
 
 /// A fixed-stimulus drive plugin over one pane.
@@ -69,6 +84,9 @@ pub struct Orchestrator {
     baseline: RowTrail,
     /// The barrier this run must clear before it types anything — see [`Readiness`].
     ready: Readiness,
+    /// What makes THIS step's turn over, armed at the step that typed it — `None` for a run that
+    /// declared no [`Turn`] and so ends its steps on [`OBSERVE_TIMEOUT`].
+    done: Option<Completion>,
 }
 
 impl Orchestrator {
@@ -82,6 +100,7 @@ impl Orchestrator {
                 spec.may_answer.clone(),
                 spec.attended,
             ),
+            done: spec.turn.as_ref().map(|turn| Completion::new(turn.when())),
             pane,
             spec,
             baseline: RowTrail::default(),
@@ -113,21 +132,52 @@ impl Orchestrator {
     /// the rest of the step's wait and no more, because the verdict is judged off the collapsed
     /// screen after the wait either way. A convergence can be reached late; it can never be lost.
     fn observe(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
-        poll_until(run, OBSERVE_TIMEOUT, || self.arrived(panes))
+        poll_until(run, self.patience(), || self.arrived(panes))
     }
 
-    /// Whether what this step is waiting for is on the pane — see [`observe`](Self::observe).
+    /// How long one step waits — the caller's [`Turn::within`] when they declared a contract, and
+    /// [`OBSERVE_TIMEOUT`] when they did not.
     ///
-    /// ⚠ The sentinel is read off the COLLAPSED screen, which is the same text and the same
-    /// `contains` the verdict below judges with. Keying the wait on anything the verdict does not
-    /// read would let a step end its wait on evidence its own judgement then disagreed with.
+    /// ⚠⚠⚠ THE CONSTANT IS ONLY EVER A FALLBACK NOW, and that is the whole shape of the fix: a
+    /// number nobody chose cannot be right for both a shell that answers in milliseconds and an
+    /// agent that thinks for a minute. See [`Turn`].
+    /// ⚠ [`Duration::MAX`] for a contract with no bound of its own, and it is not a constant in
+    /// disguise: [`poll_until`] compares ELAPSED against it and consults the run's deadline and
+    /// cancel flag on every pass, so it means *no bound beyond the run's* and cannot overflow.
+    fn patience(&self) -> Duration {
+        self.spec.turn.as_ref().map_or(OBSERVE_TIMEOUT, |turn| {
+            turn.within().unwrap_or(Duration::MAX)
+        })
+    }
+
+    /// Whether what this step is waiting for has happened — see [`observe`](Self::observe).
+    ///
+    /// The three terms, in the order they are asked:
+    ///
+    /// * **the SENTINEL, when the caller named one.** Read off the COLLAPSED screen, which is the
+    ///   same text and the same `contains` the verdict judges with — keying the wait on anything
+    ///   the verdict does not read would let a step end on evidence its own judgement then
+    ///   disagreed with. Asked FIRST because it is the run's whole goal: a peer still working when
+    ///   its sentinel is already on the pane has nothing left to say that this run wants.
+    /// * **the TURN being over**, when the caller declared a [`Turn`]. Not a preamble and not a
+    ///   timer — it is the strongest evidence there is that nothing more is coming, which is why it
+    ///   may end the wait early without repeating R374's mistake.
+    /// * **the peer having produced a row of its own**, when the caller named neither. Unchanged,
+    ///   and it is the only one of the three that is a guess.
     fn arrived(&self, panes: &dyn PaneAccess) -> bool {
-        let Some(sentinel) = self.spec.sentinel.as_deref() else {
-            return self.reaction(panes) == Reaction::Answered;
-        };
-        panes
-            .pane_collapsed(self.pane)
-            .is_some_and(|seen| seen.contains(sentinel))
+        if let Some(sentinel) = self.spec.sentinel.as_deref()
+            && panes
+                .pane_collapsed(self.pane)
+                .is_some_and(|seen| seen.contains(sentinel))
+        {
+            return true;
+        }
+        match (&self.done, self.spec.sentinel.as_deref()) {
+            (Some(done), _) => done.satisfied(panes, self.pane),
+            // A sentinel with no contract: the wait is the sentinel's alone (R374).
+            (None, Some(_)) => false,
+            (None, None) => self.reaction(panes) == Reaction::Answered,
+        }
     }
 
     /// What the pane has done since this step's baseline.
@@ -248,6 +298,14 @@ impl Plugin for Orchestrator {
 
         // Baseline before acting, so observe() waits for this step's reply.
         self.baseline = RowTrail::mark(panes, self.pane);
+        // ⚠⚠⚠ AND THE COMPLETION CONTRACT ARMS HERE, IN THE SAME BREATH AND FOR THE SAME REASON:
+        // before a byte goes in. A peer waiting to be spoken to is AT REST, so a contract armed
+        // after the injection can be satisfied by the stillness this step was addressed TO — and
+        // the step would end before the peer had written a word. See [`Completion::begin`], which
+        // is where `Agent` learned it.
+        if let Some(done) = self.done.as_mut() {
+            done.begin(panes, self.pane);
+        }
 
         // Act: inject the stimulus + Enter.
         let mut keys = KeyStroke::text(&self.spec.stimulus);
@@ -367,6 +425,7 @@ mod tests {
             ready_within: Some(Duration::from_secs(15)),
             may_answer: None,
             attended: Attended::NoOne,
+            turn: None,
         }
     }
 
@@ -399,6 +458,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -491,6 +551,7 @@ mod tests {
                 ready_within: Some(Duration::from_secs(5)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -536,6 +597,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -569,6 +631,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -595,6 +658,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -662,6 +726,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         // ⚠ WHICH OF THE TWO ASSERTIONS BELOW FIRES DEPENDS ON THE STAND-IN, and both were
@@ -741,6 +806,7 @@ mod tests {
                     ready_within: Some(Duration::from_millis(400)),
                     may_answer: None,
                     attended: Attended::NoOne,
+                    turn: None,
                 },
             );
             let outcome = Driver::new(Guardrails {
@@ -805,6 +871,7 @@ mod tests {
                 ready_within: Some(Duration::from_secs(10)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -865,6 +932,7 @@ mod tests {
                 ready_within: Some(Duration::from_millis(500)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -1075,6 +1143,7 @@ mod tests {
                 ready_within: Some(Duration::from_millis(300)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1118,6 +1187,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1172,6 +1242,7 @@ mod tests {
                 ready_within: Some(Duration::from_millis(200)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1350,6 +1421,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -1414,6 +1486,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -1447,6 +1520,241 @@ mod tests {
             "⚠⚠⚠ THE PEER WAS PROMPTED TWICE FOR ONE QUESTION, and the second prompt reached it \
              while it was still answering the first. For an agent session that is one wasted turn \
              of a bounded budget and one interrupted answer: {witness:?}",
+        );
+    }
+
+    /// How long the peer in the gate below THINKS before it answers — the one number that decides
+    /// what that gate is about, so it is named rather than buried in a shell string (R373's rule
+    /// about a fixture's clock).
+    ///
+    /// ⚠⚠⚠ IT IS LOAD-BEARING BECAUSE IT IS LONGER THAN [`OBSERVE_TIMEOUT`], and that is the whole
+    /// case: a peer that answers INSIDE one step's wait is the case already gated above, and every
+    /// fixture in this file was one until now. **A real agent session is not.** Three seconds is a
+    /// fast one — a `claude` turn that runs a tool is tens of seconds — and it is kept this short
+    /// only so the gate does not cost the suite a minute. The defect scales with the ratio, so the
+    /// number this measures is a FLOOR on what a real session would see.
+    const PEER_THINKS_FOR: Duration = Duration::from_secs(3);
+
+    /// ⚠⚠⚠ **A TURN WAITS AS LONG AS ITS PEER TAKES, AND NOT AS LONG AS ONE STEP'S TIMEOUT** — the
+    /// measurement debt 64 was registered for, and the sharpest ai-loop defect left open.
+    ///
+    /// # ⚠⚠⚠ What the gate above fixed, and what it could not reach
+    ///
+    /// A step now waits for the sentinel it named — for [`OBSERVE_TIMEOUT`], which is **500 ms**.
+    /// Past that the wait ends, the verdict is `continue`, and the next step TYPES THE STIMULUS
+    /// AGAIN. So the run's turn boundary is a fixed timer rather than the peer's own turn, and
+    /// against anything slower than half a second the loop prompts a peer that is still answering —
+    /// then again, and again, twice a second for as long as the peer takes to think.
+    ///
+    /// ⚠⚠⚠ **AND THE PEER THIS PRODUCT EXISTS TO DRIVE IS AN AGENT SESSION THAT THINKS FOR TENS OF
+    /// SECONDS.** Every prompt after the first is a real turn of that agent's bounded budget, spent
+    /// answering a question it had already been asked.
+    ///
+    /// ⚠⚠ **THE PRODUCT ALREADY KNOWS HOW TO DO THIS, IN THE OTHER PLUGIN.** [`Agent`] does not use
+    /// a timer at all: it arms a [`Completion`] and asks
+    /// [`DoneWhen::Settles`](crate::DoneWhen::Settles) whether the agent has MOVED AND COME BACK TO
+    /// REST. `Orchestrator` — the plugin the MCP `orchestrate` verb drives, and the one the outer
+    /// AI loop drives — has no completion contract at all. That asymmetry is the debt.
+    ///
+    /// [`Agent`]: crate::agent::Agent
+    /// [`Completion`]: crate::completion::Completion
+    /// [`Turn`]: crate::completion::Turn
+    #[test]
+    fn a_run_with_no_turn_contract_re_prompts_a_peer_that_is_still_thinking() {
+        let (access, pane) = slow_peer();
+        let mut orch = Orchestrator::new(pane, slowly("AGENT-REPLIED", None));
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                // ⚠ FAR ABOVE what one question needs, because the defect is measured in turns
+                // SPENT and a tight ceiling would hide it as `exhausted` instead.
+                max_iterations: 100,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the peer answers well inside the run's clock: {outcome:?}",
+        );
+        // ⚠⚠⚠ MORE THAN ONE, NOT SIX. Six is what this box measured and the count is a function of
+        // the ratio between the peer's thinking and `OBSERVE_TIMEOUT`, so pinning it would make
+        // this gate a claim about the machine. What is not machine-dependent is that the run went
+        // round AT ALL against a peer it had already asked.
+        assert!(
+            outcome.iterations > 1,
+            "⚠⚠⚠ THE DEFECT IS GONE FROM THE UNCONTRACTED PATH, which means the sibling below is no
+             longer measured against anything. A run with no [`Turn`] must still end its steps on \
+             {OBSERVE_TIMEOUT:?} — that is what its absence promises every caller who wrote their \
+             request before the contract existed: {outcome:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **AND THE FIX: A RUN THAT SAYS HOW ITS PEER FINISHES ASKS A SLOW PEER EXACTLY ONCE.**
+    ///
+    /// The sibling of the measurement above, against the same peer thinking for the same time. What
+    /// changed is one declared argument: [`Turn`] — *what makes my peer's turn over, and how long it
+    /// may take*. The step's wait stops being a constant nobody chose.
+    ///
+    /// ⚠⚠ THREE CLAIMS, because the first two alone are satisfied by a run that got lucky:
+    /// ONE turn, ONE stimulus on the pane, and the peer's own tally read from the SCROLLBACK after
+    /// it has had the time a second question would have taken.
+    ///
+    /// [`Turn`]: crate::completion::Turn
+    #[test]
+    fn a_run_that_names_how_its_peer_finishes_asks_a_slow_peer_exactly_once() {
+        let (access, pane) = slow_peer();
+        let mut orch = Orchestrator::new(
+            pane,
+            slowly(
+                "AGENT-REPLIED",
+                // ⚠ WELL ABOVE the peer's thinking time, so this bound is a BACKSTOP and not the
+                // decision — which is the whole difference from the constant it replaces. The
+                // contract is what ends the step; this is what stops a peer that never finishes
+                // from holding the run for ever.
+                Turn::lasting(crate::DoneWhen::Exits, Some(PEER_THINKS_FOR * 4)),
+            ),
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 100,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the peer answers well inside the run's clock: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.iterations, 1,
+            "⚠⚠⚠ THE RUN SPENT {} TURNS ON ONE QUESTION. Its peer thought for {PEER_THINKS_FOR:?} \
+             and this run had declared how long a turn may take, so a second turn means the \
+             contract was not consulted: {outcome:?}",
+            outcome.iterations,
+        );
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Bytes(5)),
+            "⚠⚠ and ONE stimulus reached the pane — `ping` and its Enter, once. The turn count \
+             says how often the loop decided to speak; this says how much of it the peer was \
+             actually given: {outcome:?}",
+        );
+
+        // ⚠⚠ THE PEER'S OWN TALLY, read from the SCROLLBACK rather than the screen, and after it
+        // has had the time a second question would need. A pane ten rows tall SCROLLS, so the first
+        // measurement of this defect could only see the two `PROMPTED` lines that had survived.
+        std::thread::sleep(PEER_THINKS_FOR + Duration::from_millis(500));
+        let witness = access.pane_full_text(pane).unwrap_or_default();
+        assert!(
+            !witness.contains("PROMPTED 2"),
+            "⚠⚠⚠ AND THE PEER IS THE WITNESS: it was never asked a second time. A pane that shows \
+             `PROMPTED 2` is one that answered a question nobody meant to ask twice: {witness:?}",
+        );
+    }
+
+    /// A peer that acknowledges every prompt, thinks for [`PEER_THINKS_FOR`], and answers — the one
+    /// fixture both gates above drive, so *"the same peer"* is a fact rather than a claim.
+    ///
+    /// ⚠ It COUNTS what it was asked and stamps every line with the number, because a tally taken
+    /// from the outcome cannot see this: the run ends the moment the FIRST answer appears, while
+    /// the prompts it already queued are still waiting to be read.
+    fn slow_peer() -> (WorkspacePaneAccess, PaneId) {
+        sh_access(
+            &format!(
+                "n=0; while read line; do n=$((n+1)); echo \"PROMPTED $n\"; \
+                 sleep {}; echo \"AGENT-REPLIED $n\"; done",
+                PEER_THINKS_FOR.as_secs(),
+            ),
+            40,
+            10,
+        )
+    }
+
+    /// The spec both gates above drive, differing in `turn` alone — so what the pair measures is
+    /// that argument and nothing else.
+    fn slowly(sentinel: &str, turn: Option<Turn>) -> OrchestrationSpec {
+        OrchestrationSpec {
+            stimulus: "ping".to_string(),
+            sentinel: Some(sentinel.to_string()),
+            ready_when: None,
+            ready_within: None,
+            may_answer: None,
+            attended: Attended::NoOne,
+            turn,
+        }
+    }
+
+    /// ⚠⚠⚠ **THE CONTROL, AND THE WHOLE ARGUMENT: THE OTHER PLUGIN DOES NOT DO THIS.**
+    ///
+    /// The same peer, thinking for the same [`PEER_THINKS_FOR`], driven by [`Agent`] instead. That
+    /// adapter has no timer deciding when a turn is over — it arms a [`Completion`] and asks the
+    /// contract. One prompt, one answer.
+    ///
+    /// ⚠⚠⚠ **SO THE DEFECT ABOVE IS NOT "PANES ARE HARD", IT IS AN ASYMMETRY BETWEEN TWO PLUGINS
+    /// IN THIS CRATE** — and the one WITHOUT the contract is the one the MCP `orchestrate` verb and
+    /// the outer AI loop drive. Until this existed that sentence was a source reading; the two
+    /// numbers beside each other are what make it a measurement.
+    ///
+    /// ⚠ [`DoneWhen::Exits`] rather than `Settles` so the contrast needs no supervisor: what is
+    /// under test is that SOMETHING OTHER THAN A TIMER decides, not which contract was chosen. The
+    /// peer therefore answers once and leaves, which is a one-shot tool's shape.
+    ///
+    /// [`Agent`]: crate::agent::Agent
+    /// [`Completion`]: crate::completion::Completion
+    /// [`DoneWhen::Exits`]: crate::DoneWhen::Exits
+    #[test]
+    fn the_adapter_with_a_completion_contract_asks_the_same_slow_peer_exactly_once() {
+        let (access, pane) = sh_access(
+            &format!(
+                "n=0; read line; n=$((n+1)); echo \"PROMPTED $n\"; \
+                 sleep {}; echo \"AGENT-REPLIED $n\"",
+                PEER_THINKS_FOR.as_secs(),
+            ),
+            40,
+            10,
+        );
+        let mut agent = crate::agent::Agent::new(
+            pane,
+            crate::agent::AgentSpec {
+                // ⚠ WELL ABOVE the peer's thinking time, so this bound is not what ends the turn.
+                // It is the same bound `Orchestrator` has; the difference is that here it is a
+                // BACKSTOP and there it is the decision.
+                timeout: PEER_THINKS_FOR * 4,
+                ..crate::agent::AgentSpec::new("ping")
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .run(
+            &mut agent,
+            &access,
+            &crate::run::RunContext::uncancellable(),
+        );
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the peer answers and leaves: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.iterations, 1,
+            "⚠⚠⚠ ONE TURN against the peer that cost the sibling above six. Nothing about the pane \
+             changed between the two runs — only which plugin was asked to decide when a turn was \
+             over: {outcome:?}",
+        );
+        let witness = access.pane_full_text(pane).unwrap_or_default();
+        assert!(
+            !witness.contains("PROMPTED 2"),
+            "and the peer was asked once: {witness:?}",
         );
     }
 
@@ -1490,6 +1798,7 @@ mod tests {
                 ready_within: Some(Duration::from_secs(30)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let cell = crate::driver::ProgressCell::default();
@@ -1581,6 +1890,7 @@ mod tests {
                 ready_within: None,
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let cell = crate::driver::ProgressCell::default();
@@ -1668,6 +1978,7 @@ mod tests {
                     .expect("two needles"),
                 ]),
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -1729,6 +2040,7 @@ mod tests {
                     .expect("two needles"),
                 ]),
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
         let outcome = run(
@@ -1821,6 +2133,7 @@ mod tests {
                 ready_within: Some(Duration::from_secs(15)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
 
@@ -1884,6 +2197,7 @@ mod tests {
                 ready_within: Some(Duration::from_secs(15)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
 
@@ -1987,6 +2301,7 @@ mod tests {
                 ready_within: Some(Duration::from_secs(15)),
                 may_answer: None,
                 attended: Attended::NoOne,
+                turn: None,
             },
         );
 
@@ -2080,6 +2395,7 @@ mod tests {
                     Handback::of(Duration::from_millis(400)).expect("a positive stillness"),
                 )
                 .expect("a positive patience"),
+                turn: None,
             },
         );
 
@@ -2165,6 +2481,7 @@ mod tests {
                     Handback::of(Duration::from_secs(5)).expect("a positive stillness"),
                 )
                 .expect("a positive patience"),
+                turn: None,
             },
         );
 
@@ -2255,6 +2572,7 @@ mod tests {
                     Handback::of(Duration::from_secs(2)).expect("a positive stillness"),
                 )
                 .expect("a positive patience"),
+                turn: None,
             },
         );
 
@@ -2337,6 +2655,7 @@ mod tests {
                 // handback declared here would put a second wait in front of the one it measures.
                 attended: Attended::of(Duration::from_secs(20), Handback::Never)
                     .expect("a positive patience"),
+                turn: None,
             },
         );
 

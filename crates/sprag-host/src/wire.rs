@@ -1181,12 +1181,28 @@ impl PluginGrammar {
         ],
     );
 
+    /// HOW LONG ONE TURN MAY TAKE — the bound half of the looping forms' turn contract, whose
+    /// other half is [`DONE_WHEN`](Self::DONE_WHEN).
+    ///
+    /// ⚠⚠⚠ **THE PAIR IS ONE REQUEST**, and the daemon refuses either half alone — see
+    /// `opt_turn`. Published as two optional keys because that is what the grammar can say; the
+    /// COUPLING is a fact about the type ([`Turn`](sprag_plugin::Turn) holds both) and is stated in
+    /// the daemon's refusal rather than in a shape this vocabulary can express. That residue is the
+    /// same one `await_person_ms` / `handback_still_ms` already carry.
+    pub const TURN_WITHIN: ArgGrammar =
+        ArgGrammar::open(sprag_plugin::Turn::WIRE_KEY, "int").optional();
+
     /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
     pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::ORCHESTRATOR),
         ArgGrammar::open("pane", "int"),
         ArgGrammar::open("stimulus", "string"),
         ArgGrammar::open("sentinel", "string").optional(),
+        // ⚠⚠⚠ THE TURN CONTRACT, and this is the form that MEASURED why it had to exist: without
+        // it a step ends on a 500 ms constant, so a peer that thinks for three seconds was asked
+        // its one question SIX times. See [`Turn`](sprag_plugin::Turn).
+        Self::DONE_WHEN,
+        Self::TURN_WITHIN,
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
@@ -7305,7 +7321,13 @@ mod tests {
             // R369's ruling about the sixth outcome word: a run that spelt a human's act with a
             // word of its own would let a reader count it among the decisions the RUN took.
             // `taken_over` still means what it meant — the person still has it.
-            33,
+            // ⚠ R375: re-stamped with not one ARM moved, and again by design. A run that waits for
+            // its peer's turn to END rather than for a 500 ms clock reaches the SAME endings by a
+            // better route: it converges on the sentinel it was always looking for, and it
+            // exhausts, blocks and is taken over exactly as before. Nothing a peer decodes whole
+            // learnt a word, because nothing about the ANSWER changed — only how long the run was
+            // willing to wait before speaking again.
+            34,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7569,7 +7591,13 @@ mod tests {
             // no supervised run could see them. A widened value space usually leaves the number
             // standing (R342); this one moved it, because it arrived with the ARGUMENT that
             // carries it and an added argument is a bump on this wire.
-            33,
+            // ⚠⚠⚠ R375: re-stamped for a vocabulary that reached a SECOND FORM. `done_when`'s two
+            // words are unchanged and have been published since 25; what moved is that the
+            // `orchestrator` form now offers them too, so the same closed set is now advertised at
+            // a place it was not. **And this pin's sibling caught the draft that published them
+            // there without serving them** — the second time that has happened to this exact
+            // argument, so the word is servable ALONE and the bound beside it is optional.
+            34,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7798,7 +7826,12 @@ mod tests {
             // attaches over this socket, so its keystrokes came through the door stamped *a
             // program*. ⚠ The SCALAR spellings did not move, deliberately: a bare string has
             // nowhere to carry a second argument, and that is the right shape rather than a gap.
-            33,
+            // ⚠⚠⚠ R375: `done_when:string?` and `turn_within_ms:int?` on the `orchestrator` form —
+            // AND THIS PIN CAUGHT THEM BY NAME BEFORE ANY NUMBER WAS TOUCHED, for the third round
+            // running. That is what it was built for: an added argument is invisible to the
+            // surface pin and to the value-space pins, and the only other thing that would have
+            // noticed is a hand-written count.
+            34,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -7861,7 +7894,7 @@ mod tests {
                 // built against the old shape is unaffected, and an older DAEMON swallows the key
                 // and reports a run that will never wait, which is why the number rises.
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? done_when:string? turn_within_ms:int? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
             ],
         );
@@ -8301,7 +8334,11 @@ mod tests {
         // three forms the daemon already served at addresses that did not move — this pin's named
         // blind spot, covered by the shape pin, which went red by name before the number was
         // touched.
-        33,
+        // ⚠ R375: re-stamped with the SURFACE unchanged, for R373's reason exactly one round on.
+        // `done_when` and `turn_within_ms` are ARGUMENTS inside a form served at an address that
+        // did not move — this pin's named blind spot, covered by the shape pin, which again went
+        // red by name first.
+        34,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

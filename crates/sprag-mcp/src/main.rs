@@ -1585,6 +1585,10 @@ const NOT_A_PANE: &[&str] = &[
     // they took is the run's again. The same kind of number as its neighbour above and classified
     // for the same reason, spelled through the same one definition.
     sprag_host::wire::PluginGrammar::HANDBACK_STILL.name,
+    // ⚠ A PER-TURN BOUND, in milliseconds — how long a run waits for its PEER to finish the turn
+    // it was just given. The same kind of number as the two above and classified for the same
+    // reason, spelled through the same one definition.
+    sprag_host::wire::PluginGrammar::TURN_WITHIN.name,
     "cols",
     "rows",
     "opened_by",
@@ -1952,6 +1956,27 @@ fn argument_help(name: &str) -> &'static str {
              into the gap between their words. Zero is refused for that reason. ⚠ Nothing is \
              typed while the pane is theirs, and when it comes back the run reads whatever they \
              left — a dialog they opened is met by `may_answer` and `await_person_ms` as usual."
+        }
+        "turn_within_ms" => {
+            "HOW LONG ONE TURN MAY TAKE — the bound on `done_when`, and only alongside it. Leave \
+             both out and each step gives up after HALF A SECOND and types the stimulus again, \
+             which is fine for a shell and wrong for anything that thinks: measured against a peer \
+             that took three seconds to answer, the run asked its one question SIX times, every \
+             prompt after the first landing while the peer was still answering the one before. For \
+             an agent session each of those is a turn of its own budget spent re-answering. ⚠ Set \
+             it to the longest a turn of YOUR peer plausibly takes, not to how fast you want the \
+             loop back — running out means the run gives up on that turn and speaks again. Leave \
+             it out (with `done_when` set) to wait as long as the run's own `max_seconds` allows. \
+             Zero is refused."
+        }
+        "done_when" => {
+            "WHAT MAKES YOUR PEER'S TURN OVER — `exits` for a one-shot tool that answers and \
+             leaves, `settles` for an agent CLI that answers and goes on waiting. Without it a \
+             step ends on a half-second clock and re-prompts a peer that is still working. ⚠ On \
+             `agent` it also decides whether an end-of-input is sent; on `orchestrator` it is what \
+             stops the loop talking over a slow peer. ⚠ `settles` needs the pane's agent to be \
+             identified, and a host that cannot supervise never satisfies it — the run then waits \
+             out `turn_within_ms` and carries on, which is the safe direction."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
@@ -8210,11 +8235,16 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 13,
+            seen, 14,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
-             ready_timeout_ms, await_person_ms, handback_still_ms, cols, rows, max_iterations, \
+             ready_timeout_ms, await_person_ms, handback_still_ms, turn_within_ms, cols, rows, \
+             max_iterations, \
              max_seconds, max_bytes and max_tokens — MERGED across the forms, so the agent form's \
-             readiness pair adds no new name. ⚠ `handback_still_ms` is the newest, and it is the \
+             readiness pair adds no new name. ⚠ `turn_within_ms` is the newest and the FOURTH \
+             duration on this wire wearing a number's clothes: how long one turn of the peer may \
+             take, which is a different question from how long the whole run may (`max_seconds`) \
+             and from how long its pane may take to come up (`ready_timeout_ms`). ⚠ Before it, \
+             `handback_still_ms`, and it is the \
              THIRD int on this wire that is a DURATION wearing a number's clothes: the \
              classification above is what stops this tool resolving it as somebody's pane",
         );

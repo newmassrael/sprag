@@ -343,7 +343,11 @@ pub(crate) mod grammar {
         // ⚠ ONE number for every surface below. R373 is the first bump this pin costs a SINGLE
         // edit, and the reason it moved is `handback_still_ms` on the daemon's three looping run
         // forms — which, like the three bumps before it, no surface here takes any part in.
-        33,
+        // ⚠⚠ R375 is the SECOND, and it cost one edit again: `done_when` and `turn_within_ms` on
+        // the daemon's `orchestrator` form. That is now twice this pin has moved for a reason no
+        // window takes part in, which is exactly the rate the register argued from — and exactly
+        // why it is one number rather than three hand-kept copies.
+        34,
         &[
             (
                 "the command palette",

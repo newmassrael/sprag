@@ -866,7 +866,41 @@ impl ScopeAsk {
 ///   ⚠ NOT on the scalar spellings (a bare string has nowhere to put it) and not on `mouse` or
 ///   `focus`, which stay `program` by version 31's reasoning: a hover would make a false positive
 ///   of the whole signal, and a focus edge is raised by the window system, which has no hand.
-pub const WIRE_PROTOCOL: u32 = 33;
+/// * **34 — AN `orchestrator` RUN SAYS WHAT MAKES ITS PEER'S TURN OVER.** Two optional arguments on
+///   that form: `done_when` — the word the `agent` form has taken since version 25 — and
+///   `turn_within_ms`, how long one turn may take. Absent is the behaviour every run has always
+///   had, and that is load-bearing rather than polite.
+///
+///   ⚠⚠⚠ **WHAT EARNED IT, MEASURED BEFORE ANY OF IT WAS BUILT.** A step that has typed its
+///   stimulus has to decide when to stop waiting, and this plugin decided it with a 500 ms
+///   constant. Against a peer that thinks for THREE SECONDS the run spent **six turns on one
+///   question** (`iterations: 6`, `Bytes(30)`), every prompt after the first landing while the peer
+///   was still answering the one before. Scaled to a `claude` turn of half a minute that is sixty
+///   prompts, and each is a turn of that agent's own bounded budget spent re-answering a question
+///   it already had. **The `agent` form never had the defect** — it asks a `DoneWhen` instead of a
+///   clock — so this is not *"panes are hard"*, it is an asymmetry between two plugins in one
+///   crate, and the one without the contract is the one this verb and the outer AI loop drive.
+///
+///   ⚠⚠ **AN ADDED ARGUMENT, WHICH IS THIS WIRE'S SECOND-COMMONEST BUMP CAUSE.** This surface
+///   IGNORES an undeclared key and the run SUCCEEDS, so a client that sends these to a version-33
+///   daemon gets no error — it gets the 500 ms timer back, and a run that re-prompts a working
+///   agent while its request plainly asked the daemon to wait for the turn. Silent, and in the
+///   direction of doing MORE than asked.
+///
+///   ⚠⚠⚠ **THE PAIR IS ONE REQUEST**, `handback_still_ms`'s rule and for a sharper reason: the type
+///   holds both (`sprag_plugin::Turn`), so half of it cannot be constructed. `done_when` alone is a
+///   contract with no bound — a run that would wait for ever on a peer that never finishes;
+///   `turn_within_ms` alone would quietly become *"wait this long, then type at it anyway"*, which
+///   is the timer the caller was getting away from with a bigger number. Both are `-32602`. **Zero
+///   is malformed** too, `await_person_ms`'s rule: *wait no time at all for my peer to finish* is
+///   not a thing a caller can mean.
+///
+///   ⚠ **NO ANSWER WORD MOVED, AND NO VOCABULARY IS NEW.** `done_when`'s two words have been on
+///   this wire since 25; what is new is the argument's presence on a second form, and the bound
+///   beside it.
+///
+///   ⚠ NOT on `pipe`, whose destination has turns too. A scope cut, named rather than implied.
+pub const WIRE_PROTOCOL: u32 = 34;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

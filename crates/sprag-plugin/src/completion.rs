@@ -173,6 +173,88 @@ impl DoneWhen {
     const ALL: [Self; 2] = [Self::Exits, Self::Settles];
 }
 
+/// **HOW A LOOPING RUN'S PEER FINISHES A TURN, AND HOW LONG IT MAY TAKE** — the two together,
+/// because they are one decision and neither half means anything alone.
+///
+/// # ⚠⚠⚠ What this is for, measured
+///
+/// A step that has typed its stimulus has to decide when to stop waiting, and
+/// [`Orchestrator`](crate::orchestrator::Orchestrator) decided it with a 500 ms constant. Against a
+/// peer that answers inside that, fine — and every fixture in this crate was one. **A real agent
+/// session is not.** Measured against a peer that thinks for three seconds: the run spent **six
+/// turns on one question**, typing the stimulus again twice a second at a peer that was still
+/// answering the first. Scaled to a `claude` turn of half a minute that is sixty prompts, and each
+/// one is a turn of that agent's own bounded budget spent re-answering.
+///
+/// [`Agent`](crate::agent::Agent) never had the defect, because it asks a [`DoneWhen`] instead of a
+/// clock. This is that contract offered to the looping plugins, which are the ones the MCP
+/// `orchestrate` verb and the outer AI loop drive.
+///
+/// # ⚠⚠⚠ Why the bound lives INSIDE the contract, and why it is OPTIONAL
+///
+/// [`Attended::APerson`](crate::readiness::Attended::APerson)'s shape: a bound with no contract is
+/// meaningless — *"wait this long and then type at it anyway"* is the timer this type exists to
+/// replace, with a bigger number — so it cannot be spelled alone.
+///
+/// ⚠⚠⚠ **THE OTHER DIRECTION IS DIFFERENT, AND A GATE HAD TO TEACH IT.** The first draft required
+/// both, and `every_published_word_is_a_word_the_plugin_host_accepts` refused it: the wire
+/// publishes `done_when`'s two words, so a caller who enumerates the vocabulary sends the word
+/// ALONE and must get a run rather than a refusal. **This is the second time that gate has caught
+/// this exact argument** — the first was `done_when`'s own companion, at version 25. So a contract
+/// with no bound is legal and means what it says: *wait for my peer to finish*, bounded by the
+/// run's own clock and its cancel, which are the bounds every run already has.
+///
+/// ⚠ It does NOT stamp a number. How long a turn may take is the caller's to say for
+/// [`Handback`](crate::readiness::Handback)'s reason one door over: a shell command is a second and
+/// an agent asked to read a repository is minutes, and only the caller knows which they have.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn {
+    /// Which evidence ends the turn.
+    when: DoneWhen,
+    /// A per-turn bound tighter than the run's own, or `None` for the run's alone.
+    within: Option<Duration>,
+}
+
+impl Turn {
+    /// The argument the BOUND is declared with, in ONE place — [`Attended::WIRE_KEY`]'s rule, so
+    /// the daemon's parser, the published grammar and both mouths cannot drift apart.
+    ///
+    /// ⚠ Its companion is `done_when`, which is [`DoneWhen`]'s own word and was already on this
+    /// wire for the `agent` form. This adds the bound, not the vocabulary.
+    ///
+    /// [`Attended::WIRE_KEY`]: crate::readiness::Attended::WIRE_KEY
+    pub const WIRE_KEY: &'static str = "turn_within_ms";
+
+    /// A turn that ends on `when`, waited for at most `within` — or for the RUN's own clock when
+    /// that is [`None`]. Answers [`None`] itself for a bound of zero.
+    ///
+    /// ⚠ Zero is REFUSED for [`Attended::of`](crate::readiness::Attended::of)'s reason: *"wait no
+    /// time at all for my peer to finish"* is not a thing a caller can mean, and the one who
+    /// reaches zero by arithmetic — a config default, a deadline already spent — is exactly the one
+    /// who needs telling rather than a run that goes straight back to typing.
+    #[must_use]
+    pub const fn lasting(when: DoneWhen, within: Option<Duration>) -> Option<Self> {
+        if let Some(bound) = within
+            && bound.is_zero()
+        {
+            return None;
+        }
+        Some(Self { when, within })
+    }
+
+    /// Which evidence ends the turn.
+    #[must_use]
+    pub const fn when(&self) -> DoneWhen {
+        self.when
+    }
+
+    /// The per-turn bound, or [`None`] when the run's own clock is the only one.
+    #[must_use]
+    pub const fn within(&self) -> Option<Duration> {
+        self.within
+    }
+}
+
 /// The per-turn evaluator of a [`DoneWhen`] — the contract plus whatever the turn has to REMEMBER
 /// for it.
 ///
@@ -224,7 +306,17 @@ impl Completion {
     }
 
     /// Whether `pane` satisfies this contract RIGHT NOW.
-    fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+    ///
+    /// ⚠⚠ VISIBLE TO THE CRATE, and that is not a second door to the question. [`wait`](Self::wait)
+    /// IS `poll_until(satisfied)`, so a caller who needs this contract as one term of a LARGER
+    /// predicate — a step that stops either when its peer's turn is over or when the sentinel it
+    /// named appears — cannot express it through the wait without running two waits in sequence and
+    /// making the first one's bound a lie. One predicate, composed once, is what
+    /// [`Orchestrator::arrived`](crate::orchestrator::Orchestrator) does with it.
+    ///
+    /// ⚠ Still not public: the module doc's ONE-DOOR rule is about not offering a bare [`DoneWhen`]
+    /// predicate alongside this evaluator, and that stands — an outside caller gets `wait`.
+    pub(crate) fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
         match &self.when {
             // ⚠ An UNKNOWN pane counts as over. A rule that answered "not yet" for a pane that is
             // not there would spin to the timeout on a question that can never be answered — and

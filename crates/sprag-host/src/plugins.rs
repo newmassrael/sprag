@@ -33,7 +33,7 @@ use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Attended, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec, DoneWhen,
     Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe,
-    PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, WorkspacePaneAccess,
+    PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, Turn, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -446,6 +446,7 @@ impl PluginsExternal {
                     ready_within,
                     may_answer: opt_may_answer(map)?,
                     attended: opt_attended(map)?,
+                    turn: opt_turn(map)?,
                 };
                 Ok((
                     PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
@@ -963,6 +964,39 @@ fn opt_handback(map: &Map<String, Value>) -> Result<Handback, InvokeError> {
     Handback::of(still).ok_or(InvokeError::TypeMismatch)
 }
 
+/// Read the LOOPING forms' optional turn contract — WHAT MAKES THE PEER'S TURN OVER AND HOW LONG IT
+/// MAY TAKE. Absent is `None`: the step ends on the plugin's own 500 ms constant, which is what
+/// every run did before the pair existed.
+///
+/// # ⚠⚠⚠ The pair is ONE request, and half of it is malformed
+///
+/// [`opt_attended`]'s rule exactly, for the same reason one door over. `done_when` with no
+/// `turn_within_ms` is a caller who said *"my peer finishes like this"* and left the run with no
+/// idea how long to allow — and the type they are addressing cannot express it ([`Turn`] holds
+/// both). `turn_within_ms` with no `done_when` is a bound on a contract that does not exist, which
+/// would silently become *"wait this long, then type again anyway"* — a different behaviour from
+/// the one they asked for, in the direction of doing more.
+///
+/// ⚠ Answering a quiet `None` to either half would give the caller the 500 ms timer they were
+/// plainly trying to get away from, so they are told instead.
+///
+/// ⚠⚠ **ZERO IS MALFORMED**, [`Turn::lasting`]'s predicate: *"wait no time at all for my peer to
+/// finish"* is not something a caller can mean.
+fn opt_turn(map: &Map<String, Value>) -> Result<Option<Turn>, InvokeError> {
+    let within = opt_millis(map, Turn::WIRE_KEY)?;
+    let Some(when) = opt_done_when(map)? else {
+        // A bound with nothing to bound.
+        return if within.is_some() {
+            Err(InvokeError::TypeMismatch)
+        } else {
+            Ok(None)
+        };
+    };
+    Turn::lasting(when, within)
+        .map(Some)
+        .ok_or(InvokeError::TypeMismatch)
+}
+
 /// Parse the `agent` form's optional `done_when` — WHAT MAKES THE TURN OVER. Absent (or `null`)
 /// leaves the spec's default, which is [`DoneWhen::Exits`] and is what this adapter did
 /// unconditionally before the argument existed.
@@ -1374,6 +1408,173 @@ mod tests {
     use sprag_plugin::PaneAccess;
     use sprag_terminal::CommandBuilder;
     use std::time::Instant;
+
+    /// ⚠⚠⚠ **AND THE TURN CONTRACT REACHES A RUN THROUGH THE DOOR PRODUCTION USES.**
+    ///
+    /// The plugin crate gates what the contract DOES; this asks whether a caller can get one, which
+    /// R373 paid dearly for learning to ask separately — that round's whole feature was unreachable
+    /// from every production path while its unit gates were green.
+    ///
+    /// ⚠⚠ Both runs are started through `RUN_ACTION` — the verb the MCP `orchestrate` tool and the
+    /// outer AI loop call — against the same peer thinking for the same three seconds, differing in
+    /// the two keys alone. The uncontracted one spends turns re-asking; the contracted one asks
+    /// once. **The pair is the claim**: either number alone would be a fact about this machine.
+    #[test]
+    fn a_turn_contract_sent_over_the_wire_stops_a_run_re_asking_a_slow_peer() {
+        /// One `orchestrator` run against a peer that thinks for three seconds, with `extra`
+        /// merged into the request — and the turn count it ended on.
+        fn turns_taken(extra: Value) -> u32 {
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("while read l; do echo THINKING; sleep 3; echo PEER-REPLIED; done");
+            command.env("TERM", "xterm-256color");
+            let pane = lock(&workspace)
+                .spawn(command, "peer".to_string(), 80, 24)
+                .expect("spawn the peer");
+            let registry = Arc::new(Mutex::new(RunRegistry::default()));
+            let mut external = PluginsExternal::new(
+                Arc::clone(&workspace),
+                Arc::clone(&registry),
+                None,
+                None,
+                None,
+                None,
+            );
+            let mut request = json!({
+                "plugin": "orchestrator",
+                "pane": pane.0,
+                "stimulus": "ping",
+                "sentinel": "PEER-REPLIED",
+                "guardrails": { "max_iterations": 100, "max_seconds": 60 },
+            });
+            let object = request.as_object_mut().expect("an object");
+            for (key, value) in extra.as_object().expect("an object") {
+                object.insert(key.clone(), value.clone());
+            }
+            let started = external
+                .invoke(RUN_ACTION, IntrospectValue::Json(request))
+                .expect("a well-formed run");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            let entry = ended(
+                &registry,
+                u64::try_from(id).expect("a run id is not negative"),
+                Duration::from_secs(40),
+            );
+            assert_eq!(
+                entry["state"]["outcome"]["state"],
+                json!("converged"),
+                "the peer answers well inside the run's clock: {entry:?}",
+            );
+            u32::try_from(
+                entry["state"]["outcome"]["iterations"]
+                    .as_u64()
+                    .expect("a turn count"),
+            )
+            .expect("a turn count fits")
+        }
+
+        let uncontracted = turns_taken(json!({}));
+        assert!(
+            uncontracted > 1,
+            "⚠⚠⚠ THE CONTROL: a run that names no turn contract still ends its steps on the \
+             plugin's 500 ms constant, so it re-asks a peer that thinks for three seconds. It took \
+             {uncontracted}, and if that is ever 1 the comparison below is measuring nothing",
+        );
+        let contracted = turns_taken(json!({
+            "done_when": "exits",
+            sprag_plugin::Turn::WIRE_KEY: 12_000,
+        }));
+        assert_eq!(
+            contracted, 1,
+            "⚠⚠⚠ AND THE SAME REQUEST PLUS TWO KEYS ASKS ONCE. The uncontracted run took \
+             {uncontracted} turns at the same peer; this one took {contracted}. Nothing else \
+             differs, so what the pair measures is the contract arriving over the wire",
+        );
+    }
+
+    /// ⚠⚠⚠ **HALF OF THE TURN CONTRACT IS MALFORMED, IN BOTH DIRECTIONS.**
+    ///
+    /// `done_when` says what makes the peer's turn over; `turn_within_ms` says how long it may
+    /// take. The two halves are NOT symmetric, and a conformance gate is what taught that:
+    ///
+    /// * **a bound with no contract** is REFUSED. It would quietly become *"wait this long and then
+    ///   type at it anyway"*, which is the 500 ms timer the caller was plainly trying to get away
+    ///   from, with a bigger number — doing MORE than asked, silently.
+    /// * **a contract with no bound is a RUN**, and the first draft refused it.
+    ///   `every_published_word_is_a_word_the_plugin_host_accepts` named that immediately: the wire
+    ///   publishes `done_when`'s two words, so an agent that enumerates the vocabulary sends the
+    ///   word ALONE and must be served rather than told its own call is malformed. **That gate has
+    ///   now caught this same argument twice** — the first time was its companion at version 25.
+    ///   Alone it means what it says: wait for the peer to finish, bounded by the run's own clock.
+    ///
+    /// # ⚠⚠ Why no per-argument harness could have caught the refused half
+    ///
+    /// [`a_handback_for_a_run_nobody_is_watching_is_malformed`]'s reason exactly, one contract
+    /// over: the conformance sweeps drive ONE argument at a time — wrong type, declined, absent —
+    /// and this request is well-typed, well-spelt, and wrong only in what it is missing.
+    #[test]
+    fn a_turn_contract_missing_half_of_itself_is_malformed() {
+        let paired = json!({
+            "done_when": "exits",
+            sprag_plugin::Turn::WIRE_KEY: 12_000,
+        });
+        assert!(
+            matches!(
+                opt_turn(paired.as_object().expect("an object")),
+                Ok(Some(_))
+            ),
+            "⚠ THE CONTROL FIRST: the pair these keys exist in is accepted, or the refusals below \
+             are about a parser that refuses everything",
+        );
+        assert!(
+            matches!(
+                opt_turn(
+                    json!({ "done_when": "exits" })
+                        .as_object()
+                        .expect("an object")
+                ),
+                Ok(Some(_)),
+            ),
+            "⚠⚠⚠ AND THE CONTRACT ALONE IS A RUN, not a refusal — this wire PUBLISHES the word, so \
+             an agent that enumerated the vocabulary sends exactly this and must be served",
+        );
+        assert!(
+            matches!(
+                opt_turn(
+                    json!({ sprag_plugin::Turn::WIRE_KEY: 12_000 })
+                        .as_object()
+                        .expect("an object")
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠⚠ and a bound with no contract is REFUSED rather than read as a bigger timer, which \
+             is the behaviour the caller was getting away from",
+        );
+        assert!(
+            matches!(
+                opt_turn(
+                    json!({ "done_when": "exits", sprag_plugin::Turn::WIRE_KEY: 0 })
+                        .as_object()
+                        .expect("an object")
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠ and a bound of ZERO is malformed — `await_person_ms`'s rule: *wait no time at all \
+             for my peer to finish* is not a thing a caller can mean",
+        );
+        assert!(
+            matches!(
+                opt_turn(json!({}).as_object().expect("an object")),
+                Ok(None)
+            ),
+            "⚠⚠⚠ AND THE DEFAULT IS SILENCE MEANING TODAY'S BEHAVIOUR: a caller who names neither \
+             gets the step timeout their request has always got, or an added argument would have \
+             changed what every existing call does",
+        );
+    }
 
     /// ⚠⚠⚠ **HALF OF A PAIRED REQUEST IS MALFORMED — `handback_still_ms` WITH NOBODY WATCHING.**
     ///
@@ -2272,15 +2473,20 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            23,
+            25,
             "one call per published word: the ONE plugin word that selects each of the FIVE forms, \
              the two reply formats on each of a dialogue's two endpoints, the readiness barrier's \
              FOUR `match` words on each of the three plugins that inject — the last two being \
              `runs` and `settles`, which ask the pane's terminal and its supervisor rather than \
-             its screen — and the agent's TWO `done_when` words. ⚠ Those two are why this gate is \
-             worth its own line: `done_when`'s first draft published `settles` and the parser \
-             REFUSED it, because that draft needed a companion `agent` argument the vocabulary \
-             could not demand. This is the gate that said so.",
+             its screen — and `done_when`'s TWO words on EACH of the two forms that now take it. \
+             ⚠⚠⚠ Those four are why this gate is worth its own line, and it has caught the SAME \
+             argument TWICE. `done_when`'s first draft published `settles` and the parser REFUSED \
+             it, because that draft needed a companion `agent` the vocabulary could not demand. \
+             The orchestrator's copy repeated it exactly: its first draft required \
+             `turn_within_ms` alongside, so an agent that enumerated this vocabulary would have \
+             built a call the daemon rejected. **A published word must be servable ALONE** — which \
+             is why a turn contract with no bound is a run bounded by the run's own clock rather \
+             than a refusal.",
         );
     }
 
@@ -2329,10 +2535,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            52,
+            54,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠ The THREE newest are `handback_still_ms` on each \
+             malformed rather than declined. ⚠⚠⚠ The TWO newest are the orchestrator's turn \
+             contract, `done_when` and `turn_within_ms`, and their declinability IS the default \
+             that keeps every existing caller working: a run that names neither ends its steps on \
+             the same 500 ms constant it always did. ⚠ Declinable ALONE is all this drives; that \
+             HALF the pair may not be sent alone is a rule no per-argument sweep can see — see \
+             `a_turn_contract_missing_half_of_itself_is_malformed`. ⚠⚠⚠ The THREE before them are \
+             `handback_still_ms` on each \
              LOOPING form, and its declinability is the default that keeps every existing caller \
              working: a run that names no stillness ends when somebody takes its pane, which is \
              what every run did before the key existed. ⚠ Declinable ALONE is all this drives; that \
@@ -2358,10 +2570,18 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            83,
-            "one probe per declared argument of every FORM, nesting included: EIGHTEEN for an \
+            85,
+            "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, and one to cancel. ⚠⚠⚠ The newest THREE are \
+             TEN to answer a pane, and one to cancel. ⚠⚠⚠ The newest TWO are the ORCHESTRATOR's \
+             TURN CONTRACT — `done_when`, which the `agent` form already had, and `turn_within_ms` \
+             — and they are on that form because it is where the defect was MEASURED: without them \
+             a step ends on a 500 ms constant, so a peer that thinks for three seconds was asked \
+             its one question SIX times, every prompt after the first landing while it was still \
+             answering. The `agent` adapter never had that defect, because it asks a contract \
+             instead of a clock; this is that contract offered to the plugin the MCP verb and the \
+             outer AI loop actually drive. ⚠ NOT on `pipe`, which is a scope cut and not a \
+             judgement — a relay's destination has turns too. ⚠⚠⚠ The THREE before them are \
              `handback_still_ms`, on each form that LOOPS and on none that does not — the second \
              half of `turn.interrupted`, which shipped with only the first: a run learnt to STOP \
              for a person and had no way to be given the pane back. It is not on the `answer` \
