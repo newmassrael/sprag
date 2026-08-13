@@ -365,22 +365,28 @@ mod freshness_tests {
         if seconds < 0 { from - by } else { from + by }
     }
 
-    /// Stamp a file's mtime through `filetime`-free plumbing: rewrite it, then walk the clock with
-    /// `utimensat`. There is no std API for this, and the alternative — sleeping between writes —
-    /// would make the ordering a race rather than a statement.
+    /// Stamp a file's mtime, so an ordering a real build produces over minutes can be STATED here
+    /// rather than raced. The alternative — sleeping between writes — would make every assertion
+    /// below a bet on the filesystem's timestamp granularity.
+    ///
+    /// # ⚠⚠⚠ It shelled out to `touch -d @<epoch>`, and the comment beside it said that was POSIX
+    ///
+    /// It is not. `-d @<seconds>` is a GNU coreutils extension: BSD `touch` — which is what macOS
+    /// ships — reads `-d` as an ISO-8601 timestamp and refuses an epoch, so all four of these gates
+    /// failed on the macOS runner in the commit that added them, and the whole `sprag-gate` target
+    /// with them. **A comment that states a premise is a claim to test**, and this one was written
+    /// on the box where it happened to be true.
+    ///
+    /// [`File::set_times`] is std's own answer and has been since 1.75, which is well under this
+    /// workspace's `rust-version`. It takes no dependency, runs no process, and has no dialect —
+    /// so there is no second platform for it to be wrong on.
     fn set_mtime(path: &Path, when: SystemTime) {
-        let secs = when
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("a time after the epoch")
-            .as_secs();
-        // `touch -d @<epoch>` is POSIX and this crate takes no dependencies by charter.
-        let status = std::process::Command::new("touch")
-            .arg("-d")
-            .arg(format!("@{secs}"))
-            .arg(path)
-            .status()
-            .expect("touch runs");
-        assert!(status.success(), "touch stamped {}", path.display());
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("the file to stamp")
+            .set_times(std::fs::FileTimes::new().set_modified(when))
+            .unwrap_or_else(|why| panic!("stamping {} failed: {why}", path.display()));
     }
 
     /// **A BINARY NEWER THAN EVERY SOURCE CARGO BUILT IT FROM IS CURRENT** — the healthy reading,

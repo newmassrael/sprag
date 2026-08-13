@@ -105,6 +105,24 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --exclude sprag-gui --all-targets
 
+      # ⚠⚠⚠ THE SUITE DRIVES `sprag-term` AS A PROCESS, AND `cargo test` DOES NOT LEAVE A RECORD OF
+      # HOW IT WAS BUILT.
+      #
+      # This step is not a warm-up. `cargo test --workspace` UPLIFTS `target/debug/sprag-term` and
+      # writes no `target/debug/sprag-term.d` beside it — measured, by deleting the depfile and
+      # running exactly the command below this one. Only `cargo build` writes the uplifted depfile.
+      #
+      # `sprag_gate::sibling_bin` reads that depfile to answer *was this binary built from the
+      # source in this tree*, and it refuses to pass when it cannot tell — correctly, because the
+      # alternative is a suite that drives a stale daemon and reports green (three wrong readings in
+      # a row, R358). With no build step there is nothing for it to read, so the guard refused the
+      # whole pty and MCP suite on this runner in the commit that added it.
+      #
+      # ⚠ The macOS job has had this step all along, which is why its failure was the OTHER defect
+      # and not this one. Two jobs that differ in a step differ in what they can catch.
+      - name: Build
+        run: cargo build --workspace --exclude sprag-gui
+
       # `--no-fail-fast` because a plain run stops at the FIRST failing binary, which reports one
       # failure and hides the rest. The exit code is the verdict; a summary read out of the log is
       # not (interleaved output drops lines).
