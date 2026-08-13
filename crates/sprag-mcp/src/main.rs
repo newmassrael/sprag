@@ -1969,15 +1969,6 @@ fn argument_help(name: &str) -> &'static str {
              it out (with `done_when` set) to wait as long as the run's own `max_seconds` allows. \
              Zero is refused."
         }
-        "done_when" => {
-            "WHAT MAKES YOUR PEER'S TURN OVER — `exits` for a one-shot tool that answers and \
-             leaves, `settles` for an agent CLI that answers and goes on waiting. Without it a \
-             step ends on a half-second clock and re-prompts a peer that is still working. ⚠ On \
-             `agent` it also decides whether an end-of-input is sent; on `orchestrator` it is what \
-             stops the loop talking over a slow peer. ⚠ `settles` needs the pane's agent to be \
-             identified, and a host that cannot supervise never satisfies it — the run then waits \
-             out `turn_within_ms` and carries on, which is the safe direction."
-        }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
              Set it to what you know about the program you are starting — a REPL is up in \
@@ -1994,16 +1985,21 @@ fn argument_help(name: &str) -> &'static str {
              renders nothing, where a second attempt would arrive as a second prompt."
         }
         "done_when" => {
-            "WHAT MAKES THE TURN OVER (agent), and the default is right for only one kind of peer. \
-             `exits` — the default — waits for the pane's PROGRAM TO EXIT, which is what a \
+            "WHAT MAKES THE TURN OVER, and the default is right for only one kind of peer. \
+             `exits` waits for the pane's PROGRAM TO EXIT, which is what a \
              one-shot command like `claude -p` does when it has answered. `settles` waits for the \
              AGENT IN THE PANE to go back to waiting for you, having first been seen to start: \
              that is the one for a long-lived interactive agent, which never exits. ⚠ Getting this \
              wrong is not an error, it is a WAIT: an interactive agent under `exits` is waited on \
-             until timeout_ms runs out (two minutes by default) every single turn, and what comes \
+             until the turn's bound runs out every single turn, and what comes \
              back is whatever was on the pane at that moment rather than the answer. ⚠ `settles` \
              needs this host to be able to see the agent — the same fact list_panes and \
-             agent_state report — and where it cannot, the turn waits instead of guessing."
+             agent_state report — and where it cannot, the turn waits instead of guessing. \
+             ⚠⚠ ON `agent` IT DEFAULTS TO `exits` AND BOUNDS THE TURN WITH `timeout_ms`. ON \
+             `orchestrator` THERE IS NO DEFAULT: leave it out and each step gives up after half a \
+             second and types the stimulus AGAIN, so a peer that thinks for three seconds was \
+             measured being asked its one question six times. Set it there with `turn_within_ms`, \
+             or with nothing beside it to wait as long as the run's own `max_seconds` allows."
         }
         "timeout_ms" => "How long one turn may take before the run gives up on it.",
         "seed" => "The first message, given to endpoint A (dialogue).",
