@@ -636,10 +636,11 @@ impl Plugin for Agent {
         // step (and this adapter is one-shot anyway).
         match self.ready.reached(panes, self.pane, run)? {
             Reached::Yes => {}
-            Reached::RunEnded => {
-                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(
-                    "the run ended while waiting for the pane to be ready; nothing was asked",
-                ));
+            Reached::RunEnded(why) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(format!(
+                    "the run ended while waiting for the pane to be ready; nothing was asked: \
+                     {why}"
+                )));
             }
             // ⚠⚠ THE SHARPEST OF THE THREE: this adapter publishes what comes back AS THE MODEL'S
             // ANSWER, so a prompt typed into a dialog would return the dialog's own text as a
@@ -1123,6 +1124,12 @@ mod tests {
         /// The pane's own text once the turn is over, for a peer that paints what it is given.
         fn asked(shows_the_prompt: bool) -> String {
             let (access, pane) = sh_access(SWALLOWS_THE_FIRST_PROMPT, 40, 8);
+            // ⚠⚠⚠ THE PEER ANNOUNCES ITSELF ON THE WAY UP, so the barrier must be the kind that
+            // READS a marker rather than the kind that waits for a NEW one — see `started`. Left as
+            // `Prints`, this was a member of the recorded flake class: under load the announcement
+            // landed before the barrier's first look, the baseline could never be exceeded, and the
+            // run spent its whole clock having typed nothing.
+            started(&access, pane, "UP");
             let mut agent = Agent::new(
                 pane,
                 AgentSpec {
@@ -1130,7 +1137,7 @@ mod tests {
                     // what the PEER was given, not what it answered.
                     eof: Some(false),
                     timeout: Duration::from_millis(400),
-                    ready_when: Some(ReadyWhen::Prints("UP".to_string())),
+                    ready_when: Some(ReadyWhen::Shows("UP".to_string())),
                     shows_the_prompt,
                     ..AgentSpec::new("ping")
                 },
@@ -1192,10 +1199,13 @@ mod tests {
             let script =
                 format!("{configure} printf 'UP\\n'; in=$(cat); echo \"$in\"; echo \"REPLY[$in]\"");
             let (access, pane) = sh_access(&script, 40, 8);
+            // ⚠⚠⚠ ANNOUNCED ON THE WAY UP, so the barrier READS it — see `started`. As `Prints`
+            // this was a recorded flake member.
+            started(&access, pane, "UP");
             let mut agent = Agent::new(
                 pane,
                 AgentSpec {
-                    ready_when: Some(ReadyWhen::Prints("UP".to_string())),
+                    ready_when: Some(ReadyWhen::Shows("UP".to_string())),
                     ..AgentSpec::new("ping")
                 },
             );
@@ -1423,10 +1433,13 @@ mod tests {
         let script = "printf 'TOOL-UP\\n'; dd bs=1 count=19 of=/dev/null 2>/dev/null; \
                       exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'";
         let (access, pane) = sh_access(script, 40, 8);
+        // ⚠⚠⚠ ANNOUNCED ON THE WAY UP, so the barrier READS it — see `started`. As `Prints` this
+        // was a recorded flake member.
+        started(&access, pane, "TOOL-UP");
         let mut agent = Agent::new(
             pane,
             AgentSpec {
-                ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
+                ready_when: Some(ReadyWhen::Shows("TOOL-UP".to_string())),
                 ..AgentSpec::new("summarise the repo")
             },
         );
@@ -1482,12 +1495,15 @@ mod tests {
             40,
             8,
         );
+        // ⚠⚠⚠ ANNOUNCED ON THE WAY UP, so the barrier READS it — see `started`. As `Prints` this
+        // was a recorded flake member.
+        started(&access, pane, "UP");
         let mut agent = Agent::new(
             pane,
             AgentSpec {
                 eof: Some(false),
                 timeout: Duration::from_millis(200),
-                ready_when: Some(ReadyWhen::Prints("UP".to_string())),
+                ready_when: Some(ReadyWhen::Shows("UP".to_string())),
                 shows_the_prompt: true,
                 ..AgentSpec::new("ping")
             },

@@ -133,8 +133,8 @@ impl Plugin for Answer {
             // requires the arm and a barrier that later learns to wait would arrive here for real.
             // `Continue` hands the ending to the Driver's loop top, which is the one place that
             // knows WHY a run stopped — the same deferral the three looping plugins make.
-            Reached::RunEnded => Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
-                .noting("the run ended before the pane was read")),
+            Reached::RunEnded(why) => Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
+                .noting(format!("the run ended before the pane was read: {why}"))),
             // ⚠⚠ UNREACHABLE FROM HERE FOR THE ARM ABOVE'S REASON, and a stronger one: this
             // barrier is built with `Attended::NoOne`, so it never waits for a person and never
             // reports that one came. Written, not panicked on, because the compiler requires it

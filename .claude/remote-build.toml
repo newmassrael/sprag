@@ -99,3 +99,35 @@ verify = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS
 # it can never be exceeded. That is a hypothesis, not a finding: nobody has instrumented the arming
 # count on the failing side. It is its own round, and it is a FIXTURE question rather than a product
 # one until measured otherwise.
+#
+# ⚠⚠⚠ SETTLED 2026-08-13 (R374c) — THE HYPOTHESIS ABOVE WAS RIGHT, AND IT WAS BOTH QUESTIONS.
+#
+# The state is reproduced DETERMINISTICALLY rather than waited for, by opening on purpose the window
+# a loaded box opens by accident: wait for the peer's announcement, THEN start a run whose
+# `ready_when` is `prints` for it. That run produces the recorded signature exactly, and the gate
+# asserts all three parts of it —
+#
+#     orchestrator::tests::a_run_the_clock_ended_at_the_barrier_says_what_it_was_waiting_for
+#
+# THE FIXTURE HALF. Every one of the four members ever observed is a fixture whose peer announces
+# once on the way up and whose barrier then asks `Prints` for that announcement. The correlation is
+# total, and the remedy was already written down in `testing::started`'s own doc and applied in one
+# place: wait for the marker in the FIXTURE, then ask `Shows`, which is the question that reads a
+# marker already on the screen. The four now do that.
+#
+# THE PRODUCT HALF, which is why this was never only a fixture question. A run that ends this way
+# said NOTHING about a barrier: `Exhausted(Duration)` over `Bytes(0)` is advice to raise a time
+# budget, about a wait that would never have cleared however long it ran. Whether a caller got the
+# real diagnosis depended on which of `ready_within` and the run's own clock was shorter — arithmetic
+# nobody chose. Both endings now carry it (`Reached::RunEnded`), and `PaneError::NeverReady` names
+# the marker that is ALREADY ON SCREEN (`already_showing`), which is the correction itself.
+#
+# ⚠ EVIDENCE, on the build machine at 26-30 threads: before, three consecutive `-p sprag-plugin
+# --lib` runs each failed with 1-3 members and the members differed every time; after, three
+# consecutive runs and one full `--workspace --exclude sprag-gui` run (2690/0) are green. A green
+# re-run proves nothing on its own — what carries this is the mechanism, the deterministic
+# reproduction, and the fact that the failing members are exactly the fixtures with the defect.
+#
+# ⚠ THE FIRST CLASS ABOVE IS NOT CLOSED BY THIS. `a_hooks_report_does_not_outlive_an_agent_the_pane_
+# did_not_spawn` was GREEN on the build machine in this round's full run, which is one reading of an
+# intermittent red and therefore proves nothing. Its note stands.

@@ -191,9 +191,14 @@ impl Plugin for Orchestrator {
             Reached::Yes => {}
             // Nothing was injected, so nothing is charged; the Driver's loop top says which of the
             // two ways the run ended it was.
-            Reached::RunEnded => {
-                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
-                    .noting("the run ended while waiting for the pane to be ready"));
+            // ⚠⚠⚠ AND IT SAYS WHAT IT WAS WAITING FOR. The note said only that a barrier was in the
+            // way, so a run that spent its whole clock never becoming ready published
+            // `exhausted: duration` with `Bytes(0)` — advice to raise a budget, about a pane that
+            // would never have come up however long it waited. See [`Reached::RunEnded`].
+            Reached::RunEnded(why) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(format!(
+                    "the run ended while waiting for the pane to be ready: {why}"
+                )));
             }
             // The peer is showing a question. Typing the stimulus here would SELECT rather than
             // say anything — see [`Verdict::Blocked`].
@@ -1443,6 +1448,95 @@ mod tests {
              while it was still answering the first. For an agent session that is one wasted turn \
              of a bounded budget and one interrupted answer: {witness:?}",
         );
+    }
+
+    /// ⚠⚠⚠ **A RUN WHOSE CLOCK ENDED IT AT THE BARRIER SAYS WHAT IT WAS STILL WAITING FOR** — and
+    /// this is THE SIGNATURE OF THIS WORKSPACE'S LONGEST-RUNNING FLAKE, reproduced on purpose.
+    ///
+    /// # ⚠⚠⚠ The hypothesis this gate exists to settle
+    ///
+    /// `.claude/remote-build.toml` has carried this for rounds: a `sprag-plugin --lib` run at
+    /// thirty threads fails with `Exhausted(Duration)`, `iterations: 1`, `Bytes(0)` — a DIFFERENT
+    /// member of the class each time, and each one green when run alone. The suspicion written
+    /// beside it was [`ReadyWhen::Prints`]' arming baseline, and it was explicitly filed as *a
+    /// hypothesis, not a finding: nobody has instrumented the arming count on the failing side*.
+    ///
+    /// This is the instrument. The window a loaded machine opens by accident — the peer's
+    /// announcement landing before the barrier's first look — is opened deliberately by waiting for
+    /// it, and the run then produces **that signature exactly**. The hypothesis is a finding.
+    ///
+    /// # ⚠⚠ And what a reader was told about it
+    ///
+    /// Nothing. `Exhausted(Duration)` with `Bytes(0)` is advice to raise a time budget, about a
+    /// barrier that would never have cleared however long it waited — and the caller's remedy is
+    /// not a bigger number, it is a different question ([`ReadyWhen::Shows`]). Which of the two
+    /// unsatisfied endings they land in is decided by whichever of `ready_within` and the run's own
+    /// clock is shorter, so the SAME mistake was diagnosed or silent depending on arithmetic
+    /// nobody wrote down. Both endings carry the diagnosis now — see [`Reached::RunEnded`].
+    #[test]
+    fn a_run_the_clock_ended_at_the_barrier_says_what_it_was_waiting_for() {
+        let (access, pane) = sh_access("printf 'BANNER\\n'; exec cat", 40, 8);
+        // THE WINDOW, OPENED ON PURPOSE. Under load the scheduler opens this one by itself.
+        crate::testing::screen_showing(&access, pane, "BANNER");
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
+                ready_when: Some(ReadyWhen::Prints("BANNER".to_string())),
+                // ⚠ LONGER THAN THE RUN'S CLOCK, which is what puts this on the silent path. The
+                // flaky fixtures have it this way round by taking the default and not thinking
+                // about it, which is exactly how a caller gets here.
+                ready_within: Some(Duration::from_secs(30)),
+                may_answer: None,
+                attended: Attended::NoOne,
+            },
+        );
+        let cell = crate::driver::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 10,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(400)),
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(&mut orch, &access, &crate::run::RunContext::uncancellable());
+
+        // ⚠⚠⚠ THE RECORDED SIGNATURE, ASSERTED. If these three ever stop describing this state,
+        // the note in `remote-build.toml` is about something else and this gate must be re-read.
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "the flake's own ending: {outcome:?}",
+        );
+        assert_eq!(outcome.iterations, 1, "and its turn count: {outcome:?}");
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Bytes(0)),
+            "⚠⚠ and NOTHING WAS EVER TYPED, which is the half that says a barrier and not a peer \
+             is what this run spent its clock on: {outcome:?}",
+        );
+
+        let notes: Vec<String> = cell
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        let said = notes.join(" | ");
+        assert!(
+            said.contains("BANNER"),
+            "⚠⚠⚠ the run must name WHAT it was waiting for. Without it the whole report is \
+             `exhausted: duration` over `Bytes(0)`, which sends its reader to raise a budget that \
+             was never the bound: {said:?}",
+        );
+        assert!(
+            said.contains("already on its screen"),
+            "⚠⚠⚠ and the fact that ends the search — the marker the barrier was waiting to be \
+             printed is ON THE PANE. This is the sentence that would have closed a hypothesis that \
+             stood for rounds: {said:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠ **A PANE THAT CANNOT REACT PUTS A FLOOR UNDER EVERY STEP**, which is the only thing that

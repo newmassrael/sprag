@@ -199,9 +199,10 @@ impl Plugin for Pipe {
         // consume those rows against a destination not ready to be given them.
         match self.ready.reached(panes, self.dst, run)? {
             Reached::Yes => {}
-            Reached::RunEnded => {
-                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
-                    .noting("the run ended while waiting for the destination to be ready"));
+            Reached::RunEnded(why) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(format!(
+                    "the run ended while waiting for the destination to be ready: {why}"
+                )));
             }
             // ⚠ A RELAY MUST STOP TOO. Its destination is a pane somebody else prepared, so it is
             // the likeliest of the three to be pointed at an agent that pops a dialog — and a

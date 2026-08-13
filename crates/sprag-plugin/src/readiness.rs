@@ -569,7 +569,25 @@ pub enum Reached {
     Yes,
     /// THE RUN ended while waiting — cancelled, or out of time. **Nothing was injected**, so
     /// nothing is charged; which of the two it was is the [`RunContext`]'s to answer.
-    RunEnded,
+    ///
+    /// # ⚠⚠⚠ Why it carries the refusal it is NOT
+    ///
+    /// It carries the very [`PaneError::NeverReady`] the barrier's OWN bound would have refused
+    /// with. The two endings stay different — one is *this pane never came up*, the other is *the
+    /// run was out of time* — and which of them a caller gets depends on nothing they chose: it is
+    /// whichever of `ready_within` and the run's clock happens to be shorter. So the ENDING may
+    /// differ and the DIAGNOSIS may not, or a caller learns what they were waiting for only when
+    /// the bounds fall one way round.
+    ///
+    /// ⚠⚠⚠ **AND THIS IS THIS WORKSPACE'S OWN LONGEST-RUNNING FLAKE, TOLD BACK BY THE PRODUCT.**
+    /// A suite at thirty threads deschedules the gap between a fixture's spawn and the driver's
+    /// first look for longer than a peer takes to print its banner; the marker is then in
+    /// [`Prints`](ReadyWhen::Prints)' baseline, the barrier can never clear, and the run waits out
+    /// its whole clock. What it reported was `Exhausted(Duration)` with `Bytes(0)` and not one word
+    /// about a barrier — a signature that sat in `.claude/remote-build.toml` for rounds as a
+    /// hypothesis nobody had instrumented. A run that says what it was still waiting for is the
+    /// instrument, and it is the product's to say rather than a note in a file.
+    RunEnded(PaneError),
     /// **THE PEER HAS STOPPED TO ASK, and the run is not going to type its own text at it** —
     /// carrying the question when this host can read it, and WHY nothing was answered.
     ///
@@ -1433,30 +1451,43 @@ impl Readiness {
                 self.seen = true;
                 Ok(Reached::Yes)
             }
-            Waited::Stopped => Ok(Reached::RunEnded),
-            // ⚠ THE DIAGNOSTIC IS READ AT THE MOMENT OF FAILURE, not carried from arming: what a
-            // caller needs is what the pane was doing when the wait gave up. One read, on the way
-            // out of a run that is already over.
-            Waited::TimedOut => Err(PaneError::NeverReady {
-                // ⚠⚠⚠ READ HERE, WHERE THE MARKER IS STILL IN HAND. `wanted` is moved into the
-                // error on the next line, and this is the only fact of the three that has to be
-                // asked of the SCREEN rather than of the process table — see `already_showing`.
-                already_showing: matches!(when, ReadyWhen::Prints(_))
-                    && panes
-                        .pane_collapsed(pane)
-                        .is_some_and(|text| text.contains(when.marker())),
-                wanted: when,
-                // ⚠ THE ABSENCE OF THE CAPABILITY AND THE ABSENCE OF A JOB ARE DIFFERENT ANSWERS —
-                // one is about this build, the other about this pane. See [`PaneDoing`].
-                instead: panes.foreground_job().map_or(PaneDoing::Unknown, |jobs| {
-                    jobs.pane_foreground_leader(pane).map_or(
-                        PaneDoing::Nothing,
-                        // ⚠⚠ THE SAME TYPE THE PREDICATE DECIDED WITH. Reporting one of the two
-                        // names it accepts is what named `"bash"` at a caller who launched
-                        // `/bin/sh`, and it differed by platform. See [`JobLeader`].
-                        |leader| PaneDoing::Job(JobLeader::of(&leader)),
-                    )
-                }),
+            // ⚠⚠⚠ THE SAME DIAGNOSIS AS THE ARM BELOW, and that is the point — see
+            // [`Reached::RunEnded`]. Which of these two arms a caller lands in is decided by
+            // whichever of `ready_within` and the RUN's clock is shorter, which is not a thing they
+            // chose; a diagnosis that existed on only one of the paths was therefore handed out by
+            // arithmetic nobody wrote down.
+            Waited::Stopped => Ok(Reached::RunEnded(self.not_ready(panes, pane, when))),
+            Waited::TimedOut => Err(self.not_ready(panes, pane, when)),
+        }
+    }
+
+    /// **WHAT THIS BARRIER WAS STILL WAITING FOR, AND WHAT THE PANE WAS DOING INSTEAD** — built in
+    /// ONE place because both of [`reached`](Self::reached)'s unsatisfied endings hand it back and
+    /// they must not be able to say different things.
+    ///
+    /// ⚠ THE DIAGNOSTIC IS READ AT THE MOMENT THE WAIT ENDS, not carried from arming: what a caller
+    /// needs is what the pane was doing when the wait gave up. One read, on the way out of a run
+    /// that is already over.
+    fn not_ready(&self, panes: &dyn PaneAccess, pane: PaneId, when: ReadyWhen) -> PaneError {
+        PaneError::NeverReady {
+            // ⚠⚠⚠ READ HERE, WHERE THE MARKER IS STILL IN HAND. `wanted` is moved into the error
+            // below, and this is the only fact of the three that has to be asked of the SCREEN
+            // rather than of the process table — see `already_showing`.
+            already_showing: matches!(when, ReadyWhen::Prints(_))
+                && panes
+                    .pane_collapsed(pane)
+                    .is_some_and(|text| text.contains(when.marker())),
+            wanted: when,
+            // ⚠ THE ABSENCE OF THE CAPABILITY AND THE ABSENCE OF A JOB ARE DIFFERENT ANSWERS —
+            // one is about this build, the other about this pane. See [`PaneDoing`].
+            instead: panes.foreground_job().map_or(PaneDoing::Unknown, |jobs| {
+                jobs.pane_foreground_leader(pane).map_or(
+                    PaneDoing::Nothing,
+                    // ⚠⚠ THE SAME TYPE THE PREDICATE DECIDED WITH. Reporting one of the two names
+                    // it accepts is what named `"bash"` at a caller who launched `/bin/sh`, and it
+                    // differed by platform. See [`JobLeader`].
+                    |leader| PaneDoing::Job(JobLeader::of(&leader)),
+                )
             }),
         }
     }
