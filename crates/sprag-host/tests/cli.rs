@@ -8863,4 +8863,31 @@ fn the_cli_says_a_blocked_pane_it_cannot_read_needs_a_person() {
          match: {:?}",
         said.stdout,
     );
+
+    // ⚠⚠ AND ANSWERING IT ANYWAY IS REFUSED WITH THAT SAME REMEDY — `Refusal::Unreadable`, the one
+    // arm of the six that is not about the consent at all. A caller who ignores the advice above
+    // must meet the same sentence from the act itself rather than a match failure, because
+    // *"your needles were wrong"* would send them to rewrite words that were never the problem.
+    //
+    // ⚠ AND IT IS DRIVEN IN THE `--flag=value` SPELLING, R350's rule: a flag has TWO spellings and
+    // the joined one is the only way to pass a needle that begins with a dash — which an agent's
+    // options frequently do. Everything above uses the separated form, so without this the second
+    // spelling is a branch no test builds.
+    let anyway = sprag(
+        &sock,
+        &["answer-pane", "0", "--asked=proceed", "--answer=Yes"],
+    );
+    assert!(
+        anyway.ok,
+        "an unanswerable pane is a REPORT, not a command-line error: {}",
+        anyway.stderr,
+    );
+    assert!(
+        anyway.stdout.contains("blocked")
+            && anyway.stdout.contains("cannot read as a numbered menu")
+            && anyway.stdout.contains("hand the pane to a person"),
+        "⚠⚠⚠ the act's own refusal names the remedy, and the remedy is a PERSON — not a rewritten \
+         needle: {:?}",
+        anyway.stdout,
+    );
 }
