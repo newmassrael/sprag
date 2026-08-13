@@ -67,7 +67,7 @@ pub use access::{
 };
 pub use agent::{Agent, AgentSpec};
 pub use answer::Answer;
-pub use completion::{Completion, DoneWhen, Turn};
+pub use completion::{Completion, DoneWhen, Over, Turn};
 pub use consent::{Answered, Consent, Consents, Refusal, Taken, Unanswered};
 pub use deliver::{Delivered, Delivery, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};

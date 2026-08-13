@@ -35,12 +35,12 @@ use sprag_input::Modifiers;
 use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
-use crate::completion::{Completion, DoneWhen};
+use crate::completion::{Completion, DoneWhen, Over};
 use crate::consent::Consents;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
-use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited};
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext};
 
 /// How much of a prompt has to appear on the pane before the delivery counts it as arrived.
 ///
@@ -308,6 +308,58 @@ pub struct Agent {
     ready: Readiness,
     /// What makes this turn OVER, armed at the turn's start — see [`Completion`].
     done: Completion,
+    /// **THE PROMPT THAT IS ALREADY IN THE PANE**, and everything the capture of its reply needs —
+    /// `None` before this adapter has asked anything. See [`InFlight`].
+    asked: Option<InFlight>,
+}
+
+/// A prompt that IS IN THE PANE and whose reply has not been captured yet.
+///
+/// # ⚠⚠⚠ Why a one-shot adapter has to remember a turn across steps
+///
+/// It never used to: one step delivered the prompt, waited out the reply and converged, so
+/// everything the capture needed was a local. Then a turn acquired a second way to end —
+/// [`Over::Asking`], a peer that stopped to ask — and that ending is a step this adapter cannot
+/// finish and must not restart:
+///
+/// * it cannot FINISH, because what is on the screen is a dialog, and this adapter publishes what
+///   it captures **as the model's answer**;
+/// * it must not RESTART, because the prompt has already been typed. A step that returned
+///   `Continue` without remembering would ask the same question again the moment the dialog was
+///   answered, and the peer would answer it twice.
+///
+/// So the turn is suspended instead. The next step meets the barrier, which is where this crate
+/// keeps the one door onto a blocked pane: it answers the dialog on the caller's own
+/// [`Consents`], waits for whoever they said was watching, or blocks the
+/// run. Once the peer is working again, the step after that resumes THIS turn — same baseline,
+/// same armed contract, same prompt — and the reply that comes back is the reply to the question
+/// that was actually asked.
+///
+/// ⚠ The three carried facts are all decided AT INJECTION TIME and are not re-derivable later:
+/// what the terminal's echo was doing, what the delivery earned as a caveat, and whether an
+/// end-of-input could arrive. See [`without_own_echo`], whose own doc measured what re-deriving
+/// the first of them costs.
+/// What [`Agent::ask`] answers: a turn now in flight, or the step the attempt to start one ended
+/// on.
+enum Asked {
+    /// The prompt is in the pane and its reply is outstanding.
+    Turn(InFlight),
+    /// Nothing is outstanding — the run ended under the delivery — and this is the step that says
+    /// so.
+    Ended(Step),
+}
+
+struct InFlight {
+    /// Where this turn's reply starts.
+    baseline: Baseline,
+    /// What putting the prompt in the pane cost, charged on the step that did it and never again.
+    written: u64,
+    /// Whether the pane's own TERMINAL painted the prompt back.
+    echoed: bool,
+    /// What the delivery earned the note, if anything.
+    caveat: Option<&'static str>,
+    /// What this turn did about its end-of-input.
+    eof: EndOfInput,
 }
 
 impl Agent {
@@ -325,6 +377,7 @@ impl Agent {
             pane,
             spec,
             response: None,
+            asked: None,
         }
     }
 
@@ -476,7 +529,7 @@ impl Agent {
     /// was hard-coded to *the child exits*, which is a ONE-SHOT tool's completion — a long-lived
     /// peer never exits, so every one of its turns ran the full timeout out. See
     /// [`mod@crate::completion`].
-    fn await_reply(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
+    fn await_reply(&self, panes: &dyn PaneAccess, run: &RunContext) -> Over {
         self.done.wait(panes, self.pane, self.spec.timeout, run)
     }
 
@@ -540,6 +593,71 @@ impl Agent {
     /// Two shapes because the precise one is a CAPABILITY: a host that can number its lines gives
     /// an address that survives a resize and a scroll, and one that cannot is read by comparing its
     /// rendering. See [`Agent::capture`].
+    /// **PUT THIS TURN'S PROMPT IN THE PANE**, and hand back everything its reply's capture will
+    /// need — or the [`Step`] the attempt ended on.
+    ///
+    /// Lifted out of [`step`](Plugin::step) when a turn became something that outlives one step:
+    /// it must happen ONCE per turn, and a block that has to happen once is clearer as a call with
+    /// a name than as an `if` around a third of a function.
+    fn ask(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Asked, PaneError> {
+        // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode
+        // echo) from prior content.
+        let baseline = self.mark(panes);
+        // ⚠⚠⚠ AND THE COMPLETION CONTRACT ARMS HERE, FOR THE SAME REASON AND IN THE SAME BREATH:
+        // before a byte goes in. A peer waiting for a prompt is AT REST, so a contract armed after
+        // the injection can be satisfied by the stillness the turn was addressed TO — and the
+        // capture published as the model's answer would be the screen from before it wrote a word.
+        // See [`Completion::begin`].
+        //
+        // ⚠ ARMED HERE AND NOT RE-ARMED ON A RESUMED STEP, which is the same discipline read
+        // forwards: the question this turn is waiting on an answer to is the one typed HERE, so
+        // *has the peer moved since* must be measured from here too. Re-arming after a dialog was
+        // answered would reset the watermark to the middle of the turn.
+        self.done.begin(panes, self.pane);
+        // ⚠⚠⚠ AND THE END-OF-INPUT IS DECIDED HERE, BEFORE ANYTHING IS TYPED — see
+        // [`Agent::end_of_input`]. It used to be sent unconditionally, waited out, and only then
+        // explained; the terminal's mode was knowable all along and the wait was two minutes.
+        let eof = self.end_of_input(panes);
+
+        // ⚠⚠⚠ DELIVERED, NOT WRITTEN — see [`Agent::deliver_prompt`]. This was a bare `inject` for
+        // as long as this adapter has existed, which meant the one plugin whose output is published
+        // AS A MODEL'S ANSWER was the one that never checked its question arrived.
+        let prompted = self.deliver_prompt(panes, run, eof)?;
+        let written = prompted.written();
+        match prompted {
+            // The prompt is in the pane, by whichever route, and something was submitted. What each
+            // route established is carried into the note below.
+            Prompted::Written { .. }
+            | Prompted::Delivered(Delivered::Confirmed { .. } | Delivered::OnScreenOnly { .. }) => {
+            }
+            // Nothing was submitted (`deliver` withholds the press when the text is demonstrably
+            // absent), so there is no turn to wait for and nothing on that screen is this run's.
+            // A REFUSAL rather than a converged empty capture: the latter tells a caller the model
+            // said nothing, which is the one reading that is both actionable and false.
+            Prompted::Delivered(Delivered::Unconfirmed { attempts, written }) => {
+                return Err(PaneError::NeverTook {
+                    attempts,
+                    written: written.bytes(),
+                });
+            }
+            // The run ended under the delivery. Continue, so the Driver's loop top decides whether
+            // that was a cancel or the deadline — the same hand-off the reply wait makes.
+            Prompted::Delivered(Delivered::Stopped { .. }) => {
+                return Ok(Asked::Ended(
+                    Step::new(Cost::Bytes(written), Verdict::Continue)
+                        .noting("the run ended while delivering the prompt; nothing was asked"),
+                ));
+            }
+        }
+        Ok(Asked::Turn(InFlight {
+            baseline,
+            written,
+            echoed: prompted.echoed_by_the_terminal(),
+            caveat: prompted.caveat(),
+            eof,
+        }))
+    }
+
     fn mark(&self, panes: &dyn PaneAccess) -> Baseline {
         panes
             .output_lines()
@@ -688,59 +806,77 @@ impl Plugin for Agent {
             }
         }
 
-        // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode
-        // echo) from prior content.
-        let baseline = self.mark(panes);
-        // ⚠⚠⚠ AND THE COMPLETION CONTRACT ARMS HERE, FOR THE SAME REASON AND IN THE SAME BREATH:
-        // before a byte goes in. A peer waiting for a prompt is AT REST, so a contract armed after
-        // the injection can be satisfied by the stillness the turn was addressed TO — and the
-        // capture published as the model's answer would be the screen from before it wrote a word.
-        // See [`Completion::begin`].
-        self.done.begin(panes, self.pane);
-        // ⚠⚠⚠ AND THE END-OF-INPUT IS DECIDED HERE, BEFORE ANYTHING IS TYPED — see
-        // [`Agent::end_of_input`]. It used to be sent unconditionally, waited out, and only then
-        // explained; the terminal's mode was knowable all along and the wait was two minutes.
-        let eof = self.end_of_input(panes);
-
-        // ⚠⚠⚠ DELIVERED, NOT WRITTEN — see [`Agent::deliver_prompt`]. This was a bare `inject` for
-        // as long as this adapter has existed, which meant the one plugin whose output is published
-        // AS A MODEL'S ANSWER was the one that never checked its question arrived.
-        let prompted = self.deliver_prompt(panes, run, eof)?;
-        let cost = prompted.written();
-        match prompted {
-            // The prompt is in the pane, by whichever route, and something was submitted. What each
-            // route established is carried into the note below.
-            Prompted::Written { .. }
-            | Prompted::Delivered(Delivered::Confirmed { .. } | Delivered::OnScreenOnly { .. }) => {
+        // ⚠⚠⚠ THE PROMPT IS SENT ONCE PER TURN, and a turn survives a step that could not finish
+        // it. When this adapter's peer stops to ask, the step below suspends the turn instead of
+        // capturing a dialog as a reply; the barrier above then answers, waits or blocks, and
+        // control arrives back here with the question STILL IN THE PANE. Asking again would put
+        // the same question to the peer twice — the whole reason a one-shot adapter now remembers
+        // anything at all. See [`InFlight`].
+        //
+        // ⚠ The pair is `(the turn, what THIS step charges for it)`: a resumed turn injects
+        // nothing, so re-charging the prompt's bytes would turn this run's reported spend into a
+        // count of how many dialogs its peer raised — and *what it spent is what it says* is the
+        // whole selling point of a bounded run.
+        let (asked, charged) = match self.asked.take() {
+            Some(asked) => (asked, 0),
+            None => {
+                let asked = self.ask(panes, run)?;
+                match asked {
+                    Asked::Turn(asked) => {
+                        let charged = asked.written;
+                        (asked, charged)
+                    }
+                    Asked::Ended(step) => return Ok(step),
+                }
             }
-            // Nothing was submitted (`deliver` withholds the press when the text is demonstrably
-            // absent), so there is no turn to wait for and nothing on that screen is this run's.
-            // A REFUSAL rather than a converged empty capture: the latter tells a caller the model
-            // said nothing, which is the one reading that is both actionable and false.
-            Prompted::Delivered(Delivered::Unconfirmed { attempts, written }) => {
-                return Err(PaneError::NeverTook {
-                    attempts,
-                    written: written.bytes(),
-                });
-            }
-            // The run ended under the delivery. Continue, so the Driver's loop top decides whether
-            // that was a cancel or the deadline — the same hand-off the reply wait makes below.
-            Prompted::Delivered(Delivered::Stopped { .. }) => {
-                return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
-                    .noting("the run ended while delivering the prompt; nothing was asked"));
-            }
-        }
+        };
+        let cost = charged;
+        let eof = asked.eof;
 
         let waited = self.await_reply(panes, run);
+        // ⚠⚠⚠ THE PEER STOPPED TO ASK, so this turn is over WITHOUT a reply — and this adapter,
+        // whose capture is published AS THE MODEL'S ANSWER, must not treat a dialog as one.
+        //
+        // Before [`Over::Asking`] existed the wait had no way to say this: it ran the full
+        // `timeout` out (two minutes by default), captured whatever was on screen, and converged
+        // reporting the permission dialog as the model's reply.
+        //
+        // The turn is SUSPENDED rather than abandoned. Nothing is captured, nothing converges, and
+        // the prompt stays remembered — so the next step meets the barrier, which answers the
+        // dialog on the caller's own consents, waits for whoever they said was watching, or blocks
+        // the run; and the step after that resumes THIS turn against the same baseline. See
+        // [`InFlight`].
+        if let Over::Asking(question) = &waited {
+            let note = match question {
+                Some(question) => format!(
+                    "the peer stopped to ASK before replying, so nothing was captured: {}{}",
+                    question.asked.join(" "),
+                    question
+                        .selected()
+                        .map_or_else(String::new, |choice| format!(
+                            " — a bare Enter here would answer {:?}",
+                            choice.label
+                        )),
+                ),
+                None => "the peer stopped to ASK before replying and this host cannot read the \
+                         question as a menu, so nothing was captured and a person has to look"
+                    .to_string(),
+            };
+            self.asked = Some(asked);
+            return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue).noting(note));
+        }
+        let baseline = &asked.baseline;
+        let prompt_echoed = asked.echoed;
+        let prompt_caveat = asked.caveat;
         // If the RUN ended mid-wait — cancelled, or out of time — don't converge
         // or record a partial reply. Return Continue so the Driver's loop top
         // decides the terminal state, which is the only place that knows whether
         // it was a cancel or the duration ceiling.
-        if waited == Waited::Stopped {
+        if waited == Over::RunEnded {
             return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
                 .noting("the run ended while waiting for the reply; nothing captured"));
         }
-        let reply = self.capture(panes, &baseline, prompted.echoed_by_the_terminal());
+        let reply = self.capture(panes, baseline, prompt_echoed);
         let text = reply.text;
         // ⚠ THE LENGTH IS THE DIAGNOSTIC. A peer that never answered and one that answered are the
         // same `converged` with the same cost, and an EMPTY capture is what a prompt the peer
@@ -751,7 +887,7 @@ impl Plugin for Agent {
         // text is whatever happened to be on screen mid-reply. Both were reported with the same
         // sentence, so a truncated capture was indistinguishable from a whole one.
         let characters = text.chars().count();
-        let mut note = if waited == Waited::TimedOut {
+        let mut note = if waited == Over::NotYet {
             format!(
                 "the peer had not finished after {:?}; captured the {characters} characters on \
                  screen, which may be a PARTIAL reply",
@@ -792,7 +928,7 @@ impl Plugin for Agent {
         // established that the model was asked: on a pane whose own terminal echoes, the prompt
         // appearing there is the line discipline's doing and not the peer's. Silent, this is the
         // shape R363 paid for twice — a fact that reaches the wire and dies at the mouth.
-        if let Some(caveat) = prompted.caveat() {
+        if let Some(caveat) = prompt_caveat {
             note.push_str(caveat);
         }
         self.response = Some(text);
@@ -856,6 +992,180 @@ mod tests {
             max_duration: None,
         })
         .run(agent, access, &RunContext::uncancellable())
+    }
+
+    /// A LONG-LIVED peer that raises a dialog in the middle of its turn and answers only once
+    /// somebody clears it — which is what a real agent CLI does whenever it wants to touch
+    /// anything.
+    ///
+    /// `read a` takes the prompt, the dialog goes on the SCREEN, `read b` takes whatever answers
+    /// it, and only then does the reply appear. Nothing here is a stand-in for the question: the
+    /// pane really shows one, and the reply really does not exist until it is cleared.
+    ///
+    /// The supervisor is derived from the peer's own output, which is how a real detector works —
+    /// so the state, the `seq` and the readable question all move because the PEER moved, and no
+    /// part of this fixture can report a turn's end the pane does not show.
+    fn peer_that_asks_mid_turn() -> (WorkspacePaneAccess, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(
+                "printf 'UP\\n'; read a; printf 'Do you want to edit lib.rs?\\n'; read b; \
+                 printf 'REPLY[%s]\\n' \"$a\"",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 60, 12)
+                .expect("spawn pane")
+        };
+        started(
+            &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            pane,
+            "UP",
+        );
+        let source = {
+            let workspace = Arc::clone(&workspace);
+            Arc::new(move |id: PaneId| {
+                // ⚠ Read through the SAME door the product reads a pane's text with, so a fixture
+                // cannot see a screen the plugin under test could not.
+                let screen = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                    .pane_collapsed(id)
+                    .unwrap_or_default();
+                let (state, seq) = if screen.contains("REPLY[") {
+                    (sprag_detect::AgentState::Idle, 3)
+                } else if screen.contains("Do you want to edit") {
+                    (sprag_detect::AgentState::Blocked, 2)
+                } else {
+                    (sprag_detect::AgentState::Idle, 1)
+                };
+                Some(crate::access::AgentObservation {
+                    state,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_string(),
+                    },
+                    seq,
+                    asking: (state == sprag_detect::AgentState::Blocked).then(|| {
+                        sprag_detect::Question {
+                            asked: vec!["Do you want to edit lib.rs?".to_string()],
+                            choices: vec![
+                                sprag_detect::Choice {
+                                    number: 1,
+                                    label: "Yes".to_string(),
+                                    selected: true,
+                                },
+                                sprag_detect::Choice {
+                                    number: 2,
+                                    label: "No".to_string(),
+                                    selected: false,
+                                },
+                            ],
+                        }
+                    }),
+                })
+            })
+        };
+        (
+            WorkspacePaneAccess::new(workspace).with_agent_state(Some(source)),
+            pane,
+        )
+    }
+
+    /// ⚠⚠⚠ **A DIALOG RAISED MID-TURN IS NOT THE MODEL'S ANSWER — and until the end of a turn
+    /// could see one, a caller's own consent could never be reached to clear it.**
+    ///
+    /// This adapter publishes what it captures AS THE MODEL'S REPLY, which is what makes it the
+    /// sharpest place [`Over::Asking`] lands. Under [`DoneWhen::Settles`] the sequence was a
+    /// deadlock with a wrong answer at the end of it:
+    ///
+    /// 1. the prompt goes in and the peer raises a permission dialog;
+    /// 2. the wait holds out for `Idle`, which a blocked peer never reaches, so the step spends the
+    ///    **whole** `timeout` — two minutes by default;
+    /// 3. it then captures the screen and CONVERGES, publishing the dialog as the reply.
+    ///
+    /// ⚠⚠⚠ And the caller's [`Consents`] could not help, however well written. **Consents are read
+    /// at the BARRIER**, which is the top of the next step — and there was no next step, because
+    /// the first one had not ended. A run declaring exactly the right clause behaved identically to
+    /// one declaring none.
+    ///
+    /// So this drives the whole loop with a clause that covers the dialog, and asserts the three
+    /// things that were all false before:
+    ///
+    /// * the run CONVERGES with the peer's real reply, not with the question;
+    /// * it does so in a fraction of `timeout` rather than by spending it;
+    /// * and the prompt is typed EXACTLY ONCE across the three steps it now takes — the claim
+    ///   [`InFlight`] exists for, since a turn that resumes by re-prompting would ask the peer the
+    ///   same question twice.
+    #[test]
+    fn a_turn_interrupted_by_a_dialog_resumes_and_captures_the_reply_not_the_question() {
+        /// Generous enough that spending it is unmistakable, short enough to pay in a suite.
+        const TIMEOUT: Duration = Duration::from_secs(6);
+
+        let (access, pane) = peer_that_asks_mid_turn();
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                done_when: DoneWhen::Settles,
+                timeout: TIMEOUT,
+                ready_when: Some(ReadyWhen::Settles("claude".to_string())),
+                ready_within: Some(Duration::from_secs(5)),
+                may_answer: Consents::of(vec![
+                    crate::consent::Consent::parse("edit lib.rs".to_string(), "Yes".to_string())
+                        .expect("two needles"),
+                ]),
+                ..AgentSpec::new("ping")
+            },
+        );
+
+        let started_at = Instant::now();
+        let outcome = run(&access, &mut agent);
+        let cost = started_at.elapsed();
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the peer did answer, once its question was cleared: {outcome:?}",
+        );
+        // ⚠ ASKED FIRST, and the order is load-bearing: forgetting the in-flight turn re-prompts
+        // with a FRESH baseline, so the capture goes empty too — and a capture assertion standing
+        // ahead of this one would mask the reason with a symptom. Each claim gets to be the one
+        // that fails for its own mutation.
+        let typed = access
+            .input_echo()
+            .and_then(|echo| echo.pane_recent_input(pane))
+            .unwrap_or_default();
+        assert_eq!(
+            typed.matches("ping").count(),
+            1,
+            "⚠⚠⚠ THE PROMPT IS ASKED ONCE. A suspended turn that resumed by re-delivering would \
+             put the same question to the model a second time — and this adapter's whole contract \
+             is one prompt, one reply. Typed {typed:?} over {} iterations",
+            outcome.iterations,
+        );
+
+        let captured = agent.captured().unwrap_or_default();
+        assert!(
+            captured.contains("REPLY[ping]"),
+            "⚠⚠⚠ THE CAPTURE IS THE REPLY. Before the end of a turn could report a question, this \
+             run spent its whole timeout with the dialog on screen and published THAT as the \
+             model's answer — the reply below did not exist yet, because nothing had cleared the \
+             question. Captured {captured:?}, outcome {outcome:?}",
+        );
+        assert!(
+            cost < TIMEOUT / 3,
+            "⚠⚠ and it did not get there by waiting: the step used to hold out for a state a \
+             blocked peer never reaches, so this cost the FULL {TIMEOUT:?}. It now costs {cost:?}",
+        );
+
+        assert!(
+            outcome.answered >= 1,
+            "⚠ and the caller's own consent is what cleared it, which is the thing that was \
+             unreachable: {outcome:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     #[test]

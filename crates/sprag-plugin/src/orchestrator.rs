@@ -14,7 +14,7 @@ use sprag_terminal::PaneId;
 #[cfg(test)]
 use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
-use crate::completion::{Completion, Turn};
+use crate::completion::{Completion, Over, Turn};
 use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
@@ -131,8 +131,27 @@ impl Orchestrator {
     /// ⚠ It still FAILS SAFE, and more of the time than before: a sentinel that never arrives costs
     /// the rest of the step's wait and no more, because the verdict is judged off the collapsed
     /// screen after the wait either way. A convergence can be reached late; it can never be lost.
-    fn observe(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
-        poll_until(run, self.patience(), || self.arrived(panes))
+    ///
+    /// ⚠⚠ IT ANSWERS **WHICH** THING ENDED IT, where it used to answer only *whether* something
+    /// did. [`Arrival`] is why: two of the endings need the step to say different things, and one
+    /// of them — the peer stopping to ASK — could not be represented at all while this returned a
+    /// [`Waited`].
+    fn observe(&self, panes: &dyn PaneAccess, run: &RunContext) -> Arrival {
+        // ⚠ Seeded with what an unfired wait means, so reading it back after the poll needs no
+        // `expect` — [`Completion::wait`]'s shape, for its reason.
+        let mut arrival = Arrival::Nothing;
+        let waited = poll_until(run, self.patience(), || match self.arrived(panes) {
+            Some(seen) => {
+                arrival = seen;
+                true
+            }
+            None => false,
+        });
+        match waited {
+            Waited::Ready => arrival,
+            Waited::TimedOut => Arrival::Nothing,
+            Waited::Stopped => Arrival::RunEnded,
+        }
     }
 
     /// How long one step waits — the caller's [`Turn::within`] when they declared a contract, and
@@ -164,19 +183,29 @@ impl Orchestrator {
     ///   may end the wait early without repeating R374's mistake.
     /// * **the peer having produced a row of its own**, when the caller named neither. Unchanged,
     ///   and it is the only one of the three that is a guess.
-    fn arrived(&self, panes: &dyn PaneAccess) -> bool {
+    ///
+    /// ⚠⚠ THE CONTRACT TERM NOW HAS TWO ENDINGS, and the second one is why this answers an
+    /// [`Arrival`] rather than a `bool`: a peer that stops to ASK has finished its turn, and the
+    /// union used to be unable to say so — the term simply stayed false and the step waited out
+    /// its whole patience. See [`Over`].
+    fn arrived(&self, panes: &dyn PaneAccess) -> Option<Arrival> {
         if let Some(sentinel) = self.spec.sentinel.as_deref()
             && panes
                 .pane_collapsed(self.pane)
                 .is_some_and(|seen| seen.contains(sentinel))
         {
-            return true;
+            return Some(Arrival::Sentinel);
         }
         match (&self.done, self.spec.sentinel.as_deref()) {
-            (Some(done), _) => done.satisfied(panes, self.pane),
+            // ⚠ CARRIED WHOLE rather than re-encoded into arms of this type's own. A second
+            // spelling of *how did the turn end* beside [`Over`] is the shape this crate keeps
+            // finding defects in, and it would go stale the day that type learns a fifth ending.
+            (Some(done), _) => done.ended(panes, self.pane).map(Arrival::Turn),
             // A sentinel with no contract: the wait is the sentinel's alone (R374).
-            (None, Some(_)) => false,
-            (None, None) => self.reaction(panes) == Reaction::Answered,
+            (None, Some(_)) => None,
+            (None, None) => {
+                (self.reaction(panes) == Reaction::Answered).then_some(Arrival::Reacted)
+            }
         }
     }
 
@@ -213,6 +242,28 @@ impl Orchestrator {
         }
         Reaction::Answered
     }
+}
+
+/// **WHAT ENDED A STEP'S WAIT** — see [`Orchestrator::arrived`], whose three terms these are the
+/// answers to, plus the two ways a wait ends having found none of them.
+///
+/// ⚠ It is a type rather than a [`Waited`] because the endings are not degrees of one another: a
+/// sentinel is the run's goal, a finished turn is a peer with nothing left to say, an ASK is a peer
+/// that will say nothing further until somebody decides something, and a step has to report each
+/// of those differently. While this was a `Waited`, the third was indistinguishable from *the peer
+/// is still thinking* — and the step went on waiting for it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Arrival {
+    /// The sentinel the caller named is on the pane. The run's whole goal, so it is asked first.
+    Sentinel,
+    /// The peer's turn ended on the contract the caller declared — [`Over`] says HOW.
+    Turn(Over),
+    /// The peer produced a row of its own, where the caller named neither sentinel nor contract.
+    Reacted,
+    /// None of them, inside the step's own patience.
+    Nothing,
+    /// THE RUN ended underneath — cancelled, or out of time. The Driver's loop top says which.
+    RunEnded,
 }
 
 /// What a pane has done since a step's baseline — the three cases a step must tell apart, because
@@ -317,7 +368,7 @@ impl Plugin for Orchestrator {
         // return Continue so the Driver's loop top decides the terminal state,
         // rather than a spurious Converged off a screen nobody finished reading.
         let seen = self.observe(panes, run);
-        if seen == Waited::Stopped {
+        if seen == Arrival::RunEnded {
             return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
                 .noting("the run ended while watching for the pane to react"));
         }
@@ -336,12 +387,43 @@ impl Plugin for Orchestrator {
         // outcome: the step costs the same bytes and reads `continue` either way, so a hundred
         // iterations against a pane that is not listening look exactly like a hundred against one
         // that is.
-        let note = match (seen, &verdict) {
+        let note = match (&seen, &verdict) {
             (_, Verdict::Converged) => "the sentinel appeared".to_string(),
+            // ⚠⚠⚠ THE STEP ENDS THE INSTANT ITS PEER ASKS, and it ends with a NOTE rather than a
+            // verdict of its own.
+            //
+            // `Verdict::Blocked` is the BARRIER's to give. It carries an
+            // [`Unanswered`](crate::consent::Unanswered) — a refusal built with the caller's
+            // consents in hand — and this is not where those are read: the next step's barrier is,
+            // and it already answers the dialog, waits for the person the caller said was
+            // watching, or blocks the run, whichever they declared. A second place that decided
+            // about a blocked pane would be exactly the second door
+            // [`Readiness`](crate::readiness::Readiness) exists to prevent.
+            //
+            // What this step does is STOP WAITING, and that is the whole cost: the question is
+            // already on the screen, so every further millisecond of patience is spent on a peer
+            // that cannot answer it. See [`Over::Asking`].
+            (Arrival::Turn(Over::Asking(asking)), _) => match asking {
+                Some(question) => format!(
+                    "the peer stopped to ASK, so its turn is over: {}{}",
+                    question.asked.join(" "),
+                    question
+                        .selected()
+                        .map_or_else(String::new, |choice| format!(
+                            " — a bare Enter here would answer {:?}",
+                            choice.label
+                        )),
+                ),
+                // ⚠ A REAL CASE AND NOT A GAP: an agent can block on something that is not a
+                // numbered list, and the remedy is a person. See `AgentObservation::asking`.
+                None => "the peer stopped to ASK and this host cannot read the question as a \
+                         menu, so its turn is over and a person has to look"
+                    .to_string(),
+            },
             // The two ways a step can end with no answer are different findings with different
             // remedies: a pane showing NOTHING is one nobody is listening on, while one that
             // echoed and said no more is a peer that heard and did not reply.
-            (Waited::TimedOut, _) => match self.reaction(panes) {
+            (Arrival::Nothing, _) => match self.reaction(panes) {
                 Reaction::Answered => "the pane answered as the step's wait ran out".to_string(),
                 Reaction::EchoOnly => {
                     "the stimulus was echoed back and THE PEER SAID NOTHING".to_string()
@@ -374,6 +456,7 @@ mod tests {
     use crate::testing::{STANDIN_READS_TTY, started};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     /// A workspace with one pane running `script`, wrapped as pane-access.
     fn sh_access(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
@@ -492,6 +575,206 @@ mod tests {
     /// The pane here is `claude`, `Idle` when the run starts and `Blocked` from the first step on —
     /// the shape of an agent that pops a permission dialog while working. The claim is what the run
     /// does with its remaining iterations.
+    /// A pane that echoes, supervised by a source that reports the agent BLOCKED once the pane has
+    /// been given something — which is what a real one does, since the dialog is a REACTION to the
+    /// work — or working forever when `ever_asks` is false.
+    ///
+    /// ⚠⚠ **KEYED ON THE PANE'S OWN RECORD OF WHAT WAS TYPED INTO IT**, not on a call counter, so
+    /// the fixture does not depend on how many times anything happens to look — and so the barrier
+    /// genuinely latches on an at-rest peer first, which is the precondition the whole subject
+    /// rests on. Borrowed from `a_loop_keeps_typing_into_a_peer_that_stopped_to_ask`, which
+    /// established the shape.
+    fn peer_that_asks_when_prompted(
+        ever_asks: bool,
+    ) -> (Arc<Mutex<Workspace>>, WorkspacePaneAccess, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("printf 'UP\\n'; exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 60, 12)
+                .expect("spawn pane")
+        };
+        started(
+            &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            pane,
+            "UP",
+        );
+        let source = {
+            let workspace = Arc::clone(&workspace);
+            Arc::new(move |id: PaneId| {
+                let prompted = workspace
+                    .lock()
+                    .unwrap()
+                    .pane(id)
+                    .is_some_and(|p| p.pty().echo_trail().contains("ping"));
+                // ⚠ THE SUBJECT AND THE CONTROL DIFFER HERE AND NOWHERE ELSE. Both peers are
+                // given the same stimulus, both stop being at rest when they get it, and only one
+                // of them raises a dialog about it. Everything downstream — the pane, the
+                // contract, the guardrails, the barrier — is identical.
+                let state = match (prompted, ever_asks) {
+                    (false, _) => sprag_detect::AgentState::Idle,
+                    (true, true) => sprag_detect::AgentState::Blocked,
+                    (true, false) => sprag_detect::AgentState::Working,
+                };
+                Some(crate::access::AgentObservation {
+                    state,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_string(),
+                    },
+                    seq: u64::from(prompted) + 1,
+                    asking: (state == sprag_detect::AgentState::Blocked).then(|| {
+                        sprag_detect::Question {
+                            asked: vec!["Do you want to edit lib.rs?".to_string()],
+                            choices: vec![
+                                sprag_detect::Choice {
+                                    number: 1,
+                                    label: "Yes".to_string(),
+                                    selected: true,
+                                },
+                                sprag_detect::Choice {
+                                    number: 2,
+                                    label: "No".to_string(),
+                                    selected: false,
+                                },
+                            ],
+                        }
+                    }),
+                })
+            })
+        };
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+        (workspace, access, pane)
+    }
+
+    /// The spec both halves of the measurement below are driven with — ONE value, so the only
+    /// difference between the two runs is the peer.
+    ///
+    /// ⚠ `Turn::lasting(Settles, None)` is the contract with NO bound of its own: *wait for my
+    /// peer*, bounded by the run's clock alone. It is the spelling an outer AI loop wants, because
+    /// only the run knows how long a session may take — and it is the spelling under which a
+    /// question used to cost the most, since the step's patience became `Duration::MAX`.
+    fn wait_for_the_agents_turn() -> OrchestrationSpec {
+        OrchestrationSpec {
+            stimulus: "ping".to_string(),
+            sentinel: None,
+            ready_when: Some(crate::readiness::ReadyWhen::Settles("claude".to_string())),
+            ready_within: Some(Duration::from_secs(5)),
+            may_answer: None,
+            attended: Attended::NoOne,
+            turn: Turn::lasting(crate::completion::DoneWhen::Settles, None),
+        }
+    }
+
+    /// ⚠⚠⚠ **A RUN WHOSE PEER STOPS TO ASK STOPS WAITING — measured against the control that is
+    /// the same run with the same peer NOT raising a dialog.**
+    ///
+    /// This is the unit measurement in `completion.rs` at the level a caller actually meets, and
+    /// the level the outer AI loop drives: a whole [`Driver`] run, its own clock, its own reported
+    /// outcome.
+    ///
+    /// The two runs differ in ONE fact — whether the peer raises a dialog about the stimulus — and
+    /// they differ in what they cost by the whole run:
+    ///
+    /// * **the peer that ASKS**: the step's wait ends the moment the question is up, so the next
+    ///   step's barrier reports it and the run ends `blocked` in milliseconds.
+    /// * **the peer that stays WORKING** (the control): nothing ends the wait, so the run spends
+    ///   its entire duration ceiling and reports `exhausted: duration`.
+    ///
+    /// # ⚠⚠ What makes the control impossible rather than merely slower
+    ///
+    /// R358's rule about a gate that asks WHICH of two ceilings fired. The control's peer is
+    /// `Working` forever and its pane produces nothing after the echo, so no term of the step's
+    /// union can ever be satisfied: the run CANNOT end any way but on its clock. The subject's
+    /// peer is blocked from the moment it is prompted, so its wait CANNOT run long. The gap
+    /// between them is arithmetic, not luck, and a slower box widens it.
+    ///
+    /// ⚠ Before [`Over::Asking`] existed **both** of these were the control: an ask was invisible
+    /// to the step's wait, so the run that is now milliseconds was the run that is now three
+    /// seconds. That is the measurement, kept as a live comparison rather than as a number in a
+    /// comment.
+    #[test]
+    fn a_run_stops_waiting_the_moment_its_peer_stops_to_ask() {
+        /// The run's whole clock, which is also the step's patience under a contract with no bound
+        /// of its own. Long enough that spending it is unmistakable.
+        const CEILING: Duration = Duration::from_secs(3);
+        /// What the subject has to beat. A third of the ceiling: far outside any polling interval,
+        /// far inside the ceiling.
+        const AT_ONCE: Duration = Duration::from_secs(1);
+
+        let guardrails = || Guardrails {
+            max_iterations: 4,
+            max_cost: None,
+            max_duration: Some(CEILING),
+        };
+
+        // ── THE CONTROL: the peer takes the stimulus and never comes back ──
+        let (_workspace, access, pane) = peer_that_asks_when_prompted(false);
+        let mut orch = Orchestrator::new(pane, wait_for_the_agents_turn());
+        let started_at = Instant::now();
+        let control = run(&access, &mut orch, guardrails());
+        let control_cost = started_at.elapsed();
+        assert!(
+            matches!(control.state, OutcomeState::Exhausted(Ceiling::Duration)),
+            "⚠ THE CONTROL FAILED, so the comparison below is not the one this gate names: a peer \
+             that neither answers nor asks must leave the run to end on its own clock. Got \
+             {control:?}",
+        );
+        assert!(
+            control_cost >= CEILING,
+            "and it must genuinely have SPENT that clock, or `at once` below is not a \
+             discriminator: {control_cost:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // ── THE SUBJECT: the same peer, same pane, same contract — it raises a dialog ──
+        let (_workspace, access, pane) = peer_that_asks_when_prompted(true);
+        let mut orch = Orchestrator::new(pane, wait_for_the_agents_turn());
+        let started_at = Instant::now();
+        let outcome = run(&access, &mut orch, guardrails());
+        let asking_cost = started_at.elapsed();
+        assert!(
+            matches!(outcome.state, OutcomeState::Blocked(_)),
+            "⚠⚠ the run must REPORT that its peer is asking. `exhausted` tells a reader to raise a \
+             budget and it is what this run answered before the turn's end could see a question — \
+             about a pane where the one true thing is that somebody has to answer one. Got \
+             {outcome:?}",
+        );
+        assert!(
+            asking_cost < AT_ONCE,
+            "⚠⚠⚠ THE NUMBER, AT RUN LEVEL: the same run against the same peer costs \
+             {control_cost:?} when nothing can end the wait and {asking_cost:?} when the peer \
+             stops to ask. The whole difference is that the end of a turn now reads the question \
+             the start of one has read since R366; without it this run spends the ceiling too, and \
+             for an outer AI loop the ceiling is how long a session may take",
+        );
+        assert!(
+            outcome.iterations >= 2,
+            "⚠ and it did not get there by refusing to start: the barrier passed, a stimulus went \
+             in, and it is the step AFTER the ask that reports it. {outcome:?}",
+        );
+
+        let typed = access
+            .input_echo()
+            .and_then(|echo| echo.pane_recent_input(pane))
+            .unwrap_or_default();
+        assert_eq!(
+            typed.matches("ping").count(),
+            1,
+            "⚠⚠ EXACTLY ONE stimulus, still. Ending the wait early must not turn into taking more \
+             turns: into a numbered choice list a stimulus is not text delivery, it is SELECTION, \
+             and each one ends with the Enter that confirms whatever option the agent highlighted. \
+             Typed {typed:?}, outcome {outcome:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     #[test]
     fn a_loop_keeps_typing_into_a_peer_that_stopped_to_ask() {
         // Echoes what it is given, so what the pane RECEIVED is readable afterwards.

@@ -61,10 +61,10 @@ use std::time::Duration;
 use sprag_terminal::{PaneId, RawOutput};
 
 use crate::access::{PaneAccess, PaneError, PaneLifecycle};
-use crate::completion::{Completion, DoneWhen};
+use crate::completion::{Completion, DoneWhen, Over};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
-use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited};
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext};
 use crate::session::Session;
 
 sprag_vt::closed_set! {
@@ -267,13 +267,21 @@ impl Plugin for Dialogue {
         // a second copy of the predicate — see [`mod@crate::completion`]. Here the rule is exactly
         // right and always will be: this plugin SPAWNS a one-shot CLI per turn and passes the
         // prompt as an argv argument, so the turn really is over when that process leaves.
+        //
+        // ⚠ AND IT IS DELIBERATELY NOT ARMED, so [`Over::Asking`] is an ending this one plugin
+        // cannot reach. Arming is what lets a turn's end report that its peer stopped to ASK, and
+        // the two facts that make it worth having are both absent here: this plugin spawns its
+        // own pane per turn and passes the prompt as an argv argument to a PRINT-MODE CLI, which
+        // renders no dialog for anybody to answer, and the pane is destroyed before the next turn
+        // begins. A supervision pull per turn to arm a claim about a program that cannot make it
+        // would be ceremony. Said here rather than left to be inferred from an absent call.
         let waited = Completion::new(DoneWhen::Exits).wait(panes, id, self.spec.timeout, run);
 
         // If the RUN ended mid-turn — cancelled, or out of time — record nothing
         // (no junk partial turn) and return Continue with the spend committed so
         // far; the Driver's loop top decides which terminal state it was. The
         // guard closes the pane on this return.
-        if waited == Waited::Stopped {
+        if waited == Over::RunEnded {
             // Token-denominated plugin: a stopped turn has no measured token spend
             // (Tokens(0)); the run's terminal state is the loop top's to decide.
             return Ok(

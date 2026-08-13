@@ -67,11 +67,74 @@
 
 use std::time::Duration;
 
-use sprag_detect::AgentState;
+use sprag_detect::{AgentState, Question};
 use sprag_terminal::PaneId;
 
 use crate::access::PaneAccess;
 use crate::run::{RunContext, Waited, poll_until};
+
+/// **HOW A TURN ENDED** — the answer [`Completion::wait`] gives, and the twin of
+/// [`Reached`](crate::readiness::Reached) at the other end of the same turn.
+///
+/// # ⚠⚠⚠ Why a turn's end could not be a `bool`, measured
+///
+/// It used to be [`Waited`]: ready, timed out, or the run stopped. Three answers, and a peer that
+/// stops to ASK is none of them — its turn IS over, it will not write another word until somebody
+/// decides something, and the contract had no way to say so. So the wait ran to its bound and
+/// answered [`Waited::TimedOut`], which means *the peer did not finish* about a peer that finished.
+///
+/// The cost is the bound, and [`Turn`]'s own doc tells a caller to size that to their peer — *"a
+/// shell command is a second and an agent asked to read a repository is minutes"*. So the better a
+/// caller sized it the more each dialog cost them, and with no bound at all (the legal spelling
+/// that means *wait for my peer*) a single question spent the run's entire remaining clock.
+/// `the_end_of_a_turn_waits_out_an_ask_that_the_start_of_one_reads_at_once` is that measurement,
+/// kept as this type's control.
+///
+/// ⚠⚠ **And the evidence was never hard to come by**, which is what made it a defect rather than a
+/// limit: the barrier at the START of the same turn has read it out of the same supervisor, about
+/// the same pane, in milliseconds, since R366. One [`AgentObservation`](crate::access::AgentObservation),
+/// two ends of one turn, and only one of them was looking.
+///
+/// # ⚠ Why a new type rather than a fourth [`Waited`] arm
+///
+/// R356's rule: when a new state must be handled everywhere an old one was, RENAME rather than add.
+/// A fourth arm on `Waited` would have left every `== Waited::TimedOut` in this crate compiling and
+/// silently reading *the peer stopped to ask* as *the peer never answered* — which for
+/// [`Agent`](crate::agent::Agent) means publishing a permission dialog as the model's reply. A type
+/// of its own makes each of the three call sites decide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Over {
+    /// **YES** — on the evidence the caller's [`DoneWhen`] named.
+    Yes,
+    /// **THE PEER STOPPED TO ASK**, carrying the question when this host can read it.
+    ///
+    /// The turn is over: an agent showing a dialog is waiting on a DECISION, and nothing a caller
+    /// does to the pane short of answering will produce another word. What comes next is therefore
+    /// not a stimulus and not a capture — it is the barrier, which is where this crate keeps the
+    /// one door onto a blocked pane.
+    ///
+    /// ⚠⚠ **A [`Question`], NOT an [`Unanswered`](crate::consent::Unanswered).** `Unanswered` is a
+    /// REFUSAL — it says which consent failed to cover this dialog and what that cost — and
+    /// refusing is the barrier's act, taken with the caller's clauses in hand. A turn's END has
+    /// consulted no clause and typed nothing, so a refusal built here would be a sentence about a
+    /// decision nobody made. It reports the question; the barrier decides about it.
+    ///
+    /// ⚠ The inner [`None`] is [`AgentObservation::asking`](crate::access::AgentObservation::asking)'s
+    /// own — *this host cannot read the question as a menu* — and it does not collapse into the
+    /// outer absence: one says the turn ended in a question nobody can parse, the other says the
+    /// turn did not end in a question at all.
+    Asking(Option<Question>),
+    /// The bound ran out and neither happened — the peer is still working, or was never listening.
+    ///
+    /// ⚠ [`Waited::TimedOut`] under its old name, and it now means what it says. Every ending it
+    /// used to cover that was NOT *the peer did not finish* has a word of its own above.
+    NotYet,
+    /// **THE RUN ended underneath** — cancelled, or out of time.
+    ///
+    /// Not this wait's business to interpret: every caller hands it back to the driver's loop top,
+    /// because only that knows whether it was a cancel or the duration ceiling.
+    RunEnded,
+}
 
 /// WHICH EVIDENCE says a peer's turn is over.
 ///
@@ -305,18 +368,66 @@ impl Completion {
             .and_then(|seen| seen.agent.map(|agent| (agent, seen.seq)));
     }
 
-    /// Whether `pane` satisfies this contract RIGHT NOW.
+    /// **HOW THIS TURN STANDS RIGHT NOW** — [`None`] while it is still running.
     ///
     /// ⚠⚠ VISIBLE TO THE CRATE, and that is not a second door to the question. [`wait`](Self::wait)
-    /// IS `poll_until(satisfied)`, so a caller who needs this contract as one term of a LARGER
+    /// IS `poll_until(ended)`, so a caller who needs this contract as one term of a LARGER
     /// predicate — a step that stops either when its peer's turn is over or when the sentinel it
     /// named appears — cannot express it through the wait without running two waits in sequence and
     /// making the first one's bound a lie. One predicate, composed once, is what
-    /// [`Orchestrator::arrived`](crate::orchestrator::Orchestrator) does with it.
+    /// [`Orchestrator`](crate::orchestrator::Orchestrator) does with it.
     ///
     /// ⚠ Still not public: the module doc's ONE-DOOR rule is about not offering a bare [`DoneWhen`]
-    /// predicate alongside this evaluator, and that stands — an outside caller gets `wait`.
-    pub(crate) fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+    /// predicate alongside this evaluator, and that stands — an outside caller gets `wait`. What
+    /// changed is that this door now answers the same RICH question the waiting one does; while it
+    /// answered a `bool`, a caller composing a union could not see the ask at all.
+    pub(crate) fn ended(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Over> {
+        // ⚠ THE CONTRACT IS ASKED FIRST. Where both could be true — a peer that asked and whose
+        // pane then reached end-of-file — the evidence the CALLER named is the stronger answer:
+        // the turn is over on the terms they chose and the capture is whole. The ask is what ends
+        // a turn the contract CANNOT end, and asking it second is what keeps it to that job.
+        if self.satisfied(panes, pane) {
+            return Some(Over::Yes);
+        }
+        self.asked(panes, pane).map(Over::Asking)
+    }
+
+    /// The question THIS TURN's peer raised, or [`None`] where it raised none.
+    ///
+    /// # ⚠⚠⚠ Why the ask is ARMED, exactly as [`DoneWhen::Settles`] is
+    ///
+    /// A supervisor's verdict SETTLES: a real detector goes on calling a pane blocked for its
+    /// hysteresis window after the dialog has left the screen — [`Arrival`] measured that end to
+    /// end through a live daemon, and no fixture here models it, because a fixture derives its
+    /// state from the screen and so has no lag.
+    ///
+    /// Read as a bare predicate, then, *"is it blocked?"* asked right after a stimulus can be
+    /// answered YES by a question that was already gone before this turn started — and the turn
+    /// would end on a dialog nobody is looking at. That is precisely the hazard this module exists
+    /// for, one door along: **a state left over from before the turn is not this turn's answer.**
+    ///
+    /// So it takes the same three-part evidence [`satisfied`](Self::satisfied) does — the pane's
+    /// agent is the one the turn was ADDRESSED to, and its state has MOVED past what it was when
+    /// the turn began. An unarmed evaluator can claim nothing, which is why this answers `None`
+    /// there rather than reading the pane fresh.
+    ///
+    /// ⚠ Asked WHATEVER THE CONTRACT IS, and not only under [`Settles`](DoneWhen::Settles). A
+    /// one-shot peer that has stopped to ask will not exit either, so *wait for the child to
+    /// leave* is exactly as futile there; the rule is about what the peer is doing, not about
+    /// which evidence the caller chose to end on.
+    ///
+    /// [`Arrival`]: crate::consent
+    fn asked(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Option<Question>> {
+        let (addressed, began_at) = self.addressed.as_ref()?;
+        let seen = panes.supervision()?.pane_agent_state(pane)?;
+        (seen.state == AgentState::Blocked
+            && seen.agent.as_deref() == Some(addressed.as_str())
+            && seen.seq > *began_at)
+            .then_some(seen.asking)
+    }
+
+    /// Whether `pane` satisfies this contract RIGHT NOW.
+    fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
         match &self.when {
             // ⚠ An UNKNOWN pane counts as over. A rule that answered "not yet" for a pane that is
             // not there would spin to the timeout on a question that can never be answered — and
@@ -343,29 +454,44 @@ impl Completion {
         }
     }
 
-    /// Wait for this contract to be met, bounded by `within` and by the RUN's own deadline.
-    ///
-    /// [`Waited::TimedOut`] is *the contract was not met in `within`* — the caller decides what a
-    /// partial capture is worth. [`Waited::Stopped`] is THE RUN ending underneath, which is not
-    /// this wait's business to interpret: every caller here hands that back to the driver's loop
-    /// top, because only it knows whether it was a cancel or the duration ceiling.
+    /// Wait for this turn to END, bounded by `within` and by the RUN's own deadline — see
+    /// [`Over`], which is what the four endings are and why they are four.
     pub fn wait(
         &self,
         panes: &dyn PaneAccess,
         pane: PaneId,
         within: Duration,
         run: &RunContext,
-    ) -> Waited {
-        poll_until(run, within, || self.satisfied(panes, pane))
+    ) -> Over {
+        // ⚠ SEEDED WITH THE ANSWER A WAIT THAT NEVER FIRES DESERVES, so the read after the poll
+        // needs no `expect` over an invariant held somewhere else. `poll_until` answers `Ready`
+        // exactly when the closure did, and the closure only says so having written an ending
+        // here.
+        let mut ending = Over::NotYet;
+        let waited = poll_until(run, within, || match self.ended(panes, pane) {
+            Some(over) => {
+                ending = over;
+                true
+            }
+            None => false,
+        });
+        match waited {
+            Waited::Ready => ending,
+            Waited::TimedOut => Over::NotYet,
+            Waited::Stopped => Over::RunEnded,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::WorkspacePaneAccess;
+    use crate::access::{AgentObservation, Authority, WorkspacePaneAccess};
+    use crate::readiness::{Attended, Reached, Readiness};
+    use sprag_detect::{Choice, Question};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     /// A workspace with one pane running `script`, wrapped as pane-access.
     fn sh_access(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
@@ -392,28 +518,225 @@ mod tests {
     /// what the contract does with an observation, not how one is derived.
     fn supervised(state: AgentState, seq: u64) -> (WorkspacePaneAccess, PaneId, Reported) {
         let (access, pane) = sh_access("exec cat", 20, 4);
-        let reported: Reported = Arc::new(Mutex::new((state, seq, Some("claude".to_string()))));
+        let reported: Reported = Arc::new(Mutex::new(AgentObservation {
+            state,
+            agent: Some("claude".to_string()),
+            authority: Authority::Reported {
+                source: "test".to_string(),
+            },
+            seq,
+            asking: None,
+        }));
         let source = {
             let reported = Arc::clone(&reported);
-            Arc::new(move |_id: PaneId| {
-                let (state, seq, agent) = reported.lock().expect("the reported mutex").clone();
-                Some(crate::access::AgentObservation {
-                    state,
-                    agent,
-                    authority: crate::access::Authority::Reported {
-                        source: "test".to_string(),
-                    },
-                    seq,
-                    asking: None,
-                })
-            })
+            Arc::new(move |_id: PaneId| Some(reported.lock().expect("the reported mutex").clone()))
         };
         (access.with_agent_state(Some(source)), pane, reported)
     }
 
-    /// What a test moves the supervised pane's observation with: the state, its published `seq`,
-    /// and WHICH agent is reported there.
-    type Reported = Arc<Mutex<(AgentState, u64, Option<String>)>>;
+    /// What a test moves the supervised pane's observation with — the WHOLE observation.
+    ///
+    /// ⚠ It used to be `(state, seq, agent)`, with `asking` hard-coded to `None` inside the
+    /// fixture. That triple could not express the one state this module's rule is about — a peer
+    /// that stopped to ASK — so the gate below could not have been written against it. **A fixture
+    /// that hard-codes a field is a fixture that has decided the question nobody asked yet.**
+    type Reported = Arc<Mutex<AgentObservation>>;
+
+    /// Move the supervised pane to `state` at `seq`, reported as `agent`, asking nothing.
+    fn moved(reported: &Reported, state: AgentState, seq: u64, agent: Option<&str>) {
+        let mut seen = reported.lock().expect("the reported mutex");
+        seen.state = state;
+        seen.seq = seq;
+        seen.agent = agent.map(str::to_string);
+        seen.asking = None;
+    }
+
+    /// Move the supervised pane to BLOCKED at `seq`, showing a question a host can read.
+    ///
+    /// The shape a real agent's tool-permission dialog has: a sentence and a numbered list with a
+    /// marker on one option, which is where a bare Enter would land.
+    fn asks(reported: &Reported, seq: u64) {
+        let mut seen = reported.lock().expect("the reported mutex");
+        seen.state = AgentState::Blocked;
+        seen.seq = seq;
+        seen.asking = Some(Question {
+            asked: vec!["Do you want to make this edit to lib.rs?".to_string()],
+            choices: vec![
+                Choice {
+                    number: 1,
+                    label: "Yes".to_string(),
+                    selected: true,
+                },
+                Choice {
+                    number: 2,
+                    label: "No, and tell Claude what to do differently".to_string(),
+                    selected: false,
+                },
+            ],
+        });
+    }
+
+    /// ⚠⚠⚠ **THE DEFECT, MEASURED WITH TODAY'S API — three readings of ONE pane, ONE peer, ONE
+    /// moment, and they do not agree.**
+    ///
+    /// An agent that stops to ASK has finished its turn. It will not write another word until
+    /// somebody decides something, so every second spent waiting for it after that buys nothing.
+    ///
+    /// Both ends of a turn can see it. It is one
+    /// [`AgentObservation`](crate::access::AgentObservation), pulled from one supervisor, about one
+    /// pane:
+    ///
+    /// | asked at | reads the ask? | costs |
+    /// |---|---|---|
+    /// | the START of a turn — [`Readiness::reached`] | yes, since R366 | milliseconds |
+    /// | the END of a turn — [`Completion::wait`] | **no** | **the whole bound** |
+    ///
+    /// [`DoneWhen::Settles`] holds out for [`AgentState::Idle`], which a blocked peer never
+    /// reaches, so the wait runs to its bound and answers [`Waited::TimedOut`] — *the peer did not
+    /// finish*, about a peer that finished.
+    ///
+    /// # ⚠⚠⚠ Why the bound IS the number
+    ///
+    /// This is expensive rather than untidy because of what a caller is told to put in that bound.
+    /// [`Turn`]'s own doc says to size it to the peer — *"a shell command is a second and an agent
+    /// asked to read a repository is minutes"* — so a CORRECTLY configured agent run pays minutes
+    /// of dead wait for every permission dialog, and the better the caller sized it the more it
+    /// costs. With no bound at all — the legal spelling that means *wait for my peer*, which is the
+    /// one an outer loop wants — the step waits out the RUN's entire remaining clock.
+    ///
+    /// ⚠ [`DoneWhen::Settles`]'s own doc names this and calls waiting *"the honest answer until a
+    /// run can report the question, which is a decision about the step vocabulary and not about
+    /// this rule."* That decision was already made, one door over and BEFORE this:
+    /// [`Verdict::Blocked`](crate::plugin::Verdict::Blocked) carries exactly the
+    /// [`Unanswered`](crate::consent::Unanswered) the barrier builds. **Both halves existed and
+    /// nothing joined them.**
+    ///
+    /// ⚠⚠ R375's shape a second time: the finding is not *"a blocked peer is hard"* — it is an
+    /// ASYMMETRY between the two ends of one turn in one crate, and it is only a finding as two
+    /// numbers about one pane. Reading the source says one end is missing a check; it does not say
+    /// what the omission costs, and the cost is the whole argument.
+    ///
+    /// # ⚠⚠⚠ THE INSTRUMENT IS KEPT AND RE-POINTED, NOT DELETED
+    ///
+    /// The measurement above went red the moment [`Over::Asking`] existed, which is what a gate
+    /// that measures a defect does when the defect is fixed. Deleting it would throw away the only
+    /// thing that says what the fix was worth, so it reads the OTHER way now: the same three
+    /// readings of the same pane, with the middle one asserting that the ask ends the wait at once
+    /// instead of at the bound. **The bound is still the discriminator, and it is still the
+    /// number** — a wait that has to run out to answer cannot pass this, whichever way the
+    /// assertion points.
+    #[test]
+    fn a_turn_that_ends_in_a_question_says_so_instead_of_waiting_out_its_bound() {
+        /// Long enough that a wait which runs to it is unmistakable, short enough to pay in a
+        /// suite. A REAL caller's is minutes — see the doc above.
+        const BOUND: Duration = Duration::from_millis(1_200);
+        /// What "at once" has to beat. A quarter of the bound is far outside any polling
+        /// interval and far inside the bound, so neither reading can be an artefact of the clock.
+        const AT_ONCE: Duration = Duration::from_millis(300);
+
+        // ── THE CONTROL: the contract works, and it is fast when the peer settles ──
+        //
+        // Without this the two readings below could both be explained by a contract that never
+        // fires at all, and the measurement would be about nothing.
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        moved(&reported, AgentState::Idle, 8, Some("claude"));
+        let started = Instant::now();
+        let settled = done.wait(&access, pane, BOUND, &RunContext::uncancellable());
+        let settling_cost = started.elapsed();
+        assert_eq!(
+            settled,
+            Over::Yes,
+            "⚠ THE CONTROL FAILED — a peer that worked and came back to rest must end its turn, \
+             or neither number below means anything",
+        );
+        assert!(
+            settling_cost < AT_ONCE,
+            "the control must be fast, or `the whole bound` is not the discriminator it looks \
+             like: {settling_cost:?}",
+        );
+
+        // ── WHAT THE DEFECT WAS, NOW THE OTHER WAY UP: the same peer, the same pane, one state
+        //    further on ──
+        //
+        // It did not go quiet. It stopped and asked — which is the OTHER way a real agent's turn
+        // ends, and the one that happens whenever it wants to touch anything.
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        asks(&reported, 9);
+        let started = Instant::now();
+        let asked = done.wait(&access, pane, BOUND, &RunContext::uncancellable());
+        let asking_cost = started.elapsed();
+        let Over::Asking(Some(question)) = &asked else {
+            panic!(
+                "⚠⚠⚠ the turn ended in a QUESTION and the contract has to say which ending that \
+                 was. `NotYet` here is what this gate measured before [`Over`] existed, and it is \
+                 wrong twice over: it means *the peer did not finish its turn* about a peer that \
+                 finished it, and it hands the caller no way at all to learn that a question is \
+                 on the screen. Got {asked:?}",
+            );
+        };
+        assert!(
+            question.asked.iter().any(|line| line.contains("lib.rs")),
+            "and it carries WHAT is being asked, so the barrier that decides next has the dialog \
+             rather than a word about one: {question:?}",
+        );
+        assert!(
+            asking_cost < AT_ONCE,
+            "⚠⚠⚠ THE NUMBER THIS GATE WAS BUILT FOR, READ THE OTHER WAY: the wait used to run to \
+             its FULL bound here ({BOUND:?}) against a peer that had already stopped and could \
+             not have said another word — minutes per dialog once a caller sizes the bound the \
+             way this contract's doc tells them to, and the run's whole remaining clock when they \
+             decline a bound at all. It now costs {asking_cost:?}",
+        );
+
+        // ── THE SIBLING THAT DOES NOT HAVE IT: the same pane, still asking, asked by the other
+        //    end of the same turn ──
+        //
+        // ⚠ This is what makes the reading above a defect rather than a limit. The evidence is
+        // not hard to get, not slow to get, and not missing from this host: the barrier this very
+        // crate puts in front of every injection reads it out of the same supervisor in
+        // milliseconds and says WHAT is being asked.
+        let mut barrier = Readiness::new(None, None, None, Attended::NoOne);
+        let started = Instant::now();
+        let reached = barrier
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("the barrier must answer about a pane that is asking");
+        let barrier_cost = started.elapsed();
+        let Reached::Asking(unanswered) = &reached else {
+            panic!(
+                "⚠ THE SIBLING FAILED, so the asymmetry this gate measures is not the one it \
+                 names: the START of a turn must read the ask. Got {reached:?}",
+            );
+        };
+        // ⚠ Through `question()`, not through `explain()`. `explain` is the sentence about WHY
+        // nothing was answered ("no consent … so it stopped"), and asserting on it would have made
+        // this a gate about the refusal rather than about the question — which the first run of
+        // this gate said, by failing.
+        let asked = unanswered
+            .question()
+            .expect("the barrier read a question this host can parse");
+        assert!(
+            asked.asked.iter().any(|line| line.contains("lib.rs")),
+            "and it reads WHAT is being asked, down to the option a bare Enter would land on — \
+             which is the thing the end of the turn cannot even represent: {asked:?}",
+        );
+        assert_eq!(
+            asked.selected().map(|choice| choice.number),
+            Some(1),
+            "including WHERE a bare Enter would land, which is what makes typing into it unsafe",
+        );
+        assert!(
+            barrier_cost < AT_ONCE,
+            "⚠⚠⚠ THE ASYMMETRY, as the two numbers side by side: the START of a turn answers the \
+             ask in {barrier_cost:?} and the END of the same turn spends {asking_cost:?} failing \
+             to. Same pane, same peer, same supervisor, same instant — the only difference is \
+             which end of the turn is asking",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
 
     /// ⚠⚠⚠ **A PEER'S REST FROM BEFORE THE TURN IS NOT ITS ANSWER** — the failure this rule would
     /// otherwise introduce, and the reason it was gated before it was wired to anything.
@@ -439,7 +762,7 @@ mod tests {
                 Duration::from_millis(200),
                 &RunContext::uncancellable(),
             ),
-            Waited::TimedOut,
+            Over::NotYet,
             "⚠⚠⚠ the peer is at rest and named, and it has NOT answered — it never started. A \
              contract satisfied here captures the screen from before the model wrote a word and \
              publishes it as the model's reply.",
@@ -459,8 +782,7 @@ mod tests {
         done.begin(&access, pane);
 
         // The peer answers and goes quiet — a published change, which is what `seq` counts.
-        *reported.lock().expect("the reported mutex") =
-            (AgentState::Idle, 8, Some("claude".to_string()));
+        moved(&reported, AgentState::Idle, 8, Some("claude"));
 
         assert_eq!(
             done.wait(
@@ -469,10 +791,66 @@ mod tests {
                 Duration::from_secs(5),
                 &RunContext::uncancellable(),
             ),
-            Waited::Ready,
+            Over::Yes,
             "a peer that worked and came back to rest has finished its turn — and this is the \
              evidence the end of a turn never consulted, while the START of one has read it since \
              R359b",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A QUESTION FROM BEFORE THE TURN IS NOT THIS TURN'S ENDING** — the same discipline the
+    /// gate two above holds `Idle` to, applied to the ending that was just added.
+    ///
+    /// A supervisor's verdict SETTLES: a real detector goes on calling a pane blocked for its
+    /// hysteresis window after the dialog has left the screen, which
+    /// [`Consent`](crate::consent)'s own answering path measured end to end through a live daemon
+    /// and no fixture here can model, because a fixture derives its state from the screen and so
+    /// has no lag. Read as a bare predicate, *"is it blocked?"* asked right after a stimulus can
+    /// therefore be answered YES by a question that was already gone — and the turn would end on a
+    /// dialog nobody is looking at, having captured nothing.
+    ///
+    /// So the peer is left EXACTLY as one is in that window: blocked, named, showing a readable
+    /// question, and **not having moved since the turn armed**. The contract must refuse it.
+    ///
+    /// ⚠ Then it MOVES, and the same peer's same question does end the turn — without which this
+    /// gate is satisfied by a rule that never reports an ask at all, which is precisely the state
+    /// the code was in before this round.
+    #[test]
+    fn a_question_that_was_already_up_is_not_this_turns_ending() {
+        let (access, pane, reported) = supervised(AgentState::Idle, 7);
+        // Up BEFORE the contract arms, and still up after — the hysteresis window.
+        asks(&reported, 7);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(200),
+                &RunContext::uncancellable(),
+            ),
+            Over::NotYet,
+            "⚠⚠⚠ the question on that screen is one this turn never provoked — it was there when \
+             the turn began. A contract satisfied here ends a turn the peer has not started, and \
+             hands a caller a dialog to answer that may already have been answered",
+        );
+
+        // And now the peer really does raise one: same state, same question, a `seq` that moved.
+        asks(&reported, 8);
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_secs(5),
+                    &RunContext::uncancellable(),
+                ),
+                Over::Asking(Some(_)),
+            ),
+            "and a question this turn DID provoke ends it — without this half the gate above \
+             passes for a rule that can never report an ask, which is what the code did before",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
@@ -489,8 +867,7 @@ mod tests {
         done.begin(&access, pane);
 
         // It started, and has been busy through several published changes.
-        *reported.lock().expect("the reported mutex") =
-            (AgentState::Working, 11, Some("claude".to_string()));
+        moved(&reported, AgentState::Working, 11, Some("claude"));
 
         assert_eq!(
             done.wait(
@@ -499,7 +876,7 @@ mod tests {
                 Duration::from_millis(200),
                 &RunContext::uncancellable(),
             ),
-            Waited::TimedOut,
+            Over::NotYet,
             "a peer mid-answer is not a peer that answered — capturing here truncates it",
         );
         access.lifecycle().expect("lifecycle").close(pane);
@@ -523,8 +900,7 @@ mod tests {
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
         // At rest, and moved — but it is not the program the prompt was given to.
-        *reported.lock().expect("the reported mutex") =
-            (AgentState::Idle, 8, Some("codex".to_string()));
+        moved(&reported, AgentState::Idle, 8, Some("codex"));
         assert_eq!(
             done.wait(
                 &access,
@@ -532,13 +908,13 @@ mod tests {
                 Duration::from_millis(200),
                 &RunContext::uncancellable(),
             ),
-            Waited::TimedOut,
+            Over::NotYet,
             "⚠⚠ the turn was addressed to `claude` and `codex` is what is at rest there now — a \
              contract satisfied here reports another program's quiet as this question's answer",
         );
 
         // Named nobody: the same absence of evidence, spelled the other way.
-        *reported.lock().expect("the reported mutex") = (AgentState::Idle, 9, None);
+        moved(&reported, AgentState::Idle, 9, None);
         assert_eq!(
             done.wait(
                 &access,
@@ -546,7 +922,7 @@ mod tests {
                 Duration::from_millis(200),
                 &RunContext::uncancellable(),
             ),
-            Waited::TimedOut,
+            Over::NotYet,
             "an observation naming no agent is not evidence about the one that was asked",
         );
         access.lifecycle().expect("lifecycle").close(pane);
@@ -562,7 +938,7 @@ mod tests {
                 Duration::from_millis(200),
                 &RunContext::uncancellable(),
             ),
-            Waited::TimedOut,
+            Over::NotYet,
             "a host that cannot see agents must not report every turn instantly complete",
         );
         bare.lifecycle().expect("lifecycle").close(pane);
@@ -580,7 +956,7 @@ mod tests {
                 Duration::from_secs(10),
                 &RunContext::uncancellable(),
             ),
-            Waited::Ready,
+            Over::Yes,
             "a one-shot peer's exit is what makes its capture complete",
         );
         ended.lifecycle().expect("lifecycle").close(pane);
@@ -593,7 +969,7 @@ mod tests {
                 Duration::from_millis(200),
                 &RunContext::uncancellable(),
             ),
-            Waited::TimedOut,
+            Over::NotYet,
             "⚠⚠ and a peer that never exits can only end this wait on the CLOCK — the whole \
              reason a second kind of evidence is owed, spelled here as a measurement rather than \
              as a claim in a comment",
