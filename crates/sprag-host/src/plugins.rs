@@ -62,6 +62,26 @@ pub const PLUGINS_SLOT: &str = "plugins";
 /// different ceiling from the one the daemon enforces.
 pub const GUARDRAIL_DEFAULTS_SLOT: &str = "guardrail_defaults";
 
+/// The REQUEST key carrying a consent — [`Consent::WIRE_KEY`], re-exported.
+///
+/// # ⚠⚠ Why a projection rather than a literal at each mouth
+///
+/// The mouths that build a `run` call are not all able to depend on `sprag-plugin`: `sprag-mcp`
+/// carries it as a DEV-dependency only, and a tool schema written from a literal `"asked"` would be
+/// a second definition of a name whose whole job is to be the same word on both sides of the wire.
+/// These three are `const` projections of the type that owns them, so a rename there is a compile
+/// error here rather than a mouth that quietly stops matching.
+///
+/// ⚠ They are the REQUEST-side names and are deliberately separate from [`RUN_ASKED_KEY`], which
+/// spells the same word about a different thing: that one is the QUESTION'S OWN LINES in an answer,
+/// this one is the NEEDLE a caller sends. One is what the pane said; the other is what the caller
+/// will accept. Merging them because they read alike is how two concepts come to move together.
+pub const CONSENT_KEY: &str = Consent::WIRE_KEY;
+/// The [`CONSENT_KEY`] needle naming WHICH QUESTION — [`Consent::ASKED_KEY`], re-exported.
+pub const CONSENT_ASKED_KEY: &str = Consent::ASKED_KEY;
+/// The [`CONSENT_KEY`] needle naming WHICH OPTION — [`Consent::ANSWER_KEY`], re-exported.
+pub const CONSENT_ANSWER_KEY: &str = Consent::ANSWER_KEY;
+
 /// The answer key naming a run.
 const RUN_ID_KEY: &str = "id";
 /// The answer key carrying the pane whose occupant asked for a run — absent for a run nobody
@@ -188,6 +208,15 @@ sprag_vt::closed_set! {
         Agent,
         /// Run two endpoints against each other, turn by turn.
         Dialogue,
+        /// ANSWER the question one pane's peer has stopped to ask, once, and stop.
+        ///
+        /// ⚠ The one that is not a loop, and the reason it is a plugin at all rather than a
+        /// synchronous verb: answering takes a keystroke, a look at what the peer did with it, and
+        /// possibly a second keystroke — seconds of waiting close to the panes. A wire action doing
+        /// that would block the serve loop; a run does it on its own thread and hands back
+        /// everything the run registry already gives (an id, a cancel flag, a journal, and the
+        /// count of decisions taken on somebody's behalf).
+        Answer,
     }
 }
 
@@ -211,6 +240,7 @@ impl PluginName {
             Self::Pipe => crate::wire::PluginGrammar::PIPE_FORM,
             Self::Agent => crate::wire::PluginGrammar::AGENT_FORM,
             Self::Dialogue => crate::wire::PluginGrammar::DIALOGUE_FORM,
+            Self::Answer => crate::wire::PluginGrammar::ANSWER_FORM,
         }
     }
 
@@ -222,6 +252,7 @@ impl PluginName {
             Self::Pipe => "pipe",
             Self::Agent => "agent",
             Self::Dialogue => "dialogue",
+            Self::Answer => "answer",
         }
     }
 
@@ -500,6 +531,30 @@ impl PluginsExternal {
                 );
                 Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
             }
+            PluginName::Answer => {
+                let pane = require_pane_id(map, "pane")?;
+                self.require_pane(pane)?;
+                // ⚠⚠ REQUIRED, alone among the forms — see
+                // [`PluginGrammar::MUST_ANSWER`](crate::wire::PluginGrammar::MUST_ANSWER). A run
+                // with nothing to answer would occupy a run slot to do what not calling does.
+                // Read through the SAME parser the optional key uses, so the two spellings of this
+                // contract cannot come to admit different objects.
+                let consent = opt_may_answer(map)?.ok_or_else(|| {
+                    refused(format!(
+                        "an `answer` run needs a {} — {{{}: …, {}: …}}, quoting the peer's own \
+                         words. Without one there is nothing it may type, which is what not \
+                         calling it already does.",
+                        Consent::WIRE_KEY,
+                        Consent::ASKED_KEY,
+                        Consent::ANSWER_KEY,
+                    ))
+                })?;
+                let label = format!("answer pane={}", pane.0);
+                Ok((
+                    PluginKind::Answer(sprag_plugin::Answer::new(pane, consent)),
+                    label,
+                ))
+            }
         }
     }
 
@@ -736,6 +791,7 @@ enum PluginKind {
     // larger than the byte-relay plugins; boxing the one big variant keeps the
     // enum small instead of every value paying its footprint.
     Dialogue(Box<Dialogue>),
+    Answer(sprag_plugin::Answer),
 }
 
 impl PluginKind {
@@ -745,6 +801,7 @@ impl PluginKind {
             PluginKind::Pipe(pipe) => pipe,
             PluginKind::Agent(agent) => agent,
             PluginKind::Dialogue(dialogue) => dialogue.as_mut(),
+            PluginKind::Answer(answer) => answer,
         }
     }
 
@@ -753,9 +810,13 @@ impl PluginKind {
     /// also sizes a bare `max_cost` from the wire.
     fn default_cost(&self) -> Cost {
         match self {
-            PluginKind::Orchestrator(_) | PluginKind::Pipe(_) | PluginKind::Agent(_) => {
-                Cost::Bytes(DEFAULT_MAX_BYTES)
-            }
+            PluginKind::Orchestrator(_)
+            | PluginKind::Pipe(_)
+            | PluginKind::Agent(_)
+            // ⚠ Bytes, and the ceiling never binds: the most an answer can spend is two
+            // keystrokes. It is here because a run's cost unit is its plugin's, and a plugin with
+            // no unit would be a hole in the one guarantee the guardrails make.
+            | PluginKind::Answer(_) => Cost::Bytes(DEFAULT_MAX_BYTES),
             PluginKind::Dialogue(_) => Cost::Tokens(DEFAULT_MAX_TOKENS),
         }
     }
@@ -2027,8 +2088,8 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            22,
-            "one call per published word: the ONE plugin word that selects each of the four forms, \
+            23,
+            "one call per published word: the ONE plugin word that selects each of the FIVE forms, \
              the two reply formats on each of a dialogue's two endpoints, the readiness barrier's \
              FOUR `match` words on each of the three plugins that inject — the last two being \
              `runs` and `settles`, which ask the pane's terminal and its supervisor rather than \
@@ -2052,7 +2113,7 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            15,
+            17,
             "one probe per open string argument of every form: an orchestrator's stimulus, \
              sentinel and ready_when, a PIPE's ready_when, an agent's prompt and ready_when, and \
              a dialogue's seed and two labels — PLUS the ANSWERING CONTRACT's two needles on each \
@@ -2084,12 +2145,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            41,
+            46,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
              malformed rather than declined. ⚠ The three newest are `may_answer` on each injecting \
              form, and its declinability is the whole default: a run that names no consent answers \
-             nothing and reports the question, which is what every run did before the key existed",
+             nothing and reports the question, which is what every run did before the key existed. \
+             ⚠⚠ The FIVE this round added are the `answer` form's own optionals — its `opened_by` \
+             and its three guardrail fields — and NOT its consent, which is the one argument on \
+             this surface that a form REQUIRES: `may_answer` is declinable on the four looping \
+             forms and mandatory on the one whose whole content it is",
         );
     }
 
@@ -2098,10 +2163,15 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            67,
+            77,
             "one probe per declared argument of every FORM, nesting included: SIXTEEN for an \
-             orchestrator, FIFTEEN for a pipe, NINETEEN for an agent, sixteen for a dialogue, and \
-             one to cancel. ⚠ The newest NINE are the ANSWERING CONTRACT on the three forms that \
+             orchestrator, FIFTEEN for a pipe, NINETEEN for an agent, sixteen for a dialogue, TEN \
+             to answer a pane, and one to cancel. ⚠ The newest TEN are the whole `answer` form, \
+             which is the answering contract with NO LOOP AROUND IT: a pane, a consent, and the \
+             bounds every run carries. It declares no stimulus and no readiness barrier, and both \
+             absences are the design — the only bytes it can emit are the ones the consent \
+             authorised, and a pane whose program has not started cannot be showing a dialog. \
+             ⚠ The nine before them are the ANSWERING CONTRACT on the three forms that \
              inject — `may_answer` and its two needles — which completes the turn's three declared \
              contracts: when it may START (`ready_when`), what makes it OVER (`done_when`), and \
              what the run may ANSWER if the peer interrupts it with a question of its own. ⚠ The \
@@ -2125,13 +2195,14 @@ mod tests {
                 crate::wire::PLUGINS_GRAMMAR
             )
             .count_or_panic(),
-            24,
-            "one per nested field of every form: THREE guardrail fields on each of the four run \
+            29,
+            "one per nested field of every form: THREE guardrail fields on each of the FIVE run \
              forms, since a run is bounded in steps, in spend and in time, PLUS the readiness \
              barrier's `match` and `marker` on each of the three that inject, PLUS the consent's \
-             `asked` and `answer` on those same three. ⚠ The consent's two names were CHOSEN so \
-             this holds: `done_when`'s first draft copied `ready_when`'s `match` and collided with \
-             it on exactly this gate",
+             `asked` and `answer` on FOUR — those three and the `answer` form, which is the \
+             consent with no loop around it. ⚠ The consent's two names were CHOSEN so this holds: \
+             `done_when`'s first draft copied `ready_when`'s `match` and collided with it on \
+             exactly this gate",
         );
     }
 

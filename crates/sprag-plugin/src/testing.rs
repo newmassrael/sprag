@@ -146,6 +146,255 @@ pub(crate) fn refused_naming(
     );
 }
 
+// ── THE ANSWERING CONTRACT'S PEER ─────────────────────────────────────────────────────────────
+//
+// ⚠⚠⚠ EVERY GATE THAT USES THIS DRIVES A REAL PSEUDOTERMINAL RUNNING A REAL MENU, and the
+// observation the product reads is derived by the SHIPPING parser (`sprag_detect::question`) from
+// that pane's actual screen — the same derivation the daemon's own `agent_state_source` makes. A
+// double reporting a hand-built `Question` would have asserted a belief about dialogs; this asserts
+// what the product does to one.
+//
+// ⚠⚠ AND THE PEER SAYS WHICH KEY IT ACTED ON. Every claim here is about which keystrokes a run
+// sends, so a fixture that only reported the OUTCOME would pass for a run that typed a digit it did
+// not need — the exact over-typing this contract is about. The peer prints
+// `TOOK <option> VIA <byte> AFTER <the bytes it ignored>` when it acts, `SAW <byte>` for a key it
+// ignores, and `EXTRA <byte>` for anything that arrives after it is done. The pane is the witness.
+//
+// ⚠ `AFTER` exists because ACTING CLEARS THE SCREEN, so the `SAW` lines that led up to it are wiped
+// by the redraw — and the ORDER two keys went in is exactly what an escalation gate has to assert.
+// Carried in a variable, it survives the clear.
+//
+// ⚠⚠ IT LIVES HERE, not beside one caller's gates, because TWO paths reach a blocked peer now: a
+// run's readiness barrier (`crate::readiness`) and the one-shot pane answer (`crate::answer`). A
+// second copy of this peer would let the two drift, and what they would drift about is what a
+// dialog does to a keystroke — which is the one belief this whole contract refuses to hold on its
+// own authority.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use sprag_detect::AgentState;
+use sprag_terminal::{CommandBuilder, PaneId, Workspace};
+
+use crate::access::{
+    AgentObservation, AgentStateSource, Authority, PaneAccess, WorkspacePaneAccess,
+};
+
+/// A peer that draws a bottom-anchored numbered menu and reacts to single keystrokes, in one of
+/// the four dialog behaviours a run has to survive.
+///
+/// * `numbers` — the DIGIT selects outright and Enter does nothing. The measured behaviour of
+///   the agents this reads, and the one where a reflexive trailing Enter lands on whatever the
+///   peer shows next.
+/// * `marker` — the digit only MOVES the highlight; Enter commits whatever it is on. The
+///   behaviour where an Enter is required, and may only be sent once the marker can be SEEN on
+///   the authorised option.
+/// * `either` — both, which is what a real agent's permission dialog does. The kind that makes
+///   *"do not type a key you do not need"* a claim with consequences.
+/// * `deaf` — nothing works. The peer that makes [`Refusal::NotTaken`] reachable.
+pub(crate) fn menu_peer(kind: &str) -> String {
+    format!(
+        r#"
+stty -icanon -echo 2>/dev/null
+kind={kind}
+sel=1
+seen=''
+readbyte() {{ dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }}
+draw() {{
+  printf '\033[2J\033[H'
+  printf 'Bash command\r\n'
+  printf 'Do you want to proceed?\r\n'
+  i=1
+  for label in 'Yes' 'Yes, and do not ask again' 'No, and tell me what to do'; do
+if [ "$i" = "$sel" ]; then printf '\342\235\257 '; else printf '  '; fi
+printf '%s. %s\r\n' "$i" "$label"
+i=$((i+1))
+  done
+}}
+took() {{
+  printf '\033[2J\033[H'
+  printf 'TOOK %s VIA %s AFTER%s\r\n' "$sel" "$1" "$seen"
+  while :; do
+e=$(readbyte)
+[ -n "$e" ] || exit 0
+printf 'EXTRA %s\r\n' "$e"
+  done
+}}
+draw
+while :; do
+  k=$(readbyte)
+  [ -n "$k" ] || exit 0
+  case "$k" in
+49|50|51)
+  case "$kind" in
+    numbers|either) sel=$((k-48)); took "$k" ;;
+    marker) sel=$((k-48)); draw ;;
+    *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
+  esac ;;
+13|10)
+  case "$kind" in
+    marker|either) took "$k" ;;
+    *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
+  esac ;;
+*) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
+  esac
+done
+"#
+    )
+}
+
+/// The byte the peer reports for Enter, so a gate names a KEY and not a number nobody can read.
+/// `VIA 10` is Enter; `VIA 50` is the digit `2`.
+///
+/// ⚠ TEN, not thirteen — [`KeyStroke::named("Enter")`](crate::access::KeyStroke::named) encodes
+/// LF and not CR, which the fixture MEASURED rather than assumed (the first draft of these
+/// gates asserted `13` and the pane said `10`). The peer accepts both, so the gates are about
+/// which key the RUN chose to send and not about which byte a terminal calls Enter.
+pub(crate) const ENTER_BYTE: &str = "10";
+
+/// A pane running `script` under `/bin/sh`, wrapped in a pane-access whose SUPERVISOR is derived
+/// from that pane's own screen by the shipping choice-list parser.
+///
+/// ⚠ `Blocked` exactly when the screen carries a menu. That is the daemon's own rule for the
+/// `asking` field (`agent_state_source`), reproduced here rather than mocked, so a gate cannot pass
+/// against a question the product would not have parsed — and *"this pane is not asking"* is that
+/// same parser's verdict rather than a `None` a double chose to hand back.
+fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .expect("the workspace mutex")
+            .spawn(command, "peer".to_string(), 60, 12)
+            .expect("spawn the peer")
+    };
+    // ⚠⚠⚠ IT SETTLES, like the real one. A supervisor publishes a resting verdict only once a
+    // candidate has held for its window, so a pane whose dialog has just been answered goes on
+    // reading `Blocked` with NOTHING readable on it for that long. A source derived straight
+    // from the screen has no such lag — and its absence hid a live defect from every gate in
+    // this file until an end-to-end run through a real daemon met it: the step after a
+    // successful answer read the stale verdict as a fresh one and reported that a person was
+    // needed. **A double that cannot be wrong in the way the real thing is wrong is a double
+    // that asserts your belief.**
+    //
+    // ⚠ Far shorter than `sprag_detect::DEFAULT_SETTLE`, because what is under test is that the
+    // product tolerates a lag AT ALL rather than any particular length of one — and a gate that
+    // paid two seconds per answer would be bought with wall-clock nobody gets back.
+    const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
+    let source = {
+        let workspace = Arc::clone(&workspace);
+        let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        Arc::new(move |id: PaneId| {
+            let guard = workspace.lock().expect("the workspace mutex");
+            guard.pane(id)?.pty().with_screen(|screen| {
+                let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
+                let mut seen = last_menu.lock().expect("the settle mutex");
+                if asking.is_some() {
+                    *seen = Some(std::time::Instant::now());
+                }
+                let settling = seen.is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
+                Some(AgentObservation {
+                    state: if asking.is_some() || settling {
+                        AgentState::Blocked
+                    } else {
+                        AgentState::Idle
+                    },
+                    agent: Some("claude".to_string()),
+                    authority: Authority::Scraped {
+                        rule: Some("dialog-choice-list".to_string()),
+                    },
+                    seq: 1,
+                    asking,
+                })
+            })
+        }) as AgentStateSource
+    };
+    let access = WorkspacePaneAccess::new(workspace).with_agent_state(Some(source));
+    (access, pane)
+}
+
+/// A pane running [`menu_peer`], already showing its menu.
+pub(crate) fn asking_peer(kind: &str) -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane) = peer_running(menu_peer(kind));
+    // The menu must be UP before anything asks the barrier, or the gate is about a pane that
+    // was never blocked.
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(10)
+        && crate::readiness::peer_asking(&access, pane)
+            .flatten()
+            .is_none()
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        crate::readiness::peer_asking(&access, pane)
+            .flatten()
+            .is_some(),
+        "the fixture's peer must be showing a menu the shipping parser reads, or this gate is \
+         about nothing: {:?}",
+        access.pane_collapsed(pane),
+    );
+    (access, pane)
+}
+
+/// Wait (bounded) for `pane` to show `needle`, then hand back the whole collapsed screen —
+/// which is what every assertion below reads, including the ones about what is NOT there.
+pub(crate) fn screen_showing(access: &WorkspacePaneAccess, pane: PaneId, needle: &str) -> String {
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5)
+        && !access
+            .pane_collapsed(pane)
+            .is_some_and(|text| text.contains(needle))
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    access.pane_collapsed(pane).unwrap_or_default()
+}
+
+/// A pane whose peer is plainly NOT asking anything — the control every *"it answered"* gate needs
+/// beside it, and the state a supervisor's read races.
+///
+/// # ⚠⚠ Why it runs a program rather than being an empty pane
+///
+/// A pane with nothing in it is a pane whose screen is blank, and a blank screen is what a peer
+/// looks like for the instant before it draws. This one prints a line and then BLOCKS ON ITS
+/// INPUT, so a gate that reads it is reading a settled pane running something — and anything the
+/// product typed at it would be visible, which is the assertion.
+///
+/// ⚠ Its supervisor is the same screen-derived one [`asking_peer`] builds, so *"not asking"* here
+/// is the shipping parser's verdict about a real screen rather than a `None` a double handed back.
+pub(crate) fn silent_peer() -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane) = peer_running(
+        "stty -icanon -echo 2>/dev/null\n\
+         printf 'AT REST\\r\\n'\n\
+         while :; do\n\
+           k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n')\n\
+           [ -n \"$k\" ] || exit 0\n\
+           printf 'SAW %s\\r\\n' \"$k\"\n\
+         done\n"
+            .to_string(),
+    );
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(10)
+        && !access
+            .pane_collapsed(pane)
+            .is_some_and(|text| text.contains("AT REST"))
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        crate::readiness::peer_asking(&access, pane).is_none(),
+        "⚠⚠ the control must be a pane the shipping parser reads as NOT blocked, or a gate about \
+         `there was nothing to answer` is about a parse failure instead: {:?}",
+        access.pane_collapsed(pane),
+    );
+    (access, pane)
+}
+
 #[cfg(test)]
 mod tests {
     use super::refused_naming;

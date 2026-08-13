@@ -37,6 +37,7 @@ pub(crate) mod sm {
 
 pub mod access;
 pub mod agent;
+pub mod answer;
 pub mod completion;
 pub mod consent;
 pub mod deliver;
@@ -59,6 +60,7 @@ pub use access::{
     WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
+pub use answer::Answer;
 pub use completion::{Completion, DoneWhen};
 pub use consent::{Answered, Consent, Refusal, Taken, Unanswered};
 pub use deliver::{Delivered, Delivery, deliver, has_painted};

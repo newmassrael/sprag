@@ -222,12 +222,24 @@ fn filler_for(arg: &ArgGrammar) -> Value {
         // dialogue's endpoint, and the filler table had no arm for one — the plugin surface's
         // checks found that on their first run.
         (None, "array") => Value::from(vec![Value::from("/bin/echo")]),
-        // ⚠ NO ARM FOR A REQUIRED OBJECT, deliberately: every object argument on this wire today is
-        // optional (`guardrails`, `ready_when`), so an arm for one would be a fallback nothing
-        // drives — wrong the first time it ran, and R318's rule. The first required object falls to
-        // the string filler below and fails NAMING the argument, which is exactly how the missing
-        // array arm was found.
+        // ⚠⚠ A REQUIRED OBJECT IS FILLED FROM ITS OWN FIELDS, and this arm was RESERVED rather than
+        // written: it read *"every object argument on this wire today is optional, so an arm for one
+        // would be a fallback nothing drives — the first required object falls to the string filler
+        // below and fails NAMING the argument"*. It did exactly that, on the first form to carry
+        // one (`run`'s `answer`, whose consent IS the call), and five checks reported five
+        // arguments they had not touched while the daemon was refusing the string beside them.
         //
+        // ⚠ RECURSIVE, through this same function: a field of a nest is filled by whatever rule its
+        // own type has, so a nest of nests needs nothing further here. Optional fields are LEFT OUT
+        // — a filler exists to make a call well-formed, and adding what a caller need not send would
+        // measure this harness's generosity rather than the daemon's grammar.
+        (None, "object") => Value::Object(
+            arg.fields
+                .iter()
+                .filter(|field| !field.optional)
+                .map(|field| (field.name.to_owned(), filler_for(field)))
+                .collect(),
+        ),
         // A window NAME the fixture does not hold: it parses, which is all this filler has to do,
         // and it cannot collide with a real window.
         (None, _) => Value::from("filler-not-a-window"),

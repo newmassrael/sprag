@@ -931,6 +931,8 @@ impl PluginGrammar {
     const AGENT: &'static [&'static str] = &[crate::plugins::PluginName::Agent.wire_str()];
     /// `dialogue`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
     const DIALOGUE: &'static [&'static str] = &[crate::plugins::PluginName::Dialogue.wire_str()];
+    /// `answer`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
+    const ANSWER: &'static [&'static str] = &[crate::plugins::PluginName::Answer.wire_str()];
 
     /// The `plugin` discriminator at the one word that selects this form.
     const fn selected_by(word: &'static [&'static str]) -> ArgGrammar {
@@ -1064,6 +1066,31 @@ impl PluginGrammar {
     )
     .optional();
 
+    /// The SAME consent, REQUIRED — the `answer` form, whose whole content it is.
+    ///
+    /// # ⚠⚠⚠ Why the one argument that is optional everywhere else is mandatory here
+    ///
+    /// On the four looping forms a consent is a thing a run MAY be given, and its absence is the
+    /// default that answers nothing. This form has no other content: a run told to answer a pane
+    /// with no consent has been told to type nothing at a peer that is asking, which is what NOT
+    /// calling it does, for free, without occupying a run slot.
+    ///
+    /// ⚠ And the consequence is worth stating, because it removes a whole arm from what a caller
+    /// can meet: [`Refusal::NoConsent`](sprag_plugin::Refusal::NoConsent) is UNREACHABLE through
+    /// this form. The grammar refuses the call at the door, so every refusal an `answer` run can
+    /// report is one about the question on the screen — something the caller can fix by re-reading
+    /// the dialog rather than by re-reading their own call.
+    ///
+    /// ⚠ It is the same [`ArgGrammar`] value, one `.optional()` short, and NOT a second spelling:
+    /// a client that can build a consent for `orchestrate` hands the identical object here.
+    pub const MUST_ANSWER: ArgGrammar = ArgGrammar::nested(
+        sprag_plugin::Consent::WIRE_KEY,
+        &[
+            ArgGrammar::open(sprag_plugin::Consent::ASKED_KEY, "string"),
+            ArgGrammar::open(sprag_plugin::Consent::ANSWER_KEY, "string"),
+        ],
+    );
+
     /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
     pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::ORCHESTRATOR),
@@ -1127,6 +1154,34 @@ impl PluginGrammar {
         ArgGrammar::open("timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_TOKENS,
+    ]);
+
+    /// `answer` — ANSWER THE QUESTION ONE PANE'S PEER IS ASKING, once, and stop.
+    ///
+    /// # ⚠⚠⚠ The form that makes the safe act reachable where the question is published
+    ///
+    /// R367 put what a peer is asking on the pane-level surface — the options, and which one a bare
+    /// Enter would take — and left no way to answer it there. What a caller had instead was
+    /// `send_keys`: a raw digit and a raw Enter, carrying none of the guarantees the other four
+    /// forms get from [`MAY_ANSWER`](Self::MAY_ANSWER). The number is a SCREEN fact that a
+    /// re-render invalidates, the Enter lands wherever the peer has got to, nothing checks that the
+    /// key was taken, and nothing records that a machine answered at all.
+    ///
+    /// This form is the same contract with no loop around it. It takes the pane and the consent and
+    /// nothing else — there is no stimulus, so the only bytes it can ever emit are the ones
+    /// [`Consent::covers`](sprag_plugin::Consent::covers) authorised on the question that is on the
+    /// screen at the moment it looks.
+    ///
+    /// ⚠ **NO `ready_when`, and its absence is the design.** A pane whose program has not started
+    /// cannot be showing a dialog, so there is nothing for a readiness barrier to wait for. The
+    /// barrier is still the door — see [`Answer`](sprag_plugin::Answer) — but the question it is
+    /// asked here is only ever the answering one.
+    pub const ANSWER_FORM: CallForm = CallForm::object(&[
+        Self::selected_by(Self::ANSWER),
+        ArgGrammar::open("pane", "int"),
+        Self::MUST_ANSWER,
+        Self::OPENED_BY,
+        Self::GUARDRAILS_BYTES,
     ]);
 
     /// [`CANCEL_ACTION`](crate::plugins::CANCEL_ACTION) — the run to stop.
@@ -7343,11 +7398,22 @@ mod tests {
                 "sprag_workspace/pane_<id>/sprag_input/paste:",
                 "sprag_workspace/pane_<id>/sprag_input/text:",
                 // THE PLUGIN HOST, whose two verbs published nothing until R353. ⚠ `plugin` appears
-                // FOUR TIMES because each form publishes only the word that SELECTS it — the union is
+                // FIVE TIMES because each form publishes only the word that SELECTS it — the union is
                 // the whole vocabulary, and a client can tell which key set goes with which plugin.
+                //
+                // ⚠⚠ `plugin=answer` IS THE ONE THIS ROUND ADDED, AND `WIRE_PROTOCOL` STANDS AT 28.
+                // R342 settled that widening an argument's VALUE SPACE does not earn a number, and
+                // the reason applies here in its strongest form: `plugin` is the one argument on
+                // this wire whose value is READ AND MATCHED rather than swallowed, so a client that
+                // sends `answer` to a daemon without it is answered `TypeMismatch` at the door.
+                // That is the opposite of the failure a bump exists to prevent — `may_answer`
+                // earned 27 precisely because an older daemon SWALLOWS an undeclared key and
+                // answers `ok` to a run that will never answer anything. Here the older daemon
+                // cannot mistake the request for one it can serve, and the words are published, so
+                // a client can ask first.
                 "sprag_workspace/sprag_plugins/cancel:",
                 "sprag_workspace/sprag_plugins/run:done_when=exits,settles \
-                 format_a=text,claude_json format_b=text,claude_json plugin=agent \
+                 format_a=text,claude_json format_b=text,claude_json plugin=agent plugin=answer \
                  plugin=dialogue plugin=orchestrator plugin=pipe",
             ],
         );
@@ -8305,10 +8371,11 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            driven, 24,
+            driven, 29,
             "the nested fields this crate's wire publishes: THREE guardrail fields on each of the \
-             plugin host's four run forms, `ready_when`'s two on each of the three that inject, \
-             the consent's two on those same three, and nothing on the multiplexer or a pane. \
+             plugin host's FIVE run forms, `ready_when`'s two on each of the three that inject, \
+             the consent's two on FOUR (those three and the `answer` form, whose whole content it \
+             is), and nothing on the multiplexer or a pane. \
              ⚠ The consent's `asked`/`answer` were named FOR this gate — `done_when`'s first draft \
              reused `ready_when`'s `match` and collided here",
         );
