@@ -1366,9 +1366,6 @@ mod tests {
         });
     }
 
-    /// The External as [`create_palette_externals`] builds it — same captured handles, so a test
-    /// drives the real thing rather than a look-alike.
-
     /// Drain `external`'s emitted intents through the reducer hook, which is what the shell does —
     /// the step that actually RUNS an armed command. Returns how many the palette claimed.
     ///
