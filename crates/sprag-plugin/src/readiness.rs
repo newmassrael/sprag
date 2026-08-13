@@ -1983,12 +1983,16 @@ mod tests {
     /// peer all the way out of `blocked`, so the merged arm is never the one that decides, and the
     /// mutation costs only the settle's own length against a patience many times larger. The arm
     /// is reachable and the defect is real — a patience SHORTER than the detector's settle turns an
-    /// answered dialog into `unattended` — but reproducing that through a pane means racing a
+    /// answered dialog into `unattended` — but reproducing THAT through a pane means racing a
     /// fixture's clock against a product's, which is the shape every load-marginal red in this
     /// crate has had.
     ///
-    /// ⚠ So the claim is made where it is exact, and the residue is stated rather than hidden: what
-    /// is gated here is the PREDICATE's reading of that state, not a run that survives it.
+    /// ⚠⚠ **AND THE RESIDUE IS NOW CLOSED FROM THE OTHER SIDE.**
+    /// [`a_person_who_answers_is_not_waited_out_by_the_supervisors_own_hysteresis`] drives the same
+    /// arm through the BARRIER by measuring LATENCY instead of expiry — the mutation below costs
+    /// the supervisor's whole hysteresis (301 ms measured against the fixture's 300) and no clock
+    /// of the fixture's has to beat a clock of the product's. This one stays because it is the
+    /// exact statement, and because it also gates the `None` control the timed one cannot reach.
     #[test]
     fn a_pane_whose_menu_has_gone_but_whose_verdict_has_not_counts_as_answered() {
         /// A pane its supervisor still calls blocked, with NO question readable on it — the
@@ -2061,6 +2065,77 @@ mod tests {
              against, so only the pane ceasing to be blocked can say a person dealt with it — \
              resuming here would type into whatever is still up",
         );
+    }
+
+    /// ⚠⚠⚠ **A RUN RESUMES THE MOMENT THE PERSON ANSWERS, NOT WHEN THE SUPERVISOR CATCHES UP** —
+    /// the settle-window arm measured THROUGH THE BARRIER, which R371 left open as a residue.
+    ///
+    /// # ⚠⚠⚠ How it escapes the race that made the predicate gate the honest answer first
+    ///
+    /// The obvious construction is a patience SHORTER than the settle, so a mutated arm runs out of
+    /// it and reports `unattended`. That pits the fixture's clock against the product's and is the
+    /// shape every load-marginal red in this crate has had.
+    ///
+    /// **The discriminator is LATENCY, and it needs no expiry at all.** The person's answer takes
+    /// the menu off the screen at a moment this test KNOWS, because this test is the one that
+    /// typed it. From there:
+    ///
+    /// * the shipping arm reads `blocked, nothing readable` as *the question is over* and returns
+    ///   within a [`poll_until`] tick — 10 ms;
+    /// * an arm that waits for the STATE instead cannot return until the supervisor's hysteresis
+    ///   expires, which is the fixture's 300 ms and the real detector's `DEFAULT_SETTLE` seconds.
+    ///
+    /// So the assertion is that the run came back FAST, with a patience so generous it can never
+    /// be the thing that ended the wait. ⚠ Thirty times the poll interval and a third of the
+    /// settle: wide enough that a loaded box does not fail it, and nowhere near what the mutant
+    /// must pay.
+    ///
+    /// ⚠ The person waits before answering, so the barrier is provably inside its wait rather than
+    /// still reading the screen — and if that ordering ever loses, the outcome is `Yes` and the
+    /// message below says so rather than a latency number nobody can interpret.
+    #[test]
+    fn a_person_who_answers_is_not_waited_out_by_the_supervisors_own_hysteresis() {
+        let (access, pane) = asking_peer("either");
+        let answered_at = std::sync::Mutex::new(None::<Instant>);
+
+        let reached = std::thread::scope(|watching| {
+            watching.spawn(|| {
+                // ⚠ Long enough that `reached` is provably past its screen read and inside
+                // `await_the_person`, which it enters within a millisecond of being called.
+                std::thread::sleep(Duration::from_millis(150));
+                *answered_at.lock().expect("the clock") = Some(Instant::now());
+                let _typed = access
+                    .inject(pane, &KeyStroke::text("1"))
+                    .expect("the person types");
+            });
+            // ⚠ TEN SECONDS of patience. Whatever ends this wait, it is not the bound.
+            watched(None, Duration::from_secs(10))
+                .reached(&access, pane, &RunContext::uncancellable())
+                .expect("a blocked peer is not an error")
+        });
+        let back_at = Instant::now();
+
+        let Reached::Attended(attention) = reached else {
+            panic!(
+                "⚠⚠ the person answered and the barrier must report that a person did: {reached:?} \
+                 — a `Yes` here means the fixture's own ordering lost and the wait never started",
+            );
+        };
+        assert_eq!(
+            attention.asked().why(),
+            Refusal::NoConsent,
+            "and it carries what this run could not answer for itself",
+        );
+        let after_the_answer =
+            back_at.duration_since(answered_at.lock().expect("the clock").expect("they typed"));
+        assert!(
+            after_the_answer < Duration::from_millis(100),
+            "⚠⚠⚠ THE RUN WAITED OUT THE SUPERVISOR'S HYSTERESIS INSTEAD OF THE PERSON. It came \
+             back {after_the_answer:?} after the dialog was answered, and a verdict that settles \
+             is the one thing this wait must not key on — the real detector's window is SECONDS, \
+             so a person who answered inside their patience would be reported as never having come",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠ **A PATIENCE OF ZERO IS NOT A SPELLING OF `NoOne`.**
