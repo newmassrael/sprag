@@ -64,8 +64,16 @@
 //! macOS's `/bin/bash` is fifteen years older than this box's and its startup and redisplay leave a
 //! couple more prompts in history.
 //!
-//! The guards now ask [`drag_sweep`] for what the SWEEP ADDED (see [`ADDED_BOUND`]), which is what
-//! the word *accumulate* in their names has always meant.
+//! The guards now ask [`drag_sweep`] for what the SWEEP ADDED (see [`added_ceiling`]), which is
+//! what the word *accumulate* in their names has always meant.
+//!
+//! # ⚠⚠⚠ AND A DELTA AGAINST A CONSTANT STILL COULD NOT ANSWER macOS
+//!
+//! R371b measured this box: **ZERO added, on all five, at every step gap from 1 ms to 90 ms.** The
+//! macOS runner adds **3** on the two 78-step storms, with the identical `PS1`, flags and sweep. No
+//! bound can say which of those is a fifteen-year-older bash leaving prompts behind and which is a
+//! small real accumulation — **they are the same number.** They are not the same SHAPE, and
+//! [`the_storm_does_not_scale_with_its_own_length`] is the guard that asks about the shape.
 //!
 //! These need a real `/bin/bash`; they are integration tests, not unit tests.
 //! (Char-agnostic mechanism precision is pinned by the deterministic unit tests in
@@ -156,9 +164,26 @@ fn prompt_count(session: &PanePty) -> usize {
 ///
 /// ⚠ The sweeps are **78 steps** for the three extreme guards and **32** for the non-wrapping one —
 /// which this const's first draft got wrong, saying *"~78"* of all four until [`drag_sweep`]'s
-/// non-vacuity assert said otherwise. Two is a sixteenth of the SHORTEST of them, and that assert
-/// is what stops a later round shortening a sweep until the margin is a number nobody derived.
-const ADDED_BOUND: usize = 2;
+/// non-vacuity assert said otherwise. A sixteenth is the margin, and that assert is what stops a
+/// later round shortening a sweep until the margin is a number nobody derived.
+///
+/// # ⚠⚠⚠ R371b: A SIXTEENTH OF **THIS** SWEEP, not of the shortest one applied to all
+///
+/// The constant was `2` — a sixteenth of the SHORTEST sweep (32), used as the bound for every
+/// guard including the 78-step ones. That last step was never argued anywhere; it is the same
+/// unstated simplification the TOTAL had before R370b, one level down, and it made the 78-step
+/// guards four times stricter than their own derivation asks for.
+///
+/// macOS met it first: `ADDED 3 (bound 2)` on the two 78-step storms, where this rule gives **4**.
+/// ⚠⚠⚠ **THAT IS NOT WHY THE RULE CHANGED, AND THE DIFFERENCE IS NOT EXPLAINED BY IT.** This box
+/// adds **ZERO** on all five guards at every step gap from 1 ms to 90 ms (measured, R371b), so a
+/// platform answering 3 is doing something this one does not, and a wider bound does not say what.
+/// **`the_storm_does_not_scale_with_its_own_length` is what answers that** — it asks whether the
+/// additions GROW with the storm, which is the one property that separates a shell's redisplay
+/// leaving a few prompts from the defect these guards exist for.
+fn added_ceiling(steps: usize) -> usize {
+    steps / 16
+}
 
 /// Block until the screen's damage stamp holds steady for `quiet` (bash has
 /// finished redrawing), or `cap` elapses. Bash's redraw is asynchronous (PTY →
@@ -232,7 +257,7 @@ fn drag_sweep(
     // without anybody noticing. R356's rule, applied to a margin instead of to a ceiling.
     assert!(
         widths.len() >= 30,
-        "the storm is {} steps, and [`ADDED_BOUND`] is argued against the two lengths these guards \
+        "the storm is {} steps, and [`added_ceiling`] is argued against the two lengths these guards \
          actually drive (78 and 32) — a shorter one makes that margin a number nobody derived",
         widths.len(),
     );
@@ -250,17 +275,14 @@ fn drag_sweep(
 #[test]
 fn rapid_extreme_resize_with_typed_input_does_not_accumulate() {
     let session = bash_session(80, 24);
-    let n = drag_sweep(
-        &session,
-        b"echo hi",
-        &drag_widths(80, 4),
-        24,
-        Duration::from_millis(55),
-    );
+    let widths = drag_widths(80, 4);
+    let bound = added_ceiling(widths.len());
+    let n = drag_sweep(&session, b"echo hi", &widths, 24, Duration::from_millis(55));
     assert!(
-        n <= ADDED_BOUND,
-        "a RAPID extreme resize with typed input ADDED {n} prompts \
-         (bound {ADDED_BOUND}) — the resize-stale bug (typed-input case)"
+        n <= bound,
+        "a RAPID extreme resize with typed input ADDED {n} prompts over {} steps \
+         (bound {bound}) — the resize-stale bug (typed-input case)",
+        widths.len(),
     );
 }
 
@@ -271,17 +293,20 @@ fn rapid_extreme_resize_with_typed_input_does_not_accumulate() {
 #[test]
 fn rapid_extreme_resize_with_wide_char_input_does_not_accumulate() {
     let session = bash_session(80, 24);
+    let widths = drag_widths(80, 4);
+    let bound = added_ceiling(widths.len());
     let n = drag_sweep(
         &session,
         "\u{c548}\u{b155}\u{d558}\u{c138}\u{c694}".as_bytes(), // 안녕하세요
-        &drag_widths(80, 4),
+        &widths,
         24,
         Duration::from_millis(55),
     );
     assert!(
-        n <= ADDED_BOUND,
-        "a RAPID extreme resize with Korean input ADDED {n} prompts \
-         (bound {ADDED_BOUND}) — the resize-stale bug (wide-char input case)"
+        n <= bound,
+        "a RAPID extreme resize with Korean input ADDED {n} prompts over {} steps \
+         (bound {bound}) — the resize-stale bug (wide-char input case)",
+        widths.len(),
     );
 }
 
@@ -329,16 +354,12 @@ fn prompts_a_session_printed_before_the_storm_are_not_charged_to_it() {
          control is the plain case wearing a different name: {history}",
     );
 
-    let added = drag_sweep(
-        &session,
-        b"",
-        &drag_widths(80, 4),
-        24,
-        Duration::from_millis(55),
-    );
+    let widths = drag_widths(80, 4);
+    let bound = added_ceiling(widths.len());
+    let added = drag_sweep(&session, b"", &widths, 24, Duration::from_millis(55));
     assert!(
-        added <= ADDED_BOUND,
-        "⚠⚠⚠ the storm ADDED {added} prompts (bound {ADDED_BOUND}) to a pane that already held \
+        added <= bound,
+        "⚠⚠⚠ the storm ADDED {added} prompts (bound {bound}) to a pane that already held \
          {history} — a guard reading the TOTAL here answers FIVE, which is the number the macOS \
          runner reported, on a session whose only crime was pressing Enter",
     );
@@ -351,16 +372,85 @@ fn prompts_a_session_printed_before_the_storm_are_not_charged_to_it() {
 #[test]
 fn rapid_resize_without_wrapping_stays_clean() {
     let session = bash_session(80, 24);
-    let n = drag_sweep(
-        &session,
+    let widths = drag_widths(80, 50);
+    let bound = added_ceiling(widths.len());
+    let n = drag_sweep(&session, b"", &widths, 24, Duration::from_millis(55));
+    assert!(
+        n <= bound,
+        "a rapid non-wrapping resize ADDED {n} prompts over {} steps (bound {bound}) — regression",
+        widths.len(),
+    );
+}
+
+/// HOW MUCH a doubled storm may add over the single one before it is SCALING rather than settling.
+///
+/// Two, and it is measurement noise and nothing else: this box adds ZERO at both lengths, and the
+/// defect adds one per step — so anything between those is a shell landing a prompt on a fresh row
+/// once or twice more when it is driven twice as long.
+const SCALE_SLACK: usize = 2;
+
+/// ⚠⚠⚠ **THE STORM'S CONTRIBUTION DOES NOT GROW WITH THE STORM** — the property every guard above
+/// is named for (*"does not accumulate"*) and the only one that separates the two regimes without
+/// a constant tuned to somebody's shell.
+///
+/// # ⚠⚠⚠ Why a constant could never answer the question macOS asked
+///
+/// Every bound above is *"how many is too many"*, and that number is not a property of this
+/// emulator: this box adds **0** on all five guards at every step gap from 1 ms to 90 ms, and the
+/// macOS runner adds **3** on two of them with the identical `PS1`, the identical flags and the
+/// identical sweep. Nothing in a bound can say whether that 3 is a fifteen-year-older bash leaving
+/// a couple of prompts behind or a small real accumulation — **the two are the same number.**
+///
+/// They are not the same SHAPE. The defect these guards exist for stacks **one copy per resize
+/// step** (measured ~40+ bare, ≈16-44 with input), so it grows with the sweep; a shell's redisplay
+/// leaving a few prompts does not. So this drives the SAME storm twice, once at double the length,
+/// and asks whether the additions followed. **A platform can answer that about itself**, which is
+/// what makes this the guard that reports on macOS rather than the one that gets tuned for it.
+///
+/// ⚠ Under the defect the arithmetic is not close: ~39 additions at 78 steps against ~78 at 156
+/// fails `78 <= 39 + 2` by a factor of two, and it fails harder the longer the sweep.
+///
+/// ⚠⚠ NON-VACUITY, twice over, because on a healthy box both answers are zero and `0 <= 0 + 2`
+/// would pass with the instrument unplugged: the long sweep must really be about twice the short
+/// one, and `drag_sweep`'s own 30-step floor still applies to each.
+#[test]
+fn the_storm_does_not_scale_with_its_own_length() {
+    let short = drag_widths(80, 4);
+    // ⚠ Built by SWEEPING TWICE rather than by halving the step, so the two storms differ in
+    // LENGTH and in nothing else. A finer step would change the width path each redraw takes,
+    // which is a different experiment wearing this one's name.
+    let long: Vec<u16> = short.iter().chain(short.iter()).copied().collect();
+    assert!(
+        long.len() >= short.len() * 2 && short.len() >= 30,
+        "the two storms must differ by a real factor or this compares one length with itself: \
+         {} vs {}",
+        short.len(),
+        long.len(),
+    );
+
+    let added_short = drag_sweep(
+        &bash_session(80, 24),
         b"",
-        &drag_widths(80, 50),
+        &short,
         24,
         Duration::from_millis(55),
     );
+    let added_long = drag_sweep(
+        &bash_session(80, 24),
+        b"",
+        &long,
+        24,
+        Duration::from_millis(55),
+    );
+
     assert!(
-        n <= ADDED_BOUND,
-        "a rapid non-wrapping resize ADDED {n} prompts (bound {ADDED_BOUND}) — regression"
+        added_long <= added_short + SCALE_SLACK,
+        "⚠⚠⚠ THE STORM'S CONTRIBUTION SCALED WITH THE STORM: {} steps ADDED {added_short}, and \
+         {} steps ADDED {added_long}. That is the shape of the resize-stale bug — one copy per \
+         resize step — and it is the reading a fixed bound cannot distinguish from a shell that \
+         simply leaves a prompt or two behind",
+        short.len(),
+        long.len(),
     );
 }
 
@@ -374,15 +464,13 @@ fn rapid_resize_without_wrapping_stays_clean() {
 #[test]
 fn rapid_extreme_resize_does_not_accumulate_prompts() {
     let session = bash_session(80, 24);
-    let added = drag_sweep(
-        &session,
-        b"",
-        &drag_widths(80, 4),
-        24,
-        Duration::from_millis(55),
-    );
+    let widths = drag_widths(80, 4);
+    let bound = added_ceiling(widths.len());
+    let added = drag_sweep(&session, b"", &widths, 24, Duration::from_millis(55));
     assert!(
-        added <= ADDED_BOUND,
-        "a RAPID extreme resize ADDED {added} prompts (bound {ADDED_BOUND}) — the resize-stale bug"
+        added <= bound,
+        "a RAPID extreme resize ADDED {added} prompts over {} steps (bound {bound}) — \
+         the resize-stale bug",
+        widths.len(),
     );
 }
