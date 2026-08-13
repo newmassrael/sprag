@@ -56,7 +56,8 @@ use pinion_a11y::{AccessNode, AriaRole};
 use pinion_core::composite_tag::send_activation_key;
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
-    IntrospectSchema, IntrospectValue, InvokeError, RepaintOwner, SchemaField, ThreadOwnership,
+    IntrospectSchema, IntrospectValue, InvokeError, ReadRefusal, RepaintOwner, SchemaField,
+    ThreadOwnership,
 };
 use pinion_core::intent::Intent;
 use pinion_core::reactive::{Owner, Signal};
@@ -493,6 +494,31 @@ impl External for ConfirmExternal {
     }
 }
 
+impl ConfirmExternal {
+    /// The reading itself — see [`query`](Self::query).
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
+        let armed = self.armed.get();
+        match path {
+            // Present-but-empty: the paths always resolve, and nothing armed reports Null rather
+            // than an unknown-path error (no prompt is a state, not a mistake).
+            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::confirm()),
+            )),
+            "prompt" => Some(text_or_null(
+                armed.map(|armed| armed.confirmation.prompt.clone()),
+            )),
+            "consequence" => Some(text_or_null(
+                armed.and_then(|armed| armed.confirmation.consequence.clone()),
+            )),
+            "verb" => Some(text_or_null(
+                armed.map(|armed| armed.confirmation.verb.clone()),
+            )),
+            "choice" => Some(IntrospectValue::Text(self.choice.get().key().to_owned())),
+            _ => None,
+        }
+    }
+}
+
 impl ExternalIntrospect for ConfirmExternal {
     fn schema(&self) -> IntrospectSchema {
         IntrospectSchema::new(
@@ -514,26 +540,12 @@ impl ExternalIntrospect for ConfirmExternal {
         )
     }
 
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
-        let armed = self.armed.get();
-        match path {
-            // Present-but-empty: the paths always resolve, and nothing armed reports Null rather
-            // than an unknown-path error (no prompt is a state, not a mistake).
-            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
-                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::confirm()),
-            )),
-            "prompt" => Some(text_or_null(
-                armed.map(|armed| armed.confirmation.prompt.clone()),
-            )),
-            "consequence" => Some(text_or_null(
-                armed.and_then(|armed| armed.confirmation.consequence.clone()),
-            )),
-            "verb" => Some(text_or_null(
-                armed.map(|armed| armed.confirmation.verb.clone()),
-            )),
-            "choice" => Some(IntrospectValue::Text(self.choice.get().key().to_owned())),
-            _ => None,
-        }
+    /// ⚠⚠ **THE IDENTITY MIGRATION** — see the same note on this crate's sibling surfaces.
+    /// pinion R1674 turned a read's absence into a REFUSAL, and its dispatch maps `UnknownPath`
+    /// onto the fault a `None` produced before, so this preserves the wire exactly. The three
+    /// richer arms are a per-path decision and are registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
     fn intervene(&mut self, path: &str, value: IntrospectValue) -> Result<(), InterveneError> {
@@ -1278,7 +1290,7 @@ mod tests {
             run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
 
             let mut external = external();
-            let prompt = match external.query("prompt") {
+            let prompt = match external.query("prompt").ok() {
                 Some(IntrospectValue::Text(text)) => text,
                 other => panic!("the prompt reads as text, got {other:?}"),
             };
@@ -1287,12 +1299,12 @@ mod tests {
                 "the question names what will be destroyed: {prompt}"
             );
             assert_eq!(
-                external.query("verb"),
+                external.query("verb").ok(),
                 Some(IntrospectValue::Text("Kill".to_owned())),
                 "the button's word comes from the command, not from this surface"
             );
             assert_eq!(
-                external.query("choice"),
+                external.query("choice").ok(),
                 Some(IntrospectValue::Text(DISMISS_KEY.to_owned())),
                 "and the default answer is the safe one"
             );
@@ -1314,7 +1326,7 @@ mod tests {
             let external = external();
             for path in ["prompt", "consequence", "verb"] {
                 assert_eq!(
-                    external.query(path),
+                    external.query(path).ok(),
                     Some(IntrospectValue::Null),
                     "{path} resolves to Null with nothing armed"
                 );
@@ -1524,7 +1536,7 @@ mod tests {
             let only = windows[0].name.clone();
 
             run_or_arm(kill_of(&terminal.slots, &only), None, &terminal.slots);
-            let consequence = match external().query("consequence") {
+            let consequence = match external().query("consequence").ok() {
                 Some(IntrospectValue::Text(text)) => text,
                 other => panic!("the consequence reads as text, got {other:?}"),
             };
@@ -1538,7 +1550,7 @@ mod tests {
             let spare = terminal.slots.new_window();
             run_or_arm(kill_of(&terminal.slots, &spare), None, &terminal.slots);
             assert_eq!(
-                external().query("consequence"),
+                external().query("consequence").ok(),
                 Some(IntrospectValue::Null),
                 "a window that is not the last one carries no extra warning"
             );

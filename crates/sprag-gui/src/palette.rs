@@ -56,8 +56,8 @@ use pinion_a11y::{
 use pinion_core::composite_tag::{send_activation_index, send_activation_key};
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
-    IntrospectSchema, IntrospectValue, InvokeError, RepaintOwner, SchemaArg, SchemaField,
-    ThreadOwnership,
+    IntrospectSchema, IntrospectValue, InvokeError, ReadRefusal, RepaintOwner, SchemaArg,
+    SchemaField, ThreadOwnership,
 };
 use pinion_core::intent::Intent;
 use pinion_core::reactive::{Owner, Signal};
@@ -633,6 +633,31 @@ impl External for PaletteExternal {
     }
 }
 
+impl PaletteExternal {
+    /// The reading itself — see [`query`](Self::query).
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
+        let rows = self.row_titles();
+        match path {
+            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::palette()),
+            )),
+            "row_count" => Some(IntrospectValue::Int(i64::try_from(rows.len()).ok()?)),
+            "cursor" => Some(IntrospectValue::Int(i64::try_from(self.cursor_now()).ok()?)),
+            // Present-but-empty: the path always resolves, and an empty list reports Null rather
+            // than an unknown-path error (a palette with no matches is a state, not a mistake).
+            "cursor_command" => Some(match rows.get(self.cursor_now()) {
+                Some(title) => IntrospectValue::Text(title.clone()),
+                None => IntrospectValue::Null,
+            }),
+            _ => {
+                let i: usize = path.strip_prefix("row.")?.parse().ok()?;
+                rows.get(i)
+                    .map(|title| IntrospectValue::Text(title.clone()))
+            }
+        }
+    }
+}
+
 impl ExternalIntrospect for PaletteExternal {
     fn schema(&self) -> IntrospectSchema {
         IntrospectSchema::new(
@@ -667,26 +692,12 @@ impl ExternalIntrospect for PaletteExternal {
         )
     }
 
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
-        let rows = self.row_titles();
-        match path {
-            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
-                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::palette()),
-            )),
-            "row_count" => Some(IntrospectValue::Int(i64::try_from(rows.len()).ok()?)),
-            "cursor" => Some(IntrospectValue::Int(i64::try_from(self.cursor_now()).ok()?)),
-            // Present-but-empty: the path always resolves, and an empty list reports Null rather
-            // than an unknown-path error (a palette with no matches is a state, not a mistake).
-            "cursor_command" => Some(match rows.get(self.cursor_now()) {
-                Some(title) => IntrospectValue::Text(title.clone()),
-                None => IntrospectValue::Null,
-            }),
-            _ => {
-                let i: usize = path.strip_prefix("row.")?.parse().ok()?;
-                rows.get(i)
-                    .map(|title| IntrospectValue::Text(title.clone()))
-            }
-        }
+    /// ⚠⚠ **THE IDENTITY MIGRATION** — see the same note on this crate's sibling surfaces.
+    /// pinion R1674 turned a read's absence into a REFUSAL, and its dispatch maps `UnknownPath`
+    /// onto the fault a `None` produced before, so this preserves the wire exactly. The three
+    /// richer arms are a per-path decision and are registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
     fn intervene(&mut self, path: &str, value: IntrospectValue) -> Result<(), InterveneError> {
@@ -1515,7 +1526,7 @@ mod tests {
             open(Some(0));
             let mut external = external();
 
-            let count = match external.query("row_count") {
+            let count = match external.query("row_count").ok() {
                 Some(IntrospectValue::Int(n)) => usize::try_from(n).unwrap(),
                 other => panic!("row_count reads as an int, got {other:?}"),
             };
@@ -1525,11 +1536,11 @@ mod tests {
                 "the External reports the same rows the paint walks"
             );
             assert!(matches!(
-                external.query("row.0"),
+                external.query("row.0").ok(),
                 Some(IntrospectValue::Text(_))
             ));
             assert!(matches!(
-                external.query("cursor_command"),
+                external.query("cursor_command").ok(),
                 Some(IntrospectValue::Text(_))
             ));
 

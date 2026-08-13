@@ -58,7 +58,7 @@ pub(crate) fn a_declared_path_is_what_it_claims(surface: &mut dyn ExternalIntros
         match field.channel {
             SchemaChannel::Read if field.args.is_empty() => {
                 assert!(
-                    surface.query(field.path).is_some(),
+                    surface.query(field.path).ok().is_some(),
                     "`{}` is declared on the READ channel and answers nothing — declare it with \
                      `SchemaField::action` if it is a verb",
                     field.path,
@@ -70,7 +70,7 @@ pub(crate) fn a_declared_path_is_what_it_claims(surface: &mut dyn ExternalIntros
             SchemaChannel::Read => {}
             _ => {
                 assert!(
-                    surface.query(field.path).is_none(),
+                    surface.query(field.path).ok().is_none(),
                     "`{}` is declared as a verb and also answers a query — one address serving \
                      two channels, so what a client gets depends on which door it knocked on",
                     field.path,

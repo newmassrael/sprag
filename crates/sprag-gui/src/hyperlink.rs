@@ -71,7 +71,8 @@ use std::sync::Arc;
 use pinion_core::composite_tag::split_send_payload;
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
-    IntrospectSchema, IntrospectValue, InvokeError, RepaintOwner, SchemaField, ThreadOwnership,
+    IntrospectSchema, IntrospectValue, InvokeError, ReadRefusal, RepaintOwner, SchemaField,
+    ThreadOwnership,
 };
 use pinion_core::reactive::{Owner, Signal, use_repaint_sink};
 use pinion_core::term_grid::HyperlinkId;
@@ -594,6 +595,28 @@ impl External for HyperlinkOracle {
     }
 }
 
+impl HyperlinkOracle {
+    /// The reading itself — see [`query`](Self::query).
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
+        match path {
+            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::hyperlink()),
+            )),
+            "hover_index" => Some(self.state.hovered.get().map_or(IntrospectValue::Null, |h| {
+                IntrospectValue::Int(i64::from(h.0))
+            })),
+            "activated_uri" => Some(
+                self.state
+                    .activated
+                    .borrow()
+                    .clone()
+                    .map_or(IntrospectValue::Null, IntrospectValue::Text),
+            ),
+            _ => None,
+        }
+    }
+}
+
 impl ExternalIntrospect for HyperlinkOracle {
     fn schema(&self) -> IntrospectSchema {
         IntrospectSchema::new(
@@ -616,23 +639,12 @@ impl ExternalIntrospect for HyperlinkOracle {
         )
     }
 
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
-        match path {
-            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
-                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::hyperlink()),
-            )),
-            "hover_index" => Some(self.state.hovered.get().map_or(IntrospectValue::Null, |h| {
-                IntrospectValue::Int(i64::from(h.0))
-            })),
-            "activated_uri" => Some(
-                self.state
-                    .activated
-                    .borrow()
-                    .clone()
-                    .map_or(IntrospectValue::Null, IntrospectValue::Text),
-            ),
-            _ => None,
-        }
+    /// ⚠⚠ **THE IDENTITY MIGRATION** — see the same note on this crate's sibling surfaces.
+    /// pinion R1674 turned a read's absence into a REFUSAL, and its dispatch maps `UnknownPath`
+    /// onto the fault a `None` produced before, so this preserves the wire exactly. The three
+    /// richer arms are a per-path decision and are registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
     fn intervene(&mut self, path: &str, value: IntrospectValue) -> Result<(), InterveneError> {
@@ -1020,7 +1032,7 @@ mod tests {
                 IntrospectValue::Text("PointerDown".to_owned()),
             );
             assert_eq!(
-                ExternalIntrospect::query(&oracle, "activated_uri"),
+                ExternalIntrospect::query(&oracle, "activated_uri").ok(),
                 Some(IntrospectValue::Text("https://ex".to_owned()))
             );
         });

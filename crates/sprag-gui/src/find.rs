@@ -233,7 +233,12 @@ fn read_checkbox_state(scene: &Scene, tag: &str) -> CheckboxState {
     scene
         .find_external_with_tag(tag)
         .and_then(|node| node.handle.introspect())
-        .and_then(|intro| intro.query("state"))
+        // ⚠ A REFUSAL AND AN ABSENCE COLLAPSE HERE, and that is this reader's own rule rather than
+        // a loss from pinion R1674's widening: the fallback below is `Idle` for the create-then-
+        // paint window, so *"the External is not wired yet"* and *"it refused the read"* are the
+        // same instruction to a painter — draw the resting state. A caller that had to tell them
+        // apart would be reading this signal for something it does not answer.
+        .and_then(|intro| intro.query("state").ok())
         .and_then(|value| match value {
             IntrospectValue::Text(name) => Some(CheckboxState::from_name_or_default(&name)),
             _ => None,

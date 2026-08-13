@@ -58,6 +58,7 @@ use std::time::{Duration, Instant};
 
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
+    ReadRefusal,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
@@ -349,6 +350,18 @@ impl fmt::Debug for RegistryExternal {
 
 rpc_external_impl!(RegistryExternal);
 
+impl RegistryExternal {
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
+        RegistryView {
+            registry: &self.registry,
+            attachments: self.attachments.as_deref(),
+            agents: self.agents.as_deref(),
+            samplers: &self.samplers,
+        }
+        .query(path)
+    }
+}
+
 impl ExternalIntrospect for RegistryExternal {
     /// The MUX surface's schema, whole — not a narrowed copy listing only what this door answers.
     ///
@@ -360,16 +373,24 @@ impl ExternalIntrospect for RegistryExternal {
         IntrospectSchema::new(crate::wire::MUX_SCHEMA)
     }
 
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
-        RegistryView {
-            registry: &self.registry,
-            attachments: self.attachments.as_deref(),
-            agents: self.agents.as_deref(),
-            samplers: &self.samplers,
-        }
-        .query(path)
+    /// ⚠⚠ **THE IDENTITY MIGRATION, and `UnknownPath` is what a `None` ALWAYS MEANT.**
+    ///
+    /// pinion R1674 widened a read's failure from an absence into a REFUSAL with a reason
+    /// (`ReadRefusal`), and its dispatch maps `UnknownPath` onto the very fault a `None` produced
+    /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
+    /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
+    ///
+    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
+    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
+    /// what this surface knows, and several of them supersede reasoning this file already wrote
+    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
+    /// derived. Registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
     }
 
+    /// The reading itself — see [`query`](Self::query) for why it still answers an
+    /// `Option` and what that `None` becomes.
     fn intervene(&mut self, _path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
         Err(InterveneError::UnknownPath)
     }
@@ -2599,16 +2620,8 @@ impl fmt::Debug for WorkspaceExternal {
 
 rpc_external_impl!(WorkspaceExternal);
 
-impl ExternalIntrospect for WorkspaceExternal {
-    fn schema(&self) -> IntrospectSchema {
-        // Declared in `wire`, beside the addresses and beside the pane surface's own
-        // ([`PANE_SCHEMA`](crate::wire::PANE_SCHEMA)) — this vocabulary has ONE home, and the
-        // ratchet that keeps the wire's surface from moving under the protocol number reads it
-        // from there rather than from a second copy.
-        IntrospectSchema::new(crate::wire::MUX_SCHEMA)
-    }
-
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
+impl WorkspaceExternal {
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
         // The reads whose subject is the REGISTRY, answered FIRST and through the ONE place any of
         // them is produced ([`RegistryView`]) — which is also the surface a reader whose own session
         // has gone is served from, so the two doors cannot come to answer `sessions` differently.
@@ -2988,7 +3001,35 @@ impl ExternalIntrospect for WorkspaceExternal {
             }
         }
     }
+}
 
+impl ExternalIntrospect for WorkspaceExternal {
+    fn schema(&self) -> IntrospectSchema {
+        // Declared in `wire`, beside the addresses and beside the pane surface's own
+        // ([`PANE_SCHEMA`](crate::wire::PANE_SCHEMA)) — this vocabulary has ONE home, and the
+        // ratchet that keeps the wire's surface from moving under the protocol number reads it
+        // from there rather than from a second copy.
+        IntrospectSchema::new(crate::wire::MUX_SCHEMA)
+    }
+
+    /// ⚠⚠ **THE IDENTITY MIGRATION, and `UnknownPath` is what a `None` ALWAYS MEANT.**
+    ///
+    /// pinion R1674 widened a read's failure from an absence into a REFUSAL with a reason
+    /// (`ReadRefusal`), and its dispatch maps `UnknownPath` onto the very fault a `None` produced
+    /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
+    /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
+    ///
+    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
+    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
+    /// what this surface knows, and several of them supersede reasoning this file already wrote
+    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
+    /// derived. Registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
+    }
+
+    /// The reading itself — see [`query`](Self::query) for why it still answers an
+    /// `Option` and what that `None` becomes.
     fn intervene(&mut self, _path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
         // No writable state slots. Pane management and the arrangement write are both
         // action-shaped (invoke): neither is a plain assignment — a spawn answers with a
@@ -3319,7 +3360,7 @@ mod tests {
         crate::wire::assert_empty_members_are_declared(
             crate::wire::MUX_SCHEMA,
             "the mux surface",
-            |path| scoped.query(path).is_some(),
+            |path| scoped.query(path).ok().is_some(),
         );
     }
 
@@ -3355,7 +3396,7 @@ mod tests {
         // ...and NOT what a session's would be, on the very slots the scoped surface serves.
         for scoped in [PANES_SLOT, LAYOUT_SLOT, SESSION_SLOT, WINDOWS_SLOT] {
             assert!(
-                surface.query(scoped).is_none(),
+                surface.query(scoped).ok().is_none(),
                 "{scoped} is about ONE session and this surface has none to be wrong about",
             );
         }
@@ -3496,14 +3537,14 @@ mod tests {
         let reg = registry();
         let (ext, agents) = control_with_agents(&reg);
         assert_eq!(
-            ext.query(AGENT_MANIFESTS_SLOT),
+            ext.query(AGENT_MANIFESTS_SLOT).ok(),
             Some(IntrospectValue::Null),
             "a daemon whose manifests ARE the user's reports nothing"
         );
 
         let sentence = "config.toml: `disable` names no rule `nope` in agent `claude`";
         agents.with(|state| state.set_manifest_report(Some(sentence.to_owned())));
-        let Some(IntrospectValue::Json(answer)) = ext.query(AGENT_MANIFESTS_SLOT) else {
+        let Some(IntrospectValue::Json(answer)) = ext.query(AGENT_MANIFESTS_SLOT).ok() else {
             panic!("a published report answers with a JSON object");
         };
         assert_eq!(
@@ -3513,7 +3554,7 @@ mod tests {
 
         let (plain, _) = control(&reg);
         assert_eq!(
-            plain.query(AGENT_MANIFESTS_SLOT),
+            plain.query(AGENT_MANIFESTS_SLOT).ok(),
             Some(IntrospectValue::Null),
             "and a surface with no detector has no verdict to defend"
         );
@@ -3521,7 +3562,7 @@ mod tests {
 
     /// One pane's entry from the panes slot.
     fn pane_entry(ext: &mut WorkspaceExternal, id: u64) -> Value {
-        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT).ok() else {
             panic!("the panes slot answers with a JSON array");
         };
         panes
@@ -3643,7 +3684,7 @@ mod tests {
         let (mut ext, _revision) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .expect("a pane to grant");
-        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT).ok() else {
             panic!("the panes slot answers with a JSON array");
         };
         let id = panes[0]["id"].as_u64().expect("a pane id");
@@ -3701,7 +3742,7 @@ mod tests {
         let (mut ext, _revision) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .expect("a pane to grant");
-        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT).ok() else {
             panic!("the panes slot answers with a JSON array");
         };
         let id = panes[0]["id"].as_u64().expect("a pane id");
@@ -3809,7 +3850,7 @@ mod tests {
             None,
             "the request's `name` named the WINDOW; the pane inside it is unnamed",
         );
-        let windows = without_ids(answer_doc(ext.query(WINDOWS_SLOT)));
+        let windows = without_ids(answer_doc(ext.query(WINDOWS_SLOT).ok()));
         assert!(
             windows
                 .as_array()
@@ -4173,7 +4214,7 @@ mod tests {
              names the authority instead of a rule: {entry:?}",
         );
 
-        let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0))
+        let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0)).ok()
         else {
             panic!("the events family answers");
         };
@@ -4214,7 +4255,7 @@ mod tests {
 
         channels.announce("0", vec![crate::events::Event::PaneJobChanged(7)]);
 
-        let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0))
+        let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0)).ok()
         else {
             panic!("the events family answers");
         };
@@ -4248,7 +4289,8 @@ mod tests {
             answer
         };
         let events = |ext: &WorkspaceExternal| -> usize {
-            let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0))
+            let Some(IntrospectValue::Json(batch)) =
+                ext.query(&crate::wire::events_slot_since(0)).ok()
             else {
                 panic!("the events family answers");
             };
@@ -4817,7 +4859,7 @@ mod tests {
             IntrospectValue::Json(json!({"cmd": ["cat"], "cols": 40, "rows": 12})),
         )
         .unwrap();
-        let (panes, tokens) = panes_without_projection(ext.query(PANES_SLOT));
+        let (panes, tokens) = panes_without_projection(ext.query(PANES_SLOT).ok());
         assert_eq!(
             panes,
             // `title` is null until the child sets an OSC 0/2 window title (R128). `active` rides
@@ -4854,7 +4896,7 @@ mod tests {
         // title lands (what a client does after a `scene/waitFor` wake).
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            if let Some(IntrospectValue::Json(Value::Array(entries))) = ext.query(PANES_SLOT)
+            if let Some(IntrospectValue::Json(Value::Array(entries))) = ext.query(PANES_SLOT).ok()
                 && entries.first().and_then(|pane| pane["title"].as_str()) == Some("vim README")
             {
                 return;
@@ -4886,7 +4928,7 @@ mod tests {
         // The reader thread applies the bytes asynchronously — poll the wire until both land.
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            if let Some(IntrospectValue::Json(Value::Array(entries))) = ext.query(PANES_SLOT)
+            if let Some(IntrospectValue::Json(Value::Array(entries))) = ext.query(PANES_SLOT).ok()
                 && let Some(pane) = entries.first()
                 && pane.get("mouse").and_then(Value::as_str) == Some("button")
                 && pane.get("focus_tracking").and_then(Value::as_bool) == Some(true)
@@ -4907,7 +4949,7 @@ mod tests {
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
         assert_eq!(
-            answer_doc(ext.query(LAYOUT_SLOT)),
+            answer_doc(ext.query(LAYOUT_SLOT).ok()),
             json!({"revision": 0, "tree": {"nodes": [], "root": null}, "floating": []}),
             "an empty window has no arrangement — and the wire carries no minting counter",
         );
@@ -5031,7 +5073,7 @@ mod tests {
 
     /// The mux `layout` slot as JSON (the shape a client actually parses).
     fn query_layout(ext: &mut WorkspaceExternal) -> Value {
-        answer_doc(ext.query(LAYOUT_SLOT))
+        answer_doc(ext.query(LAYOUT_SLOT).ok())
     }
 
     /// The node an arrangement roots at, resolved through the arena.
@@ -5368,7 +5410,8 @@ mod tests {
             .unwrap();
 
         let ids = |ext: &mut WorkspaceExternal| -> Vec<u64> {
-            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT).ok()
+            else {
                 panic!("the panes slot answers with a JSON array");
             };
             panes.iter().filter_map(|p| p["id"].as_u64()).collect()
@@ -5398,7 +5441,8 @@ mod tests {
         .unwrap();
 
         let entry = |ext: &mut WorkspaceExternal, id: u64| -> Value {
-            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT).ok()
+            else {
                 panic!("the panes slot answers with a JSON array");
             };
             panes
@@ -5451,7 +5495,8 @@ mod tests {
         .unwrap();
 
         let entry = |ext: &mut WorkspaceExternal, id: u64| -> Value {
-            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT).ok()
+            else {
                 panic!("the panes slot answers with a JSON array");
             };
             panes
@@ -5517,7 +5562,7 @@ mod tests {
         // At boot the only session is the empty anchor "0": no pane, nobody attached, so the human
         // list is empty — the phantom "0" that `sprag ls` used to print at rest is gone.
         assert_eq!(
-            structural(ext.query(SESSIONS_SLOT)),
+            structural(ext.query(SESSIONS_SLOT).ok()),
             Vec::<(String, u64, bool)>::new(),
             "the resting empty anchor is not listed",
         );
@@ -5525,7 +5570,7 @@ mod tests {
         // A pane makes the default session real: now it lists, and it still names itself default.
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         assert_eq!(
-            structural(ext.query(SESSIONS_SLOT)),
+            structural(ext.query(SESSIONS_SLOT).ok()),
             vec![("0".to_owned(), 1, true)],
             "a session holding a pane lists, and it is where an unscoped request goes",
         );
@@ -5536,7 +5581,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            structural(ext.query(SESSIONS_SLOT)),
+            structural(ext.query(SESSIONS_SLOT).ok()),
             vec![("0".to_owned(), 1, true), ("work".to_owned(), 1, false)],
             "the new session (born with a pane) is listed; creating it moved the default for nobody",
         );
@@ -5566,7 +5611,7 @@ mod tests {
         let (mut ext, _rev) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
 
-        let Value::Array(listed) = answer_doc(ext.query(SESSIONS_SLOT)) else {
+        let Value::Array(listed) = answer_doc(ext.query(SESSIONS_SLOT).ok()) else {
             panic!("the sessions slot answers with a JSON array");
         };
         let row = listed.first().expect("the session holding the pane lists");
@@ -5579,7 +5624,7 @@ mod tests {
 
         // ZERO tolerance: this read samples for itself, so what it answers describes the pane just
         // spawned rather than anything held from before it existed.
-        let reading = answer_doc(ext.query(&session_activity_at(0)));
+        let reading = answer_doc(ext.query(&session_activity_at(0)).ok());
         assert!(
             reading["sampled_ms_ago"].is_u64(),
             "the reading states its own age: {reading}",
@@ -5612,7 +5657,7 @@ mod tests {
         let (mut ext, _rev) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
 
-        let Value::Array(listed) = answer_doc(ext.query(PANES_SLOT)) else {
+        let Value::Array(listed) = answer_doc(ext.query(PANES_SLOT).ok()) else {
             panic!("the panes slot answers with a JSON array");
         };
         let row = listed.first().expect("the spawned pane lists");
@@ -5624,7 +5669,7 @@ mod tests {
         }
 
         // ZERO tolerance, so this read samples for itself and describes the pane just spawned.
-        let reading = answer_doc(ext.query(&pane_processes_at(0)));
+        let reading = answer_doc(ext.query(&pane_processes_at(0)).ok());
         assert!(
             reading["sampled_ms_ago"].is_u64(),
             "the reading states its own age: {reading}",
@@ -5661,7 +5706,7 @@ mod tests {
         let (mut ext, _rev) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
 
-        let Value::Array(listed) = answer_doc(ext.query(PANES_SLOT)) else {
+        let Value::Array(listed) = answer_doc(ext.query(PANES_SLOT).ok()) else {
             panic!("the panes slot answers with a JSON array");
         };
         for sampled in ["taken", "cpu", "waiting"] {
@@ -5673,7 +5718,7 @@ mod tests {
         }
 
         // ZERO tolerance, so this read samples for itself.
-        let reading = answer_doc(ext.query(&pane_resources_at(0)));
+        let reading = answer_doc(ext.query(&pane_resources_at(0)).ok());
         assert!(
             reading["sampled_ms_ago"].is_u64(),
             "the reading states its own age: {reading}",
@@ -5713,7 +5758,7 @@ mod tests {
         let (mut ext, _rev) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
 
-        let report = answer_doc(ext.query(&doctor_over(0)));
+        let report = answer_doc(ext.query(&doctor_over(0)).ok());
         let findings = report["findings"]
             .as_array()
             .expect("the report carries a finding per check");
@@ -5767,11 +5812,11 @@ mod tests {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
-            matches!(ext.query("doctor.zzz"), Some(IntrospectValue::Null)),
+            matches!(ext.query("doctor.zzz").ok(), Some(IntrospectValue::Null)),
             "a malformed window is a malformed MEMBER, not an unknown path",
         );
         assert!(
-            ext.query("doctor").is_none(),
+            ext.query("doctor").ok().is_none(),
             "and the bare name is not an address — which is what keeps a sleeping read off every \
              whole-surface snapshot",
         );
@@ -5785,11 +5830,14 @@ mod tests {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
-            matches!(ext.query("pane_resources.zzz"), Some(IntrospectValue::Null)),
+            matches!(
+                ext.query("pane_resources.zzz").ok(),
+                Some(IntrospectValue::Null)
+            ),
             "a malformed tolerance is a malformed MEMBER, not an unknown path",
         );
         assert!(
-            ext.query("pane_resources").is_none(),
+            ext.query("pane_resources").ok().is_none(),
             "and the family's bare name is not itself an address",
         );
     }
@@ -5801,11 +5849,14 @@ mod tests {
         let reg = registry();
         let (ext, _rev) = control(&reg);
         assert!(
-            matches!(ext.query("pane_processes.zzz"), Some(IntrospectValue::Null)),
+            matches!(
+                ext.query("pane_processes.zzz").ok(),
+                Some(IntrospectValue::Null)
+            ),
             "a malformed tolerance is a malformed MEMBER, not an unknown path",
         );
         assert!(
-            ext.query("pane_processes").is_none(),
+            ext.query("pane_processes").ok().is_none(),
             "and the family's bare name is not itself an address",
         );
     }
@@ -5819,13 +5870,13 @@ mod tests {
         let (ext, _rev) = control(&reg);
         assert!(
             matches!(
-                ext.query("session_activity.zzz"),
+                ext.query("session_activity.zzz").ok(),
                 Some(IntrospectValue::Null)
             ),
             "a malformed tolerance is a malformed MEMBER, not an unknown path",
         );
         assert!(
-            ext.query("session_activity").is_none(),
+            ext.query("session_activity").ok().is_none(),
             "and the family's bare name is not itself an address",
         );
     }
@@ -5847,7 +5898,11 @@ mod tests {
                 .expect("a reading carries rows")
                 .len()
         };
-        assert_eq!(rows(ext.query(&session_activity_at(0))), 1, "one session");
+        assert_eq!(
+            rows(ext.query(&session_activity_at(0)).ok()),
+            1,
+            "one session"
+        );
 
         ext.invoke(
             NEW_SESSION_ACTION,
@@ -5855,12 +5910,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            rows(ext.query(&session_activity_at(3_600_000))),
+            rows(ext.query(&session_activity_at(3_600_000)).ok()),
             1,
             "an hour of tolerance is met by the held sample, which predates the new session",
         );
         assert_eq!(
-            rows(ext.query(&session_activity_at(0))),
+            rows(ext.query(&session_activity_at(0)).ok()),
             2,
             "and a caller admitting no staleness pays for a sample that sees it",
         );
@@ -5909,7 +5964,7 @@ mod tests {
             },
         );
         assert_eq!(
-            session_names(ext.query(SESSIONS_SLOT)),
+            session_names(ext.query(SESSIONS_SLOT).ok()),
             vec!["0".to_owned()],
             "an empty session a client is attached to lists (the anchor would otherwise hide)",
         );
@@ -6029,7 +6084,7 @@ mod tests {
         // The birth pane runs the request's cmd at its size — the caller's first pane, exact.
         let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         assert_eq!(
-            panes_without_projection(work.query(PANES_SLOT)).0,
+            panes_without_projection(work.query(PANES_SLOT).ok()).0,
             json!([{
                 "id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null, "active": true,
             }]),
@@ -6644,7 +6699,7 @@ mod tests {
         // the stale scope here would assert about the fixture rather than about the product.
         let (fresh, _) = control(&reg);
         assert_eq!(
-            without_ids(answer_doc(fresh.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(fresh.query(WINDOWS_SLOT).ok())),
             json!([
                 {"name": "0", "current": false},
                 {"name": "1", "current": true},
@@ -6654,7 +6709,7 @@ mod tests {
         // The birth pane landed in the NEW window: a fresh scope to the session (now current =
         // "1") sees exactly one pane, while the request's own window "0" is still empty.
         let (fresh, _r) = scoped_control(&reg, scope_of(&reg, "0"));
-        let Some(IntrospectValue::Json(Value::Array(panes))) = fresh.query(PANES_SLOT) else {
+        let Some(IntrospectValue::Json(Value::Array(panes))) = fresh.query(PANES_SLOT).ok() else {
             panic!("the panes slot answers with a JSON array");
         };
         assert_eq!(panes.len(), 1, "the new window is born with its shell");
@@ -6763,7 +6818,7 @@ mod tests {
         );
         assert!(rev.current() > before, "a select wakes waiters to re-read");
         assert_eq!(
-            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT).ok())),
             json!([
                 {"name": "0", "current": true},
                 {"name": "logs", "current": false},
@@ -6827,7 +6882,7 @@ mod tests {
             "a newline would forge a row of every listing that prints a window name",
         );
         assert_eq!(
-            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT).ok())),
             json!([{"name": "0", "current": true}]),
             "and neither refusal touched the window, which is what makes them about the NAME",
         );
@@ -6865,7 +6920,7 @@ mod tests {
         // is pinned on the scope it was built with.
         let (fresh, _) = control(&reg);
         assert_eq!(
-            without_ids(answer_doc(fresh.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(fresh.query(WINDOWS_SLOT).ok())),
             json!([
                 {"name": "main", "current": false},
                 {"name": "logs", "current": true},
@@ -6995,8 +7050,8 @@ mod tests {
         let largest =
             control_with_a_window(&reg, 100, 30).with_window_size(|| crate::WindowSize::Largest);
 
-        let under_manual = answer_doc(manual.query(WINDOW_SIZE_SLOT));
-        let under_largest = answer_doc(largest.query(WINDOW_SIZE_SLOT));
+        let under_manual = answer_doc(manual.query(WINDOW_SIZE_SLOT).ok());
+        let under_largest = answer_doc(largest.query(WINDOW_SIZE_SLOT).ok());
 
         assert_eq!(
             under_manual,
@@ -7048,7 +7103,7 @@ mod tests {
                 .map(|w| w.id().0)
         };
         fn names(ext: &mut WorkspaceExternal) -> Vec<String> {
-            answer_doc(ext.query(WINDOWS_SLOT))
+            answer_doc(ext.query(WINDOWS_SLOT).ok())
                 .as_array()
                 .expect("a list")
                 .iter()
@@ -7158,7 +7213,7 @@ mod tests {
         );
         assert!(rev.current() > before, "a window kill wakes waiters");
         assert_eq!(
-            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT).ok())),
             json!([{"name": "0", "current": true}]),
             "logs is gone and the current fell back to the surviving window",
         );
@@ -7279,7 +7334,7 @@ mod tests {
             .collect();
         assert_eq!(minted.len(), 2, "two windows, two identities");
         let served = |ext: &mut WorkspaceExternal| {
-            answer_doc(ext.query(WINDOWS_SLOT))
+            answer_doc(ext.query(WINDOWS_SLOT).ok())
                 .as_array()
                 .expect("a list")
                 .iter()
@@ -7322,14 +7377,14 @@ mod tests {
 
         let (default_ext, _d) = control(&reg);
         assert_eq!(
-            without_ids(answer_doc(default_ext.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(default_ext.query(WINDOWS_SLOT).ok())),
             json!([{"name": "0", "current": true}]),
             "the default session sees only its own one window",
         );
 
         let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         assert_eq!(
-            without_ids(answer_doc(work.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(work.query(WINDOWS_SLOT).ok())),
             json!([
                 {"name": "0", "current": false},
                 {"name": "logs", "current": true},
@@ -7450,7 +7505,7 @@ mod tests {
     /// Which pane each row of the `panes` slot says is ACTIVE — the wire's own answer, read the way
     /// a client reads it rather than through the registry behind it.
     fn active_row(ext: &mut WorkspaceExternal) -> Option<u64> {
-        let Some(IntrospectValue::Json(Value::Array(rows))) = ext.query(PANES_SLOT) else {
+        let Some(IntrospectValue::Json(Value::Array(rows))) = ext.query(PANES_SLOT).ok() else {
             panic!("the panes slot answers a list");
         };
         let marked: Vec<u64> = rows
@@ -7525,7 +7580,7 @@ mod tests {
     /// placement the way a client does rather than by hand-walking the arena.
     fn tiled_order(ext: &mut WorkspaceExternal) -> Vec<u64> {
         let wire: sprag_terminal::LayoutWire =
-            serde_json::from_value(answer_doc(ext.query(LAYOUT_SLOT))["tree"].clone())
+            serde_json::from_value(answer_doc(ext.query(LAYOUT_SLOT).ok())["tree"].clone())
                 .expect("the layout slot serves a decodable arrangement");
         wire.panes().into_iter().map(|pane| pane.0).collect()
     }
@@ -8607,18 +8662,18 @@ mod tests {
         three_pane_window(&mut ext); // 0 | (1 over 2)
 
         assert_eq!(
-            answer_doc(ext.query("neighbors.1")),
+            answer_doc(ext.query("neighbors.1").ok()),
             json!({"left": 0, "right": null, "up": null, "down": 2}),
         );
         assert_eq!(
-            answer_doc(ext.query("neighbors.0")),
+            answer_doc(ext.query("neighbors.0").ok()),
             json!({"left": null, "right": 1, "up": null, "down": null}),
             "the leftmost pane spans the height, so it has no vertical neighbour either",
         );
         // A pane the tiling does not hold answers all four `null` — it is not at an edge, it is
         // not in the arrangement. Same answer for a pane that never existed and for a FLOATED one.
         assert_eq!(
-            answer_doc(ext.query("neighbors.99")),
+            answer_doc(ext.query("neighbors.99").ok()),
             json!({"left": null, "right": null, "up": null, "down": null}),
         );
         ext.invoke(
@@ -8627,19 +8682,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            answer_doc(ext.query("neighbors.2")),
+            answer_doc(ext.query("neighbors.2").ok()),
             json!({"left": null, "right": null, "up": null, "down": null}),
             "a floated pane is out of the tiling adjacency is a property of",
         );
         assert_eq!(
-            answer_doc(ext.query("neighbors.1")),
+            answer_doc(ext.query("neighbors.1").ok()),
             json!({"left": 0, "right": null, "up": null, "down": null}),
             "THE CONTROL: its old neighbour lost it too, so this is the live tiling and not a \
              cached one",
         );
         // A malformed member of a family the schema ADVERTISES is present-but-empty, never an
         // unknown path (the taxonomy `events.<since>` states).
-        assert_eq!(ext.query("neighbors.zzz"), Some(IntrospectValue::Null));
+        assert_eq!(ext.query("neighbors.zzz").ok(), Some(IntrospectValue::Null));
     }
 
     /// The sentence `SPLIT_ACTION`'s docs used to carry — *"`pane` is REQUIRED, because the daemon
@@ -8659,7 +8714,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            answer_doc(ext.query("neighbors.3"))["left"],
+            answer_doc(ext.query("neighbors.3").ok())["left"],
             json!(2),
             "the new pane opened beside the pane the user was on",
         );

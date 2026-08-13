@@ -8073,7 +8073,13 @@ mod tests {
                 if let Some(introspect) = node.handle.introspect() {
                     let under = tagged(&node.tag);
                     for field in introspect.schema().fields {
-                        let answered = introspect.query(field.path);
+                        // ⚠ `.ok()` COLLAPSES THE REFUSAL BACK TO AN ABSENCE, deliberately: this
+                        // ratchet's claim is *a declared field answers something*, which is what
+                        // the pre-R1674 `Option` said and what these surfaces still mean — they
+                        // refuse only with `UnknownPath`, the arm pinion maps onto the very fault a
+                        // `None` produced. A ratchet that started reading the richer arms would be
+                        // pinning refusal sentences this workspace has not derived yet.
+                        let answered = introspect.query(field.path).ok();
                         found.push(ServedField {
                             under: under.clone(),
                             path: field.path.to_owned(),

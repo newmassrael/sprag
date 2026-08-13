@@ -41,7 +41,7 @@ use std::fmt;
 use pinion_core::GridBuffer;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
-    read_only_or_unknown,
+    ReadRefusal, read_only_or_unknown,
 };
 use serde_json::{Value, json};
 use sprag_input::{KeyEdge, Modifiers, MouseButton, MouseEventKind, MouseInput};
@@ -466,14 +466,8 @@ impl fmt::Debug for SpragPaneExternal {
 
 rpc_external_impl!(SpragPaneExternal);
 
-impl ExternalIntrospect for SpragPaneExternal {
-    fn schema(&self) -> IntrospectSchema {
-        // Declared in `wire`, beside the addresses — a field's TYPE is part of its
-        // declaration, and this surface's vocabulary has ONE home.
-        IntrospectSchema::new(PANE_SCHEMA)
-    }
-
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
+impl SpragPaneExternal {
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
         // The parametric family goes FIRST, before the exact-path arms: its argument rides
         // the path, so it is matched by prefix rather than by equality. Every frame read —
         // live and history alike — is a READ, so no client can wake the waiter it is
@@ -632,7 +626,33 @@ impl ExternalIntrospect for SpragPaneExternal {
             _ => None,
         }
     }
+}
 
+impl ExternalIntrospect for SpragPaneExternal {
+    fn schema(&self) -> IntrospectSchema {
+        // Declared in `wire`, beside the addresses — a field's TYPE is part of its
+        // declaration, and this surface's vocabulary has ONE home.
+        IntrospectSchema::new(PANE_SCHEMA)
+    }
+
+    /// ⚠⚠ **THE IDENTITY MIGRATION, and `UnknownPath` is what a `None` ALWAYS MEANT.**
+    ///
+    /// pinion R1674 widened a read's failure from an absence into a REFUSAL with a reason
+    /// (`ReadRefusal`), and its dispatch maps `UnknownPath` onto the very fault a `None` produced
+    /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
+    /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
+    ///
+    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
+    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
+    /// what this surface knows, and several of them supersede reasoning this file already wrote
+    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
+    /// derived. Registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
+    }
+
+    /// The reading itself — see [`query`](Self::query) for why it still answers an
+    /// `Option` and what that `None` becomes.
     fn intervene(&mut self, path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
         // Nothing here is writable: input is an action (invoke `key`), and every slot is
         // producer-owned. But "not writable" and "not there" are different facts, and
@@ -929,7 +949,8 @@ mod tests {
     fn until_printed(external: &SpragPaneExternal, mark: &str) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(10) {
-            if let Some(IntrospectValue::Text(screen)) = external.query(crate::wire::FULL_TEXT_SLOT)
+            if let Some(IntrospectValue::Text(screen)) =
+                external.query(crate::wire::FULL_TEXT_SLOT).ok()
                 && screen.contains(mark)
             {
                 return true;
@@ -1079,7 +1100,7 @@ mod tests {
         crate::wire::assert_empty_members_are_declared(
             crate::wire::PANE_SCHEMA,
             "the pane surface",
-            |path| external.query(path).is_some(),
+            |path| external.query(path).ok().is_some(),
         );
     }
 

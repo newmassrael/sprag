@@ -26,7 +26,8 @@ use std::thread;
 use std::time::Duration;
 
 use pinion_core::external::{
-    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
+    ReadRefusal, SchemaField,
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
@@ -719,23 +720,8 @@ impl fmt::Debug for PluginsExternal {
 
 rpc_external_impl!(PluginsExternal);
 
-impl ExternalIntrospect for PluginsExternal {
-    fn schema(&self) -> IntrospectSchema {
-        IntrospectSchema::new(
-            const {
-                &[
-                    SchemaField::action(RUN_ACTION, "action"),
-                    SchemaField::action(CANCEL_ACTION, "action"),
-                    SchemaField::new(RUNS_SLOT, "list"),
-                    SchemaField::new(PLUGINS_SLOT, "list"),
-                    SchemaField::new(GUARDRAIL_DEFAULTS_SLOT, "object"),
-                    SchemaField::new(crate::wire::ACTION_GRAMMAR_SLOT, "object"),
-                ]
-            },
-        )
-    }
-
-    fn query(&self, path: &str) -> Option<IntrospectValue> {
+impl PluginsExternal {
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             RUNS_SLOT => {
                 let mut registry = lock(&self.runs);
@@ -762,7 +748,42 @@ impl ExternalIntrospect for PluginsExternal {
             _ => None,
         }
     }
+}
 
+impl ExternalIntrospect for PluginsExternal {
+    fn schema(&self) -> IntrospectSchema {
+        IntrospectSchema::new(
+            const {
+                &[
+                    SchemaField::action(RUN_ACTION, "action"),
+                    SchemaField::action(CANCEL_ACTION, "action"),
+                    SchemaField::new(RUNS_SLOT, "list"),
+                    SchemaField::new(PLUGINS_SLOT, "list"),
+                    SchemaField::new(GUARDRAIL_DEFAULTS_SLOT, "object"),
+                    SchemaField::new(crate::wire::ACTION_GRAMMAR_SLOT, "object"),
+                ]
+            },
+        )
+    }
+
+    /// ⚠⚠ **THE IDENTITY MIGRATION, and `UnknownPath` is what a `None` ALWAYS MEANT.**
+    ///
+    /// pinion R1674 widened a read's failure from an absence into a REFUSAL with a reason
+    /// (`ReadRefusal`), and its dispatch maps `UnknownPath` onto the very fault a `None` produced
+    /// before it (`QueryError::UnknownIntrospectPath`). So wrapping the reading below preserves
+    /// this surface's wire behaviour exactly, which is what a pin bump owes its callers.
+    ///
+    /// ⚠ The three RICHER arms — `NoSuchMember`, `Unavailable`, `QueryTypeMismatch` — are the
+    /// point of the upstream change and are NOT adopted here. Each is a per-path decision about
+    /// what this surface knows, and several of them supersede reasoning this file already wrote
+    /// down; taking them in the same edit as a pin bump would ship refusal sentences nobody
+    /// derived. Registered as owed rather than guessed.
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
+    }
+
+    /// The reading itself — see [`query`](Self::query) for why it still answers an
+    /// `Option` and what that `None` becomes.
     fn intervene(&mut self, _path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
         // No writable state slots: starting a run is an action (invoke `run`).
         Err(InterveneError::UnknownPath)
