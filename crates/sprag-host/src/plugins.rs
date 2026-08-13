@@ -31,9 +31,9 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec, DoneWhen, Driver,
-    Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin,
-    ReadyWhen, ReplyFormat, RunContext, WorkspacePaneAccess,
+    Agent, AgentSpec, Attended, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec, DoneWhen,
+    Driver, Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec,
+    Plugin, ReadyWhen, ReplyFormat, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -445,6 +445,7 @@ impl PluginsExternal {
                     ready_when,
                     ready_within,
                     may_answer: opt_may_answer(map)?,
+                    attended: opt_attended(map)?,
                 };
                 Ok((
                     PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
@@ -462,6 +463,7 @@ impl PluginsExternal {
                     ready_when: opt_ready_when(map)?,
                     ready_within: opt_millis(map, "ready_timeout_ms")?,
                     may_answer: opt_may_answer(map)?,
+                    attended: opt_attended(map)?,
                 };
                 Ok((
                     PluginKind::Pipe(Pipe::new(spec)),
@@ -492,6 +494,7 @@ impl PluginsExternal {
                 spec.ready_when = opt_ready_when(map)?;
                 spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
                 spec.may_answer = opt_may_answer(map)?;
+                spec.attended = opt_attended(map)?;
                 let label = format!("agent pane={}", pane.0);
                 Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
             }
@@ -917,6 +920,21 @@ fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consents>, InvokeEr
     Consents::of(clauses)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
+}
+
+/// Read the optional `await_person_ms` — WHETHER ANYBODY IS WATCHING the pane this run drives, and
+/// for how long. Absent (or `null`) is [`Attended::NoOne`], which is what every run did before the
+/// key existed and is the conservative half of the contract.
+///
+/// ⚠⚠ **ZERO IS MALFORMED, not a quiet `NoOne`** — [`opt_may_answer`]'s empty-array rule exactly,
+/// and for the same reason: two spellings of one behaviour make the caller who reached the first by
+/// arithmetic (a deadline already past, a config that defaulted to 0) silently get the other.
+/// [`Attended::of`] owns the predicate, so the parser and the type cannot drift.
+fn opt_attended(map: &Map<String, Value>) -> Result<Attended, InvokeError> {
+    let Some(patience) = opt_millis(map, Attended::WIRE_KEY)? else {
+        return Ok(Attended::NoOne);
+    };
+    Attended::of(patience).ok_or(InvokeError::TypeMismatch)
 }
 
 /// Parse the `agent` form's optional `done_when` — WHAT MAKES THE TURN OVER. Absent (or `null`)
@@ -2225,10 +2243,15 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            46,
+            49,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠ The three newest are `may_answer` on each injecting \
+             malformed rather than declined. ⚠⚠ The THREE newest are `await_person_ms` on each \
+             LOOPING form, and its declinability is the whole default in the same way the \
+             consent's is: a run that names no patience is unattended and ends when its peer asks \
+             something no clause covers, which is what every run did before the key existed. \
+             ⚠ It is not on the `answer` form, which is CALLED BY the person a wait would wait \
+             for. ⚠ The three before them are `may_answer` on each injecting \
              form, and its declinability is the whole default: a run that names no consent answers \
              nothing and reports the question, which is what every run did before the key existed. \
              ⚠⚠ The FIVE this round added are the `answer` form's own optionals — its `opened_by` \
@@ -2243,10 +2266,14 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            77,
-            "one probe per declared argument of every FORM, nesting included: SIXTEEN for an \
-             orchestrator, FIFTEEN for a pipe, NINETEEN for an agent, sixteen for a dialogue, TEN \
-             to answer a pane, and one to cancel. ⚠ The newest TEN are the whole `answer` form, \
+            80,
+            "one probe per declared argument of every FORM, nesting included: SEVENTEEN for an \
+             orchestrator, SIXTEEN for a pipe, TWENTY for an agent, sixteen for a dialogue, TEN \
+             to answer a pane, and one to cancel. ⚠⚠ The newest THREE are `await_person_ms`, on \
+             each form that LOOPS and on none that does not — the other half of the answering \
+             contract: what the run may answer itself, and who answers what it may not. The \
+             `answer` form is the one injecting form without it, because its caller IS the person \
+             a wait would be waiting for. ⚠ The TEN before them are the whole `answer` form, \
              which is the answering contract with NO LOOP AROUND IT: a pane, a consent, and the \
              bounds every run carries. It declares no stimulus and no readiness barrier, and both \
              absences are the design — the only bytes it can emit are the ones the consent \

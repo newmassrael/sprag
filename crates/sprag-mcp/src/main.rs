@@ -1573,6 +1573,14 @@ const PANE_ARGUMENTS: &[&str] = &["pane", "src", "dst"];
 const NOT_A_PANE: &[&str] = &[
     "timeout_ms",
     "ready_timeout_ms",
+    // ⚠ A PATIENCE, in milliseconds — how long a run waits for the PERSON watching its pane. It
+    // names a duration and never a pane, which is exactly the distinction this list exists to
+    // record: a number that looks like an id and is not.
+    //
+    // ⚠ Spelled through the GRAMMAR rather than as a literal, because this crate reaches
+    // `sprag-plugin` only as a dev-dependency and the published form is the one definition both
+    // sides of this file already read.
+    sprag_host::wire::PluginGrammar::AWAIT_PERSON.name,
     "cols",
     "rows",
     "opened_by",
@@ -1910,6 +1918,21 @@ fn argument_help(name: &str) -> &'static str {
              again` / `No, and tell me why`) is refused as ambiguous, because those two are \
              opposite instructions. An option whose label IS your text wins outright, which is how \
              you say `Yes` when `Yes, and don't ask again` is also on offer."
+        }
+        "await_person_ms" => {
+            "SOMEBODY IS WATCHING THIS PANE — wait this long for THEM to answer anything \
+             `may_answer` does not cover, instead of ending the run. Leave it out and the run is \
+             unattended: the first question no clause covers ends it, which is right when the pane \
+             is on a screen nobody is looking at and wrong when it is the inner session of a loop \
+             somebody is sitting in front of. Measured: a run whose supervisor answered the dialog \
+             a moment later had already reported `blocked` in forty milliseconds, and their answer \
+             landed in a pane nothing was driving. ⚠ IT DOES NOT LET THE RUN DECIDE ANYTHING — a \
+             waiting run still types nothing; `may_answer` remains the only thing that can put a \
+             byte into a dialog, and the wait ends when the PERSON has moved the peer off the \
+             question. ⚠ Set it to how long that person really is: seconds for somebody at the \
+             keyboard, minutes for somebody who checks in. If nobody comes the run ends \
+             `unattended`, which names them rather than blaming your consents. Zero is refused — \
+             say nothing at all to mean nobody is watching."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
@@ -8168,10 +8191,13 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 11,
+            seen, 12,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
-             ready_timeout_ms, cols, rows, max_iterations, max_seconds, max_bytes and max_tokens \
-             — MERGED across the forms, so the agent form's readiness pair adds no new name",
+             ready_timeout_ms, await_person_ms, cols, rows, max_iterations, max_seconds, \
+             max_bytes and max_tokens — MERGED across the forms, so the agent form's readiness \
+             pair adds no new name. ⚠ `await_person_ms` is the newest, and it is the second int \
+             on this wire that is a DURATION wearing a number's clothes: the classification above \
+             is what stops this tool resolving it as somebody's pane",
         );
         // ⚠ AND THE EXEMPTION LIST IS PRUNED TOO — an entry naming an argument no form publishes
         // any more is a stale decision, which is the half R353's exemption rule adds.

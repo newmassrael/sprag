@@ -713,7 +713,30 @@ impl ScopeAsk {
 ///   `blocked`, exactly as versions 26, 27 and 28 do. And an EMPTY list is malformed rather than a
 ///   second spelling of that default: `[]` arriving by accident — a client that built its clause
 ///   list from a filter that matched nothing — is precisely the caller who wants telling.
-pub const WIRE_PROTOCOL: u32 = 29;
+///
+/// * **30 — AN ADDED REQUEST ARGUMENT: `await_person_ms`, on the three forms that LOOP.** A run
+///   may now be told that somebody is watching the pane it drives, and wait that long for them
+///   instead of ending the moment its peer asks something no clause covers.
+///
+///   ⚠⚠ **THE NUMBER MOVES FOR VERSION 25's MEASURED REASON AND NOT FOR A WIDENED SPACE.** This
+///   surface SWALLOWS an argument it does not declare and answers `ok`
+///   (`an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused`), so a client
+///   that asks an older daemon to wait for a person gets a run that reports `blocked` the instant
+///   its peer asks — the exact behaviour the caller paid an argument to avoid, reported as a
+///   success. The handshake is what turns that into a refusal a client can read.
+///
+///   ⚠ **AND THE WIDENING BRINGS ITS OWN REFUSAL AGAIN**, the eighth `why` word: `unattended`, a
+///   run that waited for the person it was promised and gave up. It is the only reason in that
+///   vocabulary about a HUMAN rather than about a clause, and it has a remedy of its own — the
+///   clause-level reason rides underneath it in the free-text detail rather than being replaced,
+///   so a caller learns both what they would have been answering and that nobody came.
+///
+///   ⚠ **THE DEFAULT DOES NOT MOVE, AND NEITHER DOES WHAT A RUN MAY DECIDE.** Absent, a run is
+///   unattended and behaves exactly as 26 through 29 do. Present, it still types nothing of its
+///   own: `may_answer` remains the only thing that can put a byte into a dialog, and this argument
+///   only widens what a run may WAIT for. Zero is malformed rather than a second spelling of
+///   *"nobody"*, for the empty list's reason one version above.
+pub const WIRE_PROTOCOL: u32 = 30;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

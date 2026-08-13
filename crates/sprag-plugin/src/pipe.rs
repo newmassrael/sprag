@@ -36,7 +36,7 @@ use sprag_terminal::PaneId;
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::readiness::{Reached, Readiness, ReadyWhen};
+use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a relay waits for its destination to show ANY change before reporting that it showed
@@ -85,11 +85,17 @@ pub struct PipeSpec {
     /// a peer this run did not start, which is a reason to write a NARROW one — see
     /// [`Consents`].
     pub may_answer: Option<Consents>,
+    /// WHETHER ANYBODY IS WATCHING the destination, and for how long — see [`Attended`].
+    ///
+    /// ⚠ The same asymmetry as the consent above, and it cuts the other way here: the destination
+    /// belongs to somebody else, so a caller declaring that a person is watching it is making a
+    /// claim about a pane they do not own. Narrow patience is the honest form.
+    pub attended: Attended,
 }
 
 impl PipeSpec {
-    /// Relay `src` into `dst` with no readiness barrier and no consent to answer anything — for a
-    /// destination already running what it is meant to be running.
+    /// Relay `src` into `dst` with no readiness barrier, no consent to answer anything and nobody
+    /// watching — for a destination already running what it is meant to be running.
     #[must_use]
     pub const fn new(src: PaneId, dst: PaneId) -> Self {
         Self {
@@ -98,6 +104,7 @@ impl PipeSpec {
             ready_when: None,
             ready_within: None,
             may_answer: None,
+            attended: Attended::NoOne,
         }
     }
 }
@@ -130,7 +137,12 @@ impl Pipe {
             dst: spec.dst,
             cursor: 0,
             consumed: RowTrail::default(),
-            ready: Readiness::new(spec.ready_when, spec.ready_within, spec.may_answer),
+            ready: Readiness::new(
+                spec.ready_when,
+                spec.ready_within,
+                spec.may_answer,
+                spec.attended,
+            ),
         }
     }
 }
@@ -206,6 +218,13 @@ impl Plugin for Pipe {
             Reached::Answered(answered) => {
                 let (note, cost) = (answered.describe(), answered.bytes);
                 return Ok(Step::new(Cost::Bytes(cost), Verdict::Answered(answered)).noting(note));
+            }
+            // A person dealt with the destination's dialog. Nothing is relayed this step, and
+            // nothing is lost by that for the arm above's reason: the source is read AFTER this
+            // barrier, so what arrived while the run waited is still new to the next step.
+            Reached::Attended(attention) => {
+                return Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
+                    .noting(attention.describe()));
             }
         }
 

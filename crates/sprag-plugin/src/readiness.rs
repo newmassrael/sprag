@@ -48,7 +48,7 @@
 //! own — would be two readers of one question, which is the shape R344 spent a round on and R365
 //! found again. There is one, and what it may type is what the caller wrote down.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sprag_detect::{AgentState, Choice, Question};
 use sprag_terminal::PaneId;
@@ -134,6 +134,33 @@ fn marker_arrived(
     }
 }
 
+/// **HAS THE PEER MOVED OFF `question`** — the one condition that ends a wait for a person.
+///
+/// [`marker_arrived`]'s [`Arrival::LeftTheQuestion`] test with the authorised choice taken out of
+/// it, because a run waiting for a HUMAN has no authorised choice: it is not watching for a marker
+/// to land somewhere, only for the dialog it could not answer to stop being the one on the pane.
+///
+/// ⚠ The `None` question — a peer blocked on something this host cannot read — is the one case that
+/// cannot be answered by comparing sentences, so it asks the weaker question it can answer: is this
+/// pane still blocked at all. That is strictly more conservative. A person who replaces one
+/// unreadable dialog with another keeps the run waiting, which is right, since nothing here can
+/// tell the two apart and resuming would type into whichever it is.
+fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Question>) -> bool {
+    match peer_asking(panes, pane) {
+        // Not blocked at all: whatever it was asking, it is asking no longer.
+        None => true,
+        Some(now) => match (question, now) {
+            // ⚠ Blocked with no readable menu, having been blocked on one this host COULD read.
+            // `marker_arrived` merges this with "gone" for a measured reason — it is what the
+            // settle window looks like from the outside, so treating it as still-asking would wait
+            // out the very answer being waited for.
+            (Some(_), None) => true,
+            (Some(asked), Some(shown)) => shown.asked != asked.asked,
+            (None, _) => false,
+        },
+    }
+}
+
 /// How long the whole answering act may take — the keystroke, the peer moving off the question, and
 /// its supervisor catching up with both.
 ///
@@ -208,6 +235,137 @@ fn settled_question(
 /// [`DEFAULT_REPLY_TIMEOUT`]: crate::run::DEFAULT_REPLY_TIMEOUT
 pub const DEFAULT_READY_TIMEOUT: Duration = crate::run::DEFAULT_REPLY_TIMEOUT;
 
+/// **WHETHER ANYBODY IS EXPECTED TO COME** when the peer asks something this run may not answer —
+/// the run's fourth declared-in-advance contract, beside [`ReadyWhen`],
+/// [`DoneWhen`](crate::completion::DoneWhen) and [`Consents`].
+///
+/// # ⚠⚠⚠ Why a blocked run had exactly one behaviour, and why that was wrong for half its callers
+///
+/// Every refusal this contract can reach ends its sentence the same way: **hand the pane to a
+/// person** ([`Refusal::describe`]). Until this existed the run acted on that instruction by
+/// STOPPING, which is the only honest thing to do when the pane is on a screen nobody is looking
+/// at — and the wrong thing when somebody is looking at it right now.
+///
+/// The two cases are not degrees of one another, and no run could tell them apart:
+///
+/// * **An unattended run** — a nightly sweep, an agent driving a peer in a detached session. A
+///   question is the end of it, because the alternative is a machine deciding something nobody
+///   authorised. This stays the default and the behaviour is unchanged.
+/// * **A supervised run** — the inner session of a loop a person is watching. The pane is on their
+///   screen, they read every turn as it happens, and they can answer the dialog with their own
+///   hands. Here stopping throws away a turn for no reason but the absence of a way to say *"wait
+///   for me"*. **Measured before this existed: a run whose supervisor answered the dialog a moment
+///   later had already reported `blocked` — in forty milliseconds.**
+///
+/// # ⚠⚠ Why waiting is not the same as answering, and does not weaken anything
+///
+/// A run that waits still types nothing. [`Consents`] remains the only thing that can put a byte
+/// into a dialog, and the wait ends when the PERSON has moved the peer off the question. So this
+/// widens what a run can WAIT for and not one thing that it may DECIDE — which is the distinction
+/// the whole answering contract is built on, kept intact at the one door all four injecting
+/// plugins pass through.
+///
+/// # ⚠ Why a DURATION rather than a flag
+///
+/// A bare *"somebody is watching"* would need a patience from somewhere, and the only somewhere is
+/// a default nobody chose — the shape this crate has removed twice. How long a person may take is
+/// exactly the kind of question only the caller can answer (a supervisor at the keyboard is
+/// seconds; one who checks between meetings is an hour), so they say it, and the absence of the
+/// argument is the absence of the person.
+///
+/// [`Consents`]: crate::consent::Consents
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Attended {
+    /// **NOBODY IS WATCHING.** A question this run cannot answer ends it — the behaviour every run
+    /// had before this contract existed, and the default.
+    NoOne,
+    /// A person is at this pane. Wait up to this long for them to deal with the dialog, then carry
+    /// on from wherever they left the peer.
+    APerson(Duration),
+}
+
+impl Attended {
+    /// The argument this contract is declared with, in ONE place, so the daemon's parser, the
+    /// published grammar and both mouths spell it identically — [`Consents::WIRE_KEY`]'s rule.
+    ///
+    /// ⚠ It names the ACT and its UNIT rather than the state, because the value IS the patience:
+    /// *"await a person for this many milliseconds"*. A `attended: true` would have needed a
+    /// patience from somewhere, and the only somewhere is a default nobody chose.
+    ///
+    /// [`Consents::WIRE_KEY`]: crate::consent::Consents::WIRE_KEY
+    pub const WIRE_KEY: &'static str = "await_person_ms";
+
+    /// A run watched by somebody with `patience` to spare, or [`None`] for a patience of zero.
+    ///
+    /// ⚠ Zero is REFUSED rather than accepted as a no-op, for [`Consents::of`]'s reason one level
+    /// up: *"wait for a person for no time at all"* and *"nobody is watching"* would be two
+    /// spellings of one behaviour, and the caller who arrives at the first by arithmetic — a
+    /// deadline already passed, a config that defaulted to 0 — is precisely the one who needs to be
+    /// told rather than silently given the other.
+    ///
+    /// [`Consents::of`]: crate::consent::Consents::of
+    #[must_use]
+    pub const fn of(patience: Duration) -> Option<Self> {
+        if patience.is_zero() {
+            return None;
+        }
+        Some(Self::APerson(patience))
+    }
+
+    /// How long a person is given, or [`None`] when nobody is expected.
+    #[must_use]
+    pub const fn patience(self) -> Option<Duration> {
+        match self {
+            Self::NoOne => None,
+            Self::APerson(patience) => Some(patience),
+        }
+    }
+}
+
+/// **A PERSON DEALT WITH THE DIALOG THIS RUN COULD NOT** — what [`Reached::Attended`] carries.
+///
+/// It holds everything an unattended run would have ENDED with, because the facts are worth the
+/// same words either way: a supervised run that needed a human four times is a run whose consents
+/// are missing four clauses, and a journal that only said *"continued"* would hide that.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Attention {
+    /// The question, and why this run could not answer it itself.
+    asked: Unanswered,
+    /// How long the person took to come.
+    waited: Duration,
+}
+
+impl Attention {
+    /// The question that stopped the run, and the reason no clause covered it.
+    #[must_use]
+    pub const fn asked(&self) -> &Unanswered {
+        &self.asked
+    }
+
+    /// How long the run waited before the person moved the peer off it.
+    #[must_use]
+    pub const fn waited(&self) -> Duration {
+        self.waited
+    }
+
+    /// What this run had already spent on the question before it waited — non-zero only where a
+    /// consent was typed and the peer went on asking ([`Refusal::NotTaken`]).
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        self.asked.bytes()
+    }
+
+    /// The line a run's journal carries for the turn a person took over.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "a person answered what this run could not ({}) after {:.1}s",
+            self.asked.why().wire_str(),
+            self.waited.as_secs_f32(),
+        )
+    }
+}
+
 /// How a [`Readiness`] wait ended, for the endings that are not an error.
 /// ⚠ NOT `Copy` since two arms carry the peer's question — [`Verdict`]'s reason, and the same one:
 /// an answer that cannot say WHAT the peer is asking is not worth returning.
@@ -247,6 +405,20 @@ pub enum Reached {
     /// answered, and the NEXT step asks this barrier again — by which time the peer is working, at
     /// rest, or asking something else, and each of those is already an answer this type has.
     Answered(Answered),
+    /// **THE PEER ASKED SOMETHING THIS RUN MAY NOT ANSWER, AND THE PERSON WATCHING ANSWERED IT** —
+    /// see [`Attended`].
+    ///
+    /// # ⚠⚠ Not `Yes`, for [`Answered`](Self::Answered)'s reason exactly
+    ///
+    /// The peer has just been handed a decision by a human and is acting on it, so a barrier that
+    /// said `Yes` here would let the same step type its stimulus into a pane mid-transition. The
+    /// wait ENDS the step; the next one asks this barrier again, by which time the peer is working,
+    /// at rest, or asking something else — each of which this type already has an answer for.
+    ///
+    /// ⚠ That is also what makes a person's answer safe to resume from without inspecting it. This
+    /// run never learns what they chose and has no business knowing: it asks the barrier again and
+    /// meets whatever the pane became.
+    Attended(Attention),
 }
 
 /// WHICH QUESTION a readiness marker is asking — the distinction the argument used to hide.
@@ -515,16 +687,25 @@ pub struct Readiness {
     /// ⚠⚠ A LIST since R370, because one turn asks more than one question — see [`Consents`],
     /// which owns what several clauses say about one dialog.
     consent: Option<Consents>,
+    /// WHO IS EXPECTED TO COME when the consent above does not cover what the peer asked — see
+    /// [`Attended`].
+    ///
+    /// ⚠ It lives HERE, beside the consent and for the same reason: this is the one door to a
+    /// blocked pane, and *"may this run answer it"* and *"will somebody else"* are the two halves
+    /// of one question. Split across two places, a plugin could be written that consults one of
+    /// them.
+    attended: Attended,
 }
 
 impl Readiness {
     /// A barrier for `when`, waiting `within` (defaulting to [`DEFAULT_READY_TIMEOUT`]), answering
-    /// its peer's questions under `consent`.
+    /// its peer's questions under `consent`, and waiting for whoever `attended` says is watching.
     ///
     /// A `None` condition is a barrier that is already down: the caller is saying the pane is
-    /// running what they mean to drive. A `None` consent is a run that answers nothing.
+    /// running what they mean to drive. A `None` consent is a run that answers nothing, and
+    /// [`Attended::NoOne`] is a run nobody will come to.
     ///
-    /// ⚠ The consent is a PARAMETER and not a builder, so a plugin that injects cannot be written
+    /// ⚠ Both contracts are PARAMETERS and not builders, so a plugin that injects cannot be written
     /// without deciding what it does about a blocked peer — [`Plugin::driving`]'s reasoning, which
     /// is the other question in this crate whose harmless-looking default was a wrong answer.
     ///
@@ -534,6 +715,7 @@ impl Readiness {
         when: Option<ReadyWhen>,
         within: Option<Duration>,
         consent: Option<Consents>,
+        attended: Attended,
     ) -> Self {
         Self {
             seen: when.is_none(),
@@ -541,6 +723,64 @@ impl Readiness {
             within: within.unwrap_or(DEFAULT_READY_TIMEOUT),
             armed_at: None,
             consent,
+            attended,
+        }
+    }
+
+    /// **HAND THE PANE TO THE PERSON WHO IS WATCHING IT, AND WAIT** — what an
+    /// [`Attended::APerson`] run does with a refusal instead of ending on it.
+    ///
+    /// # ⚠⚠⚠ Why EVERY refusal reaches this, and not a chosen few
+    ///
+    /// The first draft waited only on the arms that read like a missing clause. That was a rule
+    /// with no author: [`Refusal::describe`] gives all seven the same closing instruction —
+    /// **hand the pane to a person** — and this is the caller stating that a person is there to
+    /// hand it to. Picking a subset would mean deciding that some of those sentences meant it less,
+    /// which nothing in the type says and no caller could predict.
+    ///
+    /// ⚠ [`Refusal::NotTaken`] is the arm that proves it rather than the exception it looks like: a
+    /// consent was typed and the peer went on asking, so the pane is sitting on a dialog in a state
+    /// nobody understands — the case where a human is most obviously wanted, and the one a subset
+    /// rule would most likely have left out.
+    ///
+    /// # ⚠⚠ What ends the wait, and why it is the QUESTION and not the STATE
+    ///
+    /// [`Arrival::LeftTheQuestion`]'s rule, for [`Arrival::LeftTheQuestion`]'s measured reason: a
+    /// supervisor's verdict settles, so a pane whose dialog has just been answered goes on reading
+    /// `Blocked` for its hysteresis window. Keyed on the state, this would wait out the person's
+    /// answer and report that nobody came.
+    ///
+    /// ⚠⚠ And a DIFFERENT question also ends it. The run does not inspect what the person chose and
+    /// has no business doing so — it hands back a spent step, and the next one meets the barrier
+    /// again with whatever the pane has become. That is [`Reached::Answered`]'s discipline, applied
+    /// to a decision this run did not make at all.
+    fn await_the_person(
+        &self,
+        panes: &dyn PaneAccess,
+        pane: PaneId,
+        unanswered: Unanswered,
+        run: &RunContext,
+    ) -> Reached {
+        let Some(patience) = self.attended.patience() else {
+            return Reached::Asking(unanswered);
+        };
+        let began = Instant::now();
+        let asked = unanswered.question().cloned();
+        let waited = poll_until(run, patience, || moved_on(panes, pane, asked.as_ref()));
+        match waited {
+            Waited::Ready => Reached::Attended(Attention {
+                asked: unanswered,
+                waited: began.elapsed(),
+            }),
+            // ⚠⚠⚠ A RUN ENDING UNDERNEATH REPORTS THE QUESTION, not `RunEnded`. The Driver's own
+            // rule — *"a peer that stopped to ASK outranks everything below, including the run's
+            // own end"* — and the same reasoning: a cancel arriving mid-wait does not make the
+            // dialog go away, and `RunEnded` promises nothing was charged, which a `not_taken`
+            // refusal would make false.
+            Waited::Stopped => Reached::Asking(unanswered),
+            // Nobody came. The arm says so and the original reason rides along — see
+            // [`Unanswered::unattended`].
+            Waited::TimedOut => Reached::Asking(Unanswered::unattended(unanswered, patience)),
         }
     }
 
@@ -807,7 +1047,16 @@ impl Readiness {
         // the latch it would never run again after the first step, which is exactly the window the
         // defect lived in.
         if let Some(asking) = settled_question(panes, pane, run) {
-            return self.answer(panes, pane, asking, run);
+            // ⚠⚠ THE WAIT WRAPS THE ANSWER RATHER THAN PRECEDING IT. A run that waited for a person
+            // FIRST would sit on a dialog its own consents authorise, which is a supervisor being
+            // fetched for a decision they already wrote down. Every path that ends in a refusal
+            // reaches the wait; the two that do not — an answer given, a run ended — never should.
+            return match self.answer(panes, pane, asking, run)? {
+                Reached::Asking(unanswered) => {
+                    Ok(self.await_the_person(panes, pane, unanswered, run))
+                }
+                decided => Ok(decided),
+            };
         }
         if self.seen {
             return Ok(Reached::Yes);
@@ -997,6 +1246,7 @@ mod tests {
                 Some(ReadyWhen::Settles("claude".to_string())),
                 Some(Duration::from_millis(150)),
                 None,
+                Attended::NoOne,
             )
             .reached(access, pane, &RunContext::uncancellable())
         };
@@ -1008,6 +1258,7 @@ mod tests {
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(50)),
                 None,
+                Attended::NoOne,
             )
             .reached(&access, pane, &RunContext::uncancellable())
             .is_err()
@@ -1018,7 +1269,8 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(200)),
-                None
+                None,
+                Attended::NoOne
             )
             .reached(&access, pane, &RunContext::uncancellable()),
             Ok(Reached::Yes),
@@ -1125,6 +1377,7 @@ mod tests {
             Some(ReadyWhen::Prints("BANNER".to_string())),
             Some(Duration::from_millis(600)),
             None,
+            Attended::NoOne,
         );
         let outcome = std::thread::scope(|scope| {
             let waiting =
@@ -1184,6 +1437,7 @@ mod tests {
             Some(ReadyWhen::Runs("claude".to_string())),
             Some(Duration::from_millis(120)),
             None,
+            Attended::NoOne,
         )
         .reached(&access, pane, &RunContext::uncancellable())
         .expect_err("a pane with no child can never come to run anything");
@@ -1241,7 +1495,8 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Prints("BANNER".to_string())),
                 Some(Duration::from_millis(120)),
-                None
+                None,
+                Attended::NoOne
             )
             .reached(&NoEchoTrail, PaneId(1), &RunContext::uncancellable())
             .is_err(),
@@ -1276,6 +1531,7 @@ mod tests {
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(400)),
                 None,
+                Attended::NoOne,
             )
             .reached(&access, pane, &RunContext::uncancellable())
             .as_ref()
@@ -1329,11 +1585,13 @@ mod tests {
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         let asks = |name: &str, within: Duration| {
-            Readiness::new(Some(ReadyWhen::Runs(name.to_string())), Some(within), None).reached(
-                &access,
-                pane,
-                &RunContext::uncancellable(),
+            Readiness::new(
+                Some(ReadyWhen::Runs(name.to_string())),
+                Some(within),
+                None,
+                Attended::NoOne,
             )
+            .reached(&access, pane, &RunContext::uncancellable())
         };
 
         assert_eq!(
@@ -1413,7 +1671,8 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Shows("TOOL UP".to_string())),
                 Some(Duration::from_secs(5)),
-                None
+                None,
+                Attended::NoOne
             )
             .reached(&access, pane, &RunContext::uncancellable()),
             Ok(Reached::Yes),
@@ -1539,6 +1798,7 @@ mod tests {
             Some(ReadyWhen::Runs("claude".to_string())),
             Some(Duration::from_millis(120)),
             None,
+            Attended::NoOne,
         );
         let failed = ready
             .reached(&NoProcessView, PaneId(1), &RunContext::uncancellable())
@@ -1558,7 +1818,8 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Settles("claude".to_string())),
                 Some(Duration::from_millis(120)),
-                None
+                None,
+                Attended::NoOne
             )
             .reached(&NoProcessView, PaneId(1), &RunContext::uncancellable())
             .is_err(),
@@ -1581,7 +1842,23 @@ mod tests {
     /// A barrier with no readiness condition and the given consent — the shape every gate below
     /// wants, since what is under test is the ANSWERING contract and not the starting one.
     fn answering(consent: Option<Consents>) -> Readiness {
-        Readiness::new(None, Some(Duration::from_millis(200)), consent)
+        Readiness::new(
+            None,
+            Some(Duration::from_millis(200)),
+            consent,
+            Attended::NoOne,
+        )
+    }
+
+    /// The same barrier with somebody watching the pane — the control's twin, differing in exactly
+    /// the one contract these gates are about.
+    fn watched(consent: Option<Consents>, patience: Duration) -> Readiness {
+        Readiness::new(
+            None,
+            Some(Duration::from_millis(200)),
+            consent,
+            Attended::of(patience).expect("a positive patience"),
+        )
     }
 
     /// A one-clause consent for the measured permission question, authorising the option carrying
@@ -1594,6 +1871,219 @@ mod tests {
                 .expect("two needles"),
         ])
         .expect("a non-empty list")
+    }
+
+    /// ⚠⚠⚠ **NOBODY CAME, AND THE RUN SAYS BOTH THINGS THAT ARE TRUE.**
+    ///
+    /// The other end of [`Attended`]: a caller declared a person was watching, the peer asked
+    /// something no clause covered, and the patience ran out with the dialog still up. Two facts
+    /// with two different remedies, and a report that carried only one of them would send the
+    /// caller the wrong way — so the ARM says nobody came and the DETAIL says what they would have
+    /// been answering.
+    ///
+    /// ⚠ It also pins the direction of the wait: the run must still have typed NOTHING. Waiting is
+    /// a widening of what a run may wait FOR and not of what it may decide, and the pane is the
+    /// witness for that.
+    #[test]
+    fn a_person_who_never_comes_is_reported_as_such_and_keeps_the_reason_underneath() {
+        let (access, pane) = asking_peer("either");
+        // ⚠ A consent about a DIFFERENT question, so the refusal underneath is `other_question`
+        // rather than `no_consent` — the arm a caller acts on by writing a clause, and the one
+        // that would be silently lost if `unattended` overwrote it.
+        let elsewhere = Consents::of(vec![
+            Consent::parse(
+                "Do you want to make this edit?".to_string(),
+                "Yes".to_string(),
+            )
+            .expect("two needles"),
+        ]);
+        let began = Instant::now();
+        let waited_out = watched(elsewhere, Duration::from_millis(400))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a blocked peer is not an error");
+        let took = began.elapsed();
+
+        let Reached::Asking(unanswered) = waited_out else {
+            panic!("⚠⚠⚠ nobody came, so the run must still hand the question over: {waited_out:?}");
+        };
+        assert_eq!(
+            unanswered.why(),
+            Refusal::Unattended,
+            "⚠⚠⚠ the arm must say that the PERSON did not come. Reported as `other_question` the \
+             caller goes looking for a clause to write, when what actually happened is that the \
+             human they promised was not there: {unanswered:?}",
+        );
+        let said = unanswered.explain();
+        assert!(
+            said.contains("other_question"),
+            "⚠⚠ and the reason underneath SURVIVES — a caller whose own consents could have \
+             answered this must not be told only to wait longer: {said:?}",
+        );
+        assert_eq!(
+            unanswered.bytes(),
+            0,
+            "a run that waited typed nothing, and waiting is not a licence to decide",
+        );
+        assert!(
+            took >= Duration::from_millis(400),
+            "⚠⚠ and it actually WAITED the patience it was given. A gate that passes without the \
+             clock moving is measuring the refusal, not the wait: {took:?}",
+        );
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !screen.contains("SAW") && !screen.contains("TOOK"),
+            "⚠⚠⚠ NOT ONE KEY, over the whole wait — the pane is the witness: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A RUN DOES NOT FETCH A PERSON FOR A DECISION THEY ALREADY WROTE DOWN.**
+    ///
+    /// The ordering claim, and it is the one a plausible implementation gets backwards: waiting
+    /// BEFORE consulting the consent would leave a supervisor staring at a dialog their own
+    /// standing rule authorises, for the whole patience, on every turn. The wait wraps the answer;
+    /// it does not precede it.
+    ///
+    /// ⚠ The clock is the assertion. Both orderings end with the peer answered, so only the time
+    /// taken tells them apart.
+    #[test]
+    fn a_question_the_consent_covers_is_answered_at_once_and_nobody_is_fetched() {
+        let (access, pane) = asking_peer("either");
+        let began = Instant::now();
+        let reached = watched(Some(consent_to("Yes")), Duration::from_secs(30))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a blocked peer is not an error");
+        let took = began.elapsed();
+        assert!(
+            matches!(reached, Reached::Answered(_)),
+            "⚠⚠⚠ the clause covers this question, so the run answers it — a `Attended` here is a \
+             run that went to find a human for a decision it was holding: {reached:?}",
+        );
+        assert!(
+            took < Duration::from_secs(5),
+            "⚠⚠⚠ AND IT DID NOT WAIT FIRST. The patience is thirty seconds and an answered dialog \
+             must not pay any of it: {took:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **THE SETTLE WINDOW ENDS THE WAIT, BECAUSE IT IS WHAT AN ANSWERED DIALOG LOOKS LIKE.**
+    ///
+    /// A supervisor's verdict SETTLES: a real detector goes on calling a pane `blocked` for its
+    /// hysteresis window after the dialog has left the screen, with nothing readable on it. That
+    /// state — blocked, no menu — is therefore two things at once, and `marker_arrived` already
+    /// merges them for a reason MEASURED end to end: read as *"still asking"*, the wait outlives
+    /// the very answer it is waiting for, and a person who answered inside their patience is
+    /// reported as never having come.
+    ///
+    /// # ⚠⚠⚠ Why this is a unit gate on the predicate and not an end-to-end run
+    ///
+    /// **It was mutated both ways first.** Flipping this arm to `false` left BOTH the plugin's
+    /// end-to-end gate and the live daemon's green: in each of them the person's answer takes the
+    /// peer all the way out of `blocked`, so the merged arm is never the one that decides, and the
+    /// mutation costs only the settle's own length against a patience many times larger. The arm
+    /// is reachable and the defect is real — a patience SHORTER than the detector's settle turns an
+    /// answered dialog into `unattended` — but reproducing that through a pane means racing a
+    /// fixture's clock against a product's, which is the shape every load-marginal red in this
+    /// crate has had.
+    ///
+    /// ⚠ So the claim is made where it is exact, and the residue is stated rather than hidden: what
+    /// is gated here is the PREDICATE's reading of that state, not a run that survives it.
+    #[test]
+    fn a_pane_whose_menu_has_gone_but_whose_verdict_has_not_counts_as_answered() {
+        /// A pane its supervisor still calls blocked, with NO question readable on it — the
+        /// settle window, and the state a peer is in for `DEFAULT_SETTLE` after being answered.
+        struct StillBlockedNothingReadable;
+        impl crate::access::PaneSupervision for StillBlockedNothingReadable {
+            fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+                Some(crate::access::AgentObservation {
+                    state: AgentState::Blocked,
+                    agent: Some("claude".to_owned()),
+                    // ⚠ The SCREEN-read authority, deliberately: the settle window is a property
+                    // of a detector sampling a pane, and a `Reported` verdict comes from inside
+                    // the agent and has no hysteresis to model.
+                    authority: crate::access::Authority::Scraped {
+                        rule: Some("permission-menu".to_owned()),
+                    },
+                    seq: 1,
+                    asking: None,
+                })
+            }
+        }
+        impl PaneAccess for StillBlockedNothingReadable {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+                Some(self)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                panic!("⚠⚠ a run waiting for a person types NOTHING");
+            }
+        }
+
+        let was_asked = sprag_detect::Question {
+            asked: vec!["Do you want to proceed?".to_owned()],
+            choices: vec![sprag_detect::Choice {
+                number: 1,
+                label: "Yes".to_owned(),
+                selected: true,
+            }],
+        };
+        assert!(
+            moved_on(&StillBlockedNothingReadable, PaneId(1), Some(&was_asked)),
+            "⚠⚠⚠ the dialog this run stopped on is off the screen, and only the supervisor's own \
+             hysteresis still says otherwise. Read as still-asking, a person who answered inside \
+             their patience is reported as never having come",
+        );
+        // ⚠ THE CONTROL, and it is what keeps the arm above from being *"anything blocked counts
+        // as answered"*: the SAME unreadable state, for a run that stopped on an unreadable dialog
+        // in the first place. There is no sentence to compare, so nothing here says a person acted.
+        assert!(
+            !moved_on(&StillBlockedNothingReadable, PaneId(1), None),
+            "⚠⚠⚠ a run that stopped on a dialog it could NOT read has no sentence to compare \
+             against, so only the pane ceasing to be blocked can say a person dealt with it — \
+             resuming here would type into whatever is still up",
+        );
+    }
+
+    /// ⚠⚠ **A PATIENCE OF ZERO IS NOT A SPELLING OF `NoOne`.**
+    ///
+    /// [`Consents::of`]'s rule one level up: two spellings of one behaviour make the caller who
+    /// arrived at the first by arithmetic — a deadline already past, a config defaulting to 0 —
+    /// silently get the other. They are told instead.
+    #[test]
+    fn a_watch_with_no_patience_cannot_be_built() {
+        assert!(
+            Attended::of(Duration::ZERO).is_none(),
+            "⚠⚠ zero patience must be unrepresentable, not a quiet `NoOne`",
+        );
+        assert_eq!(
+            Attended::of(Duration::from_millis(1)),
+            Some(Attended::APerson(Duration::from_millis(1))),
+            "and any positive patience is a person",
+        );
+        assert_eq!(
+            Attended::NoOne.patience(),
+            None,
+            "nobody watching has no patience to spend",
+        );
     }
 
     /// ⚠⚠⚠ **A RUN GIVEN NO CONSENT STILL TYPES NOTHING** — the behaviour R365 shipped, held here

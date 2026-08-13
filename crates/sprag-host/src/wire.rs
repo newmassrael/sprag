@@ -1078,6 +1078,37 @@ impl PluginGrammar {
     )
     .optional();
 
+    /// **WHETHER ANYBODY IS WATCHING the pane this run drives, and for how long** — the other half
+    /// of [`MAY_ANSWER`](Self::MAY_ANSWER), and the argument that makes a SUPERVISED loop
+    /// expressible.
+    ///
+    /// # ⚠⚠⚠ The case a blocked run could not tell apart, and got wrong for half its callers
+    ///
+    /// Every refusal the answering contract can report ends its sentence the same way — **hand the
+    /// pane to a person** — and until this key existed a run acted on that by STOPPING. That is the
+    /// only honest thing to do when the pane is on a screen nobody is looking at, and the wrong
+    /// thing when the run IS the inner session of a loop somebody is watching: the pane is on their
+    /// desk, they read every turn as it happens, and they can answer the dialog with their own
+    /// hands. Measured (R371): a run whose supervisor answered the dialog a moment later had
+    /// already reported `blocked` — in FORTY MILLISECONDS — and their answer landed in a pane
+    /// nothing was driving any more.
+    ///
+    /// ⚠⚠ **IT WIDENS WHAT A RUN MAY WAIT FOR AND NOTHING IT MAY DECIDE.** A waiting run still
+    /// types nothing: `may_answer` remains the only thing that can put a byte into a dialog, and
+    /// this wait ends when the PERSON has moved the peer off the question. The two keys are read
+    /// at one door ([`sprag_plugin::Readiness`]) so that stays true by construction.
+    ///
+    /// ⚠ A DURATION and not a flag, because a bare *"somebody is watching"* would need a patience
+    /// from somewhere and the only somewhere is a default nobody chose. **Zero is malformed**, not
+    /// a quiet *"nobody"* — [`Attended::of`](sprag_plugin::Attended::of) owns that predicate the
+    /// way `Consents::of` owns the empty list's.
+    ///
+    /// ⚠ NOT on the `answer` form. That one is CALLED BY the person a wait would be waiting for, so
+    /// waiting there would block a supervisor on their own answer — the same reasoning that keeps
+    /// its consent to one clause.
+    pub const AWAIT_PERSON: ArgGrammar =
+        ArgGrammar::open(sprag_plugin::Attended::WIRE_KEY, "int").optional();
+
     /// The SAME consent, REQUIRED — the `answer` form, whose whole content it is.
     ///
     /// # ⚠⚠⚠ Why the one argument that is optional everywhere else is mandatory here
@@ -1112,6 +1143,7 @@ impl PluginGrammar {
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
+        Self::AWAIT_PERSON,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1128,6 +1160,7 @@ impl PluginGrammar {
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
+        Self::AWAIT_PERSON,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1144,6 +1177,7 @@ impl PluginGrammar {
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::MAY_ANSWER,
+        Self::AWAIT_PERSON,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -7148,7 +7182,15 @@ mod tests {
             // single clause could not — two clauses about one question naming different options.
             // A caller branches on it exactly as on the other six (narrow one of your own rules,
             // rather than re-read the dialog), which is why it is a word and not a sentence.
-            29,
+            // ⚠⚠ R371 IS THE FIFTH, and the same shape one contract further out: `refusal` gained
+            // an EIGHTH word (`unattended`), the failure that only a run which may WAIT can have —
+            // a person was promised, the patience ran out, and the dialog is still up. It is the
+            // one arm in this vocabulary about a HUMAN rather than about a clause, and its remedy
+            // differs from all seven others (be there, or wait longer), which is exactly the test
+            // for a word rather than a sentence. ⚠ The clause-level reason it would otherwise have
+            // reported is NOT lost and does NOT widen anything: it rides in the free-text detail,
+            // R364's shape.
+            30,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7200,6 +7242,12 @@ mod tests {
                 // ⚠⚠ R370: the arm a LIST of consents made possible — the caller's own clauses
                 // disagreeing about the question on screen.
                 "refusal:contradicted",
+                // ⚠⚠⚠ R371: the arm `await_person_ms` made possible, and the ONLY one in this
+                // vocabulary about a HUMAN rather than about a clause — a run that waited for the
+                // person it was promised and gave up. Its remedy is its own (be there, or raise the
+                // patience), which is why it is a word and not the clause-level reason it carries
+                // underneath in free text.
+                "refusal:unattended",
             ],
         );
 
@@ -7376,7 +7424,13 @@ mod tests {
             // `a_published_argument_shape_cannot_move_under_the_protocol_number` was written for,
             // in the same round: this pin's own gap, closed by the pin beside it rather than by
             // widening this one, because a VALUE SPACE and a SHAPE fail differently.
-            29,
+            // ⚠⚠ R371: re-stamped for an ADDED REQUEST ARGUMENT (`await_person_ms`, on the three
+            // forms that loop) with no published vocabulary moving. The argument is a DURATION, so
+            // there is no closed set for a client to pick a value from — the same absence-by-design
+            // `may_answer`'s two needles have, and invisible here for the same reason. ⚠ THIS TIME
+            // THE BLIND SPOT WAS COVERED: the shape pin beside this one went red, which is exactly
+            // what R370 built it for.
+            30,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7580,7 +7634,12 @@ mod tests {
             // R370: born at 29, in the round whose own change proved the gap. Every entry below is
             // the shape as it stands at that number; a later round that moves one of them decides
             // about `sprag_rpc::WIRE_PROTOCOL` here.
-            29,
+            // ⚠⚠⚠ R371 IS THE FIRST MOVE, AND IT IS THE ONE THIS PIN WAS BORN FOR: three forms
+            // gained `await_person_ms:int?`, and this went red for it. R370's own re-typing had
+            // been caught by nothing but two hand-written counts, which is what the pin exists to
+            // replace. The number rises for the ADDED ARGUMENT on version 25's grounds — an older
+            // daemon swallows an undeclared key and reports success for a run that will never wait.
+            30,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -7636,9 +7695,15 @@ mod tests {
                 // `may_answer:array?{…}` on the three that loop. At 28 all four read `object`, and
                 // NOTHING in this suite could see them change.
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int may_answer:array{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
+                // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
+                // for it — where R370's own re-typing had been noticed by nothing but two
+                // hand-written counts. An argument ADDED is the case its doc predicts: a client
+                // built against the old shape is unaffected, and an older DAEMON swallows the key
+                // and reports a run that will never wait, which is why the number rises.
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
             ],
         );
 
@@ -8060,7 +8125,12 @@ mod tests {
         // (`a_published_argument_shape_cannot_move_under_the_protocol_number`) walks the served
         // grammar for each argument's TYPE, OPTIONALITY and NESTING, so the next re-typed argument
         // is caught by a gate instead of by whoever remembered.
-        29,
+        // R371: re-stamped for an ADDED REQUEST ARGUMENT (`await_person_ms`) and a widened ANSWER
+        // value space (an eighth `why` word, `unattended`). Both live inside a form or a value, and
+        // this pin walks ADDRESSES — the blind spot named above. ⚠ And it is now a NAMED blind spot
+        // rather than an admitted one: the argument was caught by the shape pin and the word by the
+        // answer-vocabulary pin, which is the arrangement R370 left behind.
+        30,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

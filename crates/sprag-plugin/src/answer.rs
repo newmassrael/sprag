@@ -87,7 +87,14 @@ impl Answer {
             // ⚠ `None` readiness, `None` timeout: see the struct's own note. The consent is the
             // whole content of this plugin, so it is not an `Option` here as it is on the others —
             // a run that may answer nothing has nothing to do.
-            door: Readiness::new(None, None, Some(consent)),
+            //
+            // ⚠⚠⚠ AND `Attended::NoOne`, WHICH IS A DECISION AND NOT A DEFAULT. The three looping
+            // plugins can be told a person is watching their pane, because they are declared in
+            // advance and left alone. This one is CALLED BY that person — a supervisor quoting the
+            // dialog they are looking at — so the caller is the human a wait would be waiting for,
+            // and waiting would leave them blocked on their own answer. It is `may_answer`'s
+            // one-clause shape at this door for the same reason.
+            door: Readiness::new(None, None, Some(consent), crate::readiness::Attended::NoOne),
             given: false,
         }
     }
@@ -128,6 +135,16 @@ impl Plugin for Answer {
             // knows WHY a run stopped — the same deferral the three looping plugins make.
             Reached::RunEnded => Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
                 .noting("the run ended before the pane was read")),
+            // ⚠⚠ UNREACHABLE FROM HERE FOR THE ARM ABOVE'S REASON, and a stronger one: this
+            // barrier is built with `Attended::NoOne`, so it never waits for a person and never
+            // reports that one came. Written, not panicked on, because the compiler requires it
+            // and because a later round that decides this door SHOULD wait must land somewhere
+            // honest — and `Continue` is honest: a person answered, so there is nothing left for
+            // this run to answer, and the next step's `given` latch converges it.
+            Reached::Attended(attention) => {
+                Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
+                    .noting(attention.describe()))
+            }
             // Asking, and the consent did not name one option on it. Terminal, carrying the
             // question and the reason — which for this plugin is the whole answer the caller
             // wanted, since the reason is what they can act on.

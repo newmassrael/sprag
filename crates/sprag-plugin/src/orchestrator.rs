@@ -16,7 +16,7 @@ use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::readiness::{Reached, Readiness, ReadyWhen};
+use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a step waits for the pane to react before judging on the current
@@ -54,6 +54,10 @@ pub struct OrchestrationSpec {
     /// SELECTION, and the run reported `Exhausted(Iterations)`. See
     /// [`Consents`].
     pub may_answer: Option<Consents>,
+    /// WHETHER ANYBODY IS WATCHING this pane, and for how long — see [`Attended`]. The other half
+    /// of [`may_answer`](Self::may_answer): what this run may answer itself, and who answers what
+    /// it may not.
+    pub attended: Attended,
 }
 
 /// A fixed-stimulus drive plugin over one pane.
@@ -76,6 +80,7 @@ impl Orchestrator {
                 spec.ready_when.clone(),
                 spec.ready_within,
                 spec.may_answer.clone(),
+                spec.attended,
             ),
             pane,
             spec,
@@ -171,6 +176,18 @@ impl Plugin for Orchestrator {
             Reached::Answered(answered) => {
                 let (note, cost) = (answered.describe(), answered.bytes);
                 return Ok(Step::new(Cost::Bytes(cost), Verdict::Answered(answered)).noting(note));
+            }
+            // A PERSON answered what this run could not, so the step is spent on having waited and
+            // the next one meets the barrier again.
+            //
+            // ⚠⚠ `Continue`, and NOT the fifth verdict word. `Answered` means THIS RUN decided
+            // something on a caller's behalf, and that is the whole reason it is indexed: a journal
+            // where a human's answer and a machine's read the same has lost the one distinction
+            // that makes an approval traceable. The tally stays put and the note says what
+            // happened, which is R369's ruling about the sixth outcome word applied one level down.
+            Reached::Attended(attention) => {
+                return Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
+                    .noting(attention.describe()));
             }
         }
 
@@ -293,6 +310,7 @@ mod tests {
             // gate's failing path has a running time too.
             ready_within: Some(Duration::from_secs(15)),
             may_answer: None,
+            attended: Attended::NoOne,
         }
     }
 
@@ -315,6 +333,7 @@ mod tests {
                 ready_when: None,
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -406,6 +425,7 @@ mod tests {
                 ready_when: Some(crate::readiness::ReadyWhen::Settles("claude".to_string())),
                 ready_within: Some(Duration::from_secs(5)),
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -450,6 +470,7 @@ mod tests {
                 ready_when: None,
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -482,6 +503,7 @@ mod tests {
                 ready_when: None,
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -507,6 +529,7 @@ mod tests {
                 ready_when: None,
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -573,6 +596,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         // ⚠ WHICH OF THE TWO ASSERTIONS BELOW FIRES DEPENDS ON THE STAND-IN, and both were
@@ -651,6 +675,7 @@ mod tests {
                     ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
                     ready_within: Some(Duration::from_millis(400)),
                     may_answer: None,
+                    attended: Attended::NoOne,
                 },
             );
             let outcome = Driver::new(Guardrails {
@@ -714,6 +739,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
                 ready_within: Some(Duration::from_secs(10)),
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -773,6 +799,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Shows("REPL-READY".to_string())),
                 ready_within: Some(Duration::from_millis(500)),
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -894,6 +921,7 @@ mod tests {
             drive_the_silent_program().ready_when,
             drive_the_silent_program().ready_within,
             None,
+            Attended::NoOne,
         );
         let started = std::time::Instant::now();
         let reached = ready
@@ -981,6 +1009,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Runs("tr".to_string())),
                 ready_within: Some(Duration::from_millis(300)),
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1023,6 +1052,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1076,6 +1106,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
                 ready_within: Some(Duration::from_millis(200)),
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1251,6 +1282,7 @@ mod tests {
                 ready_when: None,
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -1318,6 +1350,7 @@ mod tests {
                 ready_when: Some(ReadyWhen::Shows("DEAF-READY".to_string())),
                 ready_within: None,
                 may_answer: None,
+                attended: Attended::NoOne,
             },
         );
         let cell = crate::driver::ProgressCell::default();
@@ -1404,6 +1437,7 @@ mod tests {
                     )
                     .expect("two needles"),
                 ]),
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -1464,6 +1498,7 @@ mod tests {
                     )
                     .expect("two needles"),
                 ]),
+                attended: Attended::NoOne,
             },
         );
         let outcome = run(
@@ -1496,6 +1531,79 @@ mod tests {
                 .question()
                 .is_some_and(|asked| asked.asked.join(" ").contains("make this edit")),
             "and the question that stopped it comes back, in the agent's own words: {unanswered:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A RUN SOMEBODY IS WATCHING WAITS FOR THEM, AND GOES ON WHERE IT LEFT OFF.**
+    ///
+    /// The sibling of the gate above, and the whole difference between an unattended run and a
+    /// supervised one. Same peer, same missing clause — but here a PERSON is at the pane and
+    /// answers the dialog a moment later, which is what the inner session of a supervised loop
+    /// looks like: it is on somebody's screen and they can read every turn as it happens.
+    ///
+    /// Measured before [`Attended`] existed: the run reported `blocked` in under a second and the
+    /// person's answer landed in a pane nobody was driving any more. The turn they were supervising
+    /// stopped at the halfway mark for no reason but the absence of a way to say *"wait for me"*.
+    #[test]
+    fn a_watched_run_waits_for_the_person_and_resumes() {
+        let (access, pane) = crate::testing::two_question_peer();
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "carry on".to_string(),
+                sentinel: Some("TURN COMPLETE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: Consents::of(vec![
+                    crate::consent::Consent::parse(
+                        "Do you want to proceed?".to_string(),
+                        "Yes".to_string(),
+                    )
+                    .expect("two needles"),
+                ]),
+                attended: Attended::of(Duration::from_secs(20)).expect("a positive patience"),
+            },
+        );
+
+        // The person, at the keyboard of the pane they are supervising. They answer the question
+        // the run has no clause for — the second one — and nothing else.
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access, pane, "make this edit");
+                let _typed = access
+                    .inject(pane, &crate::access::KeyStroke::text("2"))
+                    .expect("the person types");
+            });
+            let outcome = run(
+                &access,
+                &mut orch,
+                Guardrails {
+                    max_iterations: 8,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+            );
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        assert!(
+            matches!(outcome.state, OutcomeState::Converged),
+            "⚠⚠⚠ the person answered the question the run could not, so the turn FINISHED — a run \
+             that reports `blocked` here ended while its supervisor was still typing: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.answered, 1,
+            "⚠⚠⚠ and the tally counts what THIS RUN answered, which is the first question only. \
+             A person's answer is not the machine's, and a run that counts it has lost the one \
+             distinction that makes an approval traceable: {outcome:?}",
+        );
+        let screen = crate::testing::screen_showing(&access, pane, "TURN COMPLETE");
+        assert!(
+            screen.contains("TOOK-2-2-VIA-50"),
+            "⚠⚠ and the second question was taken with the PERSON's option (2), not one this run \
+             chose while waiting: {screen:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

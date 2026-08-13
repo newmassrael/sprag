@@ -8086,6 +8086,93 @@ fn daemon_with_one_pane(label: &str) -> (DaemonGuard, PathBuf, u64) {
 /// was stopped by the one the person named, not by the wall-clock deadline or the cost ceiling it
 /// silently inherited. Before the outcome carried which ceiling, those three endings were one
 /// word and a person could not tell them apart.
+/// ⚠⚠⚠ **THE SHELL CAN SAY A PERSON IS WATCHING** — the argument reaches the CLI's flag surface,
+/// and a misspelling of it is refused.
+///
+/// # ⚠⚠ Why an argument the daemon reads is not yet an argument a person can send
+///
+/// This mouth derives its flags from the grammar the daemon publishes, so a new argument SHOULD
+/// arrive for free — and *should* is exactly the word R369 measured being wrong at this surface,
+/// where a question the daemon had already parsed stayed invisible to the shell for a whole round.
+/// The two halves are gated separately here because they fail separately: the grammar can publish
+/// what the flag parser never offers, and the flag parser can accept a name nothing serves.
+///
+/// ⚠ The CONTROL is the second half and it is what stops the first from being vacuous: a flag this
+/// surface does not know must be REFUSED. Without it the acceptance below would pass against a CLI
+/// that shrugs at anything it is handed — which is the failure mode a derived surface actually has.
+#[test]
+fn the_shell_offers_the_argument_that_says_somebody_is_watching() {
+    let (_guard, sock, pane) = daemon_with_one_pane("attend-flag");
+    let pane = pane.to_string();
+
+    let published = sprag(&sock, &["show-grammar", "run", "--plugins", "-t", "work"]);
+    assert!(published.ok, "show-grammar failed: {}", published.stderr);
+    assert!(
+        published
+            .stdout
+            .contains(sprag_plugin::Attended::WIRE_KEY.replace('_', "-").as_str())
+            || published.stdout.contains(sprag_plugin::Attended::WIRE_KEY),
+        "⚠⚠ a person reading the grammar must be able to SEE that a run can be told to wait for \
+         them — an argument served and unpublished is one nobody can find: {}",
+        published.stdout,
+    );
+
+    // The pane here is a plain shell that is not asking anything, so the patience is never spent:
+    // what is under test is that the FLAG is accepted at all, and the run's own ending is the
+    // bounded-loop gate's business.
+    let accepted = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo watched",
+            "--await-person-ms",
+            "5000",
+            "--max-iterations",
+            "1",
+            "--wait",
+        ],
+    );
+    assert!(
+        accepted.ok,
+        "⚠⚠⚠ the shell must accept the argument the daemon serves. A refusal here is the flag \
+         surface and the grammar disagreeing about what this wire takes: {}",
+        accepted.stderr,
+    );
+
+    // ⚠ THE CONTROL: the same call with the key's own name mangled. Refused, or the acceptance
+    // above says nothing about this argument in particular.
+    let misspelled = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo watched",
+            "--await-person",
+            "5000",
+            "--max-iterations",
+            "1",
+            "--wait",
+        ],
+    );
+    assert!(
+        !misspelled.ok,
+        "⚠⚠⚠ a flag this surface does not serve must be REFUSED, or the acceptance above would \
+         pass for a CLI that swallows anything: {} / {}",
+        misspelled.stdout, misspelled.stderr,
+    );
+}
+
 #[test]
 fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
     let (_guard, sock, pane) = daemon_with_one_pane("orchestrate");
@@ -8612,17 +8699,30 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     }
 
     /// One orchestrator run over the wire, with or without a consent, waited out and answered as
-    /// its `runs` entry.
-    fn drive(conn: &mut HostConn, session: &str, pane: u64, consent: Option<Value>) -> Value {
+    /// its `runs` entry. `awaits` names a person watching the pane, for the supervised half.
+    fn drive(
+        conn: &mut HostConn,
+        session: &str,
+        pane: u64,
+        consent: Option<Value>,
+        awaits: Option<u64>,
+    ) -> Value {
         let mut args = json!({
             "plugin": "orchestrator",
             "pane": pane,
             "stimulus": "ping",
             "sentinel": "ANSWERED-OK",
-            "guardrails": { "max_iterations": 4, "max_seconds": 60 },
+            // ⚠ SIX iterations, not four: a supervised run spends one of them on the WAIT itself
+            // (the barrier hands the step back so the next one meets the pane afresh), so the
+            // budget that fits the unattended halves would end this one `exhausted` — a red about
+            // arithmetic wearing the shape of a red about the feature.
+            "guardrails": { "max_iterations": 6, "max_seconds": 120 },
         });
         if let Some(consent) = consent {
             args[sprag_plugin::Consents::WIRE_KEY] = consent;
+        }
+        if let Some(patience) = awaits {
+            args[sprag_plugin::Attended::WIRE_KEY] = patience.into();
         }
         conn.call(
             "scene/invoke",
@@ -8664,6 +8764,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
             sprag_plugin::Consent::ASKED_KEY: "Do you want to proceed?",
             sprag_plugin::Consent::ANSWER_KEY: "Yes",
         }])),
+        None,
     )["state"]["outcome"]
         .clone();
     assert_eq!(
@@ -8704,6 +8805,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
                 sprag_plugin::Consent::ANSWER_KEY: "Yes",
             },
         ])),
+        None,
     )["state"]["outcome"]
         .clone();
     assert_eq!(
@@ -8719,9 +8821,84 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
          journal that reaches back that far: {outcome}",
     );
 
+    // ── THE SUPERVISED RUN: one clause, and a PERSON for the question it does not cover.
+    //
+    // ⚠⚠⚠ THE CLAIM NO UNIT GATE CAN MAKE, for this argument more than any other. `await_person_ms`
+    // buys a run the right to WAIT, and a wait that never happens is invisible in every other
+    // signal: this surface swallows a key it does not declare, so a daemon that ignored the
+    // argument would report exactly what the pre-R371 daemon reports — `blocked`, on the second
+    // question, having answered the first. The only thing that tells the two apart is that
+    // somebody answered the dialog afterwards and the run WENT ON.
+    //
+    // ⚠ The person is a SEPARATE CLIENT holding its own connection, typing through the same
+    // `send-keys` a human at the keyboard uses. Nothing in their path belongs to the run.
+    let pane = blocked_pane(&mut conn, "supervised", ASKING_CLAUDE_TWICE);
+    let outcome = std::thread::scope(|watching| {
+        watching.spawn(|| {
+            let mut theirs = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+            // ⚠ THEY WAIT FOR THE SECOND QUESTION, not for a clock. The first is the RUN's to
+            // answer, and a person who typed during it would be answering it for them — which
+            // would make this gate pass with the wait never happening at all.
+            let showed = wait_for(Duration::from_secs(60), || {
+                theirs
+                    .call(
+                        "scene/query",
+                        json!({
+                            "session": "supervised",
+                            "path": sprag_host::pane_input_path(
+                                pane,
+                                sprag_host::wire::FULL_TEXT_SLOT,
+                            ),
+                        }),
+                    )
+                    .ok()
+                    .and_then(|text| text.as_str().map(str::to_owned))
+                    .is_some_and(|text| text.contains("make this edit"))
+            });
+            assert!(showed, "the peer never reached its second question");
+            let typed = sprag(
+                &sock,
+                &[
+                    "send-keys",
+                    "-t",
+                    "supervised",
+                    &pane.to_string(),
+                    "-l",
+                    "1",
+                ],
+            );
+            assert!(typed.ok, "the person's keystroke: {}", typed.stderr);
+        });
+        drive(
+            &mut conn,
+            "supervised",
+            pane,
+            Some(json!([{
+                sprag_plugin::Consent::ASKED_KEY: "Do you want to proceed?",
+                sprag_plugin::Consent::ANSWER_KEY: "Yes",
+            }])),
+            Some(60_000),
+        )
+    })["state"]["outcome"]
+        .clone();
+    assert_eq!(
+        outcome["state"], "converged",
+        "⚠⚠⚠ the run answered the question it had a clause for, WAITED for the person on the one \
+         it did not, and reached its sentinel after they answered. A daemon that swallowed \
+         `await_person_ms` reports `blocked` here — the pre-R371 answer, and indistinguishable \
+         from this one without a person who actually comes: {outcome}",
+    );
+    assert_eq!(
+        outcome[sprag_host::plugins::RUN_ANSWERED_KEY],
+        1,
+        "⚠⚠⚠ and the tally counts what THE RUN answered — ONE. The person's answer is not the \
+         machine's, and a run that claimed it has lost the distinction that makes every approval \
+         on this wire traceable to whoever made it: {outcome}",
+    );
+
     // ── THE CONTROL: the same everything, minus the consent.
     let pane = blocked_pane(&mut conn, "unanswered", ASKING_CLAUDE);
-    let outcome = drive(&mut conn, "unanswered", pane, None)["state"]["outcome"].clone();
+    let outcome = drive(&mut conn, "unanswered", pane, None, None)["state"]["outcome"].clone();
     assert_eq!(
         outcome["state"], "blocked",
         "⚠⚠⚠ WITHOUT a consent the run must answer nothing at all. This is the control that stops \

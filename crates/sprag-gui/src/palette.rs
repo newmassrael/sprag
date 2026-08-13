@@ -1344,7 +1344,13 @@ mod tests {
             crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
                 &served,
                 "the command palette",
-                29,
+                // R371: re-stamped for a bump this surface's own shapes had no part in — an
+                // argument added to the plugin host's three looping run forms. ⚠ THE THIRD OF
+                // THREE HAND-EDITS FOR ONE BUMP, which is the cost the register predicted when
+                // this pin became three call sites: the daemon DERIVES its surfaces from the
+                // served scene and cannot be left out of a re-stamp; these hang in a window and
+                // are pinned by whoever remembers all three.
+                30,
                 &[
                     // ⚠ MEASURED, not guessed: it is `select` that carries the row, and `execute`
                     // acts on the palette's own armed request — which is exactly why five of these

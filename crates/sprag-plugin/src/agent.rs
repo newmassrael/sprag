@@ -39,7 +39,7 @@ use crate::completion::{Completion, DoneWhen};
 use crate::consent::Consents;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::readiness::{Reached, Readiness, ReadyWhen};
+use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited};
 
 /// How much of a prompt has to appear on the pane before the delivery counts it as arrived.
@@ -119,6 +119,14 @@ pub struct AgentSpec {
     /// MODEL'S REPLY — is the one that approved a tool call on the caller's behalf. See
     /// [`Consents`], whose whole design is about the second.
     pub may_answer: Option<Consents>,
+    /// WHETHER ANYBODY IS WATCHING this pane, and for how long — see [`Attended`].
+    ///
+    /// ⚠⚠ This adapter is the one an AI LOOP drives, so it is the one the contract was built for:
+    /// the inner session of a supervised loop is a pane on a person's screen, and a turn that
+    /// stops on a permission dialog is one they can answer in a second. Every other run's reason
+    /// to wait is convenience; this one's is that the turn was addressed to a session somebody is
+    /// sitting in front of.
+    pub attended: Attended,
     /// Whether the peer SHOWS a prompt typed at it before it is submitted — and so whether the
     /// prompt can be DELIVERED rather than merely written.
     ///
@@ -165,6 +173,10 @@ impl AgentSpec {
             ready_when: None,
             ready_within: None,
             may_answer: None,
+            // ⚠ NOBODY, and it is the same default as answering nothing: a run that waits for a
+            // person who was never coming spends its whole patience discovering that, and a caller
+            // who wanted one says so.
+            attended: Attended::NoOne,
             // The write, not the delivery: a one-shot peer renders nothing, and this default is
             // what keeps a caller who says nothing on the path their peer can survive.
             shows_the_prompt: false,
@@ -307,6 +319,7 @@ impl Agent {
                 spec.ready_when.clone(),
                 spec.ready_within,
                 spec.may_answer.clone(),
+                spec.attended,
             ),
             done: Completion::new(spec.done_when),
             pane,
@@ -647,6 +660,14 @@ impl Plugin for Agent {
             Reached::Answered(answered) => {
                 let (note, cost) = (answered.describe(), answered.bytes);
                 return Ok(Step::new(Cost::Bytes(cost), Verdict::Answered(answered)).noting(note));
+            }
+            // ⚠⚠ AND THE PROMPT IS STILL NOT SENT, for the arm above's reason exactly: the peer is
+            // acting on a decision — a human's this time — and a prompt typed into that would have
+            // whatever it produced published AS THE MODEL'S REPLY. The wait spent this iteration;
+            // the next one asks the barrier again and finds the peer at rest.
+            Reached::Attended(attention) => {
+                return Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
+                    .noting(attention.describe()));
             }
         }
 

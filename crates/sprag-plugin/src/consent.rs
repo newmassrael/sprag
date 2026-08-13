@@ -71,6 +71,8 @@
 //! only consulted when no label matches exactly. The exact tier is the caller's way to say *"that
 //! one, the whole of it"*, and it is the reason the rule is strict without being useless.
 
+use core::time::Duration;
+
 use sprag_detect::{Choice, Question};
 
 /// WHAT A RUN MAY ANSWER when its peer stops to ask — one question, one option, both in the agent's
@@ -375,6 +377,20 @@ pub enum Refusal {
     /// CALLER to decide which they meant — a choice this product would be usurping if it applied
     /// first-wins, longest-needle, or any other rule nobody wrote down.
     Contradicted,
+    /// ⚠⚠⚠ **THE RUN WAITED FOR THE PERSON WHO WAS SUPPOSED TO BE WATCHING, AND NOBODY CAME.**
+    ///
+    /// The only arm about a human rather than about a clause, and the only one a run can reach
+    /// having already done everything it could: the caller declared an
+    /// [`Attended::APerson`](crate::readiness::Attended::APerson) patience, the peer asked
+    /// something no clause covered, and the pane was still showing that dialog when the patience
+    /// ran out.
+    ///
+    /// It is separate from every arm above because the REMEDY is a different kind of thing. Those
+    /// all end *"write a clause"* or *"fetch a person"*; here a person was already expected, so
+    /// what is wrong is either the patience or the expectation. ⚠ **The clause-level reason is not
+    /// lost** — it rides in `Unanswered`'s free-text detail, the field `contradicted` established,
+    /// so a caller learns both that nobody came AND what they would have been answering.
+    Unattended,
 }
 
 impl Refusal {
@@ -393,7 +409,7 @@ impl Refusal {
     };
 
     /// Every arm, so the published vocabulary and the readers below are one list.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Unreadable,
         Self::NotTaken,
         Self::NoConsent,
@@ -401,6 +417,7 @@ impl Refusal {
         Self::NotOffered,
         Self::Ambiguous,
         Self::Contradicted,
+        Self::Unattended,
     ];
 
     /// This reason's word on the wire.
@@ -414,6 +431,7 @@ impl Refusal {
             Self::NotOffered => "not_offered",
             Self::Ambiguous => "ambiguous",
             Self::Contradicted => "contradicted",
+            Self::Unattended => "unattended",
         }
     }
 
@@ -458,6 +476,10 @@ impl Refusal {
             Self::Contradicted => {
                 "more than one consent is about this question and they authorise different \
                  options, so nothing but the caller can say which of their own rules wins here"
+            }
+            Self::Unattended => {
+                "this run was told a person was watching and waited for them, and the dialog was \
+                 still up when that patience ran out — give them longer, or stop expecting one"
             }
         }
     }
@@ -570,6 +592,44 @@ impl Unanswered {
             why: Refusal::NotTaken,
             bytes,
             detail: None,
+        }
+    }
+
+    /// **A RUN THAT WAITED FOR THE PERSON IT WAS TOLD WAS WATCHING, AND GAVE UP** — the refusal
+    /// `waited_out` would have ended with, re-headed as [`Refusal::Unattended`].
+    ///
+    /// # ⚠⚠⚠ Why the original reason is kept rather than replaced
+    ///
+    /// Two facts are true at once and they have different remedies: no clause covered the question
+    /// (write one), and nobody came (be there, or raise the patience). A report that kept only the
+    /// second would send a caller to wait longer for a dialog their own consents could have
+    /// answered outright — and one that kept only the first would never mention that the run had
+    /// been waiting at all.
+    ///
+    /// So the ARM says what is new, and the original rides in the free-text `detail` — the free
+    /// text `contradicted` established, which costs the protocol number nothing.
+    ///
+    /// ⚠ The BYTES carry over too. A consent that was typed and not taken has spent them whether or
+    /// not a person was expected afterwards, and a run that dropped them here would under-report
+    /// its own spend for no reason but which contract it was under.
+    #[must_use]
+    pub fn unattended(waited_out: Self, patience: Duration) -> Self {
+        let missed = format!(
+            "nobody came in {:.0}s; without a person this would have ended as {}",
+            patience.as_secs_f32(),
+            waited_out.why.wire_str(),
+        );
+        Self {
+            question: waited_out.question,
+            why: Refusal::Unattended,
+            bytes: waited_out.bytes,
+            // ⚠ APPENDED, never overwritten: the run may have been waiting on a `contradicted`,
+            // whose detail names the clauses that collided. Losing it here would make the one arm
+            // that owes more than its word owe it silently.
+            detail: Some(match waited_out.detail {
+                Some(had) => format!("{had}; {missed}"),
+                None => missed,
+            }),
         }
     }
 
@@ -885,11 +945,14 @@ mod tests {
         );
         assert_eq!(
             Refusal::ALL.len(),
-            7,
-            "the seven reasons a blocked peer goes unanswered: this host could not READ the menu, \
+            8,
+            "the eight reasons a blocked peer goes unanswered: this host could not READ the menu, \
              the answer was typed and NOT TAKEN, the caller consented to NOTHING, the consent is \
              about ANOTHER question, the question does not OFFER the answer, SEVERAL options \
-             carry it, or the caller's own consents CONTRADICT each other about it",
+             carry it, the caller's own consents CONTRADICT each other about it, or a person was \
+             expected and NOBODY CAME. \
+             ⚠ The last is the only one about a human rather than about a clause, and the only \
+             one a run reaches having already waited — see `Refusal::Unattended`",
         );
     }
 

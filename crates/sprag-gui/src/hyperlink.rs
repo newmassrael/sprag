@@ -1378,7 +1378,9 @@ mod tests {
             crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
                 &served,
                 "a pane's hyperlink oracle",
-                29,
+                // R371: re-stamped for a bump this surface's own shapes had no part in — see the
+                // command palette's copy of this note for the cost three call sites carry.
+                30,
                 &["activate[nullary]:", "send[scalar]:event:string"],
             );
         });
