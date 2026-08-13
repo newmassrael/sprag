@@ -87,6 +87,11 @@ unicode-segmentation = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]
+# The script engine `ai_loop.scxml`'s ecmascript datamodel is evaluated by — needed only to
+# CONSTRUCT the outer loop's machine, which the live-agent measurement does. DEV-only, exactly as in
+# `sprag-plugin`: the daemon still links no Lua, because `OuterLoop` takes its engine as a parameter.
+sce-rust-lua = { workspace = true }
+sce-rust-runtime = { workspace = true }
 # The published-grammar claims, written once for every surface that publishes one (see the crate).
 # A dev-dependency CYCLE: it depends on this crate for the types. Cargo permits exactly this shape.
 sprag-conformance = { workspace = true }

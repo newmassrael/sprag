@@ -65,6 +65,10 @@ pub mod host;
 pub mod job;
 pub mod keyhelp;
 pub mod keymap;
+/// **Debt 64c's measurement**: the ai-loop path driven against a LIVE agent CLI, through this
+/// crate's own detector. Opt-in and test-only — it costs an agent's real turns to run.
+#[cfg(test)]
+mod live_agent;
 pub mod notify;
 pub mod options;
 pub mod outward;

@@ -679,7 +679,11 @@ impl PluginsExternal {
 /// process-global, so a test of this path would otherwise assert whatever the developer's
 /// `config.toml` happens to say — and a test whose subject is a TIMED transition would be asserting
 /// it about a timing it did not choose.
-fn agent_state_source(
+/// ⚠ VISIBLE TO THE CRATE so the live-agent measurement can drive the loop through the REAL
+/// detector — see `crate::live_agent`. It is still built in one place and handed out as an opaque
+/// `Fn`, which is the property that mattered; what changed is that the one other reader in this
+/// crate is a gate rather than the run path.
+pub(crate) fn agent_state_source(
     workspace: Arc<Mutex<Workspace>>,
     agents: Arc<crate::AgentClock>,
     window: fn() -> sprag_detect::Hysteresis,

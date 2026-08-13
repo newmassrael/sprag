@@ -3719,6 +3719,8 @@ dependencies = [
  "pinion-core",
  "pinion-rpc",
  "regex",
+ "sce-rust-lua",
+ "sce-rust-runtime",
  "serde",
  "serde_json",
  "signal-hook",
