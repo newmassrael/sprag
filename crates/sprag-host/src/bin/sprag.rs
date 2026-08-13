@@ -3944,6 +3944,13 @@ fn print_grammar_arg(arg: &sprag_rpc::PublishedArg, indent: usize) {
     let pad = " ".repeat(indent);
     let width = 14_usize.saturating_sub(indent.saturating_sub(4));
     println!("{pad}{:<width$} {:<8} {need}{words}", arg.name, arg.ty);
+    // ⚠ A LIST OF OBJECTS says whose fields these are. Indented under `array`, the two shapes an
+    // array can have — a list of strings and a list of objects — print identically, so a reader
+    // cannot tell "send these keys once" from "send this many times, each with these keys". The
+    // grammar knows; the printer was the only thing not saying it.
+    if arg.is_a_list_of_objects() {
+        println!("{pad}  each entry:");
+    }
     for field in &arg.fields {
         print_grammar_arg(field, indent + 2);
     }
@@ -4170,21 +4177,34 @@ fn answer_pane(args: Vec<String>) -> io::Result<()> {
 
     let mut conn = connect()?;
     // ⚠ THE CALL IS BUILT FROM THE DAEMON'S OWN PUBLICATION, `orchestrate`'s discipline: this
-    // binary holds no second list of the `answer` form's argument names, and the two nested needles
-    // are offered one flag at a time because the wire declares them as fields
-    // (`the_plugin_hosts_nested_arguments_flatten_without_collision` is what makes that safe).
+    // binary holds no second list of the `answer` form's argument names.
+    //
+    // ⚠⚠ THE PERSON STILL TYPES TWO FLAGS, and the consent becomes a LIST OF ONE here. The wire
+    // takes a list because a RUN is declared in advance and left alone, so its caller has to be
+    // able to write down every decision a turn might need. This verb is typed by somebody LOOKING
+    // AT the dialog it answers, quoting that screen — `--asked` and `--answer` is what they have,
+    // and a list at this prompt would be a person writing rules for questions they have not seen.
+    // The MCP mouth's `answer_pane` makes the same trade for the same reason.
+    //
+    // ⚠ The one clause is spelled as JSON because that is how the published grammar offers a list
+    // (each occurrence of the flag is one element) — see `PublishedArg::element`, which checks it
+    // against the very fields this daemon published rather than passing it through.
     let forms = published_forms(
         &mut conn,
         session.as_deref(),
         sprag_host::plugins::RUN_ACTION,
     )?;
+    let clause = serde_json::json!({
+        sprag_host::plugins::CONSENT_ASKED_KEY: asked,
+        sprag_host::plugins::CONSENT_ANSWER_KEY: answer,
+    })
+    .to_string();
     let call = sprag_rpc::build_call(
         &forms,
         &[
             Flag::new("plugin", sprag_host::plugins::PluginName::Answer.wire_str()),
             Flag::new("pane", pane),
-            Flag::new(sprag_host::plugins::CONSENT_ASKED_KEY, asked),
-            Flag::new(sprag_host::plugins::CONSENT_ANSWER_KEY, answer),
+            Flag::new(sprag_host::plugins::CONSENT_KEY, clause),
         ],
     )
     .map_err(|error| bad_input(&format!("answer-pane: {error}\n{USAGE}")))?;

@@ -8358,6 +8358,24 @@ fn show_grammar_points_at_the_plugin_host_and_names_what_is_inside_guardrails() 
         "each form still says the one word that selects it: {}",
         run.stdout,
     );
+    // ⚠⚠ AND A LIST SAYS THAT IT IS ONE. `may_answer` and a `dialogue` endpoint's argv are both
+    // `array`, and indented under that word their fields print identically — so a reader could not
+    // tell "send these keys once" from "send this many times, each with these keys". That is the
+    // same silence this gate's own doc is about, one shape out: a nested grammar the printer
+    // publishes without saying whose fields these are.
+    let listed = run
+        .stdout
+        .lines()
+        .skip_while(|line| !line.contains(sprag_plugin::Consents::WIRE_KEY))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        listed.contains("array") && listed.contains("each entry:") && listed.contains("asked"),
+        "⚠⚠ the consent prints as an ARRAY, says its fields belong to ONE ENTRY, and names them: \
+         {listed:?} — from {}",
+        run.stdout,
+    );
 
     // ...and the surfaces are still NOT each other: a plugin verb is not on the multiplexer, and
     // the refusal says which surface was asked and how to name another.
@@ -8487,6 +8505,26 @@ const ASKING_CLAUDE: &str = "stty -icanon -echo 2>/dev/null; \
      done; \
      printf '\\033[2J\\033[HANSWERED-OK\\n'; exec cat";
 
+/// ⚠⚠⚠ **THE SAME PEER, ASKING TWICE IN ONE TURN** — the shape a real agent turn has, and the one
+/// a single-clause consent could not survive.
+///
+/// An agent that runs a command and then edits a file asks about both, in its own different words.
+/// Everything else here is [`ASKING_CLAUDE`]'s — the same footer, so the daemon's own detector
+/// claims the pane the same way, and the same `ANSWERED-OK` sentinel — so what differs between the
+/// two fixtures is the number of questions and nothing else.
+const ASKING_CLAUDE_TWICE: &str = "stty -icanon -echo 2>/dev/null; \
+     ask() { \
+       printf '\\033[2J\\033[H%s\\n\\342\\235\\257 1. Yes\\n  2. No\\n  \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n' \"$1\"; \
+       while :; do \
+         k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'); \
+         [ -n \"$k\" ] || exit 0; \
+         [ \"$k\" = 49 ] && break; \
+       done; \
+     }; \
+     ask 'Do you want to proceed?'; \
+     ask 'Do you want to make this edit?'; \
+     printf '\\033[2J\\033[HANSWERED-OK\\n'; exec cat";
+
 /// ⚠⚠⚠ **THE ANSWERING CONTRACT, END TO END THROUGH A REAL DAEMON** — the wire, the shipping
 /// detector, a real pseudoterminal, and a run that answers its peer and goes on to converge.
 ///
@@ -8534,14 +8572,14 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
 
     // Each half gets its OWN session and pane, so the control cannot be answered by the subject's
     // run and the two dialogs cannot be confused for one another.
-    /// A fresh session whose pane runs [`ASKING_CLAUDE`], returned once the DAEMON'S OWN detector
-    /// calls it blocked.
-    fn blocked_pane(conn: &mut HostConn, session: &str) -> u64 {
+    /// A fresh session whose pane runs `script`, returned once the DAEMON'S OWN detector calls it
+    /// blocked.
+    fn blocked_pane(conn: &mut HostConn, session: &str, script: &str) -> u64 {
         conn.call(
             "scene/invoke",
             json!({
                 "path": mux_action_path(NEW_SESSION_ACTION),
-                "args": { "name": session, "cmd": ["sh", "-c", ASKING_CLAUDE] },
+                "args": { "name": session, "cmd": ["sh", "-c", script] },
             }),
         )
         .expect("new_session answers");
@@ -8584,7 +8622,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
             "guardrails": { "max_iterations": 4, "max_seconds": 60 },
         });
         if let Some(consent) = consent {
-            args[sprag_plugin::Consent::WIRE_KEY] = consent;
+            args[sprag_plugin::Consents::WIRE_KEY] = consent;
         }
         conn.call(
             "scene/invoke",
@@ -8617,15 +8655,15 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     }
 
     // ── THE SUBJECT: a consent naming this question and this option.
-    let pane = blocked_pane(&mut conn, "answered");
+    let pane = blocked_pane(&mut conn, "answered", ASKING_CLAUDE);
     let outcome = drive(
         &mut conn,
         "answered",
         pane,
-        Some(json!({
+        Some(json!([{
             sprag_plugin::Consent::ASKED_KEY: "Do you want to proceed?",
             sprag_plugin::Consent::ANSWER_KEY: "Yes",
-        })),
+        }])),
     )["state"]["outcome"]
         .clone();
     assert_eq!(
@@ -8643,8 +8681,46 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         "a converged run has no unanswered question: {outcome}",
     );
 
+    // ── THE TURN THAT ASKS TWICE: two clauses, both of them the caller's, one run.
+    //
+    // ⚠⚠⚠ THE CLAIM THE UNIT GATES CANNOT MAKE. `sprag-plugin` measures the list against its own
+    // fixture and `sprag-host` measures the parser; neither sends a SECOND CLAUSE over the wire, and
+    // this surface is measured to swallow what it does not read. A daemon that kept only the first
+    // clause would answer question one, meet question two, and end `blocked` — which is precisely
+    // the pre-R370 behaviour, indistinguishable from the feature working unless somebody drives a
+    // turn that asks twice.
+    let pane = blocked_pane(&mut conn, "twice", ASKING_CLAUDE_TWICE);
+    let outcome = drive(
+        &mut conn,
+        "twice",
+        pane,
+        Some(json!([
+            {
+                sprag_plugin::Consent::ASKED_KEY: "Do you want to proceed?",
+                sprag_plugin::Consent::ANSWER_KEY: "Yes",
+            },
+            {
+                sprag_plugin::Consent::ASKED_KEY: "Do you want to make this edit?",
+                sprag_plugin::Consent::ANSWER_KEY: "Yes",
+            },
+        ])),
+    )["state"]["outcome"]
+        .clone();
+    assert_eq!(
+        outcome["state"], "converged",
+        "⚠⚠⚠ one turn asked TWO different questions and the caller had decided about both — a \
+         daemon that read one clause out of the list leaves this `blocked` on the second: \
+         {outcome}",
+    );
+    assert_eq!(
+        outcome[sprag_host::plugins::RUN_ANSWERED_KEY],
+        2,
+        "and BOTH decisions are counted, which is what a reader of a long run has instead of a \
+         journal that reaches back that far: {outcome}",
+    );
+
     // ── THE CONTROL: the same everything, minus the consent.
-    let pane = blocked_pane(&mut conn, "unanswered");
+    let pane = blocked_pane(&mut conn, "unanswered", ASKING_CLAUDE);
     let outcome = drive(&mut conn, "unanswered", pane, None)["state"]["outcome"].clone();
     assert_eq!(
         outcome["state"], "blocked",

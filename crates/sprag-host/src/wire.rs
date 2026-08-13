@@ -1054,11 +1054,23 @@ impl PluginGrammar {
     /// key existed. The run reports `blocked` with the question, and a person answers it.
     ///
     /// ⚠ An OBJECT and not a bare word, unlike [`DONE_WHEN`](Self::DONE_WHEN): the two needles are
-    /// independent values a caller supplies, so there is no closed vocabulary to spell. Neither
-    /// name collides with anything on these forms when a mouth flattens them
-    /// (`no_surface_publishes_a_nested_argument_that_collides`), which `ready_when`'s `match` did.
-    pub const MAY_ANSWER: ArgGrammar = ArgGrammar::nested(
-        sprag_plugin::Consent::WIRE_KEY,
+    /// independent values a caller supplies, so there is no closed vocabulary to spell.
+    ///
+    /// # ⚠⚠⚠ A LIST of those objects, because ONE TURN ASKS MORE THAN ONE QUESTION
+    ///
+    /// Measured (R370): an agent turn that runs a command and then edits a file asks *"Bash command
+    /// … Do you want to proceed?"* and then *"Edit file … Do you want to make this edit?"*. With one
+    /// clause an unattended run answered the first and stopped at the second reporting
+    /// `other_question` — correct, and still a run somebody has to come back to, which is the case
+    /// the whole argument exists to serve. So the caller writes one clause PER QUESTION they have
+    /// decided about, and [`sprag_plugin::Consents`] owns what several of them say about one dialog
+    /// (including the one failure a list makes possible: two clauses that disagree answer NEITHER).
+    ///
+    /// ⚠ Because it is a list, this is the one nested argument a mouth must NOT flatten — see
+    /// [`ArgGrammar::nested_list`]. N occurrences of a flat `--asked` beside N of a flat `--answer`
+    /// cannot say which belongs with which, so both flattening mouths offer it whole.
+    pub const MAY_ANSWER: ArgGrammar = ArgGrammar::nested_list(
+        sprag_plugin::Consents::WIRE_KEY,
         &[
             ArgGrammar::open(sprag_plugin::Consent::ASKED_KEY, "string"),
             ArgGrammar::open(sprag_plugin::Consent::ANSWER_KEY, "string"),
@@ -1083,8 +1095,8 @@ impl PluginGrammar {
     ///
     /// ⚠ It is the same [`ArgGrammar`] value, one `.optional()` short, and NOT a second spelling:
     /// a client that can build a consent for `orchestrate` hands the identical object here.
-    pub const MUST_ANSWER: ArgGrammar = ArgGrammar::nested(
-        sprag_plugin::Consent::WIRE_KEY,
+    pub const MUST_ANSWER: ArgGrammar = ArgGrammar::nested_list(
+        sprag_plugin::Consents::WIRE_KEY,
         &[
             ArgGrammar::open(sprag_plugin::Consent::ASKED_KEY, "string"),
             ArgGrammar::open(sprag_plugin::Consent::ANSWER_KEY, "string"),
@@ -7131,7 +7143,12 @@ mod tests {
             // what this re-stamp says: the question's own members are lines, numbers, labels and a
             // flag — a caller reads them, it does not decode a closed set out of them. The one word
             // near it that IS closed (`state`) is unchanged; `blocked` has been there since 26.
-            28,
+            // ⚠⚠ R370 IS THE FOURTH RE-STAMP THIS PIN EARNED ITSELF: `refusal` gained a SEVENTH
+            // word (`contradicted`), and it is the one failure a LIST of consents can have that a
+            // single clause could not — two clauses about one question naming different options.
+            // A caller branches on it exactly as on the other six (narrow one of your own rules,
+            // rather than re-read the dialog), which is why it is a word and not a sentence.
+            29,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7180,6 +7197,9 @@ mod tests {
                 "refusal:other_question",
                 "refusal:not_offered",
                 "refusal:ambiguous",
+                // ⚠⚠ R370: the arm a LIST of consents made possible — the caller's own clauses
+                // disagreeing about the question on screen.
+                "refusal:contradicted",
             ],
         );
 
@@ -7348,7 +7368,15 @@ mod tests {
             // outward only. ⚠ That asymmetry is the round's open residue rather than an oversight:
             // a pane-level surface that can say what a peer is asking still offers no way to ANSWER
             // it there, which is the run surface's `may_answer` and is registered as owed.
-            28,
+            // ⚠⚠ R370: re-stamped for a REQUEST VALUE THAT CHANGED SHAPE (`may_answer`, an object
+            // to a LIST of them), with every published vocabulary unchanged — which is exactly what
+            // this pin can and cannot see. It holds the WORDS a client picks a value from, and a
+            // consent's two needles are open strings by design, so a shape change under those names
+            // is invisible here in both directions. ⚠ That blindness is what
+            // `a_published_argument_shape_cannot_move_under_the_protocol_number` was written for,
+            // in the same round: this pin's own gap, closed by the pin beside it rather than by
+            // widening this one, because a VALUE SPACE and a SHAPE fail differently.
+            29,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7511,6 +7539,179 @@ mod tests {
             PINNED_WORDS.0,
             sprag_rpc::WIRE_PROTOCOL,
             "THE PROTOCOL NUMBER MOVED WITH EVERY PUBLISHED VOCABULARY UNCHANGED — legitimate \
+             when some other part of the wire moved, and a mistake when this pin was simply not \
+             re-stamped.",
+        );
+    }
+
+    /// **THE FOURTH PIN: a published argument's SHAPE cannot move under the protocol number.**
+    ///
+    /// # ⚠⚠⚠ The gap the three other pins each admit, and which R370 drove straight through
+    ///
+    /// The surface pin holds ADDRESSES, so an argument — which lives inside a form — is invisible
+    /// to it, and its own doc says so. [`PINNED_WORDS`] holds the words a client picks a VALUE
+    /// from, so an argument with no closed vocabulary is invisible to it too. `PINNED_VALUES` holds
+    /// the ANSWER enums. Between them, **the TYPE of a request argument was held by nothing.**
+    ///
+    /// R370 changed `may_answer` from an object to a LIST of objects on five forms. No address
+    /// moved, no name moved, no vocabulary moved — every client of the old shape breaks in both
+    /// directions and the whole ratchet suite stayed green except for two hand-written COUNTS,
+    /// which is folklore doing a pin's job.
+    ///
+    /// So this walks the served grammar and pins, per surface and verb, each form's shape word and
+    /// each argument's `name:type`, its optionality, and the fields nested inside it. What it
+    /// catches that nothing else can:
+    ///
+    /// * an argument RE-TYPED (`object` → `array`, `string` → `int`) — a break in both directions;
+    /// * an argument that became OPTIONAL or REQUIRED — one direction breaks silently, which is
+    ///   worse;
+    /// * a nested field ADDED, REMOVED or re-typed inside a parent whose own name never moves.
+    ///
+    /// ⚠ It does NOT replace the value-space pin and deliberately does not carry `one_of`: a shape
+    /// and a vocabulary fail differently — a widened vocabulary usually leaves the number standing
+    /// (R342) and a changed shape never does — and one pin holding both would have to argue both
+    /// cases in one message.
+    ///
+    /// ⚠ THROUGH THE DAEMON'S OWN SCENE, for [`PINNED_WORDS`]'s reason: a ratchet over the
+    /// declaration is not a ratchet over the product (R320).
+    #[test]
+    fn a_published_argument_shape_cannot_move_under_the_protocol_number() {
+        const PINNED_SHAPES: (u32, &[&str]) = (
+            // R370: born at 29, in the round whose own change proved the gap. Every entry below is
+            // the shape as it stands at that number; a later round that moves one of them decides
+            // about `sprag_rpc::WIRE_PROTOCOL` here.
+            29,
+            &[
+                "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
+                "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
+                "sprag_workspace/pane_<id>/sprag_input/key[object]:key:string state:string? ctrl:bool? alt:bool? shift:bool? super:bool?",
+                "sprag_workspace/pane_<id>/sprag_input/key[scalar]:key:string",
+                "sprag_workspace/pane_<id>/sprag_input/mouse[object]:button:string kind:string col:int row:int ctrl:bool? alt:bool? shift:bool?",
+                "sprag_workspace/pane_<id>/sprag_input/paste[object]:text:string",
+                "sprag_workspace/pane_<id>/sprag_input/paste[scalar]:text:string",
+                "sprag_workspace/pane_<id>/sprag_input/text[object]:text:string",
+                "sprag_workspace/pane_<id>/sprag_input/text[scalar]:text:string",
+                "sprag_workspace/sprag_mux/break_pane[object]:pane:int name:string? detached:bool? opened_by:int?",
+                "sprag_workspace/sprag_mux/close[object]:id:int?",
+                "sprag_workspace/sprag_mux/display_message[object]:text:string severity:string? client:string?",
+                "sprag_workspace/sprag_mux/drop_file[object]:pane:int path:string",
+                "sprag_workspace/sprag_mux/grant_pane[object]:pane:int share:int? memory:int? processes:int?",
+                "sprag_workspace/sprag_mux/join_pane[object]:pane:int window:string",
+                "sprag_workspace/sprag_mux/join_pane[object]:pane:int window_id:int",
+                "sprag_workspace/sprag_mux/kill_session[object]:name:string",
+                "sprag_workspace/sprag_mux/kill_window[object]:window:string?",
+                "sprag_workspace/sprag_mux/kill_window[object]:window_id:int?",
+                "sprag_workspace/sprag_mux/move_pane[object]:pane:int? target:int dir:string before:bool?",
+                "sprag_workspace/sprag_mux/move_window[object]:window:string? after:string",
+                "sprag_workspace/sprag_mux/move_window[object]:window:string? before:string",
+                "sprag_workspace/sprag_mux/move_window[object]:window:string? place:string",
+                "sprag_workspace/sprag_mux/new_session[object]:name:string? cmd:array? cwd:string? cols:int? rows:int?",
+                "sprag_workspace/sprag_mux/new_window[object]:name:string? detached:bool? opened_by:int? cmd:array? cwd:string? cols:int? rows:int?",
+                "sprag_workspace/sprag_mux/release_agent[object]:id:int",
+                "sprag_workspace/sprag_mux/rename_pane[object]:pane:int name:string?",
+                "sprag_workspace/sprag_mux/rename_session[object]:name:string",
+                "sprag_workspace/sprag_mux/rename_window[object]:window:string? name:string",
+                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool?",
+                "sprag_workspace/sprag_mux/resize[object]:id:int cols:int rows:int cell_width:int? cell_height:int?",
+                "sprag_workspace/sprag_mux/resize_pane[object]:dir:string pane:int? cells:int?",
+                "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",
+                "sprag_workspace/sprag_mux/resize_window[object]:window:string? cols:int rows:int",
+                "sprag_workspace/sprag_mux/resize_window[object]:window:string? from:string",
+                "sprag_workspace/sprag_mux/select_pane[object]:dir:string from:int?",
+                "sprag_workspace/sprag_mux/select_pane[object]:pane:int",
+                "sprag_workspace/sprag_mux/select_window[object]:relative:string",
+                "sprag_workspace/sprag_mux/select_window[object]:window:string",
+                "sprag_workspace/sprag_mux/select_window[object]:window_id:int",
+                "sprag_workspace/sprag_mux/set_floating[object]:id:int floating:bool",
+                "sprag_workspace/sprag_mux/spawn[object]:cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int?",
+                "sprag_workspace/sprag_mux/split[object]:pane:int? dir:string before:bool? cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int?",
+                "sprag_workspace/sprag_mux/stop_job[object]:pane:int signal:string?",
+                "sprag_workspace/sprag_mux/swap_pane[object]:pane:int? dir:string",
+                "sprag_workspace/sprag_mux/swap_pane[object]:pane:int? with:int",
+                "sprag_workspace/sprag_mux/zoom_pane[object]:pane:int? on:bool?",
+                "sprag_workspace/sprag_plugins/cancel[object]:id:int",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string endpoint_a:array endpoint_b:array seed:string label_a:string? label_b:string? format_a:string? format_b:string? cols:int? rows:int? timeout_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_tokens:int?}",
+                // ⚠⚠⚠ THE FOUR ENTRIES THIS PIN WAS BORN FOR. `may_answer:array{…}` is a LIST of
+                // clauses on the `answer` form (required — the consent IS the call) and
+                // `may_answer:array?{…}` on the three that loop. At 28 all four read `object`, and
+                // NOTHING in this suite could see them change.
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int may_answer:array{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+            ],
+        );
+
+        /// One argument as `name:type`, `?` for one a well-formed call may omit, and its nested
+        /// fields in braces — recursive, so a nest of nests needs nothing further.
+        fn shape(arg: &Value) -> String {
+            let name = arg[ArgGrammar::NAME_KEY].as_str().unwrap_or("<unnamed>");
+            let ty = arg[ArgGrammar::TYPE_KEY].as_str().unwrap_or("<untyped>");
+            let optional = if arg[ArgGrammar::OPTIONAL_KEY] == Value::Bool(true) {
+                "?"
+            } else {
+                ""
+            };
+            let fields = arg
+                .get(ArgGrammar::FIELDS_KEY)
+                .and_then(Value::as_array)
+                .map(|fields| {
+                    format!(
+                        "{{{}}}",
+                        fields.iter().map(shape).collect::<Vec<_>>().join(","),
+                    )
+                })
+                .unwrap_or_default();
+            format!("{name}:{ty}{optional}{fields}")
+        }
+
+        let serving: Vec<String> = served_fields()
+            .into_iter()
+            .filter(|field| field.path == ACTION_GRAMMAR_SLOT && field.answers)
+            .map(|field| field.under)
+            .collect();
+        assert!(
+            !serving.is_empty(),
+            "the grammar slot is SERVED, or everything below is about a table nobody can read",
+        );
+        let mut served: Vec<String> = Vec::new();
+        for under in &serving {
+            let published = query_served_on(under, ACTION_GRAMMAR_SLOT).expect("the slot answers");
+            let verbs = published.as_object().expect("the slot answers an object");
+            // A pane's ID folded to the schema's own placeholder, so this pin is about the WIRE
+            // and not about the fixture's pane numbering — [`PINNED_WORDS`]'s reason exactly.
+            let surface = under.replace(&pane_container_tag(0), "pane_<id>");
+            for (action, forms) in verbs {
+                for form in forms.as_array().expect("a verb answers its forms") {
+                    let kind = form[CallForm::FORM_KEY].as_str().unwrap_or("<unshaped>");
+                    let args = form
+                        .get(CallForm::ARGS_KEY)
+                        .and_then(Value::as_array)
+                        .expect("a form answers its arguments");
+                    served.push(format!(
+                        "{surface}/{action}[{kind}]:{}",
+                        args.iter().map(shape).collect::<Vec<_>>().join(" "),
+                    ));
+                }
+            }
+        }
+        // A pane's surface is served once per pane, so a two-pane fixture publishes it twice —
+        // identical, and this pin is about the SHAPES.
+        served.sort_unstable();
+        served.dedup();
+        let mut pinned: Vec<String> = PINNED_SHAPES.1.iter().map(|n| (*n).to_owned()).collect();
+        pinned.sort_unstable();
+        assert_eq!(
+            served, pinned,
+            "A PUBLISHED ARGUMENT'S SHAPE MOVED. A client builds its call from these, so a TYPE \
+             that changed breaks every caller of the old one IN BOTH DIRECTIONS, and an \
+             optionality that changed breaks one of them SILENTLY. Update this pin, and raise \
+             sprag_rpc::WIRE_PROTOCOL unless you can say why an older client is unaffected.",
+        );
+        assert_eq!(
+            PINNED_SHAPES.0,
+            sprag_rpc::WIRE_PROTOCOL,
+            "THE PROTOCOL NUMBER MOVED WITH EVERY PUBLISHED ARGUMENT SHAPE UNCHANGED — legitimate \
              when some other part of the wire moved, and a mistake when this pin was simply not \
              re-stamped.",
         );
@@ -7875,7 +8076,15 @@ mod tests {
         // shape, except that a `blocked` pane's `agent` object now carries `asking`, and its
         // ABSENCE there is a claim (this daemon read no menu) that an older daemon's silence does
         // not make. No address moved, so this pin could not have seen it.
-        28,
+        // ⚠⚠⚠ R370: re-stamped for a REQUEST VALUE THAT CHANGED SHAPE — `may_answer` went from an
+        // object to a LIST of them on five forms. NOT ONE ADDRESS MOVED and not one NAME moved, so
+        // this pin was blind to a change that breaks every client of the old shape in both
+        // directions. That is the sharpest instance yet of the gap this const's own doc admits, and
+        // R370 closed it rather than restating it: a fourth pin
+        // (`a_published_argument_shape_cannot_move_under_the_protocol_number`) walks the served
+        // grammar for each argument's TYPE, OPTIONALITY and NESTING, so the next re-typed argument
+        // is caught by a gate instead of by whoever remembered.
+        29,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -8377,13 +8586,19 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            driven, 29,
-            "the nested fields this crate's wire publishes: THREE guardrail fields on each of the \
-             plugin host's FIVE run forms, `ready_when`'s two on each of the three that inject, \
-             the consent's two on FOUR (those three and the `answer` form, whose whole content it \
-             is), and nothing on the multiplexer or a pane. \
-             ⚠ The consent's `asked`/`answer` were named FOR this gate — `done_when`'s first draft \
-             reused `ready_when`'s `match` and collided here",
+            driven, 21,
+            "the FLATTENED nested fields this crate's wire publishes: THREE guardrail fields on \
+             each of the plugin host's FIVE run forms, `ready_when`'s two on each of the three \
+             that inject, and nothing on the multiplexer or a pane. \
+             ⚠⚠ THE CONSENT'S TWO ARE NO LONGER AMONG THEM, and the drop of eight is the point \
+             rather than a regression: `may_answer` became a LIST of clauses (R370), and a list \
+             CANNOT be flattened — N loose `asked`s beside N loose `answer`s say nothing about \
+             which belongs with which — so both flattening mouths offer it whole and its fields \
+             never become flags. A collision claim over fields nobody turns into flags would be \
+             this gate asserting a property the product stopped needing. \
+             ⚠ The MIRROR is still driven and is now the one that matters: `may_answer` is itself \
+             a flag, so a field of some OTHER nested argument sharing that name is caught here \
+             with the roles reversed",
         );
     }
 }

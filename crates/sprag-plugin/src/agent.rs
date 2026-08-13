@@ -36,7 +36,7 @@ use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::completion::{Completion, DoneWhen};
-use crate::consent::Consent;
+use crate::consent::Consents;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -117,8 +117,8 @@ pub struct AgentSpec {
     /// nothing and a one-shot turn against a peer that pops a permission dialog is spent doing
     /// nothing; answer too widely and this adapter — the one that publishes what comes back AS THE
     /// MODEL'S REPLY — is the one that approved a tool call on the caller's behalf. See
-    /// [`Consent`], whose whole design is about the second.
-    pub may_answer: Option<Consent>,
+    /// [`Consents`], whose whole design is about the second.
+    pub may_answer: Option<Consents>,
     /// Whether the peer SHOWS a prompt typed at it before it is submitted — and so whether the
     /// prompt can be DELIVERED rather than merely written.
     ///

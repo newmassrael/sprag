@@ -34,7 +34,7 @@ use std::time::Duration;
 use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
-use crate::consent::Consent;
+use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
@@ -83,8 +83,8 @@ pub struct PipeSpec {
     /// ⚠ A relay is the plugin most likely to meet a dialog and the one whose caller knows least
     /// about it: the destination is somebody else's pane. So a consent given here is a claim about
     /// a peer this run did not start, which is a reason to write a NARROW one — see
-    /// [`Consent`].
-    pub may_answer: Option<Consent>,
+    /// [`Consents`].
+    pub may_answer: Option<Consents>,
 }
 
 impl PipeSpec {

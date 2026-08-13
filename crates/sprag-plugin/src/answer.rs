@@ -6,7 +6,7 @@
 //!
 //! # ⚠⚠⚠ Why a surface that can SAY what a peer is asking must also be able to answer it
 //!
-//! R365 gave a blocked pane a verdict, R366 gave a run a [`Consent`], and R367 put the question
+//! R365 gave a blocked pane a verdict, R366 gave a run a [`Consent`](crate::consent::Consent), and R367 put the question
 //! itself on the pane-level surface — so an agent watching a sibling pane can read the dialog, the
 //! options, and which one a bare Enter would take. What it could not do was answer. The only door
 //! was the RUN surface's `may_answer`, which is a consent declared BEFORE a loop starts, and a
@@ -16,7 +16,7 @@
 //! What that left is the shape this crate keeps finding defects in: **the unsafe act was the only
 //! reachable one.** A caller who could see `2. No, and tell Claude what to do differently` and
 //! wanted to answer it had `send_keys` — a raw digit and a raw Enter, with none of
-//! [`Consent`]'s protections:
+//! [`Consent`](crate::consent::Consent)'s protections:
 //!
 //! * the number is read off a screen the caller looked at some time ago, and
 //!   [`Choice::number`](sprag_detect::Choice::number) is a screen fact — a list that has scrolled
@@ -27,14 +27,14 @@
 //!
 //! So the answer is not a new keystroke path. It is this plugin, which reaches a pane through the
 //! same [`Readiness`] barrier every other injecting plugin passes through, carrying the same
-//! [`Consent`] the run surface takes — *"there is one door, and what it may type is what the caller
+//! [`Consent`](crate::consent::Consent) the run surface takes — *"there is one door, and what it may type is what the caller
 //! wrote down"*, now with four plugins behind it instead of three.
 //!
 //! # What makes this DIFFERENT from a one-iteration `orchestrator`
 //!
 //! An orchestrator with a stimulus is a plugin that TYPES ITS OWN TEXT and treats a question as a
 //! reason to stop. This one has no stimulus at all: the only bytes it can ever emit are the ones
-//! [`Consent::covers`] authorised, and it converges the moment it has answered. A caller cannot
+//! [`Consents::covers`] authorised, and it converges the moment it has answered. A caller cannot
 //! use it to drive a pane, which is what makes it safe to point at a pane that is already blocked.
 //!
 //! # ⚠⚠ The three endings, and why none of them needed a new word
@@ -53,12 +53,12 @@
 use sprag_terminal::PaneId;
 
 use crate::access::{PaneAccess, PaneError};
-use crate::consent::Consent;
+use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness};
 use crate::run::RunContext;
 
-/// A one-shot answer to whatever ONE pane's peer is asking, on a [`Consent`] the caller wrote.
+/// A one-shot answer to whatever ONE pane's peer is asking, on a [`Consent`](crate::consent::Consent) the caller wrote.
 ///
 /// ⚠ It holds a [`Readiness`] with NO readiness condition, and that is not a shortcut. A pane whose
 /// program has not started cannot be showing a dialog, so there is nothing for a barrier to wait
@@ -81,7 +81,7 @@ pub struct Answer {
 impl Answer {
     /// Answer `pane`'s peer under `consent`, once.
     #[must_use]
-    pub fn new(pane: PaneId, consent: Consent) -> Self {
+    pub fn new(pane: PaneId, consent: Consents) -> Self {
         Self {
             pane,
             // ⚠ `None` readiness, `None` timeout: see the struct's own note. The consent is the
@@ -161,10 +161,17 @@ mod tests {
     use super::*;
     use crate::testing::asking_peer;
 
-    /// A consent for the fixture's permission question, authorising the option carrying `answer`.
-    fn consent_to(answer: &str) -> Consent {
-        Consent::parse("Do you want to proceed?".to_string(), answer.to_string())
-            .expect("two needles")
+    /// A one-clause consent for the fixture's permission question, authorising the option
+    /// carrying `answer`.
+    fn consent_to(answer: &str) -> Consents {
+        Consents::of(vec![
+            crate::consent::Consent::parse(
+                "Do you want to proceed?".to_string(),
+                answer.to_string(),
+            )
+            .expect("two needles"),
+        ])
+        .expect("a non-empty list")
     }
 
     /// ⚠⚠⚠ **THE ANSWER IS GIVEN ONCE, AND THE SECOND STEP DOES NOT LOOK AGAIN.**

@@ -186,7 +186,17 @@ fn call_built_from_the_grammar(
                 nest.insert(field.name.to_owned(), filler_for(field));
             }
         }
-        map.insert(parent.name.to_owned(), Value::Object(nest));
+        // ⚠⚠ A LIST PARENT WRAPS THE NEST IN AN ARRAY, and getting this wrong is invisible from the
+        // finding: a bare object sent where the grammar declares a list is refused by the daemon
+        // for the CONTAINER's type, and this harness would have reported the FIELD as constrained.
+        // Derived from the declaration (`is_a_list_of_objects`) rather than from the parent's name,
+        // so the second list argument on this wire needs nothing here.
+        let nested = if parent.is_a_list_of_objects() {
+            Value::Array(vec![Value::Object(nest)])
+        } else {
+            Value::Object(nest)
+        };
+        map.insert(parent.name.to_owned(), nested);
     }
     for arg in form.args {
         if vary.parent.is_none() && arg.name == vary.arg.name {
@@ -216,6 +226,21 @@ fn filler_for(arg: &ArgGrammar) -> Value {
         // these verbs take.
         (None, "int") => Value::from(1),
         (None, "bool") => Value::from(false),
+        // ⚠⚠ AN ARRAY OF OBJECTS IS FILLED FROM ITS ELEMENT'S OWN FIELDS — one element, since a
+        // filler exists to make a call well-formed and a second copy would measure nothing further.
+        // `ty == "array"` WITH fields is `ArgGrammar::nested_list`, the shape a list of nested
+        // values takes; without them it is the argv arm below. ⚠ The arm order matters: this must
+        // be read before the scalar-array one, or the first list of objects on this wire (the
+        // answering contract's `may_answer`) would be filled with a program name and every check
+        // beside it would report an argument it had not touched — the exact failure the required-
+        // object arm was reserved against, one shape out.
+        (None, "array") if !arg.fields.is_empty() => Value::from(vec![Value::Object(
+            arg.fields
+                .iter()
+                .filter(|field| !field.optional)
+                .map(|field| (field.name.to_owned(), filler_for(field)))
+                .collect(),
+        )]),
         // ⚠ AN ARGV, and the program is chosen rather than invented: `/bin/echo` is on both
         // platforms this project ships to (R352b swept them after a doctest spawned a `/bin/true`
         // macOS does not have) and it exits at once. The first REQUIRED array on this wire is a
@@ -526,6 +551,17 @@ pub fn a_nullary_form_is_a_verb_that_needs_nothing(
 ///   things and one of them would win silently;
 /// * two nested parents of one form sharing a field name — the same collision, one level down.
 ///
+/// ⚠⚠ **A LIST PARENT'S FIELDS ARE NOT DRIVEN HERE, BECAUSE THEY ARE NOT FLATTENED.**
+/// `ArgGrammar::nested_list` — a value that may appear N times — cannot be offered by its fields at
+/// all: N occurrences of a flat `--asked` beside N of a flat `--answer` say nothing about which
+/// belongs with which, so the mouths offer that parent whole. A collision claim over fields nobody
+/// turns into flags would be this harness asserting a property the product does not need, which is
+/// how a check comes to constrain a design it stopped describing.
+///
+/// ⚠ The MIRROR case is still driven, and it is the one that matters: a list parent's own NAME is
+/// now a flag, so a field of some OTHER nested argument sharing it is caught by the first bullet
+/// above with the roles reversed.
+///
 /// ⚠ It drives no daemon: the subject is the DECLARATIONS, and a claim about them needs no live
 /// surface. It is here rather than in a `wire` test because a second surface that grows a nested
 /// argument gets it by calling this, which is the reason every other claim in this crate moved out
@@ -541,6 +577,9 @@ pub fn a_flattened_nested_argument_collides_with_nothing(
                 let Some(parent) = offered.parent else {
                     continue;
                 };
+                if parent.is_a_list_of_objects() {
+                    continue;
+                }
                 for other in declared(form) {
                     let collides = other.arg.name == offered.arg.name
                         && !std::ptr::eq(other.arg, offered.arg)

@@ -1623,10 +1623,21 @@ struct RunArgument {
     /// never re-assembled, and reached the daemon as two loose keys with its parent nowhere. The
     /// barrier an agent asked for would simply not have been applied. Derived from the grammar now,
     /// so a third nested argument works without an edit.
-    parent: Option<&'static str>,
+    ///
+    /// ⚠ THE WHOLE DECLARATION and not its name, because the schema below has to ask the parent a
+    /// second question — is it a LIST? — and a name would have made that a lookup back into the
+    /// table, which is the second reader this struct exists to avoid.
+    parent: Option<&'static sprag_rpc::ArgGrammar>,
     /// Whether a well-formed call may leave this field out — needed to publish a nested object's
     /// own `required` list.
     optional: bool,
+    /// Whether this argument is an ARRAY OF OBJECTS — the shape whose `items` are described by the
+    /// FIELDS that arrive as their own entries, rather than by the string item a scalar list has.
+    ///
+    /// ⚠ Carried rather than re-derived from `ty`, because `"array"` alone cannot tell a
+    /// `dialogue` endpoint's argv from a list of consents, and guessing the item type is how a
+    /// published schema comes to refuse a call the daemon accepts.
+    is_a_list: bool,
 }
 
 /// Whether a nested argument is a UNIT — an object whose fields only mean anything TOGETHER —
@@ -1660,13 +1671,19 @@ fn orchestrate_arguments() -> Vec<RunArgument> {
     let mut out: Vec<RunArgument> = Vec::new();
     for form in run_forms() {
         for top in form.args {
-            let carried = is_a_unit(top).then_some(top.name);
+            let carried = is_a_unit(top).then_some(top);
             let fields = top.fields.iter().map(|field| (carried, field));
             for (parent, arg) in std::iter::once((None, top)).chain(fields) {
                 // The PARENT is not an argument in its own right here — it is published by its
                 // fields, which carry its name. Emitting it too would offer an agent an empty
                 // object beside the one that has the fields in it.
-                if arg.name == OPENED_BY || !arg.fields.is_empty() {
+                //
+                // ⚠⚠ A LIST parent is the exception, and it is published INSTEAD of being
+                // flattened: an array of objects cannot be offered field-by-field, because N loose
+                // `asked`s beside N loose `answer`s say nothing about which belongs with which. Its
+                // fields still come through below and land inside the array's `items`.
+                let published_whole = arg.is_a_list_of_objects();
+                if arg.name == OPENED_BY || (!arg.fields.is_empty() && !published_whole) {
                     continue;
                 }
                 let words = arg.words.unwrap_or_default();
@@ -1684,6 +1701,7 @@ fn orchestrate_arguments() -> Vec<RunArgument> {
                         words: words.to_vec(),
                         parent,
                         optional: arg.optional,
+                        is_a_list: published_whole,
                     }),
                 }
             }
@@ -1720,7 +1738,22 @@ fn orchestrate_schema() -> Value {
                 },
             );
             if arg.ty == "array" {
-                schema.insert("items".to_owned(), json!({ "type": "string" }));
+                // ⚠ A LIST OF OBJECTS gets its element shape filled in by its FIELDS below, which
+                // arrive as their own entries. Started empty rather than as a string item, because
+                // a wrong `items` an agent's client validates against is worse than a late one —
+                // and `is_a_list` is read off the grammar so a list of strings still gets the
+                // scalar item it has always had.
+                let items = if arg.is_a_list {
+                    json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false,
+                    })
+                } else {
+                    json!({ "type": "string" })
+                };
+                schema.insert("items".to_owned(), items);
             }
             if !arg.words.is_empty() {
                 schema.insert("enum".to_owned(), json!(arg.words));
@@ -1732,19 +1765,43 @@ fn orchestrate_schema() -> Value {
             // A FIELD goes inside its parent's object, and the parent carries its own `required`
             // list — which is how "these two only mean anything together" reaches an agent as a
             // rule its client can check, rather than as a sentence it has to read.
+            //
+            // ⚠⚠ A LIST parent's fields go one level deeper — inside its `items` — because what
+            // carries them is each ELEMENT and not the array. Same `required` reasoning, applied
+            // where the object actually is: a client validating an element against the array's own
+            // properties would validate nothing at all.
             Some(parent) => {
-                let nest = properties.entry(parent.to_owned()).or_insert_with(|| {
-                    json!({
-                        "type": "object",
-                        "properties": {},
-                        "required": [],
-                        "additionalProperties": false,
-                        "description": argument_help(parent),
-                    })
+                let listed = parent.is_a_list_of_objects();
+                let nest = properties.entry(parent.name.to_owned()).or_insert_with(|| {
+                    if listed {
+                        json!({
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {},
+                                "required": [],
+                                "additionalProperties": false,
+                            },
+                            "description": argument_help(parent.name),
+                        })
+                    } else {
+                        json!({
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false,
+                            "description": argument_help(parent.name),
+                        })
+                    }
                 });
-                nest["properties"][arg.name] = schema;
+                let element = if listed {
+                    &mut nest["items"]
+                } else {
+                    &mut *nest
+                };
+                element["properties"][arg.name] = schema;
                 if !arg.optional
-                    && let Some(required) = nest["required"].as_array_mut()
+                    && let Some(required) = element["required"].as_array_mut()
                 {
                     required.push(json!(arg.name));
                 }
@@ -1827,12 +1884,16 @@ fn argument_help(name: &str) -> &'static str {
              from the command line you typed to start it. It may never be empty."
         }
         "may_answer" => {
-            "LET THE RUN ANSWER ONE QUESTION its peer stops to ask (orchestrator, pipe, agent). \
-             Leave it out and the run answers NOTHING: an agent that pops a permission dialog ends \
-             the run `blocked`, the question and its options come back to you, and a person \
-             decides. That default is deliberate — a loop that clicked approvals nobody read would \
-             be worse than a loop that stops. Give it only when you can name, in advance and in \
-             the agent's own words, both the question you expect and the option you authorise."
+            "LET THE RUN ANSWER THE QUESTIONS its peer stops to ask — a LIST, one entry per \
+             question you have already decided about, because ONE TURN ASKS MORE THAN ONCE (an \
+             agent that runs a command and then edits a file asks about both). Leave it out and \
+             the run answers NOTHING: an agent that pops a permission dialog ends the run \
+             `blocked`, the question and its options come back to you, and a person decides. That \
+             default is deliberate — a loop that clicked approvals nobody read would be worse than \
+             a loop that stops. Give an entry only when you can name, in advance and in the \
+             agent's own words, both the question you expect and the option you authorise. ⚠ Two \
+             entries that fit ONE question and pick DIFFERENT options answer neither: the run \
+             stops and says `contradicted`, because which of your own rules wins is not its call."
         }
         "asked" => {
             "WHICH QUESTION the consent is about — text the dialog's own sentence must contain. It \
@@ -1984,7 +2045,7 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
         .iter()
         .filter(|arg| arg.parent.is_none())
         .map(|arg| arg.name)
-        .chain(known.iter().filter_map(|arg| arg.parent))
+        .chain(known.iter().filter_map(|arg| arg.parent.map(|it| it.name)))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -1995,18 +2056,46 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
     // one layer above the daemon that refuses it correctly.
     for arg in &known {
         let Some(parent) = arg.parent else { continue };
-        match object.get(parent) {
-            None | Some(Value::Object(_)) => {}
+        // ⚠ A LIST parent takes an ARRAY of those objects, not one — see
+        // `ArgGrammar::nested_list`. Same argument, one container out: read as a bare object, a
+        // caller's single clause would be a shape the daemon refuses whole, and the refusal it
+        // sends back names a type rather than the thing they wrote.
+        let listed = parent.is_a_list_of_objects();
+        let fields = || {
+            known
+                .iter()
+                .filter(|field| field.parent.is_some_and(|it| it.name == parent.name))
+                .map(|field| field.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match object.get(parent.name) {
+            None => {}
+            Some(Value::Object(_)) if !listed => {}
+            Some(Value::Array(clauses)) if listed => {
+                if let Some(other) = clauses.iter().find(|it| !it.is_object()) {
+                    return Err(format!(
+                        "every entry of '{}' is an object, and {other} is not. Each one takes \
+                         {{{}}} — every field, because they only mean anything together. Call \
+                         tools/list for the schema.",
+                        parent.name,
+                        fields(),
+                    ));
+                }
+            }
             Some(other) => {
+                let shape = if listed {
+                    "a LIST of objects"
+                } else {
+                    "an object"
+                };
                 return Err(format!(
-                    "'{parent}' is an object here, not {other}. It takes {{{}}} — every field, \
+                    "'{}' is {shape} here, not {other}. It takes {}{{{}}}{} — every field, \
                      because they only mean anything together. Call tools/list for the schema.",
-                    known
-                        .iter()
-                        .filter(|field| field.parent == Some(parent))
-                        .map(|field| field.name)
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    parent.name,
+                    if listed { "[" } else { "" },
+                    fields(),
+                    if listed { ", …]" } else { "" },
                 ));
             }
         }
@@ -2028,10 +2117,20 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
     // barrier at all while reporting nothing wrong.
     let mut nests: serde_json::Map<String, Value> = serde_json::Map::new();
     for arg in &known {
+        // ⚠⚠ A FIELD OF A LIST PARENT IS NOT READ HERE AT ALL. Its parent is published whole and
+        // arrives as one top-level argument, so the clauses travel to the daemon as the caller
+        // wrote them — reading `asked` out of an array would take the FIRST element's and drop
+        // every other clause, which is the silent narrowing a list exists to make impossible.
+        if arg
+            .parent
+            .is_some_and(sprag_rpc::ArgGrammar::is_a_list_of_objects)
+        {
+            continue;
+        }
         // A field is read from inside its parent, exactly as the schema publishes it.
         let Some(value) = arg.parent.map_or_else(
             || object.get(arg.name),
-            |parent| object.get(parent).and_then(|nest| nest.get(arg.name)),
+            |parent| object.get(parent.name).and_then(|nest| nest.get(arg.name)),
         ) else {
             continue;
         };
@@ -2063,7 +2162,7 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
                 ));
             }
             nests
-                .entry(arg.parent.unwrap_or("guardrails").to_owned())
+                .entry(arg.parent.map_or("guardrails", |it| it.name).to_owned())
                 .or_insert_with(|| Value::Object(serde_json::Map::new()))
                 .as_object_mut()
                 .expect("a nest is an object")
@@ -2092,7 +2191,7 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
         match arg.parent {
             Some(parent) => {
                 nests
-                    .entry(parent.to_owned())
+                    .entry(parent.name.to_owned())
                     .or_insert_with(|| Value::Object(serde_json::Map::new()))
                     .as_object_mut()
                     .expect("a nest is an object")
@@ -2431,11 +2530,18 @@ const ANSWER_POLL: Duration = Duration::from_millis(100);
 /// answer is over in a keystroke, so handing back a run id would make an agent poll for the one
 /// fact it asked for.
 ///
-/// ⚠ The two needles are FLAT here where `orchestrate` nests them under `may_answer`, and the
-/// reason the nesting exists does not apply: a unit is nested so a malformed one cannot be read
+/// ⚠ The two needles are FLAT here where `orchestrate` takes a LIST of them under `may_answer`, and
+/// the reason the nesting exists does not apply: a unit is nested so a malformed one cannot be read
 /// field-by-field and silently DROPPED, leaving the run to start without it. Both needles are
 /// `required` on this tool, so an incomplete consent is a refusal rather than a default — there is
 /// nothing here for a dropped field to fall back to.
+///
+/// ⚠⚠ **AND IT STAYS ONE CLAUSE WHERE A RUN TAKES MANY**, which is a difference in what the two are
+/// FOR rather than a surface falling behind. A run is declared in advance and left alone, so its
+/// caller must be able to write down every decision a turn might need. This tool is called by a
+/// supervisor who is LOOKING AT the dialog it is about to answer, quoting that screen — a list
+/// there would be an agent writing rules for questions it has not seen, on a call that answers
+/// exactly one. It becomes a list of one on the way to the wire, which is where the shapes meet.
 fn tool_answer_pane(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref_at(args, "pane")?;
     require_own_pane(
@@ -2478,10 +2584,10 @@ fn tool_answer_pane(args: &Value) -> Result<String, String> {
             "args": {
                 "plugin": sprag_host::plugins::PluginName::Answer.wire_str(),
                 "pane": pane.id(),
-                sprag_host::plugins::CONSENT_KEY: {
+                sprag_host::plugins::CONSENT_KEY: [{
                     sprag_host::plugins::CONSENT_ASKED_KEY: asked,
                     sprag_host::plugins::CONSENT_ANSWER_KEY: answer,
-                },
+                }],
                 OPENED_BY: mine,
             },
         }),
@@ -8091,6 +8197,7 @@ mod tests {
                 .find(|arg| arg.name == name)
                 .unwrap_or_else(|| panic!("{name} is published"))
                 .parent
+                .map(|it| it.name)
         };
         assert_eq!(
             parent_of("match"),
@@ -8102,6 +8209,23 @@ mod tests {
             parent_of("max_iterations"),
             None,
             "a guardrail means what it means alone, and agents already send it flat",
+        );
+        // ⚠⚠ AND A LIST'S FIELDS KEEP THEIR PARENT TOO, which is a THIRD answer rather than the
+        // unit's: they stay inside it AND the parent is published in its own right, because an
+        // array of objects cannot be offered field by field at all. Without the parent's own entry
+        // an agent would have nothing to send the clauses under.
+        assert_eq!(
+            parent_of(sprag_plugin::Consent::ASKED_KEY),
+            Some(sprag_plugin::Consents::WIRE_KEY),
+        );
+        assert!(
+            known
+                .iter()
+                .any(|arg| arg.name == sprag_plugin::Consents::WIRE_KEY
+                    && arg.parent.is_none()
+                    && arg.is_a_list),
+            "⚠⚠⚠ the list itself is a top-level argument of this tool, or the clauses have no              key to travel under: {:?}",
+            known.iter().map(|arg| arg.name).collect::<Vec<_>>(),
         );
     }
 
@@ -8160,11 +8284,16 @@ mod tests {
             .expect("an object of arguments");
         for form in run_forms() {
             for top in form.args {
-                // Same rule the schema is built by: a UNIT keeps its parent, a bag is flattened.
-                let carried = is_a_unit(top).then_some(top.name);
+                // Same rule the schema is built by: a UNIT keeps its parent, a bag is flattened,
+                // and a LIST keeps its parent AND is offered in its own right.
+                let carried = is_a_unit(top).then_some(top);
                 let fields = top.fields.iter().map(|field| (carried, field));
                 for (parent, arg) in std::iter::once((None, top)).chain(fields) {
-                    if !arg.fields.is_empty() {
+                    // ⚠⚠ A LIST PARENT IS CHECKED, not skipped. An array of objects cannot be
+                    // offered field by field, so unlike a unit it has to appear under its own name
+                    // — and if it did not, its fields would have nothing to travel inside and the
+                    // clauses an agent wrote would reach the daemon as no key at all.
+                    if !arg.fields.is_empty() && !arg.is_a_list_of_objects() {
                         continue; // the parent is offered by its fields
                     }
                     if arg.name == OPENED_BY {
@@ -8179,28 +8308,46 @@ mod tests {
                     // nested argument, drop the parent on the way back out, and pass: `ready_when`
                     // would have been advertised as two loose keys and its barrier silently never
                     // applied.
+                    // ⚠⚠ A FIELD MUST BE OFFERED WHERE ITS PARENT'S SHAPE PUTS IT — inside the
+                    // object for a unit, inside the array's `items` for a list. A check that
+                    // accepted either would pass for a schema advertising a consent's needles
+                    // beside the array instead of in it, which no client could validate against.
+                    let element = |parent: &sprag_rpc::ArgGrammar| -> Option<&Value> {
+                        let nest = properties.get(parent.name)?;
+                        if parent.is_a_list_of_objects() {
+                            nest.get("items")?.get("properties")
+                        } else {
+                            nest.get("properties")
+                        }
+                    };
                     let offered = parent.map_or_else(
                         || properties.get(arg.name),
-                        |parent| properties.get(parent)?.get("properties")?.get(arg.name),
+                        |parent| element(parent)?.get(arg.name),
                     );
                     assert!(
                         offered.is_some(),
                         "the daemon publishes {:?}{} and the tool does not offer it there, so an \
                          agent cannot send an argument this build's own wire takes",
                         arg.name,
-                        parent.map_or(String::new(), |p| format!(" inside {p:?}")),
+                        parent.map_or(String::new(), |p| format!(" inside {:?}", p.name)),
                     );
                     // And a field the grammar REQUIRES is published as required, so a client that
                     // validates knows the two only mean anything together.
                     if let Some(parent) = parent
                         && !arg.optional
                     {
+                        let required = if parent.is_a_list_of_objects() {
+                            &properties[parent.name]["items"]["required"]
+                        } else {
+                            &properties[parent.name]["required"]
+                        };
                         assert!(
-                            properties[parent]["required"]
+                            required
                                 .as_array()
                                 .is_some_and(|req| req.contains(&json!(arg.name))),
-                            "{:?} is required inside {parent:?} and the schema does not say so",
+                            "{:?} is required inside {:?} and the schema does not say so",
                             arg.name,
+                            parent.name,
                         );
                     }
                 }
@@ -8275,6 +8422,59 @@ mod tests {
         assert!(
             other.contains("nonsense") && other.contains("prompt"),
             "{other}"
+        );
+    }
+
+    /// ⚠⚠⚠ **A CONSENT SENT AS ONE OBJECT IS REFUSED HERE, NAMING THE SHAPE AND THE FIELDS.**
+    ///
+    /// The list is the shape a version-29 daemon takes, and an agent that learned `may_answer` from
+    /// an older schema — or from a memory of one — sends the bare object. That is the same class as
+    /// the `ready_when` refusal beside it, and the reason both exist rather than being left to the
+    /// daemon: read field-by-field, a mis-shaped nest is DROPPED and the run starts without the
+    /// thing the caller asked for. Here the failure is louder (the daemon answers `TypeMismatch`
+    /// for the whole call) and the refusal is still this surface's job, because `TypeMismatch`
+    /// names nothing an agent can fix.
+    ///
+    /// ⚠ Refused BEFORE anything is sent, so it needs no daemon.
+    #[test]
+    fn a_consent_that_is_not_a_list_is_refused_in_the_agents_own_terms() {
+        let asked = sprag_host::plugins::CONSENT_ASKED_KEY;
+        let answer = sprag_host::plugins::CONSENT_ANSWER_KEY;
+        let key = sprag_host::plugins::CONSENT_KEY;
+
+        let bare = tool_orchestrate(&json!({
+            "plugin": "agent", "pane": 1, "prompt": "hi",
+            key: { asked: "proceed", answer: "Yes" },
+        }))
+        .expect_err("a single object where the list goes is refused");
+        assert!(
+            bare.contains("LIST of objects") && bare.contains(asked) && bare.contains(answer),
+            "⚠⚠ it must say WHAT SHAPE and WHICH FIELDS, or an agent's next attempt is another \
+             guess: {bare}",
+        );
+
+        let wrong_entry = tool_orchestrate(&json!({
+            "plugin": "agent", "pane": 1, "prompt": "hi",
+            key: ["Yes"],
+        }))
+        .expect_err("an entry that is not an object is refused");
+        assert!(
+            wrong_entry.contains("every entry") && wrong_entry.contains(asked),
+            "⚠ and a LIST of the wrong things is a different sentence from the wrong CONTAINER — \
+             an agent that got the array right needs telling about the element: {wrong_entry}",
+        );
+
+        // ⚠⚠ THE CONTROL: the shape the tool is FOR is not refused here. Without it both
+        // assertions above would pass against a surface that rejects every consent.
+        let good = tool_orchestrate(&json!({
+            "plugin": "agent", "pane": 1, "prompt": "hi",
+            key: [{ asked: "proceed", answer: "Yes" }],
+        }))
+        .expect_err("no daemon is listening, so it cannot get further than trying");
+        assert!(
+            !good.contains("LIST of objects") && !good.contains("every entry"),
+            "⚠⚠⚠ a well-formed list must reach the daemon rather than being refused by its own \
+             mouth: {good}",
         );
     }
 

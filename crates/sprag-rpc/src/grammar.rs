@@ -69,8 +69,25 @@ pub struct ArgGrammar {
     /// (`MoveWindowAsk::PLACE_WORDS`) says so at its declaration and is held to the parser by
     /// `every_published_word_is_a_word_the_daemon_accepts`.
     pub words: Option<&'static [&'static str]>,
-    /// THE ARGUMENTS INSIDE THIS ONE, when its value is an object with a known shape — empty for
-    /// every scalar argument.
+    /// THE ARGUMENTS INSIDE THIS ONE, when its value is an object with a known shape — or inside
+    /// EACH ELEMENT of it when the value is an array. Empty for every scalar argument.
+    ///
+    /// # ⚠⚠ Two shapes read this one key, and [`ty`](Self::ty) is what says which
+    ///
+    /// * `"object"` with fields — the value is one object carrying them ([`nested`](Self::nested)).
+    /// * `"array"` with fields — the value is a LIST of such objects ([`nested_list`](Self::nested_list)).
+    /// * `"array"` with none — a list of scalars, which is what a `dialogue` endpoint's argv is.
+    ///
+    /// One key rather than an `items` beside it, because *"the arguments inside this one"* is the
+    /// same fact in both cases and a second key would let a declaration carry both and mean
+    /// neither. The constructors are what keep the pair consistent: neither takes `ty`.
+    ///
+    /// ⚠ The list shape arrived with the answering contract, whose caller writes down one clause
+    /// per question a turn may ask (`sprag_plugin::Consents`). Until then every nested value on
+    /// this wire appeared exactly once, and the FLATTENING two mouths do — offering a parent by its
+    /// fields rather than by itself — quietly depended on that: N occurrences of a flat `--asked`
+    /// beside N of a flat `--answer` cannot say which belongs with which. So a list parent is
+    /// offered by its OWN name, and that rule is derived from the shape rather than special-cased.
     ///
     /// # This is the answer to "is a nested value a recursive grammar, or an address of its own?"
     ///
@@ -150,6 +167,40 @@ impl ArgGrammar {
             words: None,
             fields,
         }
+    }
+
+    /// An argument whose value is a LIST OF OBJECTS, each carrying these arguments.
+    ///
+    /// The type is fixed at `"array"` for [`nested`](Self::nested)'s reason one level out: a value
+    /// that is a list of things with named fields is an array, and there is no second type a caller
+    /// could sensibly declare beside the fields.
+    ///
+    /// # ⚠⚠ Why a list is a different DECLARATION and not a flag on the same one
+    ///
+    /// Because it changes what a mouth may do with it. A `nested` argument is FLATTENED by the CLI
+    /// and by the MCP roster — offered as its fields, since the fields are what a caller has values
+    /// for — and that is only unambiguous while the parent appears once. A list parent has to be
+    /// offered whole, so the two shapes must be distinguishable by reading the declaration, which
+    /// is exactly what `ty` does here.
+    #[must_use]
+    pub const fn nested_list(name: &'static str, fields: &'static [ArgGrammar]) -> Self {
+        Self {
+            name,
+            ty: "array",
+            optional: false,
+            words: None,
+            fields,
+        }
+    }
+
+    /// Whether this argument's value is a LIST whose elements carry [`fields`](Self::fields) — the
+    /// one shape a mouth must NOT flatten.
+    ///
+    /// Derived from the declaration rather than matched on a name, so a second list argument
+    /// inherits every mouth's handling of the first.
+    #[must_use]
+    pub const fn is_a_list_of_objects(&self) -> bool {
+        !self.fields.is_empty() && matches!(self.ty.as_bytes(), b"array")
     }
 
     /// The same argument, marked as one this form REQUIRES.

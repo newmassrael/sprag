@@ -161,6 +161,19 @@ pub enum FillError {
         /// The argument.
         name: String,
     },
+    /// A key inside one element of a LIST-OF-OBJECTS argument that the element does not have.
+    ///
+    /// ⚠ Its own arm rather than [`UnknownFlag`](Self::UnknownFlag), because what the caller typed
+    /// is not a flag: it is a member of a JSON object they wrote, and a refusal that put `--` in
+    /// front of it would send them looking for an option that never existed.
+    NotThatField {
+        /// The argument whose elements were being read.
+        arg: String,
+        /// The key the caller put in the element.
+        key: String,
+        /// Every key one element does take, in declared order.
+        known: Vec<String>,
+    },
     /// No published form matches the words the caller chose.
     NoForm {
         /// The discriminating argument, when every form is told apart by one.
@@ -214,6 +227,11 @@ impl std::fmt::Display for FillError {
             Self::Repeated { name } => {
                 write!(f, "--{name} was given more than once, and it is not a list",)
             }
+            Self::NotThatField { arg, key, known } => write!(
+                f,
+                "each --{arg} is an object taking {}, and {key:?} is not one of them",
+                joined(known),
+            ),
             Self::NoForm { selector, words } => match selector {
                 Some(selector) => write!(
                     f,
@@ -342,6 +360,24 @@ impl PublishedArg {
     /// square brackets when a call may omit it.
     #[must_use]
     pub fn usage(&self) -> String {
+        // ⚠⚠ A LIST OF OBJECTS IS OFFERED WHOLE, and repeatably — see `is_a_list_of_objects`. Its
+        // fields cannot become flags of their own, because N loose `--asked`s beside N loose
+        // `--answer`s say nothing about which belongs with which, so the usage line names the flag
+        // and the shape of one element.
+        if self.is_a_list_of_objects() {
+            let element = self
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            let body = format!("--{} <{{{element}}}> …", self.name);
+            return if self.optional {
+                format!("[{body}]")
+            } else {
+                body
+            };
+        }
         // A nested argument is offered one field at a time, so its own name never appears — see
         // `PublishedForm::fill`'s flattening — and it takes NO bracket of its own: each field
         // carries the one that says whether that field may be left out, and a bracket around the
@@ -363,6 +399,96 @@ impl PublishedArg {
             format!("[{body}]")
         } else {
             body
+        }
+    }
+
+    /// Whether this argument's value is a LIST whose elements carry [`fields`](Self::fields) — the
+    /// one shape a mouth must not flatten. [`ArgGrammar::is_a_list_of_objects`]'s counterpart on
+    /// the read-back side, spelled the same way so a reader moving between them meets one question.
+    #[must_use]
+    pub fn is_a_list_of_objects(&self) -> bool {
+        !self.fields.is_empty() && self.ty == "array"
+    }
+
+    /// ONE ELEMENT of a list-of-objects argument, checked against the fields it publishes.
+    ///
+    /// # ⚠⚠ Why the CLI checks this rather than letting the daemon do it
+    ///
+    /// Because the daemon's refusal is `TypeMismatch` for the WHOLE call, and a caller who
+    /// mistyped `askd` inside one of three clauses would be told their run was malformed with no
+    /// word about where. Every other refusal this module makes is one the daemon would have made,
+    /// made here so the caller reads it in the argument's own terms — this is that rule reaching
+    /// inside a value the caller had to write as JSON.
+    ///
+    /// ⚠ It REBUILDS the object from the declared fields rather than passing the caller's through:
+    /// an element that survived this is one whose every key was read, so a key the check somehow
+    /// let past cannot ride along to the daemon.
+    fn element(&self, given: &Value) -> Result<Value, FillError> {
+        let Value::Object(object) = given else {
+            return Err(FillError::NotThatType {
+                name: self.name.clone(),
+                ty: "object".to_owned(),
+                given: given.to_string(),
+            });
+        };
+        for key in object.keys() {
+            if !self.fields.iter().any(|field| same_name(key, &field.name)) {
+                return Err(FillError::NotThatField {
+                    arg: self.name.clone(),
+                    key: key.clone(),
+                    known: self.fields.iter().map(|field| field.name.clone()).collect(),
+                });
+            }
+        }
+        let mut built = Map::new();
+        let mut missing = Vec::new();
+        for field in &self.fields {
+            let Some(value) = object
+                .iter()
+                .find(|(key, _)| same_name(key, &field.name))
+                .map(|(_, value)| value.clone())
+            else {
+                if !field.optional {
+                    missing.push(field.name.clone());
+                }
+                continue;
+            };
+            // ⚠ The value is already JSON, so its type is a FACT rather than something to parse
+            // out of a shell word — `coerce` is for what a person typed at a prompt. A string
+            // declaration meeting a number here is the caller's mistake and not a conversion.
+            let matches = match field.ty.as_str() {
+                "string" => value.is_string(),
+                "int" => value.is_i64() || value.is_u64(),
+                "float" => value.is_number(),
+                "bool" => value.is_boolean(),
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                // A type this build has no rule for is accepted, for `coerce`'s reason: the daemon
+                // that published the type is the one that judges the value.
+                _ => true,
+            };
+            if !matches {
+                return Err(FillError::NotThatType {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                    given: value.to_string(),
+                });
+            }
+            if let (Some(words), Some(word)) = (&field.words, value.as_str())
+                && !words.iter().any(|admitted| admitted == word)
+            {
+                return Err(FillError::NotThatWord {
+                    name: field.name.clone(),
+                    given: word.to_owned(),
+                    words: words.clone(),
+                });
+            }
+            built.insert(field.name.clone(), value);
+        }
+        if missing.is_empty() {
+            Ok(Value::Object(built))
+        } else {
+            Err(FillError::Missing { names: missing })
         }
     }
 
@@ -460,7 +586,13 @@ impl PublishedForm {
     fn offered(&self) -> Vec<(&PublishedArg, Option<&PublishedArg>)> {
         let mut offered = Vec::new();
         for arg in &self.args {
-            if arg.fields.is_empty() {
+            // ⚠⚠ A LIST OF OBJECTS IS NOT FLATTENED. The flattening rests on the parent appearing
+            // once — `--max-iterations 5` re-assembles into `guardrails` because there is only one
+            // `guardrails` to put it in. A list may appear N times, and N flat `--asked`s beside N
+            // flat `--answer`s cannot say which pairs with which, so it is offered under its own
+            // name and each occurrence is one element. Derived from the declaration, so a second
+            // list argument needs nothing here.
+            if arg.fields.is_empty() || arg.is_a_list_of_objects() {
                 offered.push((arg, None));
             } else {
                 offered.extend(arg.fields.iter().map(|field| (field, Some(arg))));
@@ -575,6 +707,22 @@ impl PublishedForm {
                             given: String::new(),
                         });
                     };
+                    // ⚠⚠ A LIST OF OBJECTS is the one place a person still writes JSON at a
+                    // prompt, and it is not the case `coerce` calls undescribed: the fields ARE
+                    // published, so each element is checked against them here rather than being
+                    // passed through to a daemon that can only refuse the whole call. The
+                    // alternative — pairing N flat `--asked`s with N flat `--answer`s by position —
+                    // is an ordering rule nothing declares and the caller has to remember.
+                    if arg.is_a_list_of_objects() {
+                        let parsed: Value =
+                            serde_json::from_str(raw).map_err(|_| FillError::NotThatType {
+                                name: arg.name.clone(),
+                                ty: "object".to_owned(),
+                                given: raw.clone(),
+                            })?;
+                        items.push(arg.element(&parsed)?);
+                        continue;
+                    }
                     items.push(Value::from(raw.as_str()));
                 }
                 Value::Array(items)
@@ -816,6 +964,18 @@ mod tests {
         ArgGrammar::one_of("plugin", "string", &["dialogue"]),
         ArgGrammar::open("endpoint_a", "array"),
         ArgGrammar::one_of("format_a", "string", &["text", "claude_json"]).optional(),
+        // ⚠ A LIST OF OBJECTS — the shape the answering contract's `may_answer` takes, and the one
+        // this module must NOT flatten. It sits beside the scalar list deliberately: the two are
+        // both `"array"` and are handled differently, so a fixture with only one of them would let
+        // either handling pass for the other.
+        ArgGrammar::nested_list(
+            "may_answer",
+            &[
+                ArgGrammar::open("asked", "string"),
+                ArgGrammar::open("answer", "string"),
+            ],
+        )
+        .optional(),
     ];
 
     fn published() -> Vec<PublishedForm> {
@@ -904,6 +1064,143 @@ mod tests {
                 "format_a": "claude_json",
             }),
             "a repeated flag is one list, and both spellings of a name are one name",
+        );
+    }
+
+    /// ⚠⚠⚠ **A LIST OF OBJECTS IS OFFERED WHOLE AND REPEATABLY, AND EACH ELEMENT IS CHECKED.**
+    ///
+    /// The one nested shape this module must not flatten. Flattening rests on the parent appearing
+    /// ONCE — `--max-iterations 3` re-assembles into `guardrails` because there is only one
+    /// `guardrails` to put it in — and a list may appear N times, so N flat `--asked`s beside N
+    /// flat `--answer`s could not say which pairs with which. A caller who wrote two clauses would
+    /// get one, or a pairing this module invented, and neither is something they can check.
+    ///
+    /// So each occurrence is ONE element, written as JSON, and validated against the fields the
+    /// DAEMON published — which is what keeps this from being the escape hatch `coerce` reserves
+    /// for shapes the publication cannot describe. Every refusal below is one the daemon would have
+    /// made, made here in the caller's own terms: a daemon that met a typo inside clause two
+    /// answers `TypeMismatch` for the whole call and names nothing.
+    #[test]
+    fn a_list_of_objects_is_offered_whole_and_each_element_is_checked() {
+        let two = build_call(
+            &published(),
+            &flags(&[
+                ("plugin", "dialogue"),
+                ("endpoint-a", "claude"),
+                ("may-answer", r#"{"asked": "proceed", "answer": "Yes"}"#),
+                (
+                    "may-answer",
+                    r#"{"asked": "make this edit", "answer": "Yes"}"#,
+                ),
+            ]),
+        )
+        .expect("two clauses fill");
+        assert_eq!(
+            two["may_answer"],
+            json!([
+                {"asked": "proceed", "answer": "Yes"},
+                {"asked": "make this edit", "answer": "Yes"},
+            ]),
+            "⚠⚠⚠ BOTH clauses, in the order they were typed — the whole reason the list is a list",
+        );
+
+        // ⚠ The fields are NOT flags of their own, and the refusal says so by listing what the form
+        // does take. Without this a caller who wrote the pre-list spelling would get a call built
+        // from a parent nobody assembled.
+        assert!(
+            matches!(
+                build_call(
+                    &published(),
+                    &flags(&[
+                        ("plugin", "dialogue"),
+                        ("endpoint-a", "claude"),
+                        ("asked", "proceed"),
+                    ]),
+                ),
+                Err(FillError::UnknownFlag { .. }),
+            ),
+            "a list's fields are offered inside its elements, never beside them",
+        );
+
+        for (why, written, expected) in [
+            (
+                "a key the element does not have",
+                r#"{"askd": "proceed", "answer": "Yes"}"#,
+                "each --may_answer is an object taking asked and answer, and \"askd\" is not one \
+                 of them",
+            ),
+            (
+                "a required field left out",
+                r#"{"asked": "proceed"}"#,
+                "this call needs answer, and it was not given",
+            ),
+            (
+                "a field of the wrong type",
+                r#"{"asked": 4, "answer": "Yes"}"#,
+                "--asked takes a string, and \"4\" is not one",
+            ),
+            (
+                "an element that is not an object",
+                r#""Yes""#,
+                "--may_answer takes an object, and \"\\\"Yes\\\"\" is not one",
+            ),
+            (
+                "something that is not JSON at all",
+                "proceed=Yes",
+                "--may_answer takes an object, and \"proceed=Yes\" is not one",
+            ),
+        ] {
+            let refused = build_call(
+                &published(),
+                &flags(&[
+                    ("plugin", "dialogue"),
+                    ("endpoint-a", "claude"),
+                    ("may-answer", written),
+                ]),
+            )
+            .expect_err(why);
+            assert_eq!(
+                refused.to_string(),
+                expected,
+                "⚠⚠ {why} must be named where the caller can act on it: {refused:?}",
+            );
+        }
+    }
+
+    /// ⚠⚠ **THE USAGE LINE NAMES THE LIST, NOT ITS FIELDS** — the same rule one layer out, at the
+    /// only place a person reads before typing.
+    ///
+    /// A nested OBJECT's usage is its fields, because those are the flags. A list's fields are not
+    /// flags, so printing them would tell a caller to type something the parser refuses.
+    #[test]
+    fn a_lists_usage_offers_the_flag_and_the_shape_of_one_entry() {
+        let form = published()
+            .into_iter()
+            .find(|form| {
+                form.args
+                    .iter()
+                    .any(|arg| arg.words.as_ref().is_some_and(|w| w == &["dialogue"]))
+            })
+            .expect("the second form");
+        let listed = form
+            .args
+            .iter()
+            .find(|arg| arg.name == "may_answer")
+            .expect("the list argument");
+        assert_eq!(
+            listed.usage(),
+            "[--may_answer <{asked,answer}> …]",
+            "the flag, the shape of ONE entry, and the ellipsis that says it repeats",
+        );
+        let nested = published()
+            .into_iter()
+            .find_map(|form| form.args.into_iter().find(|arg| arg.name == "guardrails"))
+            .expect("the nested object");
+        assert_eq!(
+            nested.usage(),
+            "[--max_iterations <int>] [--max_bytes <int>]",
+            "⚠ and the OBJECT still prints its fields, because for that shape the fields ARE the \
+             flags — the two must not print alike",
         );
     }
 

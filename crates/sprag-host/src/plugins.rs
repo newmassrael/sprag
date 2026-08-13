@@ -31,9 +31,9 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Ceiling, Consent, Cost, Dialogue, DialogueSpec, DoneWhen, Driver, Guardrails,
-    OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReadyWhen,
-    ReplyFormat, RunContext, WorkspacePaneAccess,
+    Agent, AgentSpec, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec, DoneWhen, Driver,
+    Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin,
+    ReadyWhen, ReplyFormat, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -63,7 +63,7 @@ pub const PLUGINS_SLOT: &str = "plugins";
 /// different ceiling from the one the daemon enforces.
 pub const GUARDRAIL_DEFAULTS_SLOT: &str = "guardrail_defaults";
 
-/// The REQUEST key carrying a consent — [`Consent::WIRE_KEY`], re-exported.
+/// The REQUEST key carrying the consent LIST — [`Consents::WIRE_KEY`], re-exported.
 ///
 /// # ⚠⚠ Why a projection rather than a literal at each mouth
 ///
@@ -77,10 +77,12 @@ pub const GUARDRAIL_DEFAULTS_SLOT: &str = "guardrail_defaults";
 /// spells the same word about a different thing: that one is the QUESTION'S OWN LINES in an answer,
 /// this one is the NEEDLE a caller sends. One is what the pane said; the other is what the caller
 /// will accept. Merging them because they read alike is how two concepts come to move together.
-pub const CONSENT_KEY: &str = Consent::WIRE_KEY;
-/// The [`CONSENT_KEY`] needle naming WHICH QUESTION — [`Consent::ASKED_KEY`], re-exported.
+pub const CONSENT_KEY: &str = Consents::WIRE_KEY;
+/// The [`CONSENT_KEY`] ELEMENT'S needle naming WHICH QUESTION — [`Consent::ASKED_KEY`],
+/// re-exported. ⚠ It lives inside one member of the list, not beside it.
 pub const CONSENT_ASKED_KEY: &str = Consent::ASKED_KEY;
-/// The [`CONSENT_KEY`] needle naming WHICH OPTION — [`Consent::ANSWER_KEY`], re-exported.
+/// The [`CONSENT_KEY`] ELEMENT'S needle naming WHICH OPTION — [`Consent::ANSWER_KEY`],
+/// re-exported.
 pub const CONSENT_ANSWER_KEY: &str = Consent::ANSWER_KEY;
 
 /// The answer key naming a run.
@@ -542,10 +544,10 @@ impl PluginsExternal {
                 // contract cannot come to admit different objects.
                 let consent = opt_may_answer(map)?.ok_or_else(|| {
                     refused(format!(
-                        "an `answer` run needs a {} — {{{}: …, {}: …}}, quoting the peer's own \
+                        "an `answer` run needs a {} — [{{{}: …, {}: …}}], quoting the peer's own \
                          words. Without one there is nothing it may type, which is what not \
                          calling it already does.",
-                        Consent::WIRE_KEY,
+                        Consents::WIRE_KEY,
                         Consent::ASKED_KEY,
                         Consent::ANSWER_KEY,
                     ))
@@ -879,7 +881,7 @@ fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeE
         .map(Some)
 }
 
-/// Read the optional `may_answer` consent — WHAT THIS RUN MAY ANSWER if its peer stops to ask.
+/// Read the optional `may_answer` consents — WHAT THIS RUN MAY ANSWER if its peer stops to ask.
 /// Absent (or `null`) is a run that answers nothing, which is what every run did before the key
 /// existed.
 ///
@@ -888,16 +890,31 @@ fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeE
 /// something else — see [`Consent::parse`](sprag_plugin::Consent::parse), which owns the predicate
 /// so the parser and the publication cannot drift. A caller who sends one has made a MALFORMED
 /// request (R353's rule), which is why this is a `TypeMismatch` rather than a friendly refusal.
-fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consent>, InvokeError> {
-    if declined(map, Consent::WIRE_KEY) {
+///
+/// # ⚠⚠⚠ A LIST, and an EMPTY one is malformed rather than an omission
+///
+/// One turn asks more than one question, so the value is an ARRAY of clauses — see
+/// [`PluginGrammar::MAY_ANSWER`](crate::wire::PluginGrammar::MAY_ANSWER) for the measurement. The
+/// empty array is refused rather than read as *"no consent"*: `[]` and an absent key would then be
+/// two spellings of one meaning, and the one that arrives by accident — a client that built its
+/// clause list from a filter and matched nothing — is exactly the one a caller would want told
+/// about. [`Consents::of`](sprag_plugin::Consents::of) owns that predicate, as `Consent::parse`
+/// owns the needle's.
+fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consents>, InvokeError> {
+    if declined(map, Consents::WIRE_KEY) {
         return Ok(None);
     }
-    let object = map[Consent::WIRE_KEY]
-        .as_object()
+    let listed = map[Consents::WIRE_KEY]
+        .as_array()
         .ok_or(InvokeError::TypeMismatch)?;
-    let asked = require_str(object, Consent::ASKED_KEY)?.to_string();
-    let answer = require_str(object, Consent::ANSWER_KEY)?.to_string();
-    Consent::parse(asked, answer)
+    let mut clauses = Vec::with_capacity(listed.len());
+    for clause in listed {
+        let object = clause.as_object().ok_or(InvokeError::TypeMismatch)?;
+        let asked = require_str(object, Consent::ASKED_KEY)?.to_string();
+        let answer = require_str(object, Consent::ANSWER_KEY)?.to_string();
+        clauses.push(Consent::parse(asked, answer).ok_or(InvokeError::TypeMismatch)?);
+    }
+    Consents::of(clauses)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
 }
@@ -1572,22 +1589,48 @@ mod tests {
     ///
     /// ⚠ And an absent key is a run that answers NOTHING, which is the default the whole feature
     /// rests on.
+    ///
+    /// # ⚠⚠⚠ The shape is a LIST, and the two ways that can go wrong are BOTH malformed
+    ///
+    /// An EMPTY list, because `[]` and an absent key would otherwise be two spellings of *"answer
+    /// nothing"* — and the one that arrives by accident (a client whose clause list came from a
+    /// filter that matched nothing) is exactly the caller who wants telling. And the PRE-BUMP
+    /// OBJECT, which is what a version-28 client sends a version-29 daemon: it must meet the
+    /// grammar at the door rather than be read as a one-clause list, because a shape this wire
+    /// quietly reinterprets is one no version number can protect.
     #[test]
     fn the_consent_this_surface_reads_is_the_one_the_type_admits() {
         let asked = "Do you want to proceed?";
-        let good =
-            json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: asked, Consent::ANSWER_KEY: "Yes" } });
+        let clause = |asked: &str, answer: &str| json!({ Consent::ASKED_KEY: asked, Consent::ANSWER_KEY: answer });
+        let good = json!({ Consents::WIRE_KEY: [clause(asked, "Yes")] });
         assert_eq!(
             opt_may_answer(good.as_object().expect("an object")).expect("a well-formed consent"),
-            Consent::parse(asked.to_owned(), "Yes".to_owned()),
+            Consents::of(vec![
+                Consent::parse(asked.to_owned(), "Yes".to_owned()).expect("two needles"),
+            ]),
             "the surface builds exactly what the type would",
+        );
+
+        let many = json!({
+            Consents::WIRE_KEY: [clause(asked, "Yes"), clause("make this edit", "Yes")],
+        });
+        assert_eq!(
+            opt_may_answer(many.as_object().expect("an object")).expect("two well-formed clauses"),
+            Consents::of(vec![
+                Consent::parse(asked.to_owned(), "Yes".to_owned()).expect("two needles"),
+                Consent::parse("make this edit".to_owned(), "Yes".to_owned()).expect("two needles"),
+            ]),
+            "⚠⚠⚠ EVERY clause arrives, and IN THE CALLER'S ORDER — a parser that kept only the \
+             first would leave an unattended run stopping at the second question of every turn, \
+             which is the defect the list exists to close. Compared WHOLE rather than by count, so \
+             a parser that read two clauses and built them from one object fails here too",
         );
 
         for (label, sent) in [
             ("absent", json!({})),
             (
                 "declined as null",
-                json!({ Consent::WIRE_KEY: Value::Null }),
+                json!({ Consents::WIRE_KEY: Value::Null }),
             ),
         ] {
             assert_eq!(
@@ -1601,19 +1644,35 @@ mod tests {
         for (label, sent) in [
             (
                 "an empty question needle",
-                json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: "", Consent::ANSWER_KEY: "Yes" } }),
+                json!({ Consents::WIRE_KEY: [clause("", "Yes")] }),
             ),
             (
                 "an empty option needle",
-                json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: asked, Consent::ANSWER_KEY: "" } }),
+                json!({ Consents::WIRE_KEY: [clause(asked, "")] }),
             ),
             (
                 "no option needle at all",
-                json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: asked } }),
+                json!({ Consents::WIRE_KEY: [{ Consent::ASKED_KEY: asked }] }),
             ),
             (
-                "a bare string where the object goes",
-                json!({ Consent::WIRE_KEY: "Yes" }),
+                "a bare string where the list goes",
+                json!({ Consents::WIRE_KEY: "Yes" }),
+            ),
+            (
+                "an EMPTY list, which is not a second spelling of the default",
+                json!({ Consents::WIRE_KEY: [] }),
+            ),
+            (
+                "a bare string INSIDE the list",
+                json!({ Consents::WIRE_KEY: ["Yes"] }),
+            ),
+            (
+                "⚠⚠⚠ the PRE-BUMP object a version-28 client sends",
+                json!({ Consents::WIRE_KEY: clause(asked, "Yes") }),
+            ),
+            (
+                "one good clause beside a malformed one",
+                json!({ Consents::WIRE_KEY: [clause(asked, "Yes"), clause("", "Yes")] }),
             ),
         ] {
             assert!(
@@ -2216,14 +2275,17 @@ mod tests {
                 crate::wire::PLUGINS_GRAMMAR
             )
             .count_or_panic(),
-            29,
-            "one per nested field of every form: THREE guardrail fields on each of the FIVE run \
-             forms, since a run is bounded in steps, in spend and in time, PLUS the readiness \
-             barrier's `match` and `marker` on each of the three that inject, PLUS the consent's \
-             `asked` and `answer` on FOUR — those three and the `answer` form, which is the \
-             consent with no loop around it. ⚠ The consent's two names were CHOSEN so this holds: \
-             `done_when`'s first draft copied `ready_when`'s `match` and collided with it on \
-             exactly this gate",
+            21,
+            "one per FLATTENED nested field of every form: THREE guardrail fields on each of the \
+             FIVE run forms, since a run is bounded in steps, in spend and in time, PLUS the \
+             readiness barrier's `match` and `marker` on each of the three that inject. \
+             ⚠⚠ THE CONSENT'S `asked`/`answer` ARE NOT COUNTED, and the drop of eight is R370's \
+             design rather than a lost check: `may_answer` is a LIST of clauses now, and a list is \
+             the one nested shape that cannot be flattened — N loose `asked`s beside N loose \
+             `answer`s cannot say which pairs with which — so both flattening mouths offer it \
+             whole. Its fields are never flags, so there is nothing for them to collide with. \
+             ⚠ What DOES still run is the mirror: `may_answer` is a top-level flag now, and a \
+             field of another nest sharing that name is caught here",
         );
     }
 

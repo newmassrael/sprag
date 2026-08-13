@@ -14,7 +14,7 @@ use sprag_terminal::PaneId;
 #[cfg(test)]
 use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
-use crate::consent::Consent;
+use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
@@ -52,8 +52,8 @@ pub struct OrchestrationSpec {
     /// ⚠ This is the loop that MEASURED the failure the contract is about: a peer that blocked
     /// after the first step was typed at three more times, each stimulus landing on a menu as a
     /// SELECTION, and the run reported `Exhausted(Iterations)`. See
-    /// [`Consent`].
-    pub may_answer: Option<Consent>,
+    /// [`Consents`].
+    pub may_answer: Option<Consents>,
 }
 
 /// A fixed-stimulus drive plugin over one pane.
@@ -1361,5 +1361,142 @@ mod tests {
              {} turns says the floor is missing",
             outcome.iterations,
         );
+    }
+
+    /// ⚠⚠⚠ **ONE TURN ASKS MORE THAN ONE QUESTION, AND A RUN MAY BE GIVEN CONSENT TO ALL OF THEM.**
+    ///
+    /// The measurement this gate was written for: an agent turn that runs a command and then edits
+    /// a file asks *"Do you want to proceed?"* and then *"Do you want to make this edit?"* — two
+    /// questions, in the agent's own different words. With a consent that can name only ONE of
+    /// them, an unattended run answers the first and stops at the second under
+    /// [`Refusal::OtherQuestion`](crate::consent::Refusal::OtherQuestion) — correct, honest, and
+    /// still a run that a person has to come back to, which is the case the whole contract exists
+    /// to serve.
+    ///
+    /// So the contract takes a LIST, and this drives one: both questions are answered, the peer
+    /// finishes its turn, and the run converges on the sentinel it prints.
+    ///
+    /// ⚠ **THE PANE IS THE WITNESS, not the tally.** `TURN COMPLETE` carries what the peer took on
+    /// each question and which byte took it — so this asserts the run chose `1` on both and never
+    /// touched the two options that mean *stop asking me* and *no*. A gate reading only
+    /// `answered: 2` would pass for a run that approved the wrong thing twice.
+    ///
+    /// ⚠ REVERT-PROOF: give the run only the first clause and it ends `blocked` after ONE answer.
+    #[test]
+    fn one_run_answers_every_question_of_a_turn_it_was_consented_to() {
+        let (access, pane) = crate::testing::two_question_peer();
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "carry on".to_string(),
+                sentinel: Some("TURN COMPLETE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: Consents::of(vec![
+                    crate::consent::Consent::parse(
+                        "Do you want to proceed?".to_string(),
+                        "Yes".to_string(),
+                    )
+                    .expect("two needles"),
+                    crate::consent::Consent::parse(
+                        "Do you want to make this edit?".to_string(),
+                        "Yes".to_string(),
+                    )
+                    .expect("two needles"),
+                ]),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 8,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⚠⚠⚠ the turn asked twice and the caller had decided about both: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.answered, 2,
+            "⚠⚠ BOTH questions, and the tally is what a reader of a long run has instead of a \
+             journal that reaches back that far: {outcome:?}",
+        );
+        let screen = crate::testing::screen_showing(&access, pane, "TURN COMPLETE");
+        assert!(
+            screen.contains("TOOK-1-1-") && screen.contains("TOOK-2-1-"),
+            "⚠⚠⚠ THE PEER SAYS WHAT IT TOOK, and it must be option 1 on BOTH questions — a run \
+             that answered `Yes, and do not ask again` or `No` would report the same tally: \
+             {screen:?}",
+        );
+        assert!(
+            !screen.contains("SAW-"),
+            "⚠⚠ AND NOT ONE KEY THE DIALOGS IGNORED. Every byte this run sent was one the peer \
+             acted on, which is what `Taken` is about: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A QUESTION NO CLAUSE IS ABOUT STILL STOPS THE RUN** — the arm that must not move when
+    /// the contract learns to hold several clauses.
+    ///
+    /// The control for the gate above, and the more important of the two. A list is a widening, and
+    /// every widening in this contract is in the direction of answering something the caller did
+    /// not picture — so the run given consent to the FIRST question only must answer exactly that
+    /// one and hand the second to a person, with the reason that says which.
+    #[test]
+    fn a_second_question_no_clause_covers_still_ends_the_run() {
+        let (access, pane) = crate::testing::two_question_peer();
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "carry on".to_string(),
+                sentinel: Some("TURN COMPLETE".to_string()),
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: Consents::of(vec![
+                    crate::consent::Consent::parse(
+                        "Do you want to proceed?".to_string(),
+                        "Yes".to_string(),
+                    )
+                    .expect("two needles"),
+                ]),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 8,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            },
+        );
+        let OutcomeState::Blocked(Some(unanswered)) = &outcome.state else {
+            panic!(
+                "⚠⚠⚠ the second question is one the caller never wrote a clause about, and a run \
+                 that answered it anyway is the defect this contract exists to make \
+                 unrepresentable: {outcome:?}",
+            );
+        };
+        assert_eq!(
+            unanswered.why(),
+            crate::consent::Refusal::OtherQuestion,
+            "and the reason is the one the caller can act on — a clause is missing, not wrong",
+        );
+        assert_eq!(
+            outcome.answered, 1,
+            "the FIRST question was covered and answered: {outcome:?}",
+        );
+        assert!(
+            unanswered
+                .question()
+                .is_some_and(|asked| asked.asked.join(" ").contains("make this edit")),
+            "and the question that stopped it comes back, in the agent's own words: {unanswered:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 }

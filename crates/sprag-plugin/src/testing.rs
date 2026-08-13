@@ -317,27 +317,111 @@ fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
     (access, pane)
 }
 
-/// A pane running [`menu_peer`], already showing its menu.
-pub(crate) fn asking_peer(kind: &str) -> (WorkspacePaneAccess, PaneId) {
-    let (access, pane) = peer_running(menu_peer(kind));
-    // The menu must be UP before anything asks the barrier, or the gate is about a pane that
-    // was never blocked.
+/// Wait (bounded) until the shipping parser reads a menu on `pane`, so nothing below is about a
+/// pane that was never blocked.
+fn awaiting_the_menu(access: &WorkspacePaneAccess, pane: PaneId) {
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(10)
-        && crate::readiness::peer_asking(&access, pane)
+        && crate::readiness::peer_asking(access, pane)
             .flatten()
             .is_none()
     {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        crate::readiness::peer_asking(&access, pane)
+        crate::readiness::peer_asking(access, pane)
             .flatten()
             .is_some(),
         "the fixture's peer must be showing a menu the shipping parser reads, or this gate is \
          about nothing: {:?}",
         access.pane_collapsed(pane),
     );
+}
+
+/// A pane running [`menu_peer`], already showing its menu.
+pub(crate) fn asking_peer(kind: &str) -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane) = peer_running(menu_peer(kind));
+    awaiting_the_menu(&access, pane);
+    (access, pane)
+}
+
+/// ONE TURN THAT ASKS TWICE — a peer that shows a permission dialog, and on being answered shows a
+/// SECOND, DIFFERENT one before it finishes.
+///
+/// # ⚠⚠⚠ Why the shape of a real turn needed its own peer
+///
+/// [`menu_peer`] asks ONE question and is done, which is the shape every answering gate was written
+/// against — and it is not the shape of an agent's turn. A `claude` turn that edits a file after
+/// running a command asks *"Bash command … Do you want to proceed?"* and then *"Edit file … Do you
+/// want to make this edit?"*: two questions, in the agent's own different words, inside one turn a
+/// caller left unattended.
+///
+/// A fixture that only ever asks once cannot tell a contract that covers a TURN from one that covers
+/// a QUESTION, so every gate over the single-question peer passes either way. This one makes the
+/// difference expressible.
+///
+/// ⚠ It behaves as `either` does — the digit selects outright AND Enter commits the marker — which
+/// is the measured behaviour of a real permission dialog and the kind that makes *"do not type a
+/// key you do not need"* a claim with consequences.
+///
+/// ⚠ The trail SURVIVES the clears: acting wipes the screen, so what was taken on the first
+/// question would be gone by the time the second is answered. `TURN COMPLETE` carries both, in
+/// order, with the byte that took each — so a gate reads which options a run actually chose rather
+/// than trusting the outcome's own tally.
+pub(crate) const TWO_QUESTION_TURN: &str = r#"
+stty -icanon -echo 2>/dev/null
+sel=1
+stage=1
+trail=''
+readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }
+draw() {
+  printf '\033[2J\033[H'
+  if [ "$stage" = 1 ]; then
+printf 'Bash command\r\n'
+printf 'Do you want to proceed?\r\n'
+  else
+printf 'Edit file src/main.rs\r\n'
+printf 'Do you want to make this edit?\r\n'
+  fi
+  i=1
+  for label in 'Yes' 'Yes, and do not ask again' 'No, and tell me what to do'; do
+if [ "$i" = "$sel" ]; then printf '\342\235\257 '; else printf '  '; fi
+printf '%s. %s\r\n' "$i" "$label"
+i=$((i+1))
+  done
+}
+took() {
+  trail="$trail TOOK-$stage-$sel-VIA-$1"
+  if [ "$stage" = 1 ]; then
+stage=2
+sel=1
+draw
+  else
+printf '\033[2J\033[H'
+printf 'TURN COMPLETE%s\r\n' "$trail"
+while :; do
+  e=$(readbyte)
+  [ -n "$e" ] || exit 0
+  printf 'EXTRA %s\r\n' "$e"
+done
+  fi
+}
+draw
+while :; do
+  k=$(readbyte)
+  [ -n "$k" ] || exit 0
+  case "$k" in
+49|50|51) sel=$((k-48)); took "$k" ;;
+13|10) took "$k" ;;
+*) trail="$trail SAW-$k" ;;
+  esac
+done
+"#;
+
+/// A pane running [`TWO_QUESTION_TURN`], already showing the FIRST of its two questions.
+pub(crate) fn two_question_peer() -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane) = peer_running(TWO_QUESTION_TURN.to_string());
+    awaiting_the_menu(&access, pane);
     (access, pane)
 }
 

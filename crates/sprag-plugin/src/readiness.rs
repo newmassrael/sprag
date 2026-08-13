@@ -42,7 +42,7 @@
 //!
 //! A barrier that only ever refuses would leave a run with one answer to a peer's question, and
 //! *"stop and fetch a person"* is the right answer only until somebody has decided in advance. So
-//! the caller's [`Consent`] lives here too, and the reason is the reason
+//! the caller's [`Consent`](crate::consent::Consent) lives here too, and the reason is the reason
 //! this module exists at all: **this is the one place all three injecting plugins pass through on
 //! their way to a keystroke.** A second door to a blocked pane — a plugin answering a dialog on its
 //! own — would be two readers of one question, which is the shape R344 spent a round on and R365
@@ -54,7 +54,7 @@ use sprag_detect::{AgentState, Choice, Question};
 use sprag_terminal::PaneId;
 
 use crate::access::{JobLeader, KeyStroke, PaneAccess, PaneDoing, PaneError};
-use crate::consent::{Answered, Consent, Refusal, Taken, Unanswered};
+use crate::consent::{Answered, Consents, Refusal, Taken, Unanswered};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// Whether the peer in `pane` has stopped to ASK, and what it is asking when this host can read it.
@@ -236,7 +236,7 @@ pub enum Reached {
     /// blocked after its first step typed the stimulus three more times and reported
     /// `Exhausted(Iterations)`.
     Asking(Unanswered),
-    /// **THE PEER ASKED AND THE RUN ANSWERED IT**, on a [`Consent`] the caller declared in advance.
+    /// **THE PEER ASKED AND THE RUN ANSWERED IT**, on a [`Consent`](crate::consent::Consent) the caller declared in advance.
     ///
     /// # ⚠⚠ This is not `Yes`, and the difference is the whole safety of it
     ///
@@ -511,7 +511,10 @@ pub struct Readiness {
     /// through on their way to a keystroke, and a second door to a blocked pane is the shape this
     /// crate keeps finding defects in. The consent is the only thing that may be typed at a peer
     /// that is asking, and it is typed here or nowhere.
-    consent: Option<Consent>,
+    ///
+    /// ⚠⚠ A LIST since R370, because one turn asks more than one question — see [`Consents`],
+    /// which owns what several clauses say about one dialog.
+    consent: Option<Consents>,
 }
 
 impl Readiness {
@@ -530,7 +533,7 @@ impl Readiness {
     pub fn new(
         when: Option<ReadyWhen>,
         within: Option<Duration>,
-        consent: Option<Consent>,
+        consent: Option<Consents>,
     ) -> Self {
         Self {
             seen: when.is_none(),
@@ -853,6 +856,7 @@ impl Readiness {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
+    use crate::consent::Consent;
     use crate::testing::{ENTER_BYTE, asking_peer, screen_showing};
     use sprag_terminal::{CommandBuilder, JobProcess, Workspace};
     use std::sync::{Arc, Mutex};
@@ -1565,14 +1569,20 @@ mod tests {
 
     /// A barrier with no readiness condition and the given consent — the shape every gate below
     /// wants, since what is under test is the ANSWERING contract and not the starting one.
-    fn answering(consent: Option<Consent>) -> Readiness {
+    fn answering(consent: Option<Consents>) -> Readiness {
         Readiness::new(None, Some(Duration::from_millis(200)), consent)
     }
 
-    /// A consent for the measured permission question, authorising the option carrying `answer`.
-    fn consent_to(answer: &str) -> Consent {
-        Consent::parse("Do you want to proceed?".to_string(), answer.to_string())
-            .expect("two needles")
+    /// A one-clause consent for the measured permission question, authorising the option carrying
+    /// `answer` — the shape every gate in this section is about, since what they measure is the
+    /// KEYSTROKE a single authorised option produces. What SEVERAL clauses say about one question
+    /// is `Consents::covers`'s own business and is gated there.
+    fn consent_to(answer: &str) -> Consents {
+        Consents::of(vec![
+            Consent::parse("Do you want to proceed?".to_string(), answer.to_string())
+                .expect("two needles"),
+        ])
+        .expect("a non-empty list")
     }
 
     /// ⚠⚠⚠ **A RUN GIVEN NO CONSENT STILL TYPES NOTHING** — the behaviour R365 shipped, held here
@@ -1866,8 +1876,10 @@ mod tests {
             ("delete the database?", "Yes", Refusal::OtherQuestion),
         ] {
             let (access, pane) = asking_peer("either");
-            let consent =
-                Consent::parse(asked.to_string(), answer.to_string()).expect("two needles");
+            let consent = Consents::of(vec![
+                Consent::parse(asked.to_string(), answer.to_string()).expect("two needles"),
+            ])
+            .expect("a non-empty list");
             let reached = answering(Some(consent))
                 .reached(&access, pane, &RunContext::uncancellable())
                 .expect("a refusal is not an error");
@@ -1885,6 +1897,55 @@ mod tests {
             );
             access.lifecycle().expect("lifecycle").close(pane);
         }
+    }
+
+    /// ⚠⚠⚠ **CONSENTS THAT DISAGREE TYPE NOTHING AT THE PANE**, driven at the one door a keystroke
+    /// can come out of.
+    ///
+    /// [`Consents::covers`](crate::consent::Consents::covers) decides the precedence and is gated
+    /// there over values; this is the claim that matters — that the decision reaches the PANE as
+    /// silence. The caller has authorised `Yes` for a question about proceeding and `No, and tell`
+    /// for one about `rm -rf`, and the dialog on screen carries both phrases: a run that resolved
+    /// that would be applying a precedence rule nobody wrote down, and it would be applying it to
+    /// two options that mean opposite things.
+    ///
+    /// ⚠ THE PANE IS THE WITNESS, not the refusal word. This peer prints `SAW <byte>` for any key
+    /// it ignores and `TOOK` when it acts, so a run that typed anything at all is visible even if
+    /// the dialog swallowed it.
+    #[test]
+    fn consents_that_disagree_about_the_question_on_screen_leave_it_untouched() {
+        let (access, pane) = asking_peer("either");
+        let disagreeing = Consents::of(vec![
+            Consent::parse("proceed".to_string(), "Yes".to_string()).expect("two needles"),
+            Consent::parse("Bash command".to_string(), "No, and tell".to_string())
+                .expect("two needles"),
+        ])
+        .expect("a non-empty list");
+        let reached = answering(Some(disagreeing))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a refusal is not an error");
+        let Reached::Asking(unanswered) = reached else {
+            panic!("⚠⚠⚠ two clauses naming opposite options must answer NEITHER: {reached:?}");
+        };
+        assert_eq!(
+            unanswered.why(),
+            Refusal::Contradicted,
+            "and the reason is the one the caller can act on — narrow one of their OWN rules, \
+             which is a different remedy from every other arm here",
+        );
+        assert_eq!(unanswered.bytes(), 0);
+        assert!(
+            unanswered.why().describe().contains("caller"),
+            "the remedy names whose decision it is: {}",
+            unanswered.why().describe(),
+        );
+        std::thread::sleep(Duration::from_millis(80));
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !screen.contains("TOOK") && !screen.contains("SAW"),
+            "⚠⚠⚠ NOT ONE KEY reaches a dialog the caller's own consents disagree about: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠ **A BLOCKED PANE WHOSE QUESTION THIS HOST CANNOT READ NOW SAYS WHAT TO DO ABOUT IT.**

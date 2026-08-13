@@ -679,7 +679,41 @@ impl ScopeAsk {
 ///   ⚠ The pane's object carries NO `why` beside it, unlike a run's. A run may be given a consent
 ///   and refuse to use it, and owes a reason; a pane was given none and refuses nothing. Inventing
 ///   the key here to make the two objects match would publish a refusal nobody made.
-pub const WIRE_PROTOCOL: u32 = 28;
+/// * **29** — a run's consent is a LIST, because ONE TURN ASKS MORE THAN ONE QUESTION. `may_answer`
+///   changed shape from `{"asked": …, "answer": …}` to `[{"asked": …, "answer": …}, …]` on all five
+///   forms that take it, and a seventh `why` word (`contradicted`) says what a list can do that a
+///   single clause could not (R370).
+///
+///   ⚠⚠ **A VALUE THAT CHANGED SHAPE** — this wire's second bump cause, and the first time it has
+///   been earned by an ARGUMENT rather than by an answer. Neither pin can see it: the address is
+///   the same, the key is the same, and the surface pin catches an added name rather than a
+///   re-typed one. What moves is what the value IS, in both directions — a version-28 client's
+///   object reaches a version-29 daemon as `TypeMismatch`, and a version-29 client's array reaches
+///   a version-28 daemon as `TypeMismatch`. Both are the safe direction: the call is refused at the
+///   door rather than half-read, so neither side can answer a dialog under a consent the other one
+///   spelled differently, which is the only outcome that would have been worse than a bump.
+///
+///   What earned it is what one clause could not do. Measured on a turn shaped like a real one — an
+///   agent that runs a command and then edits a file asks *"Bash command … Do you want to proceed?"*
+///   and then *"Edit file … Do you want to make this edit?"* — an unattended run answered the first
+///   and stopped at the second reporting `other_question`. Correct, honest, and still a run a
+///   person has to come back to, which is the case this contract exists to serve at all. A caller
+///   leaving a run unattended has to be able to write down every decision they have already made,
+///   and no number of single-clause runs adds up to that: the clauses have to be weighed against
+///   ONE question, together.
+///
+///   ⚠ **AND THE WIDENING BROUGHT ITS OWN REFUSAL, which is why the `why` vocabulary moves too.**
+///   Two clauses about one question naming DIFFERENT options is a caller who has written a broad
+///   rule and a narrow exception, and nothing on this wire says which outranks which. Answering
+///   either would be a precedence policy nobody chose, so it is `contradicted`, nothing is typed
+///   and the run stops — version 26's argument about a closed set a reader decodes whole, applied
+///   to the vocabulary that says why a peer was left for a person.
+///
+///   ⚠ **THE DEFAULT STILL DOES NOT MOVE.** A run with no `may_answer` answers nothing and reports
+///   `blocked`, exactly as versions 26, 27 and 28 do. And an EMPTY list is malformed rather than a
+///   second spelling of that default: `[]` arriving by accident — a client that built its clause
+///   list from a filter that matched nothing — is precisely the caller who wants telling.
+pub const WIRE_PROTOCOL: u32 = 29;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
