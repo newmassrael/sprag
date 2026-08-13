@@ -88,13 +88,46 @@ impl Orchestrator {
         }
     }
 
-    /// Wait (bounded, cancellable) for the PEER to answer — a row whose damage
-    /// `generation` has advanced past the pre-stimulus baseline AND that carries
-    /// something other than the stimulus this step just typed.
+    /// Wait (bounded, cancellable) for THE ANSWER THIS STEP ASKED FOR.
+    ///
+    /// # ⚠⚠⚠ Why the wait is keyed on the SENTINEL and not on "the peer said something"
+    ///
+    /// A run that named a sentinel has said what it is waiting for. Ending the wait on the first
+    /// row the peer produces asks a different question — *has it begun* rather than *has it
+    /// finished* — and the two differ for every peer that says anything before its answer: an AI
+    /// CLI painting a spinner or a tool-use line, a build printing what it is compiling, a shell
+    /// reporting a job. The step then judged the sentinel against a screen that had not reached it,
+    /// read `continue`, and typed the stimulus AGAIN at a peer that was part-way through answering
+    /// the first one. Measured: a peer that says one line of its own before replying was prompted
+    /// TWICE for one question, and the second prompt landed while it was still answering.
+    ///
+    /// ⚠⚠ Which is [`reaction`](Self::reaction)'s own lesson one turn further on. That one stopped
+    /// the terminal's ECHO from ending the wait; this one stops the peer's PREAMBLE from ending it.
+    /// Both are the same mistake — treating movement as an answer — and the fixtures that came
+    /// first hid it, because a peer that replies in a single write has no preamble to see.
+    ///
+    /// ⚠ WITHOUT a sentinel there is nothing named, so the question really is *did the peer
+    /// produce a row of its own* and the wait is unchanged.
+    ///
+    /// ⚠ It still FAILS SAFE, and more of the time than before: a sentinel that never arrives costs
+    /// the rest of the step's wait and no more, because the verdict is judged off the collapsed
+    /// screen after the wait either way. A convergence can be reached late; it can never be lost.
     fn observe(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
-        poll_until(run, OBSERVE_TIMEOUT, || {
-            self.reaction(panes) == Reaction::Answered
-        })
+        poll_until(run, OBSERVE_TIMEOUT, || self.arrived(panes))
+    }
+
+    /// Whether what this step is waiting for is on the pane — see [`observe`](Self::observe).
+    ///
+    /// ⚠ The sentinel is read off the COLLAPSED screen, which is the same text and the same
+    /// `contains` the verdict below judges with. Keying the wait on anything the verdict does not
+    /// read would let a step end its wait on evidence its own judgement then disagreed with.
+    fn arrived(&self, panes: &dyn PaneAccess) -> bool {
+        let Some(sentinel) = self.spec.sentinel.as_deref() else {
+            return self.reaction(panes) == Reaction::Answered;
+        };
+        panes
+            .pane_collapsed(self.pane)
+            .is_some_and(|seen| seen.contains(sentinel))
     }
 
     /// What the pane has done since this step's baseline.
@@ -1336,6 +1369,80 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **A PEER THAT SAYS SOMETHING BEFORE IT ANSWERS IS STILL ANSWERING** — the sibling of the
+    /// gate above, and the case that separates *"wait past your own echo"* from *"wait for what you
+    /// named"*.
+    ///
+    /// The gate above taught the wait to discount the terminal's echo. What it left standing is
+    /// that ANY other change ends the step: the wait's predicate is *did the peer produce a row*,
+    /// while the run's question is *did the thing I named appear*. A peer that prints one line of
+    /// its own before its answer therefore ends the step at that line, the sentinel is judged
+    /// against a screen it has not reached yet, and the loop takes another turn — typing the same
+    /// stimulus at a peer that is part-way through answering the first one.
+    ///
+    /// ⚠⚠⚠ **AND EVERY REAL PEER THIS PRODUCT EXISTS TO DRIVE DOES EXACTLY THAT.** An AI CLI paints
+    /// a spinner, a tool-use line, a token count — all of it before the answer. So does a build, a
+    /// test run, a shell that reports a job. The fixtures that came first replied in ONE write, and
+    /// that is the only reason the defect had never been seen.
+    ///
+    /// The peer here counts the prompts it is given and stamps every line with the number, so the
+    /// witness is not the tally but the pane: `WORKING 2` is a second prompt this run had no reason
+    /// to send.
+    #[test]
+    fn a_turn_waits_for_the_sentinel_it_named_and_not_for_the_first_thing_that_moves() {
+        // Says `WORKING <n>` the instant it is prompted, thinks, and only then answers. Both lines
+        // are the PEER's, so neither is an echo and the gate above cannot see this at all.
+        let (access, pane) = sh_access(
+            "n=0; while read line; do n=$((n+1)); echo \"WORKING $n\"; sleep 0.25; \
+             echo \"PEER-REPLIED $n\"; done",
+            40,
+            8,
+        );
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("PEER-REPLIED".to_string()),
+                ready_when: None,
+                ready_within: None,
+                may_answer: None,
+                attended: Attended::NoOne,
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: None,
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the peer answers well inside one step's observe timeout: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.iterations, 1,
+            "⚠⚠⚠ and it took ONE turn. A second turn is the run typing at a peer that had already \
+             begun answering the first — the step ended on the peer's `WORKING` line, judged the \
+             sentinel against a screen that had not reached it, and prompted again: {outcome:?}",
+        );
+        // ⚠⚠⚠ THE PANE IS THE WITNESS, and it is read AFTER the peer has had the time a second
+        // answer would need. The run ends the moment it sees the sentinel, so a second stimulus
+        // already queued in the pty would land after the outcome was decided — a tally read at the
+        // run's end cannot see it and would call this gate green while the peer worked twice.
+        std::thread::sleep(Duration::from_millis(600));
+        let witness = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !witness.contains("WORKING 2"),
+            "⚠⚠⚠ THE PEER WAS PROMPTED TWICE FOR ONE QUESTION, and the second prompt reached it \
+             while it was still answering the first. For an agent session that is one wasted turn \
+             of a bounded budget and one interrupted answer: {witness:?}",
+        );
+    }
+
     /// ⚠⚠ **A PANE THAT CANNOT REACT PUTS A FLOOR UNDER EVERY STEP**, which is the only thing that
     /// lets a gate ask WHICH ceiling stopped a run without racing the machine it runs on.
     ///
@@ -1562,6 +1669,28 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// The budget the INTERRUPTION PAIR below is driven under — one number, because the two gates
+    /// are one claim read from both sides and a pair kept in step by hand drifts.
+    ///
+    /// # ⚠⚠⚠ Why it is far above where the run is expected to stop
+    ///
+    /// It was FOUR, and four was also roughly the step a run stops at when a person types into it.
+    /// So `iterations < 4` asked *"did it stop before its budget"* of a run whose stop and whose
+    /// budget were the same step, and the answer depended on whether the person's thread won a race
+    /// against the run's step cadence. It won on Linux and lost on macOS, where the gate went red
+    /// **about a product that had behaved correctly**: the run stopped at the FIRST barrier after
+    /// the person's key — that barrier was just the fourth, so `Bytes(15)` says it typed three
+    /// times and stopped, exactly as the contract requires.
+    ///
+    /// ⚠⚠⚠ **A CONTROL WITH NO MARGIN IS NOT A CONTROL.** What the assertion has to separate is *it
+    /// stopped because somebody took the pane* from *it stopped because it ran out of turns*, and
+    /// those two are only distinguishable when the second is a long way off. The distance is the
+    /// whole instrument; the number itself is arbitrary.
+    ///
+    /// ⚠ The handless control pays for all forty and asserts it reached them, which is what makes
+    /// the other half mean something — the same fixture, the same person, one capability withheld.
+    const INTERRUPTION_BUDGET: u32 = 40;
+
     /// ⚠⚠⚠ **A HOST THAT CANNOT SAY WHOSE KEYSTROKES THESE WERE GOES ON DRIVING — THE ABSENCE IS
     /// NOT READ AS A PERSON.**
     ///
@@ -1611,7 +1740,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: 4,
+                    max_iterations: INTERRUPTION_BUDGET,
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -1629,9 +1758,10 @@ mod tests {
              every host that has not implemented it: {outcome:?}",
         );
         assert_eq!(
-            outcome.iterations, 4,
-            "⚠⚠ and it drove all four, so the claim above is about driving rather than about \
-             which word a stopped run chose: {outcome:?}",
+            outcome.iterations, INTERRUPTION_BUDGET,
+            "⚠⚠ and it drove every one of them, so the claim above is about driving rather than \
+             about which word a stopped run chose — and it is what puts the DISTANCE under the \
+             sibling's `stopped early`: {outcome:?}",
         );
         access.0.lifecycle().expect("lifecycle").close(pane);
     }
@@ -1670,7 +1800,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: 4,
+                    max_iterations: INTERRUPTION_BUDGET,
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -1699,11 +1829,18 @@ mod tests {
 
         // ⚠⚠⚠ THE CONTROL THAT MAKES THE ASSERTION ABOVE MEAN SOMETHING: the run STOPPED EARLY. A
         // run that reached its ceiling and merely relabelled the outcome would satisfy everything
-        // above it, and would still have typed over the person four times.
+        // above it, and would still have typed over the person every turn it had.
+        //
+        // ⚠⚠⚠ AND THE DISTANCE IS THE INSTRUMENT — see [`INTERRUPTION_BUDGET`]. This asked
+        // `< 4` of a run expected to stop at about the fourth step, which is a control whose
+        // margin was zero: it held while the person's thread won a race against the run's step
+        // cadence, and macOS is where it lost. The sibling above spends the whole budget, so
+        // stopping this far short of it cannot be the budget.
         assert!(
-            outcome.iterations < 4,
-            "⚠⚠⚠ the run must have stopped BEFORE its ceiling — it ran {} of 4 iterations, which \
-             means it went on typing and only the word changed: {outcome:?}",
+            outcome.iterations < INTERRUPTION_BUDGET,
+            "⚠⚠⚠ the run must have stopped BEFORE its ceiling — it ran {} of \
+             {INTERRUPTION_BUDGET} iterations, which means it went on typing and only the word \
+             changed: {outcome:?}",
             outcome.iterations,
         );
         // ⚠⚠ WAIT FOR THE PERSON'S OWN BYTE TO BE ON THE SCREEN BEFORE READING THE WITNESS. The
