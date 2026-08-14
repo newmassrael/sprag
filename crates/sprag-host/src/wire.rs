@@ -1430,6 +1430,14 @@ impl PluginGrammar {
         // ⚠⚠⚠ THE OTHER AUTHORITY, and the only form that has it: `screen_rules` are the loop
         // DOCUMENT's, so they exist nowhere else. See [`SCREEN_RULES`](Self::SCREEN_RULES) for why
         // a consent cannot be widened into one.
+        //
+        // ⚠⚠⚠ AND ARMING ONE NOW MEANS A RULE THAT FIRES **REPLACES THE AGENT'S SESSION**, which a
+        // caller has to know because nothing else on this form implies it. An instruction that was
+        // said once lived exactly as long as that agent's context — measured as ONE delivery against
+        // SIX re-issues of the milestone it overrode — so making it stick means composing it into the
+        // prompts, and the prompts are composed when a session STARTS. The loop therefore reflects at
+        // the very next judgement and restarts, once per distinct instruction. ⚠ It happens whatever
+        // `reflect_every` says: that argument is a BUDGET, and this is a correctness edge.
         Self::SCREEN_RULES,
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
