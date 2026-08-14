@@ -77,7 +77,7 @@ pub use driver::{
     StepRecord, Stopped,
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
-pub use outer::{AiLoopEvent, AiLoopState, Authored, OuterLoop, Pumped};
+pub use outer::{AiLoopEvent, AiLoopState, Authored, Brief, Briefed, OuterLoop, Pumped};
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Cost, Plugin, Step, Verdict};
 pub use readiness::{

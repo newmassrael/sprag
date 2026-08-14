@@ -94,6 +94,13 @@ mod tests {
              outside, or a driver cannot report having acted at all: {ingress:?}",
         );
         assert!(
+            ingress.contains(&AiLoopEvent::Brief),
+            "⚠⚠ and so must the one thing a caller TELLS the machine rather than reports to it. \
+             `brief` is how somebody who did not edit this file says what the run is for; a \
+             machine that does not accept it from outside is one whose template nothing can fill \
+             in, which is exactly the state this round found it in: {ingress:?}",
+        );
+        assert!(
             !ingress.contains(&AiLoopEvent::PromptStart),
             "⚠⚠ and the supposed INSTRUCTION is not an ingress event, which is the machine saying \
              the same thing from the other side: nobody outside sends `prompt.start`, so nothing \
@@ -325,13 +332,17 @@ mod tests {
     ///
     /// * `north_star` — a bare literal. The control: if this one fails, the gate is
     ///   not reading the datamodel at all and nothing below means anything.
-    /// * `start_prompt` — a COMPOSED string. What `priming` sends.
+    /// * `start_prompt` — a COMPOSED string, and **as of this round the composition
+    ///   is an `<assign>` in `priming`'s `onentry` rather than a `<data expr>`**. That
+    ///   is a shape this gate had never driven, and the document's own caveat says a
+    ///   shape not driven here is a shape nobody has measured — so the walk to
+    ///   `priming` below is the point, not a detour around it.
     /// * `screen_rules` — a LIST OF OBJECTS, the shape debt 60's `screening` is
     ///   built out of, and the only one whose syntax the codegen rewrote.
     /// * `max_turns` — a scalar, which the outer `judging` budget compares against.
     #[test]
     fn the_whole_authored_surface_crosses_into_the_datamodel() {
-        let (_engine, lua, session) = started();
+        let (mut engine, lua, session) = started();
 
         // ── the control: a bare literal crosses unharmed ──
         let north_star = lua.get_variable(&session, "north_star");
@@ -341,8 +352,22 @@ mod tests {
              literal must reach the datamodel. Got {north_star:?}",
         );
 
-        // ── a COMPOSED string: the one reading the generated source said was
-        //    broken, and the reason this gate exists ──
+        // ── the SECOND control, and it is what makes the composition below a claim
+        //    about `priming` rather than about `<data>`: nothing is composed yet.
+        let unprimed = lua.get_variable(&session, "start_prompt");
+        assert!(
+            matches!(&unprimed, Ok(ScriptValue::String(text)) if text.is_empty()),
+            "⚠ a machine that has not primed must hold no composed prompt, or the walk \
+             below proves nothing about where the composition happens: {unprimed:?}",
+        );
+
+        // ── a COMPOSED string, built by an `<assign expr>` on the way into `priming` ──
+        engine.process_event(AiLoopEvent::Start);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Priming,
+            "the control: the composition runs on entry to `priming`",
+        );
         let start_prompt = lua.get_variable(&session, "start_prompt");
         let Ok(ScriptValue::String(start_prompt)) = &start_prompt else {
             panic!("the prompt `priming` sends must be a composed string: {start_prompt:?}");
@@ -355,6 +380,15 @@ mod tests {
             start_prompt.contains("Report what you did and what is left."),
             "and every clause of it must be there, not just the first: \
              {start_prompt:?}",
+        );
+        // ⚠⚠ AND ONE `<assign>` MUST HAVE SEEN THE ONE BEFORE IT. `done_instruction` is
+        // composed first and the two working prompts end with it, so executable content
+        // running out of document order would append the PREVIOUS entry's instruction —
+        // correct for every entry but the first, and silent.
+        assert!(
+            start_prompt.trim_end().ends_with("MILESTONE REACHED"),
+            "⚠⚠ `done_instruction` must have been composed BEFORE the prompt that ends \
+             with it: {start_prompt:?}",
         );
 
         // ── a LIST OF OBJECTS: the shape `screening` reads its rules out of, and
@@ -394,6 +428,90 @@ mod tests {
         assert!(
             matches!(&max_turns, Ok(ScriptValue::Int(40))),
             "the authored budget must cross as a number: {max_turns:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **WHICH SIDE OF THE DATAMODEL MANGLES A NON-ASCII STRING** — asked of the engine,
+    /// because the driver's brief came back mojibake and a diagnosis read off either end would be
+    /// a guess about the other.
+    ///
+    /// `OuterLoop::brief` sends a person's prose in as event data and reads it back out. An em
+    /// dash went in and `â\u{80}\u{94}` came out: the three UTF-8 bytes of U+2014, each widened
+    /// into its own `char`. That is a byte string being turned into a Rust `String` one byte at a
+    /// time, and it can happen at either of two seams — the JSON payload becoming `_event.data`,
+    /// or [`IScriptEngine::get_variable`] converting a Lua value back.
+    ///
+    /// This separates them, and the separation matters because only one of the two is reachable
+    /// from a document. **`screen_rules` in the shipped template is Korean**, so this is not a
+    /// hypothetical about a caller: it is about text `screening` will read the day it is built.
+    ///
+    /// ⚠ Whatever this reports is a fact about the PINNED SCE rev and belongs upstream rather than
+    /// in a workaround here — see the workspace manifest's SCE block.
+    #[test]
+    fn a_non_ascii_string_says_which_seam_it_is_mangled_at() {
+        let (_engine, lua, session) = started();
+
+        // ── seam one: a literal in the DOCUMENT, initialised by `<data expr>` ──
+        //
+        // The template's own third rule, which is Korean prose a person wrote into this file.
+        let rules = lua.get_variable(&session, "screen_rules");
+        let Ok(ScriptValue::Array(rules)) = &rules else {
+            panic!("the control: the rules must cross as a list at all: {rules:?}");
+        };
+        let ScriptValue::Object(first) = &rules[0] else {
+            panic!("the control: a rule is an object: {:?}", rules[0]);
+        };
+        let Some(ScriptValue::String(text)) = first.get("text") else {
+            panic!("the control: a rule carries a reply text: {first:?}");
+        };
+        assert!(
+            text.starts_with("비용 무시하고"),
+            "⚠⚠⚠ SEAM ONE: a non-ASCII literal AUTHORED IN THE DOCUMENT does not survive the \
+             datamodel. Every `screening` rule this template ships is Korean, so the day that \
+             state is built it would send an agent bytes nobody wrote. Got {text:?}",
+        );
+
+        // ── seam two: a string arriving as EVENT DATA, assigned by a transition ──
+        //
+        // `idle`'s `brief` transition is the one place this document takes a string from outside,
+        // and it is the path `OuterLoop::brief` uses. Same engine, same session, same variable
+        // kind — the ONLY difference from seam one is how the value got there.
+        let mut engine = _engine;
+        let sent = "북극성 — ship it";
+        engine.raise_external(
+            AiLoopEvent::Brief,
+            &serde_json::json!({
+                "north_star": sent,
+                "milestone": "m",
+                "reference": "r",
+                "max_turns": 3,
+                "reflect_every": 9,
+            })
+            .to_string(),
+            "",
+        );
+        engine.step();
+        let held = lua.get_variable(&session, "north_star");
+        let Ok(ScriptValue::String(held)) = &held else {
+            panic!("the control: the brief must have assigned something at all: {held:?}");
+        };
+        assert_ne!(
+            held, sent,
+            "⚠⚠⚠ UPSTREAM LANDED IT: a non-ASCII string now survives EVENT DATA. Delete this half, \
+             widen `outer`'s brief gates back to prose in a person's own language, and drop \
+             `a_brief_the_engine_cannot_carry_is_refused_rather_than_delivered`",
+        );
+        // ⚠ THE SHAPE OF THE DAMAGE, DERIVED rather than pasted, so a DIFFERENT breakage cannot be
+        // read as this one. `json_to_lua_table` walks the payload with `bytes[i] as char`, which is
+        // a Latin-1 decode of UTF-8 — every byte becomes the char of the same number and is then
+        // re-encoded. Reproducing that here is what makes the diagnosis a claim rather than a
+        // guess: if the mangling is ever something else, this stops matching.
+        let latin1_widened: String = sent.bytes().map(char::from).collect();
+        assert_eq!(
+            held, &latin1_widened,
+            "the damage must be exactly a Latin-1 widening of the UTF-8 bytes — that is the \
+             mechanism at `sce-rust-lua`'s `json_to_lua_table`, and anything else is a different \
+             defect wearing its symptom",
         );
     }
 }

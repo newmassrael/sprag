@@ -130,18 +130,105 @@ impl Authored {
     ///
     /// [`None`] for a datamodel that does not hold them as strings, which is a machine this driver
     /// cannot drive — and saying so here is what stops a run being started against one.
+    ///
+    /// ⚠⚠ IT ASKS WHETHER THEY ARE THERE, NOT WHETHER THEY SAY ANYTHING. Three of the four are
+    /// composed by `priming`'s `onentry`, so a machine still sitting in `idle` holds them empty and
+    /// that is correct rather than broken — see [`OuterLoop::authored`].
     fn read(script: &Arc<dyn IScriptEngine>, session: &str) -> Option<Self> {
         let text = |name: &str| match script.get_variable(session, name) {
             Ok(ScriptValue::String(value)) => Some(value),
             _ => None,
         };
         Some(Self {
-            start: text("start_prompt")?,
-            turn: text("turn_prompt")?,
-            end: text("end_prompt")?,
-            done_marker: text("done_marker")?,
+            start: text(Owed::Start.variable())?,
+            turn: text(Owed::Turn.variable())?,
+            end: text(Owed::End.variable())?,
+            done_marker: text(DONE_MARKER)?,
         })
     }
+}
+
+/// The datamodel variable holding the word the agent says when it is finished.
+const DONE_MARKER: &str = "done_marker";
+
+/// **WHAT THIS PARTICULAR LOOP IS FOR** — the template's parts, supplied by whoever starts the run.
+///
+/// # ⚠⚠⚠ Why this type exists, measured
+///
+/// `ai_loop.scxml` ships `(edit me)` placeholders and says *"a GUI fills these in"*. No GUI did,
+/// and neither did anything else: the only prompt any caller could make the loop send was
+///
+/// ```text
+/// North star: (edit me) the outcome this loop exists to reach
+/// Milestone: (edit me) the next checkpoint on the way there
+/// Reference: (edit me) paths, URLs or repos to consult
+/// ```
+///
+/// — three of the five clauses a live agent reads. It could not be retro-fitted from out here
+/// either: the prompts were COMPOSED from these parts at `<datamodel>` init, so writing a part
+/// after `initialize()` left the composed prompt stale, and the session id those writes would need
+/// is not on this surface at all.
+///
+/// So the parts travel as the machine's own `brief` event and the document composes from them in
+/// `priming` — see [`OuterLoop::brief`].
+///
+/// # ⚠ What it deliberately does NOT carry
+///
+/// `screen_rules`, `screen_permissions` and `model` are authored above the same line and are not
+/// here. Each belongs to a state this driver does not serve yet — `screening` for the first two
+/// (two owner decisions in front of it), the session-replace lifecycle for the third — and a door
+/// built for a consumer that does not exist is the extension point this workspace already recorded
+/// as an anti-pattern. They are registered as owed, not forgotten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Brief {
+    /// Where this loop is ultimately going. Never rewritten by reflection.
+    pub north_star: String,
+    /// The step being worked on now. Reflection may rewrite this.
+    pub milestone: String,
+    /// Prior art the agent should read before deciding anything.
+    pub reference: String,
+    /// How many turns the run may take before the document calls it `exhausted`.
+    pub max_turns: i64,
+    /// How often the loop stops to improve its own setup.
+    pub reflect_every: i64,
+}
+
+/// **WHAT THE MACHINE DID WITH A [`Brief`]** — see [`OuterLoop::brief`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum Briefed {
+    /// The machine holds every part, read back out of its own datamodel.
+    Took,
+    /// **A BRIEF ONLY REACHES A LOOP THAT HAS NOT STARTED.** The document's `brief` transition is
+    /// on `idle` alone: a run already driving an agent adopts new parts through `reflecting`,
+    /// which replaces the session, because changing what a run is for underneath a working agent
+    /// is not an assignment. Carries where the machine actually was.
+    TooLate(AiLoopState),
+    /// **THE EVENT WAS TAKEN AND THE DATAMODEL DOES NOT HOLD WHAT WAS SENT.**
+    ///
+    /// ⚠ Read back rather than assumed, because everything that could go wrong between here and
+    /// the datamodel is silent: the event is raised into a queue, the assignment is evaluated by a
+    /// script engine this crate does not own, and a failed `<assign>` raises `error.execution` at
+    /// the machine rather than an error out here. A driver that reported success on having SENT
+    /// the brief would report success on a loop about to prompt an agent with `(edit me)`.
+    ///
+    /// ⚠⚠⚠ IT IS NOT HYPOTHETICAL, AND THE READ-BACK IS THE ONLY THING THAT CATCHES IT. At the
+    /// pinned SCE rev a brief holding any non-ASCII character comes back mangled — measured, and
+    /// isolated to one seam in
+    /// `a_non_ascii_string_says_which_seam_it_is_mangled_at`. Without this arm the
+    /// loop would prompt a live agent with the mojibake and report success.
+    ///
+    /// ⚠⚠ THE MACHINE IS SENT TO `failed` when this is answered. A brief the engine could not
+    /// carry has already been assigned — the mangled text is in the datamodel — so a caller that
+    /// ignored the answer would start a run about something nobody wrote. `fail` is the
+    /// document's own word for a run that cannot go on, and using it means the refusal cannot be
+    /// walked past by pumping.
+    NotHeld {
+        /// The datamodel variable that did not come back.
+        part: &'static str,
+        /// What it held instead, when it held anything a reader could name.
+        held: Option<String>,
+    },
 }
 
 /// **WHETHER THE TRANSITION THIS DRIVER JUST CAUSED OWES THE PEER A PROMPT** — the document's own
@@ -161,6 +248,26 @@ enum Owed {
 }
 
 impl Owed {
+    /// The datamodel variable this prompt is read out of.
+    ///
+    /// ⚠ ONE LIST DECIDES BOTH READS. [`Authored::read`] validates a machine through these names
+    /// and [`OuterLoop::advance`] delivers through them, so a rename in the document breaks both
+    /// at once instead of leaving a driver that validates one variable and sends another.
+    ///
+    /// # Panics
+    ///
+    /// Never: [`Self::Nothing`] is filtered by the caller's match before this is reached, and the
+    /// alternative — an `Option` every call site unwraps — would put the same impossibility one
+    /// layer further from where it is decided.
+    const fn variable(self) -> &'static str {
+        match self {
+            Self::Start => "start_prompt",
+            Self::Turn => "turn_prompt",
+            Self::End => "end_prompt",
+            Self::Nothing => panic!("`Owed::Nothing` names no prompt; the caller matches it first"),
+        }
+    }
+
     /// What the document says goes with arriving at `landed` by raising `raised`.
     ///
     /// # ⚠⚠ The two halves of `ai_loop.scxml`'s sends, and why only one needs the event
@@ -192,6 +299,7 @@ impl Owed {
                 // failure class this crate keeps paying for.
                 AiLoopEvent::PromptSent
                 | AiLoopEvent::ScreenMatched
+                | AiLoopEvent::Brief
                 | AiLoopEvent::Cancel
                 | AiLoopEvent::ErrorExecution
                 | AiLoopEvent::Fail
@@ -282,8 +390,6 @@ pub struct OuterLoop {
     /// The engine its `<data>` lives in, and the session id it files them under.
     script: Arc<dyn IScriptEngine>,
     session: String,
-    /// The four authored strings.
-    authored: Authored,
     /// The inner session's pane.
     pane: PaneId,
     /// The barrier the pane must clear before anything is typed into it.
@@ -336,7 +442,10 @@ impl OuterLoop {
         let mut machine = Engine::new(AiLoopPolicy::new(Arc::clone(&script)));
         machine.initialize();
         let session = machine.policy().session_id.clone()?;
-        let authored = Authored::read(&script, &session)?;
+        // ⚠ VALIDATION, NOT A SNAPSHOT — the answer is dropped. A machine that does not carry the
+        // four strings is one this driver cannot drive and refusing here is what stops a run being
+        // started against it; keeping the values would be the staleness this round removed.
+        Authored::read(&script, &session)?;
         Some(Self {
             done: Completion::new(turn.when()),
             judged: crate::access::RowTrail::default(),
@@ -349,11 +458,95 @@ impl OuterLoop {
             machine,
             script,
             session,
-            authored,
             pane,
             turn,
             shows_the_prompt,
         })
+    }
+
+    /// **TELL THE MACHINE WHAT THIS RUN IS FOR** — the template filled in by a caller that did not
+    /// edit the file.
+    ///
+    /// The parts travel as the document's own `brief` event, so the composition stays where the
+    /// author wrote it: `priming`'s `onentry` builds the prompts out of whatever the parts hold at
+    /// the moment a session is about to be spoken to. That is what makes this reach a prompt at
+    /// all — writing the parts directly, if this surface even exposed the session id, would leave
+    /// the composed prompts exactly as stale as they were before.
+    ///
+    /// ⚠⚠ THE ANSWER IS READ BACK OUT OF THE DATAMODEL rather than inferred from having sent the
+    /// event — see [`Briefed::NotHeld`].
+    pub fn brief(&mut self, brief: &Brief) -> Briefed {
+        let at = self.state();
+        if at != AiLoopState::Idle {
+            return Briefed::TooLate(at);
+        }
+        // ⚠ Built by the JSON writer rather than by `format!`. A north star is a person's prose:
+        // it holds quotes, newlines and non-ASCII, and a hand-spliced payload would either lose
+        // the brief or end the object early — the second of which reaches the datamodel as a
+        // PARTIAL brief and prompts an agent with half a sentence.
+        let payload = serde_json::json!({
+            "north_star": brief.north_star,
+            "milestone": brief.milestone,
+            "reference": brief.reference,
+            "max_turns": brief.max_turns,
+            "reflect_every": brief.reflect_every,
+        });
+        self.machine
+            .raise_external(AiLoopEvent::Brief, &payload.to_string(), "");
+        self.machine.step();
+
+        let held = self.held_as_briefed(brief);
+        if held != Briefed::Took {
+            // The mangled or missing part is already in the datamodel; there is no un-assigning it
+            // from out here. `fail` is what the document says happens to a run that cannot go on,
+            // and it is what stops a caller pumping past this answer.
+            self.machine.process_event(AiLoopEvent::Fail);
+        }
+        held
+    }
+
+    /// Whether every part of `brief` came back out of the datamodel unchanged.
+    fn held_as_briefed(&self, brief: &Brief) -> Briefed {
+        for (part, sent) in [
+            ("north_star", &brief.north_star),
+            ("milestone", &brief.milestone),
+            ("reference", &brief.reference),
+        ] {
+            match self.script.get_variable(&self.session, part) {
+                Ok(ScriptValue::String(held)) if &held == sent => {}
+                Ok(ScriptValue::String(held)) => {
+                    return Briefed::NotHeld {
+                        part,
+                        held: Some(held),
+                    };
+                }
+                _ => return Briefed::NotHeld { part, held: None },
+            }
+        }
+        for (part, sent) in [
+            ("max_turns", brief.max_turns),
+            ("reflect_every", brief.reflect_every),
+        ] {
+            match self.script.get_variable(&self.session, part) {
+                Ok(ScriptValue::Int(held)) if held == sent => {}
+                Ok(ScriptValue::Int(held)) => {
+                    return Briefed::NotHeld {
+                        part,
+                        held: Some(held.to_string()),
+                    };
+                }
+                _ => return Briefed::NotHeld { part, held: None },
+            }
+        }
+        Briefed::Took
+    }
+
+    /// One of the document's own strings, as the datamodel holds it NOW.
+    fn text_of(&self, name: &str) -> Option<String> {
+        match self.script.get_variable(&self.session, name) {
+            Ok(ScriptValue::String(value)) => Some(value),
+            _ => None,
+        }
     }
 
     /// Where the machine is.
@@ -362,10 +555,26 @@ impl OuterLoop {
         self.machine.get_current_state()
     }
 
-    /// What the document was authored with.
+    /// What the document says NOW.
+    ///
+    /// # ⚠⚠⚠ Read live, because a snapshot is the defect this replaced
+    ///
+    /// This used to be a field, filled once in [`new`](Self::new). That is the same mistake the
+    /// document made by composing in `<data>`: a value taken at construction cannot see a
+    /// [`brief`](Self::brief), and it cannot see `priming` compose the prompts either — so a
+    /// driver holding one would deliver the empty string a machine in `idle` carries and report
+    /// having sent a prompt.
+    ///
+    /// ⚠ A LOOP IN `idle` HOLDS THREE EMPTY PROMPTS, and that is the honest answer rather than a
+    /// gap: nothing has been primed, so nothing has been composed. What a caller can read before
+    /// then is the parts it supplied.
+    ///
+    /// [`None`] when the datamodel no longer answers with the four strings — a machine that has
+    /// stopped being drivable mid-run, which [`pump`](Self::pump) turns into the document's own
+    /// `fail`.
     #[must_use]
-    pub const fn authored(&self) -> &Authored {
-        &self.authored
+    pub fn authored(&self) -> Option<Authored> {
+        Authored::read(&self.script, &self.session)
     }
 
     /// How many turns the machine counts having taken — its own number, not one kept out here.
@@ -580,13 +789,23 @@ impl OuterLoop {
             self.machine.process_event(raised);
         }
         let landed = self.state();
-        let text = match Owed::on(raised, landed) {
-            Owed::Nothing => return Ok((landed, 0)),
-            Owed::Start => &self.authored.start,
-            Owed::Turn => &self.authored.turn,
-            Owed::End => &self.authored.end,
+        let owed = Owed::on(raised, landed);
+        if owed == Owed::Nothing {
+            return Ok((landed, 0));
+        }
+        // ⚠⚠⚠ READ AT THE MOMENT OF DELIVERY, which is the whole point of the order this function
+        // documents. `priming`'s `onentry` composes the prompts out of the parts, and it has just
+        // run — the machine moved above. A driver reading a construction-time copy would send the
+        // template's `(edit me)` however carefully the caller had briefed it.
+        let Some(text) = self.text_of(owed.variable()) else {
+            // ⚠ THE DOCUMENT'S OWN ANSWER, not one invented out here. A machine whose datamodel has
+            // stopped holding its prompts cannot be driven, and `fail` -> `failed` is what this
+            // document says happens to a run that cannot go on. Inventing a `Pumped` arm for it
+            // would put a terminal decision in the driver.
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Ok((self.state(), 0));
         };
-        let spent = self.say(panes, run, &text.clone())?;
+        let spent = self.say(panes, run, &text)?;
         Ok((landed, spent))
     }
 
@@ -676,12 +895,20 @@ impl OuterLoop {
     /// ⚠ **IT FAILS SAFE.** A marker the agent decorated past recognising costs one more turn; the
     /// direction this rule refuses to fail in is converging a run that proved nothing, which is
     /// this crate's most expensive failure class and is what it did before.
+    ///
+    /// ⚠ The marker is read from the datamodel at the moment the question is asked, for
+    /// [`authored`](Self::authored)'s reason. A datamodel that cannot answer leaves the loop
+    /// judging that the agent did NOT say it, which is the direction this predicate already fails
+    /// in: one more turn, never a convergence nobody earned.
     #[must_use]
     pub fn said_done(&self, panes: &dyn PaneAccess) -> bool {
+        let Some(marker) = self.text_of(DONE_MARKER) else {
+            return false;
+        };
         self.judged
             .fresh(panes, self.pane)
             .iter()
-            .any(|row| stands_alone(row, &self.authored.done_marker))
+            .any(|row| stands_alone(row, &marker))
     }
 }
 
@@ -859,7 +1086,7 @@ mod tests {
                 .expect("spawn pane")
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let loops = OuterLoop::new(
+        let mut loops = OuterLoop::new(
             lua,
             pane,
             None,
@@ -868,7 +1095,28 @@ mod tests {
             false,
         )
         .expect("the document's datamodel must carry its four authored strings");
-        let authored = loops.authored();
+        // ⚠⚠ THE PROMPTS ARE COMPOSED IN `priming`, so a loop still in `idle` holds them empty and
+        // this question cannot be asked of it. One pump is what makes them exist — and it is the
+        // same pump that delivers, so what is asserted below is the text the peer was actually
+        // sent rather than a copy assembled beside it.
+        let run = RunContext::uncancellable();
+        let primed = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert!(
+            matches!(
+                primed,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                }
+            ),
+            "the control: starting a loop must reach the state that composes its prompts, or the \
+             assertions below are about an empty datamodel. Got {primed:?}",
+        );
+        let authored = loops
+            .authored()
+            .expect("a primed machine must still answer with its four strings");
 
         assert!(
             !authored.done_marker.is_empty(),
@@ -888,6 +1136,305 @@ mod tests {
                 authored.done_marker,
             );
         }
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A CALLER CAN SAY WHAT THE LOOP IS FOR, AND THAT IS WHAT THE AGENT IS ASKED** — the
+    /// gate that was the measurement of debt A-1.
+    ///
+    /// # The defect it was written against, in its own words
+    ///
+    /// `ai_loop.scxml` ships `(edit me)` placeholders and says *"a GUI fills these in"*. Nothing
+    /// did. Asked of the only door there was — [`OuterLoop::new`] plus a construction-time
+    /// `authored()` — the whole of what a caller could make this loop send was:
+    ///
+    /// ```text
+    /// North star: (edit me) the outcome this loop exists to reach
+    /// Milestone: (edit me) the next checkpoint on the way there
+    /// Reference: (edit me) paths, URLs or repos to consult
+    /// Report what you did and what is left.
+    /// When the milestone is fully reached AND verified, make the last line of your reply
+    /// exactly: MILESTONE REACHED
+    /// ```
+    ///
+    /// Three of the five clauses a live agent reads. It could not be repaired from outside either:
+    /// the session id was private, and writing a part after `initialize()` would not have helped,
+    /// because the prompts were composed from the parts AT init.
+    ///
+    /// # ⚠⚠ What this asserts, and why each half is separable
+    ///
+    /// * **the parts are held** — [`Briefed::Took`] is read back out of the datamodel, so a brief
+    ///   the script engine dropped cannot report success;
+    /// * **the composed prompt carries them** — which is the half a read-back cannot reach, and
+    ///   the half the old arrangement failed: the parts were writable in principle and the prompt
+    ///   built from them was already fixed.
+    /// * **and no placeholder survives into it**, which is the failure stated positively. A
+    ///   composition that dropped a part would leave the template's own text in the prompt, and a
+    ///   gate checking only that the brief appears would pass with the placeholder beside it.
+    #[test]
+    fn a_briefed_loop_prompts_an_agent_with_what_it_was_briefed_with() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = OuterLoop::new(
+            Arc::clone(&lua),
+            pane,
+            None,
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        // ⚠ PROSE, not identifiers. A north star is what a person types: quotes that would splice
+        // a hand-built payload apart, an apostrophe, a newline that would end the line early, and
+        // a brace that would close the object. A brief that survives this survives a real one.
+        //
+        // ⚠⚠ IT IS ASCII, AND THAT IS A LIMIT RATHER THAN A CHOICE — see
+        // `a_brief_the_engine_cannot_carry_is_refused_rather_than_delivered`, which pins the
+        // measured upstream reason and is the gate that goes red the day it is lifted.
+        let brief = Brief {
+            north_star: "ship \"sprag\" 1.0 and don't break the wire {yet}".to_string(),
+            milestone: "the outer loop\nruns unattended".to_string(),
+            reference: "~/herdr, ~/ghostty, DESIGN.md 5".to_string(),
+            max_turns: 3,
+            reflect_every: 99,
+        };
+        assert_eq!(
+            loops.brief(&brief),
+            Briefed::Took,
+            "the machine must hold every part of a brief it accepted, read back out of its own \
+             datamodel",
+        );
+
+        let run = RunContext::uncancellable();
+        let primed = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert!(
+            matches!(
+                primed,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                }
+            ),
+            "the control: the brief must not have stopped the loop starting. Got {primed:?}",
+        );
+        let start = loops
+            .authored()
+            .expect("a primed machine answers with its four strings")
+            .start;
+
+        for (part, text) in [
+            ("north_star", &brief.north_star),
+            ("milestone", &brief.milestone),
+            ("reference", &brief.reference),
+        ] {
+            assert!(
+                start.contains(text.as_str()),
+                "⚠⚠⚠ `{part}` was briefed and the composed prompt does not carry it, so the agent \
+                 is asked to work on something nobody said. Prompt:\n{start}",
+            );
+        }
+        assert!(
+            !start.contains("(edit me)"),
+            "⚠⚠⚠ a placeholder survived into the prompt a live agent reads, which is the defect \
+             stated positively — a composition that dropped one part leaves the template's own \
+             text where that part should be. Prompt:\n{start}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A BRIEF THE SCRIPT ENGINE CANNOT CARRY IS REFUSED, NOT DELIVERED** — and the reason
+    /// it cannot is measured, upstream, and named here.
+    ///
+    /// # The defect, isolated
+    ///
+    /// At the pinned SCE rev a non-ASCII string does not survive arriving as EVENT DATA, while the
+    /// same characters authored as a `<data expr>` literal in the same document, read out of the
+    /// same session by the same call, survive perfectly —
+    /// `a_non_ascii_string_says_which_seam_it_is_mangled_at` is where those two are separated.
+    ///
+    /// The mechanism, read after the measurement said which end to read:
+    /// `sce-rust-lua`'s `set_current_event` tries the payload as a Lua expression, and a JSON
+    /// object is not one, so it falls to `json_to_lua_table` — which walks the payload with
+    /// `bytes[i] as char`. That is a Latin-1 decode of UTF-8: `북` (`EB B6 81`) becomes three
+    /// separate chars and is re-encoded as six bytes. **Filed upstream; not worked around here.**
+    /// Sending Lua table syntax instead of JSON would dodge it and would hard-code the one engine
+    /// this driver deliberately takes as a parameter.
+    ///
+    /// # ⚠⚠ Why the product is still safe under it, which is what this asserts
+    ///
+    /// [`OuterLoop::brief`] reads every part back out of the datamodel instead of trusting that it
+    /// sent them. So the mangling is CAUGHT: the caller is told which part did not survive and
+    /// what the machine holds instead, and the run is sent to `failed` rather than left startable —
+    /// because the mangled text is already assigned and a caller that ignored the answer would
+    /// prompt a live agent with mojibake.
+    ///
+    /// ⚠ **THIS GATE GOES RED WHEN UPSTREAM LANDS THE FIX.** That is the point of writing it as an
+    /// equality on the refusal rather than as a `#[ignore]`: the day a brief in a person's own
+    /// language crosses whole, this fails and says to widen the gate above.
+    #[test]
+    fn a_brief_the_engine_cannot_carry_is_refused_rather_than_delivered() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = OuterLoop::new(
+            Arc::clone(&lua),
+            pane,
+            None,
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        let wanted = "비용 무시하고 가장 장기적으로 올바른 방법으로";
+        let answer = loops.brief(&Brief {
+            north_star: wanted.to_string(),
+            milestone: "m".to_string(),
+            reference: "r".to_string(),
+            max_turns: 3,
+            reflect_every: 99,
+        });
+        let Briefed::NotHeld { part, held } = answer else {
+            // ⚠ TWO CAUSES, and this message names both because they are told apart by looking
+            // rather than by guessing: the engine now carries the string, OR `brief` stopped
+            // reading it back. `a_non_ascii_string_says_which_seam_it_is_mangled_at` asks the
+            // ENGINE directly and answers that question on its own.
+            panic!(
+                "⚠⚠⚠ a brief in a person's own language was accepted. Either UPSTREAM LANDED IT — \
+                 in which case widen \
+                 `a_briefed_loop_prompts_an_agent_with_what_it_was_briefed_with` back to non-ASCII \
+                 prose and delete this gate — or `brief` STOPPED READING THE PARTS BACK, which is \
+                 a loop about to type mojibake at a live agent. \
+                 `a_non_ascii_string_says_which_seam_it_is_mangled_at` says which. Got {answer:?}",
+            );
+        };
+        assert_eq!(
+            part, "north_star",
+            "the refusal must name the part that did not survive, or a caller cannot tell which \
+             of five to rewrite",
+        );
+        assert!(
+            held.is_some_and(|held| held != wanted),
+            "⚠ THE CONTROL: the refusal must be about a value that came back DIFFERENT. A `None` \
+             here would mean the variable was missing entirely, which is a different failure and \
+             would make this gate pass for the wrong reason",
+        );
+
+        // ── and the refusal is a refusal: the run cannot be pumped past it ──
+        let run = RunContext::uncancellable();
+        let pumped = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert_eq!(
+            pumped,
+            Pumped::Ended(AiLoopState::Failed),
+            "⚠⚠⚠ a loop whose brief the engine mangled must not go on to prompt an agent with it. \
+             The mangled text is already in the datamodel, so an answer a caller could walk past \
+             is one that types mojibake at a live agent",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **A BRIEF IS ONLY TAKEN BEFORE THE RUN STARTS**, which is the document's own rule and
+    /// not the driver's caution.
+    ///
+    /// `ai_loop.scxml` puts `brief` on `idle` alone: a loop already driving an agent adopts new
+    /// parts through `reflecting`, which writes them and REPLACES the session, because a session
+    /// reads its context on the way up and cannot be asked to re-read it. Assigning underneath a
+    /// working agent would change what the run is for without the agent ever learning.
+    ///
+    /// ⚠ The answer has to SAY SO rather than be silently dropped: an unhandled event on this
+    /// machine is a no-op, so a caller briefing a started loop would otherwise be told nothing and
+    /// go on believing the run was about something it is not.
+    #[test]
+    fn a_brief_that_arrives_after_the_run_started_is_refused_and_says_where_it_was() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = OuterLoop::new(
+            Arc::clone(&lua),
+            pane,
+            None,
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        let first = Brief {
+            north_star: "the one the run is actually for".to_string(),
+            milestone: "step one".to_string(),
+            reference: "none".to_string(),
+            max_turns: 3,
+            reflect_every: 99,
+        };
+        assert_eq!(loops.brief(&first), Briefed::Took, "the control");
+
+        let run = RunContext::uncancellable();
+        loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert_eq!(
+            loops.state(),
+            AiLoopState::Priming,
+            "the control: the run has started",
+        );
+
+        let second = Brief {
+            north_star: "something else entirely".to_string(),
+            ..first.clone()
+        };
+        assert_eq!(
+            loops.brief(&second),
+            Briefed::TooLate(AiLoopState::Priming),
+            "a brief arriving after the run started must be refused, and must name where the \
+             machine was — a caller cannot otherwise tell it from one that was taken",
+        );
+        let held = loops
+            .authored()
+            .expect("a primed machine answers with its four strings")
+            .start;
+        assert!(
+            held.contains(&first.north_star) && !held.contains(&second.north_star),
+            "⚠⚠ and the refusal must be a refusal: the run goes on being about what it was \
+             briefed with. Prompt:\n{held}",
+        );
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
@@ -1017,13 +1564,31 @@ mod tests {
             false,
         )
         .expect("the document's datamodel must carry its four authored strings");
-        let marker = loops.authored().done_marker.clone();
         let run = RunContext::uncancellable();
 
-        // ── THE ECHO ── the whole start prompt, which now NAMES the marker, painted straight back.
-        loops
-            .say(&access, &run, &loops.authored().start.clone())
-            .expect("the parrot takes the prompt");
+        // ── THE ECHO ── the whole start prompt, which NAMES the marker, painted straight back.
+        //
+        // ⚠ Delivered by ONE PUMP rather than by a hand-built `say`, and that is not a
+        // convenience: the prompts are composed in `priming`, so the pump is what makes the text
+        // exist at all — and it arms the baseline through the same call the driver uses in
+        // production, which is what the note above means by not testing its own arrangement.
+        let primed = loops
+            .pump(&access, &run)
+            .expect("the parrot stays readable");
+        assert!(
+            matches!(
+                primed,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                }
+            ),
+            "the control: the start prompt is delivered by reaching `priming`. Got {primed:?}",
+        );
+        let authored = loops
+            .authored()
+            .expect("a primed machine answers with its four strings");
+        let marker = authored.done_marker.clone();
         started(&access, pane, &marker);
         assert!(
             !loops.said_done(&access),
@@ -1064,7 +1629,7 @@ mod tests {
         //    half `stands_alone` cannot answer: that row stands alone perfectly well, and it
         //    belongs to a turn that is over.
         loops
-            .say(&access, &run, &loops.authored().turn.clone())
+            .say(&access, &run, &authored.turn.clone())
             .expect("the parrot takes the next prompt");
         assert!(
             !loops.said_done(&access),
@@ -1117,23 +1682,39 @@ mod tests {
         .expect("the document's datamodel must carry its four authored strings");
 
         assert_eq!(loops.state(), AiLoopState::Idle, "the document's `initial`");
+        // ⚠⚠ THE RUN IS TOLD WHAT IT IS FOR, as any caller must. Before this door existed the only
+        // thing a loop could ask an agent to do was the template's `(edit me)`.
+        let brief = Brief {
+            north_star: "the stand-in answers two prompts and then says the marker".to_string(),
+            milestone: "reach it".to_string(),
+            reference: "this gate".to_string(),
+            max_turns: 40,
+            reflect_every: 99,
+        };
+        assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
+        // ⚠⚠⚠ AND NOTHING IS COMPOSED YET, which is the CONTROL for the whole arrangement. The
+        // prompts are built in `priming`; a loop in `idle` holding them already would mean the
+        // composition had happened at `<datamodel>` init, and the brief above could not have
+        // reached the text below however correctly it was stored.
+        let before = loops
+            .authored()
+            .expect("an unstarted machine still declares its four strings");
         assert!(
-            loops.authored().start.contains("North star"),
-            "⚠ THE CONTROL: the authored prompts must have crossed out of the datamodel, or the \
-             loop below is delivering nothing: {:?}",
-            loops.authored(),
+            before.start.is_empty() && before.turn.is_empty(),
+            "⚠⚠⚠ a loop that has not primed must hold no composed prompt, or a brief cannot reach \
+             one: {before:?}",
         );
         // ⚠⚠⚠ AND THE MARKER IS ITS OWN CONTROL, because the way it fails is invisible. `said_done`
-        // asks whether the screen CONTAINS the marker, and every string contains the empty one — so
-        // a `done_marker` that arrived empty makes the loop converge on its first turn, reporting
+        // asks whether a row IS the marker, and every row ends with the empty one — so a
+        // `done_marker` that arrived empty makes the loop converge on its first turn, reporting
         // a milestone reached against a screen that says nothing of the kind. The driver did
         // exactly that, and this is the assertion that would have named it in one line.
+        //
+        // ⚠ It is NOT composed, so it is readable before priming — which is what makes it usable
+        // as a control here at all.
         assert_eq!(
-            loops.authored().done_marker,
-            "MILESTONE REACHED",
-            "the document's own marker, whole — an empty one is `contains` answering yes to \
-             everything: {:?}",
-            loops.authored(),
+            before.done_marker, "MILESTONE REACHED",
+            "the document's own marker, whole — an empty one is a suffix of every row: {before:?}",
         );
         assert!(
             !loops.said_done(&access),
@@ -1207,13 +1788,20 @@ mod tests {
              the pane — a driver that sent one prompt for every state would pass every assertion \
              above. Typed: {typed:?}",
         );
+        assert!(
+            typed.contains(&brief.north_star),
+            "⚠⚠⚠ and what reached the pane must be what this run was BRIEFED with, not the \
+             template it was composed from. Typed: {typed:?}",
+        );
         // ⚠⚠ AND THE RUN SAYS WHAT IT SPENT. Every bounded run in this crate can, and the outer
         // loop could not until the compiler objected to the dropped `Written`. The claim is the
         // RELATION, not a byte count: what reached the pane is what the three authored prompts
         // weigh, so a driver that silently sent nothing — or sent something else — cannot pass.
-        let authored_weight = (loops.authored().start.len()
-            + loops.authored().turn.len()
-            + loops.authored().end.len()) as u64;
+        let composed = loops
+            .authored()
+            .expect("a converged machine still answers with its four strings");
+        let authored_weight =
+            (composed.start.len() + composed.turn.len() + composed.end.len()) as u64;
         assert!(
             spent_total >= authored_weight,
             "⚠⚠ the three prompts weigh {authored_weight} bytes and the run reports spending \

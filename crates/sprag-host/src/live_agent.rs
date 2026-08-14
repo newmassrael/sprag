@@ -533,13 +533,15 @@ fn a_live_agents_turn_is_ended_by_the_contract_rather_than_by_the_clock() {
 /// real agent CLI actually produces**, which is boxed, prefixed with `❯ ` and re-wrapped, and which
 /// this crate's existing echo rule (*"the stimulus contains the row"*) would not have discounted.
 ///
-/// # ⚠⚠ What it deliberately does NOT assert
+/// # ⚠⚠ What it deliberately does NOT assert, and where that moved to
 ///
-/// That a live loop CONVERGES. The shipped document's milestone is `(edit me) the next checkpoint
-/// on the way there`, and nothing in the product fills a template in — the document says *"a GUI
-/// fills these in"* and no GUI does. Driving a live agent to convergence would mean asserting what
-/// a model says about a placeholder, which is not a claim about this code. **The gap is registered
-/// rather than papered over**, and what IS asserted here is every seam up to it.
+/// That a live loop CONVERGES. When this gate was written nothing in the product could fill the
+/// template in, so the milestone a live agent read was `(edit me) the next checkpoint on the way
+/// there` and driving it to convergence would have meant asserting what a model says about a
+/// placeholder. **That gap is now closed** — [`OuterLoop::brief`] exists — and the convergence
+/// claim is its own gate, [`a_briefed_loop_converges_against_a_live_agent`]. This one stays as it
+/// is: it is the ECHO claim, and keeping it on the SHIPPED template is what makes it a claim about
+/// the document a person actually gets.
 #[test]
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
@@ -563,14 +565,13 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
     )
     .expect("the document's datamodel must carry its authored strings");
 
-    let marker = loops.authored().done_marker.clone();
-    assert!(
-        loops.authored().start.contains(&marker),
-        "⚠ THE CONTROL, and the whole reason this gate exists: the start prompt must NAME the \
-         marker, or the screen below cannot contain the loop's own instruction and the assertion \
-         after it is about nothing. Authored: {:?}",
-        loops.authored(),
-    );
+    // ⚠ The marker is a plain `<data>` literal, so it is readable before anything is primed. The
+    // PROMPT that carries it is composed on entry to `priming`, which is why its control sits
+    // below, at the first move rather than here.
+    let marker = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .done_marker;
 
     let mut walked = Vec::new();
     let mut turn_began = Instant::now();
@@ -585,6 +586,20 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
             } => {
                 step(began, &format!("{from:?} --{raised:?}--> {to:?}"));
                 walked.push((from, raised, to));
+
+                if to == AiLoopState::Priming {
+                    let composed = loops
+                        .authored()
+                        .expect("a primed machine answers with its strings")
+                        .start;
+                    assert!(
+                        composed.contains(&marker),
+                        "⚠ THE CONTROL, and the whole reason this gate exists: the start prompt \
+                         must NAME the marker, or the screen below cannot contain the loop's own \
+                         instruction and the assertion after it is about nothing. Composed: \
+                         {composed:?}",
+                    );
+                }
 
                 // ⚠⚠⚠ THE MOMENT THIS GATE IS FOR. The start prompt has just been delivered and
                 // the agent has not answered anything: the ONLY thing on that screen carrying the
@@ -654,6 +669,167 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
         "\n== 64c, second half: {} ==\n  walk: {walked:?}\n  one live turn through the loop: \
          {turn_cost:?}\n",
         live.agent,
+    );
+}
+
+/// ⚠⚠⚠ **A BRIEFED LOOP IS DRIVEN TO CONVERGENCE BY A LIVE AGENT** — the thing that had never
+/// happened, and the gate debt A-1 was blocking.
+///
+/// # What could not be asked before
+///
+/// Two separate things had to be true for a live loop to converge, and until R379 neither was.
+/// R379 made the document ASK the agent for the word the loop stops on. This round made it
+/// possible to tell the agent what the run is FOR: the shipped template says `(edit me)`, the
+/// prompts were composed from it at `<datamodel>` init, and nothing could reach them. So every
+/// live run to date could only spend its budget and report `exhausted`.
+///
+/// # ⚠⚠ What this asserts that no stand-in can
+///
+/// * **that a real model, reading `done_instruction`, ends a reply with the marker on a row of its
+///   own.** Every unit gate in the tree has a stand-in *written* to print it — R358's rule, which
+///   R379 paid for — so the instruction being followable by an actual reader has never been tested
+///   by anything. This is the first time the sentence is read by something that could ignore it.
+/// * **that `stands_alone` recognises what that model actually paints.** The predicate requires
+///   the row to END with the marker and carry no other alphanumerics; a model that writes
+///   `**MILESTONE REACHED**` or `MILESTONE REACHED.` is not recognised and the loop fails SAFE —
+///   one more turn. Registered debt says nobody had ever watched a real agent try. This watches,
+///   and PRINTS the row either way, so the answer is on the record whichever it is.
+/// * **that convergence is the machine's, not the clock's** — `Converged` is a distinct final
+///   state from `Exhausted`, and the budget below is small enough that a run which merely ran out
+///   would say so rather than look like success.
+///
+/// # ⚠ Why the milestone is arithmetic
+///
+/// It needs NO TOOL. A milestone that writes a file raises a permission dialog, which sends the
+/// machine to `screening` — an unbuilt state — and the gate would be measuring debt 60 instead of
+/// this. Arithmetic is answerable in one turn from the model alone, which keeps the claim on the
+/// LOOP rather than on what an agent is allowed to do.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_briefed_loop_converges_against_a_live_agent() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{AiLoopState, Brief, Briefed, OuterLoop, Pumped, Turn as TurnContract};
+
+    /// Small enough that a run which merely ran out of budget is cheap, and large enough that one
+    /// answered turn plus the closing report fits with room to spare.
+    const LIVE_MAX_TURNS: i64 = 3;
+
+    let live = Live::start("converge");
+    let run = RunContext::uncancellable();
+    let began = Instant::now();
+
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = OuterLoop::new(
+        lua,
+        live.pane,
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND)).expect("a non-zero bound"),
+        true,
+    )
+    .expect("the document's datamodel must carry its authored strings");
+
+    let brief = Brief {
+        north_star: "prove an outer loop can be driven to convergence by a real agent".to_string(),
+        milestone: "state the product of 17 and 23 as a single number".to_string(),
+        reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
+        max_turns: LIVE_MAX_TURNS,
+        reflect_every: 99,
+    };
+    assert_eq!(
+        loops.brief(&brief),
+        Briefed::Took,
+        "the machine must hold the brief before a live agent is spoken to",
+    );
+    let marker = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .done_marker;
+
+    let mut walked = Vec::new();
+    let mut composed = String::new();
+    let ended = loop {
+        assert!(
+            walked.len() < 24,
+            "the loop must reach a final state rather than pumping forever. Walked: {walked:?}, \
+             screen: {}",
+            live.tail(10),
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(300),
+            "a live convergence must not outlast five minutes; something is stuck. Walked: \
+             {walked:?}, screen: {}",
+            live.tail(10),
+        );
+        match loops
+            .pump(&live.access, &run)
+            .expect("the pane stays readable")
+        {
+            Pumped::Moved {
+                from, raised, to, ..
+            } => {
+                step(began, &format!("{from:?} --{raised:?}--> {to:?}"));
+                walked.push((from, raised, to));
+                if to == AiLoopState::Priming {
+                    composed = loops
+                        .authored()
+                        .expect("a primed machine answers with its strings")
+                        .start;
+                    // ⚠ THE CONTROL. If the agent were reading the template rather than the brief,
+                    // everything below would still be a live measurement — of the wrong document.
+                    assert!(
+                        composed.contains(&brief.milestone) && !composed.contains("(edit me)"),
+                        "the live agent must be asked what this run was BRIEFED with. Composed: \
+                         {composed:?}",
+                    );
+                }
+            }
+            Pumped::Unbuilt(state) => panic!(
+                "a live run reached {state:?}, which no driver serves yet — most likely the agent \
+                 raised a dialog and this went to `screening`. Walked: {walked:?}, screen: {}",
+                live.tail(10),
+            ),
+            Pumped::NotReady(seen) => {
+                step(began, &format!("not ready yet: {seen:?}"));
+                continue;
+            }
+            Pumped::Ended(state) => break state,
+        }
+    };
+
+    // ⚠⚠⚠ WHAT THE MODEL ACTUALLY PAINTED, on the record whichever way this went — debt 92 is a
+    // question about a real agent's decoration and this is the only place it is ever answered.
+    let screen = live.screen();
+    let marker_rows: Vec<&str> = screen
+        .lines()
+        .filter(|row| row.contains(marker.as_str()))
+        .collect();
+    println!(
+        "\n== a briefed live loop ==\n  agent: {}\n  walk: {walked:?}\n  turns: {:?}\n  \
+         through the loop: {:?}\n  rows carrying the marker:\n{}\n  composed start prompt:\n{composed}\n",
+        live.agent,
+        loops.turns(),
+        began.elapsed(),
+        marker_rows
+            .iter()
+            .map(|row| format!("    {row:?}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+
+    assert_eq!(
+        ended,
+        AiLoopState::Converged,
+        "⚠⚠⚠ a briefed loop must CONVERGE against a live agent, and `exhausted` here would mean \
+         the model never put the marker on a row `stands_alone` accepts — which is debt 92, not a \
+         budget. Walked: {walked:?}, marker rows: {marker_rows:?}, screen: {}",
+        live.tail(12),
+    );
+    assert!(
+        loops.turns().is_some_and(|turns| turns < LIVE_MAX_TURNS),
+        "⚠⚠ and it must have converged INSIDE its budget rather than at it — a run that reached \
+         the ceiling on the same pass cannot be told from one that ran out. Turns: {:?}",
+        loops.turns(),
     );
 }
 

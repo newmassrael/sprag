@@ -66,8 +66,28 @@
        initial="idle">
 
   <!--
-    Everything above the line is the template's editable surface. A GUI fills
-    these in; nothing below the line changes per loop.
+    Everything above the line is the template's editable surface. A person edits
+    it here; a caller that did not write the file fills the same parts in through
+    the `brief` event on `idle`. Nothing below the line changes per loop.
+
+    ⚠⚠⚠ THE PARTS ARE DATA AND THE PROMPTS ARE COMPOSED FROM THEM IN `priming`,
+    which is the one arrangement that lets both authors work. Composing in
+    `<data>` — where this document did it until now — happens exactly once, at
+    `initialize()`, so a caller filling a part in afterwards left the composed
+    prompt stale and there was no way to reach it: MEASURED, the only prompt any
+    caller could make this loop send was
+
+        North star: (edit me) the outcome this loop exists to reach
+        Milestone: (edit me) the next checkpoint on the way there
+        Reference: (edit me) paths, URLs or repos to consult
+
+    — three of the five clauses a live agent reads. Writing the composition in
+    BOTH places would keep the file-editing author working and is what this
+    document already warns against two comments down: two copies of one rule,
+    and the failure of letting them drift is silent. `priming` is where it runs
+    instead, once, because it is entered on the way to EVERY prompt this loop
+    ever sends — from `idle` at the start, and from `restarting` after a
+    reflection has rewritten the parts.
   -->
   <datamodel>
     <!-- Where this loop is ultimately going. Never rewritten by reflection. -->
@@ -113,28 +133,26 @@
     <data id="done_marker" expr="'MILESTONE REACHED'"/>
 
     <!--
-      How the agent is told to end a turn it believes finished the milestone.
-      Authored HERE, beside the marker, because it is prose a person may want
-      in their own language — and because the driver must not be the thing that
-      appends instructions to an authored prompt (that is a second author).
-    -->
-    <data id="done_instruction"
-          expr="'When the milestone is fully reached AND verified, make the last line of your ' +
-                'reply exactly: ' + done_marker"/>
+      ⚠⚠⚠ THE THREE COMPOSED PROMPTS ARE DECLARED EMPTY HERE AND WRITTEN IN
+      `priming`. Their text is up there, in one place, where a person editing
+      this template reads it; declaring them is what makes them assignable, and
+      what lets a consumer ask whether this machine is one it can drive at all.
 
+      A loop sitting in `idle` therefore holds three empty strings, and that is
+      the honest answer rather than a gap: nothing has been primed, so nothing
+      has been composed. What a caller can read before then is the PARTS, which
+      are what it filled in.
+    -->
+    <data id="done_instruction" expr="''"/>
     <!-- Sent once, into a freshly opened session. -->
-    <data id="start_prompt"
-          expr="'North star: ' + north_star + '\n' +
-                'Milestone: ' + milestone + '\n' +
-                'Reference: ' + reference + '\n' +
-                'Report what you did and what is left.' + '\n' +
-                done_instruction"/>
+    <data id="start_prompt" expr="''"/>
     <!-- Sent on every turn after the first. -->
-    <data id="turn_prompt"
-          expr="'Continue toward: ' + milestone + '\n' +
-                'Do the next smallest thing that is verifiable, then report.' + '\n' +
-                done_instruction"/>
-    <!-- Sent once before the loop reports converged. -->
+    <data id="turn_prompt" expr="''"/>
+    <!--
+      Sent once before the loop reports converged. NOT composed — it names
+      nothing else in this datamodel — so it stays a plain literal, and a
+      reader can tell the two kinds apart by whether `priming` writes them.
+    -->
     <data id="end_prompt"
           expr="'Summarise what changed, what was verified, and what is left open.'"/>
 
@@ -191,7 +209,43 @@
   </datamodel>
 
   <state id="idle">
+    <!--
+      ⚠⚠⚠ THE TEMPLATE, FILLED IN BY SOMEBODY WHO DID NOT EDIT THIS FILE.
+
+      A person authoring a loop edits the `<data>` above. A GUI — or any caller
+      that starts a run — has no file to edit, and until this transition existed
+      it had no other way either: the composed prompts were built at
+      `initialize()`, so writing a part afterwards left them stale, and the only
+      prompt a caller could actually send was the `(edit me)` template.
+
+      TARGETLESS ON PURPOSE. W3C SCXML 3.13: a transition with no `target`
+      executes its content and changes no state, so a brief does not exit and
+      re-enter `idle` — there is nothing to re-run here, because the composition
+      lives in `priming` and every path to a prompt goes through it.
+
+      ⚠ ONLY BEFORE THE RUN STARTS, and that is the whole reason it sits on
+      `idle` rather than on the machine. A loop already driving an agent adopts
+      new parts through `reflecting` — which writes them, restarts the session,
+      and passes back through `priming` — because changing what a run is for
+      underneath a working agent is a session replacement, not an assignment.
+    -->
+    <transition event="brief">
+      <assign location="north_star" expr="_event.data.north_star"/>
+      <assign location="milestone" expr="_event.data.milestone"/>
+      <assign location="reference" expr="_event.data.reference"/>
+      <assign location="max_turns" expr="_event.data.max_turns"/>
+      <assign location="reflect_every" expr="_event.data.reflect_every"/>
+    </transition>
     <transition event="start" target="priming"/>
+    <!--
+      ⚠⚠ A LOOP CAN BE UNSTARTABLE BEFORE IT EVER PROMPTS, and until this edge
+      existed `idle` was the one non-final state with no way out but forward.
+      What made it concrete: a brief whose text the script engine could not
+      carry is already assigned by the time anybody can tell, so the run must
+      not be startable — and with no `fail` here the driver's refusal could be
+      walked straight past by pumping.
+    -->
+    <transition event="fail" target="failed"/>
   </state>
 
   <!--
@@ -201,6 +255,55 @@
   -->
   <state id="priming">
     <onentry>
+      <!--
+        ⚠⚠⚠ THE COMPOSITION, WRITTEN ONCE AND RUN ON EVERY PATH TO A PROMPT.
+
+        `priming` is entered from `idle` at the start and from `restarting`
+        after every session replacement, and those are the only two ways this
+        loop ever comes to send a prompt. So composing here is composing exactly
+        as often as the parts can have changed — a brief before the run, a
+        reflection during it — with one copy of the text.
+
+        ⚠ ORDER IS LOAD-BEARING, as it was in `<data>` before: `done_instruction`
+        is composed FIRST because the two working prompts end with it. Executable
+        content runs in document order, so moving it below them would append the
+        PREVIOUS entry's instruction — silently, and correctly for every entry
+        but the first.
+
+        ⚠⚠⚠ AND THE PROMPTS COMPOSE `done_marker` RATHER THAN REPEATING IT. R379
+        measured what the alternative costs. The marker existed, `judging` waited
+        for it, the driver looked for it on the screen — and NO PROMPT EVER ASKED
+        THE AGENT FOR IT. Nothing in the loop was wrong except that the one word
+        the whole termination rests on was never said to the only party who could
+        say it back. A run against a real agent could not converge; it could only
+        spend all `max_turns` and report `exhausted`, which is the word for *the
+        budget ran out* and not for *nobody ever asked*. It went unnoticed for
+        eleven rounds because the stand-in agent in the driver's gate was written
+        to say the marker, which is a fixture manufacturing the answer it tests
+        for.
+
+        Composing means an author who edits the marker edits the instruction with
+        it. Retyping the word into each prompt would be three places to keep in
+        step, and the failure of doing that badly is silent.
+
+        How the agent is told to end a turn it believes finished the milestone is
+        prose a person may want in their own language, which is why it is here
+        and not in the driver — the driver must not be the thing that appends
+        instructions to an authored prompt (that is a second author).
+      -->
+      <assign location="done_instruction"
+              expr="'When the milestone is fully reached AND verified, make the last line of your ' +
+                    'reply exactly: ' + done_marker"/>
+      <assign location="start_prompt"
+              expr="'North star: ' + north_star + '\n' +
+                    'Milestone: ' + milestone + '\n' +
+                    'Reference: ' + reference + '\n' +
+                    'Report what you did and what is left.' + '\n' +
+                    done_instruction"/>
+      <assign location="turn_prompt"
+              expr="'Continue toward: ' + milestone + '\n' +
+                    'Do the next smallest thing that is verifiable, then report.' + '\n' +
+                    done_instruction"/>
       <send event="prompt.start"/>
     </onentry>
     <transition event="prompt.sent" target="working"/>
@@ -320,11 +423,26 @@
       <assign location="turns_since_reflect" expr="0"/>
       <send event="reflect.begin"/>
     </onentry>
-    <!-- The driver rewrote prompts and/or environment; adopt the new text. -->
+    <!--
+      The driver rewrote the loop's parts and/or its environment; adopt them.
+
+      ⚠⚠⚠ THE PARTS, NOT THE PROMPTS, and the change is forced rather than
+      tidy. This transition used to assign `start_prompt` and `turn_prompt`
+      whole, from text the driver had composed — a second author for the one
+      thing this template exists to own. Now that `priming` composes, a prompt
+      assigned here would be overwritten on the way through it, which is a
+      document that contradicts itself. Handing over the PARTS is the shape that
+      survives: `restarting -> priming` recomposes from them, so a reflection
+      changes what the loop is aiming at and the template still decides how that
+      is said.
+
+      ⚠ `north_star` is deliberately absent. It is where the loop is ultimately
+      going, and a run that may rewrite its own destination cannot be said to
+      have reached it.
+    -->
     <transition event="reflect.applied" target="restarting">
-      <assign location="start_prompt" expr="_event.data.start_prompt"/>
-      <assign location="turn_prompt" expr="_event.data.turn_prompt"/>
       <assign location="milestone" expr="_event.data.milestone"/>
+      <assign location="reference" expr="_event.data.reference"/>
     </transition>
     <!-- Nothing worth changing: carry on without paying for a restart. -->
     <transition event="reflect.none" target="working">
