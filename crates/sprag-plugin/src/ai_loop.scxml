@@ -64,19 +64,21 @@
   so `ecmascript` is the only legal declaration for a script datamodel. The
   mismatch above is upstream's shape, not something this file can correct.
 
-  ⚠⚠⚠ WHERE NON-ASCII SURVIVES AND WHERE IT DOES NOT — read this before writing
-  prose into the datamodel, because the two halves of this file differ:
+  ⚠⚠ NON-ASCII REACHES THIS DATAMODEL BY BOTH ROUTES INTO IT, and that is worth
+  writing down because for one round it did not:
 
-  * TEXT AUTHORED HERE, as a `<data expr="'…'">` literal, crosses whole. The three
-    `screen_rules` replies below are Korean and are measured intact.
-  * TEXT ARRIVING AS EVENT DATA does not. `sce-rust-lua` evaluates a payload as a
-    Lua expression first and falls back to a JSON converter that walks the bytes
-    with `bytes[i] as char` — a Latin-1 decode of UTF-8. So a `brief` in a
-    person's own language comes back mangled, and the driver REFUSES it rather
-    than prompting an agent with the result. Filed upstream as PR-87.
+  * TEXT AUTHORED HERE, as a `<data expr="'…'">` literal — the three `screen_rules`
+    replies below are Korean — always crossed whole.
+  * TEXT ARRIVING AS EVENT DATA did not. `sce-rust-lua` rewrote a JSON payload into
+    Lua source with `bytes[i] as char`, a Latin-1 decode of UTF-8, so a `brief` in
+    a person's own language came back mangled with no error raised anywhere. The
+    driver's read-back REFUSED it rather than prompting an agent with the result,
+    which is how it was found at all; filed as PR-87 and FIXED upstream, where the
+    rewrite was replaced by a real JSON decoder (restoring escapes and arrays with
+    it — valid JSON carrying either had been demoting `_event.data` to a string).
 
-  Both are measured by `a_non_ascii_string_says_which_seam_it_is_mangled_at`,
-  which is also what goes red the day the fix lands.
+  Both routes are measured by `a_non_ascii_string_reaches_the_datamodel_by_either
+  _route`, which is what goes red if either regresses.
 -->
 <scxml xmlns="http://www.w3.org/2005/07/scxml"
        version="1.0"

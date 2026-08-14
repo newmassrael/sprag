@@ -431,24 +431,30 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠ **WHICH SIDE OF THE DATAMODEL MANGLES A NON-ASCII STRING** — asked of the engine,
-    /// because the driver's brief came back mojibake and a diagnosis read off either end would be
-    /// a guess about the other.
+    /// ⚠⚠⚠ **A PERSON'S OWN LANGUAGE REACHES THE DATAMODEL BY BOTH ROUTES INTO IT** — the gate
+    /// that found SCE PR-87, repurposed onto the fix rather than deleted with it.
+    ///
+    /// # What it measured before, and why the two-seam shape is kept
     ///
     /// `OuterLoop::brief` sends a person's prose in as event data and reads it back out. An em
-    /// dash went in and `â\u{80}\u{94}` came out: the three UTF-8 bytes of U+2014, each widened
-    /// into its own `char`. That is a byte string being turned into a Rust `String` one byte at a
-    /// time, and it can happen at either of two seams — the JSON payload becoming `_event.data`,
-    /// or [`IScriptEngine::get_variable`] converting a Lua value back.
+    /// dash went in and `â\u{80}\u{94}` came out — the three UTF-8 bytes of U+2014, each widened
+    /// into its own `char`. Read off either end that is a guess: the widening could have been the
+    /// payload becoming `_event.data`, or [`IScriptEngine::get_variable`] converting a Lua value
+    /// back. **Asking the SAME engine, session and variable through the TWO DIFFERENT ARRIVAL
+    /// ROUTES is what made it arithmetic**: a document literal was clean and event data was not,
+    /// so the converter was the only thing left. `sce-rust-lua`'s `json_to_lua_table` walked the
+    /// payload with `bytes[i] as char`.
     ///
-    /// This separates them, and the separation matters because only one of the two is reachable
-    /// from a document. **`screen_rules` in the shipped template is Korean**, so this is not a
-    /// hypothetical about a caller: it is about text `screening` will read the day it is built.
+    /// Upstream's fix went further than the report asked — the Lua-source rewrite was replaced by
+    /// a real JSON decoder, which also restored escapes and arrays (valid JSON containing either
+    /// had been silently demoting `_event.data` to a string).
     ///
-    /// ⚠ Whatever this reports is a fact about the PINNED SCE rev and belongs upstream rather than
-    /// in a workaround here — see the workspace manifest's SCE block.
+    /// So the structure stays and the verdicts flip. It is still the only place that asks both
+    /// routes, and the routes are not interchangeable: **`screen_rules` in the shipped template is
+    /// Korean**, so seam one is about text `screening` will read the day it is built, while seam
+    /// two is about every brief a caller will ever supply.
     #[test]
-    fn a_non_ascii_string_says_which_seam_it_is_mangled_at() {
+    fn a_non_ascii_string_reaches_the_datamodel_by_either_route() {
         let (_engine, lua, session) = started();
 
         // ── seam one: a literal in the DOCUMENT, initialised by `<data expr>` ──
@@ -495,23 +501,56 @@ mod tests {
         let Ok(ScriptValue::String(held)) = &held else {
             panic!("the control: the brief must have assigned something at all: {held:?}");
         };
-        assert_ne!(
-            held, sent,
-            "⚠⚠⚠ UPSTREAM LANDED IT: a non-ASCII string now survives EVENT DATA. Delete this half, \
-             widen `outer`'s brief gates back to prose in a person's own language, and drop \
-             `a_brief_the_engine_cannot_carry_is_refused_rather_than_delivered`",
-        );
-        // ⚠ THE SHAPE OF THE DAMAGE, DERIVED rather than pasted, so a DIFFERENT breakage cannot be
-        // read as this one. `json_to_lua_table` walks the payload with `bytes[i] as char`, which is
-        // a Latin-1 decode of UTF-8 — every byte becomes the char of the same number and is then
-        // re-encoded. Reproducing that here is what makes the diagnosis a claim rather than a
-        // guess: if the mangling is ever something else, this stops matching.
-        let latin1_widened: String = sent.bytes().map(char::from).collect();
         assert_eq!(
+            held, sent,
+            "⚠⚠⚠ SEAM TWO: a non-ASCII string does not survive EVENT DATA, where the same \
+             characters authored in the document (asserted above) do. So the mangling is in the \
+             payload -> `_event.data` conversion and NOT in `get_variable`. Every brief a caller \
+             supplies crosses this seam. This is SCE PR-87 returning",
+        );
+        // ⚠ THE OLD DAMAGE, DERIVED rather than pasted, kept as the NEGATIVE control. A regression
+        // would not merely differ from what was sent — it would be exactly a Latin-1 widening of
+        // the UTF-8 bytes, because that is what `bytes[i] as char` does. Naming the shape is what
+        // stops a DIFFERENT breakage being read as this one having come back.
+        let latin1_widened: String = sent.bytes().map(char::from).collect();
+        assert_ne!(
             held, &latin1_widened,
-            "the damage must be exactly a Latin-1 widening of the UTF-8 bytes — that is the \
-             mechanism at `sce-rust-lua`'s `json_to_lua_table`, and anything else is a different \
-             defect wearing its symptom",
+            "the exact shape of PR-87 must not be reachable again: every byte its own char",
+        );
+        assert_ne!(
+            sent,
+            latin1_widened.as_str(),
+            "⚠ THE CONTROL FOR THE CONTROL: the probe text must actually CONTAIN non-ASCII, or the \
+             assertion above holds for a string nothing could have damaged",
+        );
+
+        // ── and the two things upstream's fix restored beyond what was reported ──
+        //
+        // The rewrite required JSON's grammar to coincide with Lua's. Escapes and arrays do not,
+        // so valid JSON carrying either had been demoting `_event.data` to a STRING — the field
+        // read back nil and no error was raised anywhere. Neither shape is used by this document
+        // today, which is exactly why they get a gate: nothing else here would notice them break.
+        engine.raise_external(
+            AiLoopEvent::Brief,
+            &serde_json::json!({
+                "north_star": "a \"quoted\" line\nand a second one",
+                "milestone": "m",
+                "reference": "r",
+                "max_turns": 3,
+                "reflect_every": 9,
+            })
+            .to_string(),
+            "",
+        );
+        engine.step();
+        assert!(
+            matches!(
+                lua.get_variable(&session, "north_star"),
+                Ok(ScriptValue::String(ref held))
+                    if held == "a \"quoted\" line\nand a second one",
+            ),
+            "a JSON escape must decode rather than be handed to a Lua parser: {:?}",
+            lua.get_variable(&session, "north_star"),
         );
     }
 }

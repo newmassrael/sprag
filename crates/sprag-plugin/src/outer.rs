@@ -213,10 +213,11 @@ pub enum Briefed {
     /// the brief would report success on a loop about to prompt an agent with `(edit me)`.
     ///
     /// ⚠⚠⚠ IT IS NOT HYPOTHETICAL, AND THE READ-BACK IS THE ONLY THING THAT CATCHES IT. At the
-    /// pinned SCE rev a brief holding any non-ASCII character comes back mangled — measured, and
-    /// isolated to one seam in
-    /// `a_non_ascii_string_says_which_seam_it_is_mangled_at`. Without this arm the
-    /// loop would prompt a live agent with the mojibake and report success.
+    /// SCE rev before this one, a brief holding any non-ASCII character came back mangled — the
+    /// engine's JSON path decoded UTF-8 as Latin-1. **Nothing else in the product could have
+    /// noticed**: the event was accepted, the assignment succeeded, no error was raised anywhere,
+    /// and the loop would have prompted a live agent with the mojibake and reported success. It
+    /// was found by this arm, filed upstream as PR-87 and fixed there.
     ///
     /// ⚠⚠ THE MACHINE IS SENT TO `failed` when this is answered. A brief the engine could not
     /// carry has already been assigned — the mangled text is in the datamodel — so a caller that
@@ -931,8 +932,177 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::testing::started;
+    use sce_rust_runtime::helpers::io_processors::IoProcessorDescriptor;
+    use sce_rust_runtime::scripting::i_script_engine::{NativeMethod, StateQueryCallback};
+    use sce_rust_runtime::{ScriptResult, SetCurrentEventArgs};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// **A REAL SCRIPT ENGINE THAT DISAGREES ABOUT ONE VARIABLE** — the witness this driver's
+    /// refusals need, and the only thing that can produce them.
+    ///
+    /// # ⚠⚠⚠ Why a stand-in ENGINE, where every other fixture here stands in for a PANE
+    ///
+    /// Three of [`OuterLoop`]'s answers exist because a datamodel can fail to hold what it was
+    /// given: [`Briefed::NotHeld`], `Authored::read`'s [`None`], and the `fail` [`advance`] raises
+    /// when a prompt cannot be read at the moment of delivery. **None of them is reachable from
+    /// the public surface**, and that is not an oversight in the gates — it is the same privacy
+    /// that made debt A-1 unfixable from outside: the session id belongs to the loop, so nothing
+    /// out here can reach into the datamodel and take something away.
+    ///
+    /// They were not hypothetical either. `Briefed::NotHeld` is what caught **SCE PR-87** — a
+    /// non-ASCII brief silently mangled crossing into `_event.data`, with the event accepted, the
+    /// assignment successful and no error raised anywhere. Upstream fixed it, which removed the
+    /// one mechanism that drove the arm; **retiring the arm with it would have retired the only
+    /// thing in this driver that turns a silent engine defect into a refusal.**
+    ///
+    /// So the witness is R356's shape, one layer down: not an absence, but **a peer that answers
+    /// with a DIFFERENT VALUE**. It delegates every one of the engine's twenty-three methods to a
+    /// real `LuaEngine` and lies about exactly one read, on demand.
+    ///
+    /// ⚠ `lying` is a switch rather than a constructor argument because two of the three arms need
+    /// the engine to be TRUTHFUL while the loop is built — `OuterLoop::new` reads all four authored
+    /// strings — and to lie afterwards. A wrapper that lied from birth could only ever drive the
+    /// constructor's refusal.
+    struct Disagreeing {
+        inner: Arc<dyn IScriptEngine>,
+        /// The variable this engine will not answer honestly about.
+        about: &'static str,
+        /// What it answers instead, once `lying` is on.
+        instead: ScriptValue,
+        lying: AtomicBool,
+    }
+
+    impl Disagreeing {
+        fn about(name: &'static str, instead: ScriptValue) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Arc::new(sce_rust_lua::LuaEngine::new()),
+                about: name,
+                instead,
+                lying: AtomicBool::new(false),
+            })
+        }
+
+        fn start_lying(&self) {
+            self.lying.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl IScriptEngine for Disagreeing {
+        fn get_variable(&self, session_id: &str, name: &str) -> ScriptResult<ScriptValue> {
+            if name == self.about && self.lying.load(Ordering::SeqCst) {
+                return Ok(self.instead.clone());
+            }
+            self.inner.get_variable(session_id, name)
+        }
+
+        // ── everything else is the real engine, verbatim ──
+        fn execute_script(&self, session_id: &str, script: &str) -> ScriptResult<ScriptValue> {
+            self.inner.execute_script(session_id, script)
+        }
+        fn evaluate_expression(&self, session_id: &str, expr: &str) -> ScriptResult<ScriptValue> {
+            self.inner.evaluate_expression(session_id, expr)
+        }
+        fn validate_expression(&self, session_id: &str, expr: &str) -> ScriptResult<bool> {
+            self.inner.validate_expression(session_id, expr)
+        }
+        fn set_variable(
+            &self,
+            session_id: &str,
+            name: &str,
+            value: ScriptValue,
+        ) -> ScriptResult<()> {
+            self.inner.set_variable(session_id, name, value)
+        }
+        fn set_variable_as_dom(&self, session_id: &str, name: &str, xml: &str) -> ScriptResult<()> {
+            self.inner.set_variable_as_dom(session_id, name, xml)
+        }
+        fn has_variable(&self, session_id: &str, name: &str) -> bool {
+            self.inner.has_variable(session_id, name)
+        }
+        fn is_variable_pre_initialized(&self, session_id: &str, name: &str) -> bool {
+            self.inner.is_variable_pre_initialized(session_id, name)
+        }
+        fn setup_system_variables(
+            &self,
+            session_id: &str,
+            session_name: &str,
+            io: &[IoProcessorDescriptor],
+        ) -> ScriptResult<()> {
+            self.inner
+                .setup_system_variables(session_id, session_name, io)
+        }
+        fn set_current_event(
+            &self,
+            session_id: &str,
+            args: SetCurrentEventArgs<'_>,
+        ) -> ScriptResult<()> {
+            self.inner.set_current_event(session_id, args)
+        }
+        fn register_global_function(&self, name: &str, callback: NativeMethod) -> bool {
+            self.inner.register_global_function(name, callback)
+        }
+        fn bind_native_object(
+            &self,
+            session_id: &str,
+            object_name: &str,
+            methods: Vec<(String, NativeMethod)>,
+        ) -> bool {
+            self.inner
+                .bind_native_object(session_id, object_name, methods)
+        }
+        fn get_engine_info(&self) -> String {
+            self.inner.get_engine_info()
+        }
+        fn get_memory_usage(&self) -> usize {
+            self.inner.get_memory_usage()
+        }
+        fn collect_garbage(&self) {
+            self.inner.collect_garbage();
+        }
+        fn set_state_query_callback(&self, session_id: &str, callback: Option<StateQueryCallback>) {
+            self.inner.set_state_query_callback(session_id, callback);
+        }
+        fn initialize(&self) -> bool {
+            self.inner.initialize()
+        }
+        fn shutdown(&self) {
+            self.inner.shutdown();
+        }
+        fn is_initialized(&self) -> bool {
+            self.inner.is_initialized()
+        }
+        fn reset(&self) {
+            self.inner.reset();
+        }
+        fn create_session(&self, session_id: &str) {
+            self.inner.create_session(session_id);
+        }
+        fn destroy_session(&self, session_id: &str) {
+            self.inner.destroy_session(session_id);
+        }
+        fn has_session(&self, session_id: &str) -> bool {
+            self.inner.has_session(session_id)
+        }
+    }
+
+    /// A pane running `cat` — a peer that takes whatever is typed and says nothing of its own.
+    fn quiet_pane() -> (Arc<Mutex<Workspace>>, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        (workspace, pane)
+    }
 
     /// A stand-in AGENT CLI: long-lived, echo off, answers every prompt and says the document's
     /// done marker once it has taken `turns_before_done` turns.
@@ -1198,16 +1368,18 @@ mod tests {
         .expect("the document's datamodel must carry its four authored strings");
 
         // ⚠ PROSE, not identifiers. A north star is what a person types: quotes that would splice
-        // a hand-built payload apart, an apostrophe, a newline that would end the line early, and
-        // a brace that would close the object. A brief that survives this survives a real one.
+        // a hand-built payload apart, an apostrophe, a newline that would end the line early, a
+        // brace that would close the object, an em dash and **the language this repository's owner
+        // actually writes in**. A brief that survives this survives a real one.
         //
-        // ⚠⚠ IT IS ASCII, AND THAT IS A LIMIT RATHER THAN A CHOICE — see
-        // `a_brief_the_engine_cannot_carry_is_refused_rather_than_delivered`, which pins the
-        // measured upstream reason and is the gate that goes red the day it is lifted.
+        // ⚠⚠ IT WAS ASCII FOR ONE ROUND AND THAT WAS A LIMIT, NOT A CHOICE: at the previous SCE
+        // pin a non-ASCII brief was mangled crossing into `_event.data` and `brief` refused it.
+        // Upstream fixed it (PR-87) and this widened back, which is what the retired gate's own
+        // failure message asked for.
         let brief = Brief {
-            north_star: "ship \"sprag\" 1.0 and don't break the wire {yet}".to_string(),
-            milestone: "the outer loop\nruns unattended".to_string(),
-            reference: "~/herdr, ~/ghostty, DESIGN.md 5".to_string(),
+            north_star: "ship \"sprag\" 1.0 — don't break the wire {yet}".to_string(),
+            milestone: "바깥 루프가\n혼자 돈다".to_string(),
+            reference: "~/herdr, ~/ghostty, 그리고 DESIGN.md §5".to_string(),
             max_turns: 3,
             reflect_every: 99,
         };
@@ -1257,53 +1429,38 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠ **A BRIEF THE SCRIPT ENGINE CANNOT CARRY IS REFUSED, NOT DELIVERED** — and the reason
-    /// it cannot is measured, upstream, and named here.
+    /// ⚠⚠⚠ **A BRIEF THE DATAMODEL DOES NOT HOLD EXACTLY IS REFUSED, NOT DELIVERED.**
     ///
-    /// # The defect, isolated
+    /// # Why this gate exists at all, and why it is not the one it replaced
     ///
-    /// At the pinned SCE rev a non-ASCII string does not survive arriving as EVENT DATA, while the
-    /// same characters authored as a `<data expr>` literal in the same document, read out of the
-    /// same session by the same call, survive perfectly —
-    /// `a_non_ascii_string_says_which_seam_it_is_mangled_at` is where those two are separated.
+    /// Its predecessor drove the same refusal through **SCE PR-87** — a non-ASCII string did not
+    /// survive arriving as event data, and [`OuterLoop::brief`]'s read-back is the only thing that
+    /// caught it. Upstream landed the fix, so that mechanism is gone, **and deleting the gate with
+    /// it would have left `Briefed::NotHeld` with no driver at all** — retiring the one piece of
+    /// this driver that turns somebody else's silent bug into a refusal.
     ///
-    /// The mechanism, read after the measurement said which end to read:
-    /// `sce-rust-lua`'s `set_current_event` tries the payload as a Lua expression, and a JSON
-    /// object is not one, so it falls to `json_to_lua_table` — which walks the payload with
-    /// `bytes[i] as char`. That is a Latin-1 decode of UTF-8: `북` (`EB B6 81`) becomes three
-    /// separate chars and is re-encoded as six bytes. **Filed upstream; not worked around here.**
-    /// Sending Lua table syntax instead of JSON would dodge it and would hard-code the one engine
-    /// this driver deliberately takes as a parameter.
+    /// So the question was asked again of the engine, on the other axis a brief carries: **what
+    /// does the datamodel do with a number it cannot hold exactly?** Whatever it answers, the
+    /// product's rule is the same one — a budget that came back different is a run that would be
+    /// bounded by a number nobody chose, and `max_turns` is the ceiling that decides when the loop
+    /// stops driving a real agent.
     ///
-    /// # ⚠⚠ Why the product is still safe under it, which is what this asserts
+    /// # ⚠⚠ What is asserted, and what is deliberately NOT
     ///
-    /// [`OuterLoop::brief`] reads every part back out of the datamodel instead of trusting that it
-    /// sent them. So the mangling is CAUGHT: the caller is told which part did not survive and
-    /// what the machine holds instead, and the run is sent to `failed` rather than left startable —
-    /// because the mangled text is already assigned and a caller that ignored the answer would
-    /// prompt a live agent with mojibake.
-    ///
-    /// ⚠ **THIS GATE GOES RED WHEN UPSTREAM LANDS THE FIX.** That is the point of writing it as an
-    /// equality on the refusal rather than as a `#[ignore]`: the day a brief in a person's own
-    /// language crosses whole, this fails and says to widen the gate above.
+    /// Not that the engine is wrong to round. It is a script datamodel and `i64::MAX` is outside
+    /// what a double holds exactly; that is a fact about the engine, not a defect. What is
+    /// asserted is that **the driver notices** — names the part, carries what the machine holds,
+    /// and sends the run to `failed` rather than leaving it startable on a budget it did not get.
     #[test]
-    fn a_brief_the_engine_cannot_carry_is_refused_rather_than_delivered() {
-        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
-        let pane = {
-            let mut command = CommandBuilder::new("/bin/sh");
-            command.arg("-c");
-            command.arg("exec cat");
-            command.env("TERM", "dumb");
-            workspace
-                .lock()
-                .unwrap()
-                .spawn(command, "sh".to_string(), 80, 8)
-                .expect("spawn pane")
-        };
+    fn a_brief_the_datamodel_does_not_hold_exactly_is_refused_rather_than_delivered() {
+        let engine = Disagreeing::about(
+            "north_star",
+            ScriptValue::String("something else entirely".to_string()),
+        );
+        let (workspace, pane) = quiet_pane();
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         let mut loops = OuterLoop::new(
-            Arc::clone(&lua),
+            Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
             None,
             Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
@@ -1311,27 +1468,26 @@ mod tests {
             false,
         )
         .expect("the document's datamodel must carry its four authored strings");
+        // ⚠ TRUTHFUL UNTIL NOW, and that is the control: the loop was built against an engine
+        // that answered honestly, so the refusal below is about the read-back and not about
+        // construction having quietly failed.
+        engine.start_lying();
 
-        let wanted = "비용 무시하고 가장 장기적으로 올바른 방법으로";
-        let answer = loops.brief(&Brief {
-            north_star: wanted.to_string(),
+        let brief = Brief {
+            north_star: "what the caller asked for".to_string(),
             milestone: "m".to_string(),
             reference: "r".to_string(),
             max_turns: 3,
             reflect_every: 99,
-        });
+        };
+
+        // ── the value came back DIFFERENT: the shape SCE PR-87 produced ──
+        let answer = loops.brief(&brief);
         let Briefed::NotHeld { part, held } = answer else {
-            // ⚠ TWO CAUSES, and this message names both because they are told apart by looking
-            // rather than by guessing: the engine now carries the string, OR `brief` stopped
-            // reading it back. `a_non_ascii_string_says_which_seam_it_is_mangled_at` asks the
-            // ENGINE directly and answers that question on its own.
             panic!(
-                "⚠⚠⚠ a brief in a person's own language was accepted. Either UPSTREAM LANDED IT — \
-                 in which case widen \
-                 `a_briefed_loop_prompts_an_agent_with_what_it_was_briefed_with` back to non-ASCII \
-                 prose and delete this gate — or `brief` STOPPED READING THE PARTS BACK, which is \
-                 a loop about to type mojibake at a live agent. \
-                 `a_non_ascii_string_says_which_seam_it_is_mangled_at` says which. Got {answer:?}",
+                "⚠⚠⚠ the loop reports holding a brief its engine answers differently about. This \
+                 is the arm that caught SCE PR-87 — a silently mangled brief, with the event \
+                 accepted, the assignment successful and no error raised anywhere. Got {answer:?}",
             );
         };
         assert_eq!(
@@ -1339,11 +1495,11 @@ mod tests {
             "the refusal must name the part that did not survive, or a caller cannot tell which \
              of five to rewrite",
         );
-        assert!(
-            held.is_some_and(|held| held != wanted),
-            "⚠ THE CONTROL: the refusal must be about a value that came back DIFFERENT. A `None` \
-             here would mean the variable was missing entirely, which is a different failure and \
-             would make this gate pass for the wrong reason",
+        assert_eq!(
+            held.as_deref(),
+            Some("something else entirely"),
+            "⚠ and it must carry what the machine holds INSTEAD, or a caller is told a part was \
+             wrong and not what the agent would have been asked to work on",
         );
 
         // ── and the refusal is a refusal: the run cannot be pumped past it ──
@@ -1354,10 +1510,126 @@ mod tests {
         assert_eq!(
             pumped,
             Pumped::Ended(AiLoopState::Failed),
-            "⚠⚠⚠ a loop whose brief the engine mangled must not go on to prompt an agent with it. \
-             The mangled text is already in the datamodel, so an answer a caller could walk past \
-             is one that types mojibake at a live agent",
+            "⚠⚠⚠ a loop whose brief the datamodel did not take must not go on to drive an agent. \
+             The value is already assigned, so an answer a caller could walk past is a run about \
+             something nobody wrote",
         );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **A PART THE DATAMODEL ANSWERS ABOUT WITH SOMETHING THAT IS NOT TEXT IS ALSO REFUSED**,
+    /// and the refusal says it could not name what is held.
+    ///
+    /// [`Briefed::NotHeld`]'s `held` is an [`Option`] for exactly this: *the value came back
+    /// different* and *the value did not come back as a value at all* are different failures, and
+    /// a caller rewriting a brief needs to know which. Without this the `None` arm is a shape
+    /// nothing produces.
+    #[test]
+    fn a_part_that_comes_back_as_nothing_is_refused_and_says_it_cannot_name_what_is_held() {
+        let engine = Disagreeing::about("milestone", ScriptValue::Undefined);
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = OuterLoop::new(
+            Arc::clone(&engine) as Arc<dyn IScriptEngine>,
+            pane,
+            None,
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        engine.start_lying();
+
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "n".to_string(),
+                milestone: "m".to_string(),
+                reference: "r".to_string(),
+                max_turns: 3,
+                reflect_every: 99,
+            }),
+            Briefed::NotHeld {
+                part: "milestone",
+                held: None,
+            },
+            "a part that is not a string must be refused with `held: None` — a caller told only \
+             that something was wrong cannot tell a mangled value from a missing one",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A MACHINE WHOSE DATAMODEL DOES NOT CARRY THE AUTHORED STRINGS IS REFUSED AT
+    /// CONSTRUCTION, AND ONE THAT STOPS CARRYING THEM MID-RUN FAILS THE RUN.**
+    ///
+    /// Two arms with one cause, and neither had a driver before this witness existed:
+    ///
+    /// * `Authored::read` answers [`None`] and [`OuterLoop::new`] refuses. That is what stops a
+    ///   run being started against a machine this driver cannot drive.
+    /// * [`advance`](OuterLoop::advance) reads the owed prompt **at the moment of delivery** — the
+    ///   whole point of the round that removed the construction-time snapshot — so a datamodel
+    ///   that stops answering AFTER the loop was built has to be caught there instead. It raises
+    ///   the document's own `fail`, because a machine that cannot say what to send is a run that
+    ///   cannot go on, and inventing a `Pumped` arm for it would put a terminal decision in the
+    ///   driver.
+    ///
+    /// ⚠ The two are driven by the SAME lie, switched on at different moments. That is what makes
+    /// this a claim about WHEN the prompt is read rather than two coincidences.
+    #[test]
+    fn a_datamodel_that_stops_answering_refuses_the_loop_or_fails_the_run() {
+        // ── at construction ──
+        let engine = Disagreeing::about("start_prompt", ScriptValue::Undefined);
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        engine.start_lying();
+        let turn = || {
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                .expect("a non-zero bound")
+        };
+        assert!(
+            OuterLoop::new(
+                Arc::clone(&engine) as Arc<dyn IScriptEngine>,
+                pane,
+                None,
+                turn(),
+                false,
+            )
+            .is_none(),
+            "⚠⚠ a machine that does not answer with its four authored strings must be refused \
+             here, or a run is started against one this driver cannot drive",
+        );
+
+        // ── and mid-run, which is a different claim: the prompt is read WHEN IT IS DELIVERED ──
+        let engine = Disagreeing::about("start_prompt", ScriptValue::Undefined);
+        let mut loops = OuterLoop::new(
+            Arc::clone(&engine) as Arc<dyn IScriptEngine>,
+            pane,
+            None,
+            turn(),
+            false,
+        )
+        .expect("the control: a truthful engine must build a loop");
+        engine.start_lying();
+
+        let run = RunContext::uncancellable();
+        let pumped = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert_eq!(
+            pumped,
+            Pumped::Moved {
+                from: AiLoopState::Idle,
+                raised: AiLoopEvent::Start,
+                to: AiLoopState::Failed,
+                spent: 0,
+            },
+            "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
+             own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
+             an empty prompt here would report a delivery of nought bytes as a turn",
+        );
+        // ⚠ `said_done`'s own unreadable-marker arm is NOT asserted here, and saying so is the
+        // point: this engine lies about `start_prompt`, not about `done_marker`, so a `false` from
+        // it would be the empty screen answering rather than the datamodel. Driving that arm needs
+        // a pane that DOES carry the marker plus a liar aimed at it — registered, not faked.
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
