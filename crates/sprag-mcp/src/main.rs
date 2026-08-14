@@ -2104,11 +2104,16 @@ fn argument_help(name: &str) -> &'static str {
              guardrail."
         }
         "reflect_every" => {
-            "HOW OFTEN THE LOOP STOPS TO IMPROVE ITS OWN SETUP (ai_loop). ⚠ THIS BUILD DOES NOT \
-             DRIVE THAT STATE YET, so it must be at least `max_turns` — leave it out and it \
-             becomes exactly `max_turns`, which is the only value that keeps the run inside the \
-             path this build can finish. A smaller number is refused when you call, naming this \
-             argument, rather than stopping the run part way through."
+            "HOW OFTEN THE LOOP STOPS TO IMPROVE ITS OWN SETUP (ai_loop) — it writes what it has \
+             learned to disk, then CLOSES the agent's session and opens a fresh one that reads it. \
+             That is what lets one run outlive one agent's context, and it is the reason to name a \
+             number smaller than `max_turns`. ⚠ Leaving it out defaults it to `max_turns`, so the \
+             run never reflects — deliberately: a restart CLOSES a pane somebody may be reading, so \
+             a caller who said nothing about reflection has not asked for one. ⚠ It is also not \
+             free: a restart discards the accumulated context and pays a cold start to rebuild the \
+             fixed prefix, which costs more than it saves unless a lot has accumulated to discard. \
+             ⚠ A `screen_rules` match restarts the session whatever this says — that is a \
+             correctness edge rather than a budget."
         }
         "agent" => {
             "WHICH PROGRAM IS IN THE PANE (ai_loop) — `claude`, or whatever list_panes reports \
