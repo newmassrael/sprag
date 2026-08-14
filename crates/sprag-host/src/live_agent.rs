@@ -121,7 +121,11 @@ struct Live {
     pane: PaneId,
     agent: String,
     /// Held so the directory outlives the pane that is running in it.
-    _scratch: Scratch,
+    /// ⚠ Named rather than `_scratch` since R382: the gate that drives a milestone which WRITES A
+    /// FILE has to look in it. That look is also the only thing in this module that has ever
+    /// checked the premise its whole safety argument rests on — *the agent runs in here* — which
+    /// was registered as owed and asserted by nothing.
+    scratch: Scratch,
 }
 
 impl Live {
@@ -133,6 +137,24 @@ impl Live {
 
         let mut command = CommandBuilder::new(&agent);
         command.cwd(scratch.path());
+        // ⚠⚠⚠ **THE CHILD MUST NOT INHERIT WHOEVER RAN THIS GATE'S PERMISSION ALLOWLIST**, and
+        // this is the same argument as the blanked variables below rather than a new one.
+        //
+        // MEASURED, which is the only reason it is here: the gate that drives a milestone which
+        // WRITES A FILE reported `dialogs answered: 0` — the agent created the file and never
+        // asked, because this developer's `~/.claude/settings.json` allows `Write(*)`, `Bash(*)`
+        // and `Read(*)`. So the run's permission path was decided by a file nobody in this
+        // measurement wrote, and the same gate on another machine would take a different path and
+        // report the same green. **A fixture whose behaviour is read off the developer's home
+        // directory is a fixture asserting their configuration.**
+        //
+        // ⚠ `project` and not the empty string: it names a source that exists, and the scratch
+        // directory has no project settings in it — so the effective posture is *this agent's own
+        // defaults*, which is what a person meets on a machine they have not configured.
+        // ⚠ It is about SETTINGS and not about credentials, which are read from elsewhere; the
+        // sessions this spawns still authenticate exactly as before.
+        command.arg("--setting-sources");
+        command.arg("project");
         // A real terminal, because the agent renders a TUI and the detector reads what it renders.
         command.env("TERM", "xterm-256color");
         // ⚠ THE CHILD MUST BE THE THING A PERSON GETS FROM A TERMINAL. This process is itself an
@@ -183,7 +205,7 @@ impl Live {
             agents,
             pane,
             agent,
-            _scratch: scratch,
+            scratch,
         }
     }
 
@@ -826,6 +848,160 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         "⚠⚠ and it must have converged INSIDE its budget rather than at it — a run that reached \
          the ceiling on the same pass cannot be told from one that ran out. Turns: {:?}",
         loops.turns(),
+    );
+}
+
+/// ⚠⚠⚠ **A LIVE LOOP THAT DOES WORK WHICH CHANGES SOMETHING** — register item 112, and the one
+/// claim every other measurement of this loop has deliberately avoided making.
+///
+/// # ⚠⚠⚠ What every live gate before this one refused to touch, and said so
+///
+/// The convergence gate above picks an ARITHMETIC milestone, in its own words *"so no permission
+/// dialog can fire"*: a milestone that writes a file raises one, a dialog sends the machine to
+/// `screening`, and `screening` is unbuilt. So the whole live record of this loop is of an agent
+/// **answering from its own head and touching nothing**. The model wrote that limitation back in
+/// its own closing report, twice, unprompted: *"the next step is a milestone with real work in it
+/// — something requiring tool use, multiple steps, or a failure to recover from."*
+///
+/// This is that milestone. It asks a real `claude` to CREATE A FILE, which means:
+///
+/// * it uses a tool, so the agent stops and asks for permission — the path no live run has taken;
+/// * the run answers on the caller's own [`Consents`](sprag_plugin::Consents), which is the
+///   argument this round put on the `ai_loop` form and which nothing but a stand-in has driven;
+/// * and **the assertion is the FILE**, not a word on a screen. A run that reported `converged`
+///   having written nothing would fail here, which is the difference between measuring the loop's
+///   bookkeeping and measuring its effect.
+///
+/// # ⚠⚠ And it settles a premise this module's safety argument rests on
+///
+/// *"A live agent is a program that edits files. It is spawned in a scratch directory of this
+/// measurement's own"* — registered as owed because **nothing asserted it**. If the file appears in
+/// the scratch directory, the agent's working directory really is the sandbox; if it appears
+/// nowhere, this gate says so before anybody trusts the sentence again.
+///
+/// ⚠ THE CONSENT QUOTES THE AGENT'S OWN WORDS and authorises exactly one option. `Yes` is matched
+/// as a WHOLE LABEL, so *"Yes, and don't ask again"* — the option that turns off every future
+/// question — is NOT what this run agrees to. That is [`Consent::covers`]'s exact-before-substring
+/// rule doing the work, on a real dialog rather than a fixture's.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{AiLoopState, Brief, Consent, Consents, Turn as TurnContract};
+
+    /// Room for the tool turn, the dialog and the closing report, and no more.
+    const LIVE_MAX_TURNS: i64 = 4;
+    /// A name nothing else would produce, so its presence is this run's doing.
+    const MADE: &str = "SPRAG-LOOP-MADE-THIS.txt";
+
+    let live = Live::start("does-work");
+    let began = Instant::now();
+    let expected = live.scratch.path().join(MADE);
+    assert!(
+        !expected.exists(),
+        "⚠ THE CONTROL: the file must not be there before the run, or its presence afterwards \
+         says nothing: {expected:?}",
+    );
+
+    let brief = Brief {
+        north_star: "prove an outer loop can drive a real agent through work that changes a file"
+            .to_string(),
+        milestone: format!(
+            "create a file named {MADE} in the current directory whose only contents are the \
+             single word: ready"
+        ),
+        reference: "you are in an empty scratch directory of your own; use your file tools"
+            .to_string(),
+        max_turns: LIVE_MAX_TURNS,
+        reflect_every: LIVE_MAX_TURNS,
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            // ⚠⚠⚠ THE WHOLE POINT. Without this the run stops at the agent's first permission
+            // dialog with nothing judged — measured against a stand-in, and the reason every live
+            // milestone before this one was arithmetic.
+            may_answer: Consents::of(vec![
+                Consent::parse("Do you want to".to_string(), "Yes".to_string())
+                    .expect("both needles are non-empty"),
+            ]),
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        // The substrate's bounds, as the convergence gate beside this one establishes. A tool turn
+        // is slower than an arithmetic one, so the wall clock is the looser of the two.
+        max_iterations: 40,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(420)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let held = progress.lock().expect("the progress cell").clone();
+    let walked: Vec<String> = held
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    let made = std::fs::read_to_string(&expected);
+    println!(
+        "\n== a live loop doing work that changes something ==\n  agent: {}\n  walk: {walked:?}\n  \
+         turns: {:?}\n  iterations: {}\n  dialogs answered: {}\n  spent: {:?}\n  \
+         through the loop: {:?}\n  {MADE}: {made:?}\n",
+        live.agent,
+        loops.turns(),
+        outcome.iterations,
+        held.answered,
+        outcome.cost,
+        began.elapsed(),
+    );
+
+    // ⚠⚠⚠ THE FILE IS THE ASSERTION. Everything else this run reports is bookkeeping about a
+    // screen; this is the world being different because a loop ran.
+    let made = made.unwrap_or_else(|_| {
+        panic!(
+            "⚠⚠⚠ the loop must have driven the agent to actually CREATE {expected:?}. It is not \
+             there, so either the agent never got permission (walk: {walked:?}) or it wrote \
+             somewhere else — which would also mean this module's sandbox claim is false. Outcome: \
+             {:?}, screen: {}",
+            outcome.state,
+            live.tail(14),
+        )
+    });
+    assert!(
+        made.to_lowercase().contains("ready"),
+        "⚠⚠ and its contents must be what the milestone asked for, or the loop drove the agent to \
+         do something adjacent to the work: {made:?}",
+    );
+    assert_eq!(
+        outcome.state,
+        sprag_plugin::OutcomeState::Converged,
+        "⚠⚠ and the run must AGREE that it reached the milestone. A file on disk beside an \
+         `exhausted` or `blocked` outcome would mean the work happened and the loop could not tell. \
+         Walked: {walked:?}, screen: {}",
+        live.tail(14),
+    );
+    assert_eq!(
+        loops.state(),
+        AiLoopState::Converged,
+        "and the document agrees with the run's word",
+    );
+    assert!(
+        held.answered >= 1,
+        "⚠⚠⚠ AND THE RUN MUST HAVE ANSWERED AT LEAST ONE DIALOG ON THE CALLER'S BEHALF. If it \
+         answered none, this agent was configured to ask for nothing and the gate measured the \
+         arithmetic case with extra steps — which is exactly the hole it was built to close. \
+         Journal: {walked:?}",
     );
 }
 

@@ -313,6 +313,25 @@ impl Plugin for AiLoop {
                 to,
                 spent,
             } => {
+                // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
+                // is reported once. The barrier answered the peer's question inside this pump, on
+                // a clause the caller declared — a decision taken on somebody's behalf, which the
+                // substrate insists is a WORD and not a note (`Verdict::Answered`), because a run
+                // whose journal spells it `continue` is a run in which approvals are indexed by
+                // nothing.
+                //
+                // ⚠⚠ ITS BYTES JOIN THE STEP'S. They were typed by the BARRIER rather than by
+                // `say`, so `Pumped::Moved`'s own `spent` cannot see them — and a cost ceiling
+                // that could not see what a run typed into somebody's dialog would be a ceiling
+                // with a hole in it.
+                if let Some(answered) = self.inner.took_answer() {
+                    let note = answered.describe();
+                    return Ok(Step::new(
+                        Cost::Bytes(spent + answered.bytes),
+                        Verdict::Answered(answered),
+                    )
+                    .noting(note));
+                }
                 let note = format!("{from:?} --{raised:?}--> {to:?}");
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
@@ -440,6 +459,8 @@ mod tests {
             turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(5)))
                 .expect("a non-zero bound"),
             shows_the_prompt: false,
+            may_answer: None,
+            attended: crate::readiness::Attended::NoOne,
         }
     }
 
@@ -646,6 +667,101 @@ mod tests {
         AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("⚠ the control: an equal pair is the brief this build can drive to the end");
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A LOOP WHOSE AGENT STOPS TO ASK PERMISSION** — register items 119/120/112, measured
+    /// with today's API before anything was built for it.
+    ///
+    /// Every live measurement of this loop picked an ARITHMETIC milestone *"so no permission dialog
+    /// can fire"*, and the model itself wrote back that the next step needed real work. **Every
+    /// kind of real work raises one of these.** This is what happens when one does.
+    ///
+    /// ⚠⚠ IT IS A PAIR, and the pair is the whole claim:
+    ///
+    /// * **given no consent, the run STOPS**, publishes the question, and says `no_consent` — which
+    ///   is honest and is the end of the run;
+    /// * **given the caller's own consent, the same peer, the same brief and the same fixture
+    ///   CONVERGE** — the dialog is answered, the loop takes its next turn and the agent reaches
+    ///   the milestone.
+    ///
+    /// Either half alone would be a fact about one arrangement. Together they say the consent is
+    /// what makes the difference, and nothing else about the run changed.
+    #[test]
+    fn a_loop_whose_agent_asks_stops_without_a_consent_and_goes_on_with_one() {
+        /// One run against a peer that raises a permission dialog on its first turn, with whatever
+        /// answering contract `may_answer` declares — and what became of it.
+        fn run_with(may_answer: Option<crate::consent::Consents>) -> (OutcomeState, Option<i64>) {
+            let (workspace, pane) = crate::testing::standin_agent_asking();
+            let access = crate::testing::supervised_asking(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &brief_for(40),
+                &AiLoopSpec {
+                    may_answer,
+                    ..standin_spec()
+                },
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 40,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let turns = loops.turns();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (outcome.state, turns)
+        }
+
+        // ── THE DEFECT, IN ITS OWN WORDS ──
+        let (unarmed, unarmed_turns) = run_with(None);
+        let OutcomeState::Blocked(Some(unanswered)) = &unarmed else {
+            panic!(
+                "⚠⚠⚠ a loop whose agent stops to ask must report BLOCKED with the question, not \
+                 {unarmed:?} — anything else is a run that typed at a menu or died silently",
+            );
+        };
+        assert_eq!(
+            unanswered.why(),
+            crate::consent::Refusal::NoConsent,
+            "⚠⚠ and it must say WHY nothing was answered. `no_consent` is the one reason whose \
+             remedy is a change to the CALL, which is what makes the other half of this pair \
+             possible: {unanswered:?}",
+        );
+        assert!(
+            unanswered.question().is_some(),
+            "⚠⚠ and it must publish the question itself, or a person coming back to this run has \
+             to go and read the pane: {unanswered:?}",
+        );
+        assert_eq!(
+            unarmed_turns,
+            Some(0),
+            "⚠⚠⚠ THE NUMBER THIS DEFECT COSTS: the loop stops on the FIRST dialog, with ZERO turns \
+             judged. Every milestone that touches a file ends here",
+        );
+
+        // ── AND THE SAME EVERYTHING, PLUS ONE CLAUSE ──
+        let consent = crate::consent::Consents::of(vec![
+            crate::consent::Consent::parse(
+                "Do you want to proceed?".to_string(),
+                "Yes".to_string(),
+            )
+            .expect("both needles are non-empty"),
+        ])
+        .expect("a non-empty consent list");
+        let (armed, armed_turns) = run_with(Some(consent));
+        assert_eq!(
+            armed,
+            OutcomeState::Converged,
+            "⚠⚠⚠ the caller's own consent must carry the loop THROUGH the dialog and on to its \
+             milestone. Nothing else about this run differs from the one above",
+        );
+        assert!(
+            armed_turns.is_some_and(|turns| turns >= 1),
+            "⚠⚠ and the agent must have taken a real turn on the other side of the question, or \
+             `converged` would be a word about a run that never got past it: {armed_turns:?}",
+        );
     }
 
     /// ⚠⚠⚠ **THE STATE THE DOOR REFUSES IS ONE A RUN REALLY REACHES** — the refusal's premise,

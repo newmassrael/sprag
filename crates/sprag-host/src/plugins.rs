@@ -634,6 +634,12 @@ impl PluginsExternal {
                         .as_bool()
                         .ok_or(InvokeError::TypeMismatch)?;
                 }
+                // ⚠⚠⚠ THE ANSWERING CONTRACT, read through the SAME two parsers every other
+                // injecting form uses. A loop is the form that needs it most and was the only one
+                // without it: every kind of real work its agent does raises a permission dialog,
+                // and a loop that met one with nothing declared stopped having judged no turns.
+                spec.may_answer = opt_may_answer(map)?;
+                spec.attended = opt_attended(map)?;
                 // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building
                 // a concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
                 // this crate; the manifest carries the argument. It is per RUN and not shared: a
@@ -2886,11 +2892,12 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            22,
+            24,
             "one probe per open string argument of every form: an orchestrator's stimulus, \
              sentinel and ready_when, a PIPE's ready_when, an agent's prompt and ready_when, and \
              a dialogue's seed and two labels — PLUS the ANSWERING CONTRACT's two needles on each \
-             of the three forms that inject. ⚠⚠ THE FIVE NEWEST ARE THE `ai_loop` FORM'S: its \
+             of the FOUR forms that inject, the newest pair being the loop's. \
+             ⚠⚠ The five before them are the `ai_loop` FORM'S OWN: its \
              three BRIEF strings, the `agent` its barrier is derived from, and its own \
              `ready_when` marker. The brief's three are open for the consent needles' reason \
              turned around — a north star is a PERSON's prose about their own work, so a closed \
@@ -2923,10 +2930,14 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            65,
+            68,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠ THE ELEVEN NEWEST ARE THE `ai_loop` FORM'S, and \
+             malformed rather than declined. ⚠⚠⚠ THE THREE NEWEST ARE THE ANSWERING CONTRACT ON \
+             THE LOOP, and their declinability is the whole default: a loop that names no consent \
+             answers nothing and reports the question, which is what every loop did before the \
+             keys existed — and what was measured costing it every turn it had. \
+             ⚠⚠ The eleven before them are the `ai_loop` FORM'S own, and \
              what is NOT among them is the point: the brief's four and the `agent` are REQUIRED, \
              because a loop with no purpose and a loop with no barrier are both runs nobody can \
              mean. ⚠ `reflect_every` IS declinable, and its default is the one number that keeps \
@@ -2963,10 +2974,15 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            105,
+            110,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, TWENTY to run an AI loop, and one to cancel. \
+             TEN to answer a pane, TWENTY-FIVE to run an AI loop, and one to cancel. \
+             ⚠⚠⚠ THE NEWEST FIVE ARE THE ANSWERING CONTRACT REACHING THE LOOP — `may_answer` with \
+             its two needles, `await_person_ms` and `handback_still_ms`. It was the ONE injecting \
+             form without them, on the argument that answering a dialog belongs to a state in the \
+             document; that state is unbuilt, and the cost was measured as a loop whose agent \
+             asked one permission question stopping with ZERO turns judged. \
              ⚠⚠⚠ THE NEWEST TWENTY ARE THE `ai_loop` FORM, the door register item 65 had been \
              holding open since R378 — five rounds built that loop's machine, its driver and its \
              live measurement, and nothing in the daemon constructed one. FOUR of the twenty are \

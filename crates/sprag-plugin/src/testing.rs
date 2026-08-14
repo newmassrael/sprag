@@ -717,6 +717,153 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
     (workspace, pane)
 }
 
+/// A stand-in AGENT CLI **THAT STOPS TO ASK PERMISSION**, exactly once, on its first turn.
+///
+/// # ⚠⚠⚠ Why the outer loop has never met one of these
+///
+/// Every live measurement of the loop picked an ARITHMETIC milestone, deliberately, *"so no
+/// permission dialog can fire"* — because a dialog sends the machine to `screening`, which nothing
+/// drives. That choice is registered debt (112) and the model itself wrote it back in its own
+/// closing report: *"the next step is a milestone with real work in it — something requiring tool
+/// use."* **Every kind of work a real loop does raises one of these**, and until this fixture the
+/// path was measured by nothing.
+///
+/// ⚠⚠⚠ **IT READS THE DIALOG AS A KEYPRESS AND THE PROMPT AS A LINE, AND THE FIRST RUN OF THIS
+/// FIXTURE IS WHY.** The first draft read everything with `read line`, which looks harmless and
+/// silently tests the wrong product: what a run sends a menu whose marker is ALREADY on the
+/// authorised option is a bare **Enter** ([`Taken::Selected`](crate::consent::Taken)), and — if
+/// that is ignored — the digit **alone**, with no newline behind it. A line-reading peer never sees
+/// either, so the run typed both keys, watched the menu sit there and reported `not_taken`: a
+/// perfect measurement of a peer no agent CLI resembles. A real one is in raw mode and acts on the
+/// key. So `icanon` is turned OFF for exactly as long as the menu is up.
+///
+/// ⚠⚠ **IT CLEARS THE SCREEN WHEN THE DIALOG IS ANSWERED**, which is not decoration: the shipping
+/// parser reads a menu off the pane's bottom window, so a menu left painted keeps the pane
+/// `Blocked` for ever and the answer would look like it had not been taken. A real agent CLI
+/// repaints the same way.
+///
+/// ⚠ After the dialog it answers one more prompt with the marker, so a run that gets PAST the
+/// question can still converge — which is what makes *"it stopped"* and *"it went on"* two
+/// distinguishable endings rather than one.
+///
+/// ⚠⚠ **AND IT KEYS ON `Summarise` AS WELL AS ON `exactly:`**, [`standin_agent`]'s rule and for its
+/// reason: `closing` sends the END prompt, which carries neither the done instruction nor anything
+/// else this peer would recognise. A peer that ignores it never publishes another change, the
+/// turn never ends, and a run that had already reached its milestone burns its whole wall clock in
+/// `closing` — measured here, as `exhausted — duration` on a run that had converged in every sense
+/// but the last one.
+pub(crate) fn standin_agent_asking() -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let script = "\
+stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; k=''; \
+readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
+while read line; do \
+  printf '%s\\n' \"$line\"; \
+  case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
+  if [ $asked -eq 0 ]; then \
+    asked=1; \
+    printf 'Bash command\\n'; \
+    printf 'Do you want to proceed?\\n'; \
+    printf '\\342\\235\\257 1. Yes\\n'; \
+    printf '  2. Yes, and do not ask again\\n'; \
+    printf '  3. No, and tell me what to do\\n'; \
+    stty -icanon; \
+    while :; do \
+      k=$(readbyte); \
+      [ -n \"$k\" ] || exit 0; \
+      case \"$k\" in 49|50|51|10|13) break;; esac; \
+    done; \
+    stty icanon; \
+    printf '\\033[2J\\033[H'; n=$((n+1)); printf 'ACK took %s\\n' \"$k\"; \
+    continue; \
+  fi; \
+  n=$((n+1)); printf 'MILESTONE REACHED\\n'; \
+done"
+        .to_string();
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 80, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
+/// The supervision a real host would provide for [`standin_agent_asking`] — **the shipping dialog
+/// parser for what it is asking, and the peer's own output for how far it has got**.
+///
+/// # ⚠⚠⚠ Why neither half alone would do
+///
+/// [`supervised`] answers `Idle` always and derives `seq` from the screen, which is honest for a
+/// peer that never blocks and useless here: a run has to be able to SEE the question. The dialog
+/// fixtures' supervisor ([`asking_peer`]) reads the question with the real parser and pins `seq` to
+/// 1, which is honest for a one-shot answer and useless here: `DoneWhen::Settles` compares `seq`
+/// against the turn's arming, so a frozen one means no turn ever ends.
+///
+/// A loop needs both at once, so this is both — and the `asking` half is the SHIPPING parser
+/// (`sprag_detect::question`) rather than a hand-written menu reader, so a gate cannot pass against
+/// a question the product would not have parsed.
+///
+/// ⚠⚠ **IT SETTLES**, for [`asking_peer`]'s measured reason: a real supervisor publishes a resting
+/// verdict only once a candidate has held for its window, so a pane whose dialog was just answered
+/// goes on reading `Blocked` for that long. A source with no lag hid a live defect from every gate
+/// in this file until an end-to-end run met it.
+pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
+    /// Far shorter than `sprag_detect::DEFAULT_SETTLE`: what is under test is that the product
+    /// tolerates a lag AT ALL, not any particular length of one.
+    const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
+    let source = {
+        let workspace = Arc::clone(workspace);
+        let high = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        Arc::new(move |id: PaneId| {
+            let text = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_collapsed(id)
+                .unwrap_or_default();
+            // ⚠ HELD MONOTONIC BY HAND, `supervised`'s measured rule: the count is read off the
+            // COLLAPSED screen, so a pane that has scrolled would make it go DOWN — and
+            // `seq > began_at` can never be satisfied again by a number that shrank.
+            let answers = (text.matches("ACK").count() + text.matches("MILESTONE").count()) as u64;
+            let seq = high
+                .fetch_max(answers, std::sync::atomic::Ordering::SeqCst)
+                .max(answers);
+            let guard = workspace.lock().expect("the workspace mutex");
+            guard.pane(id)?.pty().with_screen(|screen| {
+                let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
+                let mut seen = last_menu.lock().expect("the settle mutex");
+                if asking.is_some() {
+                    *seen = Some(std::time::Instant::now());
+                }
+                let settling = seen.is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
+                Some(AgentObservation {
+                    state: if asking.is_some() || settling {
+                        AgentState::Blocked
+                    } else {
+                        AgentState::Idle
+                    },
+                    agent: Some("claude".to_string()),
+                    authority: Authority::Scraped {
+                        rule: Some("dialog-choice-list".to_string()),
+                    },
+                    seq,
+                    asking,
+                })
+            })
+        }) as AgentStateSource
+    };
+    WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
+}
+
 /// The supervision a real host would provide for [`standin_agent`], derived from the peer's OWN
 /// output.
 ///

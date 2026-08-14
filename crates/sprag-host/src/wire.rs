@@ -1332,6 +1332,20 @@ impl PluginGrammar {
     /// caller changing one number and a run that prompts a live agent eight times and then stops
     /// somewhere with no answer for it.
     ///
+    /// # ⚠⚠⚠ And the three the loop was the ONLY injecting form without
+    ///
+    /// `may_answer`, `await_person_ms` and `handback_still_ms` were left off this form on an
+    /// argument rather than a measurement: *"answering a dialog is `screening`'s job in the
+    /// document"*. That is a true sentence about a state nothing drives, and what it cost was
+    /// measured — **a loop whose agent asked one permission question stopped with ZERO turns
+    /// judged**, and no argument on this whole form could have covered it.
+    ///
+    /// Every kind of work a real loop does raises such a question: an agent that edits a file, runs
+    /// a command or fetches a URL asks first. So a loop takes the same answering contract every
+    /// other injecting form takes, and a question no clause covers still reaches the machine's own
+    /// `turn.blocked`. See [`sprag_plugin::AiLoopSpec::may_answer`], which holds the argument for
+    /// why two authorities over one dialog is the right number rather than a duplication.
+    ///
     /// ⚠ **`agent` IS THE PROGRAM NAME, and it is what the barrier waits for**, under
     /// [`ReadyWhen::Settles`](sprag_plugin::ReadyWhen) — the one barrier word a program that prints
     /// nothing on startup can be waited for by. R379 measured what its absence costs: a loop typed
@@ -1362,6 +1376,9 @@ impl PluginGrammar {
         Self::DONE_WHEN,
         ArgGrammar::open(sprag_plugin::Turn::WIRE_KEY, "int").optional(),
         ArgGrammar::open("shows_prompt", "bool").optional(),
+        Self::MAY_ANSWER,
+        Self::AWAIT_PERSON,
+        Self::HANDBACK_STILL,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -7992,7 +8009,16 @@ mod tests {
                 // newer client that sends it to an older daemon is refused at the door by that
                 // daemon's own `plugin` vocabulary. Neither half of a skewed pair can act on a
                 // request it has misread, which is the failure a bump exists to prevent.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                //
+                // ⚠⚠⚠ **AND THE ANSWERING CONTRACT ARRIVED ON IT WITHOUT COSTING THE NUMBER
+                // EITHER, ON THAT SAME PROPERTY AND NOT ON THE GENERAL RULE.** An ADDED ARGUMENT is
+                // this wire's second-commonest bump cause precisely because this surface SWALLOWS
+                // an undeclared key and the run succeeds — a `may_answer` sent to a daemon that
+                // does not read it is a run that answers nothing and reports `ok`. That cannot
+                // happen HERE while no released daemon serves `ai_loop` at all: the whole form is
+                // refused, key and all. ⚠ **THE RESIDUE, STATED: the day this form ships, an
+                // argument added to it earns the number by the ordinary rule.**
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

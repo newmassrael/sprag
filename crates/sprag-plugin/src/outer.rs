@@ -241,6 +241,44 @@ pub struct AiLoopSpec {
     /// Whether the inner agent paints the prompt box it is typed into — see
     /// [`OuterLoop::shows_the_prompt`](OuterLoop#structfield.shows_the_prompt).
     pub shows_the_prompt: bool,
+    /// **WHAT THIS RUN MAY ANSWER IF ITS AGENT STOPS TO ASK**, quoting the agent's own words.
+    ///
+    /// # ⚠⚠⚠ Why the loop takes this, when the document has a state for the same job
+    ///
+    /// It did not, and the omission was argued rather than measured: *"answering a dialog is
+    /// `screening`'s job, and a consent given to the barrier would answer dialogs one level below
+    /// the machine that exists to decide about them."* That is a true sentence about a state
+    /// **nothing drives**, and what it cost was measured the round this field was added — a loop
+    /// whose agent asked one permission question stopped with **zero turns judged**, and no
+    /// argument on the whole form could have covered it, where `orchestrator`, `agent` and `pipe`
+    /// all take one.
+    ///
+    /// ⚠⚠ **THE TWO AUTHORITIES ARE DIFFERENT AND BOTH ARE REAL.** `screen_rules` are AUTHORED
+    /// into the document and decide by dialog KIND, standing across every run of that loop; a
+    /// consent is the CALLER's, decides by quoted text, and belongs to THIS run. The second is
+    /// built, measured and shared with three other plugins; the first is blocked on two owner
+    /// decisions. A question no consent covers still reaches the machine's own `turn.blocked`, so
+    /// this does not close the door `screening` will come in by — it stops the run dying on the
+    /// step in front of it.
+    ///
+    /// ⚠ [`None`] is *answer nothing*, which is what every loop did before this field and is still
+    /// the right default: a run that types into a menu nobody authorised is the failure class this
+    /// whole contract exists inside.
+    pub may_answer: Option<crate::consent::Consents>,
+    /// **WHETHER A PERSON IS WATCHING THE PANE, AND FOR HOW LONG** — the other half of
+    /// [`may_answer`](Self::may_answer), and the loop document's own `awaiting_human` supplied by
+    /// the substrate.
+    ///
+    /// ⚠⚠ `ai_loop.scxml` has always asked for exactly this: `awaiting_human` is a WAITING state
+    /// with four exits and only one ends the run. R371 measured a supervisor who answered a dialog
+    /// forty milliseconds after the run had already reported `blocked`; R373 measured a person who
+    /// typed ONE key into a pane a loop was driving and left **thirty-seven of forty iterations
+    /// unspent**. Both are this argument's absence.
+    ///
+    /// ⚠ [`Attended::NoOne`](crate::readiness::Attended::NoOne) is the default and means the run
+    /// ends rather than waiting, which is the only honest answer for a pane on a screen nobody is
+    /// looking at.
+    pub attended: crate::readiness::Attended,
 }
 
 impl AiLoopSpec {
@@ -261,6 +299,11 @@ impl AiLoopSpec {
             turn: Turn::lasting(INNER_SESSION_ENDS, None)
                 .expect("a turn with no bound is never the zero one `lasting` refuses"),
             shows_the_prompt: true,
+            // ⚠ NEITHER IS DERIVABLE FROM THE AGENT'S NAME. What a run may answer on somebody's
+            // behalf, and whether anybody is at the pane, are the caller's alone — a default here
+            // would be this constructor deciding something nobody said.
+            may_answer: None,
+            attended: crate::readiness::Attended::NoOne,
         }
     }
 }
@@ -500,6 +543,14 @@ pub enum Noticed {
     /// Names the variable rather than the fact alone: the run's failure sentence is the only thing
     /// its caller gets, and *"a prompt could not be read"* does not say which of four.
     Undrivable(&'static str),
+    /// **THE PEER ASKED AND THIS RUN ANSWERED IT**, on a consent the caller declared before the
+    /// run started — see [`AiLoopSpec::may_answer`].
+    ///
+    /// ⚠⚠ THE ONE NOTICE THAT IS NOT TERMINAL, and the one a consumer must report exactly ONCE.
+    /// The other three are read at the end of a run; this is a decision taken on somebody's behalf
+    /// DURING one, and a run whose journal spells that `continue` is a run in which approvals are
+    /// indexed by nothing. [`OuterLoop::took_answer`] is how a reporter consumes it.
+    Answered(crate::consent::Answered),
 }
 
 /// A run of `ai_loop.scxml`'s machine against one pane.
@@ -565,11 +616,14 @@ impl OuterLoop {
             done: Completion::new(spec.turn.when()),
             judged: crate::access::RowTrail::default(),
             noticed: None,
-            // ⚠ NO CONSENTS AND NOBODY WATCHING, and both are the machine's job rather than the
-            // barrier's. `screening` is where this document answers a dialog — from the person's
-            // standing rules, as a state a reader can see happened — and `awaiting_human` is where
-            // it waits. A consent given to the barrier would answer dialogs one level below the
-            // machine that exists to decide about them.
+            // ⚠⚠⚠ THE CALLER'S CONSENTS AND THEIR ATTENDANT REACH THE BARRIER, and that reverses a
+            // decision this constructor used to argue: *"answering a dialog is `screening`'s job,
+            // and a consent given to the barrier would answer dialogs one level below the machine
+            // that exists to decide about them."* True of a state NOTHING DRIVES, and the cost was
+            // measured — a loop whose agent asked one permission question stopped with zero turns
+            // judged. See [`AiLoopSpec::may_answer`], which holds the whole argument: two different
+            // authorities, one of them built, and a question no consent covers still reaches the
+            // machine's own `turn.blocked`.
             //
             // ⚠ THE BARRIER'S OWN PATIENCE IS THE CALLER'S, because a loop's first prompt waits for
             // an agent CLI to come up and that is tens of seconds on a cold start — where the
@@ -579,8 +633,8 @@ impl OuterLoop {
             ready: Readiness::new(
                 spec.ready_when.clone(),
                 spec.ready_within,
-                None,
-                crate::readiness::Attended::NoOne,
+                spec.may_answer.clone(),
+                spec.attended,
             ),
             machine,
             script,
@@ -689,6 +743,31 @@ impl OuterLoop {
     #[must_use]
     pub const fn noticed(&self) -> Option<&Noticed> {
         self.noticed.as_ref()
+    }
+
+    /// **TAKE THE APPROVAL THIS RUN JUST GAVE**, leaving every other notice where it is.
+    ///
+    /// # ⚠⚠ Why only this arm, and why taking rather than reading
+    ///
+    /// [`Noticed::Answered`] is the one notice that is not terminal: it is a decision taken on
+    /// somebody's behalf DURING a run, and a consumer publishes it. A reporter that merely LOOKED
+    /// would publish the same approval on every pump until the next prompt cleared it, and a tally
+    /// built on that would count one decision as many.
+    ///
+    /// The other three arms say why a run is ENDING and are read through
+    /// [`noticed`](Self::noticed) at that ending — so a `take` that emptied the field would
+    /// destroy the question a `blocked` outcome is supposed to publish. **This one leaves them
+    /// alone**, which is what makes the two uses safe to sit on one field.
+    pub fn took_answer(&mut self) -> Option<crate::consent::Answered> {
+        match self.noticed {
+            Some(Noticed::Answered(_)) => match self.noticed.take() {
+                Some(Noticed::Answered(answered)) => Some(answered),
+                // Unreachable: the arm was just matched. Answering `None` rather than panicking
+                // keeps a driver bug from taking a live agent's pane down with it.
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// What the document says NOW.
@@ -846,6 +925,65 @@ impl OuterLoop {
         }
     }
 
+    /// **WHAT THE BARRIER SAYS ABOUT THIS PANE, AS THE MACHINE'S OWN EVENT** — or [`None`] for
+    /// *carry on*.
+    ///
+    /// # ⚠⚠⚠ Why this is a function, and why [`watch`](Self::watch) calls it TWICE
+    ///
+    /// A question reaches this driver by two different doors: the barrier reads one off the pane at
+    /// the top of a pump, and the turn's own [`Completion`] answers [`Over::Asking`] when a turn
+    /// ENDS because the peer stopped to ask. They are the same fact arriving at two moments, and
+    /// R377 established that the readings genuinely differ — a menu the peer has only just painted
+    /// is invisible to the first and plain to the second.
+    ///
+    /// What the second door used to do was decide for itself: it built the refusal by hand, with
+    /// [`Refusal::NoConsent`](crate::consent::Refusal::NoConsent) written in as a literal. That was
+    /// true while a loop could hold no consents and became a **false statement about the caller**
+    /// the moment one could — a run whose clause had a typo in its needle was told it had given no
+    /// consent, which is the one confusion `Refusal`'s vocabulary exists to prevent. Worse, the
+    /// answer never got taken at all: the turn ended, the machine went to `screening`, and the
+    /// barrier — the one thing holding the caller's clauses — was never asked.
+    ///
+    /// So both doors lead here, and here asks the barrier. **One authority for what a run may
+    /// answer**, which is R367's rule about one parse of one question, applied to the decision
+    /// rather than to the reading.
+    fn barrier_says(
+        &mut self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) -> Result<Option<AiLoopEvent>, PaneError> {
+        Ok(match self.ready.reached(panes, self.pane, run)? {
+            Reached::Yes => None,
+            // A PERSON TOOK THE PANE. R372's product half, reaching the machine at last.
+            Reached::Interrupted(who) => {
+                self.noticed = Some(Noticed::Interrupted(who));
+                Some(AiLoopEvent::TurnInterrupted)
+            }
+            // The run ended underneath — cancelled, or out of time.
+            Reached::RunEnded(_) => Some(AiLoopEvent::Cancel),
+            // The peer is asking and NOTHING this run holds answers it — the barrier's own reason
+            // rides along, so a caller learns whether to write a clause or fix the one they wrote.
+            Reached::Asking(unanswered) => {
+                self.noticed = Some(Noticed::Asking(unanswered));
+                Some(AiLoopEvent::TurnBlocked)
+            }
+            // ⚠⚠⚠ THE RUN ANSWERED ITS PEER'S QUESTION, on a consent the caller declared. NOT an
+            // event: the machine's `turn.blocked` is for a question NOBODY answered, and raising it
+            // here would send a loop to `screening` about a dialog that is already gone. The turn
+            // simply carries on — which is the whole point of the contract — and the fact is
+            // RECORDED because a decision taken on somebody's behalf has to be reportable in the
+            // run's own vocabulary rather than left in prose.
+            Reached::Answered(answered) => {
+                self.noticed = Some(Noticed::Answered(answered));
+                Some(AiLoopEvent::Null)
+            }
+            // ⚠ The pane is mid-transition — a person is dealing with a dialog this run may not
+            // answer, or has just handed the pane back. Both are states the next pump asks about
+            // again, so the honest event is none at all.
+            Reached::Attended(_) | Reached::HandedBack(_) => Some(AiLoopEvent::Null),
+        })
+    }
+
     /// **WATCH THE INNER AGENT'S TURN, AND SAY HOW IT ENDED** — the translation debt 74 named.
     ///
     /// The barrier is asked first, because a person reaching into the pane outranks everything the
@@ -856,27 +994,8 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
     ) -> Result<AiLoopEvent, PaneError> {
-        match self.ready.reached(panes, self.pane, run)? {
-            // A PERSON TOOK THE PANE. R372's product half, reaching the machine at last.
-            Reached::Interrupted(who) => {
-                self.noticed = Some(Noticed::Interrupted(who));
-                return Ok(AiLoopEvent::TurnInterrupted);
-            }
-            // The run ended underneath — cancelled, or out of time.
-            Reached::RunEnded(_) => return Ok(AiLoopEvent::Cancel),
-            // The peer is asking before this turn even started, which the machine has an answer
-            // for: it is the same question `turn.blocked` sends to `screening`.
-            Reached::Asking(unanswered) => {
-                self.noticed = Some(Noticed::Asking(unanswered));
-                return Ok(AiLoopEvent::TurnBlocked);
-            }
-            // ⚠ The barrier answers these only for a run that declared consents or an attendant,
-            // and this one declares neither — see `new`. They mean the pane is mid-transition, so
-            // the honest event is none at all and the next pump asks again.
-            Reached::Answered(_) | Reached::Attended(_) | Reached::HandedBack(_) => {
-                return Ok(AiLoopEvent::Null);
-            }
-            Reached::Yes => {}
+        if let Some(event) = self.barrier_says(panes, run)? {
+            return Ok(event);
         }
         // ⚠⚠⚠ AND THIS IS THE WHOLE POINT OF R377. Before `Over` existed the two endings a real
         // agent's turn actually has — *it answered* and *it stopped to ask* — were one answer out
@@ -885,19 +1004,16 @@ impl OuterLoop {
         Ok(
             match self.done.wait(panes, self.pane, self.patience(), run) {
                 Over::Yes => AiLoopEvent::TurnDone,
-                // ⚠ `NoConsent` is the LITERAL reason and not a filler: this loop declares none —
-                // see `new` — because the document answers dialogs in `screening`, from a person's
-                // standing rules, rather than at the barrier one level below the machine.
-                Over::Asking(question) => {
-                    self.noticed = Some(Noticed::Asking(match question {
-                        Some(question) => crate::consent::Unanswered::refused(
-                            question,
-                            crate::consent::Refusal::NoConsent,
-                        ),
-                        None => crate::consent::Unanswered::unreadable(),
-                    }));
-                    AiLoopEvent::TurnBlocked
-                }
+                // ⚠⚠⚠ THE SECOND DOOR, ANSWERED BY THE FIRST — see [`barrier_says`](Self::barrier_says).
+                // The question this ending carries is DROPPED rather than re-published, which is
+                // deliberate: the barrier reads the pane again and its reading is the one the
+                // answer (or the refusal) was decided from, so publishing this one would put a
+                // second parse of one question into the run's report.
+                //
+                // ⚠ `None` from the barrier means the menu is gone — the peer moved on between the
+                // two reads. Nothing happened that the machine has a word for, and the next pump
+                // asks again.
+                Over::Asking(_) => self.barrier_says(panes, run)?.unwrap_or(AiLoopEvent::Null),
                 // The peer is still working after the turn's own bound. NOT an event: the machine has
                 // no *the turn overran* transition, and inventing one out here would put a decision in
                 // the driver that belongs in the document. The run's own clock bounds it, and the next
@@ -1262,6 +1378,11 @@ mod tests {
             ready_within: None,
             turn,
             shows_the_prompt: false,
+            // ⚠ ANSWERS NOTHING AND NOBODY IS WATCHING — the default every run has, and the one
+            // these gates want: what they are about is the driver, not the answering contract.
+            // `ai_loop`'s own gates drive the other half.
+            may_answer: None,
+            attended: crate::readiness::Attended::NoOne,
         }
     }
 
