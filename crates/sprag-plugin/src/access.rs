@@ -635,17 +635,6 @@ pub trait PaneAccess {
     fn job_control(&self) -> Option<&dyn PaneJobControl> {
         None
     }
-
-    /// The pane's *launch directory* — WHERE its child was spawned — if this host kept it. `None`
-    /// by default, on the same terms as the other sub-surfaces.
-    ///
-    /// ⚠ A `None` here is *"this build cannot say where that program was started"*, and the safe
-    /// degradation is to answer nothing rather than to guess: every consumer of this uses it to
-    /// FIND a file that belongs to that child, and a wrong directory does not fail — it silently
-    /// reads somebody else's.
-    fn launch_dir(&self) -> Option<&dyn PaneLaunchDir> {
-        None
-    }
 }
 
 /// Pane *output stream*: the complete logical lines a pane has produced, addressed by a number
@@ -841,28 +830,6 @@ pub trait PaneInputEcho {
 pub trait PaneHands {
     /// How many times each hand has written into `id`, or `None` for a pane nobody knows.
     fn pane_hands(&self, id: PaneId) -> Option<Hands>;
-}
-
-/// WHERE a pane's child was launched. Reached via [`PaneAccess::launch_dir`].
-///
-/// # ⚠⚠ Why this is its own capability and not a field on anything
-///
-/// It is the only thing a plugin needs in order to find files an agent CLI writes ABOUT ITSELF
-/// somewhere else on disk — a transcript, a session log, a cost record. Those files are keyed by the
-/// directory the tool was started in, not by anything sprag hands out, so without this the pane and
-/// the record it produces cannot be connected at all.
-///
-/// # ⚠⚠⚠ IT IS THE LAUNCH DIRECTORY AND NOT THE CURRENT ONE, AND THE DIFFERENCE IS THE WHOLE POINT
-///
-/// A program may `chdir` as it works; an agent doing a task in a subdirectory does exactly that.
-/// **The record stays keyed by where the program STARTED.** Answering with the live cwd would drift
-/// away from the file mid-run and find nothing — or worse, find a different session's. So this
-/// deliberately answers the spawn-time value, which is also the value
-/// [`PaneLifecycle::respawn`] already reuses to put a replacement back where its predecessor was.
-pub trait PaneLaunchDir {
-    /// The directory `id`'s child was spawned in, or `None` for a pane nobody knows — and also
-    /// `None` for a pane spawned with no directory of its own, which inherited the daemon's.
-    fn pane_launch_dir(&self, id: PaneId) -> Option<std::path::PathBuf>;
 }
 
 /// What a pane's TERMINAL does with what is written into it — the kernel's answers, not guesses.

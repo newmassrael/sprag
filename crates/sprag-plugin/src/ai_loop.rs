@@ -189,6 +189,18 @@ impl AiLoop {
         self.inner.turns()
     }
 
+    /// **WHAT THE AGENT'S SESSION HAS BEEN CHARGED TO READ** — the document's own `context`,
+    /// assigned on every judged turn.
+    ///
+    /// The quantity `turns` is not: measurement puts one request's addition to context between 861
+    /// tokens and 633,749, so a turn count is out by 63% at p90 as a stand-in for it. See
+    /// [`OuterLoop::context`](crate::outer::OuterLoop::context) for what a `Some(0)` means, which is
+    /// *do not decide on this* rather than *nothing has accumulated*.
+    #[must_use]
+    pub fn context(&self) -> Option<i64> {
+        self.inner.context()
+    }
+
     /// How many of its peer's calls a standing instruction turned down — **the DOCUMENT's own
     /// count**, beside the run's.
     ///

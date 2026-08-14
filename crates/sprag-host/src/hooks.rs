@@ -160,6 +160,32 @@ pub struct Target {
     /// codex session. An unverified `Some` would be worse than an honest `None`: it would append a
     /// flag to somebody's editor session and find out at their expense.
     session_flag: Option<&'static str>,
+    /// The flag this agent takes a caller-chosen SESSION IDENTITY on, when it has one.
+    ///
+    /// # ⚠⚠⚠ Why sprag names the session rather than finding out what it was called
+    ///
+    /// An agent files everything it records about a run — its transcript, and the per-request token
+    /// counts a cost signal is denominated in — under a name of its own choosing, in a directory
+    /// keyed by the cwd it started in. Recovering that name from outside is three inferences
+    /// (live cwd, to a directory, to the newest file in it) and **each one fails by silently reading
+    /// a different session rather than by failing.** Naming it first replaces all three with a
+    /// lookup: the file is called what sprag called it.
+    ///
+    /// The rule is `claudedocs/INSIGHT-LOOP-SCORING-AND-COST-SIGNALS.md`'s, one level down: an identity
+    /// must be minted rather than recovered, or *"did we do this twice"* cannot be asked.
+    ///
+    /// # ⚠⚠ It is MINTED PER BIRTH, and that is what makes it safe
+    ///
+    /// Measured: a second launch carrying an id already in use is refused outright — `Error: Session
+    /// ID … is already in use.` So an identity must never be *stored* and replayed. It is not: this
+    /// module is consulted by [`crate::pane_args_source`] at every pane birth, a pane's recorded
+    /// argv is captured BEFORE instrumentation, and a respawn therefore re-enters here and is named
+    /// afresh. That is the same reason the instrumentation itself is not stored — a stored one
+    /// *"would point a fresh agent at a dead socket"*.
+    ///
+    /// `None` for an agent with no such door, which is codex today: it is not enough that a flag
+    /// exists, the record it names has to be findable, and nobody has established codex's.
+    identity_flag: Option<&'static str>,
     /// What the user must still do after the file is written, when writing it is not enough.
     ///
     /// Printed by the installer and by `list-hooks`. It exists because an agent may hold a hook it
@@ -186,6 +212,12 @@ pub const CLAUDE: Target = Target {
     // form is what makes this a launch and not a file: nothing is written, so nothing is left
     // behind to version, clean up, or point at a daemon that has since gone.
     session_flag: Some("--settings"),
+    // Verified against `claude --help` and then against a live session: "--session-id <uuid> — Use
+    // a specific session ID for the conversation (must be a valid UUID)". The record it writes is
+    // named for it — `~/.claude/projects/<dir>/<uuid>.jsonl` — which is the whole reason this field
+    // exists, and it is fixed by the live gate
+    // `a_minted_session_identity_names_the_record_a_live_agent_writes`.
+    identity_flag: Some("--session-id"),
     follow_up: None,
     events: &[
         // The turn starts, and every step inside it. `PreToolUse` and `PostToolUse` both mean
@@ -223,6 +255,11 @@ pub const CODEX: Target = Target {
     // See `session_flag`: codex's per-run overrides are `-c key=value` over TOML, and no one has
     // run whether a hooks table can be spelled that way. Its users go through `install-hooks`.
     session_flag: None,
+    // See `identity_flag`. A flag that names a session is not enough on its own — what sprag needs
+    // is the RECORD that name reaches, and nobody has established where codex files one or whether
+    // it can be named from outside. An unverified `Some` here would put a flag on somebody's
+    // session in exchange for a lookup that finds nothing.
+    identity_flag: None,
     // codex hashes each configured hook and holds it until its user has seen it. Writing the file
     // is therefore only half the install, and the half sprag must not do for them.
     follow_up: Some(
@@ -401,6 +438,83 @@ impl Target {
             serde_json::json!({ "hooks": Value::Object(hooks) }).to_string(),
         ])
     }
+
+    /// The arguments that NAME one launch of this agent, so what it records about itself can be
+    /// found again — see this type's `identity_flag`.
+    ///
+    /// `None` when the launch must be left to name itself: an agent with no such flag, or an `argv`
+    /// that has already settled the question. **The refusals are the substance here**, and each is a
+    /// different sentence:
+    ///
+    /// * the caller already passed `--session-id`. They said which session this is; a second copy is
+    ///   a precedence question, and sprag's answer would silently win over a person's.
+    /// * the caller passed `--resume`, `--continue` or `--fork-session`. Those name a session by
+    ///   CONTINUING one, so a minted name is not merely redundant — it contradicts the argument
+    ///   beside it, and what an agent does with a contradiction is its business rather than
+    ///   something to find out on somebody's editing session.
+    ///
+    /// ⚠ Separate from [`session_args`](Self::session_args) rather than folded into it, because the
+    /// two refuse independently: a launch whose own config already reports still wants naming, and a
+    /// launch that is resuming still wants instrumenting. Folding them would make each one's refusal
+    /// suppress the other's answer, which is a bug shaped exactly like a missing feature.
+    ///
+    /// `mint` is injected for `launch_args_from`'s reason — a decision should be provable without
+    /// the randomness it consumes.
+    #[must_use]
+    pub fn identity_args(&self, argv: &[String], mint: impl Fn() -> String) -> Option<Vec<String>> {
+        let flag = self.identity_flag?;
+        let settled = |name: &str| {
+            let joined = format!("{name}=");
+            argv.iter()
+                .any(|arg| arg == name || arg.starts_with(&joined))
+        };
+        if settled(flag)
+            || ["--resume", "-r", "--continue", "-c", "--fork-session"]
+                .iter()
+                .any(|other| settled(other))
+        {
+            return None;
+        }
+        Some(vec![flag.to_owned(), mint()])
+    }
+}
+
+/// A v4 UUID from the kernel's randomness — the name sprag gives one agent session.
+///
+/// # ⚠⚠ Why this is here and public rather than private to its caller
+///
+/// So the live gate that measures the claim mints exactly as the product does. **A fixture's reader
+/// must be the product's reader** (R383), and a fixture with its own id generator would be proving
+/// that ITS ids reach a record.
+///
+/// No `uuid` dependency for sixteen bytes and a format string; the only property required is that
+/// the agent accepts it, which is `must be a valid UUID`.
+///
+/// ⚠ An unreadable `/dev/urandom` yields the nil UUID rather than a panic. The safe direction: a
+/// launch is never lost over a name, and a nil id is refused by the agent the second time it is
+/// used, which surfaces as a failed birth rather than as two sessions sharing a record.
+#[must_use]
+pub fn mint_session_id() -> String {
+    use std::io::Read as _;
+
+    let mut bytes = [0u8; 16];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut urandom| urandom.read_exact(&mut bytes))
+        .is_err()
+    {
+        bytes = [0u8; 16];
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32],
+    )
 }
 
 /// How long the AGENT waits for one of these hooks before giving up on it, in seconds.
@@ -561,7 +675,12 @@ impl Status {
 /// where that conjunction lives and is tested.
 #[must_use]
 pub fn launch_args(argv: &[String], exe: &Path) -> Vec<String> {
-    launch_args_from(argv, exe, |target| already_reports(status(target)))
+    launch_args_from(
+        argv,
+        exe,
+        |target| already_reports(status(target)),
+        mint_session_id,
+    )
 }
 
 /// Whether an agent's OWN config already reports, from a reading of this machine that may have
@@ -600,6 +719,7 @@ fn launch_args_from(
     argv: &[String],
     exe: &Path,
     already_reports: impl Fn(&'static Target) -> bool,
+    mint: impl Fn() -> String,
 ) -> Vec<String> {
     // The PROGRAM decides, by its basename, so `/usr/local/bin/claude` and `claude` are one agent
     // and `sh -c claude` is not: an argv sprag did not write is one whose words it cannot read, and
@@ -613,10 +733,17 @@ fn launch_args_from(
     else {
         return Vec::new();
     };
-    if already_reports(target) {
-        return Vec::new();
-    }
-    target.session_args(argv, exe).unwrap_or_default()
+    // ⚠⚠ TWO DECISIONS, ASKED SEPARATELY. Instrumentation says *report your turns through this
+    // daemon*; identity says *and this is what this session is called*. They refuse for unrelated
+    // reasons — see `Target::identity_args` — so a launch may take one, both, or neither, and the
+    // one that is refused must not take the other down with it.
+    let mut extra = if already_reports(target) {
+        Vec::new()
+    } else {
+        target.session_args(argv, exe).unwrap_or_default()
+    };
+    extra.extend(target.identity_args(argv, mint).unwrap_or_default());
+    extra
 }
 
 /// Read `target`'s configuration and report where the integration stands.
@@ -1346,6 +1473,16 @@ mod tests {
     /// Where the installed binary is pretended to live. Absolute, because that is what an install
     /// resolves and what the recognition rule reads back.
     const EXE: &str = "/usr/local/bin/sprag";
+
+    /// The identity a test's launch is named with — FIXED, so what a rule answers is a function of
+    /// the argv and not of the round it was run in. [`mint_session_id`] is measured separately, by
+    /// the one thing that can measure it: a live agent accepting it.
+    const MINTED: &str = "00000000-0000-4000-8000-000000000001";
+
+    /// A fixed minter, for the rules that do not care which name they carry.
+    fn fixed() -> String {
+        MINTED.to_owned()
+    }
 
     /// One target's config file in a temporary directory, removed on drop.
     ///
@@ -2184,7 +2321,19 @@ mod tests {
                 None,
                 "{argv:?} already says what configures it",
             );
-            assert!(launch_args_from(&argv, Path::new(EXE), |_| false).is_empty());
+            // ⚠ The launch still gets NAMED. The two decisions are independent — a caller who said
+            // what configures this run has not said what it is called — so this asserts the
+            // absence of the flag it refused rather than the absence of everything.
+            let carried = launch_args_from(&argv, Path::new(EXE), |_| false, fixed);
+            assert!(
+                !carried.iter().any(|arg| arg == "--settings"),
+                "{argv:?} already says what configures it, so sprag adds no second copy: {carried:?}",
+            );
+            assert_eq!(
+                carried,
+                vec!["--session-id".to_owned(), MINTED.to_owned()],
+                "and what it does carry is the name, which that refusal has nothing to do with",
+            );
         }
     }
 
@@ -2200,6 +2349,7 @@ mod tests {
                 &argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(),
                 Path::new(EXE),
                 |_| false,
+                fixed,
             )
         };
         assert_eq!(
@@ -2226,14 +2376,135 @@ mod tests {
     #[test]
     fn an_agent_that_already_reports_is_not_instrumented_twice() {
         let argv = ["claude".to_owned()];
-        assert!(
-            launch_args_from(&argv, Path::new(EXE), |target| target.name == "claude").is_empty(),
-            "the user ran install-hooks; sprag adds nothing on top of it",
+        let reporting = launch_args_from(
+            &argv,
+            Path::new(EXE),
+            |target| target.name == "claude",
+            fixed,
         );
         assert!(
-            !launch_args_from(&argv, Path::new(EXE), |_| false).is_empty(),
+            !reporting.iter().any(|arg| arg == "--settings"),
+            "the user ran install-hooks; sprag adds no hooks on top of it: {reporting:?}",
+        );
+        // ⚠ NAMING SURVIVES IT, and this is the assertion that would have caught the two decisions
+        // being folded together. A user who installed hooks machine-wide has said how their agent
+        // REPORTS; they have said nothing about what this one session is called, and sprag still
+        // needs to be able to find what it records.
+        assert_eq!(
+            reporting,
+            vec!["--session-id".to_owned(), MINTED.to_owned()],
+            "an agent that already reports is still named",
+        );
+        assert!(
+            launch_args_from(&argv, Path::new(EXE), |_| false, fixed)
+                .iter()
+                .any(|arg| arg == "--settings"),
             "and the control: with nothing installed the launch is instrumented",
         );
+    }
+
+    /// **A LAUNCH THAT HAS ALREADY SETTLED WHICH SESSION IT IS, IS NOT RENAMED** — and the four
+    /// spellings of settling it are one rule.
+    ///
+    /// Measured, which is why the refusal exists at all: a second launch carrying an id already in
+    /// use is refused outright — `Error: Session ID … is already in use.` — so a name sprag adds on
+    /// top of one the caller chose does not merely lose a precedence argument, it can cost the
+    /// launch. `--resume`, `--continue` and `--fork-session` settle it the other way, by naming a
+    /// session to CONTINUE.
+    #[test]
+    fn a_launch_that_already_names_its_session_is_left_to_its_own_name() {
+        let named = |argv: &[&str]| {
+            CLAUDE.identity_args(
+                &argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(),
+                fixed,
+            )
+        };
+        for argv in [
+            vec![
+                "claude",
+                "--session-id",
+                "de305d54-75b4-431b-adb2-eb6b9e546014",
+            ],
+            // The joined spelling, for `session_args`' measured reason: a reader that knew only the
+            // separated form would append a second one.
+            vec![
+                "claude",
+                "--session-id=de305d54-75b4-431b-adb2-eb6b9e546014",
+            ],
+            vec!["claude", "--resume", "de305d54-75b4-431b-adb2-eb6b9e546014"],
+            vec!["claude", "-r"],
+            vec!["claude", "--continue"],
+            vec!["claude", "-c"],
+            vec!["claude", "--fork-session"],
+        ] {
+            assert_eq!(
+                named(&argv),
+                None,
+                "{argv:?} has already said which session this is",
+            );
+        }
+        assert_eq!(
+            named(&["claude", "-p", "hello"]),
+            Some(vec!["--session-id".to_owned(), MINTED.to_owned()]),
+            "and the control: a launch that says nothing about it is named",
+        );
+        assert_eq!(
+            CODEX.identity_args(&["codex".to_owned()], fixed),
+            None,
+            "an agent whose record sprag cannot find is not given a name it could not use",
+        );
+    }
+
+    /// **THE FLAG THAT NAMES A SESSION IS THE FLAG THAT FINDS IT** — one string, two crates, and
+    /// this is the only place both are visible.
+    ///
+    /// `sprag-host` WRITES it onto an agent's command line at a pane's birth; `sprag-plugin` READS
+    /// it back off the running process to learn what that session is spending. The host depends on
+    /// the plugin and not the reverse, so the constant cannot be shared — and drift between them is
+    /// SILENT in the worst direction: the loop would find no identity, report no spend, and be
+    /// indistinguishable from an agent that had not started yet.
+    #[test]
+    fn the_flag_that_names_a_session_is_the_flag_that_finds_it() {
+        assert_eq!(
+            CLAUDE.identity_flag,
+            Some(sprag_plugin::CLAUDE_IDENTITY_FLAG),
+            "the writer and the reader must name the same argument",
+        );
+    }
+
+    /// A minted identity is a valid UUID, which is the only property the agent states.
+    ///
+    /// ⚠ Shape only. That an agent ACCEPTS one and files its record under it is a claim about
+    /// another program, and it is fixed where such claims belong — the live gate
+    /// `a_minted_session_identity_names_the_record_a_live_agent_writes`.
+    #[test]
+    fn a_minted_identity_is_shaped_like_a_uuid() {
+        let one = mint_session_id();
+        let two = mint_session_id();
+        assert_ne!(
+            one, two,
+            "each birth is named afresh, or the second is refused"
+        );
+        for minted in [&one, &two] {
+            let groups: Vec<&str> = minted.split('-').collect();
+            assert_eq!(
+                groups.iter().map(|g| g.len()).collect::<Vec<_>>(),
+                vec![8, 4, 4, 4, 12],
+                "{minted} is not shaped like a UUID",
+            );
+            assert!(
+                minted.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+                "{minted} holds something that is not a hex digit",
+            );
+            assert!(
+                groups[2].starts_with('4'),
+                "{minted} does not say version 4"
+            );
+            assert!(
+                ['8', '9', 'a', 'b'].contains(&groups[3].chars().next().unwrap_or(' ')),
+                "{minted} does not carry the RFC 4122 variant",
+            );
+        }
     }
 
     /// "Already reporting" is COMPLETE AND ABLE TO RUN, and the second half is what a `complete()`

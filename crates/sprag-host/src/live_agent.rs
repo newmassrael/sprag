@@ -131,12 +131,62 @@ struct Live {
 impl Live {
     /// Spawn the agent named by [`AGENT_PROGRAM`] in a scratch directory of its own.
     fn start(tag: &str) -> Self {
+        Self::start_args(tag, &[])
+    }
+
+    /// The same, but with the agent NAMED THE WAY A DAEMON NAMES IT — through a
+    /// [`PaneArgsSource`](sprag_terminal::PaneArgsSource) consulted at every birth, rather than
+    /// through argv this side wrote.
+    ///
+    /// Each identity it mints is pushed to the returned log, so a gate can say what the run was
+    /// called without the source having to tell it. The source carries **only** the identity
+    /// decision — not `crate::pane_args_source`'s hooks — because a hook pointing at a daemon that
+    /// is not running would be a second variable in a measurement about naming.
+    fn start_minting(tag: &str) -> (Self, Arc<Mutex<Vec<String>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&log);
+        let source: sprag_terminal::PaneArgsSource = Arc::new(move |argv: &[String]| {
+            let minted = crate::hooks::CLAUDE
+                .identity_args(argv, crate::hooks::mint_session_id)
+                .unwrap_or_default();
+            if let Some(name) = minted.last() {
+                recorder.lock().expect("the log").push(name.clone());
+            }
+            minted
+        });
+        (Self::start_inner(tag, &[], Some(source)), log)
+    }
+
+    /// The same, plus `extra` arguments on the agent's command line.
+    ///
+    /// ⚠ A seam rather than a convenience: the one gate that uses it is asking whether an argument
+    /// CHANGES WHAT THE AGENT WRITES ABOUT ITSELF, so the argument has to reach the same spawn
+    /// every other gate here measures. A second `start` with its own command would be measuring a
+    /// different program from the one the rest of this module drives.
+    fn start_args(tag: &str, extra: &[&str]) -> Self {
+        Self::start_inner(tag, extra, None)
+    }
+
+    fn start_inner(
+        tag: &str,
+        extra: &[&str],
+        args_source: Option<sprag_terminal::PaneArgsSource>,
+    ) -> Self {
         let agent = std::env::var(AGENT_PROGRAM).unwrap_or_else(|_| DEFAULT_AGENT.to_owned());
         let scratch = Scratch::new(tag);
         let workspace = Arc::new(Mutex::new(Workspace::new(PANE_SIZE)));
+        if let Some(source) = args_source {
+            workspace
+                .lock()
+                .expect("the workspace mutex")
+                .set_pane_args_source(source);
+        }
 
         let mut command = CommandBuilder::new(&agent);
         command.cwd(scratch.path());
+        for argument in extra {
+            command.arg(argument);
+        }
         // ⚠⚠⚠ **THE CHILD MUST NOT INHERIT WHOEVER RAN THIS GATE'S PERMISSION ALLOWLIST**, and
         // this is the same argument as the blanked variables below rather than a new one.
         //
@@ -2133,6 +2183,625 @@ fn one_turn(live: &Live, run: &RunContext, index: usize, sampled: bool, began: I
         elapsed,
         seq_before,
         seq_after,
+        answered,
+    }
+}
+
+/// The identity these gates hand an agent — **the product's own minter**,
+/// [`crate::hooks::mint_session_id`], and not one of this module's.
+///
+/// ⚠⚠⚠ A GATE WITH ITS OWN GENERATOR PROVES THAT ITS OWN IDS REACH A RECORD, which is not the claim.
+/// R383's rule, met from the naming side: the fixture's reader must be the product's reader, and so
+/// must its writer.
+fn minted_uuid() -> String {
+    crate::hooks::mint_session_id()
+}
+
+/// The record the agent wrote about the session called `session`, found **by the identity**.
+///
+/// # ⚠⚠⚠ Why this scans rather than deriving a directory
+///
+/// The agent files its record under a directory named for the cwd it was started in, and every
+/// route to that name is a guess this workspace should not be making: the live cwd drifts the
+/// moment the agent works in a subdirectory, the spawn cwd is stored nowhere, and picking the
+/// newest file in the directory races any other session in the same repository. **All three fail
+/// by silently reading somebody else's record rather than by failing.**
+///
+/// Minting removes the question. The file is named for the identity, so the identity finds it —
+/// no directory, no recency, no slug. That this scan is possible at all is the measurement's own
+/// argument for minting.
+fn agent_record(session: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let projects = PathBuf::from(home).join(".claude").join("projects");
+    let wanted = format!("{session}.jsonl");
+    std::fs::read_dir(projects)
+        .ok()?
+        .flatten()
+        .map(|project| project.path().join(&wanted))
+        .find(|candidate| candidate.is_file())
+}
+
+/// What a record says its session was charged to read.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Billed {
+    /// Distinct billed requests — deduplicated by `message.id`, because a streamed message appears
+    /// many times and every fragment repeats the same usage.
+    requests: usize,
+    /// The accumulated context on the LAST request: everything the model was charged to read, cache
+    /// included. This is the quantity `ai_loop` has no access to today.
+    context: u64,
+    /// Of that, the part served from cache.
+    cached: u64,
+}
+
+fn billed(record: &Path) -> Billed {
+    let text = std::fs::read_to_string(record).unwrap_or_default();
+    let mut seen: Vec<String> = Vec::new();
+    let mut billed = Billed::default();
+    for line in text.lines() {
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if row.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(usage) = row.pointer("/message/usage") else {
+            continue;
+        };
+        let Some(cached) = usage
+            .get("cache_read_input_tokens")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        let id = row
+            .pointer("/message/id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !id.is_empty() && seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        let field = |name: &str| {
+            usage
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        billed.requests += 1;
+        billed.cached = cached;
+        billed.context = field("input_tokens") + cached + field("cache_creation_input_tokens");
+    }
+    billed
+}
+
+/// **THE PREMISE THE WHOLE COST SIGNAL RESTS ON: a run can NAME the session it starts, and the
+/// agent files its own record under that name.**
+///
+/// # ⚠⚠⚠ What this replaces, and why the replaced thing was wrong
+///
+/// `ai_loop` cannot say what it spends. `Cost::Bytes` counts prompt bytes, which measurement showed
+/// is the component that *falls* as a session grows, and `max_turns` counts turns, which span 861
+/// to 633,749 tokens of context each. The number that matters — accumulated context — is written by
+/// the agent on every request and never read.
+///
+/// The first attempt at reading it went looking for the file: pane cwd, to a directory name, to the
+/// newest transcript in it. Three inferences, each failing by reading the WRONG session rather than
+/// by failing. `claude --session-id <uuid>` removes all three by letting this side choose the name
+/// first — the same rule `claudedocs/INSIGHT-LOOP-SCORING-AND-COST-SIGNALS.md` states one level up,
+/// an identity must be minted rather than recovered.
+///
+/// ⚠⚠ Measured in `--print` mode before this gate was written, and that is exactly why the gate
+/// exists: a piped shell probe could not submit a prompt to the TUI (the closed stdin read as
+/// Ctrl-D), so the interactive case — **the only one `ai_loop` uses**, since sprag reads agent state
+/// from a rendered screen — stayed unverified. A real pty driver is what settles it, and sprag is
+/// one.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_minted_session_identity_names_the_record_a_live_agent_writes() {
+    let session = minted_uuid();
+    let live = Live::start_args("session", &["--session-id", session.as_str()]);
+    let run = RunContext::uncancellable();
+    let began = Instant::now();
+    step(began, &format!("minted {session}"));
+    step(began, &format!("spawned {:?}", live.agent));
+
+    let mut barrier = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    );
+    let reached = barrier
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+    step(began, &format!("barrier: {reached:?}"));
+    assert_eq!(
+        reached,
+        Reached::Yes,
+        "⚠⚠⚠ the agent did not come up with `--session-id` on its command line. That is the FIRST \
+         thing this gate asks — an identity the run chose must not cost it a session — and it is a \
+         finding about the flag rather than about the record. Screen: {}",
+        live.tail(6),
+    );
+
+    let turn = one_turn(&live, &run, 0, false, began);
+    assert!(
+        turn.answered,
+        "⚠⚠ the turn produced no answer, so there is nothing the agent would have billed and this \
+         gate cannot tell a missing record from a missing turn. Over: {:?}. Screen: {}",
+        turn.over,
+        live.tail(6),
+    );
+
+    // ⚠ THE RECORD IS WRITTEN BY SOMEBODY ELSE'S PROCESS, so it is polled rather than asserted on
+    // the first look. What is NOT allowed to be slow is the identity: a record that appears under a
+    // different name would never appear under this one however long the wait.
+    let mut record = None;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        record = agent_record(&session);
+        if record.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let record = record.unwrap_or_else(|| {
+        panic!(
+            "⚠⚠⚠ NO RECORD IS NAMED {session}.jsonl anywhere under ~/.claude/projects. The run \
+             minted an identity, handed it to the agent on the command line, and drove a turn the \
+             agent answered — so the agent wrote its record somewhere this side cannot name. \
+             Everything the cost signal was going to be built on assumed it could.",
+        )
+    });
+    step(began, &format!("record: {}", record.display()));
+
+    let billed = billed(&record);
+    println!("\n== a minted identity, and what it reaches ==");
+    println!("  minted:   {session}");
+    println!("  record:   {}", record.display());
+    println!("  requests: {}", billed.requests);
+    println!("  context:  {} tokens on the last request", billed.context);
+    println!(
+        "  cached:   {} of them ({:.1}%)",
+        billed.cached,
+        if billed.context == 0 {
+            0.0
+        } else {
+            100.0 * billed.cached as f64 / billed.context as f64
+        },
+    );
+
+    assert!(
+        billed.requests > 0,
+        "⚠⚠⚠ the record exists under the minted name but carries no billed request. The identity \
+         reaches a FILE and not a NUMBER, which is half of what this gate claims. Record: {}",
+        record.display(),
+    );
+    assert!(
+        billed.context > 0,
+        "⚠⚠ {} requests are recorded and the accumulated context reads zero. The field this whole \
+         signal is denominated in is `cache_read_input_tokens` + `input_tokens` + \
+         `cache_creation_input_tokens`; a zero means the shape moved and every number downstream \
+         of it is about to be wrong.",
+        billed.requests,
+    );
+}
+
+/// **A REPLACEMENT CANNOT REUSE AN ARGUMENT THAT NAMES ONE INSTANCE — and today it does, and it is
+/// told it succeeded.**
+///
+/// # ⚠⚠⚠ What this measures, and why it is not about the feature that found it
+///
+/// [`PaneLifecycle::respawn`](sprag_plugin::access::PaneLifecycle::respawn) promises *"the same
+/// argv, the same environment, the same working directory"*, and argues — correctly — that the loop
+/// must not be the authority on what its pane runs. That argument is about WHAT RUNS. It does not
+/// hold for an argument that names WHICH INSTANCE is running, because such an argument is unique by
+/// construction and a second use of it is refused:
+///
+/// ```text
+/// Error: Session ID e7eddfb2-… is already in use.
+/// ```
+///
+/// So a pane opened with an explicit `--session-id` cannot be replaced. **This is reachable today
+/// by a person** who launches one that way; nothing in sprag passes the flag yet, which is the only
+/// reason it is latent rather than live.
+///
+/// # ⚠⚠ The shape of the failure is the finding, not the failure
+///
+/// The pseudoterminal spawn SUCCEEDS — the program is there and execs fine — and the agent then
+/// refuses itself and exits. So `respawn` answers `Ok(new_pane)` and the caller is holding a pane
+/// whose agent is already gone. A loop's `restarting` would take `session.ready` on it and wait out
+/// its whole startup bound against a corpse. **A replacement that fails by reporting success is the
+/// class this workspace pays most for.**
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_replacement_reuses_the_argument_that_named_the_session_it_replaces() {
+    let session = minted_uuid();
+    let live = Live::start_args("respawn-id", &["--session-id", session.as_str()]);
+    let run = RunContext::uncancellable();
+    let began = Instant::now();
+    step(began, &format!("minted {session}"));
+
+    let mut barrier = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    );
+    let reached = barrier
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+    step(began, &format!("first session barrier: {reached:?}"));
+    assert_eq!(
+        reached,
+        Reached::Yes,
+        "⚠⚠ the FIRST session must come up, or this gate is measuring a broken launch rather than a \
+         broken replacement. Screen: {}",
+        live.tail(6),
+    );
+
+    // ⚠⚠⚠ THE FIRST SESSION MUST ACTUALLY USE ITS IDENTITY, and the first run of this gate did not
+    // — which is why it reported the replacement coming up healthy and refuted its own premise.
+    // A `claude` that has only been STARTED has written nothing: the earlier probe that launched
+    // one and killed it left no record at all. The identity is claimed by the session doing
+    // something, so a gate that skips the turn hands the replacement a free name and measures
+    // nothing. **A fixture that manufactures a non-answer costs the same as one that manufactures
+    // an answer.**
+    let first = one_turn(&live, &run, 0, false, began);
+    assert!(
+        first.answered,
+        "⚠⚠ the first session did not answer, so it may not have claimed its identity and the \
+         replacement below would be measuring an unclaimed name. Over: {:?}",
+        first.over,
+    );
+    step(began, "first session has used its identity");
+
+    // ── THE REPLACEMENT, exactly as `restarting` performs it ──
+    let replaced = live
+        .access
+        .lifecycle()
+        .expect("this host has the lifecycle capability")
+        .respawn(live.pane);
+    step(began, &format!("respawn answered: {replaced:?}"));
+
+    let fresh = replaced.expect(
+        "⚠ respawn REFUSING is a different (and better) finding than the one this gate expects — \
+         it would mean the failure is visible to the caller. Record it and rewrite this gate.",
+    );
+
+    // Give the replacement's child the time it needs to refuse itself and go.
+    let mut ended = false;
+    let mut screen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        screen = live.access.pane_full_text(fresh).unwrap_or_default();
+        ended = live.access.pane_eof(fresh).unwrap_or(false);
+        if ended || screen.contains("already in use") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let tail: String = screen.lines().rev().take(8).collect::<Vec<_>>().join(" | ");
+    step(began, &format!("replacement eof={ended} screen: {tail}"));
+
+    println!("\n== what a replacement did with an argument that named one instance ==");
+    println!("  minted:              {session}");
+    println!("  respawn answered:    Ok({})", fresh.0);
+    println!("  replacement at eof:  {ended}");
+    println!("  replacement screen:  {tail}");
+
+    assert!(
+        ended || screen.contains("already in use"),
+        "⚠⚠⚠ THE REPLACEMENT CAME UP. That refutes this gate's premise — either the agent stopped \
+         refusing a reused session id, or respawn stopped reusing argv. Both change the design \
+         resting on this measurement, so find out which before deleting anything. Screen: {tail}",
+    );
+    assert!(
+        screen.contains("already in use"),
+        "⚠⚠ the replacement's child is gone but its screen does not say why, so this gate cannot \
+         attribute the death to the reused identity rather than to anything else that kills a \
+         startup. Screen: {tail}",
+    );
+    println!(
+        "\n  ⚠⚠⚠ respawn reported Ok on a pane whose agent refused itself at startup. The caller \
+         has no way to tell this from a healthy replacement."
+    );
+}
+
+/// **A RUN AND ITS REPLACEMENT ARE TWO NAMED SESSIONS, AND BOTH RECORDS CAN BE FOUND** — the thing
+/// the two gates above were separately unable to have.
+///
+/// # ⚠⚠⚠ What this proves that the others cannot
+///
+/// The gate above measures a launch that carries its identity in **argv the caller wrote**, and that
+/// one cannot be replaced: `respawn` promises the same argv, the agent refuses the reused name, and
+/// the replacement dies reporting success. The fix is not to weaken that promise. It is that sprag's
+/// own naming does not live in argv at all — a pane's argv is captured BEFORE instrumentation, and
+/// [`sprag_terminal::PaneArgsSource`] is consulted at EVERY BIRTH, so a replacement re-enters the
+/// decision and is named afresh without `respawn` knowing anything about identities.
+///
+/// The same mechanism already carries the hooks instrumentation for the same reason, stated in
+/// `workspace.rs`: *"a stored instrumentation would point a fresh agent at a dead socket."* A stored
+/// identity goes stale in exactly that way — measured, `Error: Session ID … is already in use.`
+///
+/// # ⚠⚠ And the trajectory is the point, not a side effect
+///
+/// Two sessions, two names, two records. `claudedocs/INSIGHT-LOOP-SCORING-AND-COST-SIGNALS.md` asks
+/// for an identity that outlives the iteration so *"did we do this twice"* can be asked; this is
+/// that question's session-level half, and the list of names a run accumulates IS the answer.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_replacement_is_named_afresh_and_both_records_can_be_found() {
+    let (live, minted) = Live::start_minting("minting");
+    let run = RunContext::uncancellable();
+    let began = Instant::now();
+
+    let mut barrier = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    );
+    assert_eq!(
+        barrier
+            .reached(&live.access, live.pane, &run)
+            .expect("the pane must stay readable"),
+        Reached::Yes,
+        "⚠⚠ the FIRST session must come up. Screen: {}",
+        live.tail(6),
+    );
+    let first = one_turn(&live, &run, 0, false, began);
+    assert!(first.answered, "the first session must claim its identity");
+    step(began, "first session has used its identity");
+
+    let fresh = live
+        .access
+        .lifecycle()
+        .expect("this host has the lifecycle capability")
+        .respawn(live.pane)
+        .expect("the replacement must spawn");
+    step(began, &format!("respawn answered: Ok({})", fresh.0));
+
+    // ⚠ The barrier is built anew for the new pane, exactly as `Session::replacing` re-arms one:
+    // a latched barrier would report *already ready* about a program that has existed for
+    // milliseconds, which is R379's measured defect.
+    let mut replaced_barrier = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    );
+    let came_up = replaced_barrier
+        .reached(&live.access, fresh, &run)
+        .expect("the replacement pane must stay readable");
+    let screen = live.access.pane_full_text(fresh).unwrap_or_default();
+    let tail: String = screen.lines().rev().take(6).collect::<Vec<_>>().join(" | ");
+    step(began, &format!("replacement barrier: {came_up:?}"));
+
+    let names = minted.lock().expect("the log").clone();
+    println!("\n== a run and its replacement, each named at its own birth ==");
+    for (index, name) in names.iter().enumerate() {
+        println!("  birth {index}: {name}");
+    }
+
+    assert!(
+        !screen.contains("already in use"),
+        "⚠⚠⚠ THE REPLACEMENT WAS HANDED THE NAME ITS PREDECESSOR IS USING. The whole point of \
+         minting at each birth is that this cannot happen — so either the args source was not \
+         consulted on respawn, or the identity reached the pane's RECORDED argv and was replayed. \
+         Screen: {tail}",
+    );
+    assert_eq!(
+        came_up,
+        Reached::Yes,
+        "⚠⚠ the replacement did not come up, and not because of a reused name. Screen: {tail}",
+    );
+    assert_eq!(
+        names.len(),
+        2,
+        "⚠⚠⚠ two births, two names — got {names:?}. A respawn that did not re-enter the naming \
+         decision is the failure this gate exists for.",
+    );
+    assert_ne!(
+        names[0], names[1],
+        "⚠⚠⚠ both births were given the SAME name. Minting per birth is what makes replacement \
+         possible at all; a repeated one is the stored-identity bug wearing the fix's clothes.",
+    );
+
+    // The replacement must use its own identity before it has a record to find.
+    let second = one_turn_on(&live, fresh, &run, 1, began);
+    assert!(
+        second.answered,
+        "the replacement must answer, or its record is missing for a reason this gate is not about",
+    );
+
+    let mut found = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        found = names.iter().filter_map(|name| agent_record(name)).collect();
+        if found.len() == names.len() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    for (name, record) in names.iter().zip(&found) {
+        let billed = billed(record);
+        println!(
+            "  {name} -> {} requests, {} tokens of context",
+            billed.requests, billed.context,
+        );
+    }
+    assert_eq!(
+        found.len(),
+        names.len(),
+        "⚠⚠⚠ {} sessions were named and {} records can be found. A trajectory with a hole in it \
+         cannot answer what a run spent, which is the whole reason for naming. Names: {names:?}",
+        names.len(),
+        found.len(),
+    );
+    println!(
+        "\n  the run's trajectory is {} named sessions, every one of them findable",
+        names.len(),
+    );
+}
+
+/// **A LOOP KNOWS WHAT ITS AGENT IS BEING CHARGED TO READ** — the number reaches the document, and
+/// it is the same number the agent wrote about itself.
+///
+/// # ⚠⚠⚠ The last link, and the only one no unit test can close
+///
+/// Everything under this claim is separately fixed: that a minted name reaches a record, that a
+/// replacement is named afresh, that the reader counts a streamed reply once. What none of them can
+/// say is whether the number **crosses into the machine** — the driver puts it on `turn.done`,
+/// `judging`'s entry assigns it, and a stand-in agent would prove only that a fixture's number
+/// survives a datamodel.
+///
+/// So this asserts the two ends against each other: what `OuterLoop::context` reads out of the
+/// document, and what the record on disk says, for the same live session. **Equal, or the loop is
+/// holding a number about something else.**
+///
+/// ⚠ The pane is opened through a naming source — [`Live::start_minting`] — because a loop over an
+/// UNNAMED session is the degradation, not the feature: it reads `0` and carries on, which is what
+/// every other gate in this module has been driving all along.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{Brief, Turn as TurnContract};
+
+    const LIVE_MAX_TURNS: i64 = 3;
+
+    let (live, minted) = Live::start_minting("spend");
+    let began = Instant::now();
+
+    let brief = Brief {
+        north_star: "prove a loop can read what its own agent session is spending".to_string(),
+        milestone: "state the product of 17 and 23 as a single number".to_string(),
+        reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
+        max_turns: LIVE_MAX_TURNS,
+        reflect_every: LIVE_MAX_TURNS,
+        screen_rules: None,
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a briefed loop over a named pane starts");
+
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 24,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    step(began, &format!("run ended: {outcome:?}"));
+
+    let turns = loops.turns();
+    let held = loops.context();
+    let names = minted.lock().expect("the log").clone();
+    let recorded = names.first().and_then(|name| sprag_plugin::spend_of(name));
+
+    println!("\n== what the loop knew about its own session ==");
+    println!("  session:  {names:?}");
+    println!("  turns:    {turns:?}");
+    println!("  context held by the document: {held:?}");
+    println!("  spend read from the record:   {recorded:?}");
+
+    assert_eq!(
+        turns,
+        Some(1),
+        "⚠⚠ the loop must have judged exactly one turn for this to be about a number rather than \
+         about a run that never got going",
+    );
+    let recorded = recorded.expect(
+        "⚠⚠⚠ the session was named and the loop drove a turn, but no record can be found under \
+         that name. Everything above this claim assumed it could be.",
+    );
+    let held = held.expect("a machine that judged a turn holds its own `context`");
+    assert!(
+        held > 0,
+        "⚠⚠⚠ THE DOCUMENT HOLDS ZERO after a judged turn against a NAMED session. Zero is the \
+         degradation this deliberately cannot distinguish from a real level — so reaching it here, \
+         where the name was minted by the harness and the record exists, means the number never \
+         crossed. Recorded: {recorded:?}",
+    );
+    // ⚠⚠⚠ NOT EQUALITY, AND THE FIRST RUN OF THIS GATE IS WHY. It asserted the two were the same
+    // number and went red at 31,754 against 31,964 — with the record showing **two** requests where
+    // the document had judged **one**. Nothing was wrong: `closing` sends the report prompt after
+    // the judged turn, so the session bills again while this test is still reading. The document
+    // holds A LEVEL AT A MOMENT and the record keeps growing past it; an assertion that they are
+    // equal is an assertion that nothing happened in between, which is false by construction here.
+    //
+    // So what is pinned is what is actually true of the pair: the level the loop holds is one this
+    // session really reached, and it is the same size rather than merely non-zero. The ordering is
+    // the sharp half — a document holding MORE than the record has ever reached would mean the
+    // number came from somewhere else.
+    let held = u64::try_from(held).expect("a context is not negative");
+    assert!(
+        held <= recorded.context,
+        "⚠⚠⚠ the loop holds {held} and its agent's record has never exceeded {}. A level the \
+         session never reached did not come from the session.",
+        recorded.context,
+    );
+    assert!(
+        held * 2 > recorded.context,
+        "⚠⚠ the loop holds {held} against a record at {}. Ordered correctly but not the same size, \
+         which is what reading the WRONG session's record would look like — the check that a bare \
+         `> 0` would pass straight through.",
+        recorded.context,
+    );
+    println!(
+        "\n  the loop holds {held} tokens as of the turn it judged; the record has since reached \
+         {} over {} requests ({} cached)",
+        recorded.context, recorded.requests, recorded.cached,
+    );
+}
+
+/// [`one_turn`] against a pane that is not [`Live::pane`] — what a replacement needs.
+fn one_turn_on(live: &Live, pane: PaneId, run: &RunContext, index: usize, began: Instant) -> Turn {
+    let token = format!("ORTHOGONAL-{index}7");
+    let ask = format!("Reply with exactly the word {token} and nothing else.");
+    let mut done = Completion::new(DoneWhen::Settles);
+    done.begin(&live.access, pane);
+    let delivered = deliver(
+        &live.access,
+        run,
+        pane,
+        &ask,
+        &Delivery {
+            confirm: Some(ask.chars().take(40).collect()),
+            then_press: vec![KeyStroke::named("Enter")],
+            ..Delivery::new()
+        },
+    )
+    .expect("the pane must take the prompt");
+    step(began, &format!("turn {index}: delivered {delivered:?}"));
+    let asked_at = Instant::now();
+    let over = done.wait(&live.access, pane, TURN_BOUND, run);
+    let elapsed = asked_at.elapsed();
+    let answered = live
+        .access
+        .pane_full_text(pane)
+        .unwrap_or_default()
+        .contains(&token);
+    step(began, &format!("turn {index}: {over:?} after {elapsed:?}"));
+    Turn {
+        index,
+        sampled: false,
+        over,
+        elapsed,
+        seq_before: None,
+        seq_after: None,
         answered,
     }
 }

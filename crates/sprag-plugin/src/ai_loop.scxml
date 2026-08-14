@@ -331,6 +331,31 @@
     <!-- ── below the line: loop bookkeeping, not authored ── -->
     <data id="turns" expr="0"/>
     <data id="turns_since_reflect" expr="0"/>
+    <!--
+      ⚠⚠⚠ WHAT THE INNER SESSION HAS BEEN CHARGED TO READ, as of its last billed
+      request. Written by the driver on every `turn.done` and by nothing else.
+
+      This is the number the two budgets above are NOT. Measured across forty
+      local agent sessions: cache read is 99.0% of tokens and 78.1% of cost,
+      while the part a prompt's size resembles is 10.3% of cost — and it is the
+      part that FALLS as a session grows. A turn is not a unit of it either: one
+      request adds 861 tokens at the median and 633,749 at the maximum.
+
+      ⚠⚠ ZERO MEANS "DO NOT DECIDE ON THIS", not "nothing has accumulated". A run
+      whose session cannot be named — an agent sprag did not name, a host that
+      cannot read a process, an agent that has not written yet — reads 0, and the
+      two are indistinguishable here on purpose: the alternative is refusing to
+      drive a loop over a number that is only ever an optimisation.
+
+      ⚠ NOTHING GUARDS ON IT YET, and that is deliberate rather than unfinished.
+      What it would be for is deciding whether `restarting` is worth its cold
+      start, and the threshold that decides is measured in
+      `claudedocs/INSIGHT-RESTART-COST-CURVE.md` at 15,000-21,000 tokens of
+      discardable context — a figure whose own sign for real workloads is still
+      unmeasured. A guard written before that settles would be a policy nobody
+      can defend; the number arriving is what makes settling it possible.
+    -->
+    <data id="context" expr="0"/>
     <!-- ⚠⚠ How many calls a standing instruction TURNED DOWN. Counted so an
          auto-screened run does not read like a hand-answered one.
 
@@ -632,6 +657,22 @@
     time to improve ourselves, otherwise take another turn.
   -->
   <state id="judging">
+    <!--
+      ⚠⚠⚠ ONE PLACE, AND IT IS THE ENTRY RATHER THAN THE EDGES. Every way into
+      this state is a `turn.done` — from `working` and from `awaiting_human` —
+      so `_event.data` here is that event's on both paths, and the assignment
+      runs exactly once per judged turn.
+
+      Writing it on the `judge` transitions instead would be FOUR copies of one
+      line, which is what this document warns against wherever it composes
+      rather than repeats: the failure of letting copies drift is silent, and
+      here it would be silent in the worst way — the guard that eventually reads
+      this would see a level from some earlier turn and be right about a session
+      that no longer exists.
+    -->
+    <onentry>
+      <assign location="context" expr="_event.data.context"/>
+    </onentry>
     <transition event="judge" cond="_event.data.done" target="closing"/>
     <transition event="judge" cond="turns &gt;= max_turns" target="exhausted"/>
     <!--

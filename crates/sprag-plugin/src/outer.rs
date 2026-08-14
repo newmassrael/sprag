@@ -717,6 +717,20 @@ struct Session {
     /// Marked at the same moment the contract is, for the same reason: a marker that was on the
     /// screen before this turn started is not this turn's answer.
     judged: crate::access::RowTrail,
+    /// **THE NAME THIS SESSION FILES ITS OWN RECORD UNDER**, latched the first time it can be read.
+    ///
+    /// # ⚠⚠ Why it is latched rather than read when wanted
+    ///
+    /// It is recovered from the pane's FOREGROUND JOB, which is live state: the leader is whatever
+    /// owns the terminal now, so an agent that runs a pager or an editor in the foreground would be
+    /// asked about the wrong process and answer nothing. Latching means the run keeps the name it
+    /// learned while its agent was the thing in front, and a momentary child cannot take the
+    /// session's identity away from it.
+    ///
+    /// ⚠ `None` is not an error and never ends a run. It means *this build could not name that
+    /// session* — no `PaneForegroundJob`, a pane whose agent a person launched with its own name,
+    /// an agent sprag does not instrument — and the only thing lost is knowing what it spends.
+    identity: Option<String>,
 }
 
 impl Session {
@@ -730,7 +744,27 @@ impl Session {
             pane: fresh,
             ready: self.ready.rearmed(),
             judged: crate::access::RowTrail::default(),
+            // ⚠⚠⚠ A REPLACEMENT IS A DIFFERENT SESSION AND MUST BE NAMED AFRESH. Carrying the old
+            // name over would point every later reading at the record of a session that has been
+            // closed — the spend would freeze at whatever the predecessor last spent and look like
+            // an agent doing nothing. Measured upstream of this: a launch handed a name already in
+            // use is refused outright, so the two really are distinct sessions and not one resumed.
+            identity: None,
         }
+    }
+
+    /// The name this session's agent files its record under, learning it if it can — see
+    /// [`Session::identity`].
+    fn identify(&mut self, panes: &dyn PaneAccess) -> Option<&str> {
+        if self.identity.is_none() {
+            self.identity = panes
+                .foreground_job()
+                .and_then(|jobs| jobs.pane_foreground_leader(self.pane))
+                .and_then(|leader| {
+                    crate::spend::identity_in(&leader.argv, crate::spend::CLAUDE_IDENTITY_FLAG)
+                });
+        }
+        self.identity.as_deref()
     }
 }
 
@@ -815,6 +849,10 @@ impl OuterLoop {
                     spec.attended,
                 ),
                 judged: crate::access::RowTrail::default(),
+                // Learned on the first look at a pane whose agent is up, not here: at construction
+                // the child may not have `exec`d yet, and a `None` cached now would be indistinguishable
+                // from one that will never be answerable.
+                identity: None,
             },
             machine,
             script,
@@ -1123,6 +1161,27 @@ impl OuterLoop {
         }
     }
 
+    /// **WHAT THE DOCUMENT HOLDS AS ITS SESSION'S ACCUMULATED CONTEXT** — its own `context`,
+    /// assigned on entry to `judging` from the number this driver put on `turn.done`.
+    ///
+    /// # ⚠⚠⚠ Read from the MACHINE, not from the driver that supplied it
+    ///
+    /// The same rule as [`turns`](Self::turns) and for a sharper reason: this driver computed the
+    /// number, so answering from a field out here would let a reporter agree with the driver about
+    /// a value the DOCUMENT never took. That is exactly the shape R381 measured — a value published
+    /// as optional and read as required — and the only reading worth publishing is the one a guard
+    /// would see.
+    ///
+    /// ⚠ `Some(0)` means *the session could not be named, or has written nothing yet*, and is not a
+    /// claim that nothing has accumulated. See `context_now`.
+    #[must_use]
+    pub fn context(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, "context") {
+            Ok(ScriptValue::Int(context)) => Some(context),
+            _ => None,
+        }
+    }
+
     /// **HOW MANY CALLS THE DOCUMENT COUNTS A STANDING INSTRUCTION HAVING TURNED DOWN** — its own
     /// `screened`, incremented on `screen.matched`.
     ///
@@ -1187,7 +1246,17 @@ impl OuterLoop {
 
             // ⚠⚠⚠ THE STATE THE WHOLE ROUND WAS ABOUT. The inner agent is working and the driver
             // watches its pane; what the turn ENDS ON is what the machine is told.
-            AiLoopState::Working | AiLoopState::Closing => self.watch(panes, run)?.into(),
+            // ⚠⚠ A TURN THAT ENDED CARRIES WHAT THE SESSION HAS BEEN CHARGED TO READ, and only that
+            // one ending does: `turn.blocked` and `turn.interrupted` are answers about a peer that
+            // is still mid-turn, so a number attached to them would be a level nobody had reached.
+            // The other endings keep going through `into()`, which sends no data at all.
+            AiLoopState::Working | AiLoopState::Closing => match self.watch(panes, run)? {
+                AiLoopEvent::TurnDone => Raise::carrying(
+                    AiLoopEvent::TurnDone,
+                    serde_json::json!({ "context": self.context_now(panes) }),
+                ),
+                other => other.into(),
+            },
 
             // One turn has landed. The document decides in priority order, and what it needs from
             // out here is whether the agent said it was done — `judge`'s first guard reads
@@ -1754,6 +1823,31 @@ impl OuterLoop {
             });
         }
         Ok(delivered.written().bytes())
+    }
+
+    /// **WHAT THE INNER SESSION HAS BEEN CHARGED TO READ**, as of its most recent billed request —
+    /// the quantity a cost policy is denominated in, and `0` when this run cannot name its session.
+    ///
+    /// # ⚠⚠⚠ Why a loop needs this and cannot get it from anything it already holds
+    ///
+    /// `turns` counts turns and [`Cost::Bytes`](crate::Cost) counts what was typed, and measurement
+    /// says neither tracks the bill: across forty local agent sessions **cache read is 99.0% of
+    /// tokens and 78.1% of cost**, while what a prompt's size resembles is **10.3% of cost** and is
+    /// the component that FALLS as a session grows. And a turn is not a unit: one billed request
+    /// adds 861 tokens of context at the median and **633,749 at the maximum**, so predicting this
+    /// from `turns` is out by 63% at p90. See `claudedocs/INSIGHT-LOOP-SCORING-AND-COST-SIGNALS.md`.
+    ///
+    /// # ⚠⚠ ZERO IS A DEGRADATION AND NOT A MEASUREMENT, which is why it is safe
+    ///
+    /// A run that cannot name its session, or whose agent has written nothing yet, reads `0`. Every
+    /// consumer must therefore treat `0` as *"do not decide on this"* rather than as *"nothing has
+    /// accumulated"* — the two are indistinguishable here on purpose, because the alternative is
+    /// refusing to drive an agent over a number that is only ever an optimisation.
+    fn context_now(&mut self, panes: &dyn PaneAccess) -> u64 {
+        self.driving
+            .identify(panes)
+            .and_then(crate::spend::spend_of)
+            .map_or(0, |spend| spend.context)
     }
 
     /// Whether **THE AGENT SAID, IN THIS TURN,** what the document calls done — the one fact
