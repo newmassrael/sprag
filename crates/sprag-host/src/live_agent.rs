@@ -1005,6 +1005,274 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
     );
 }
 
+/// ⚠⚠⚠ **WHAT A REAL AGENT ASKS WHILE IT IS WORKING** — the instrument register item 137 is about,
+/// and the evidence `screening`'s shape has to be decided from.
+///
+/// # ⚠⚠⚠ What this crate's captured dialogs already cover, and what they do not
+///
+/// `sprag-detect` holds SIX dialogs captured from two real agents, and the parse of every one is
+/// asserted against what a person reading the fixture sees. That is real coverage and this gate
+/// does not duplicate it. What it does is name the hole in it:
+///
+/// | captured | kind |
+/// |---|---|
+/// | claude trust, codex trust, claude model picker, codex model picker, codex sign-in | **before the agent works** |
+/// | claude permission (one `Fetch`) | **while it works** |
+///
+/// **An outer loop only ever meets the second kind**, and there is one of them, from one tool, from
+/// one version. Every consent needle in this tree — including the `"Do you want to"` the live loop
+/// gate answers with — was read off that single screen. So the question `screening` turns on is
+/// unmeasured: *can a caller quoting the agent's own words cover the dialogs a working loop meets,
+/// or does something have to classify them by KIND first?*
+///
+/// # What it does
+///
+/// One FRESH agent session per probe, because a capture taken on a screen the previous probe left
+/// behind is a capture of two dialogs. Each probe asks for work that needs a different TOOL, waits
+/// for the shipping parser to read a menu, and records the rendered rows plus what the parser made
+/// of them — in the exact `&[&str]` shape `sprag-detect`'s own fixtures use, so a capture can be
+/// pasted in and replayed offline for ever after.
+///
+/// ⚠⚠ **NOTHING IS ANSWERED.** The probes stop at the question; the session is dropped with the
+/// dialog still up. A gate that answered would be measuring the answer path, which the loop gates
+/// already do — and it would let the agent do the work, which this one has no reason to.
+///
+/// # ⚠⚠⚠ The assertion, and why it is the point rather than the print-out
+///
+/// It builds the ONE clause a caller would plausibly write — *"Do you want to"* → *"Yes"* — and
+/// asks [`Consents::covers`] about every dialog it captured. If one clause covers all of them, a
+/// caller can arm a loop for real work without enumerating anything, and the authored `screening`'s
+/// dialog-KIND matching is answering a question nobody has. If it does not, the failure names the
+/// tool whose dialog broke it, which is the same finding from the other side.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn what_a_live_agent_asks_while_it_works() {
+    use sprag_plugin::{Consent, Consents};
+
+    /// How long to wait for the agent to reach its permission question.
+    const ASKS_WITHIN: Duration = Duration::from_secs(90);
+    /// The rows of a capture, matching `sprag-detect`'s tallest fixture with room over.
+    const CAPTURE_ROWS: usize = 14;
+
+    /// One probe: what to call it, the smallest work that needs its tool, and **whether a dialog
+    /// is expected at all**.
+    ///
+    /// ⚠⚠⚠ THE `false` ROW IS A MEASUREMENT AND NOT A CONTROL FOR ITS OWN SAKE. The first run of
+    /// this gate asked a live `claude` to run `date -u +%Y` and it **ran it without asking** — the
+    /// agent judges some tool calls safe and gates others. That means the dialog population a loop
+    /// actually meets is NARROWER than *"every tool call"*, which is a fact about how much of a
+    /// run needs covering and which nothing in this tree had ever established. Asserted rather
+    /// than noted, so the day an agent starts gating `date` this says the population moved.
+    const PROBES: &[(&str, &str, bool)] = &[
+        (
+            "write",
+            "Create a file called PROBE.txt whose only contents are the word ready.",
+            true,
+        ),
+        (
+            "edit",
+            "In the file SEED.txt, change the word ready to steady. Do not create any new file.",
+            true,
+        ),
+        (
+            "bash-writes",
+            "Run the shell command `touch MADE-BY-BASH.txt` and tell me when it is done.",
+            true,
+        ),
+        (
+            "bash-reads",
+            "Run the shell command `date -u +%Y` and tell me the single line it prints.",
+            false,
+        ),
+    ];
+
+    let mut captured: Vec<(&str, Vec<String>, sprag_detect::Question)> = Vec::new();
+    for (label, ask, must_ask) in PROBES {
+        let live = Live::start(&format!("asks-{label}"));
+        let began = Instant::now();
+        // ⚠ The `edit` probe needs something to edit. Seeded HERE rather than by an earlier probe,
+        // because probes must not depend on each other's side effects — the whole reason each gets
+        // its own session.
+        std::fs::write(live.scratch.path().join("SEED.txt"), "ready\n")
+            .expect("the scratch directory is this measurement's own");
+
+        let run = RunContext::uncancellable();
+        // ⚠⚠⚠ THE BARRIER, AND THE FIRST RUN OF THIS GATE IS WHY IT IS HERE. It was written
+        // without one, and the capture came back showing the agent's WELCOME BANNER with the
+        // prompt sitting unsubmitted in its composer: the text was typed into a program that was
+        // still booting, `deliver` read its own echo back and called the delivery confirmed, and
+        // the Enter went nowhere. **That is R379's finding, reproduced by a gate written three
+        // rounds after it was recorded** — which is the measurement this barrier exists for, met
+        // from the other side.
+        let reached = Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+        assert_eq!(
+            reached,
+            Reached::Yes,
+            "{label}: the agent must be up and at rest before it is spoken to: {}",
+            live.tail(3),
+        );
+
+        // ⚠⚠ ARMED BEFORE A BYTE GOES IN — `Completion::begin`'s guarantee, and what lets this
+        // gate tell *the agent asked* from *the agent finished* at all.
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&live.access, live.pane);
+        let delivered = deliver(
+            &live.access,
+            &run,
+            live.pane,
+            ask,
+            &Delivery {
+                confirm: Some(ask.chars().take(40).collect()),
+                then_press: vec![KeyStroke::named("Enter")],
+                ..Delivery::new()
+            },
+        )
+        .expect("the pane must take the prompt");
+        assert!(
+            !matches!(delivered, Delivered::Unconfirmed { .. }),
+            "{label}: a live agent PAINTS what is typed into its composer: {delivered:?}",
+        );
+
+        // ⚠⚠⚠ THE PRODUCT'S OWN TURN-ENDING VOCABULARY DOES THE MEASURING. `Over` is exactly the
+        // distinction this gate is about — *it answered* versus *it stopped to ask* — and it is
+        // what a loop's `watch` reads, so what is captured here is what a run would have met. A
+        // hand-rolled poll for a menu would be a second reader of one screen, which this crate has
+        // paid for before.
+        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        // ⚠⚠ ROWS, NOT THE COLLAPSED SCREEN, and the first run of this gate is why: it captured
+        // `pane_collapsed`, which joins the whole pane into ONE string, and produced a "fixture"
+        // of a single two-thousand-character line. `sprag_detect` reads `row_text` per row, so a
+        // capture that is not per-row is not the parser's input.
+        let rows: Vec<String> = live
+            .access
+            .pane_rows(live.pane)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.text.trim_end().to_owned())
+            .filter(|row| !row.trim().is_empty())
+            .rev()
+            .take(CAPTURE_ROWS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        println!(
+            "\n== {label}: {}, after {:?} — {} ==",
+            if *must_ask {
+                "expected to ASK"
+            } else {
+                "expected to just DO IT"
+            },
+            began.elapsed(),
+            match &over {
+                Over::Yes => "finished WITHOUT asking".to_owned(),
+                Over::Asking(Some(_)) => "ASKED, and the parser read it".to_owned(),
+                Over::Asking(None) => "BLOCKED and the parser could NOT read it".to_owned(),
+                other => format!("{other:?}"),
+            },
+        );
+
+        let Over::Asking(asked) = over else {
+            assert!(
+                !must_ask && matches!(over, Over::Yes),
+                "⚠⚠⚠ {label}: this probe expects a permission dialog and the turn ended {over:?}. \
+                 A `Yes` means the agent did the work WITHOUT asking — so either this session \
+                 inherited an allowlist (see `Live::start`'s `--setting-sources`) or the agent \
+                 stopped gating that tool. Screen: {}",
+                live.tail(6),
+            );
+            println!(
+                "  ⚠ MEASURED: this agent does not gate that call. Screen: {}",
+                live.tail(3),
+            );
+            continue;
+        };
+        let question = asked.unwrap_or_else(|| {
+            panic!(
+                "⚠⚠⚠ {label}: the pane is BLOCKED and `sprag_detect::question` could not read what \
+                 it is asking. That is a finding about the PARSER rather than about the agent, and \
+                 it is the one this gate exists to catch. Rows:\n{}",
+                rows.join("\n"),
+            )
+        });
+        assert!(
+            must_ask,
+            "⚠⚠ {label}: this probe was declared as one the agent does NOT gate, and it asked. \
+             The dialog population moved, which is the fact that row exists to notice",
+        );
+        println!(
+            "    /// Captured from a live `{}` ({label}).\n    const {}_DIALOG: &[&str] = &[\n{}\n    ];",
+            live.agent,
+            label.to_uppercase().replace('-', "_"),
+            rows.iter()
+                .map(|row| format!("        {row:?},"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        println!(
+            "  parsed: asked={:?}\n          choices={:?}\n          enter lands on {:?}",
+            question.asked,
+            question
+                .choices
+                .iter()
+                .map(|c| (c.number, c.label.as_str()))
+                .collect::<Vec<_>>(),
+            question.selected().map(|c| c.number),
+        );
+        captured.push((label, rows, question));
+    }
+
+    // ⚠⚠⚠ THE MEASUREMENT. One clause, quoting the agent's own words, against every tool's dialog.
+    let one_clause = Consents::of(vec![
+        Consent::parse("Do you want to".to_string(), "Yes".to_string())
+            .expect("both needles are non-empty"),
+    ])
+    .expect("a non-empty consent list");
+    let verdicts: Vec<(&str, String)> = captured
+        .iter()
+        .map(|(label, _, question)| {
+            (
+                *label,
+                match one_clause.covers(question) {
+                    Ok(chose) => format!("Ok({}. {:?})", chose.number, chose.label),
+                    Err(why) => format!("Err({:?})", why),
+                },
+            )
+        })
+        .collect();
+    println!("\n== one clause, every tool ==\n  {verdicts:?}\n");
+
+    for (label, _, question) in &captured {
+        one_clause.covers(question).unwrap_or_else(|why| {
+            panic!(
+                "⚠⚠⚠ {label}: ONE clause quoting the agent's own words did not cover this tool's \
+                 dialog ({why:?}). That is the finding: a caller cannot arm a loop for real work \
+                 without enumerating dialogs, and whatever `screening` becomes has to carry the \
+                 difference. asked={:?} choices={:?}",
+                question.asked,
+                question
+                    .choices
+                    .iter()
+                    .map(|c| (c.number, c.label.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+        });
+    }
+    assert_eq!(
+        captured.len(),
+        PROBES.iter().filter(|(_, _, must_ask)| *must_ask).count(),
+        "every probe that expects a dialog must have reached one, or the claim above is about the \
+         ones that did",
+    );
+}
+
 /// What one live turn cost and how it ended.
 struct Turn {
     index: usize,

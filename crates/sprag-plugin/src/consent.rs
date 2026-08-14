@@ -777,6 +777,110 @@ impl Answered {
 mod tests {
     use super::*;
 
+    /// ⚠⚠⚠ **ONE CLAUSE, QUOTING THE AGENT'S OWN WORDS, COVERS EVERY DIALOG A WORKING AGENT
+    /// RAISES** — the measurement `screening`'s shape turns on, against three dialogs captured
+    /// from a live `claude` 2.1.232 rather than against this file's composed one.
+    ///
+    /// # ⚠⚠⚠ The question it settles
+    ///
+    /// `ai_loop.scxml` answers permission dialogs in `screening`, from standing rules that match by
+    /// dialog KIND — which needs somebody to classify other people's dialogs into a taxonomy, and
+    /// `sprag-detect` classifies none. That is one of the two owner decisions the whole state has
+    /// been blocked on, and it was blocked on an ASSUMPTION: that a caller could not cover a real
+    /// loop's dialogs by quoting words.
+    ///
+    /// Measured, they can. Three tool families — write, edit, shell — ask three DIFFERENT
+    /// questions (*"Do you want to create PROBE.txt?"*, *"…make this edit to SEED.txt?"*, *"…
+    /// proceed?"*) and offer three DIFFERENT second options, and all three carry `Do you want to`
+    /// and offer `Yes` as a whole label. **A taxonomy buys nothing this needle does not already
+    /// have.**
+    ///
+    /// # ⚠⚠⚠ And the exact-before-substring rule is doing SAFETY work, on real dialogs
+    ///
+    /// Option 2 is *"Yes, allow all edits during this session"* on two of them and *"Yes, and
+    /// always allow access to …"* on the third — the option that turns off future questions, worded
+    /// differently every time. Both CONTAIN `Yes`. If [`Consent::covers`] matched substrings first,
+    /// every one of these would be [`Refusal::Ambiguous`] and answer nothing; matching the whole
+    /// label first is what makes one clause both sufficient and safe. That rule was written from
+    /// one screen and is asserted here against three.
+    #[test]
+    fn one_clause_covers_every_dialog_a_live_agent_raised_while_working() {
+        let clause = Consents::of(vec![
+            Consent::parse("Do you want to".to_owned(), "Yes".to_owned())
+                .expect("both needles are non-empty"),
+        ])
+        .expect("a non-empty consent list");
+
+        for (label, rows) in crate::testing::CLAUDE_WORKING_DIALOGS {
+            let question = crate::testing::parsed_dialog(rows).unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠ {label}: the SHIPPING parser must read a dialog captured from a live \
+                     agent. A miss here is the detector going stale against the program it is \
+                     written for, which no other gate in this tree would notice",
+                )
+            });
+            let chose = clause.covers(&question).unwrap_or_else(|why| {
+                panic!(
+                    "⚠⚠⚠ {label}: one clause quoting the agent's own words must cover this — a \
+                     caller who cannot arm a loop for real work without enumerating dialogs is \
+                     the case `screening`'s taxonomy would exist to serve. Got {why:?}. \
+                     asked={:?} choices={:?}",
+                    question.asked,
+                    question
+                        .choices
+                        .iter()
+                        .map(|c| (c.number, c.label.as_str()))
+                        .collect::<Vec<_>>(),
+                )
+            });
+            assert_eq!(
+                (chose.number, chose.label.as_str()),
+                (1, "Yes"),
+                "⚠⚠⚠ {label}: and it must land on the BARE yes. The other option carrying `Yes` \
+                 turns off every future question, so a consent that reached it would be a standing \
+                 permission nobody wrote",
+            );
+            assert!(
+                chose.selected,
+                "⚠⚠ {label}: and that option is where a bare Enter already lands, which is what \
+                 lets the answer be taken with the one keystroke `Taken::Selected` can prove",
+            );
+        }
+    }
+
+    /// ⚠⚠ **A NEEDLE THAT LOOKS RIGHT AND IS A SUBSTRING OF THE DANGEROUS OPTION ANSWERS NOTHING**
+    /// — the control for the gate above, over the same real screens.
+    ///
+    /// Without it, that gate passes for a parser that returns any option at all. Here the caller
+    /// writes `Yes, a` — plausible, and carried by *"Yes, allow all edits…"* and *"Yes, and always
+    /// allow access…"* but by neither `Yes` nor `No` — and the answer must be a REFUSAL naming the
+    /// dialog rather than a keystroke into it.
+    #[test]
+    fn a_needle_that_only_reaches_the_standing_permission_is_refused() {
+        let broad = Consents::of(vec![
+            Consent::parse("Do you want to".to_owned(), "Yes, a".to_owned())
+                .expect("both needles are non-empty"),
+        ])
+        .expect("a non-empty consent list");
+        for (label, rows) in crate::testing::CLAUDE_WORKING_DIALOGS {
+            let question =
+                crate::testing::parsed_dialog(rows).expect("the parser reads every capture");
+            let reached = broad.covers(&question).map(|c| c.number);
+            assert!(
+                reached.is_ok(),
+                "⚠ {label}: THE CONTROL'S OWN CONTROL — this needle does reach exactly one option \
+                 on each captured dialog, or the assertion below is about a needle that matches \
+                 nothing: {reached:?}",
+            );
+            assert_ne!(
+                reached,
+                Ok(1),
+                "⚠⚠⚠ {label}: a needle that names no option exactly must never fall back to the \
+                 bare yes",
+            );
+        }
+    }
+
     /// The measured shape of a real tool-permission dialog — the one the ambiguity rule is about.
     fn permission() -> Question {
         Question {

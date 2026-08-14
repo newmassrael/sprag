@@ -1007,6 +1007,18 @@ mod tests {
     ];
 
     /// A tool PERMISSION request — the measurement slice 1 was blocked on.
+    ///
+    /// ⚠⚠⚠ **THE ONLY ONE OF THIS FILE'S SIX THAT AN AGENT SHOWS WHILE IT IS WORKING.** The other
+    /// five — two trust prompts, two model pickers, a sign-in — are all shown BEFORE it does
+    /// anything, and an outer loop only ever meets the working kind. So every consent needle in
+    /// this workspace was read off this one screen, from one tool, at one version.
+    ///
+    /// ⚠⚠ R383 captured three more of the working kind from a live `claude` 2.1.232 (write, edit
+    /// and shell) and they live in `sprag_plugin::testing` rather than here. That is a wart with a
+    /// reason: the claim they were captured to settle is about `Consents::covers`, and this crate
+    /// is BELOW the one that owns consents — keeping the family together would have meant keeping
+    /// the data twice. What those three establish is that one clause quoting the agent's own words
+    /// covers all of them, which is why nothing in this crate has to classify a dialog by KIND.
     const PERMISSION_DIALOG: &[&str] = &[
         "────────────────────────────────────────────────────────────────────────────────",
         " Fetch",

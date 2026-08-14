@@ -717,6 +717,90 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
     (workspace, pane)
 }
 
+// ── ⚠⚠⚠ THREE DIALOGS CAPTURED FROM A LIVE `claude` 2.1.232 **WHILE IT WAS WORKING** (R383's
+//    probes), by `sprag_host::live_agent::what_a_live_agent_asks_while_it_works`. Not composed.
+//
+//    `sprag-detect` holds six captured dialogs from two real agents and asserts the parse of every
+//    one. Five of those six are shown BEFORE an agent works — trust prompts, model pickers, a
+//    sign-in — and exactly one is a tool permission (`Fetch`). **An outer loop only ever meets the
+//    second kind**, so every consent needle in this tree was read off that single screen. These
+//    three are the write, edit and shell families, measured.
+//
+//    ⚠⚠ THEY LIVE HERE AND NOT BESIDE THE OTHER SIX, and the reason is the claim they exist for:
+//    it is about `Consents::covers`, which `sprag-detect` cannot see (it is the crate BELOW this
+//    one). Keeping one copy where both claims can be made beat keeping the family together with a
+//    second copy of the data — see `consent`'s gate. Registered as the wart it is.
+
+/// The `Write` tool's permission dialog.
+pub(crate) const CLAUDE_WRITE_DIALOG: &[&str] = &[
+    "● Write(PROBE.txt)",
+    "────────────────────────────────────────────────────────────────────────",
+    " Create file",
+    " PROBE.txt",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    "  1 ready",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " Do you want to create PROBE.txt?",
+    " ❯ 1. Yes",
+    "   2. Yes, allow all edits during this session (shift+tab)",
+    "   3. No",
+    " Esc to cancel · Tab to amend",
+];
+
+/// The `Edit` tool's permission dialog — a DIFFERENT sentence and the same option set.
+pub(crate) const CLAUDE_EDIT_DIALOG: &[&str] = &[
+    "● Update(SEED.txt)",
+    "────────────────────────────────────────────────────────────────────────",
+    " Edit file",
+    " SEED.txt",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " 1 -ready",
+    " 1 +steady",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " Do you want to make this edit to SEED.txt?",
+    " ❯ 1. Yes",
+    "   2. Yes, allow all edits during this session (shift+tab)",
+    "   3. No",
+    " Esc to cancel · Tab to amend",
+];
+
+/// A SHELL command's permission dialog — the shortest question of the three, and the one whose
+/// second option is worded differently again.
+pub(crate) const CLAUDE_BASH_DIALOG: &[&str] = &[
+    "● I'll run that now.",
+    "● Bash(touch MADE-BY-BASH.txt && ls -la MADE-BY-BASH.txt)",
+    "  ⎿ \u{a0}Waiting…",
+    "────────────────────────────────────────────────────────────────────────",
+    " Bash command",
+    "   touch MADE-BY-BASH.txt && ls -la MADE-BY-BASH.txt",
+    "   Create MADE-BY-BASH.txt",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and always allow access to sprag-live-asks-bash/ from this project",
+    "   3. No",
+    " Esc to cancel · Tab to amend · ctrl+e to explain",
+];
+
+/// Every working-agent dialog this crate has captured, with the label the probe that took it used.
+pub(crate) const CLAUDE_WORKING_DIALOGS: &[(&str, &[&str])] = &[
+    ("write", CLAUDE_WRITE_DIALOG),
+    ("edit", CLAUDE_EDIT_DIALOG),
+    ("bash", CLAUDE_BASH_DIALOG),
+];
+
+/// Replay a captured screen through the SHIPPING parser and hand back what it read.
+///
+/// ⚠ Through a real [`Emulator`](sprag_vt::Emulator) rather than by handing the parser a
+/// hand-built screen: `sprag_detect::question` reads `row_text`, and how a row BECOMES text — the
+/// wrapping, the trailing blanks, the wide glyphs in these captures — is the emulator's answer and
+/// not a test's.
+pub(crate) fn parsed_dialog(rows: &[&str]) -> Option<sprag_detect::Question> {
+    use sprag_vt::VtPort;
+    let mut emulator = sprag_vt::Emulator::new(120, 40);
+    emulator.advance(rows.join("\r\n").as_bytes());
+    sprag_detect::question(emulator.screen(), sprag_detect::DIALOG_WINDOW)
+}
+
 /// A stand-in AGENT CLI **THAT STOPS TO ASK PERMISSION**, exactly once, on its first turn.
 ///
 /// # ⚠⚠⚠ Why the outer loop has never met one of these
