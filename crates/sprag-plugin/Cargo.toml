@@ -20,10 +20,6 @@ sprag-input = { workspace = true }
 sprag-detect = { workspace = true }
 # The generated state machine's runtime (Engine + StatePolicy).
 sce-rust-runtime = { workspace = true }
-# ⚠ INTERIM UNTIL PR-86. Required BY THE GENERATED CODE, not by anything sprag
-# writes: SCE emits bare `log::error!` on the datamodel error paths. See the
-# workspace manifest's entry and claudedocs/PINION-PR86-*.md.
-log = { workspace = true }
 # Parse a foreign AI tool's structured stdout (a `claude -p --output-format
 # json` envelope) — perception of an external program, NOT serialization of
 # sprag's own types (the host still owns the RPC-wire mapping), so this does
