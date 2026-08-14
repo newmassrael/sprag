@@ -54,10 +54,29 @@
   of objects, the scalar. The prediction was wrong and the gate is what said so.
 
   What that measurement does NOT license is assuming ECMAScript semantics.
-  Nothing here has been shown to work beyond the four shapes the gate drives, so
+  Nothing here has been shown to work beyond the shapes the gate drives, so
   before writing `===`, `JSON.stringify`, `Array.prototype.map`, `undefined` or a
   template literal into this file, ADD IT TO THAT GATE FIRST. The engine will
   answer; the name at the top of this document will not.
+
+  ⚠ AND `datamodel="lua"` IS NOT AN OPTION, measured at the pinned rev: SCE types
+  the attribute and refuses `lua` as *undefined* (and `xpath` as *unimplemented*),
+  so `ecmascript` is the only legal declaration for a script datamodel. The
+  mismatch above is upstream's shape, not something this file can correct.
+
+  ⚠⚠⚠ WHERE NON-ASCII SURVIVES AND WHERE IT DOES NOT — read this before writing
+  prose into the datamodel, because the two halves of this file differ:
+
+  * TEXT AUTHORED HERE, as a `<data expr="'…'">` literal, crosses whole. The three
+    `screen_rules` replies below are Korean and are measured intact.
+  * TEXT ARRIVING AS EVENT DATA does not. `sce-rust-lua` evaluates a payload as a
+    Lua expression first and falls back to a JSON converter that walks the bytes
+    with `bytes[i] as char` — a Latin-1 decode of UTF-8. So a `brief` in a
+    person's own language comes back mangled, and the driver REFUSES it rather
+    than prompting an agent with the result. Filed upstream as PR-87.
+
+  Both are measured by `a_non_ascii_string_says_which_seam_it_is_mangled_at`,
+  which is also what goes red the day the fix lands.
 -->
 <scxml xmlns="http://www.w3.org/2005/07/scxml"
        version="1.0"
