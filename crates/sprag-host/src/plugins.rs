@@ -18,6 +18,20 @@
 //! WHICH.
 //! Target panes are validated at submit time, so a typo is a synchronous
 //! `Rejected`, not an async `Failed`.
+//!
+//! # ⚠⚠⚠ The `ai_loop` form is the door register item 65 had been holding open
+//!
+//! Five rounds built the outer AI loop's statechart, its driver and its measurement against a live
+//! `claude`, and at the end of them **nothing in the daemon constructed one and no surface started
+//! one**. It is a plugin like the others now, which is what gives it everything above for free —
+//! a run id, the three guardrails, a cancel flag, a journal and a durable record — and what makes
+//! `sce-rust-lua` a real dependency of this crate: the loop's document has a script datamodel, so
+//! starting one means building an interpreter for it HERE. That trade is written out in the
+//! manifest beside the dependency.
+//!
+//! ⚠ Its own budget is NOT a guardrail. `max_turns` counts the inner agent's turns and one of
+//! those is many steps of the loop driving it, so it travels in the brief and a run stopped by it
+//! reports the ceiling `turns` — a word whose remedy is in the request rather than in `guardrails`.
 
 use std::fmt;
 use std::sync::atomic::AtomicBool;
@@ -31,9 +45,9 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Attended, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec, DoneWhen,
-    Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe,
-    PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, Turn, WorkspacePaneAccess,
+    Agent, AgentSpec, Attended, Brief, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec,
+    DoneWhen, Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState,
+    Pipe, PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, Turn, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -220,6 +234,18 @@ sprag_vt::closed_set! {
         /// everything the run registry already gives (an id, a cancel flag, a journal, and the
         /// count of decisions taken on somebody's behalf).
         Answer,
+        /// ⚠⚠⚠ **RUN `ai_loop.scxml` AGAINST AN AGENT IN A PANE** — the outer loop, as a run
+        /// somebody can start.
+        ///
+        /// The one plugin whose behaviour is AUTHORED rather than written in Rust: what it prompts
+        /// with, when it stops, how many turns it may take and what it does with a blocked peer
+        /// are a statechart document, and this is the driver that makes that document act on a
+        /// pane. See [`sprag_plugin::ai_loop`].
+        ///
+        /// ⚠ It is the only form that takes a BRIEF, because it is the only plugin whose job is
+        /// not in its arguments. An `agent` run carries the prompt it will send; a loop carries
+        /// what it is FOR, and composes each turn's prompt from that in the document's own words.
+        AiLoop,
     }
 }
 
@@ -244,6 +270,7 @@ impl PluginName {
             Self::Agent => crate::wire::PluginGrammar::AGENT_FORM,
             Self::Dialogue => crate::wire::PluginGrammar::DIALOGUE_FORM,
             Self::Answer => crate::wire::PluginGrammar::ANSWER_FORM,
+            Self::AiLoop => crate::wire::PluginGrammar::AI_LOOP_FORM,
         }
     }
 
@@ -256,6 +283,10 @@ impl PluginName {
             Self::Agent => "agent",
             Self::Dialogue => "dialogue",
             Self::Answer => "answer",
+            // ⚠ `ai_loop` AND NOT `loop`, and the distinction is not decoration: every plugin on
+            // this surface is a loop, so the shorter word would claim to be THE one. This is the
+            // document's own name, which is what the whole tree already calls it.
+            Self::AiLoop => "ai_loop",
         }
     }
 
@@ -562,6 +593,59 @@ impl PluginsExternal {
                     label,
                 ))
             }
+            PluginName::AiLoop => {
+                let pane = require_pane_id(map, "pane")?;
+                self.require_pane(pane)?;
+                let max_turns = require_count(map, "max_turns")?;
+                let brief = Brief {
+                    north_star: require_str(map, "north_star")?.to_string(),
+                    milestone: require_str(map, "milestone")?.to_string(),
+                    reference: require_str(map, "reference")?.to_string(),
+                    max_turns,
+                    // ⚠ ABSENT MEANS "NEVER", spelled as the one number that makes `reflecting`
+                    // unreachable rather than as a magic zero: `judging` tests `turns >= max_turns`
+                    // BEFORE `turns_since_reflect >= reflect_every`, so an equal pair exhausts
+                    // first. A caller who omits it gets the only loop this build can drive to the
+                    // end, and one who names a smaller number is told why it is refused rather
+                    // than discovering it eight turns in.
+                    reflect_every: opt_count(map, "reflect_every")?.unwrap_or(max_turns),
+                };
+                // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
+                // loop's first prompt goes into a pane whose program may still be starting — see
+                // `AI_LOOP_FORM`. A caller whose peer needs a different barrier overrides it.
+                let mut spec = sprag_plugin::AiLoopSpec::driving(require_str(map, "agent")?);
+                if let Some(ready_when) = opt_ready_when(map)? {
+                    spec.ready_when = Some(ready_when);
+                }
+                spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
+                // ⚠⚠ READ AS TWO INDEPENDENT KEYS, where the `agent` form's `opt_turn` refuses a
+                // bound with no `done_when` beside it. That rule is right there and wrong here:
+                // an `agent` run's default contract is `exits`, so a bare bound would be bounding
+                // something the caller did not choose — a loop's default is
+                // `INNER_SESSION_ENDS`, the contract this document makes load-bearing, so a bare
+                // bound bounds exactly the turn the caller is thinking about.
+                spec.turn = Turn::lasting(
+                    opt_done_when(map)?.unwrap_or(sprag_plugin::INNER_SESSION_ENDS),
+                    opt_millis(map, Turn::WIRE_KEY)?,
+                )
+                .ok_or(InvokeError::TypeMismatch)?;
+                if !declined(map, "shows_prompt") {
+                    spec.shows_the_prompt = map["shows_prompt"]
+                        .as_bool()
+                        .ok_or(InvokeError::TypeMismatch)?;
+                }
+                // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building
+                // a concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
+                // this crate; the manifest carries the argument. It is per RUN and not shared: a
+                // datamodel is a run's own state, and two loops sharing one interpreter would be
+                // two runs sharing their north star.
+                let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+                    Arc::new(sce_rust_lua::LuaEngine::new());
+                let label = format!("ai_loop pane={}", pane.0);
+                let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+                    .map_err(|why| refused(ai_loop_refusal(&why)))?;
+                Ok((PluginKind::AiLoop(Box::new(loops)), label))
+            }
         }
     }
 
@@ -823,6 +907,9 @@ enum PluginKind {
     // enum small instead of every value paying its footprint.
     Dialogue(Box<Dialogue>),
     Answer(sprag_plugin::Answer),
+    // Boxed for the `Dialogue` reason above: an `AiLoop` owns a compiled `ai_loop.scxml` engine
+    // and the script interpreter its datamodel lives in.
+    AiLoop(Box<sprag_plugin::AiLoop>),
 }
 
 impl PluginKind {
@@ -833,6 +920,7 @@ impl PluginKind {
             PluginKind::Agent(agent) => agent,
             PluginKind::Dialogue(dialogue) => dialogue.as_mut(),
             PluginKind::Answer(answer) => answer,
+            PluginKind::AiLoop(loops) => loops.as_mut(),
         }
     }
 
@@ -847,7 +935,12 @@ impl PluginKind {
             // ⚠ Bytes, and the ceiling never binds: the most an answer can spend is two
             // keystrokes. It is here because a run's cost unit is its plugin's, and a plugin with
             // no unit would be a hole in the one guarantee the guardrails make.
-            | PluginKind::Answer(_) => Cost::Bytes(DEFAULT_MAX_BYTES),
+            | PluginKind::Answer(_)
+            // ⚠ BYTES, and it is the loop's real currency rather than a fallback: what an
+            // `ai_loop` spends on its peer is the prompts it types, and the model's tokens are
+            // spent by the AGENT in the pane, which this daemon neither bills nor can count. The
+            // budget that bounds an agent's spend is `max_turns`, and it is in the brief.
+            | PluginKind::AiLoop(_) => Cost::Bytes(DEFAULT_MAX_BYTES),
             PluginKind::Dialogue(_) => Cost::Tokens(DEFAULT_MAX_TOKENS),
         }
     }
@@ -1015,6 +1108,78 @@ fn opt_done_when(map: &Map<String, Value>) -> Result<Option<DoneWhen>, InvokeErr
     DoneWhen::parse(word)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
+}
+
+/// A required COUNT — `max_turns` and its kind.
+///
+/// ⚠ `i64` because that is what a script datamodel holds and what
+/// [`Brief`] carries; reading it as a `u32` here and widening would put a
+/// second opinion about the range between the caller and the document that enforces it. A negative
+/// or absurd number is refused by the loop's own door, which is where the reason lives.
+fn require_count(map: &Map<String, Value>, key: &str) -> Result<i64, InvokeError> {
+    map.get(key)
+        .and_then(Value::as_i64)
+        .ok_or(InvokeError::TypeMismatch)
+}
+
+/// The same count, optional — absent (or `null`) is [`None`].
+fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeError> {
+    if declined(map, key) {
+        return Ok(None);
+    }
+    require_count(map, key).map(Some)
+}
+
+/// **WHY A LOOP DID NOT START, IN A SENTENCE THE CALLER CAN ACT ON.**
+///
+/// ⚠⚠ Every arm names the KNOB or the FILE, because each of these is refused before anything
+/// happens and the whole value of refusing early is that the caller can fix it and call again. A
+/// refusal that said only *"the loop could not be started"* would cost them the run they were
+/// spared.
+fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
+    match why {
+        sprag_plugin::NotStarted::Undrivable => {
+            "this build's `ai_loop.scxml` does not carry the strings a loop is driven by, so no \
+             run could be started against it — the document, or the statechart engine pinned under \
+             it, is not the one this driver was written for"
+                .to_owned()
+        }
+        sprag_plugin::NotStarted::Unbuilt(sprag_plugin::AiLoopState::Reflecting) => {
+            "`reflect_every` must be at least `max_turns` (or omitted). Below it the loop reaches \
+             `reflecting`, and the session-replace lifecycle behind that state — close the pane, \
+             write the improvements, open a fresh one that reads them — is not built, so the run \
+             would stop there with nothing anybody could do about it"
+                .to_owned()
+        }
+        sprag_plugin::NotStarted::Unbuilt(sprag_plugin::AiLoopState::Exhausted) => {
+            "`max_turns` must be at least 1: a loop allowed no turns judges itself exhausted \
+             before its agent has answered anything"
+                .to_owned()
+        }
+        sprag_plugin::NotStarted::Unbuilt(state) => {
+            format!("a loop briefed this way reaches {state:?}, which this build does not drive")
+        }
+        sprag_plugin::NotStarted::Brief(sprag_plugin::Briefed::NotHeld { part, held }) => {
+            format!(
+                "the loop's datamodel did not hold {part} as it was sent{}, so nothing was \
+                 started rather than an agent being prompted with something nobody wrote",
+                match held {
+                    Some(held) => format!(" (it holds {held:?})"),
+                    None => " (it holds nothing a reader can name)".to_owned(),
+                },
+            )
+        }
+        // Neither is reachable from here — the machine is built one line above the brief, so it is
+        // in `idle`, and `Took` is the success this function is not called for. Said rather than
+        // collapsed into a wildcard: a sentence nobody can produce is cheaper than a match that
+        // stops being exhaustive when the type grows.
+        sprag_plugin::NotStarted::Brief(sprag_plugin::Briefed::TooLate(state)) => {
+            format!("the loop was already in {state:?} when it was briefed")
+        }
+        sprag_plugin::NotStarted::Brief(sprag_plugin::Briefed::Took) => {
+            "the loop took its brief and did not start anyway".to_owned()
+        }
+    }
 }
 
 fn opt_millis(map: &Map<String, Value>, key: &str) -> Result<Option<Duration>, InvokeError> {
@@ -1347,11 +1512,17 @@ pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeS
         // a question re-published from a durable record would be a claim about a screen nobody has
         // looked at since. The WORD survives, which is what tells a reader the run wants an answer.
         Some("blocked") => OutcomeState::Blocked(None),
-        Some("exhausted") => OutcomeState::Exhausted(match ceiling {
-            Some(word) if word == Ceiling::Cost.wire_str() => Ceiling::Cost,
-            Some(word) if word == Ceiling::Duration.wire_str() => Ceiling::Duration,
-            _ => Ceiling::Iterations,
-        }),
+        // ⚠⚠ READ THROUGH THE TYPE'S OWN LIST, not a match over the words this file knows. It
+        // matched two by hand and answered `Iterations` for everything else, so the fourth ceiling
+        // (`turns`, the loop's own budget) would have come back from a restart as *"you ran out of
+        // steps"* — a false sentence pointing at a guardrail that run never met.
+        Some("exhausted") => OutcomeState::Exhausted(
+            ceiling
+                .and_then(Ceiling::from_wire)
+                // A record with no ceiling word at all predates the key or was truncated; name the
+                // one bound EVERY run has, which is still true of anything that got here.
+                .unwrap_or(Ceiling::Iterations),
+        ),
         _ => OutcomeState::Failed,
     }
 }
@@ -1496,6 +1667,210 @@ mod tests {
             "⚠⚠⚠ AND THE SAME REQUEST PLUS TWO KEYS ASKS ONCE. The uncontracted run took \
              {uncontracted} turns at the same peer; this one took {contracted}. Nothing else \
              differs, so what the pair measures is the contract arriving over the wire",
+        );
+    }
+
+    /// A pane running a stand-in agent: announces itself, then echoes back every line it is given.
+    ///
+    /// ⚠ ECHO OFF, so what appears on the screen is what the PROGRAM printed rather than what the
+    /// line discipline painted — the difference between measuring a delivery and measuring the
+    /// kernel.
+    fn echoing_agent_pane(workspace: &Arc<Mutex<Workspace>>) -> PaneId {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(
+            "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done",
+        );
+        command.env("TERM", "dumb");
+        lock(workspace)
+            .spawn(command, "agent".to_string(), 80, 24)
+            .expect("spawn the stand-in agent")
+    }
+
+    /// The `run` request that starts a loop, with `extra` merged over it.
+    fn ai_loop_request(pane: PaneId, extra: Value) -> Value {
+        let mut request = json!({
+            "plugin": "ai_loop",
+            "pane": pane.0,
+            "agent": "claude",
+            "north_star": "SPRAG-NORTH-STAR-CROSSED-THE-WIRE",
+            "milestone": "say the marker",
+            "reference": "this gate",
+            "max_turns": 3,
+            // ⚠ The barrier is `shows` rather than the `settles` a real agent gets, and that is
+            // this FIXTURE's honesty rather than the product's default: a `/bin/sh` stand-in is not
+            // an agent any detector will name, so waiting for one to settle would be waiting for a
+            // verdict nothing can produce. The `agent` key above still travels, which is the point
+            // — it is what the barrier would be derived from.
+            //
+            // ⚠⚠ AND `shows` RATHER THAN `prints`, which the first run of this gate paid for: the
+            // pane announces itself when it is SPAWNED and the run is asked for afterwards, so
+            // `prints` — *more occurrences than when this run started watching* — can never be
+            // satisfied by a marker that is already there. The refusal says so in its own sentence;
+            // this fixture is the case that sentence was written for.
+            "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+            // ⚠ FALSE for the peer's reason, not the product's: this stand-in paints only whole
+            // lines, so a delivery cannot be confirmed on screen before the newline that submits it.
+            "shows_prompt": false,
+            "guardrails": { "max_iterations": 200, "max_seconds": 30 },
+        });
+        let object = request.as_object_mut().expect("an object");
+        for (key, value) in extra.as_object().expect("an object") {
+            object.insert(key.clone(), value.clone());
+        }
+        request
+    }
+
+    /// ⚠⚠⚠ **A PERSON CAN START AN AI LOOP, AND WHAT THEY BRIEFED IT WITH REACHES THE AGENT** —
+    /// register item 65, which R380 called *"the single biggest thing between this loop and a
+    /// user"*.
+    ///
+    /// Five rounds built `ai_loop.scxml`'s machine, gave its turns two endings, wrote its driver
+    /// and measured all of it against a live `claude` — and **nothing in the daemon constructed one
+    /// and no surface started one.** Every one of those measurements ran inside a test.
+    ///
+    /// This one goes through `RUN_ACTION`, the verb the MCP mouth and the CLI both call, and
+    /// asserts the thing that could not be asserted before: **the caller's own north star is on the
+    /// agent's screen.** That single string crossing is the whole chain — the request grammar
+    /// parsed it, the daemon built a real script engine for it, the brief crossed into the
+    /// document's datamodel as an event, `priming` composed a prompt out of it, and the driver
+    /// delivered that prompt into a live pseudoterminal.
+    ///
+    /// ⚠⚠ **AND IT IS CANCELLED RATHER THAN RUN TO CONVERGENCE**, deliberately. Convergence needs a
+    /// supervisor that can call this peer's turns over, which is `sprag-plugin`'s own gate against
+    /// its `supervised` fixture. What is measured HERE is the door, and a gate that also waited for
+    /// an ending would be two claims wearing one name.
+    #[test]
+    fn a_loop_started_over_the_wire_prompts_its_agent_with_what_the_caller_briefed() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+
+        let access = sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let began = Instant::now();
+        let mut screen = String::new();
+        while began.elapsed() < Duration::from_secs(20) {
+            screen = access.pane_collapsed(pane).unwrap_or_default();
+            if screen.contains("SPRAG-NORTH-STAR-CROSSED-THE-WIRE") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            screen.contains("SPRAG-NORTH-STAR-CROSSED-THE-WIRE"),
+            "⚠⚠⚠ the caller's own north star must be on the agent's screen — that string is the \
+             whole chain from a wire request to a prompt in a pseudoterminal. Screen: {screen:?}, \
+             run: {:?}",
+            // ⚠ The run's own record, because a screen that is missing the prompt cannot say WHY:
+            // a refused barrier and a machine that never left `idle` look identical from here.
+            lock(&registry).snapshot().first().map(run_to_json),
+        );
+
+        assert!(
+            lock(&registry).cancel(RunId(id)),
+            "the run this call started is one the registry can stop",
+        );
+        let entry = ended(&registry, id, Duration::from_secs(30));
+        assert_eq!(
+            entry["state"]["outcome"]["state"],
+            json!("cancelled"),
+            "⚠⚠ AND IT IS THE RUN REGISTRY'S OWN CANCEL that ends it, not a bound this gate \
+             invented — a loop is a run like any other the day it is a plugin: {entry:?}",
+        );
+        assert_eq!(
+            entry["label"],
+            json!(format!("ai_loop pane={}", pane.0)),
+            "a reader of `runs` must be able to see WHICH pane a loop is driving: {entry:?}",
+        );
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+    }
+
+    /// ⚠⚠⚠ **A BRIEF THIS BUILD CANNOT DRIVE TO THE END IS REFUSED AT THE DOOR, NAMING THE KNOB.**
+    ///
+    /// `ai_loop.scxml` ships `reflect_every: 8` beside `max_turns: 40`, so the DEFAULT numbers walk
+    /// into `reflecting` at turn eight — a state whose session-replace lifecycle is registered debt.
+    /// A caller who copied those numbers off the document would otherwise get a run that prompted
+    /// their agent eight times, spent eight turns of somebody's quota, and then stopped somewhere
+    /// with no answer for it.
+    ///
+    /// ⚠⚠ The refusal is SYNCHRONOUS and carries a sentence, which is this surface's own rule: a
+    /// caller's mistake is answered at the door with what to change, never as an `outcome` a minute
+    /// later. ⚠ THE CONTROL is the same request with one number moved — otherwise this measures a
+    /// door that refuses everything.
+    #[test]
+    fn a_loop_briefed_into_an_unbuilt_state_is_refused_with_the_knob_that_fixes_it() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let refused = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(
+                    pane,
+                    json!({ "max_turns": 40, "reflect_every": 8 }),
+                )),
+            )
+            .expect_err("the document's own shipped pair reaches a state this build cannot drive");
+        let sentence = refused
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            sentence.contains("reflect_every") && sentence.contains("max_turns"),
+            "⚠⚠⚠ the refusal must name BOTH numbers, because the fix is their relationship and a \
+             caller cannot act on a sentence that names neither: {sentence:?}",
+        );
+        assert!(
+            lock(&registry).snapshot().is_empty(),
+            "⚠⚠ AND NO RUN SLOT WAS TAKEN. A refusal that had already registered a run would have \
+             spent the thing refusing early exists to save",
+        );
+
+        // ⚠ THE CONTROL: the same request with the one number moved is a run.
+        external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(
+                    pane,
+                    json!({ "max_turns": 40, "reflect_every": 40 }),
+                )),
+            )
+            .expect("⚠ the control: an equal pair is the brief this build drives to the end");
+        lock(&registry).cancel_all();
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
         );
     }
 
@@ -2477,12 +2852,16 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            25,
-            "one call per published word: the ONE plugin word that selects each of the FIVE forms, \
+            32,
+            "one call per published word: the ONE plugin word that selects each of the SIX forms, \
              the two reply formats on each of a dialogue's two endpoints, the readiness barrier's \
-             FOUR `match` words on each of the three plugins that inject — the last two being \
+             FOUR `match` words on each of the four plugins that inject — the last two being \
              `runs` and `settles`, which ask the pane's terminal and its supervisor rather than \
-             its screen — and `done_when`'s TWO words on EACH of the two forms that now take it. \
+             its screen — and `done_when`'s TWO words on EACH of the three forms that now take it. \
+             ⚠⚠⚠ THE SEVEN NEWEST ARE THE `ai_loop` FORM'S, and this gate caught the same argument \
+             a THIRD time on it: `agent` was published as declinable and read with `require_str`, \
+             so a caller building the minimal call this grammar describes was answered \
+             `TypeMismatch`. It is required now, which is what it always was. \
              ⚠⚠⚠ Those four are why this gate is worth its own line, and it has caught the SAME \
              argument TWICE. `done_when`'s first draft published `settles` and the parser REFUSED \
              it, because that draft needed a companion `agent` the vocabulary could not demand. \
@@ -2507,11 +2886,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            17,
+            22,
             "one probe per open string argument of every form: an orchestrator's stimulus, \
              sentinel and ready_when, a PIPE's ready_when, an agent's prompt and ready_when, and \
              a dialogue's seed and two labels — PLUS the ANSWERING CONTRACT's two needles on each \
-             of the three forms that inject. ⚠ Both of those are open on purpose and it is the \
+             of the three forms that inject. ⚠⚠ THE FIVE NEWEST ARE THE `ai_loop` FORM'S: its \
+             three BRIEF strings, the `agent` its barrier is derived from, and its own \
+             `ready_when` marker. The brief's three are open for the consent needles' reason \
+             turned around — a north star is a PERSON's prose about their own work, so a closed \
+             vocabulary there could only ever be sprag's guess at what somebody is trying to do. \
+             ⚠ Both of those are open on purpose and it is the \
              one place on this surface where that is a safety property rather than a convenience: \
              a consent quotes the AGENT's own words, so a closed vocabulary here could only ever \
              be sprag's guess at what dialogs say",
@@ -2519,7 +2903,7 @@ mod tests {
     }
 
     /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THIS SURFACE ACTUALLY READS** — the gate that lets this table
-    /// be hand-written, over a verb whose four forms were transcribed from a parser by eye.
+    /// be hand-written, over a verb whose forms were transcribed from a parser by eye.
     ///
     /// ⚠ The number moved by twelve when the loop got a door, and both halves are the point: four
     /// `opened_by` arguments (one per form) and **eight nested `guardrails` fields the claim could
@@ -2539,10 +2923,15 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            54,
+            65,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠ The TWO newest are the orchestrator's turn \
+             malformed rather than declined. ⚠⚠ THE ELEVEN NEWEST ARE THE `ai_loop` FORM'S, and \
+             what is NOT among them is the point: the brief's four and the `agent` are REQUIRED, \
+             because a loop with no purpose and a loop with no barrier are both runs nobody can \
+             mean. ⚠ `reflect_every` IS declinable, and its default is the one number that keeps \
+             the run inside the states this build drives — `max_turns` itself. \
+             ⚠⚠⚠ The TWO before them are the orchestrator's turn \
              contract, `done_when` and `turn_within_ms`, and their declinability IS the default \
              that keeps every existing caller working: a run that names neither ends its steps on \
              the same 500 ms constant it always did. ⚠ Declinable ALONE is all this drives; that \
@@ -2564,7 +2953,7 @@ mod tests {
              nothing and reports the question, which is what every run did before the key existed. \
              ⚠⚠ The FIVE this round added are the `answer` form's own optionals — its `opened_by` \
              and its three guardrail fields — and NOT its consent, which is the one argument on \
-             this surface that a form REQUIRES: `may_answer` is declinable on the four looping \
+             this surface that a form REQUIRES: `may_answer` is declinable on the looping \
              forms and mandatory on the one whose whole content it is",
         );
     }
@@ -2574,10 +2963,20 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            85,
+            105,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, and one to cancel. ⚠⚠⚠ The newest TWO are the ORCHESTRATOR's \
+             TEN to answer a pane, TWENTY to run an AI loop, and one to cancel. \
+             ⚠⚠⚠ THE NEWEST TWENTY ARE THE `ai_loop` FORM, the door register item 65 had been \
+             holding open since R378 — five rounds built that loop's machine, its driver and its \
+             live measurement, and nothing in the daemon constructed one. FOUR of the twenty are \
+             the BRIEF (`north_star`, `milestone`, `reference`, `max_turns`), which is the one \
+             thing on this whole surface that no other form has: every other plugin is told what \
+             to TYPE, and a loop is told what it is FOR and composes each turn's prompt from that \
+             itself. ⚠ `agent` is required beside them for a measured reason — a loop with no \
+             barrier types its first prompt into whatever the pane happens to be running, which \
+             R379 measured costing a whole run. \
+             ⚠⚠⚠ The two before them are the ORCHESTRATOR's \
              TURN CONTRACT — `done_when`, which the `agent` form already had, and `turn_within_ms` \
              — and they are on that form because it is where the defect was MEASURED: without them \
              a step ends on a 500 ms constant, so a peer that thinks for three seconds was asked \
@@ -2624,10 +3023,15 @@ mod tests {
                 crate::wire::PLUGINS_GRAMMAR
             )
             .count_or_panic(),
-            21,
+            26,
             "one per FLATTENED nested field of every form: THREE guardrail fields on each of the \
-             FIVE run forms, since a run is bounded in steps, in spend and in time, PLUS the \
-             readiness barrier's `match` and `marker` on each of the three that inject. \
+             SIX run forms, since a run is bounded in steps, in spend and in time, PLUS the \
+             readiness barrier's `match` and `marker` on each of the four that inject. \
+             ⚠⚠ THE FIVE NEWEST ARE THE `ai_loop` FORM'S: a loop injects, so it takes the barrier \
+             every injecting form takes, and it spends BYTES — the prompts it types — so its \
+             guardrail object is the byte-relay one. What it does NOT take is a cost bound on the \
+             agent's own spend, which this daemon neither bills nor can count; that budget is \
+             `max_turns`, and it is in the brief rather than in the guardrails. \
              ⚠⚠ THE CONSENT'S `asked`/`answer` ARE NOT COUNTED, and the drop of eight is R370's \
              design rather than a lost check: `may_answer` is a LIST of clauses now, and a list is \
              the one nested shape that cannot be flattened — N loose `asked`s beside N loose \

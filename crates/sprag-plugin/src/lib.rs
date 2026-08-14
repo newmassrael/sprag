@@ -42,7 +42,7 @@ pub(crate) mod sm {
 
 pub mod access;
 pub mod agent;
-pub(crate) mod ai_loop;
+pub mod ai_loop;
 pub mod answer;
 pub mod completion;
 pub mod consent;
@@ -67,6 +67,7 @@ pub use access::{
     Signalled, WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
+pub use ai_loop::{AiLoop, NotStarted};
 pub use answer::Answer;
 pub use completion::{Completion, DoneWhen, Over, Turn};
 pub use consent::{Answered, Consent, Consents, Refusal, Taken, Unanswered};
@@ -77,7 +78,10 @@ pub use driver::{
     StepRecord, Stopped,
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
-pub use outer::{AiLoopEvent, AiLoopState, Authored, Brief, Briefed, OuterLoop, Pumped};
+pub use outer::{
+    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, INNER_SESSION_ENDS, Noticed,
+    OuterLoop, Pumped,
+};
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Cost, Plugin, Step, Verdict};
 pub use readiness::{

@@ -557,11 +557,14 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
     let mut loops = OuterLoop::new(
         lua,
         live.pane,
-        Some(ReadyWhen::Settles(live.agent.clone())),
-        TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND)).expect("a non-zero bound"),
-        // ⚠ TRUE, where the stand-in gate passes false: a real agent renders each character into
-        // its composer as it arrives, which is the premise `deliver`'s read-back rests on.
-        true,
+        // ⚠ `driving` fixes the two knobs that are true of every agent CLI — the barrier is
+        // `settles` on its own name, and it paints the prompt box it is typed into, which is the
+        // premise `deliver`'s read-back rests on. Only the per-turn bound is this gate's own.
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
     )
     .expect("the document's datamodel must carry its authored strings");
 
@@ -709,93 +712,75 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
 fn a_briefed_loop_converges_against_a_live_agent() {
     use sce_rust_runtime::IScriptEngine;
     use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, Briefed, OuterLoop, Pumped, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief, Turn as TurnContract};
 
     /// Small enough that a run which merely ran out of budget is cheap, and large enough that one
     /// answered turn plus the closing report fits with room to spare.
     const LIVE_MAX_TURNS: i64 = 3;
 
     let live = Live::start("converge");
-    let run = RunContext::uncancellable();
     let began = Instant::now();
-
-    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-    let mut loops = OuterLoop::new(
-        lua,
-        live.pane,
-        Some(ReadyWhen::Settles(live.agent.clone())),
-        TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND)).expect("a non-zero bound"),
-        true,
-    )
-    .expect("the document's datamodel must carry its authored strings");
 
     let brief = Brief {
         north_star: "prove an outer loop can be driven to convergence by a real agent".to_string(),
         milestone: "state the product of 17 and 23 as a single number".to_string(),
         reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
         max_turns: LIVE_MAX_TURNS,
-        reflect_every: 99,
+        // ⚠ EQUAL to the budget, which is what keeps `reflecting` — an unbuilt state — off the
+        // path. `AiLoop::new` refuses anything smaller, so this is the door's own rule rather than
+        // a number chosen here.
+        reflect_every: LIVE_MAX_TURNS,
     };
-    assert_eq!(
-        loops.brief(&brief),
-        Briefed::Took,
-        "the machine must hold the brief before a live agent is spoken to",
-    );
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
     let marker = loops
         .authored()
         .expect("the document's datamodel must carry its authored strings")
         .done_marker;
 
-    let mut walked = Vec::new();
-    let mut composed = String::new();
-    let ended = loop {
-        assert!(
-            walked.len() < 24,
-            "the loop must reach a final state rather than pumping forever. Walked: {walked:?}, \
-             screen: {}",
-            live.tail(10),
-        );
-        assert!(
-            began.elapsed() < Duration::from_secs(300),
-            "a live convergence must not outlast five minutes; something is stuck. Walked: \
-             {walked:?}, screen: {}",
-            live.tail(10),
-        );
-        match loops
-            .pump(&live.access, &run)
-            .expect("the pane stays readable")
-        {
-            Pumped::Moved {
-                from, raised, to, ..
-            } => {
-                step(began, &format!("{from:?} --{raised:?}--> {to:?}"));
-                walked.push((from, raised, to));
-                if to == AiLoopState::Priming {
-                    composed = loops
-                        .authored()
-                        .expect("a primed machine answers with its strings")
-                        .start;
-                    // ⚠ THE CONTROL. If the agent were reading the template rather than the brief,
-                    // everything below would still be a live measurement — of the wrong document.
-                    assert!(
-                        composed.contains(&brief.milestone) && !composed.contains("(edit me)"),
-                        "the live agent must be asked what this run was BRIEFED with. Composed: \
-                         {composed:?}",
-                    );
-                }
-            }
-            Pumped::Unbuilt(state) => panic!(
-                "a live run reached {state:?}, which no driver serves yet — most likely the agent \
-                 raised a dialog and this went to `screening`. Walked: {walked:?}, screen: {}",
-                live.tail(10),
-            ),
-            Pumped::NotReady(seen) => {
-                step(began, &format!("not ready yet: {seen:?}"));
-                continue;
-            }
-            Pumped::Ended(state) => break state,
-        }
-    };
+    // ⚠⚠⚠ THE BOUNDS ARE THE SUBSTRATE'S, AND THAT IS WHAT THIS GATE NOW MEASURES THAT IT COULD
+    // NOT BEFORE. It used to pump `OuterLoop` by hand under `walked.len() < 24` and a five-minute
+    // wall clock written here — which is register item 66 exactly: *"nothing bounds the pump; the
+    // CALLER loops"*. Those two numbers are the same two numbers, moved into the `Guardrails`
+    // every other run on this daemon is bounded by. A live loop that stalls is now stopped by the
+    // product rather than by a `panic!` in a test.
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 24,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let walked: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    // ⚠ THE CONTROL, read off the datamodel the agent was actually prompted from. If the model
+    // were reading the shipped template rather than this brief, everything below would still be a
+    // live measurement — of the wrong document.
+    let composed = loops
+        .authored()
+        .expect("a primed machine answers with its strings")
+        .start;
+    assert!(
+        composed.contains(&brief.milestone) && !composed.contains("(edit me)"),
+        "the live agent must be asked what this run was BRIEFED with. Composed: {composed:?}",
+    );
 
     // ⚠⚠⚠ WHAT THE MODEL ACTUALLY PAINTED, on the record whichever way this went — debt 92 is a
     // question about a real agent's decoration and this is the only place it is ever answered.
@@ -805,10 +790,14 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         .filter(|row| row.contains(marker.as_str()))
         .collect();
     println!(
-        "\n== a briefed live loop ==\n  agent: {}\n  walk: {walked:?}\n  turns: {:?}\n  \
-         through the loop: {:?}\n  rows carrying the marker:\n{}\n  composed start prompt:\n{composed}\n",
+        "\n== a briefed live loop, under the substrate's own guardrails ==\n  agent: {}\n  \
+         walk: {walked:?}\n  turns: {:?}\n  iterations: {} of 24\n  spent: {:?}\n  \
+         through the loop: {:?}\n  rows carrying the marker:\n{}\n  \
+         composed start prompt:\n{composed}\n",
         live.agent,
         loops.turns(),
+        outcome.iterations,
+        outcome.cost,
         began.elapsed(),
         marker_rows
             .iter()
@@ -818,12 +807,19 @@ fn a_briefed_loop_converges_against_a_live_agent() {
     );
 
     assert_eq!(
-        ended,
-        AiLoopState::Converged,
-        "⚠⚠⚠ a briefed loop must CONVERGE against a live agent, and `exhausted` here would mean \
-         the model never put the marker on a row `stands_alone` accepts — which is debt 92, not a \
-         budget. Walked: {walked:?}, marker rows: {marker_rows:?}, screen: {}",
+        outcome.state,
+        sprag_plugin::OutcomeState::Converged,
+        "⚠⚠⚠ a briefed loop must CONVERGE against a live agent, and `exhausted — turns` here would \
+         mean the model never put the marker on a row `stands_alone` accepts — which is debt 92, \
+         not a budget. ⚠ `exhausted — iterations` or `duration` would mean the GUARDRAILS stopped \
+         it, which is a different finding again. Walked: {walked:?}, marker rows: {marker_rows:?}, \
+         screen: {}",
         live.tail(12),
+    );
+    assert_eq!(
+        loops.state(),
+        AiLoopState::Converged,
+        "and the DOCUMENT agrees with the run's word, or the two are counting different things",
     );
     assert!(
         loops.turns().is_some_and(|turns| turns < LIVE_MAX_TURNS),

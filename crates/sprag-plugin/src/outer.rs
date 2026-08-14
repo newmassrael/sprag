@@ -40,13 +40,20 @@
 //! # ⚠ Why the script engine is a PARAMETER
 //!
 //! `ai_loop.scxml` declares `datamodel="ecmascript"`, so constructing its machine needs an
-//! [`IScriptEngine`], and at the pinned SCE rev the only one is `sce-rust-lua` — which this crate
-//! carries as a **dev-dependency**, deliberately, so the daemon does not link mlua and its C Lua
-//! toolchain for a machine nothing in the product constructs yet.
+//! [`IScriptEngine`], and at the pinned SCE rev the only one is `sce-rust-lua` — which THIS crate
+//! still carries as a **dev-dependency**, because nothing here names a concrete engine.
 //!
-//! Taking the engine as an argument is what keeps that true while this is built and measured. The
-//! day a mouth constructs an [`OuterLoop`] in the daemon, that decision has to be retaken — and
-//! this is the constructor that will force whoever does it to notice.
+//! ⚠⚠ **THE DECISION IT WAS DEFERRING HAS BEEN TAKEN.** R381 built the door
+//! ([`AiLoop`](crate::ai_loop::AiLoop)), so `sprag-host` constructs a `LuaEngine` per run and the
+//! daemon links mlua and its C Lua toolchain — the cost the parameter was buying time on, paid
+//! because the alternative was a loop that runs end to end against a live agent with no way for
+//! anybody to start one.
+//!
+//! ⚠⚠⚠ **AND THE PARAMETER EARNED ITS KEEP TWICE OVER**: it is what keeps this crate free of an
+//! engine, AND it is the seam a gate enters through. Three of this driver's refusals are only
+//! reachable by handing in an engine that answers differently about one variable — the witness in
+//! this module's own tests. **The decision that kept a dependency out of the product is the same
+//! one that made the driver's refusals testable.**
 //!
 //! # ⚠⚠ Why this module COMPILES, where R378 left it `#[cfg(test)]`
 //!
@@ -63,8 +70,10 @@
 //! measured**. A module private to its own tests cannot be driven by the crate that owns the
 //! evidence.
 //!
-//! ⚠ The other two decisions R378 named are untouched and still owed: nothing in the daemon
-//! CONSTRUCTS one of these, and no surface starts a loop.
+//! ⚠ The other two decisions R378 named were *"nothing in the daemon CONSTRUCTS one of these, and
+//! no surface starts a loop"*. **Both are paid** — see [`AiLoop`](crate::ai_loop::AiLoop), which
+//! is this driver wrapped as a [`Plugin`](crate::plugin::Plugin) so the substrate's own
+//! [`Driver`](crate::driver::Driver) bounds it, and `run {plugin: "ai_loop"}` on the wire.
 //!
 //! [`ai_loop.scxml`]: ../../ai_loop.scxml
 //! [`IScriptEngine`]: sce_rust_runtime::IScriptEngine
@@ -102,9 +111,11 @@ const CONFIRM_WHOLE_UP_TO: usize = 40;
 /// the arm the outer loop makes load-bearing, where every gate before R377 drove
 /// [`DoneWhen::Exits`] because `Settles` needed a supervisor.
 ///
-/// ⚠ ITS ONLY READER IS A TEST, which R355's rule calls a comment rather than a constant. It stays
-/// because the reader it is waiting for is the construction site in the daemon — see the module
-/// doc — and it is registered as owed rather than left to look settled.
+/// ⚠ It had no reader but a test, which R355's rule calls a comment rather than a constant, and it
+/// was registered as owed on the argument that *"the reader it is waiting for is the construction
+/// site in the daemon"*. **That reader arrived**: [`AiLoopSpec::driving`] builds a real agent's
+/// turn contract out of it, and the daemon's `ai_loop` form uses it as the default a caller who
+/// names no `done_when` gets.
 pub const INNER_SESSION_ENDS: DoneWhen = DoneWhen::Settles;
 
 /// **WHAT THE DOCUMENT AUTHORS**, read out of the machine's own datamodel rather than retyped.
@@ -191,6 +202,67 @@ pub struct Brief {
     pub max_turns: i64,
     /// How often the loop stops to improve its own setup.
     pub reflect_every: i64,
+}
+
+/// **HOW A LOOP DRIVES THE PANE IT RUNS IN** — the three declared contracts a turn-owning plugin
+/// takes, plus the one fact about the peer that decides how a prompt is delivered.
+///
+/// # ⚠⚠ Why a struct, where this was five positional arguments
+///
+/// It reached six the moment the barrier's own patience became the caller's, and two of those six
+/// were adjacent `Option`s of different types: `OuterLoop::new(lua, pane, None, None, turn, false)`
+/// says nothing at all about which `None` is the barrier and which is how long to wait for it. That
+/// is [`NewRun`](../../sprag_host/runs/struct.NewRun.html)'s argument one crate over, and this
+/// crate's own for [`AgentSpec`](crate::agent::AgentSpec) and
+/// [`OrchestrationSpec`](crate::orchestrator::OrchestrationSpec) before it.
+///
+/// # ⚠⚠⚠ Why the [`Brief`] is NOT in here
+///
+/// It is the one thing a caller supplies that is not a construction argument. The parts travel as
+/// the machine's own `brief` EVENT so the document composes from them in `priming` — see
+/// [`OuterLoop::brief`] — and the machine answers whether it took them. A field on this struct
+/// would put the brief where a reader expects it to be applied silently, and its refusal
+/// ([`Briefed::NotHeld`]) is precisely the answer that must not be swallowed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiLoopSpec {
+    /// What makes the pane ready for the loop's FIRST prompt.
+    ///
+    /// ⚠ [`None`] means *go ahead immediately*, and against an agent CLI that is almost always
+    /// wrong — R379 measured a loop typing its first prompt into a pane whose agent had existed for
+    /// ten milliseconds, with the pseudoterminal's own echo confirming the delivery. The honest
+    /// value for an agent is [`ReadyWhen::Settles`] naming it.
+    pub ready_when: Option<ReadyWhen>,
+    /// How long the barrier waits for that, or [`None`] for the substrate's default.
+    pub ready_within: Option<Duration>,
+    /// What makes ONE of the inner agent's turns over, and how long one may take.
+    ///
+    /// [`INNER_SESSION_ENDS`] is the contract this loop makes load-bearing.
+    pub turn: Turn,
+    /// Whether the inner agent paints the prompt box it is typed into — see
+    /// [`OuterLoop::shows_the_prompt`](OuterLoop#structfield.shows_the_prompt).
+    pub shows_the_prompt: bool,
+}
+
+impl AiLoopSpec {
+    /// The spec for driving a real agent CLI called `agent`.
+    ///
+    /// ⚠ Both of the knobs it fixes are true of every agent CLI and of nothing else: one settles
+    /// rather than exiting, so the barrier and the turn contract are both
+    /// [`Settles`](ReadyWhen::Settles); and one renders each character into its prompt box as it
+    /// arrives, so a delivery can be confirmed on screen before the Enter that submits it.
+    #[must_use]
+    pub fn driving(agent: &str) -> Self {
+        Self {
+            ready_when: Some(ReadyWhen::Settles(agent.to_owned())),
+            ready_within: None,
+            // ⚠ NO PER-TURN BOUND, the honest default for an agent: how long one of its turns may
+            // take is the caller's to say, and the run's own clock and cancel bound it meanwhile.
+            // `lasting` refuses only a ZERO bound, so this is never `None`.
+            turn: Turn::lasting(INNER_SESSION_ENDS, None)
+                .expect("a turn with no bound is never the zero one `lasting` refuses"),
+            shows_the_prompt: true,
+        }
+    }
 }
 
 /// **WHAT THE MACHINE DID WITH A [`Brief`]** — see [`OuterLoop::brief`].
@@ -355,9 +427,11 @@ pub enum Pumped {
         /// `#[must_use]` [`Written`](crate::access::Written) and the first draft threw it away —
         /// R316's rule, which this workspace has paid for at eight call sites before.
         ///
-        /// ⚠ Nothing CONSUMES it yet: the outer loop has no [`Guardrails`](crate::driver::Guardrails)
-        /// equivalent, which is registered debt. This is the fact a ceiling would be built on, and
-        /// it is carried from the round that could first produce it rather than added later.
+        /// ⚠⚠ AND IT IS CONSUMED NOW. It was carried by the round that could first produce it,
+        /// with nothing reading it and the reason registered as debt — *"the outer loop has no
+        /// `Guardrails` equivalent"*. [`AiLoop`](crate::ai_loop::AiLoop) reports it as a step's
+        /// [`Cost::Bytes`](crate::plugin::Cost::Bytes), so the same `max_cost` ceiling that bounds
+        /// every other byte-relay run bounds a loop, and a run's published spend is real.
         spent: u64,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
@@ -367,6 +441,12 @@ pub enum Pumped {
     /// WHICH of the unbuilt states its run reached — `screening` and `reflecting`/`restarting` are
     /// registered debt with named prerequisites, and a run that silently spun in one of them would
     /// report the same thing as a run that never got there.
+    ///
+    /// ⚠⚠ THE CALLER THAT ACTS ON IT is `AiLoop::unbuilt`, and what it does is worth reading
+    /// beside this: two of the three are not *"unimplemented"* to whoever reads the run — a peer
+    /// that stopped to ask and a person at the pane are the same two facts every other plugin
+    /// reports, so they get the same two words. Only `reflecting`/`restarting` are this build's
+    /// own gap, and a brief that could reach one is refused at the door.
     Unbuilt(AiLoopState),
     /// **THE PANE IS NOT THE LOOP'S TO TYPE INTO YET**, and why — see
     /// `OuterLoop::start_ready`.
@@ -382,6 +462,44 @@ pub enum Pumped {
     NotReady(Reached),
     /// The loop reached one of the document's five final states.
     Ended(AiLoopState),
+}
+
+/// **WHAT A PUMP SAW THAT THE MACHINE'S STATE CANNOT CARRY** — the fact behind the last event
+/// this driver raised.
+///
+/// # ⚠⚠⚠ Why the driver remembers it instead of a consumer re-reading the pane
+///
+/// Three of the machine's transitions are caused by something a consumer has to be able to
+/// REPORT, and the event that carries them is a bare word: `turn.blocked` says a peer stopped to
+/// ask and not WHAT it is asking, `turn.interrupted` says a person is here and not how much they
+/// typed. The driver had both in its hand — [`Reached::Asking`] carries the whole
+/// [`Unanswered`](crate::consent::Unanswered), [`Reached::Interrupted`] the
+/// [`Interruption`](crate::readiness::Interruption) — and dropped them on the floor.
+///
+/// A consumer could ask the pane again. It must not: the screen moves, so a second read is a
+/// second authority on one fact, and this workspace has paid for that shape before (R367 moved a
+/// question to ONE parse for exactly this reason). What is carried here is what the driver
+/// actually decided on, at the instant it decided.
+///
+/// ⚠ It is CLEARED when a prompt goes in, because a new turn is a new
+/// question: a notice left over from the previous turn would be published as this one's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Noticed {
+    /// **THE PEER STOPPED TO ASK** — the question, and why this run answered nothing.
+    ///
+    /// ⚠ The refusal is [`Refusal::NoConsent`](crate::consent::Refusal::NoConsent) whenever the
+    /// question came from the turn's own end rather than from the barrier, and that is the literal
+    /// truth rather than a default: this loop declares no consents at all (see
+    /// [`OuterLoop::new`]), because answering a dialog is `screening`'s job in the document and
+    /// not the barrier's.
+    Asking(crate::consent::Unanswered),
+    /// **A PERSON TOOK THE PANE**, and how much they wrote into it.
+    Interrupted(crate::readiness::Interruption),
+    /// **THE DATAMODEL STOPPED ANSWERING** for this variable, so the machine was sent to `failed`.
+    ///
+    /// Names the variable rather than the fact alone: the run's failure sentence is the only thing
+    /// its caller gets, and *"a prompt could not be read"* does not say which of four.
+    Undrivable(&'static str),
 }
 
 /// A run of `ai_loop.scxml`'s machine against one pane.
@@ -421,25 +539,21 @@ pub struct OuterLoop {
     /// Marked at the same moment the contract is, for the same reason: a marker that was on the
     /// screen before this turn started is not this turn's answer.
     judged: crate::access::RowTrail,
+    /// What the last pump saw behind the event it raised — see [`Noticed`].
+    noticed: Option<Noticed>,
 }
 
 impl OuterLoop {
-    /// Drive the machine `script` evaluates against `pane`, waiting `turn` for each of the inner
-    /// agent's turns and holding the pane to `ready_when` before typing anything.
+    /// Drive the machine `script` evaluates against `pane`, on the contracts `spec` declares.
     ///
     /// [`None`] when the machine's datamodel does not carry the four authored strings — see
     /// `Authored::read`.
     ///
-    /// ⚠ The engine is the CALLER's — see the module doc. Constructing one in the daemon is the
-    /// decision that makes `sce-rust-lua` a real dependency, and it has not been taken.
+    /// ⚠ The engine is the CALLER's — see the module doc. The daemon takes
+    /// [`AiLoop`](crate::ai_loop::AiLoop)'s door and constructs one there, which is the decision
+    /// that made `sce-rust-lua` a real dependency of the host.
     #[must_use]
-    pub fn new(
-        script: Arc<dyn IScriptEngine>,
-        pane: PaneId,
-        ready_when: Option<ReadyWhen>,
-        turn: Turn,
-        shows_the_prompt: bool,
-    ) -> Option<Self> {
+    pub fn new(script: Arc<dyn IScriptEngine>, pane: PaneId, spec: &AiLoopSpec) -> Option<Self> {
         let mut machine = Engine::new(AiLoopPolicy::new(Arc::clone(&script)));
         machine.initialize();
         let session = machine.policy().session_id.clone()?;
@@ -448,20 +562,32 @@ impl OuterLoop {
         // started against it; keeping the values would be the staleness this round removed.
         Authored::read(&script, &session)?;
         Some(Self {
-            done: Completion::new(turn.when()),
+            done: Completion::new(spec.turn.when()),
             judged: crate::access::RowTrail::default(),
+            noticed: None,
             // ⚠ NO CONSENTS AND NOBODY WATCHING, and both are the machine's job rather than the
             // barrier's. `screening` is where this document answers a dialog — from the person's
             // standing rules, as a state a reader can see happened — and `awaiting_human` is where
             // it waits. A consent given to the barrier would answer dialogs one level below the
             // machine that exists to decide about them.
-            ready: Readiness::new(ready_when, None, None, crate::readiness::Attended::NoOne),
+            //
+            // ⚠ THE BARRIER'S OWN PATIENCE IS THE CALLER'S, because a loop's first prompt waits for
+            // an agent CLI to come up and that is tens of seconds on a cold start — where the
+            // default was chosen for a shell. Absent still means the default; what changed is that
+            // a caller who knows their peer is slow can say so, instead of the run reporting
+            // `NeverReady` about a program that was still loading.
+            ready: Readiness::new(
+                spec.ready_when.clone(),
+                spec.ready_within,
+                None,
+                crate::readiness::Attended::NoOne,
+            ),
             machine,
             script,
             session,
             pane,
-            turn,
-            shows_the_prompt,
+            turn: spec.turn.clone(),
+            shows_the_prompt: spec.shows_the_prompt,
         })
     }
 
@@ -554,6 +680,15 @@ impl OuterLoop {
     #[must_use]
     pub fn state(&self) -> AiLoopState {
         self.machine.get_current_state()
+    }
+
+    /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
+    ///
+    /// [`None`] while the loop is driving a turn nothing has interrupted, which is every pump of a
+    /// run that is going well.
+    #[must_use]
+    pub const fn noticed(&self) -> Option<&Noticed> {
+        self.noticed.as_ref()
     }
 
     /// What the document says NOW.
@@ -723,12 +858,18 @@ impl OuterLoop {
     ) -> Result<AiLoopEvent, PaneError> {
         match self.ready.reached(panes, self.pane, run)? {
             // A PERSON TOOK THE PANE. R372's product half, reaching the machine at last.
-            Reached::Interrupted(_) => return Ok(AiLoopEvent::TurnInterrupted),
+            Reached::Interrupted(who) => {
+                self.noticed = Some(Noticed::Interrupted(who));
+                return Ok(AiLoopEvent::TurnInterrupted);
+            }
             // The run ended underneath — cancelled, or out of time.
             Reached::RunEnded(_) => return Ok(AiLoopEvent::Cancel),
             // The peer is asking before this turn even started, which the machine has an answer
             // for: it is the same question `turn.blocked` sends to `screening`.
-            Reached::Asking(_) => return Ok(AiLoopEvent::TurnBlocked),
+            Reached::Asking(unanswered) => {
+                self.noticed = Some(Noticed::Asking(unanswered));
+                return Ok(AiLoopEvent::TurnBlocked);
+            }
             // ⚠ The barrier answers these only for a run that declared consents or an attendant,
             // and this one declares neither — see `new`. They mean the pane is mid-transition, so
             // the honest event is none at all and the next pump asks again.
@@ -744,7 +885,19 @@ impl OuterLoop {
         Ok(
             match self.done.wait(panes, self.pane, self.patience(), run) {
                 Over::Yes => AiLoopEvent::TurnDone,
-                Over::Asking(_) => AiLoopEvent::TurnBlocked,
+                // ⚠ `NoConsent` is the LITERAL reason and not a filler: this loop declares none —
+                // see `new` — because the document answers dialogs in `screening`, from a person's
+                // standing rules, rather than at the barrier one level below the machine.
+                Over::Asking(question) => {
+                    self.noticed = Some(Noticed::Asking(match question {
+                        Some(question) => crate::consent::Unanswered::refused(
+                            question,
+                            crate::consent::Refusal::NoConsent,
+                        ),
+                        None => crate::consent::Unanswered::unreadable(),
+                    }));
+                    AiLoopEvent::TurnBlocked
+                }
                 // The peer is still working after the turn's own bound. NOT an event: the machine has
                 // no *the turn overran* transition, and inventing one out here would put a decision in
                 // the driver that belongs in the document. The run's own clock bounds it, and the next
@@ -803,6 +956,11 @@ impl OuterLoop {
             // stopped holding its prompts cannot be driven, and `fail` -> `failed` is what this
             // document says happens to a run that cannot go on. Inventing a `Pumped` arm for it
             // would put a terminal decision in the driver.
+            //
+            // ⚠⚠ WHICH VARIABLE IS RECORDED, because the state it lands in cannot say. `failed` is
+            // reached from six transitions and a consumer meeting one has no way back to the
+            // cause; this is the same argument `Noticed` makes for the other two.
+            self.noticed = Some(Noticed::Undrivable(owed.variable()));
             self.machine.process_event(AiLoopEvent::Fail);
             return Ok((self.state(), 0));
         };
@@ -824,6 +982,9 @@ impl OuterLoop {
     ) -> Result<u64, PaneError> {
         self.done = Completion::new(self.turn.when());
         self.done.begin(panes, self.pane);
+        // ⚠ A NEW TURN IS A NEW QUESTION — see [`Noticed`]. Cleared beside the two other things
+        // armed per turn rather than anywhere else, so the three cannot come apart.
+        self.noticed = None;
         // ⚠⚠ THE SAME MOMENT, AND FOR THE SAME REASON — see `judged` and `said_done`. Marked
         // BEFORE the injection so the pane's echo of this prompt counts as fresh output: it has to
         // be REJECTED on what it says rather than hidden by where the baseline was taken, or the
@@ -931,7 +1092,7 @@ fn stands_alone(row: &str, marker: &str) -> bool {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
-    use crate::testing::started;
+    use crate::testing::{standin_agent, started, supervised};
     use sce_rust_runtime::helpers::io_processors::IoProcessorDescriptor;
     use sce_rust_runtime::scripting::i_script_engine::{NativeMethod, StateQueryCallback};
     use sce_rust_runtime::{ScriptResult, SetCurrentEventArgs};
@@ -1087,6 +1248,28 @@ mod tests {
         }
     }
 
+    /// The spec these gates drive with — the two knobs each one is actually about, and the two
+    /// that are the same for every stand-in here.
+    ///
+    /// ⚠ `shows_the_prompt` is FALSE throughout, and it is a fact about the fixtures rather than a
+    /// convenience: a `/bin/sh` peer paints only once it has a whole LINE, so a delivery cannot be
+    /// confirmed on screen before the newline that would submit it — confirming first is a
+    /// deadlock. A real agent CLI renders each character into its prompt box as it arrives and
+    /// takes the other path, which is what [`AiLoopSpec::driving`] is for.
+    fn spec(ready_when: Option<ReadyWhen>, turn: Turn) -> AiLoopSpec {
+        AiLoopSpec {
+            ready_when,
+            ready_within: None,
+            turn,
+            shows_the_prompt: false,
+        }
+    }
+
+    /// The turn contract these gates use, bounded at `within`.
+    fn turn_of(within: Duration) -> Turn {
+        Turn::lasting(INNER_SESSION_ENDS, Some(within)).expect("a non-zero bound")
+    }
+
     /// A pane running `cat` — a peer that takes whatever is typed and says nothing of its own.
     fn quiet_pane() -> (Arc<Mutex<Workspace>>, PaneId) {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
@@ -1102,119 +1285,6 @@ mod tests {
                 .expect("spawn pane")
         };
         (workspace, pane)
-    }
-
-    /// A stand-in AGENT CLI: long-lived, echo off, answers every prompt and says the document's
-    /// done marker once it has taken `turns_before_done` turns.
-    ///
-    /// ⚠⚠ **ECHO OFF AND A READINESS MARKER THAT ENDS ITS ROW** — both recorded hazards. With echo
-    /// on, the line discipline paints the prompt before the program reads a byte and every wait
-    /// ends on the kernel's work rather than the peer's; with the marker mid-row, the first
-    /// stimulus merges onto it and reads as the pane's own output.
-    ///
-    /// ⚠ It is `read`-driven, so it consumes what is typed at it. A stand-in that merely SLEEPS
-    /// does not stand in for an agent: nothing eats the stimulus, so it waits in the pty buffer
-    /// and the run converges either way.
-    ///
-    /// ⚠⚠⚠ **IT ANSWERS ONE PROMPT, NOT ONE LINE, AND THE FIRST RUN OF THIS GATE IS WHY.** The
-    /// authored prompts are MULTI-LINE — `start_prompt` is four clauses joined with `\n` — so a
-    /// `read line` stand-in took one delivery as four turns and said the done marker during the
-    /// first one. The peer therefore keys on each prompt's LAST clause, which is the honest shape:
-    /// a real agent CLI takes a whole prompt box and answers it once.
-    ///
-    /// ⚠⚠ **AND THE PRODUCT QUESTION THAT FOUND IS REGISTERED, NOT FIXED HERE**: what a newline
-    /// INSIDE an authored prompt does to a peer that submits on Enter is a live question about
-    /// delivery, and this fixture is not the place to answer it.
-    ///
-    /// ⚠⚠ **AND IT KEYS ON `exactly:` BECAUSE THE DOCUMENT'S LAST CLAUSE MOVED THERE** (R379): the
-    /// working prompts now end with `done_instruction`, so a peer keying on the OLD last clause
-    /// (*"Report what you did"*) would count a turn one clause early and answer into the middle of
-    /// a delivery.
-    ///
-    /// ⚠⚠⚠ **IT PAINTS WHAT IT READS, AND THE SECOND RUN OF THIS GATE IS WHY.** With echo off and
-    /// nothing painted, [`deliver`] can never confirm the prompt arrived, so it RETYPES it — and a
-    /// peer counting prompts saw two where the driver sent one, converging a turn early. A real
-    /// agent CLI paints the prompt into its own box, which is the whole reason `deliver` reads the
-    /// screen back; a stand-in that stayed silent was testing the retry path, not the loop.
-    fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
-        let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
-        let script = format!(
-            "stty -echo; printf 'AGENT-READY\\n'; n=0; \
-             while read line; do \
-               printf '%s\\n' \"$line\"; \
-               case \"$line\" in \
-                 *exactly:*|*Summarise*) ;; \
-                 *) continue;; \
-               esac; \
-               n=$((n+1)); \
-               if [ $n -ge {prompts_before_done} ]; then printf 'MILESTONE REACHED\\n'; \
-               else printf 'ACK %s\\n' \"$n\"; fi; \
-             done"
-        );
-        let pane = {
-            let mut command = CommandBuilder::new("/bin/sh");
-            command.arg("-c");
-            command.arg(script);
-            command.env("TERM", "dumb");
-            workspace
-                .lock()
-                .unwrap()
-                .spawn(command, "sh".to_string(), 80, 16)
-                .expect("spawn pane")
-        };
-        started(
-            &WorkspacePaneAccess::new(Arc::clone(&workspace)),
-            pane,
-            "AGENT-READY",
-        );
-        (workspace, pane)
-    }
-
-    /// The supervision a real host would provide, derived from the peer's OWN output.
-    ///
-    /// # ⚠⚠⚠ Why `seq` carries the whole signal and the STATE is always at rest
-    ///
-    /// A shell peer with echo off paints nothing between reading a prompt and answering it, so
-    /// there is no moment at which a screen-derived detector could honestly call it *working* —
-    /// and a fixture that claimed otherwise would be inventing evidence the pane does not carry.
-    ///
-    /// What it can say truthfully is HOW MANY answers the peer has produced, which is exactly what
-    /// [`AgentObservation::seq`](crate::access::AgentObservation::seq) means: published changes.
-    /// So this reports `Idle` always and lets the count do the work — **which puts the whole weight
-    /// on [`DoneWhen::Settles`]'s arming**, the discipline that stops a peer's rest from BEFORE a
-    /// turn reading as its answer. A driver that dropped the arming would end every turn instantly
-    /// against this fixture, and the gate would say so.
-    /// ⚠⚠⚠ **AND IT IS HELD MONOTONIC BY HAND, WHICH THE SECOND STALL OF THIS GATE PAID FOR.**
-    /// The count is read off the COLLAPSED SCREEN, so it is a claim about the terminal's SIZE as
-    /// much as about the peer: once the pane had scrolled, `ACK 1` left the grid and the count went
-    /// DOWN — and `seq > began_at` can never be satisfied again by a number that shrank. R375
-    /// recorded exactly this trap about counting from a screen; a real detector's `seq` never
-    /// decreases while the pane lives, and this is what makes the stand-in honest about that.
-    fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
-        let source = {
-            let workspace = Arc::clone(workspace);
-            let high = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            Arc::new(move |id: PaneId| {
-                let screen = WorkspacePaneAccess::new(Arc::clone(&workspace))
-                    .pane_collapsed(id)
-                    .unwrap_or_default();
-                let answers =
-                    (screen.matches("ACK").count() + screen.matches("MILESTONE").count()) as u64;
-                let seq = high
-                    .fetch_max(answers, std::sync::atomic::Ordering::SeqCst)
-                    .max(answers);
-                Some(crate::access::AgentObservation {
-                    state: sprag_detect::AgentState::Idle,
-                    agent: Some("claude".to_string()),
-                    authority: crate::access::Authority::Reported {
-                        source: "test".to_string(),
-                    },
-                    seq,
-                    asking: None,
-                })
-            })
-        };
-        WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
     }
 
     /// ⚠⚠⚠ **THE LOOP STOPS ON A WORD, AND SOMETHING HAS TO ASK THE AGENT FOR IT.**
@@ -1256,15 +1326,8 @@ mod tests {
                 .expect("spawn pane")
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut loops = OuterLoop::new(
-            lua,
-            pane,
-            None,
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                .expect("a non-zero bound"),
-            false,
-        )
-        .expect("the document's datamodel must carry its four authored strings");
+        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_secs(1))))
+            .expect("the document's datamodel must carry its four authored strings");
         // ⚠⚠ THE PROMPTS ARE COMPOSED IN `priming`, so a loop still in `idle` holds them empty and
         // this question cannot be asked of it. One pump is what makes them exist — and it is the
         // same pump that delivers, so what is asserted below is the text the peer was actually
@@ -1360,10 +1423,7 @@ mod tests {
         let mut loops = OuterLoop::new(
             Arc::clone(&lua),
             pane,
-            None,
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                .expect("a non-zero bound"),
-            false,
+            &spec(None, turn_of(Duration::from_secs(1))),
         )
         .expect("the document's datamodel must carry its four authored strings");
 
@@ -1462,10 +1522,7 @@ mod tests {
         let mut loops = OuterLoop::new(
             Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
-            None,
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                .expect("a non-zero bound"),
-            false,
+            &spec(None, turn_of(Duration::from_secs(1))),
         )
         .expect("the document's datamodel must carry its four authored strings");
         // ⚠ TRUTHFUL UNTIL NOW, and that is the control: the loop was built against an engine
@@ -1532,10 +1589,7 @@ mod tests {
         let mut loops = OuterLoop::new(
             Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
-            None,
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                .expect("a non-zero bound"),
-            false,
+            &spec(None, turn_of(Duration::from_secs(1))),
         )
         .expect("the document's datamodel must carry its four authored strings");
         engine.start_lying();
@@ -1589,9 +1643,7 @@ mod tests {
             OuterLoop::new(
                 Arc::clone(&engine) as Arc<dyn IScriptEngine>,
                 pane,
-                None,
-                turn(),
-                false,
+                &spec(None, turn()),
             )
             .is_none(),
             "⚠⚠ a machine that does not answer with its four authored strings must be refused \
@@ -1603,9 +1655,7 @@ mod tests {
         let mut loops = OuterLoop::new(
             Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
-            None,
-            turn(),
-            false,
+            &spec(None, turn()),
         )
         .expect("the control: a truthful engine must build a loop");
         engine.start_lying();
@@ -1663,10 +1713,7 @@ mod tests {
         let mut loops = OuterLoop::new(
             Arc::clone(&lua),
             pane,
-            None,
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                .expect("a non-zero bound"),
-            false,
+            &spec(None, turn_of(Duration::from_secs(1))),
         )
         .expect("the document's datamodel must carry its four authored strings");
         let first = Brief {
@@ -1752,10 +1799,10 @@ mod tests {
         let mut loops = OuterLoop::new(
             lua,
             pane,
-            Some(ReadyWhen::Prints("PEER-READY".to_string())),
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_millis(200)))
-                .expect("a non-zero bound"),
-            false,
+            &spec(
+                Some(ReadyWhen::Prints("PEER-READY".to_string())),
+                turn_of(Duration::from_millis(200)),
+            ),
         )
         .expect("the document's datamodel must carry its four authored strings");
 
@@ -1827,15 +1874,8 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         started(&access, pane, "PARROT-READY");
 
-        let mut loops = OuterLoop::new(
-            lua,
-            pane,
-            None,
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_millis(200)))
-                .expect("a non-zero bound"),
-            false,
-        )
-        .expect("the document's datamodel must carry its four authored strings");
+        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+            .expect("the document's datamodel must carry its four authored strings");
         let run = RunContext::uncancellable();
 
         // ── THE ECHO ── the whole start prompt, which NAMES the marker, painted straight back.
@@ -1943,13 +1983,10 @@ mod tests {
         let mut loops = OuterLoop::new(
             Arc::clone(&lua),
             pane,
-            Some(ReadyWhen::Settles("claude".to_string())),
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(5)))
-                .expect("a non-zero bound"),
-            // ⚠ This peer paints only once it has a whole LINE, so it cannot be confirmed before
-            // the newline that submits — see `shows_the_prompt`. A real agent CLI renders into its
-            // prompt box as the characters arrive and takes the other path.
-            false,
+            &spec(
+                Some(ReadyWhen::Settles("claude".to_string())),
+                turn_of(Duration::from_secs(5)),
+            ),
         )
         .expect("the document's datamodel must carry its four authored strings");
 

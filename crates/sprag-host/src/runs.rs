@@ -420,14 +420,18 @@ mod tests {
     #[test]
     fn every_outcome_survives_the_round_trip_through_its_own_words() {
         use sprag_plugin::{Ceiling, OutcomeState};
-        let every = [
+        // ⚠⚠ THE CEILINGS ARE WALKED, NOT LISTED. They were spelled out here, and a fourth added
+        // to the type would have been round-tripped by nothing while this gate went on passing —
+        // which is exactly what happened to `outcome_from_words`, whose hand-written match
+        // silently restored an unknown ceiling as `iterations`.
+        let every: Vec<OutcomeState> = [
             OutcomeState::Converged,
             OutcomeState::Cancelled,
             OutcomeState::Failed,
-            OutcomeState::Exhausted(Ceiling::Iterations),
-            OutcomeState::Exhausted(Ceiling::Cost),
-            OutcomeState::Exhausted(Ceiling::Duration),
-        ];
+        ]
+        .into_iter()
+        .chain(Ceiling::ALL.map(OutcomeState::Exhausted))
+        .collect();
         for state in every {
             let outcome = Outcome {
                 state: state.clone(),

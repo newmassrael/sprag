@@ -646,6 +646,126 @@ pub(crate) fn silent_peer() -> (WorkspacePaneAccess, PaneId) {
     (access, pane)
 }
 
+/// A stand-in AGENT CLI: long-lived, echo off, answers every prompt and says the document's
+/// done marker once it has taken `prompts_before_done` turns.
+///
+/// ⚠ SHARED between the outer driver's gates and the loop PLUGIN's, and that is the point: those
+/// two subjects are one pane's behaviour seen from two heights, so a second copy of this peer would
+/// be two fixtures a change could drift between. It moved here the round the plugin was built.
+///
+/// ⚠⚠ **ECHO OFF AND A READINESS MARKER THAT ENDS ITS ROW** — both recorded hazards. With echo
+/// on, the line discipline paints the prompt before the program reads a byte and every wait
+/// ends on the kernel's work rather than the peer's; with the marker mid-row, the first
+/// stimulus merges onto it and reads as the pane's own output.
+///
+/// ⚠ It is `read`-driven, so it consumes what is typed at it. A stand-in that merely SLEEPS
+/// does not stand in for an agent: nothing eats the stimulus, so it waits in the pty buffer
+/// and the run converges either way.
+///
+/// ⚠⚠⚠ **IT ANSWERS ONE PROMPT, NOT ONE LINE, AND THE FIRST RUN OF THAT GATE IS WHY.** The
+/// authored prompts are MULTI-LINE — `start_prompt` is four clauses joined with `\n` — so a
+/// `read line` stand-in took one delivery as four turns and said the done marker during the
+/// first one. The peer therefore keys on each prompt's LAST clause, which is the honest shape:
+/// a real agent CLI takes a whole prompt box and answers it once.
+///
+/// ⚠⚠ **AND THE PRODUCT QUESTION THAT FOUND IS REGISTERED, NOT FIXED HERE**: what a newline
+/// INSIDE an authored prompt does to a peer that submits on Enter is a live question about
+/// delivery, and this fixture is not the place to answer it.
+///
+/// ⚠⚠ **AND IT KEYS ON `exactly:` BECAUSE THE DOCUMENT'S LAST CLAUSE MOVED THERE** (R379): the
+/// working prompts now end with `done_instruction`, so a peer keying on the OLD last clause
+/// (*"Report what you did"*) would count a turn one clause early and answer into the middle of
+/// a delivery.
+///
+/// ⚠⚠⚠ **IT PAINTS WHAT IT READS, AND THE SECOND RUN OF THAT GATE IS WHY.** With echo off and
+/// nothing painted, [`deliver`](crate::deliver::deliver) can never confirm the prompt arrived, so
+/// it RETYPES it — and a peer counting prompts saw two where the driver sent one, converging a
+/// turn early. A real agent CLI paints the prompt into its own box, which is the whole reason
+/// `deliver` reads the screen back; a stand-in that stayed silent was testing the retry path, not
+/// the loop.
+pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let script = format!(
+        "stty -echo; printf 'AGENT-READY\\n'; n=0; \
+         while read line; do \
+           printf '%s\\n' \"$line\"; \
+           case \"$line\" in \
+             *exactly:*|*Summarise*) ;; \
+             *) continue;; \
+           esac; \
+           n=$((n+1)); \
+           if [ $n -ge {prompts_before_done} ]; then printf 'MILESTONE REACHED\\n'; \
+           else printf 'ACK %s\\n' \"$n\"; fi; \
+         done"
+    );
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 80, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
+/// The supervision a real host would provide for [`standin_agent`], derived from the peer's OWN
+/// output.
+///
+/// # ⚠⚠⚠ Why `seq` carries the whole signal and the STATE is always at rest
+///
+/// A shell peer with echo off paints nothing between reading a prompt and answering it, so
+/// there is no moment at which a screen-derived detector could honestly call it *working* —
+/// and a fixture that claimed otherwise would be inventing evidence the pane does not carry.
+///
+/// What it can say truthfully is HOW MANY answers the peer has produced, which is exactly what
+/// [`AgentObservation::seq`](crate::access::AgentObservation::seq) means: published changes.
+/// So this reports `Idle` always and lets the count do the work — **which puts the whole weight
+/// on [`DoneWhen::Settles`](crate::completion::DoneWhen)'s arming**, the discipline that stops a
+/// peer's rest from BEFORE a turn reading as its answer. A driver that dropped the arming would
+/// end every turn instantly against this fixture, and the gate would say so.
+///
+/// ⚠⚠⚠ **AND IT IS HELD MONOTONIC BY HAND, WHICH THE SECOND STALL OF THAT GATE PAID FOR.**
+/// The count is read off the COLLAPSED SCREEN, so it is a claim about the terminal's SIZE as
+/// much as about the peer: once the pane had scrolled, `ACK 1` left the grid and the count went
+/// DOWN — and `seq > began_at` can never be satisfied again by a number that shrank. R375
+/// recorded exactly this trap about counting from a screen; a real detector's `seq` never
+/// decreases while the pane lives, and this is what makes the stand-in honest about that.
+pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
+    let source = {
+        let workspace = Arc::clone(workspace);
+        let high = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        Arc::new(move |id: PaneId| {
+            let screen = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_collapsed(id)
+                .unwrap_or_default();
+            let answers =
+                (screen.matches("ACK").count() + screen.matches("MILESTONE").count()) as u64;
+            let seq = high
+                .fetch_max(answers, std::sync::atomic::Ordering::SeqCst)
+                .max(answers);
+            Some(crate::access::AgentObservation {
+                state: AgentState::Idle,
+                agent: Some("claude".to_string()),
+                authority: crate::access::Authority::Reported {
+                    source: "test".to_string(),
+                },
+                seq,
+                asking: None,
+            })
+        })
+    };
+    WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
+}
+
 #[cfg(test)]
 mod tests {
     use super::refused_naming;

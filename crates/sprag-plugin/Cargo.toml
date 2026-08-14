@@ -27,11 +27,17 @@ sce-rust-runtime = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# The script engine `ai_loop.scxml`'s datamodel is generated against. A DEV
-# dependency on purpose: the machine is measured here before anything in the
-# product constructs it, so a Lua interpreter (and the C toolchain mlua builds
-# through) is not linked into the daemon by a round that has not yet decided it
-# should be. Consumed by the gates in `src/ai_loop.rs`.
+# The script engine `ai_loop.scxml`'s datamodel is generated against. STILL a DEV dependency, and
+# the reason changed at R381: it was deferring a decision, and now it is a design.
+#
+# `OuterLoop` and `AiLoop` take their `IScriptEngine` as a parameter, so nothing in this crate names
+# a concrete engine and a consumer chooses one — `sprag-host` builds a `LuaEngine` per run, and its
+# manifest carries that argument. Keeping this dev-only is what holds that seam open: a second
+# engine, or a host that wants none, changes one line in ITS manifest and none here.
+#
+# ⚠ It is also what the gates enter through. Three of the driver's refusals are only reachable by
+# handing in an engine that answers differently about one variable, which is a fixture this crate
+# can only build because the engine is a parameter.
 sce-rust-lua = { workspace = true }
 
 [build-dependencies]

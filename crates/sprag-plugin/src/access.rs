@@ -247,6 +247,21 @@ pub enum PaneError {
         /// How many bytes reached the pseudoterminal across all of them. Paid for, and gone.
         written: u64,
     } = { attempts: 0, written: 0 },
+    /// ⚠⚠ **THE MACHINE DRIVING THIS RUN COULD NOT BE DRIVEN ON**, and the clause saying why.
+    ///
+    /// The one arm that is not about the pane, and it is here because this type is what
+    /// [`Plugin::step`](crate::plugin::Plugin::step) returns — the substrate's single channel for
+    /// *this step could not be taken*. A statechart plugin's step is a transition of a document,
+    /// and a document can stop being drivable in ways no pane operation describes: its datamodel
+    /// stops holding the prompt the transition owes a peer
+    /// ([`OuterLoop::authored`](crate::outer::OuterLoop::authored) says why that is read at the
+    /// moment of delivery rather than cached), or it reaches a state this build has no effect for.
+    ///
+    /// ⚠ It carries the CLAUSE and not just the fact, because the alternative is a failed run
+    /// whose only sentence is that it failed. Every producer names what it was and what it wanted:
+    /// the remedy here is a fix — the document, the engine, or the pin under it — which is exactly
+    /// what separates a `failed` outcome from a `blocked` one that wants an answer.
+    Undrivable(String) = (String::new()),
     /// ⚠ A STOP WAS NOT DELIVERED, so the pane's job is STILL RUNNING — and why.
     ///
     /// Distinct from every other arm here because the others describe something that did not
@@ -458,6 +473,9 @@ impl std::fmt::Display for PaneError {
                      its pseudoterminal and none of them ever appeared on it, so nothing was \
                      submitted and no reply is this run's"
                 )
+            }
+            Self::Undrivable(why) => {
+                write!(f, "this run's machine could not be driven on: {why}")
             }
             Self::NotStopped(why) => {
                 write!(

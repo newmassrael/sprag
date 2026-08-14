@@ -1592,6 +1592,15 @@ const NOT_A_PANE: &[&str] = &[
     "cols",
     "rows",
     "opened_by",
+    // ⚠⚠ A COUNT OF THE INNER AGENT'S TURNS, not a pane and not a duration — the `ai_loop` form's
+    // own budget, which the daemon's guardrails structurally cannot see because one of those turns
+    // is many steps of the loop driving it. Classified here for this list's whole reason: it is a
+    // small number sitting beside a `pane`, and the only thing that stops it being resolved as one
+    // is a decision somebody wrote down.
+    "max_turns",
+    // ⚠ HOW OFTEN THE LOOP STOPS TO IMPROVE ITS OWN SETUP — the same kind of count as its
+    // neighbour above, and not a pane for the same reason.
+    "reflect_every",
     "max_iterations",
     "max_seconds",
     "max_bytes",
@@ -1849,7 +1858,12 @@ fn argument_help(name: &str) -> &'static str {
             "Which plugin to run. `agent` prompts the AI in a pane and collects its reply; \
              `orchestrator` retypes one stimulus until a sentinel appears; `pipe` relays one \
              pane's output into another's input; `dialogue` runs two commands against each other, \
-             turn by turn. `answer` is the one that is NOT a loop: it answers the question a \
+             turn by turn. `ai_loop` is the biggest one: it drives the agent in a pane over MANY \
+             turns towards a goal you describe, prompting it, judging each turn against a done \
+             marker, and stopping when the agent says it has arrived or when the turns you \
+             allowed run out — you tell it what the work is FOR (north_star, milestone, \
+             reference) rather than what to type, and it composes each turn's prompt itself. \
+             `answer` is the one that is NOT a loop: it answers the question a \
              pane's agent has stopped to ask, once, and stops — you will normally want the \
              answer_pane tool, which is this plugin with the waiting done for you."
         }
@@ -2036,6 +2050,47 @@ fn argument_help(name: &str) -> &'static str {
         }
         "max_bytes" => "Stop after injecting this many bytes. Lower than the default only.",
         "max_tokens" => "Stop after this many model tokens. Lower than the default only.",
+        // ⚠⚠ THE `ai_loop` FORM'S SIX. A loop is the one plugin here told what the work is FOR
+        // rather than what to type, so its arguments describe a GOAL and each needs a sentence an
+        // agent can act on — the three below are what the loop composes every prompt out of.
+        "north_star" => {
+            "WHERE THIS LOOP IS ULTIMATELY GOING (ai_loop) — one or two sentences, in your own \
+             words, naming the outcome the whole run exists to reach. It is never rewritten and it \
+             goes into every prompt the loop sends, so write the destination rather than the next \
+             step."
+        }
+        "milestone" => {
+            "THE STEP BEING WORKED ON NOW (ai_loop) — the checkpoint on the way to the north star. \
+             This is what the agent is asked to reach, and it is what the loop judges each turn \
+             against: the run converges when the agent says it has arrived."
+        }
+        "reference" => {
+            "PRIOR ART THE AGENT SHOULD CONSULT FIRST (ai_loop) — paths, URLs or repositories, as \
+             free text. It is carried into every prompt, so name the things that would otherwise \
+             have to be rediscovered on every turn."
+        }
+        "max_turns" => {
+            "HOW MANY TURNS OF THE AGENT THIS RUN MAY TAKE (ai_loop) — the loop's own budget, and \
+             the one bound that is about the agent rather than about this daemon. One turn is a \
+             whole prompt-and-answer, which for a real agent is tens of seconds and a slice of its \
+             own quota, so this is the number that decides what a run costs. A run stopped by it \
+             reports `exhausted` with the ceiling `turns`, which is how you tell it apart from a \
+             guardrail."
+        }
+        "reflect_every" => {
+            "HOW OFTEN THE LOOP STOPS TO IMPROVE ITS OWN SETUP (ai_loop). ⚠ THIS BUILD DOES NOT \
+             DRIVE THAT STATE YET, so it must be at least `max_turns` — leave it out and it \
+             becomes exactly `max_turns`, which is the only value that keeps the run inside the \
+             path this build can finish. A smaller number is refused when you call, naming this \
+             argument, rather than stopping the run part way through."
+        }
+        "agent" => {
+            "WHICH PROGRAM IS IN THE PANE (ai_loop) — `claude`, or whatever list_panes reports \
+             running there. The loop waits for that agent to be up and at rest before it types its \
+             first prompt: without it a loop types into whatever the pane happens to be running, \
+             which was measured costing a whole run against a `claude` that had been alive for ten \
+             milliseconds."
+        }
         _ => "See `sprag show-grammar run` for what this daemon says about this argument.",
     }
 }
@@ -8231,12 +8286,16 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 14,
+            seen, 16,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
              ready_timeout_ms, await_person_ms, handback_still_ms, turn_within_ms, cols, rows, \
-             max_iterations, \
+             max_turns, reflect_every, max_iterations, \
              max_seconds, max_bytes and max_tokens — MERGED across the forms, so the agent form's \
-             readiness pair adds no new name. ⚠ `turn_within_ms` is the newest and the FOURTH \
+             readiness pair adds no new name. ⚠⚠ THE TWO NEWEST ARE THE `ai_loop` FORM'S, and they \
+             are the first ints here that are neither a pane nor a DURATION: they COUNT the inner \
+             agent's turns. That is the classification this list exists for — a small number \
+             beside a `pane` argument, which nothing but a written decision stops this tool \
+             resolving as somebody's pane. ⚠ Before them, `turn_within_ms`, the FOURTH \
              duration on this wire wearing a number's clothes: how long one turn of the peer may \
              take, which is a different question from how long the whole run may (`max_seconds`) \
              and from how long its pane may take to come up (`ready_timeout_ms`). ⚠ Before it, \

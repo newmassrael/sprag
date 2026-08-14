@@ -77,6 +77,29 @@ pub enum Verdict {
     /// reason — something happened to this run that its journal has to be askable about — and a
     /// TERMINAL one for [`Blocked`](Self::Blocked)'s: the pane now belongs to somebody else.
     TakenOver(crate::readiness::Interruption),
+    /// **THE PLUGIN'S OWN DECLARED BUDGET IS SPENT**, and which one — see
+    /// [`Ceiling::Turns`](crate::driver::Ceiling::Turns).
+    ///
+    /// # ⚠⚠⚠ Why a plugin may say `exhausted` at all, when the Driver owns exhaustion
+    ///
+    /// The [`Driver`](crate::driver::Driver)'s three [`Guardrails`](crate::driver::Guardrails)
+    /// bound a run in the substrate's own units — steps, spend, seconds — and they are the only
+    /// budgets it can see. A plugin whose DOCUMENT carries a budget of its own counts something
+    /// the substrate has no name for: `ai_loop.scxml`'s `max_turns` counts the inner agent's
+    /// TURNS, and one turn is many steps of the loop driving it.
+    ///
+    /// Before this arm the only endings available to such a plugin were a lie in one direction or
+    /// the other. [`Converged`](Self::Converged) says the goal was reached and it was not.
+    /// `Continue` hands the run back to the guardrails, so a loop that spent its author's eight
+    /// turns would go on pumping a machine that is already in a final state until the iteration
+    /// ceiling bit — reporting `exhausted — iterations`, which tells the reader to raise a number
+    /// that would have bought them nothing. The remedy for THIS exhaustion is in the brief.
+    ///
+    /// ⚠ It is TERMINAL, and it does not outrank the two verdicts above it: a peer that stopped to
+    /// ask, or a person at the pane, is a fact about somebody else and this is a fact about
+    /// arithmetic. The Driver's ordering already says so — a step reports one verdict, and a
+    /// plugin that can see both reports the other one.
+    Exhausted(crate::driver::Ceiling),
 }
 
 impl Verdict {
@@ -92,6 +115,7 @@ impl Verdict {
             Self::Blocked(_) => "blocked",
             Self::Answered(_) => "answered",
             Self::TakenOver(_) => "taken_over",
+            Self::Exhausted(_) => "exhausted",
         }
     }
 
@@ -101,8 +125,14 @@ impl Verdict {
     /// ⚠ Hand-ordered because the variants CARRY DATA and so have no `ALL` to walk — the residue
     /// [`OutcomeState`](crate::driver::OutcomeState) states for the same reason, and the gate below
     /// this holds the list to [`wire_str`](Self::wire_str) rather than trusting it.
-    pub const WIRE_WORDS: &'static [&'static str] =
-        &["continue", "converged", "blocked", "answered", "taken_over"];
+    pub const WIRE_WORDS: &'static [&'static str] = &[
+        "continue",
+        "converged",
+        "blocked",
+        "answered",
+        "taken_over",
+        "exhausted",
+    ];
 }
 
 /// A typed cost quantity — what a [`Step`] spent, with its UNIT in the type.
@@ -346,6 +376,7 @@ mod tests {
                 bytes: 1,
             }),
             Verdict::TakenOver(crate::readiness::Interruption::of(1)),
+            Verdict::Exhausted(crate::driver::Ceiling::Turns),
         ]
         .iter()
         .map(Verdict::wire_str)

@@ -71,7 +71,8 @@ pub struct Guardrails {
     pub max_duration: Option<Duration>,
 }
 
-/// WHICH GUARDRAIL STOPPED A RUN — the reason an [`OutcomeState::Exhausted`] carries.
+sprag_vt::closed_set! {
+/// WHICH CEILING STOPPED A RUN — the reason an [`OutcomeState::Exhausted`] carries.
 ///
 /// # ⚠⚠ Why an exhausted run that does not say which ceiling is barely an answer
 ///
@@ -98,6 +99,17 @@ pub struct Guardrails {
 /// take the string and print it. So a fourth ceiling is additive here in the strongest sense: an
 /// old reader shows a word it has never seen and is not wrong. Giving it a `WIRE_WORDS` nobody
 /// reads would be a constant the product does not enforce, which this project has removed twice.
+///
+/// # ⚠⚠⚠ Why it IS a `closed_set!`, where the paragraph above says it is not a vocabulary
+///
+/// Those are different claims. Nothing publishes an admissible LIST of these to a client — that is
+/// still true, and is why there is no `WIRE_WORDS`. What a `closed_set!` buys is [`ALL`](Self::ALL),
+/// and the reader that needs it is the DURABLE LOG: a run's ceiling is written out as its word and
+/// read back by `outcome_from_words`, which matched two of the three by hand and answered
+/// `Iterations` for anything else. The fourth arm added below would have come back from a restart
+/// as *"you ran out of steps"* — a false sentence pointing at a guardrail the run never met.
+/// **A list with no glob decides alone**, and this one decided against a variant that did not
+/// exist when it was written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ceiling {
     /// [`Guardrails::max_iterations`] — the run took all the steps it was allowed.
@@ -106,9 +118,36 @@ pub enum Ceiling {
     Cost,
     /// [`Guardrails::max_duration`] — the run ran out of wall-clock time.
     Duration,
+    /// ⚠⚠ **THE PLUGIN'S OWN DECLARED BUDGET** — the one ceiling the [`Driver`] does not own.
+    ///
+    /// The three above are [`Guardrails`], which bound a run in the substrate's units: steps,
+    /// spend, seconds. A plugin whose document counts something else has a fourth budget the
+    /// Driver structurally cannot see — [`ai_loop.scxml`]'s `max_turns` counts the inner AGENT's
+    /// turns, and one of those is many steps of the loop that drives it, so no iteration ceiling
+    /// expresses *"give this agent eight turns"*.
+    ///
+    /// It reaches the Driver through [`Verdict::Exhausted`], which is why this is the same type
+    /// rather than a second word beside it: a caller reading `ceiling` is asking *what do I raise
+    /// to buy this run more room*, and the answer is one question whoever set the number can act
+    /// on. The remedy differs (raise `max_turns` in the brief, not a guardrail), and the word says
+    /// which knob it is exactly as `cost` does for a bound spelled `max_bytes` on one form and
+    /// `max_tokens` on another.
+    ///
+    /// [`ai_loop.scxml`]: ../../ai_loop.scxml
+    Turns,
+}
 }
 
 impl Ceiling {
+    /// The ceiling a `word` names, or [`None`] for one no ceiling spells.
+    ///
+    /// ⚠ Derived from [`ALL`](Self::ALL) rather than matched by hand, which is the whole reason
+    /// this type is a closed set — see the type's own doc.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+
     /// This ceiling's word on the wire — the ONE place the variant → name mapping lives, so the
     /// host never spells a `Ceiling` variant ([`Cost::unit`]'s rule, one level up).
     ///
@@ -120,6 +159,7 @@ impl Ceiling {
             Self::Iterations => "iterations",
             Self::Cost => "cost",
             Self::Duration => "duration",
+            Self::Turns => "turns",
         }
     }
 }
@@ -646,6 +686,18 @@ impl Driver {
                         // a ceiling. What makes it different is a RECORD and not a control path —
                         // the fifth verdict word, and the tally kept beside the loop's own
                         // counters — so a second arm here would be one concept spelled twice.
+                        // ⚠⚠ THE PLUGIN'S OWN BUDGET, recorded through the SAME writer the three
+                        // guardrails go through — `exhaust` is the single site that pairs the
+                        // recorded ceiling with the transition, so a fourth source of exhaustion
+                        // cannot reach `exhausted` without saying which one it was.
+                        //
+                        // ⚠ Below `blocked` and `taken_over` and above the run's own end, and each
+                        // half of that is a decision. A peer's question and a person's hand are
+                        // facts about somebody else and outrank arithmetic. A cancel arriving in
+                        // the same instant does NOT: the plugin has already looked and its budget
+                        // is already spent, so reporting `cancelled` would tell the reader to
+                        // start it again when the answer is to give it more turns.
+                        Verdict::Exhausted(ceiling) => self.exhaust(*ceiling),
                         Verdict::Continue | Verdict::Answered(_) => {
                             match self.ended_from_outside(run) {
                                 Some(event) => event,

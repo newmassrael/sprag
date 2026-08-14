@@ -32,6 +32,24 @@ sprag-input = { workspace = true }
 # The plugin substrate (PaneAccess + Driver + bundled plugins): the plugin-host
 # External (plugins.rs) runs plugins over it on background threads.
 sprag-plugin = { workspace = true }
+# ⚠⚠⚠ THE SCRIPT ENGINE `ai_loop.scxml`'s DATAMODEL IS EVALUATED BY — a REAL dependency since R381,
+# and that promotion is the decision the register had been holding open since R378.
+#
+# It was DEV-only on purpose while nothing in the product constructed the outer loop: `OuterLoop`
+# takes its `IScriptEngine` as a parameter precisely so the daemon would not link mlua and the C
+# Lua toolchain it builds through, for a machine no surface started.
+#
+# `run {plugin: "ai_loop"}` is that surface, so the daemon is now the construction site and the
+# cost is real: one Lua interpreter, linked into every sprag daemon, whether or not anybody starts
+# a loop. It is paid because the alternative is a loop that runs end to end against a live agent
+# and has no door — which is what every round from R376 to R380 measured and none of them could
+# fix. ⚠ The parameter STAYS: it is what lets a gate hand in a witness engine, so the same decision
+# that kept this dependency out is the one that makes the driver's refusals testable.
+sce-rust-lua = { workspace = true }
+# `Arc<dyn IScriptEngine>` — the type the line above is handed in as. Reached through the runtime
+# rather than through `sce-rust-lua`'s own re-export so the host names the INTERFACE it depends on
+# and the implementation separately, which is what would let a second engine be substituted.
+sce-rust-runtime = { workspace = true }
 # Base64 for the inline-image (Kitty graphics / Sixel, R1404) RGBA served ON DEMAND via the
 # `image_data.<id>` pane slot (the panes slot carries only the {id,w,h,anchor,seq} summary).
 base64 = { workspace = true }
@@ -87,11 +105,6 @@ unicode-segmentation = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]
-# The script engine `ai_loop.scxml`'s ecmascript datamodel is evaluated by — needed only to
-# CONSTRUCT the outer loop's machine, which the live-agent measurement does. DEV-only, exactly as in
-# `sprag-plugin`: the daemon still links no Lua, because `OuterLoop` takes its engine as a parameter.
-sce-rust-lua = { workspace = true }
-sce-rust-runtime = { workspace = true }
 # The published-grammar claims, written once for every surface that publishes one (see the crate).
 # A dev-dependency CYCLE: it depends on this crate for the types. Cargo permits exactly this shape.
 sprag-conformance = { workspace = true }

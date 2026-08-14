@@ -822,7 +822,7 @@ impl InlineGrammar {
 /// published nothing since they existed. That is the hand-written-list rule catching the round's own
 /// hand-written list, one hour old, which is the strongest argument for deriving a list there is.
 ///
-/// # `run` is FOUR forms, one per bundled plugin
+/// # `run` is ONE FORM PER BUNDLED PLUGIN, and the list is projected rather than written
 ///
 /// The `plugin` word chooses which arguments the rest of the call carries, so a flat list would have
 /// said every one of them was optional — the same defect R352's first draft shipped for `move_window`.
@@ -850,13 +850,13 @@ pub struct PluginGrammar;
 impl PluginGrammar {
     /// The liveness bound every form of `run` accepts — the iteration ceiling.
     ///
-    /// Declared once and shared by all four forms, because the LOOP bound is unit-free where the
+    /// Declared once and shared by EVERY form, because the LOOP bound is unit-free where the
     /// COST bound is not.
     const MAX_ITERATIONS: ArgGrammar = ArgGrammar::open("max_iterations", "int").optional();
 
     /// The WALL-CLOCK bound every form of `run` accepts — the run's deadline, in seconds.
     ///
-    /// Beside [`MAX_ITERATIONS`](Self::MAX_ITERATIONS) and shared by all four forms for the same
+    /// Beside [`MAX_ITERATIONS`](Self::MAX_ITERATIONS) and shared by every form for the same
     /// reason: time, like the loop count, is unit-free where the COST bound is not — a second is a
     /// second whether the run spends bytes or tokens.
     ///
@@ -930,9 +930,10 @@ impl PluginGrammar {
     /// alternation over a VALUE readable at all.
     ///
     /// Every other alternation on this wire is told apart by which KEYS a form carries — `select_pane`
-    /// takes a `pane` or a `dir`. These four forms all carry `plugin`, and differ by its value, so
-    /// publishing the whole vocabulary on every one of them would have left a client four key sets and
-    /// no way to know that `src`/`dst` is the `pipe` one. A one-word vocabulary per form says it
+    /// takes a `pane` or a `dir`. These forms ALL carry `plugin`, and differ by its value, so
+    /// publishing the whole vocabulary on every one of them would have left a client a pile of key
+    /// sets and no way to know that `src`/`dst` is the `pipe` one. A one-word vocabulary per form
+    /// says it
     /// exactly, and the UNION over the forms is still the whole set — nothing is hidden, and
     /// `an_argument_the_daemon_constrains_publishes_what_it_admits` drives each word inside the form
     /// that admits it.
@@ -949,6 +950,8 @@ impl PluginGrammar {
     const DIALOGUE: &'static [&'static str] = &[crate::plugins::PluginName::Dialogue.wire_str()];
     /// `answer`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
     const ANSWER: &'static [&'static str] = &[crate::plugins::PluginName::Answer.wire_str()];
+    /// `ai_loop`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
+    const AI_LOOP: &'static [&'static str] = &[crate::plugins::PluginName::AiLoop.wire_str()];
 
     /// The `plugin` discriminator at the one word that selects this form.
     const fn selected_by(word: &'static [&'static str]) -> ArgGrammar {
@@ -1160,7 +1163,7 @@ impl PluginGrammar {
     ///
     /// # ⚠⚠⚠ Why the one argument that is optional everywhere else is mandatory here
     ///
-    /// On the four looping forms a consent is a thing a run MAY be given, and its absence is the
+    /// On the looping forms a consent is a thing a run MAY be given, and its absence is the
     /// default that answers nothing. This form has no other content: a run told to answer a pane
     /// with no consent has been told to type nothing at a peer that is asking, which is what NOT
     /// calling it does, for free, without occupying a run slot.
@@ -1292,6 +1295,73 @@ impl PluginGrammar {
         Self::selected_by(Self::ANSWER),
         ArgGrammar::open("pane", "int"),
         Self::MUST_ANSWER,
+        Self::OPENED_BY,
+        Self::GUARDRAILS_BYTES,
+    ]);
+
+    /// `ai_loop` — RUN THE OUTER LOOP'S STATECHART AGAINST AN AGENT IN A PANE.
+    ///
+    /// # ⚠⚠⚠ The door the register had been holding open since R378
+    ///
+    /// `ai_loop.scxml` compiled at R376, got a turn with two endings at R377, got a driver at R378,
+    /// was measured against a live `claude` at R379 and converged against one at R380 — and
+    /// **nothing in the daemon constructed one and no surface started one.** This form is that
+    /// surface. It is additive in the way this wire's own rule calls free: a new ACTION or a new
+    /// FORM is not what earns a protocol number, and a client sending `ai_loop` to a daemon that
+    /// predates it meets an ordinary vocabulary refusal at the door, because the `plugins` slot
+    /// publishes the word and it can ask first.
+    ///
+    /// # ⚠⚠ The four brief keys, and why a loop takes them where an `agent` run takes a prompt
+    ///
+    /// An `agent` run carries the exact text it will send. A loop composes each turn's prompt
+    /// itself, in the document's own words, out of what it is FOR — so what a caller supplies is
+    /// the purpose and not the sentence. `north_star` is where the loop is ultimately going and is
+    /// never rewritten; `milestone` is the step being worked on now; `reference` is prior art the
+    /// agent should read first. All three are required, and that is measured rather than strict:
+    /// the document ships `(edit me)` placeholders for exactly these, and a live agent read three
+    /// of its five clauses as `(edit me)` until R380.
+    ///
+    /// ⚠⚠ **`max_turns` COUNTS THE AGENT'S TURNS AND IS NOT A GUARDRAIL**, which is why it is here
+    /// and not in `guardrails`. One turn of a real agent is many steps of the loop driving it, so
+    /// `max_iterations` cannot express *"give this agent eight turns"* — and a run stopped by this
+    /// number reports `exhausted` with the ceiling `turns`, so a reader is told which knob to turn.
+    ///
+    /// ⚠ **`reflect_every` MUST BE AT LEAST `max_turns` AT THIS BUILD**, and a smaller one is
+    /// refused synchronously with that sentence. Below it the document reaches `reflecting`, whose
+    /// session-replace lifecycle is not built — refusing at the door is the difference between a
+    /// caller changing one number and a run that prompts a live agent eight times and then stops
+    /// somewhere with no answer for it.
+    ///
+    /// ⚠ **`agent` IS THE PROGRAM NAME, and it is what the barrier waits for**, under
+    /// [`ReadyWhen::Settles`](sprag_plugin::ReadyWhen) — the one barrier word a program that prints
+    /// nothing on startup can be waited for by. R379 measured what its absence costs: a loop typed
+    /// its first prompt into a pane whose agent had existed for ten milliseconds, the
+    /// pseudoterminal's own echo confirmed the delivery, and the run then sat in `working` for as
+    /// long as anyone let it.
+    pub const AI_LOOP_FORM: CallForm = CallForm::object(&[
+        Self::selected_by(Self::AI_LOOP),
+        ArgGrammar::open("pane", "int"),
+        ArgGrammar::open("north_star", "string"),
+        ArgGrammar::open("milestone", "string"),
+        ArgGrammar::open("reference", "string"),
+        ArgGrammar::open("max_turns", "int"),
+        ArgGrammar::open("reflect_every", "int").optional(),
+        // ⚠⚠⚠ REQUIRED, and the conformance sweep is what settled it. It was declared optional and
+        // read with `require_str`, which is the exact defect `DONE_WHEN` beside it records from
+        // version 25: the wire published an argument as declinable and the daemon refused every
+        // call that declined it, so an agent building a call from the published form gets
+        // `TypeMismatch` for a request the grammar says is well-formed.
+        //
+        // It is required rather than optional-with-a-default because there IS no honest default: a
+        // loop with no barrier types its first prompt into whatever the pane happens to be running
+        // — R379 measured that costing a whole run — and only the caller knows which program is in
+        // their pane.
+        ArgGrammar::open("agent", "string"),
+        Self::READY_WHEN,
+        ArgGrammar::open("ready_timeout_ms", "int").optional(),
+        Self::DONE_WHEN,
+        ArgGrammar::open(sprag_plugin::Turn::WIRE_KEY, "int").optional(),
+        ArgGrammar::open("shows_prompt", "bool").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1726,7 +1796,7 @@ pub const PANE_GRAMMAR: &[ActionGrammar] = &[
 /// Both PLUGIN-HOST verbs — what the surface under `sprag_plugins` serves.
 ///
 /// ⚠ Found by [`SURFACES`]'s own derivation, not by a person: these two had published nothing
-/// since they were built. [`PluginGrammar`] says what `run`'s four forms are and why `guardrails`
+/// since they were built. [`PluginGrammar`] says what `run`'s forms are and why `guardrails`
 /// is named without its inner keys.
 pub const PLUGINS_GRAMMAR: &[ActionGrammar] = &[
     ActionGrammar {
@@ -7372,6 +7442,25 @@ mod tests {
                 "verdict:answered",
                 // ⚠⚠ R372: the fifth verdict — the step that stopped because a person took over.
                 "verdict:taken_over",
+                // ⚠⚠⚠ R381: THE SIXTH VERDICT — a plugin whose OWN document carries a budget saying
+                // that budget is spent. `ai_loop.scxml`'s `max_turns` counts the inner agent's
+                // turns and one of those is many steps of the loop driving it, so no guardrail can
+                // see it; without this word the run had to report `exhausted — iterations` about a
+                // ceiling it never met.
+                //
+                // ⚠⚠⚠ **AND IT DID NOT COST THE NUMBER, which is a judgement and not an
+                // oversight.** This pin's standing sentence says an added answer word breaks older
+                // readers and the protocol number must rise. It cannot here, and the reason is
+                // specific rather than general: this word is produced by exactly one plugin, and
+                // that plugin is selected by a `plugin` value no client older than this build
+                // knows. An old client never sends `ai_loop`, so it never receives a journal that
+                // can carry this word; a new client that sends `ai_loop` to an old daemon meets an
+                // ordinary vocabulary refusal at the door, because the `plugins` slot publishes
+                // the word and it can ask first. **Neither half of a skewed pair can misread
+                // anything**, which is the one escape the argument-shape pin beside this offers.
+                // ⚠ The same argument covers `ceiling: "turns"`, which this pin deliberately does
+                // not walk (see `sprag_plugin::Ceiling`).
+                "verdict:exhausted",
                 // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
                 // needle, write a consent, or fetch a person — so they are words and not prose.
                 "refusal:unreadable",
@@ -7661,9 +7750,14 @@ mod tests {
                 // cannot mistake the request for one it can serve, and the words are published, so
                 // a client can ask first.
                 "sprag_workspace/sprag_plugins/cancel:",
+                // ⚠⚠ R381: the SIXTH `plugin` word, `ai_loop` — the outer loop as a run somebody
+                // can start. A widened ARGUMENT vocabulary leaves the number standing (R342's
+                // rule): a client that never heard of the word cannot send it, and one that sends
+                // it to an older daemon meets a vocabulary refusal at the door rather than a run
+                // that quietly does something else.
                 "sprag_workspace/sprag_plugins/run:done_when=exits,settles \
-                 format_a=text,claude_json format_b=text,claude_json plugin=agent plugin=answer \
-                 plugin=dialogue plugin=orchestrator plugin=pipe",
+                 format_a=text,claude_json format_b=text,claude_json plugin=agent plugin=ai_loop \
+                 plugin=answer plugin=dialogue plugin=orchestrator plugin=pipe",
             ],
         );
 
@@ -7887,6 +7981,18 @@ mod tests {
                 // `may_answer:array?{…}` on the three that loop. At 28 all four read `object`, and
                 // NOTHING in this suite could see them change.
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int may_answer:array{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                // ⚠⚠⚠ R381: A WHOLE NEW FORM — the outer AI loop, as a run somebody can start. Its
+                // four brief keys are the only REQUIRED strings on this surface that are not a
+                // pane or a program: what the loop is for is not derivable from anything, and the
+                // document ships `(edit me)` placeholders where they belong.
+                //
+                // ⚠⚠ **A FORM ADDED LEAVES THE NUMBER STANDING**, which is this pin's own escape
+                // used deliberately: an older client is unaffected because it cannot select this
+                // form — the `plugin` word that reaches it is one it has never heard of — and a
+                // newer client that sends it to an older daemon is refused at the door by that
+                // daemon's own `plugin` vocabulary. Neither half of a skewed pair can act on a
+                // request it has misread, which is the failure a bump exists to prevent.
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two
@@ -8858,10 +8964,13 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            driven, 21,
+            driven, 26,
             "the FLATTENED nested fields this crate's wire publishes: THREE guardrail fields on \
-             each of the plugin host's FIVE run forms, `ready_when`'s two on each of the three \
+             each of the plugin host's SIX run forms, `ready_when`'s two on each of the four \
              that inject, and nothing on the multiplexer or a pane. \
+             ⚠⚠ THE FIVE NEWEST ARE THE `ai_loop` FORM'S — its own guardrail three and its \
+             barrier's two. A loop injects, so it takes the barrier every injecting form takes; \
+             it spends BYTES, so its guardrail object is the byte-relay one. \
              ⚠⚠ THE CONSENT'S TWO ARE NO LONGER AMONG THEM, and the drop of eight is the point \
              rather than a regression: `may_answer` became a LIST of clauses (R370), and a list \
              CANNOT be flattened — N loose `asked`s beside N loose `answer`s say nothing about \
