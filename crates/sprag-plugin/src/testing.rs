@@ -731,15 +731,24 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
 //    one). Keeping one copy where both claims can be made beat keeping the family together with a
 //    second copy of the data — see `consent`'s gate. Registered as the wart it is.
 
+/// The frame rule an agent draws across its dialog, at the 120 columns these were captured in.
+///
+/// ⚠ A `const` rather than 120 characters typed into six places: it is the ONE part of a capture
+/// that is a property of the PANE's width rather than of what the agent said, and spelling it out
+/// six times would invite somebody to shorten one and call the fixture still-captured.
+const RULE: &str = "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────";
+/// The dotted rule an agent draws around a file preview, at the same width.
+const DOTS: &str = "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌";
+
 /// The `Write` tool's permission dialog.
 pub(crate) const CLAUDE_WRITE_DIALOG: &[&str] = &[
     "● Write(PROBE.txt)",
-    "────────────────────────────────────────────────────────────────────────",
+    RULE,
     " Create file",
     " PROBE.txt",
-    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    DOTS,
     "  1 ready",
-    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    DOTS,
     " Do you want to create PROBE.txt?",
     " ❯ 1. Yes",
     "   2. Yes, allow all edits during this session (shift+tab)",
@@ -750,13 +759,13 @@ pub(crate) const CLAUDE_WRITE_DIALOG: &[&str] = &[
 /// The `Edit` tool's permission dialog — a DIFFERENT sentence and the same option set.
 pub(crate) const CLAUDE_EDIT_DIALOG: &[&str] = &[
     "● Update(SEED.txt)",
-    "────────────────────────────────────────────────────────────────────────",
+    RULE,
     " Edit file",
     " SEED.txt",
-    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    DOTS,
     " 1 -ready",
     " 1 +steady",
-    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    DOTS,
     " Do you want to make this edit to SEED.txt?",
     " ❯ 1. Yes",
     "   2. Yes, allow all edits during this session (shift+tab)",
@@ -766,17 +775,24 @@ pub(crate) const CLAUDE_EDIT_DIALOG: &[&str] = &[
 
 /// A SHELL command's permission dialog — the shortest question of the three, and the one whose
 /// second option is worded differently again.
+///
+/// ⚠⚠ ITS SECOND OPTION NAMES THE WORKING DIRECTORY, which for the probe that took this was a
+/// scratch path carrying a pid and a nanosecond count. **Kept verbatim** rather than generalised:
+/// the point of a captured fixture is that nobody edited it, and a reader who cannot tell which
+/// parts were touched cannot trust any of it. What the volatile name proves is its own small
+/// thing — that this option's text is BUILT from the session, so a consent needle aimed at it
+/// would be aimed at a string that differs every run.
 pub(crate) const CLAUDE_BASH_DIALOG: &[&str] = &[
     "● I'll run that now.",
     "● Bash(touch MADE-BY-BASH.txt && ls -la MADE-BY-BASH.txt)",
     "  ⎿ \u{a0}Waiting…",
-    "────────────────────────────────────────────────────────────────────────",
+    RULE,
     " Bash command",
     "   touch MADE-BY-BASH.txt && ls -la MADE-BY-BASH.txt",
     "   Create MADE-BY-BASH.txt",
     " Do you want to proceed?",
     " ❯ 1. Yes",
-    "   2. Yes, and always allow access to sprag-live-asks-bash/ from this project",
+    "   2. Yes, and always allow access to sprag-live-asks-bash-writes-3241854-485793172/ from this project",
     "   3. No",
     " Esc to cancel · Tab to amend · ctrl+e to explain",
 ];

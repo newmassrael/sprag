@@ -881,6 +881,43 @@ mod tests {
         }
     }
 
+    /// ⚠⚠⚠ **A REAL DIALOG'S `asked` CARRIES THE FILE'S CONTENTS, SO A NEEDLE CAN MATCH THE WORK
+    /// RATHER THAN THE QUESTION** — a hazard the captures made visible, asserted so it stays
+    /// visible.
+    ///
+    /// `Consent::asked` says WHICH QUESTION a clause is about, and it is matched by `contains` over
+    /// the dialog's lines joined. Reading the captures shows what those lines actually hold: the
+    /// write dialog carries `1 ready` — the FILE'S CONTENTS — and the edit dialog carries
+    /// `1 -ready` / `1 +steady`, its DIFF. So a caller who quotes a word that happens to appear in
+    /// their own file has written a clause that fires on a dialog they were not thinking about.
+    ///
+    /// ⚠⚠ **THIS GATE ASSERTS THE HAZARD, NOT A REMEDY.** Narrowing the match to *the question
+    /// line* is not available: `sprag_detect::question` does not mark which of the `asked` lines is
+    /// the sentence, and inventing that here would be this crate guessing at another program's
+    /// layout. If a later round makes the match narrower, this goes red — and the reader is meant
+    /// to arrive HERE and find out what was true before, rather than delete it.
+    #[test]
+    fn a_needle_can_match_the_work_a_dialog_shows_rather_than_the_question_it_asks() {
+        let quoting_the_file = Consents::of(vec![
+            Consent::parse("ready".to_owned(), "Yes".to_owned()).expect("non-empty needles"),
+        ])
+        .expect("a non-empty consent list");
+        let write = crate::testing::parsed_dialog(crate::testing::CLAUDE_WRITE_DIALOG)
+            .expect("the parser reads the capture");
+        assert!(
+            write.asked.iter().any(|line| line.contains("1 ready")),
+            "⚠ THE PREMISE: this dialog really does put the file's contents in what it asked — if \
+             it stops, the hazard below is about nothing: {:?}",
+            write.asked,
+        );
+        assert!(
+            quoting_the_file.covers(&write).is_ok(),
+            "⚠⚠⚠ MEASURED: a clause quoting a word from the FILE covers a dialog whose question \
+             never contains it. A caller cannot tell from `asked`'s name that it matches the whole \
+             screen the agent drew, contents and all",
+        );
+    }
+
     /// The measured shape of a real tool-permission dialog — the one the ambiguity rule is about.
     fn permission() -> Question {
         Question {
