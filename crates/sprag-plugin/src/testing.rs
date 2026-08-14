@@ -683,10 +683,100 @@ pub(crate) fn silent_peer() -> (WorkspacePaneAccess, PaneId) {
 /// turn early. A real agent CLI paints the prompt into its own box, which is the whole reason
 /// `deliver` reads the screen back; a stand-in that stayed silent was testing the retry path, not
 /// the loop.
+/// The token a stand-in peer publishes ITS OWN reply counter behind — see [`peer_seq`].
+const SEQ_MARKER: &str = "SEQ";
+
+/// **THE PEER'S OWN PUBLISHED-CHANGE COUNTER**, read off the screen — what the two supervisors
+/// below report as [`AgentObservation::seq`](crate::access::AgentObservation::seq).
+///
+/// # ⚠⚠⚠ Why this replaced COUNTING THE PEER'S TOKENS, and the number that said so
+///
+/// Both supervisors used to count occurrences of `ACK` and `MILESTONE` on the collapsed screen and
+/// hold the total monotone by hand, with a doc explaining that a scrolled pane would otherwise make
+/// it go DOWN. Holding it monotone stops the count SHRINKING; it does not make it GROW. So once the
+/// pane had scrolled, the high-water mark was reached and `seq` never moved again — and
+/// `DoneWhen::Settles` compares `seq` against the turn's arming, so **no further turn could ever
+/// end**.
+///
+/// Measured, driving the refusing peer for six turns: the walk was
+/// `Idle -> Priming -> Working -> Screening -> … -> Judging` three times and then
+/// `Working --Null--> Working` **twenty-two times** until the run's wall clock. Three turns is the
+/// most any gate in this crate could have driven, because the authored prompts are three or four
+/// rows each and the pane is sixteen — nobody had asked for a fourth.
+///
+/// The peer prints a counter it increments on every reply, so the LARGEST one on screen is the
+/// current total whatever has scrolled off. That is also closer to what the field means: a real
+/// detector's `seq` is a count of published changes, not of words a screen happens to still hold.
+///
+/// ⚠ The monotone latch is KEPT anyway, and not as decoration: the refusing peer CLEARS the screen
+/// between turns, so there is an instant with no counter on it at all.
+///
+/// See also [`has_painted`], which is the other half of what a supervisor must not over-claim.
+///
+/// ⚠⚠⚠ **AND THE LATCH IS PER PANE, which a session REPLACEMENT is what measured.** One `AgentStateSource`
+/// answers about every pane it is asked about, and it held ONE high-water mark — so when a loop's
+/// `restarting` closed its inner pane and opened a fresh one, the new peer's counter started at 1
+/// against a mark of 3 and **could never exceed it**: the run reached `priming` on the replacement
+/// session, prompted it, and then sat in `Working --Null--> Working` until its wall clock. A real
+/// detector's `seq` is a per-pane count and a new pane starts at its own zero, so the stand-in's has
+/// to as well.
+///
+/// ⚠⚠⚠ **AND IT READS ROWS, NOT [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed)** —
+/// R383's rule, paid a second time by the first draft of this very function. That read joins the
+/// rows **without separators**, exactly as its doc says, so `str::lines` yields ONE line and a
+/// per-row prefix match finds nothing: every turn reported `seq` 0 and the two gates that drive this
+/// peer both stalled at the FIRST turn rather than the fourth. The old token count survived a joined
+/// string only because `str::matches` does not care where a row ends.
+fn peer_seq(rows: &[String]) -> u64 {
+    rows.iter()
+        .filter_map(|row| row.trim().strip_prefix(SEQ_MARKER))
+        .filter_map(|count| count.trim().parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+}
+
+/// **HAS THIS PANE'S PROGRAM PAINTED ANYTHING YET?** — what stops the two supervisors below claiming
+/// an agent is present on a pane that has drawn nothing.
+///
+/// # ⚠⚠⚠ Why a blank pane must answer `agent: None`, measured
+///
+/// [`ReadyWhen::Settles`](crate::readiness::ReadyWhen) is satisfied when the supervisor reports THAT
+/// AGENT at rest, and both supervisors used to name it unconditionally. So a pane whose child had not
+/// yet been scheduled — a blank grid, microseconds old — read as *the agent is here and idle*, and a
+/// barrier over it came down at once.
+///
+/// It went unnoticed for as long as no run met a pane it had not waited for by hand: every fixture
+/// waits for its peer's announcement before the run begins. A loop that REPLACES its own session meets
+/// exactly that pane, and the gate for it measured the consequence — the barrier cleared on the blank
+/// screen, the loop primed and typed its first prompt, and the menu the replacement was ABOUT to paint
+/// arrived afterwards and was met as a blocked TURN instead of as a session that never came up.
+///
+/// R350 recorded this from the other side: *"the stand-in agent paints no title, no spinner, no
+/// footer, so the pane has NO agent key before its first event"* — the property that made an
+/// end-to-end proof possible there, over-claimed here.
+fn has_painted(rows: &[String]) -> bool {
+    rows.iter().any(|row| !row.trim().is_empty())
+}
+
+/// The monotone latch [`peer_seq`] is read through — **one high-water mark PER PANE**.
+///
+/// See `peer_seq` for the run that measured why it cannot be one mark for the source: a pane a loop
+/// has REPLACED is a different pane, and its peer's counter starts again at one.
+type SeqHighWater = Arc<Mutex<std::collections::HashMap<PaneId, u64>>>;
+
+/// `rows`' counter, never below what this pane has already published.
+fn latched(high: &SeqHighWater, pane: PaneId, rows: &[String]) -> u64 {
+    let seen = peer_seq(rows);
+    let mut marks = high.lock().expect("the high-water mutex");
+    let mark = marks.entry(pane).or_default();
+    *mark = (*mark).max(seen);
+    *mark
+}
+
 pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     let script = format!(
-        "stty -echo; printf 'AGENT-READY\\n'; n=0; \
+        "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
          while read line; do \
            printf '%s\\n' \"$line\"; \
            case \"$line\" in \
@@ -696,7 +786,9 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
            n=$((n+1)); \
            if [ $n -ge {prompts_before_done} ]; then printf 'MILESTONE REACHED\\n'; \
            else printf 'ACK %s\\n' \"$n\"; fi; \
-         done"
+           s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; \
+         done",
+        SEQ = SEQ_MARKER
     );
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -855,8 +947,9 @@ pub(crate) fn parsed_dialog(rows: &[&str]) -> Option<sprag_detect::Question> {
 pub(crate) fn standin_agent_asking() -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     let script = "\
-stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; k=''; \
+stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; s=0; k=''; \
 readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
 while read line; do \
   printf '%s\\n' \"$line\"; \
   case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
@@ -874,10 +967,10 @@ while read line; do \
       case \"$k\" in 49|50|51|10|13) break;; esac; \
     done; \
     stty icanon; \
-    printf '\\033[2J\\033[H'; n=$((n+1)); printf 'ACK took %s\\n' \"$k\"; \
+    printf '\\033[2J\\033[H'; n=$((n+1)); printf 'ACK took %s\\n' \"$k\"; bump; \
     continue; \
   fi; \
-  n=$((n+1)); printf 'MILESTONE REACHED\\n'; \
+  n=$((n+1)); printf 'MILESTONE REACHED\\n'; bump; \
 done"
         .to_string();
     let pane = {
@@ -919,36 +1012,83 @@ done"
 ///   call turned down, and comes back for the next prompt. The redirect then arrives as ordinary
 ///   text.
 ///
-/// ⚠ It answers the redirect with the done marker, so a run that gets past the dialog CONVERGES and
-/// one that does not cannot — which is what makes *"the standing instruction worked"* an ending
-/// rather than a note.
+/// ⚠ It ACKNOWLEDGES the redirect — which ENDS that turn — and then says the done marker once it has
+/// been prompted `turns_after_redirect` more times. At 1 that makes *"the standing instruction
+/// worked"* an ending rather than a note: a run that gets past the dialog CONVERGES and one that does
+/// not cannot.
 ///
-/// ⚠⚠⚠ **AND ITS REFUSAL LINE CARRIES `ACK`, WHICH IS NOT DECORATION — R375's TRAP, MET AGAIN.**
-/// [`supervised_asking`] derives `seq` by counting tokens on the COLLAPSED SCREEN and holds it
-/// monotone by hand, because a screen that scrolls would otherwise make the count go DOWN and
-/// `seq > armed` could never hold again. This peer does something worse than scroll: it CLEARS, so
-/// the first turn's token goes with the menu. The first draft printed a refusal line with no token
-/// in it and the count was pinned at its old high for the rest of the run — measured, as a run
-/// whose screening plainly worked (`Working --TurnBlocked--> Screening`, the refusal in its
-/// journal) and then sat in `Working --Null--> Working` until its wall clock. **A fixture's
-/// counting has to survive the fixture's own repaint.**
+/// ⚠⚠⚠ **AND EVERY REPLY BUMPS ITS PUBLISHED COUNTER, WHICH IS NOT DECORATION — R375's TRAP, MET
+/// TWICE.** [`supervised_asking`] derives `seq` from [`peer_seq`] and latches it monotone, because
+/// this peer does something worse than scroll: it CLEARS, so for an instant the screen carries no
+/// counter at all. The first draft printed a refusal line that published nothing and the count was
+/// pinned at its old high for the rest of the run — measured, as a run whose screening plainly
+/// worked (`Working --TurnBlocked--> Screening`, the refusal in its journal) and then sat in
+/// `Working --Null--> Working` until its wall clock. **A fixture's counting has to survive the
+/// fixture's own repaint** — and, as `peer_seq` records, its own SCROLL.
 /// ⚠⚠⚠ **`takes_the_key` IS THE HAZARD, PARAMETERISED.** `false` builds the peer the live probe's
 /// `Tab` arm measured: a dialog that stays up whatever arrives. What the product must do there is
 /// **type nothing at all**, and a fixture that could not be that peer would leave the one assertion
 /// that matters — *the redirect never reached the pane* — with nothing to make it fail.
-pub(crate) fn standin_agent_refusing(takes_the_key: bool) -> (Arc<Mutex<Workspace>>, PaneId) {
+///
+/// ⚠⚠⚠ **AND `turns_after_redirect` IS THE SECOND HAZARD, PARAMETERISED FOR THE SAME REASON.** One
+/// is the shape that CONVERGES on the redirect, which is what *"the standing instruction worked"*
+/// needs. A LARGE one is the shape a live agent actually took: it does what it was redirected to,
+/// comes back, and is asked for the original milestone again — R384's live agent wrote that out in
+/// words (*"루프가 매 턴 같은 요청을 반복하고 저는 매 턴 같은 이유로 거절 … 진전이 없습니다"*), and
+/// with a peer that converges immediately nothing can count it.
+/// ⚠⚠⚠ **AND `asks_on_its_second_life` IS THE THIRD, which is the only way to be a peer a REPLACEMENT
+/// session cannot be driven through.**
+///
+/// A loop's `resuming` waits for the pane its `restarting` opened, and the barrier there can answer
+/// something other than *ready*: a fresh agent CLI showing a trust prompt is the real case, and it is
+/// the one a person meeting this feature for the first time is likeliest to hit. That path ends the run
+/// with a sentence naming what the replacement came up asking.
+///
+/// A peer cannot know which of its lives it is in — a replacement runs the SAME argv, deliberately —
+/// so this one asks the FILESYSTEM. Given a path, the first life creates it and behaves normally; any
+/// later life finds it and comes up showing a menu instead of announcing itself. **The world changed,
+/// not the command**, which is exactly what distinguishes a second session from a first.
+///
+/// ⚠⚠ **AND IT PRINTS SIX LINES BEFORE THE MENU**, which the first run of that gate is why:
+/// `sprag_detect::question` reads the pane's BOTTOM [`DIALOG_WINDOW`](sprag_detect::DIALOG_WINDOW)
+/// rows — twelve — and a menu at the top of an otherwise-blank sixteen-row screen sits ABOVE them, so
+/// the barrier saw nothing and the run waited out its whole clock. ⚠ It is a fixture artifact and not
+/// a product defect: a real agent CLI paints a full-screen TUI, so its dialog is never the only thing
+/// on the screen. Said out loud because a reader meeting the filler lines would otherwise delete them.
+pub(crate) fn standin_agent_refusing(
+    takes_the_key: bool,
+    turns_after_redirect: u32,
+    asks_on_its_second_life: Option<&std::path::Path>,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     // ⚠ `27` is Escape's byte, and `0` is a byte no key sends — so the un-dismissable peer is the
     // SAME program waiting for something that never arrives, rather than a different fixture whose
     // difference a reader has to take on trust.
     let breaks_on = if takes_the_key { "27" } else { "0" };
+    // ⚠ EMPTY means *there is no second life to behave differently in*, so the guard below is false
+    // for every existing caller and the peer is exactly what it was.
+    let once = asks_on_its_second_life
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
     let script = "\
-stty -echo; printf 'AGENT-READY\\n'; asked=0; k=''; \
+LIVES='ONCE_MARKER'; \
+if [ -n \"$LIVES\" ] && [ -e \"$LIVES\" ]; then \
+  stty -echo; \
+  i=0; while [ $i -lt 6 ]; do printf 'starting up\\n'; i=$((i+1)); done; \
+  printf 'Choose an approach\\n'; \
+  printf 'Which way should I build this?\\n'; \
+  printf '\\342\\235\\257 1. The quick one\\n'; \
+  printf '  2. The thorough one\\n'; \
+  exec cat; \
+fi; \
+[ -z \"$LIVES\" ] || : > \"$LIVES\"; \
+stty -echo; printf 'AGENT-READY\\n'; asked=0; n=0; s=0; k=''; \
 readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
 while read line; do \
   printf '%s\\n' \"$line\"; \
   if [ $asked -eq 1 ]; then \
-    asked=2; printf 'MILESTONE REACHED\\n'; continue; \
+    asked=2; printf 'ACK took the redirect\\n'; bump; continue; \
   fi; \
   case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
   if [ $asked -eq 0 ]; then \
@@ -964,17 +1104,33 @@ while read line; do \
     done; \
     stty icanon; \
     asked=1; \
-    printf '\\033[2J\\033[H'; printf 'ACK rejected the choice\\n'; \
+    printf '\\033[2J\\033[H'; printf 'ACK rejected the choice\\n'; bump; \
     continue; \
   fi; \
-  printf 'MILESTONE REACHED\\n'; \
+  n=$((n+1)); \
+  if [ $n -ge TURNS_AFTER ]; then printf 'MILESTONE REACHED\\n'; \
+  else printf 'ACK %s\\n' \"$n\"; fi; \
+  bump; \
 done"
-        .replace("BREAKS_ON", breaks_on);
+        .replace("BREAKS_ON", breaks_on)
+        .replace("TURNS_AFTER", &turns_after_redirect.to_string())
+        .replace("ONCE_MARKER", &once);
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
         command.arg(script);
         command.env("TERM", "dumb");
+        // ⚠⚠⚠ A WORKING DIRECTORY THAT IS NOT THE TEST PROCESS'S, and it is load-bearing rather than
+        // tidy. This peer is the one a session REPLACEMENT is measured on, and the claim there is
+        // that the fresh pane runs in the SAME directory — which `PaneLifecycle::respawn` reads off
+        // the pane it is replacing. Spawned in the runner's own directory, that claim is satisfied by
+        // a `respawn` that passes NO directory at all, because an unset cwd is inherited and the two
+        // answers are the same string. **Measured: the mutation that dropped the cwd left the gate
+        // green.** R349's rule — a fixture that fits proves nothing about an anchor; make the two
+        // behaviours disagree.
+        //
+        // ⚠ `/` because it exists on every host this suite runs on and is never a build directory.
+        command.cwd("/");
         workspace
             .lock()
             .unwrap()
@@ -1014,19 +1170,15 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
     const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
     let source = {
         let workspace = Arc::clone(workspace);
-        let high = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let high: SeqHighWater = Arc::default();
         let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
         Arc::new(move |id: PaneId| {
-            let text = WorkspacePaneAccess::new(Arc::clone(&workspace))
-                .pane_collapsed(id)
+            let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_full_lines(id)
                 .unwrap_or_default();
-            // ⚠ HELD MONOTONIC BY HAND, `supervised`'s measured rule: the count is read off the
-            // COLLAPSED screen, so a pane that has scrolled would make it go DOWN — and
-            // `seq > began_at` can never be satisfied again by a number that shrank.
-            let answers = (text.matches("ACK").count() + text.matches("MILESTONE").count()) as u64;
-            let seq = high
-                .fetch_max(answers, std::sync::atomic::Ordering::SeqCst)
-                .max(answers);
+            // ⚠⚠ THE PEER'S OWN COUNTER, not a count of its words, latched per PANE — see
+            // [`peer_seq`] for the two walks that measured both halves of that.
+            let seq = latched(&high, id, &rows);
             let guard = workspace.lock().expect("the workspace mutex");
             guard.pane(id)?.pty().with_screen(|screen| {
                 let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
@@ -1041,7 +1193,9 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     } else {
                         AgentState::Idle
                     },
-                    agent: Some("claude".to_string()),
+                    // ⚠⚠⚠ ONLY ONCE THE PANE HAS PAINTED — see [`has_painted`]. A blank pane naming
+                    // an agent is a barrier that comes down before the program exists.
+                    agent: has_painted(&rows).then(|| "claude".to_string()),
                     authority: Authority::Scraped {
                         rule: Some("dialog-choice-list".to_string()),
                     },
@@ -1070,28 +1224,26 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
 /// peer's rest from BEFORE a turn reading as its answer. A driver that dropped the arming would
 /// end every turn instantly against this fixture, and the gate would say so.
 ///
-/// ⚠⚠⚠ **AND IT IS HELD MONOTONIC BY HAND, WHICH THE SECOND STALL OF THAT GATE PAID FOR.**
-/// The count is read off the COLLAPSED SCREEN, so it is a claim about the terminal's SIZE as
-/// much as about the peer: once the pane had scrolled, `ACK 1` left the grid and the count went
-/// DOWN — and `seq > began_at` can never be satisfied again by a number that shrank. R375
-/// recorded exactly this trap about counting from a screen; a real detector's `seq` never
-/// decreases while the pane lives, and this is what makes the stand-in honest about that.
+/// ⚠⚠⚠ **AND IT IS THE PEER'S OWN COUNTER, WHICH THE THIRD STALL OF THAT GATE PAID FOR** — see
+/// [`peer_seq`], which carries the walk. Counting the peer's WORDS on the collapsed screen was a
+/// claim about the terminal's SIZE as much as about the peer, and holding that count monotone (which
+/// this fixture did, for two rounds, with a doc explaining why) stops it shrinking without making it
+/// GROW: past the first scroll the high-water mark was final and **no further turn could end**.
+/// R375 recorded the shrinking half of this trap; the half that cost a round is the ceiling.
 pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
     let source = {
         let workspace = Arc::clone(workspace);
-        let high = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let high: SeqHighWater = Arc::default();
         Arc::new(move |id: PaneId| {
-            let screen = WorkspacePaneAccess::new(Arc::clone(&workspace))
-                .pane_collapsed(id)
+            let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_full_lines(id)
                 .unwrap_or_default();
-            let answers =
-                (screen.matches("ACK").count() + screen.matches("MILESTONE").count()) as u64;
-            let seq = high
-                .fetch_max(answers, std::sync::atomic::Ordering::SeqCst)
-                .max(answers);
+            let seq = latched(&high, id, &rows);
             Some(crate::access::AgentObservation {
                 state: AgentState::Idle,
-                agent: Some("claude".to_string()),
+                // ⚠⚠ ONLY ONCE THE PANE HAS PAINTED — see [`has_painted`], and the same reason as its
+                // sibling above: `Settles` names an agent, and a blank pane must not.
+                agent: has_painted(&rows).then(|| "claude".to_string()),
                 authority: crate::access::Authority::Reported {
                     source: "test".to_string(),
                 },

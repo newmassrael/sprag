@@ -635,6 +635,17 @@ pub trait PaneAccess {
     fn job_control(&self) -> Option<&dyn PaneJobControl> {
         None
     }
+
+    /// The pane's *launch directory* — WHERE its child was spawned — if this host kept it. `None`
+    /// by default, on the same terms as the other sub-surfaces.
+    ///
+    /// ⚠ A `None` here is *"this build cannot say where that program was started"*, and the safe
+    /// degradation is to answer nothing rather than to guess: every consumer of this uses it to
+    /// FIND a file that belongs to that child, and a wrong directory does not fail — it silently
+    /// reads somebody else's.
+    fn launch_dir(&self) -> Option<&dyn PaneLaunchDir> {
+        None
+    }
 }
 
 /// Pane *output stream*: the complete logical lines a pane has produced, addressed by a number
@@ -832,6 +843,28 @@ pub trait PaneHands {
     fn pane_hands(&self, id: PaneId) -> Option<Hands>;
 }
 
+/// WHERE a pane's child was launched. Reached via [`PaneAccess::launch_dir`].
+///
+/// # ⚠⚠ Why this is its own capability and not a field on anything
+///
+/// It is the only thing a plugin needs in order to find files an agent CLI writes ABOUT ITSELF
+/// somewhere else on disk — a transcript, a session log, a cost record. Those files are keyed by the
+/// directory the tool was started in, not by anything sprag hands out, so without this the pane and
+/// the record it produces cannot be connected at all.
+///
+/// # ⚠⚠⚠ IT IS THE LAUNCH DIRECTORY AND NOT THE CURRENT ONE, AND THE DIFFERENCE IS THE WHOLE POINT
+///
+/// A program may `chdir` as it works; an agent doing a task in a subdirectory does exactly that.
+/// **The record stays keyed by where the program STARTED.** Answering with the live cwd would drift
+/// away from the file mid-run and find nothing — or worse, find a different session's. So this
+/// deliberately answers the spawn-time value, which is also the value
+/// [`PaneLifecycle::respawn`] already reuses to put a replacement back where its predecessor was.
+pub trait PaneLaunchDir {
+    /// The directory `id`'s child was spawned in, or `None` for a pane nobody knows — and also
+    /// `None` for a pane spawned with no directory of its own, which inherited the daemon's.
+    fn pane_launch_dir(&self, id: PaneId) -> Option<std::path::PathBuf>;
+}
+
 /// What a pane's TERMINAL does with what is written into it — the kernel's answers, not guesses.
 /// Reached via [`PaneAccess::terminal_modes`].
 ///
@@ -982,6 +1015,48 @@ pub trait PaneLifecycle {
     /// Close (reap) the pane with `id`, returning whether it existed. The
     /// pane's blocking teardown runs outside any shared lock.
     fn close(&self, id: PaneId) -> bool;
+
+    /// **REPLACE `id` WITH A FRESH PANE RUNNING THE SAME THING, IN THE SAME PLACE** — the same argv,
+    /// the same environment, the same working directory and the same size — answering the new pane's
+    /// [`PaneId`].
+    ///
+    /// # ⚠⚠⚠ Why this takes no argv, where [`spawn`](Self::spawn) does
+    ///
+    /// The caller that needs this is [`AiLoop`](crate::ai_loop::AiLoop)'s `restarting`: the things a
+    /// loop wants to improve about its inner session — the agent's base context, which MCP servers
+    /// load, `CLAUDE.md`, a memory index — are all read when a session STARTS, so a live session
+    /// cannot be asked to re-read them and the loop closes it and opens a fresh one.
+    ///
+    /// A `respawn(id, argv)` would make the loop the authority on what its pane runs, and it is not:
+    /// the pane was opened by somebody else, possibly with arguments nobody passed this run
+    /// (`claude --model …`), in a working directory that is the whole point of the work. **The pane
+    /// itself is the only authority on what it is running**, and this asks it. A loop that supplied
+    /// an agent NAME instead would silently restart `claude` where a person had launched
+    /// `claude --resume`, or in the daemon's directory rather than the repository.
+    ///
+    /// # ⚠⚠ The order, which is a promise: the new pane exists BEFORE the old one is closed
+    ///
+    /// A spawn can fail — a program that has been uninstalled, a full process table. Closing first
+    /// would leave a run with no pane at all and nothing to report it against; this way a failed
+    /// replacement leaves the caller exactly where it was, holding a pane it can still read.
+    ///
+    /// # ⚠⚠ What it does NOT carry, stated because each one matters to somebody
+    ///
+    /// * the new pane's POSITION in a window's layout — it arrives wherever a newly spawned pane
+    ///   arrives, so a person watching sees the session they were reading appear somewhere else;
+    /// * the pane's resource `grant`, its `name`, and its `opened_by` PROVENANCE. The last is the
+    ///   sharpest: a replacement is a pane NOBODY CLAIMS, so an agent surface that refuses to close
+    ///   panes its caller did not open will refuse the run's own inner session to the agent that
+    ///   started it.
+    ///
+    /// The four things it does carry are what make it *the same command*; these are what would make it
+    /// *the same pane to everybody else*, and they are registered rather than guessed at.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::Spawn`] when there is no such pane, when it has no argv to re-run (a pane
+    /// restored from a snapshot older than argv capture), or when the fresh pane cannot start.
+    fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError>;
 }
 
 /// Pane *raw-output* capture: the child's **source** bytes, before the emulator
@@ -1280,8 +1355,22 @@ impl PaneRawCapture for WorkspacePaneAccess {
     }
 }
 
-impl PaneLifecycle for WorkspacePaneAccess {
-    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError> {
+impl WorkspacePaneAccess {
+    /// Spawn `argv` at `cols × rows`, in `cwd` when one is given — the body both
+    /// [`spawn`](PaneLifecycle::spawn) and [`respawn`](PaneLifecycle::respawn) are, so a replacement
+    /// pane is wired to the daemon's hooks exactly as a first one is.
+    ///
+    /// ⚠ ONE BODY AND NOT TWO, for the reason this crate keeps re-deriving: the interesting content
+    /// here is the three opaque birth hooks, and a second copy of them is a second place for a
+    /// plugin-spawned pane to stop feeding the reaper.
+    fn spawn_in(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        env: &[(std::ffi::OsString, std::ffi::OsString)],
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError> {
         let (program, rest) = argv
             .split_first()
             .ok_or_else(|| PaneError::Spawn("empty argv".to_string()))?;
@@ -1289,9 +1378,24 @@ impl PaneLifecycle for WorkspacePaneAccess {
         for arg in rest {
             command.arg(arg.as_str());
         }
+        if let Some(cwd) = cwd {
+            command.cwd(cwd);
+        }
         // The emulator parses (and strips) escape sequences, so captured cell
         // text stays clean regardless of TERM; match the host's spawn default.
         command.env("TERM", "xterm-256color");
+        // ⚠⚠⚠ AND WHATEVER THE PANE BEING REPLACED WAS LAUNCHED WITH — after the default above, so a
+        // recorded `TERM` wins over it and a caller who set none still gets one.
+        //
+        // A replacement that carried only the argv would be the same PROGRAM in a different WORLD, and
+        // the live measurement in `sprag_host::live_agent` is what makes that concrete: it blanks nine
+        // `CLAUDE_CODE_*` variables so the child is what a person gets from a terminal rather than a
+        // NESTED agent session. A restart that dropped them would hand the replacement a mode only
+        // that harness can produce, silently, and every reading after it would be of a different
+        // program.
+        for (key, value) in env {
+            command.env(key, value);
+        }
         // Carry the daemon's death-signal (if any) so a plugin-spawned pane feeds the reaper
         // exactly like a boot/mux one — the opaque hook is just a channel send, so this
         // registry-free layer wires it without learning what it does.
@@ -1313,6 +1417,49 @@ impl PaneLifecycle for WorkspacePaneAccess {
         lock(&self.workspace)
             .spawn_with_dirty(command, program.clone(), cols, rows, hooks)
             .map_err(|e| PaneError::Spawn(e.to_string()))
+    }
+}
+
+impl PaneLifecycle for WorkspacePaneAccess {
+    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError> {
+        // ⚠ NO WORKING DIRECTORY AND NO ENVIRONMENT, which is what this door has always meant: a
+        // plugin spawning a one-shot tool has no opinion about either, and takes the daemon's.
+        // `respawn` is the caller that does have one, and it reads both off the pane rather than being
+        // told.
+        self.spawn_in(argv, None, &[], cols, rows)
+    }
+
+    fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError> {
+        // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_in` takes the workspace lock itself, and this
+        // crate's standing rule is that no lock is held across a syscall — a pty spawn most of all.
+        let (argv, env, cwd, (cols, rows)) = {
+            let guard = lock(&self.workspace);
+            let pane = guard
+                .pane(id)
+                .ok_or_else(|| PaneError::Spawn(format!("no pane {} to replace", id.0)))?;
+            (
+                pane.argv().to_vec(),
+                pane.env().to_vec(),
+                pane.pty().cwd(),
+                pane.pty().dimensions(),
+            )
+        };
+        if argv.is_empty() {
+            // ⚠ A REAL CASE AND NOT A DEFENSIVE ONE: `Pane::argv` is empty for a pane restored from
+            // a snapshot taken before argv capture existed. Saying so beats spawning something
+            // invented, which is what a fallback to a shell would be for a caller that is trying to
+            // replace an AGENT session.
+            return Err(PaneError::Spawn(format!(
+                "pane {} has no recorded command to re-run, so it cannot be replaced",
+                id.0
+            )));
+        }
+        let fresh = self.spawn_in(&argv, cwd.as_deref(), &env, cols, rows)?;
+        // ⚠ The old pane goes only once the new one is up — see the trait's doc. Its answer is
+        // deliberately ignored: it existed a moment ago (it was read above), and a caller holding a
+        // fresh pane has nothing to do differently if the reap raced somebody else's close.
+        let _ = <Self as PaneLifecycle>::close(self, id);
+        Ok(fresh)
     }
 
     fn close(&self, id: PaneId) -> bool {
@@ -1787,6 +1934,117 @@ mod tests {
         assert!(life.close(id), "close reports the pane existed");
         assert!(lock(&workspace).pane(id).is_none(), "pane should be gone");
         assert!(!life.close(id), "closing again reports absence");
+    }
+
+    /// ⚠⚠⚠ **A REPLACEMENT PANE IS THE SAME COMMAND IN THE SAME WORLD** —
+    /// [`PaneLifecycle::respawn`], and the four facts a session replacement has to carry.
+    ///
+    /// # ⚠⚠⚠ Why the ENVIRONMENT is asserted through the child rather than by reading the pane back
+    ///
+    /// Comparing `Pane::env` before and after would compare two copies of the same `Vec` and pass on a
+    /// `respawn` that recorded the entries and never PASSED them to the spawn. So the peer prints what
+    /// it was given, and the assertion is what a program inside the fresh pane can see.
+    ///
+    /// It matters because of what it is for: `sprag_host::live_agent` blanks nine `CLAUDE_CODE_*`
+    /// variables so its child is what a person gets from a terminal rather than a NESTED agent
+    /// session, and a restart that dropped them would hand the replacement a mode only that harness
+    /// can produce — silently, with every later reading being of a different program.
+    ///
+    /// ⚠ The cwd is asserted the same way and for the same reason, and it is the one this test can
+    /// choose freely: `/` is never where a test runner stands, so *carried* and *defaulted* are
+    /// different answers. See the same rule in `sprag_plugin::testing::standin_agent_refusing`, where
+    /// a mutation went green until the fixture stopped agreeing with the default by accident.
+    #[test]
+    fn a_respawned_pane_is_the_same_command_in_the_same_world() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((37, 9))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // Everything the replacement has to reproduce, printed by the child itself.
+            command.arg("printf 'MARK %s %s\\n' \"$SPRAG_RESPAWN_PROBE\" \"$(pwd)\"; exec cat");
+            command.env("SPRAG_RESPAWN_PROBE", "carried");
+            command.env("TERM", "dumb");
+            command.cwd("/");
+            lock(&workspace)
+                .spawn(command, "sh".to_string(), 37, 9)
+                .expect("spawn the pane to be replaced")
+        };
+        let settled = |id: PaneId| {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(5)
+                && !WorkspacePaneAccess::new(Arc::clone(&workspace))
+                    .pane_collapsed(id)
+                    .is_some_and(|text| text.contains("MARK "))
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_collapsed(id)
+                .unwrap_or_default()
+        };
+        assert!(
+            settled(pane).contains("MARK carried /"),
+            "⚠ the control: the ORIGINAL pane must show what it was launched with, or the comparison \
+             below is against a fixture that never worked: {:?}",
+            settled(pane),
+        );
+
+        let life = access
+            .lifecycle()
+            .expect("workspace access exposes lifecycle");
+        let fresh = life.respawn(pane).expect("a live pane can be replaced");
+        let shown = settled(fresh);
+        let (argv, size) = {
+            let guard = lock(&workspace);
+            let new = guard
+                .pane(fresh)
+                .expect("the replacement is in the workspace");
+            (new.argv().to_vec(), new.pty().dimensions())
+        };
+
+        assert_ne!(fresh, pane, "a replacement is a NEW pane");
+        assert!(
+            lock(&workspace).pane(pane).is_none(),
+            "⚠⚠⚠ and the pane it replaced is CLOSED — a replacement that left the old child running \
+             leaves two programs where the caller asked for one",
+        );
+        assert!(
+            shown.contains("MARK carried /"),
+            "⚠⚠⚠ THE CHILD ITSELF MUST SEE the launcher's variable and the launcher's directory. \
+             `MARK  /home/…` means the environment was dropped; `MARK carried /home/…` means the cwd \
+             was. Shown: {shown:?}",
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf 'MARK %s %s\\n' \"$SPRAG_RESPAWN_PROBE\" \"$(pwd)\"; exec cat".to_string(),
+            ],
+            "and the same argv, which is the only one of the four the pane can be asked for directly",
+        );
+        assert_eq!(size, (37, 9), "and the same size");
+        assert!(
+            life.close(fresh),
+            "the pane this gate opened was there to close"
+        );
+    }
+
+    /// A pane that has gone cannot be replaced, and the refusal names it — the arm a loop meets when
+    /// somebody closed its inner session by hand between two pumps.
+    #[test]
+    fn a_pane_that_is_gone_cannot_be_replaced() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let life = access.lifecycle().expect("lifecycle");
+        match life.respawn(PaneId(4242)) {
+            Err(PaneError::Spawn(why)) => assert!(
+                why.contains("4242") && why.contains("replace"),
+                "the refusal must name the pane and what was being attempted: {why:?}",
+            ),
+            other => panic!("a pane nobody has cannot be replaced: {other:?}"),
+        }
     }
 
     #[test]

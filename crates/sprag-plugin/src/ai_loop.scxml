@@ -252,8 +252,79 @@
               text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' }
           ]"/>
 
-    <!-- Budgets. `max_turns` bounds the run; `reflect_every` sets how often
-         the loop stops to improve itself. -->
+    <!--
+      ⚠⚠⚠ HOW A STANDING INSTRUCTION IS INTRODUCED once it has been carried out,
+      and this prose is AUTHORED for the same reason the rules' own `text` is: it
+      is said to somebody's agent, in somebody's language, and the driver must
+      never be the thing that writes words into a prompt.
+
+      A rule fires ONCE — `screening` refuses the call, types the instruction and
+      the turn carries on — and until this existed that was the whole of its
+      life. R384's live agent measured what that costs, in its own words:
+
+          "the loop is re-issuing the original milestone, but your last direct
+           instruction was to not create that file … 루프가 매 턴 같은 요청을
+           반복하고 저는 매 턴 같은 이유로 거절하게 되므로, 진전이 없습니다."
+
+      Measured offline as two numbers on a six-turn run: the instruction reached
+      the pane ONCE and the milestone it overrides was asked for SIX times. So an
+      instruction that has to STICK has to reach every later prompt, which means
+      it has to be one of the PARTS the prompts are composed from — and the
+      composition happens in `priming`, so adopting one is a session
+      replacement. That is what `reflecting` and `restarting` are for.
+    -->
+    <data id="standing_label"
+          expr="'A standing instruction you have already been given, which overrides the milestone wherever the two conflict: '"/>
+
+    <!--
+      Budgets. `max_turns` bounds the run; `reflect_every` sets how often
+      the loop stops to improve itself.
+
+      ⚠⚠⚠ BOTH ARE COUNTS OF TURNS, AND A TURN IS NOT A UNIT OF ANYTHING THE
+      BILL IS DENOMINATED IN. Measured over 39 local sessions: what one billed
+      request adds to the agent's context is 861 tokens at the median, 2,989 at
+      p90, 10,402 at p99 and 633,749 at the maximum. A `date` invocation and a
+      3,000-line file read are both one turn.
+
+      * `max_turns` IS NOT A COST CEILING. It is honestly named — it bounds
+        turns — and `Ceiling::Turns` says so. But two runs both ending
+        `exhausted, 40 of 40` are not comparable on spend, because cost tracks
+        accumulated context and context per turn spans three orders of
+        magnitude. A caller who wants a budget wants a different ceiling, and
+        this loop does not offer one.
+
+      * `reflect_every` IS ALSO A COST KNOB, WHICH IS NOT WHY IT IS HERE.
+        `reflecting` exits through `restarting`, which throws the accumulated
+        context away and pays a cold start to rebuild the fixed prefix. Whether
+        that trade wins depends on how much there was to throw away:
+        `claudedocs/INSIGHT-RESTART-COST-CURVE.md` measured a restart paying for
+        itself only above roughly 15,000-21,000 tokens of discardable context,
+        and measured this default losing by 11.4% on its workload.
+
+        ⚠ THAT RESULT DOES NOT SETTLE THE DEFAULT, and the reason is worth
+        writing down rather than rounding off. The experiment's task accumulated
+        755 tokens per turn; real sessions in this repo accumulate 1,745. At the
+        real rate eight turns discard about 14,000 — ON the threshold, not far
+        under it. So the sign of the trade at `reflect_every = 8` is UNMEASURED
+        for real work, and 16 or 24 would clear the threshold outright.
+
+      ⚠⚠ SO DO NOT TUNE EITHER NUMBER ON COST ALONE. What `reflect_every` is
+      actually for is how often the loop gets to improve its own setup, and
+      whether eight turns is the right cadence FOR THAT has never been measured
+      at all. Changing it to save money would trade a measured axis against an
+      unmeasured one.
+
+      ⚠⚠⚠ AND IF A RESTART POLICY IS EVER WRITTEN, IT MUST NOT READ THESE
+      COUNTERS. Predicting context from turn count is off by 19% at the median,
+      63% at p90 and 30x at worst — against a 15-21k threshold, an eight-turn
+      estimate carries a band that straddles the entire decision. The exact
+      quantity is reported on every billed request as `cache_read_input_tokens`,
+      and an interactive inner session writes it to
+      `~/.claude/projects/<cwd-slug>/<session>.jsonl` even though it publishes
+      no structured JSON result envelope for `reply.rs` to read (that is print
+      mode's `output-format json`, which this loop forbids). Nothing needs to be
+      instrumented; the number is already being written down.
+    -->
     <data id="max_turns" expr="40"/>
     <data id="reflect_every" expr="8"/>
 
@@ -270,6 +341,41 @@
          claim nothing would have counted every question it declined to
          answer. -->
     <data id="screened" expr="0"/>
+    <!--
+      ⚠⚠⚠ THE STANDING INSTRUCTIONS THIS RUN HAS CARRIED OUT, one labelled line
+      each, accumulated on `screen.matched` and composed into both working
+      prompts by `priming`.
+
+      It is BOOKKEEPING and not authored: the words are the author's (the rule's
+      own `text`, behind the author's own `standing_label`), and what this
+      variable holds is which of them have actually happened. A person editing
+      this file has nothing to say here.
+
+      ⚠ The label is repeated per line rather than written once above the list,
+      and that is deliberate: making it a heading would need this composition to
+      know whether the list is EMPTY, and a conditional in executable content is
+      a construct this document has never been measured with. A self-describing
+      line costs a few words and needs no `<if>`.
+
+      ⚠⚠ IT HAS NO CEILING, and that is stated rather than capped. Each DISTINCT
+      instruction adds one line to every prompt the loop sends for the rest of
+      the run (repeats are dropped — the driver normalises at every reflection),
+      so a long run whose agent asks about many different things pays for all of
+      them on every turn. What the right bound would be is a question about
+      somebody else's work — the oldest instruction is not obviously the least
+      important — so nothing here guesses at one.
+    -->
+    <data id="standing" expr="''"/>
+    <!--
+      ⚠⚠ How many screened calls the loop has already ADOPTED — the value
+      `screened` had at the last reflection.
+
+      `judging` compares the two, so a standing instruction that fired is
+      reflected on at the very next judgement rather than waiting out
+      `reflect_every`. Without it the loop asks for the original milestone again
+      on the turn straight after being told not to, which is the defect above.
+    -->
+    <data id="screened_carried" expr="0"/>
   </datamodel>
 
   <state id="idle">
@@ -365,14 +471,29 @@
       <assign location="done_instruction"
               expr="'When the milestone is fully reached AND verified, make the last line of your ' +
                     'reply exactly: ' + done_marker"/>
+      <!--
+        ⚠⚠⚠ `standing` IS COMPOSED INTO BOTH WORKING PROMPTS, and it is what makes
+        a standing instruction outlive the turn it was given in. It holds its own
+        line terminators and is EMPTY until a rule has fired, so a loop that has
+        never been screened composes exactly the text it always did — which is
+        why no conditional is needed here.
+
+        ⚠ It goes into `start_prompt` too, and that is the half that matters most:
+        `start_prompt` is what a FRESH session is greeted with after a restart,
+        and a fresh agent remembers nothing of having been redirected. A loop
+        that carried its instructions only in `turn_prompt` would hand its
+        replacement a clean slate and the original milestone.
+      -->
       <assign location="start_prompt"
               expr="'North star: ' + north_star + '\n' +
                     'Milestone: ' + milestone + '\n' +
                     'Reference: ' + reference + '\n' +
+                    standing +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
       <assign location="turn_prompt"
               expr="'Continue toward: ' + milestone + '\n' +
+                    standing +
                     'Do the next smallest thing that is verifiable, then report.' + '\n' +
                     done_instruction"/>
       <send event="prompt.start"/>
@@ -427,6 +548,14 @@
     -->
     <transition event="screen.matched" target="working">
       <assign location="screened" expr="screened + 1"/>
+      <!--
+        ⚠⚠⚠ AND THE INSTRUCTION IS REMEMBERED, not only said. The driver carries
+        the rule's own `text` on this event; keeping it is what lets `priming`
+        compose it into every later prompt once `reflecting` has adopted it. See
+        `standing`.
+      -->
+      <assign location="standing"
+              expr="standing + standing_label + _event.data.text + '\n'"/>
     </transition>
     <!--
       NO STANDING INSTRUCTION GOT THE RUN PAST THIS ONE. The person decides.
@@ -505,6 +634,26 @@
   <state id="judging">
     <transition event="judge" cond="_event.data.done" target="closing"/>
     <transition event="judge" cond="turns &gt;= max_turns" target="exhausted"/>
+    <!--
+      ⚠⚠⚠ A STANDING INSTRUCTION HAS FIRED THAT THE PROMPTS DO NOT YET CARRY, so
+      reflect NOW rather than at the next multiple of `reflect_every`.
+
+      This is not a budget; it is a correctness edge. `screening` refuses a call
+      and says what to do instead, and the very next `turn_prompt` asks for the
+      original milestone again — measured on a six-turn run as ONE instruction
+      against SIX re-issues, with a live agent reporting the deadlock in words.
+      Adopting the instruction means composing it into the prompts, which happens
+      in `priming`, which is reached only through a restart.
+
+      ⚠ A SEPARATE TRANSITION from the budget one rather than an `or` in its
+      guard, because they are different reasons and a reader of this document
+      should meet them separately. ⚠⚠ WHAT THAT DOES NOT BUY: a run's TRACE
+      cannot tell them apart — both raise `judge` and land in `reflecting`, so
+      the walk reads identically either way. Which one fired is not published
+      anywhere, and saying so here is cheaper than a comment that implies it is.
+      The order is therefore for the reader, not for the machine.
+    -->
+    <transition event="judge" cond="screened &gt; screened_carried" target="reflecting"/>
     <transition event="judge" cond="turns_since_reflect &gt;= reflect_every" target="reflecting"/>
     <transition event="judge" target="working">
       <send event="prompt.turn"/>
@@ -523,6 +672,14 @@
   <state id="reflecting">
     <onentry>
       <assign location="turns_since_reflect" expr="0"/>
+      <!--
+        ⚠⚠ BOTH REASONS TO BE HERE ARE CLEARED ON ENTRY, not on the way out. A
+        reflection that finds nothing worth changing answers `reflect.none` and
+        goes back to work, and if this only moved on `reflect.applied` that run
+        would be sent straight back here by the same guard on the next
+        judgement — for ever, having judged no further turn.
+      -->
+      <assign location="screened_carried" expr="screened"/>
       <send event="reflect.begin"/>
     </onentry>
     <!--
@@ -545,9 +702,22 @@
     <transition event="reflect.applied" target="restarting">
       <assign location="milestone" expr="_event.data.milestone"/>
       <assign location="reference" expr="_event.data.reference"/>
+      <assign location="standing" expr="_event.data.standing"/>
     </transition>
-    <!-- Nothing worth changing: carry on without paying for a restart. -->
+    <!--
+      Nothing worth changing: carry on without paying for a restart.
+
+      ⚠⚠⚠ IT STILL ADOPTS THE STANDING LIST, and that is what keeps this state
+      from growing one. `screen.matched` APPENDS, so an agent that asks the same
+      thing twice puts the same line in twice — and reflection is where the list
+      is normalised, on BOTH ways out. Assigning it only on `reflect.applied`
+      would leave duplicates behind on every reflection that changed nothing,
+      and each duplicate is a `standing` the prompts do not carry, which is a
+      restart. **A run whose agent kept asking the same question would replace
+      its session every time.**
+    -->
     <transition event="reflect.none" target="working">
+      <assign location="standing" expr="_event.data.standing"/>
       <send event="prompt.turn"/>
     </transition>
     <transition event="fail" target="failed"/>
@@ -562,8 +732,37 @@
     <onentry>
       <send event="session.replace"/>
     </onentry>
-    <transition event="session.ready" target="priming"/>
+    <!--
+      ⚠⚠⚠ THE REPLACEMENT AND THE WAIT ARE TWO STATES, and the reason is this
+      document's own rule that the machine instructs its driver THROUGH ITS
+      STATE.
+
+      Replacing a pane happens ONCE; waiting for the agent inside the fresh one
+      to come up takes as many looks as it takes. Written as one state, the
+      driver would have to remember whether it had already done the replacing —
+      and a driver that gets that wrong opens a pane per pump, which is a run
+      that spawns agent processes without limit. Nothing about the document
+      would have said it was wrong.
+
+      So arriving here means REPLACE, and arriving at `resuming` means WAIT.
+      Neither the driver nor a reader of the trace has to infer which half a run
+      is in.
+    -->
+    <transition event="session.replaced" target="resuming"/>
     <!-- A session that will not come back is a failed run, not a stuck one. -->
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    A fresh inner session exists and its agent is starting. Nothing is typed
+    until it is up: a prompt into a pane whose agent has existed for ten
+    milliseconds is echoed by the terminal's own line discipline and read back
+    as delivered, which is measured and is what `idle`'s barrier exists for.
+    This is that same barrier, on the pane that replaced the old one.
+  -->
+  <state id="resuming">
+    <transition event="session.ready" target="priming"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
   </state>

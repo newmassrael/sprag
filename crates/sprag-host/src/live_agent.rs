@@ -47,7 +47,7 @@ use sprag_plugin::{
     Attended, Completion, Delivered, Delivery, DoneWhen, KeyStroke, Over, PaneAccess, Reached,
     Readiness, ReadyWhen, RunContext, deliver,
 };
-use sprag_terminal::{CommandBuilder, PaneId, Workspace};
+use sprag_terminal::{CommandBuilder, Pane, PaneId, Workspace};
 
 use crate::plugins::agent_state_source;
 
@@ -249,11 +249,16 @@ impl Drop for Live {
         // The agent is a long-lived process; nothing else in this test reaps it. ⚠ The answer is
         // deliberately dropped rather than asserted: this runs while a failing assertion is
         // unwinding, and a panic here would replace that gate's message with this one's.
-        let _closed = self
-            .workspace
-            .lock()
-            .expect("the workspace mutex")
-            .close(self.pane);
+        //
+        // ⚠⚠⚠ EVERY PANE IN THE WORKSPACE, and not `self.pane`. A loop that REFLECTS closes its inner
+        // session and opens a fresh one, so the pane this struct was built around is not the one the
+        // run ended on — and a `Drop` that named only it would leave a live agent CLI running with
+        // nobody's hand on it, once per gate, for as long as the machine is up.
+        let mut guard = self.workspace.lock().expect("the workspace mutex");
+        let live: Vec<PaneId> = guard.panes().iter().map(Pane::id).collect();
+        for pane in live {
+            let _closed = guard.close(pane);
+        }
     }
 }
 
@@ -1049,7 +1054,20 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
     /// Room for the tool turn, the screening, the redirected turn and the closing report.
     const LIVE_MAX_TURNS: i64 = 4;
     /// A name nothing else would produce — so if it appears, this run allowed it.
-    const REFUSED: &str = "SPRAG-LOOP-MUST-NOT-MAKE-THIS.txt";
+    ///
+    /// ⚠⚠⚠ **AND IT MUST NOT ARGUE WITH THE AGENT**, which the session-replacement gate below measured
+    /// the hard way. This constant used to read `SPRAG-LOOP-MUST-NOT-MAKE-THIS.txt`, and a live claude
+    /// declined to attempt it AT ALL — not by asking permission, but by reasoning about the NAME:
+    ///
+    /// > *"If this arrived via a /loop or scheduled agent carrying instructions from a prior session,
+    /// > that's worth checking — that's the scenario the filename appears designed to catch. No files
+    /// > were created or modified."*
+    ///
+    /// So the run raised no dialog, nothing was screened, and the gate measured nothing — while its
+    /// green twin had measured a dialog the day before. **A fixture whose NAME is an argument is a
+    /// fixture that decides its own result**, and the name that reads as a tripwire is the one an agent
+    /// resisting prompt injection is right to refuse. Neutral, distinctive, and it says nothing.
+    const REFUSED: &str = "LOOP-OUTPUT.txt";
     /// The author's standing instruction, in the author's own language.
     ///
     /// ⚠ It names the done marker because the loop's own `done_instruction` is in the PROMPT, and a
@@ -1202,6 +1220,292 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
             .any(|note| note.contains("refused the peer's call")),
         "⚠⚠ and the run's JOURNAL must carry the refusal in its own words, or a person auditing \
          this run finds a converged loop and no record of what it turned down: {walked:?}",
+    );
+}
+
+/// ⚠⚠⚠ **A LIVE LOOP REPLACES ITS AGENT'S SESSION AND TELLS THE REPLACEMENT WHAT IT LEARNED** —
+/// register items 6 and 148, against the real thing.
+///
+/// # ⚠⚠⚠ What no gate in this workspace could say before this one
+///
+/// `reflecting` and `restarting` were the last two states of `ai_loop.scxml` that no driver served.
+/// What they are for is the only thing that lets ONE RUN outlive ONE AGENT'S CONTEXT: the parts a loop
+/// would want to improve about its inner session — the agent's base context, which MCP servers load,
+/// `CLAUDE.md`, a memory index — are all read when a session STARTS, so a live session cannot be asked
+/// to re-read them. The loop closes it and opens a fresh one.
+///
+/// Offline gates prove the walk, the pane, the argv, the directory and the prompts. What they cannot
+/// prove is the part that matters most: **that a real agent CLI comes back up in the replacement and
+/// carries on toward the same milestone.** A `/bin/sh` stand-in restarts in milliseconds and has no
+/// context to lose.
+///
+/// # The shape, and why the trigger is a standing instruction rather than the budget
+///
+/// A reflection is triggered by `turns_since_reflect >= reflect_every` OR by a standing instruction
+/// having fired since the last one. The budget trigger would reflect and find nothing to change, which
+/// costs no restart — correctly. So this gate uses the other one, which is also register item 148's
+/// own case:
+///
+/// 1. the milestone asks for a FILE, so the agent reaches for a tool and asks permission;
+/// 2. no consent is armed, so the author's `screen_rules` claim the dialog: the call is REFUSED and
+///    the agent is told, in the author's own language, to do something else instead;
+/// 3. that instruction is remembered, the next judgement reflects on it, and the session is REPLACED;
+/// 4. ⚠⚠⚠ **the fresh agent — which never saw the refusal — is greeted with a `start_prompt` carrying
+///    it**, and finishes the work the instruction described.
+///
+/// Step 4 is the whole claim. Before this round the redirect reached the pane once and `turn_prompt`
+/// asked for the original milestone on every turn after it; the live agent of R384 reported the
+/// deadlock in words — *"루프가 매 턴 같은 요청을 반복하고 저는 매 턴 같은 이유로 거절 … 진전이
+/// 없습니다"*.
+///
+/// # ⚠⚠⚠ WHY THIS RUN ENDS `exhausted` AND NOT `converged`, which the FIRST run of this gate is why
+///
+/// The first attempt reused R384's standing instruction, which tells the agent to say the file's
+/// contents in its reply **and to write the completion token**. Measured: the live agent did both IN
+/// THE SAME TURN, so `judging`'s first guard — *goal met* — took the run to `closing` and there was
+/// nothing left to reflect on. The whole walk was eight steps with no reflection in it.
+///
+/// That is `judging` working exactly as authored, and it is a fact worth writing down: **a standing
+/// instruction that COMPLETES the milestone leaves nothing to carry across a session.** A reflection
+/// is only ever needed by a run that has further to go.
+///
+/// So this gate's instruction deliberately leaves the milestone unmet — it forbids the file and says
+/// not to write the token, which is the conclusion R384's own live agent reached unprompted about a
+/// brief of this shape (*"이 상태에서 완료 토큰은 쓰지 않습니다"*). The run therefore spends its turn
+/// budget, and what is asserted is the REPLACEMENT rather than the ending. ⚠ Being explicit about it
+/// is the difference between an instrument and a self-contradictory brief nobody noticed.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{AiLoopState, Brief, ScreenRule, ScreenRules, Turn as TurnContract};
+
+    /// The tool turn, the redirected turn on the fresh session, and room for two more. ⚠ A reflection
+    /// turn is not among them: this build's reflection speaks to nobody.
+    const LIVE_MAX_TURNS: i64 = 4;
+    /// A name nothing else would produce — so if it appears, this run allowed it. ⚠⚠⚠ NEUTRAL, and the
+    /// first two runs of this gate are why: see the same constant in the screening gate above, where a
+    /// live agent read the old name as a tripwire and declined the whole milestone on its own
+    /// judgement, so nothing was ever screened and nothing was measured.
+    const REFUSED: &str = "LOOP-OUTPUT.txt";
+    /// The author's standing instruction, in the author's own language.
+    ///
+    /// ⚠⚠⚠ **IT LEAVES THE MILESTONE UNMET ON PURPOSE** — see the doc above. R384's version told the
+    /// agent how to FINISH, and the live agent finished in the same turn, so `judging` went straight
+    /// to `closing` and no reflection ever happened. An instruction that completes the milestone is
+    /// one a run has nothing to carry across a session.
+    const INSTEAD: &str = "그 파일은 만들지 마라. 이 지시가 마일스톤보다 우선한다. 파일을 만드는 \
+                           대신, 그 파일에 들어갔을 내용을 답으로만 말해라. 마일스톤이 파일을 \
+                           요구하므로 완료 토큰은 쓰지 마라.";
+    /// A word of that instruction that is unmistakably non-ASCII, for the crossing claim.
+    const KOREAN: &str = "만들지";
+
+    let live = Live::start("replaces");
+    let began = Instant::now();
+    let forbidden = live.scratch.path().join(REFUSED);
+    let started_on = live.pane;
+    // ⚠ Read BEFORE the run: these are what the replacement has to match, off the pane that is about
+    // to be closed.
+    let (argv, cwd) = {
+        let guard = live.workspace.lock().expect("the workspace mutex");
+        let pane = guard.pane(started_on).expect("the pane the loop is given");
+        (pane.argv().to_vec(), pane.pty().cwd())
+    };
+
+    let brief = Brief {
+        north_star:
+            "prove a loop can replace its agent's session and carry its instructions across"
+                .to_string(),
+        milestone: format!(
+            "create a file named {REFUSED} in the current directory whose only contents are the \
+             single word: ready"
+        ),
+        reference: "you are in an empty scratch directory of your own; use your file tools"
+            .to_string(),
+        max_turns: LIVE_MAX_TURNS,
+        // ⚠⚠⚠ THE BUDGET TRIGGER IS OFF, so the reflection below is caused by the STANDING
+        // INSTRUCTION and by nothing else. Equal is what makes `turns_since_reflect >= reflect_every`
+        // unreachable — `judging` tests the turn budget first.
+        reflect_every: LIVE_MAX_TURNS,
+        screen_rules: ScreenRules::of(vec![
+            ScreenRule::parse("Do you want to".to_string(), INSTEAD.to_string())
+                .expect("both halves are non-empty"),
+        ]),
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            // ⚠ NO CONSENT: a clause could take the dialog's own `Yes`, the file would be written, and
+            // nothing below would be about screening — or about the reflection screening triggers.
+            may_answer: None,
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 60,
+        max_cost: None,
+        // ⚠ Longer than the other loop gates by a whole agent STARTUP: this run pays for a second
+        // session coming up, which R379 measured at tens of seconds on a cold start. ⚠⚠ And not
+        // longer than that: a peer that goes quiet costs this whole number and says only `Null`
+        // (item 175), so every second here is a second the WORST case takes. Measured: the walk this
+        // gate wants is done inside ninety.
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let held = progress.lock().expect("the progress cell").clone();
+    let walked: Vec<String> = held
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    // ⚠⚠⚠ THE PANE THE RUN ENDED ON, found by asking the WORKSPACE rather than the loop: `driving()`
+    // answers `None` once a run has converged, which is correct (its peer is at rest) and useless
+    // here. Exactly one pane should be left — the replacement.
+    let live_panes = live.access.pane_ids();
+    let ended_on = live_panes.first().copied().unwrap_or(started_on);
+    let typed_fresh = live
+        .access
+        .input_echo()
+        .and_then(|echo| echo.pane_recent_input(ended_on))
+        .unwrap_or_default();
+    let (fresh_argv, fresh_cwd) = {
+        let guard = live.workspace.lock().expect("the workspace mutex");
+        guard.pane(ended_on).map_or((Vec::new(), None), |pane| {
+            (pane.argv().to_vec(), pane.pty().cwd())
+        })
+    };
+
+    // ⚠⚠ PRINTED UNCONDITIONALLY, R378's lesson: what this gate is for is the walk, and a failure
+    // whose message carries the ending but not the screen cannot say why.
+    println!(
+        "\n== a live loop replacing its own inner session ==\n  agent: {}\n  walk: {walked:?}\n  \
+         turns: {:?}\n  iterations: {}\n  calls refused: {}\n  dialogs answered: {}\n  spent: {:?}\n  \
+         through the loop: {:?}\n  started on pane {} and ended on pane {} ({} live)\n  \
+         {REFUSED} exists: {}\n  detector: {}\n  screen of the pane it ended on:\n{}\n",
+        live.agent,
+        loops.turns(),
+        outcome.iterations,
+        held.screened,
+        held.answered,
+        outcome.cost,
+        began.elapsed(),
+        started_on.0,
+        ended_on.0,
+        live_panes.len(),
+        forbidden.exists(),
+        verdict_of(&live.access, ended_on),
+        tail_of(&live.access, ended_on, 24),
+    );
+
+    // ── ⚠⚠⚠ 1. THE SESSION WAS REALLY REPLACED ──
+    for edge in [
+        "Reflecting --ReflectApplied--> Restarting",
+        "Restarting --SessionReplaced--> Resuming",
+        "Resuming --SessionReady--> Priming",
+    ] {
+        assert!(
+            walked.iter().any(|note| note == edge),
+            "⚠⚠⚠ the run must have gone through the replacement as three separate acts — `{edge}` is \
+             missing. Walked {walked:?}",
+        );
+    }
+    assert_ne!(
+        ended_on, started_on,
+        "⚠⚠⚠ and it must have ended on a DIFFERENT pane. The same one back means nothing was replaced",
+    );
+    assert_eq!(
+        live_panes.len(),
+        1,
+        "⚠⚠⚠ and exactly ONE pane may be left. Two means a live agent CLI is still running in the \
+         session this run was supposed to have closed — two models on one milestone, both spending \
+         somebody's tokens. Live: {live_panes:?}",
+    );
+    assert_eq!(
+        (fresh_argv, fresh_cwd),
+        (argv, cwd),
+        "⚠⚠⚠ and the replacement must be the SAME agent in the SAME directory. `respawn` reads both \
+         off the pane it replaces, which is why it takes no argv — a loop that named the agent \
+         instead would restart the program without the flags its launcher chose",
+    );
+
+    // ── ⚠⚠⚠ 2. THE REPLACEMENT WAS TOLD WHAT THE RUN HAD LEARNED ──
+    assert!(
+        typed_fresh.contains(KOREAN),
+        "⚠⚠⚠ THE WHOLE POINT. The fresh session never saw the refusal — it is a new process with an \
+         empty context — so the author's standing instruction must be in the FIRST prompt it is \
+         greeted with. Before `reflecting` existed the redirect reached one pane once and every later \
+         prompt asked for the original milestone; the live agent of R384 reported that deadlock in \
+         words. Typed into the pane it ended on: {typed_fresh:?}",
+    );
+    assert!(
+        typed_fresh.contains("North star: "),
+        "⚠⚠ and it must be the START prompt that carried it, which is the half a `turn_prompt`-only \
+         answer would miss: a replacement is greeted, not continued. Typed: {typed_fresh:?}",
+    );
+
+    // ── ⚠⚠⚠ 3. AND THE RUN DID WHAT IT WAS FOR ──
+    assert!(
+        !forbidden.exists(),
+        "⚠⚠⚠ THE AGENT'S TOOL CALL MUST NOT HAVE HAPPENED, in either session. The file is there, so \
+         some turn approved a dialog nobody consented to. Walked: {walked:?}",
+    );
+    assert_eq!(
+        held.screened, 1,
+        "⚠⚠⚠ **ONE REFUSAL ACROSS BOTH SESSIONS**, and this is the sharpest thing this gate measures.
+         \n\
+         ZERO would mean the agent asked for nothing, so there was no instruction to carry and \
+         nothing here was measured. TWO would mean the REPLACEMENT reached for the forbidden tool \
+         again — the instruction would have reached its composer (asserted above) and changed nothing \
+         about what it did, which is register item 148 surviving the fix. One means the fresh agent, \
+         told in its first prompt what its predecessor had been told, did not repeat the attempt. \
+         Walked: {walked:?}",
+    );
+    assert_eq!(
+        held.answered, 0,
+        "⚠⚠ and nothing was APPROVED — the two tallies are separate words for opposite decisions",
+    );
+    assert!(
+        loops.turns().is_some_and(|turns| turns >= 2),
+        "⚠⚠⚠ and the REPLACEMENT must have taken a turn. One turn is the first session's; two says the \
+         session this run opened was prompted and answered, which is the difference between replacing \
+         a session and merely opening one. Turns: {:?}, walked {walked:?}",
+        loops.turns(),
+    );
+    assert!(
+        matches!(outcome.state, sprag_plugin::OutcomeState::Exhausted(_)),
+        "⚠⚠⚠ and it must end EXHAUSTED, which is this instrument's shape rather than a disappointment \
+         — see the gate's own doc. The standing instruction forbids the only route to the milestone and \
+         says not to write the token, so the run has further to go on every turn, which is the only \
+         condition under which a reflection is ever needed. `Converged` would mean the instruction \
+         finished the work and the reflection above happened for some other reason.\n\
+         ⚠⚠ WHICH ceiling is deliberately not asserted, and register item 175 is why: an agent told \
+         repeatedly to do something it has already done stops answering, and a loop cannot say *my peer \
+         went quiet* — measured here as `turns` and then twenty-nine `Working --Null--> Working` until \
+         the wall clock. Pinning `Ceiling::Turns` made this gate a claim about how long a model keeps \
+         replying. Walked: {walked:?}",
+    );
+    assert!(
+        matches!(
+            loops.state(),
+            AiLoopState::Exhausted | AiLoopState::Cancelled
+        ),
+        "⚠⚠ and the DOCUMENT must have ended too — on its own turn budget, or on `cancelled`, which is \
+         its word for *the run ended underneath me*. The two vocabularies differ here deliberately: a \
+         run out of TIME reaches the machine as `cancel`, because telling a person's stop from a clock \
+         running out is a distinction only the Driver can make and this document must not guess at. \
+         Got {:?}",
+        loops.state(),
     );
 }
 

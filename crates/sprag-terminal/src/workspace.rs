@@ -77,6 +77,25 @@ pub struct Pane {
     /// restored from a pre-argv snapshot re-runs a shell, so it comes back with the shell's argv,
     /// never empty.
     argv: Vec<String>,
+    /// **THE ENVIRONMENT ENTRIES ITS LAUNCHER SET**, captured from the [`CommandBuilder`] at the same
+    /// moment as [`argv`](Self::argv) and for the same reason: so a REPLACEMENT can be the same
+    /// command, and not merely the same program.
+    ///
+    /// # ⚠⚠⚠ Why the daemon's own additions are deliberately NOT in here
+    ///
+    /// Captured BEFORE `instrument` and before `pane_env`, exactly as the argv is. What those two add
+    /// — this daemon's endpoint flag, this pane's own id — are facts about the process doing the
+    /// spawning and about the pane being born, so a replacement RE-DERIVES them rather than inheriting
+    /// the previous pane's. Copying them would give a fresh pane the closed pane's id.
+    ///
+    /// # ⚠⚠ What it does not carry, stated
+    ///
+    /// The INHERITED environment. A child gets the daemon's own variables plus these, and a
+    /// replacement spawned by the same daemon inherits the same ones — so the only part that has to be
+    /// recorded is the part somebody chose. ⚠ A pane restored from a snapshot has none of these: the
+    /// snapshot records argv and cwd, so a restored pane's replacement is the program without its
+    /// launcher's variables. Its own limitation, said out loud.
+    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     /// The structured remote endpoint, set ONLY for a pane born via `sprag ssh` (its explicit
     /// intent marker). `Some` marks a sanctioned remote workspace — the host reconnects it on
     /// restore (bypassing the argv allowlist) and can `scp` a dropped file to it; `None` is an
@@ -197,6 +216,13 @@ impl Pane {
     #[must_use]
     pub fn argv(&self) -> &[String] {
         &self.argv
+    }
+
+    /// The environment entries this pane's launcher set — what a REPLACEMENT has to set too. See the
+    /// [field](Self::env) for what is in it and what is deliberately not.
+    #[must_use]
+    pub fn env(&self) -> &[(std::ffi::OsString, std::ffi::OsString)] {
+        &self.env
     }
 
     /// The pane's structured remote endpoint, `Some` only for a `sprag ssh` workspace pane — the
@@ -930,6 +956,10 @@ impl Workspace {
         // Capture the launch argv BEFORE the builder is moved into the spawn, so a snapshot can
         // later re-run it (an allowlisted program) or fall back to a shell.
         let argv = argv_of(&command);
+        // ⚠⚠ AND THE LAUNCHER'S ENVIRONMENT, at the same moment and for the same reason — see
+        // [`Pane::env`]. Everything below this line that touches the environment is the DAEMON's own,
+        // which a replacement re-derives.
+        let env = command.env_pairs().to_vec();
         // Instrumentation is added AFTER that capture and is deliberately not part of it: what a
         // snapshot records is what the USER asked to run, and the flag added here names THIS
         // daemon's endpoint. A restore re-derives it from the daemon doing the restoring — the
@@ -969,6 +999,7 @@ impl Workspace {
             pty,
             command_label: label,
             argv,
+            env,
             remote: None,
             opened_by: None,
             name: None,
@@ -1110,6 +1141,11 @@ impl Workspace {
             pty,
             command_label: label,
             argv,
+            // ⚠ A RESTORED PANE RECORDS NONE, and that is the snapshot's shape rather than an
+            // omission: it stores argv and cwd, so there is nothing here to restore. What it costs is
+            // stated on [`Pane::env`] — a restored pane's REPLACEMENT is the program without its
+            // original launcher's variables.
+            env: Vec::new(),
             remote: None,
             opened_by: None,
             name: None,

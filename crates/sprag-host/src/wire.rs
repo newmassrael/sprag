@@ -1369,11 +1369,18 @@ impl PluginGrammar {
     /// `max_iterations` cannot express *"give this agent eight turns"* — and a run stopped by this
     /// number reports `exhausted` with the ceiling `turns`, so a reader is told which knob to turn.
     ///
-    /// ⚠ **`reflect_every` MUST BE AT LEAST `max_turns` AT THIS BUILD**, and a smaller one is
-    /// refused synchronously with that sentence. Below it the document reaches `reflecting`, whose
-    /// session-replace lifecycle is not built — refusing at the door is the difference between a
-    /// caller changing one number and a run that prompts a live agent eight times and then stops
-    /// somewhere with no answer for it.
+    /// ⚠⚠⚠ **`reflect_every` USED TO HAVE TO BE AT LEAST `max_turns`, AND NO LONGER DOES.** A smaller
+    /// one reaches `reflecting`, and that state — improve the loop's own setup, then close the inner
+    /// session and open a fresh one that reads it — is served. What a caller gets by naming a smaller
+    /// number is a run that periodically replaces its agent's session, which is what lets one run
+    /// outlive one agent's context.
+    ///
+    /// ⚠⚠ **ITS DEFAULT IS STILL `max_turns`**, deliberately, and that is not the old refusal in
+    /// disguise: a restart closes a pane somebody may be reading and opens another, so a caller who
+    /// has said nothing about reflection has not asked for it. What they get without asking is the
+    /// reflection a STANDING INSTRUCTION triggers — the document's own `screened > screened_carried`
+    /// edge — because that one is a correctness edge and not a budget: without it, a loop told *"do it
+    /// another way"* is asked for the original way on the very next turn.
     ///
     /// # ⚠⚠⚠ And the three the loop was the ONLY injecting form without
     ///

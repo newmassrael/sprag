@@ -603,12 +603,19 @@ impl PluginsExternal {
                     milestone: require_str(map, "milestone")?.to_string(),
                     reference: require_str(map, "reference")?.to_string(),
                     max_turns,
-                    // ⚠ ABSENT MEANS "NEVER", spelled as the one number that makes `reflecting`
-                    // unreachable rather than as a magic zero: `judging` tests `turns >= max_turns`
-                    // BEFORE `turns_since_reflect >= reflect_every`, so an equal pair exhausts
-                    // first. A caller who omits it gets the only loop this build can drive to the
-                    // end, and one who names a smaller number is told why it is refused rather
-                    // than discovering it eight turns in.
+                    // ⚠⚠ ABSENT STILL MEANS "NEVER, ON THE BUDGET", spelled as the one number that
+                    // makes the budget guard unreachable rather than as a magic zero: `judging`
+                    // tests `turns >= max_turns` BEFORE `turns_since_reflect >= reflect_every`, so
+                    // an equal pair exhausts first.
+                    //
+                    // ⚠⚠⚠ IT IS NO LONGER A REFUSAL TO NAME A SMALLER ONE — `reflecting` and the
+                    // session-replace lifecycle behind it are built. The default is kept as it was
+                    // ON PURPOSE rather than moved to the document's `8`: a restart closes a pane a
+                    // person may be reading and opens another, and a caller who has said nothing
+                    // about reflection has not asked for that. What they DO get without asking is a
+                    // reflection when a standing instruction fires, which is the correctness edge
+                    // (item 148) and not a budget — `screened > screened_carried` is not spelled
+                    // here because no caller sets it.
                     reflect_every: opt_count(map, "reflect_every")?.unwrap_or(max_turns),
                     // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
                     // The rules live in the loop template, so a caller who says nothing about
@@ -1183,13 +1190,6 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
             "this build's `ai_loop.scxml` does not carry the strings a loop is driven by, so no \
              run could be started against it — the document, or the statechart engine pinned under \
              it, is not the one this driver was written for"
-                .to_owned()
-        }
-        sprag_plugin::NotStarted::Unbuilt(sprag_plugin::AiLoopState::Reflecting) => {
-            "`reflect_every` must be at least `max_turns` (or omitted). Below it the loop reaches \
-             `reflecting`, and the session-replace lifecycle behind that state — close the pane, \
-             write the improvements, open a fresh one that reads them — is not built, so the run \
-             would stop there with nothing anybody could do about it"
                 .to_owned()
         }
         sprag_plugin::NotStarted::Unbuilt(sprag_plugin::AiLoopState::Exhausted) => {
@@ -1864,18 +1864,24 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠ **A BRIEF THIS BUILD CANNOT DRIVE TO THE END IS REFUSED AT THE DOOR, NAMING THE KNOB.**
+    /// ⚠⚠⚠ **A BRIEF THIS BUILD CANNOT DRIVE TO THE END IS REFUSED AT THE DOOR, NAMING THE KNOB** —
+    /// and the DOCUMENT'S OWN SHIPPED NUMBERS ARE NO LONGER ONE OF THEM.
+    ///
+    /// # ⚠⚠⚠ What this gate asserted until `restarting` was built
     ///
     /// `ai_loop.scxml` ships `reflect_every: 8` beside `max_turns: 40`, so the DEFAULT numbers walk
-    /// into `reflecting` at turn eight — a state whose session-replace lifecycle is registered debt.
-    /// A caller who copied those numbers off the document would otherwise get a run that prompted
-    /// their agent eight times, spent eight turns of somebody's quota, and then stopped somewhere
-    /// with no answer for it.
+    /// into `reflecting` at turn eight — and this surface REFUSED them, because the session-replace
+    /// lifecycle behind that state did not exist. A caller who copied the numbers off the document got
+    /// a sentence telling them to raise `reflect_every`.
     ///
-    /// ⚠⚠ The refusal is SYNCHRONOUS and carries a sentence, which is this surface's own rule: a
-    /// caller's mistake is answered at the door with what to change, never as an `outcome` a minute
-    /// later. ⚠ THE CONTROL is the same request with one number moved — otherwise this measures a
-    /// door that refuses everything.
+    /// It is built, so **the shipped pair is now a RUN**, and that is asserted here rather than left
+    /// as an absence: a refusal that quietly stopped happening would leave the wire's own grammar
+    /// documenting a constraint nothing enforces.
+    ///
+    /// ⚠⚠ The refusal that REMAINS is the other end of the same arithmetic — a loop allowed no turn at
+    /// all — and it is still SYNCHRONOUS and still carries a sentence, which is this surface's own
+    /// rule: a caller's mistake is answered at the door with what to change, never as an `outcome` a
+    /// minute later.
     #[test]
     fn a_loop_briefed_into_an_unbuilt_state_is_refused_with_the_knob_that_fixes_it() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
@@ -1890,23 +1896,21 @@ mod tests {
             None,
         );
 
+        // ⚠⚠⚠ A LOOP ALLOWED NO TURN, which is the one arm of this refusal that is left.
         let refused = external
             .invoke(
                 RUN_ACTION,
-                IntrospectValue::Json(ai_loop_request(
-                    pane,
-                    json!({ "max_turns": 40, "reflect_every": 8 }),
-                )),
+                IntrospectValue::Json(ai_loop_request(pane, json!({ "max_turns": 0 }))),
             )
-            .expect_err("the document's own shipped pair reaches a state this build cannot drive");
+            .expect_err("a loop allowed no turns can only judge itself exhausted");
         let sentence = refused
             .reason()
             .map(ToString::to_string)
             .unwrap_or_default();
         assert!(
-            sentence.contains("reflect_every") && sentence.contains("max_turns"),
-            "⚠⚠⚠ the refusal must name BOTH numbers, because the fix is their relationship and a \
-             caller cannot act on a sentence that names neither: {sentence:?}",
+            sentence.contains("max_turns"),
+            "⚠⚠⚠ the refusal must name the knob, because a caller cannot act on a sentence that \
+             names none: {sentence:?}",
         );
         assert!(
             lock(&registry).snapshot().is_empty(),
@@ -1914,16 +1918,21 @@ mod tests {
              spent the thing refusing early exists to save",
         );
 
-        // ⚠ THE CONTROL: the same request with the one number moved is a run.
+        // ⚠⚠⚠ AND THE DOCUMENT'S OWN SHIPPED PAIR IS A RUN. This used to be the REFUSED case; the
+        // session-replace lifecycle it needed is built, and a caller copying the template's numbers
+        // gets the loop the template describes.
         external
             .invoke(
                 RUN_ACTION,
                 IntrospectValue::Json(ai_loop_request(
                     pane,
-                    json!({ "max_turns": 40, "reflect_every": 40 }),
+                    json!({ "max_turns": 40, "reflect_every": 8 }),
                 )),
             )
-            .expect("⚠ the control: an equal pair is the brief this build drives to the end");
+            .expect(
+                "⚠⚠⚠ the template's own `reflect_every: 8` against `max_turns: 40` must START — it \
+                 reaches `reflecting`, and `reflecting` is served",
+            );
         lock(&registry).cancel_all();
         assert!(
             lock(&workspace).close(pane).is_some(),
@@ -3004,8 +3013,12 @@ mod tests {
              ⚠⚠ The eleven before them are the `ai_loop` FORM'S own, and \
              what is NOT among them is the point: the brief's four and the `agent` are REQUIRED, \
              because a loop with no purpose and a loop with no barrier are both runs nobody can \
-             mean. ⚠ `reflect_every` IS declinable, and its default is the one number that keeps \
-             the run inside the states this build drives — `max_turns` itself. \
+             mean. ⚠⚠ `reflect_every` IS declinable, and its default is STILL `max_turns` — which \
+             used to mean *the one number that keeps the run inside the states this build drives* and \
+             now means something else entirely: `reflecting` is served, so that default is a CHOICE \
+             rather than a limit. A restart closes a pane somebody may be reading, so a caller who \
+             said nothing about reflection has not asked for one; what they get anyway is the \
+             reflection a STANDING INSTRUCTION triggers, which is a correctness edge, not a budget. \
              ⚠⚠⚠ The TWO before them are the orchestrator's turn \
              contract, `done_when` and `turn_within_ms`, and their declinability IS the default \
              that keeps every existing caller working: a run that names neither ends its steps on \

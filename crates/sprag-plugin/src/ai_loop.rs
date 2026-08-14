@@ -68,14 +68,15 @@ pub enum NotStarted {
     Brief(Briefed),
     /// ⚠⚠ **THE BRIEF WOULD TAKE THE RUN THROUGH A STATE THIS BUILD DOES NOT DRIVE**, and which.
     ///
-    /// `reflecting` is reached from `judging` when `turns_since_reflect >= reflect_every`, so a
-    /// brief whose `reflect_every` is under its `max_turns` reaches it — and the session-replace
-    /// lifecycle behind it (close the pane, write the improvements, open a fresh one that reads
-    /// them) is registered debt with named prerequisites.
+    /// ⚠⚠⚠ ONE ARM REACHES THIS NOW AND IT IS `exhausted`: a brief that allows no turn at all can
+    /// only end there, which is a run nobody wanted rather than a state nobody wrote. **The arm this
+    /// variant was built for is gone** — `reflecting` was refused because the session-replace
+    /// lifecycle behind it did not exist, and it does.
     ///
-    /// Refusing here rather than mid-run is the difference between *"raise `reflect_every` to
-    /// `max_turns` or above"*, which the caller can act on before anything happens, and a run that
-    /// prompts a live agent eight times and then stops somewhere with no answer for it.
+    /// Refusing here rather than mid-run is the difference between something the caller can act on
+    /// before anything happens and a run that prompts a live agent and then stops somewhere with no
+    /// answer for it. The variant stays a STATE rather than becoming a sentence about turn budgets
+    /// for that reason: the next state this build does not serve gets the same treatment.
     Unbuilt(AiLoopState),
     /// ⚠⚠ **THE LOOP'S STANDING INSTRUCTIONS ARE NOT ONES THIS BUILD CAN CARRY OUT**, and which.
     ///
@@ -92,9 +93,15 @@ pub enum NotStarted {
 /// See the module doc for why this is a [`Plugin`] and not a second run mechanism.
 pub struct AiLoop {
     /// The driver, one pass at a time.
+    ///
+    /// ⚠⚠⚠ IT ALSO HOLDS THE PANE, and this type deliberately keeps no copy. It used to: a `pane`
+    /// field set at construction, which was correct for exactly as long as a loop could not replace
+    /// its own inner session. `restarting` closes that pane and opens a fresh one, so a copy taken
+    /// here names a pane that no longer exists — and [`Plugin::driving`] is what a cancelled run
+    /// interrupts, so the model in the replacement pane would go on spending somebody's tokens while
+    /// the run reported having stopped it. **The one field this type could hold is the one that made
+    /// `driving` lie.**
     inner: OuterLoop,
-    /// The pane whose agent this loop is causing to work — [`Plugin::driving`]'s answer.
-    pane: PaneId,
 }
 
 impl std::fmt::Debug for AiLoop {
@@ -105,7 +112,7 @@ impl std::fmt::Debug for AiLoop {
     /// reader meeting this in a failed assertion needs is which pane and which state.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AiLoop")
-            .field("pane", &self.pane.0)
+            .field("pane", &self.inner.pane().0)
             .field("state", &self.inner.state())
             .finish()
     }
@@ -128,15 +135,17 @@ impl AiLoop {
         spec: &AiLoopSpec,
     ) -> Result<Self, NotStarted> {
         // ⚠⚠ ASKED BEFORE THE MACHINE IS BUILT, because the answer is arithmetic on the caller's
-        // own numbers and needs nothing else. `judging` checks `turns >= max_turns` BEFORE
-        // `turns_since_reflect >= reflect_every`, and `turns_since_reflect` only resets in
-        // `reflecting` — so `exhausted` is reached first exactly when `reflect_every >= max_turns`,
-        // and that is the whole condition for a run that never meets an unbuilt state.
+        // own numbers and needs nothing else. A loop that may take no turn at all can only reach
+        // `exhausted`, which is a run nobody wanted rather than one this build cannot drive.
+        //
+        // ⚠⚠⚠ THE SECOND REFUSAL THAT USED TO BE HERE IS GONE, and its going is the round's headline:
+        // `reflect_every < max_turns` was refused because it reaches `reflecting`, and *"the
+        // session-replace lifecycle behind it is registered debt"*. It is built. The gate that
+        // measured the refusal's premise — that a run really does reach that state — is kept and
+        // now measures the walk THROUGH it, which is the standing rule for a gate whose defect has
+        // been paid.
         if brief.max_turns < 1 {
             return Err(NotStarted::Unbuilt(AiLoopState::Exhausted));
-        }
-        if brief.reflect_every < brief.max_turns {
-            return Err(NotStarted::Unbuilt(AiLoopState::Reflecting));
         }
         let mut inner = OuterLoop::new(script, pane, spec).ok_or(NotStarted::Undrivable)?;
         match inner.brief(brief) {
@@ -148,7 +157,7 @@ impl AiLoop {
         // already typed and cannot be malformed; what this reaches is the author's, and the round
         // trip that just carried either of them.
         inner.screening().map_err(NotStarted::Screening)?;
-        Ok(Self { inner, pane })
+        Ok(Self { inner })
     }
 
     /// Where the machine is — the loop's own state, for a caller that wants it beside the run's.
@@ -209,6 +218,7 @@ impl AiLoop {
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
+            | AiLoopState::Resuming
             | AiLoopState::Closing => false,
         }
     }
@@ -257,9 +267,24 @@ impl AiLoop {
                         "its datamodel stopped answering for {variable:?}, so the prompt it owed \
                          the pane could not be read and nothing was sent"
                     ),
-                    // `fail` is raised from exactly two places and the other one is `brief`, which
-                    // this plugin answers at the door — so a `failed` with no notice is a path
-                    // nobody wrote, and saying so beats inventing a cause.
+                    // ⚠⚠⚠ THE REPLACEMENT SESSION DID NOT COME UP, and this round's own sweep is why
+                    // these two arms exist. `resuming` raises `fail` when the barrier over a FRESH
+                    // pane answers anything but *ready* — a question nobody covered, or somebody
+                    // typing in it — and it records the fact in the notice. Without these arms the
+                    // run's only sentence said *"recorded no reason"* about a run that had recorded
+                    // one, and the question the loop was holding was dropped on the floor.
+                    Some(Noticed::Asking(unanswered)) => format!(
+                        "the session it opened to replace the old one came up asking something \
+                         nothing this run holds could answer ({unanswered:?}), so it was never \
+                         prompted — a session that will not come back is a failed run"
+                    ),
+                    Some(Noticed::Interrupted(who)) => format!(
+                        "somebody was already typing in the session it opened to replace the old \
+                         one ({who:?}), so it was never prompted"
+                    ),
+                    // `fail` is raised from three places and the other one is `brief`, which this
+                    // plugin answers at the door — so a `failed` with no notice is a path nobody
+                    // wrote, and saying so beats inventing a cause.
                     _ => "it reached `failed` and recorded no reason, which is a path this driver \
                           does not write"
                         .to_owned(),
@@ -273,6 +298,7 @@ impl AiLoop {
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
+            | AiLoopState::Resuming
             | AiLoopState::Closing => Verdict::Continue,
         };
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
@@ -288,11 +314,11 @@ impl AiLoop {
     /// registered cost of an advisory answer, and this is where it is paid: the run stops, and the
     /// word it stops on is the one whose remedy is real.
     ///
-    /// ⚠ Two of the three are not *"unimplemented"* to whoever reads the run. A peer that stopped
-    /// to ask wants an ANSWER and a person at the pane is already acting — those are the same two
-    /// facts every other plugin here reports, and they get the same two words. Only
-    /// `reflecting`/`restarting` are this build's own gap, and they are refused at the door
-    /// ([`NotStarted::Unbuilt`]) so a run cannot reach them.
+    /// ⚠ AND IT IS NOT *"unimplemented"* to whoever reads the run. `awaiting_human` is the only state
+    /// left here, and a peer that stopped to ask wants an ANSWER while a person at the pane is
+    /// already acting — the same two facts every other plugin reports, given the same two words.
+    /// `reflecting` and `restarting` used to be here as this build's own gap; they are built, so the
+    /// one thing this function is about is a run waiting for somebody who is not coming.
     ///
     /// ⚠⚠⚠ **AND IT CHARGES WHAT THE REFUSAL SPENT**, which is a hole this round opened and closed
     /// in the same breath. `Orchestrator`, `Agent` and `Answer` all report `Cost::Bytes(asking
@@ -435,6 +461,12 @@ impl Plugin for AiLoop {
     /// the pane. That is the direction that fails safe: a needless interrupt costs a peer one
     /// keystroke it was waiting at anyway, and a missed one leaves a model spending somebody's
     /// tokens on a question nothing is waiting for.
+    ///
+    /// ⚠⚠⚠ **AND WHICH PANE IS A QUESTION WITH A MOVING ANSWER, since `restarting` was built.** It is
+    /// asked of the driver on every call and never cached, because a loop that has reflected is
+    /// driving the pane that REPLACED the one it was started over — see [`OuterLoop::pane`]. A copy
+    /// held here would name a closed pane, and this method's whole reason is what happens to the one
+    /// that is still occupied.
     fn driving(&self) -> Option<PaneId> {
         match self.inner.state() {
             // ⚠ THE PEER IS AT REST BY CONSTRUCTION in both: `converged` is entered when the
@@ -455,7 +487,8 @@ impl Plugin for AiLoop {
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
-            | AiLoopState::Closing => Some(self.pane),
+            | AiLoopState::Resuming
+            | AiLoopState::Closing => Some(self.inner.pane()),
         }
     }
 
@@ -482,7 +515,10 @@ mod tests {
     use crate::access::PaneAccess;
     use crate::completion::Turn;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState, ProgressCell, Stopped};
-    use crate::outer::{AiLoopSpec, Brief, INNER_SESSION_ENDS, OuterLoop, Pumped};
+    // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
+    // them drove the layer UNDER the door in order to reach a state the door refused. The door no
+    // longer refuses it, so the PLUGIN reaches it, which is the only height a caller has.
+    use crate::outer::{AiLoopSpec, Brief, INNER_SESSION_ENDS};
     use crate::plugin::Plugin;
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
@@ -671,13 +707,20 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠ **A BRIEF THAT WOULD REACH A STATE NOBODY BUILT IS REFUSED BEFORE A BYTE IS TYPED.**
+    /// ⚠⚠⚠ **A BRIEF THAT WOULD REACH A STATE NOBODY BUILT IS REFUSED BEFORE A BYTE IS TYPED** —
+    /// and the document's own shipped numbers are no longer one of them.
     ///
-    /// The document's shipped `reflect_every` is 8 against a `max_turns` of 40, so the DEFAULT
-    /// brief walks into `reflecting` at turn eight — a state whose session-replace lifecycle is
-    /// registered debt. A run that discovered that eight turns in would have prompted a live agent
-    /// eight times, spent eight turns of somebody's quota, and then stopped somewhere with no
-    /// answer for it.
+    /// # ⚠⚠⚠ THE HALF THAT WAS REMOVED, kept here because its going is the round's headline
+    ///
+    /// This gate used to assert that the document's shipped pair — `reflect_every` 8 against
+    /// `max_turns` 40 — was REFUSED, because the default brief walks into `reflecting` at turn eight
+    /// and the session-replace lifecycle behind that state did not exist. It does now, so the same
+    /// brief STARTS, and that is asserted below rather than left as an absence: a refusal that
+    /// quietly stopped happening would leave a caller reading a sentence about a knob nothing
+    /// enforces.
+    ///
+    /// What survives is the other end of the same arithmetic: a loop allowed NO turn can only reach
+    /// `exhausted`, which is a run nobody wanted.
     ///
     /// ⚠⚠ **THE PANE IS THE ASSERTION**, not just the refusal: the whole value of refusing at the
     /// door is that nothing happened, and a refusal that had already typed the first prompt would
@@ -688,21 +731,21 @@ mod tests {
         let access = supervised(&workspace);
         let before = access.pane_collapsed(pane).expect("a readable pane");
 
-        let refused = AiLoop::new(
+        // ⚠⚠⚠ THE DOCUMENT'S OWN SHIPPED PAIR NOW STARTS. Every other assertion here is about a
+        // refusal, and this one exists so that the refusal's DISAPPEARANCE is a thing a test says
+        // out loud.
+        AiLoop::new(
             engine(),
             pane,
             &Brief {
-                // The document's own shipped pair, which is the case that matters.
                 reflect_every: 8,
                 ..brief_for(40)
             },
             &standin_spec(),
         )
-        .expect_err("a brief that reaches `reflecting` cannot start a run this build can finish");
-        assert_eq!(
-            refused,
-            NotStarted::Unbuilt(AiLoopState::Reflecting),
-            "the refusal must name the STATE, so the sentence a caller reads can name the knob",
+        .expect(
+            "⚠⚠⚠ the document's shipped `reflect_every: 8` reaches `reflecting`, and a run that \
+             reaches it is one this build drives — see `restarting`",
         );
 
         // ⚠ AND A LOOP THAT CANNOT TAKE A TURN AT ALL, at the other end of the same arithmetic.
@@ -710,17 +753,16 @@ mod tests {
             AiLoop::new(engine(), pane, &brief_for(0), &standin_spec())
                 .expect_err("a loop allowed no turns judges itself exhausted before it starts"),
             NotStarted::Unbuilt(AiLoopState::Exhausted),
+            "the refusal must name the STATE, so the sentence a caller reads can name the knob",
         );
 
         assert_eq!(
             access.pane_collapsed(pane).expect("a readable pane"),
             before,
-            "⚠⚠⚠ NOTHING WAS TYPED. A refusal that had already prompted the agent would have cost \
-             exactly what refusing early exists to save",
+            "⚠⚠⚠ NOTHING WAS TYPED. Neither the refusal nor the loop that started has spoken to the \
+             pane — a door that prompted an agent before answering would have cost exactly what \
+             answering early exists to save",
         );
-        // ⚠ THE CONTROL: the same pane and the same numbers, one of them changed, starts.
-        AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
-            .expect("⚠ the control: an equal pair is the brief this build can drive to the end");
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
@@ -891,7 +933,11 @@ mod tests {
             Vec<String>,
             Option<i64>,
         ) {
-            let (workspace, pane) = crate::testing::standin_agent_refusing(takes_the_key);
+            // ⚠ ONE turn after the redirect, which is what makes the ENDING carry the claim: the
+            // peer does what it was told instead and then says the marker. The gate below this one
+            // drives the same peer with a number it can never reach, because *"how often is the
+            // original milestone asked for again?"* is a question a converging peer cannot answer.
+            let (workspace, pane) = crate::testing::standin_agent_refusing(takes_the_key, 1, None);
             let access = crate::testing::supervised_asking(&workspace);
             let mut loops = AiLoop::new(
                 engine(),
@@ -926,11 +972,24 @@ mod tests {
                 .collect();
             let turns = loops.turns();
             let screened = loops.screened();
-            let typed = access
-                .input_echo()
-                .and_then(|echo| echo.pane_recent_input(pane))
+            // ⚠⚠⚠ THE PANE THE RUN ENDED ON, and not `pane`. A screening now triggers a reflection,
+            // and a reflection that is ADOPTED replaces the inner session — so the pane this run was
+            // handed is closed, and its echo trail answers `""`. Read it and every assertion about
+            // what the loop said becomes an assertion about a pane nobody is driving. ⚠ In the third
+            // arm nothing is adopted (the key does not land), so this is the ORIGINAL pane and the
+            // negative assertion still means what it says.
+            let live = access.pane_ids();
+            let typed = live
+                .first()
+                .and_then(|last| {
+                    access
+                        .input_echo()
+                        .and_then(|echo| echo.pane_recent_input(*last))
+                })
                 .unwrap_or_default();
-            access.lifecycle().expect("lifecycle").close(pane);
+            for pane in live {
+                access.lifecycle().expect("lifecycle").close(pane);
+            }
             (outcome, turns, typed, walk, screened)
         }
 
@@ -993,10 +1052,14 @@ mod tests {
         );
         assert_eq!(
             (armed.screened, armed.answered),
-            (1, 0),
+            (2, 0),
             "⚠⚠⚠ AND THE RUN MUST SAY WHICH DECISION IT TOOK. This act REFUSED a call; a run that \
              counted it among the things it approved would answer *what did my agent get to do?* \
-             with the opposite fact. Walked {walk:?}",
+             with the opposite fact. ⚠⚠ TWO, not one, since `reflecting` was built: the first \
+             screening is ADOPTED, which replaces the session, and this fixture asks on its first \
+             prompt whatever it has been told — so the fresh agent asks and the rule fires again. \
+             What the adoption buys is visible in the walk rather than in this number: the second \
+             reflection is `ReflectNone` and costs no restart. Walked {walk:?}",
         );
         assert_eq!(
             armed_screened.map(|count| u32::try_from(count).unwrap_or(u32::MAX)),
@@ -1079,71 +1142,497 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠ **THE STATE THE DOOR REFUSES IS ONE A RUN REALLY REACHES** — the refusal's premise,
-    /// measured rather than argued from reading the document.
+    /// ⚠⚠⚠ **A STANDING INSTRUCTION REACHES EVERY PROMPT ONCE IT HAS BEEN ADOPTED** — register item
+    /// 148, paid; and the LIVE AGENT of R384 is what reported the defect, mid-gate, in its own words:
     ///
-    /// [`AiLoop::new`] refuses `reflect_every < max_turns` on an arithmetic claim about
-    /// `judging`'s guard order, and a claim like that is exactly the kind this workspace has been
-    /// wrong about before: R370b filed four premises read off the source and all four were wrong.
-    /// So the loop is driven with the numbers the door refuses, through [`OuterLoop`] — the layer
-    /// UNDER the refusal, which is the only way to reach a case the door exists to prevent — and
-    /// the machine is asked where it actually goes.
+    /// > *"the loop is re-issuing the original milestone, but your last direct instruction was to
+    /// > not create that file … 루프가 매 턴 같은 요청을 반복하고 저는 매 턴 같은 이유로 거절하게
+    /// > 되므로, 진전이 없습니다."*
     ///
-    /// ⚠⚠ **IT IS THE OTHER HALF OF A PAIR.** `a_loop_that_uses_the_turns_it_was_briefed_with…`
-    /// drives the EQUAL pair (`reflect_every == max_turns`) all the way to `exhausted` without
-    /// meeting an unbuilt state, so between them the two gates measure both sides of the one
-    /// inequality the door is made of. Either alone would be a fact about one arrangement of
-    /// numbers.
+    /// # ⚠⚠⚠ THE NUMBERS, BEFORE AND AFTER, on the same six-turn run
+    ///
+    /// **BEFORE** — this gate's first form, and what it asserted: the instruction reached the pane
+    /// exactly **ONCE**, `turn_prompt` asked for the original milestone **SIX** times, and
+    /// `authored().turn` did not carry the instruction at all. The loop spent its budget asking for
+    /// something its author had already forbidden, and a peer that keeps refusing makes no progress.
+    ///
+    /// **AFTER** — the same peer and the same rule, with `reflecting` and `restarting` built: the
+    /// screening triggers a reflection at the very next judgement, the session is replaced, and from
+    /// then on **every prompt that names the milestone carries the instruction with it**. So the two
+    /// counts no longer diverge — that is the whole claim, and it is asserted as a relation between
+    /// them rather than as one number, because what matters is that no prompt asks for the milestone
+    /// without saying what overrides it.
+    ///
+    /// ⚠⚠ **THE `authored()` HALF IS THE SHARPER ONE.** What went into the pane is history; what the
+    /// loop is GOING to say next is `turn_prompt`, and after a reflection it carries the instruction —
+    /// including `start_prompt`, which is what a FRESH agent that remembers nothing is greeted with.
+    ///
+    /// ⚠⚠⚠ **AND THE PANE IT READS IS THE ONE THE RUN ENDED ON**, not the one it started over. A
+    /// reflection closes the inner session, so the echo trail of the original pane holds only the
+    /// first session's prompts — a gate that kept reading it would report the BEFORE numbers for ever
+    /// and call them a pass.
     #[test]
-    fn the_state_the_door_refuses_is_one_a_run_would_really_reach() {
-        // ⚠ NEVER says the marker, so nothing but the document's own guards decides where it goes.
-        let (workspace, pane) = standin_agent(u32::MAX);
-        let access = supervised(&workspace);
-        let script = engine();
-        let mut loops = OuterLoop::new(Arc::clone(&script), pane, &standin_spec())
-            .expect("the document's datamodel must carry its four authored strings");
+    fn a_standing_instruction_reaches_every_prompt_once_it_has_been_adopted() {
+        /// The dialog the peer raises, quoted by the rule below.
+        const ASKS: &str = "Which way should I build this?";
+        /// What the author's standing instruction says instead. ⚠ Distinctive, and carrying neither
+        /// `exactly:` nor `Summarise`, so counting it counts only the screening act.
+        const INSTEAD: &str = "not that way; do the smallest verifiable thing and report";
+        /// The brief's milestone. ⚠ It must share no substring with `done_instruction` — which
+        /// carries the words `MILESTONE REACHED` into every single prompt — or the count below
+        /// would be counting the marker.
+        const AIM: &str = "the-original-thing";
+        /// The turn budget. ⚠ Small deliberately: the pane's echo trail is
+        /// [`ECHO_TRAIL_CAP`](sprag_terminal::pane_pty::ECHO_TRAIL_CAP) bytes and a longer run would
+        /// make the counts a question about that bound instead.
+        const TURNS: i64 = 6;
+
+        // ⚠ A peer that NEVER converges after the redirect — the shape the live agent took. It does
+        // what it was redirected to, comes back, and is asked for the original milestone again.
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, u32::MAX, None);
+        let access = crate::testing::supervised_asking(&workspace);
+        let rules = crate::screen::ScreenRules::of(vec![
+            crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                .expect("both halves are non-empty"),
+        ])
+        .expect("a non-empty list");
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                milestone: AIM.to_owned(),
+                screen_rules: Some(rules),
+                ..brief_for(TURNS)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 200,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(120)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        // ⚠⚠⚠ THE PANE THE RUN ENDED ON, which is not the one it started over: a reflection replaced
+        // the inner session. The original is closed, so `pane_ids` holds exactly the survivor — and
+        // reading the OLD pane's echo trail is how this gate would go on reporting the BEFORE numbers
+        // for ever. `driving()` cannot be asked, and correctly so: an `exhausted` loop answers `None`
+        // because its peer is at rest.
+        let live = access.pane_ids();
+        let typed = access
+            .input_echo()
+            .and_then(|echo| echo.pane_recent_input(*live.first().expect("a surviving pane")))
+            .unwrap_or_default();
+        let authored = loops.authored().expect("the datamodel still answers");
+        let turns = loops.turns();
+        for pane in &live {
+            access.lifecycle().expect("lifecycle").close(*pane);
+        }
+
+        // ⚠ THE CONTROLS FIRST. Without these the counts below could both be about a run that never
+        // got past the dialog, or one whose echo trail had wrapped.
         assert_eq!(
-            loops.brief(&Brief {
-                // The refused shape, at its sharpest: reflection due after the FIRST turn.
-                reflect_every: 1,
-                ..brief_for(40)
-            }),
-            crate::outer::Briefed::Took,
-            "the control: the parts must reach the datamodel, or what follows is about a brief \
-             that never arrived",
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Turns),
+            "the peer never says the marker, so this run must end on the DOCUMENT's turn budget — \
+             anything else and the counts below are about a different run: walked {walk:?}",
+        );
+        assert_eq!(
+            live.len(),
+            1,
+            "⚠⚠ and exactly ONE pane must survive the run: the replacement, with the session it \
+             replaced closed. Two would mean an agent was left running",
+        );
+        assert_eq!(
+            (turns, outcome.screened),
+            (Some(TURNS), 2),
+            "⚠⚠ every turn spent, and the rule fired TWICE — once per session. The replacement is a \
+             FRESH agent that has never been turned down, so this fixture (which asks on its first \
+             prompt whatever it is told) asks again; what the adoption buys is that the second time \
+             costs no restart. Walked {walk:?}",
+        );
+        assert!(
+            typed.contains("North star: "),
+            "⚠ and the echo trail must still hold the FIRST prompt of that session, or these counts \
+             are a question about `ECHO_TRAIL_CAP` rather than about the loop: {typed:?}",
         );
 
-        let run = RunContext::uncancellable();
-        let mut walked = Vec::new();
-        let reached = loop {
-            assert!(
-                walked.len() < 24,
-                "⚠ this gate's own bound, which is exactly what item 66 says a caller has to \
-                 supply when nothing else does — the plugin above it is bounded by the Driver. \
-                 Walked: {walked:?}",
-            );
-            match loops
-                .pump(&access, &run)
-                .expect("the pane must stay readable")
-            {
-                Pumped::Moved {
-                    from, raised, to, ..
-                } => walked.push((from, raised, to)),
-                other => break other,
-            }
-        };
+        // ── ⚠⚠⚠ THE CLAIM, AS A RELATION BETWEEN THE TWO COUNTS ──
+        let said = typed.matches(INSTEAD).count();
+        let asked = typed.matches(AIM).count();
         assert!(
-            matches!(reached, Pumped::Unbuilt(AiLoopState::Reflecting)),
-            "⚠⚠⚠ a loop briefed the way the door refuses must really arrive at `reflecting` — if \
-             it does not, the refusal is turning away callers for a reason that is not true. Got \
-             {reached:?} after {walked:?}",
+            asked > 0 && said >= asked,
+            "⚠⚠⚠ ITEM 148: no prompt may ask for the milestone without carrying what overrides it. \
+             Before `reflecting` existed these were ONE and SIX. The instruction is asked-for {asked} \
+             times and said {said} times. Walked {walk:?}",
+        );
+        assert!(
+            authored.turn.contains(AIM) && authored.turn.contains(INSTEAD),
+            "⚠⚠⚠ AND THE SHARPER HALF: what the loop will say NEXT carries both, so the relation \
+             above is not a history — it is the loop's standing behaviour: {:?}",
+            authored.turn,
+        );
+        assert!(
+            authored.start.contains(INSTEAD),
+            "⚠⚠⚠ AND `start_prompt` MOST OF ALL: it is what the next replacement session is greeted \
+             with, and that agent remembers nothing of having been redirected: {:?}",
+            authored.start,
+        );
+    }
+
+    /// ⚠⚠⚠ **THE STATE THE DOOR USED TO REFUSE IS ONE A RUN NOW WALKS THROUGH** — register item 6,
+    /// and item 148's answer end to end.
+    ///
+    /// # ⚠⚠⚠ What this gate was, and why it is the same gate
+    ///
+    /// It measured a REFUSAL's premise: [`AiLoop::new`] turned away `reflect_every < max_turns`
+    /// because such a brief reaches `reflecting`, and this drove the loop through [`OuterLoop`] — the
+    /// layer under the door — to prove the state was genuinely reachable rather than argued for from
+    /// reading the document. The premise held. **Now the state is built, so the same drive is kept
+    /// and the assertion moves from *it arrives* to *it gets through*** — the standing rule that a
+    /// gate which measured a defect is repurposed, never deleted.
+    ///
+    /// # ⚠⚠⚠ The five things a session replacement has to get right, all asserted here
+    ///
+    /// 1. **THE WALK**, as four separate states and not one: `reflecting` decides, `restarting`
+    ///    replaces, `resuming` waits for the fresh agent, `priming` recomposes. A driver that held
+    ///    the phase itself would replace the pane once per pump.
+    /// 2. **A DIFFERENT PANE**, and the old one GONE. A replacement that left the previous session
+    ///    running would leave two agents on one milestone, both spending tokens.
+    /// 3. **THE SAME COMMAND, DIRECTORY AND SIZE** — read off the pane rather than supplied, so a
+    ///    caller cannot be given a `claude` where they launched `claude --resume`, or the daemon's
+    ///    directory where the work is.
+    /// 4. ⚠⚠⚠ **THE PROMPTS CARRY THE STANDING INSTRUCTION**, which is what the whole restart is
+    ///    FOR: the measurement gate above counts one delivery against six re-issues of the milestone
+    ///    it overrides, and after a reflection the instruction is in `start_prompt` — the one a FRESH
+    ///    agent, which remembers nothing, is greeted with.
+    /// 5. **`driving()` NAMES THE NEW PANE.** A cancelled run signals what `driving` answers, so a
+    ///    stale answer means the model in the live pane goes on working while the run reports having
+    ///    stopped it.
+    #[test]
+    fn a_reflection_replaces_the_session_and_the_new_one_is_told_what_was_learned() {
+        /// The dialog the peer raises, which the rule below quotes.
+        const ASKS: &str = "Which way should I build this?";
+        /// The standing instruction. ⚠ Distinctive enough to find in a composed prompt.
+        const INSTEAD: &str = "not that way; do the smallest verifiable thing and report";
+
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, u32::MAX, None);
+        let access = crate::testing::supervised_asking(&workspace);
+        // ⚠ Read BEFORE the replacement: these are what the fresh pane has to match, and the pane
+        // that carries them is about to be closed.
+        let (argv, cwd, size) = {
+            let guard = workspace.lock().expect("the workspace mutex");
+            let old = guard.pane(pane).expect("the pane the loop was given");
+            (old.argv().to_vec(), old.pty().cwd(), old.pty().dimensions())
+        };
+
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                screen_rules: Some(
+                    crate::screen::ScreenRules::of(vec![
+                        crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                            .expect("both halves are non-empty"),
+                    ])
+                    .expect("a non-empty list"),
+                ),
+                // ⚠ THE BUDGET IS OFF (equal pair), so the reflection below is caused by the
+                // STANDING INSTRUCTION and by nothing else. A gate that left `reflect_every` small
+                // could not tell the correctness edge from the budget one.
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        assert_eq!(
+            loops.driving(),
+            Some(pane),
+            "⚠ the control: the loop must be driving the pane it was GIVEN before it replaces it, or \
+             the assertion at the end is true for the wrong reason",
+        );
+
+        // ⚠⚠ PUMPED THROUGH THE PLUGIN, one step at a time, so the gate can STOP at the far side of
+        // the restart. Driven to convergence this fixture would ask again from its fresh session and
+        // reflect again for ever, which is honest behaviour and a different claim.
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut replaced = None;
+        while replaced.is_none() {
+            assert!(
+                walked.len() < 40,
+                "⚠ this gate's own bound. Walked: {walked:?}",
+            );
+            let before = loops.state();
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a replacement must be readable");
+            if let Some(note) = step.note.clone() {
+                walked.push(note);
+            }
+            // The far side: the machine is composing again, on a pane that is not the one it started
+            // over.
+            if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
+                replaced = Some(loops.driving().expect("a loop mid-run drives its pane"));
+            }
+        }
+        let fresh = replaced.expect("the loop reached `priming` through a replacement");
+        let authored = loops.authored().expect("the datamodel still answers");
+        let held = {
+            let guard = workspace.lock().expect("the workspace mutex");
+            (
+                guard.pane(pane).is_some(),
+                guard
+                    .pane(fresh)
+                    .map(|new| (new.argv().to_vec(), new.pty().cwd(), new.pty().dimensions())),
+            )
+        };
+        access.lifecycle().expect("lifecycle").close(fresh);
+
+        // ── 1. THE WALK, as four states ──
+        for edge in [
+            "Judging --Judge--> Reflecting",
+            "Reflecting --ReflectApplied--> Restarting",
+            "Restarting --SessionReplaced--> Resuming",
+            "Resuming --SessionReady--> Priming",
+        ] {
+            assert!(
+                walked.iter().any(|note| note == edge),
+                "⚠⚠⚠ the replacement must be these FOUR acts and the run's journal must say so — \
+                 `{edge}` is missing. Walked {walked:?}",
+            );
+        }
+
+        // ── 2. A DIFFERENT PANE, and the old one gone ──
+        assert_ne!(
+            fresh, pane,
+            "⚠⚠⚠ a restart must open a NEW session; the same pane back means nothing was replaced",
+        );
+        assert!(
+            !held.0,
+            "⚠⚠⚠ and the OLD one must be gone. A replacement that left it running leaves two agents \
+             working on one milestone, both spending somebody's tokens",
+        );
+
+        // ── 3. THE SAME COMMAND, DIRECTORY AND SIZE ──
+        assert_eq!(
+            held.1,
+            Some((argv, cwd, size)),
+            "⚠⚠⚠ the fresh session must be the SAME program in the SAME directory at the SAME size. \
+             The pane is the only authority on what it was running, which is why `respawn` takes no \
+             argv — a loop that supplied an agent NAME would restart `claude` where somebody had \
+             launched `claude --resume`, in the daemon's directory rather than the repository",
+        );
+
+        // ── 4. ⚠⚠⚠ THE PROMPTS NOW CARRY WHAT THE RUN LEARNED ──
+        assert!(
+            authored.start.contains(INSTEAD),
+            "⚠⚠⚠ THE WHOLE POINT. `start_prompt` is what the FRESH agent is greeted with, and it \
+             remembers nothing of having been redirected — so a loop that carried its standing \
+             instructions only in `turn_prompt` would hand its replacement a clean slate and the \
+             original milestone: {:?}",
+            authored.start,
+        );
+        assert!(
+            authored.turn.contains(INSTEAD),
+            "⚠⚠ and every later turn carries it too, which is what makes it STANDING rather than \
+             said once: {:?}",
+            authored.turn,
+        );
+
+        // ── 5. `driving()` NAMES THE LIVE PANE ──
+        assert_eq!(
+            loops.driving(),
+            Some(fresh),
+            "⚠⚠⚠ and a cancelled run must interrupt the session that EXISTS. This type held a `pane` \
+             field until this round, which was correct for exactly as long as a loop could not \
+             replace its own",
+        );
+    }
+
+    /// ⚠⚠⚠ **A REFLECTION WITH NOTHING TO CARRY DOES NOT PAY FOR A RESTART** — the other exit of
+    /// `reflecting`, and the one that stops the feature eating every run that uses it.
+    ///
+    /// # ⚠⚠⚠ Why this is the sharper half of the pair
+    ///
+    /// Closing an agent's pane and opening a fresh one throws away that session's whole context. It
+    /// is worth it to make a standing instruction stick, and it is worth NOTHING when there is no
+    /// instruction to make stick — so a driver that answered `reflect.applied` whenever it was asked
+    /// would replace the session on every multiple of `reflect_every`, for ever, having changed
+    /// nothing. The document already has the word for that (*"Nothing worth changing: carry on
+    /// without paying for a restart"*); this is the gate that says the driver uses it.
+    ///
+    /// ⚠⚠ **THE PANE IS THE ASSERTION.** A run that reflected and restarted still converges and still
+    /// reports the same turn count, so the outcome cannot tell the two apart — only the pane can, and
+    /// only by being the SAME one it started with.
+    ///
+    /// ⚠ `reflect_every: 1` is the sharpest arrangement of the budget: due after the very first turn,
+    /// and again after every one. This brief is what the door refused until this round.
+    #[test]
+    fn a_reflection_with_nothing_to_carry_does_not_pay_for_a_restart() {
+        let (workspace, pane) = standin_agent(3);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reflect_every: 1,
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a brief that reflects after every turn is one this build drives");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 60,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        let live = access.pane_ids();
+        for pane in &live {
+            access.lifecycle().expect("lifecycle").close(*pane);
+        }
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the control: a loop reflecting after every turn must still reach its milestone: \
+             walked {walk:?}",
+        );
+        assert!(
+            walk.iter()
+                .any(|note| note == "Reflecting --ReflectNone--> Working"),
+            "⚠⚠⚠ it must really have REFLECTED and found nothing — an assertion about no restart is \
+             worth nothing if the loop never reached `reflecting` at all. Walked {walk:?}",
+        );
+        assert!(
+            !walk.iter().any(|note| note.contains("Restarting")),
+            "⚠⚠⚠ AND NOTHING WAS REPLACED. A reflection that restarts whenever it is asked throws \
+             away an agent's whole context on every multiple of `reflect_every`, having changed \
+             nothing. Walked {walk:?}",
         );
         assert_eq!(
-            loops.turns(),
-            Some(1),
-            "and it arrives after the FIRST judged turn, which is what `reflect_every: 1` says",
+            live,
+            vec![pane],
+            "⚠⚠⚠ THE PANE IS THE ASSERTION: the outcome and the turn count are identical whether or \
+             not a session was replaced, so the only witness is that this is the pane the run \
+             started with",
         );
-        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A REPLACEMENT SESSION THAT COMES UP ASKING ENDS THE RUN, AND THE RUN SAYS SO** — the
+    /// `resuming` edge a person meeting this feature is likeliest to hit.
+    ///
+    /// # ⚠⚠⚠ Why this is the arm worth a fixture of its own
+    ///
+    /// A fresh agent CLI does not always come up ready to be typed at. A trust prompt, a model picker,
+    /// a sign-in — `sprag-detect` holds captures of five such screens from two real agents, and every
+    /// one of them is shown BEFORE the agent works. So the pane a `restarting` opens can be a pane
+    /// nothing this run holds may answer, and the document is explicit about what that means:
+    /// *"a session that will not come back is a failed run, not a stuck one."*
+    ///
+    /// ⚠⚠ **AND THE SENTENCE IS THE ASSERTION.** This round's own sweep found the defect: `resuming`
+    /// recorded the question it was refused by, and `AiLoop::ended`'s `failed` arm knew only about a
+    /// datamodel that had stopped answering — so the run's single sentence said *"it reached `failed`
+    /// and recorded no reason"* about a run holding the reason, and the question was dropped. A caller
+    /// would have been told a path nobody wrote had been taken.
+    ///
+    /// ⚠ The peer cannot know which of its lives it is in, because a replacement runs the same argv on
+    /// purpose. It asks the FILESYSTEM — see [`standin_agent_refusing`](crate::testing).
+    #[test]
+    fn a_replacement_session_that_comes_up_asking_ends_the_run_saying_what_it_asked() {
+        /// The dialog the peer raises on its FIRST life, which the rule below claims.
+        const ASKS: &str = "Which way should I build this?";
+        /// The redirect. ⚠ It leaves the milestone unmet, so the judgement after it reflects.
+        const INSTEAD: &str = "not that way; report and wait";
+
+        // ⚠ ONE FILE, not a directory, so the cleanup below is a single removal and a panic leaks
+        // nothing a person has to go and find. The name carries the pid and a nanosecond count for the
+        // reason every fixture path in this workspace does: two runs of this suite must not share it.
+        let marker = std::env::temp_dir().join(format!(
+            "sprag-second-life-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.subsec_nanos()),
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, 1, Some(&marker));
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                screen_rules: Some(
+                    crate::screen::ScreenRules::of(vec![
+                        crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                            .expect("both halves are non-empty"),
+                    ])
+                    .expect("a non-empty list"),
+                ),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 60,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(90)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        for pane in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+        let _ = std::fs::remove_file(&marker);
+
+        assert!(
+            walk.iter()
+                .any(|note| note == "Restarting --SessionReplaced--> Resuming"),
+            "⚠ THE CONTROL: the run must have got as far as opening a replacement, or what follows is \
+             about a session that was never replaced. Walked {walk:?}",
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "⚠⚠⚠ a replacement that came up asking something nothing could answer must END the run. \
+             Carrying on would mean typing a prompt at a pane showing somebody else's question, which \
+             is the one thing this crate's barrier exists to prevent. Walked {walk:?}",
+        );
+        let said = format!("{:?}", outcome.failure);
+        assert!(
+            said.contains("came up asking") && said.contains("Which way"),
+            "⚠⚠⚠ AND THE SENTENCE MUST CARRY THE QUESTION. Until this round it said *it reached \
+             `failed` and recorded no reason* — about a run that had recorded one, holding the very \
+             dialog its caller needs to see: {said:?}",
+        );
     }
 
     /// ⚠⚠⚠ **A CANCELLED LOOP STOPS THE AGENT'S TURN IT SET GOING** — [`Plugin::driving`]'s whole
@@ -1158,10 +1647,25 @@ mod tests {
     /// or without this, and [`Stopped`] is the only thing that says what became of the work.
     #[test]
     fn a_cancelled_loop_stops_the_turn_its_agent_was_taking() {
+        /// ⚠⚠⚠ A BUDGET NO 600-MILLISECOND RUN CAN SPEND, and it has to be said why it is this large.
+        ///
+        /// This gate asked for FORTY turns and passed for two rounds — because the stand-in's
+        /// supervisor counted words on a screen, so `seq` stopped growing at the first scroll and
+        /// every turn after the third burned the whole five-second turn patience. The run was still
+        /// inside turn one when the cancel landed. With the counter read off the peer instead
+        /// ([`peer_seq`](crate::testing)) a turn takes milliseconds, forty of them fit inside the
+        /// cancel window, and the run reported `exhausted — turns`: **the correct answer to a
+        /// question this gate is not asking.**
+        ///
+        /// So the ceilings are put out of reach and the cancel is the only ending available, which is
+        /// what *"a person's stop is the run's ending, above every ceiling"* needs in order to mean
+        /// anything.
+        const UNSPENDABLE: i64 = 1_000_000;
+
         // ⚠ NEVER says the marker, so the run is still mid-loop when the cancel lands.
         let (workspace, pane) = standin_agent(u32::MAX);
         let access = supervised(&workspace);
-        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(UNSPENDABLE), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1179,7 +1683,9 @@ mod tests {
             })
         };
         let outcome = Driver::new(Guardrails {
-            max_iterations: 10_000,
+            // ⚠ The substrate's ceilings are put out of reach for `UNSPENDABLE`'s reason: the
+            // iteration count is the one a fast peer reaches first, and this gate is about neither.
+            max_iterations: u32::try_from(UNSPENDABLE).expect("a positive budget"),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -1218,6 +1724,22 @@ mod tests {
             .clone()
             .expect("a script datamodel must have opened a script session");
         (engine, lua, session)
+    }
+
+    /// Raise `event` at `engine` carrying `standing` as `_event.data.standing`, then step.
+    ///
+    /// ⚠⚠ THE TWO REFLECTION EDGES BOTH ADOPT THAT LIST, so a gate driving the machine by hand has to
+    /// send it: `process_event` carries no data at all, and a document-level gate that used it would
+    /// assign nil over the variable `priming` composes and then assert about the states anyway. **A
+    /// fixture must reach a state by the door the product uses** — the driver's `Raise::carrying` is
+    /// this, one layer up.
+    fn reflected(engine: &mut Engine<AiLoopPolicy>, event: AiLoopEvent, standing: &str) {
+        engine.raise_external(
+            event,
+            &serde_json::json!({"standing": standing}).to_string(),
+            "",
+        );
+        engine.step();
     }
 
     /// ⚠⚠⚠ **HOW THE MACHINE TELLS ITS DRIVER WHAT TO DO — asked of the ENGINE, because the
@@ -1456,8 +1978,14 @@ mod tests {
             // A reflection that finds nothing to change returns to `working`
             // without paying for a restart — the document's `reflect.none` edge,
             // and what keeps this walk going to the ceiling.
+            //
+            // ⚠⚠ RAISED WITH DATA, because that edge adopts the normalised
+            // standing list (`_event.data.standing`) and the driver always
+            // carries it. `process_event` sends none, which would assign nil over
+            // the very variable `priming` composes — a fixture reaching the state
+            // by a door production does not use.
             if engine.get_current_state() == AiLoopState::Reflecting {
-                engine.process_event(AiLoopEvent::ReflectNone);
+                reflected(&mut engine, AiLoopEvent::ReflectNone, "");
             }
             assert!(turn <= 100, "the ceiling must be reachable: {decisions:?}");
         }
@@ -1484,6 +2012,80 @@ mod tests {
         assert!(
             engine.is_in_final_state(),
             "and `exhausted` is a final state, not a pause",
+        );
+    }
+
+    /// ⚠⚠⚠ **A STANDING INSTRUCTION IS REFLECTED ON AT THE NEXT JUDGEMENT, AND ONCE** — the
+    /// `screened > screened_carried` guard, asked of the MACHINE.
+    ///
+    /// # ⚠⚠⚠ The two halves, and why neither alone would do
+    ///
+    /// * **AT THE NEXT JUDGEMENT.** Without this guard a screened loop waits out `reflect_every`
+    ///   before adopting what it was told — the document ships 8 — and every turn in between asks for
+    ///   the original milestone again. That is register item 148, whose live agent wrote *"루프가 매
+    ///   턴 같은 요청을 반복하고 저는 매 턴 같은 이유로 거절 … 진전이 없습니다"*.
+    /// * ⚠⚠⚠ **AND ONCE.** `screened_carried` is set on ENTRY to `reflecting`, not on the way out, so
+    ///   a reflection that changes nothing does not send the run straight back. Set on the exit
+    ///   instead, `reflect.none` would return to `working`, the very next judgement would see the same
+    ///   inequality, and the loop would judge no further turn for the rest of its budget. **That is a
+    ///   livelock the state names cannot show**, which is why the second half is asserted here rather
+    ///   than left to read as obvious.
+    ///
+    /// ⚠ Driven with `raise_external`, because both edges carry data — see [`reflected`].
+    #[test]
+    fn a_standing_instruction_is_reflected_on_at_the_next_judgement_and_once() {
+        let (mut engine, _lua, _session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        engine.process_event(AiLoopEvent::PromptSent);
+        assert_eq!(engine.get_current_state(), AiLoopState::Working);
+
+        // ⚠ THE CONTROL: with nothing screened, a judged turn goes straight back to work. The
+        // document ships `reflect_every: 8`, so nothing else can send this turn to `reflecting`.
+        engine.process_event(AiLoopEvent::TurnDone);
+        engine.process_event(AiLoopEvent::Judge);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Working,
+            "the control: an unscreened turn is not a reason to reflect, or the assertion below is \
+             about the turn budget",
+        );
+
+        // The peer asks, a rule claims it, and the driver reports what it said.
+        engine.process_event(AiLoopEvent::TurnBlocked);
+        assert_eq!(engine.get_current_state(), AiLoopState::Screening);
+        engine.raise_external(
+            AiLoopEvent::ScreenMatched,
+            &serde_json::json!({"text": "do it another way"}).to_string(),
+            "",
+        );
+        engine.step();
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Working,
+            "a claimed dialog returns to work — the peer has just been handed its answer",
+        );
+
+        engine.process_event(AiLoopEvent::TurnDone);
+        engine.process_event(AiLoopEvent::Judge);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Reflecting,
+            "⚠⚠⚠ THE FIRST HALF: the judgement straight after a standing instruction fired must \
+             reflect, at turn TWO of a document whose `reflect_every` is 8",
+        );
+
+        // Nothing worth changing — back to work without a restart.
+        reflected(&mut engine, AiLoopEvent::ReflectNone, "");
+        assert_eq!(engine.get_current_state(), AiLoopState::Working);
+        engine.process_event(AiLoopEvent::TurnDone);
+        engine.process_event(AiLoopEvent::Judge);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Working,
+            "⚠⚠⚠ THE SECOND HALF: the SAME instruction must not send the run back to `reflecting` \
+             for ever. `screened_carried` is set on entry, so this judgement sees the two counts \
+             equal — set on the way out instead, this loop would never judge another turn and no \
+             state name would show it",
         );
     }
 

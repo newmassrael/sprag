@@ -915,7 +915,21 @@ impl ReadyWhen {
 ///
 /// Latched — the wait happens once and every later step drives straight away, so a run pays for
 /// this on its first step only.
-#[derive(Clone, Debug)]
+///
+/// # ⚠⚠⚠ NOT `Clone`, and that absence is a safety property
+///
+/// A barrier is three facts about ONE PANE — the latch, the marker baseline, the hands watermark —
+/// and the only caller that ever wanted a second one is `ai_loop`'s `restarting`, which closes its
+/// inner pane and opens a fresh one. A copy is precisely the WRONG value there: `seen` is latched, so
+/// the replacement session reads as *already ready* and its first prompt goes into a program that has
+/// existed for ten milliseconds. **That is R379's measured defect, and a mutation proved no stand-in
+/// in this workspace catches it** — a `sh` peer's pseudoterminal buffers the early prompt and the run
+/// converges either way, which is the same blindness that let the defect ship in the first place.
+///
+/// So the copy is not forbidden by a comment or caught by a gate: [`rearmed`](Self::rearmed) is the
+/// only way to get a second barrier from an existing one, and it forgets what it must. Deriving
+/// `Clone` here would make the dangerous version writable again, and nothing would fail.
+#[derive(Debug)]
 pub struct Readiness {
     /// What the pane must show, and which question it answers. `None` starts driving immediately,
     /// which is right for a pane the caller knows is already running the program.
@@ -998,6 +1012,35 @@ impl Readiness {
             attended,
             hands_at: None,
         }
+    }
+
+    /// **THE SAME BARRIER OVER A PANE THAT HAS BEEN REPLACED** — same terms, nothing latched.
+    ///
+    /// # ⚠⚠⚠ Why a run's barrier cannot simply be reused across a session replacement
+    ///
+    /// Every one of the three pieces of state in here is a fact ABOUT ONE PANE, and a loop that
+    /// closes its inner session and opens a fresh one keeps none of them:
+    ///
+    /// * `seen` LATCHES, and it is what makes the barrier cost one look per pump after the first.
+    ///   Carried over, a fresh pane whose agent has existed for ten milliseconds is *already ready*
+    ///   — R379's defect exactly, reintroduced by a struct field rather than by a missing call.
+    /// * `armed_at` is a marker count taken on the old pane's screen.
+    /// * `hands_at` is a watermark of how often a PERSON had written into the old pane, so a
+    ///   replacement pane's own startup writes would read as an interruption.
+    ///
+    /// What is kept is everything the CALLER declared — the condition, the patience, the consents and
+    /// who is expected — because a replacement session is the same run under the same contracts.
+    ///
+    /// ⚠ It answers a NEW barrier rather than resetting this one, so the caller has to put it
+    /// somewhere: a `reset(&mut self)` could be called and its answer dropped, and this cannot.
+    #[must_use]
+    pub fn rearmed(&self) -> Self {
+        Self::new(
+            self.when.clone(),
+            Some(self.within),
+            self.consent.clone(),
+            self.attended,
+        )
     }
 
     /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
@@ -1470,8 +1513,42 @@ impl Readiness {
                     .map_or(0, |text| text.matches(when.marker()).count()),
             );
         }
-        match poll_until(run, self.within, || self.satisfied(&when, panes, pane)) {
+        // ⚠⚠⚠ THE WAIT WATCHES FOR A QUESTION AS WELL AS FOR READINESS, and until this round it did
+        // not — it asked *is the peer asking?* once, above, and then polled the readiness condition
+        // alone until its bound.
+        //
+        // **A PEER THAT IS STARTING UP RAISES ITS FIRST DIALOG DURING EXACTLY THIS WAIT.** That is not
+        // a corner: a fresh agent CLI takes seconds to come up and a *"do you trust the files in this
+        // folder?"* is the first thing it paints — `sprag-detect` holds captures of five such screens
+        // from two real agents. Asked only beforehand, the barrier saw a blank pane, waited out the
+        // whole bound and reported `NeverReady`: **the run was told the session never came up, about a
+        // session that came up and asked something.** A caller's consent could not reach it either,
+        // which is the one thing `may_answer` exists for.
+        //
+        // ⚠ MEASURED, on the pane an `ai_loop`'s `restarting` opens: the loop's own `resuming` arm for
+        // a question was structurally unreachable, so the gate written to drive it ended
+        // `exhausted — duration` instead. That is how this was found.
+        let mut arrived = None;
+        let waited = poll_until(run, self.within, || {
+            if let Some(question) = settled_question(panes, pane, run) {
+                arrived = Some(question);
+                return true;
+            }
+            self.satisfied(&when, panes, pane)
+        });
+        match waited {
             Waited::Ready => {
+                if let Some(question) = arrived {
+                    // ⚠ THE SAME THREE-STEP ANSWER the pre-poll check makes, and deliberately not a
+                    // fourth spelling of it: what a run may answer, and who is expected when it may
+                    // not, are one decision — see the arm above.
+                    return match self.answer(panes, pane, question, run)? {
+                        Reached::Asking(unanswered) => {
+                            Ok(self.await_the_person(panes, pane, unanswered, run))
+                        }
+                        decided => Ok(decided),
+                    };
+                }
                 self.seen = true;
                 Ok(Reached::Yes)
             }
@@ -1809,6 +1886,91 @@ mod tests {
             "text that was on screen when the barrier armed is NOT the pane printing it, however \
              many times the screen is re-laid out under it",
         );
+    }
+
+    /// ⚠⚠⚠ **A BARRIER OVER A REPLACED PANE HAS FORGOTTEN THE PANE IT LATCHED ON** —
+    /// [`Readiness::rearmed`], and the one thing that makes a loop's session replacement safe.
+    ///
+    /// # ⚠⚠⚠ Why this cannot be left to the caller remembering
+    ///
+    /// `seen` LATCHES, deliberately: it is what makes the barrier cost one look per pump after the
+    /// first, on a run that pumps hundreds of times. So a driver that closed its pane, opened a fresh
+    /// one and kept its barrier would be told *already ready* about a program that had existed for ten
+    /// milliseconds — and would type its first prompt into it. That is R379's measured defect (the
+    /// pty's own line discipline echoes the text, the delivery reads back as confirmed, Enter goes to
+    /// a booting program, and the run sits in `working` for as long as anyone lets it), reintroduced
+    /// not by a missing call but by a struct field that was still true about a pane that is gone.
+    ///
+    /// ⚠⚠ **THE SECOND HALF IS THE CONTROL, and it is the half that makes this a gate rather than an
+    /// assertion about a `bool`**: the SAME barrier, unrearmed, answers `Yes` about the same silent
+    /// pane. Without it a `rearmed` that returned a barrier which refuses everything would pass.
+    #[test]
+    fn a_barrier_over_a_replaced_pane_has_forgotten_the_pane_it_latched_on() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let spawn = |script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 40, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        // The pane the barrier clears on: it prints the marker and then waits.
+        let first = spawn("printf 'BANNER\\n'; exec cat");
+        // ⚠⚠⚠ WAIT FOR THE MARKER, THEN ASK `Shows` — the recorded remedy for the recorded trap, which
+        // the first run of this gate walked straight into on the build machine. `Prints` means *MORE
+        // occurrences than when the barrier armed*, so on a fast box the fixture's own `printf` lands
+        // BEFORE the arming look, the marker goes into the baseline and the barrier can never be
+        // satisfied: it refused with `already_showing: true`, which is the correction naming itself.
+        // `Shows` is the question that reads a marker already on the screen, and it is the right one
+        // here anyway — this gate's subject is the LATCH, not who printed what when.
+        crate::testing::started(&access, first, "BANNER");
+        let mut ready = Readiness::new(
+            Some(ReadyWhen::Shows("BANNER".to_string())),
+            Some(Duration::from_millis(1500)),
+            None,
+            Attended::NoOne,
+        );
+        assert_eq!(
+            ready
+                .reached(&access, first, &RunContext::uncancellable())
+                .expect("a pane that prints the marker clears this barrier"),
+            Reached::Yes,
+            "the control: this barrier must really have LATCHED, or what follows is about a barrier \
+             that never cleared",
+        );
+
+        // ⚠ The replacement, standing in for what `restarting` opens: a pane that never prints the
+        // marker at all. Whatever the barrier says about it is a statement about the LATCH.
+        let replacement = spawn("exec cat");
+        assert_eq!(
+            ready
+                .reached(&access, replacement, &RunContext::uncancellable())
+                .expect("the latched barrier answers without looking"),
+            Reached::Yes,
+            "⚠⚠ THE CONTROL FOR THE CLAIM BELOW: carried over, the barrier says a pane it has never \
+             looked at is ready — which is exactly the answer a loop must not get about a session it \
+             has just opened",
+        );
+
+        let mut afresh = ready.rearmed();
+        crate::testing::refused_naming(
+            afresh
+                .reached(&access, replacement, &RunContext::uncancellable())
+                .as_ref()
+                .err(),
+            &ReadyWhen::Shows("BANNER".to_string()),
+            "cat",
+            "⚠⚠⚠ a re-armed barrier must ASK AGAIN on the pane that replaced the old one — a loop \
+             that inherits `seen` types its first prompt into a program that is still starting",
+        );
+        let lifecycle = <WorkspacePaneAccess as PaneAccess>::lifecycle(&access).expect("lifecycle");
+        lifecycle.close(first);
+        lifecycle.close(replacement);
     }
 
     /// ⚠⚠⚠ **AND THE REFUSAL SAYS THE ONE THING THAT FIXES IT: THE MARKER IS ALREADY THERE.**
