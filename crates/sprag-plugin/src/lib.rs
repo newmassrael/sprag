@@ -56,6 +56,7 @@ pub mod plugin;
 pub mod readiness;
 pub mod reply;
 pub mod run;
+pub mod screen;
 pub(crate) mod session;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -79,8 +80,8 @@ pub use driver::{
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use outer::{
-    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, INNER_SESSION_ENDS, Noticed,
-    OuterLoop, Pumped,
+    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, INNER_SESSION_ENDS,
+    NotScreenable, Noticed, OuterLoop, Pumped,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Cost, Plugin, Step, Verdict};
@@ -90,3 +91,4 @@ pub use readiness::{
 };
 pub use reply::{AgentReply, parse_claude_json};
 pub use run::{RunContext, Waited, poll_until};
+pub use screen::{Malformed, REFUSES, ScreenRule, ScreenRules, Screened};

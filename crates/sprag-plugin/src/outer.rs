@@ -86,9 +86,11 @@ use sprag_terminal::PaneId;
 
 use crate::access::{PaneAccess, PaneError};
 use crate::completion::{Completion, DoneWhen, Over, Turn};
+use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::RunContext;
+use crate::screen::{Malformed, Refused, ScreenRule, ScreenRules, Screened};
 use crate::sm::ai_loop::AiLoopPolicy;
 
 /// The machine's own vocabulary, re-exported because [`Pumped`] is made of it.
@@ -185,11 +187,13 @@ const DONE_MARKER: &str = "done_marker";
 ///
 /// # ⚠ What it deliberately does NOT carry
 ///
-/// `screen_rules`, `screen_permissions` and `model` are authored above the same line and are not
-/// here. Each belongs to a state this driver does not serve yet — `screening` for the first two
-/// (two owner decisions in front of it), the session-replace lifecycle for the third — and a door
-/// built for a consumer that does not exist is the extension point this workspace already recorded
-/// as an anti-pattern. They are registered as owed, not forgotten.
+/// `model` is authored above the same line and is not here: it belongs to the session-replace
+/// lifecycle this driver does not serve yet, and a door built for a consumer that does not exist is
+/// the extension point this workspace already recorded as an anti-pattern. Registered as owed, not
+/// forgotten.
+///
+/// ⚠⚠ `screen_rules` USED TO BE IN THAT SENTENCE and is now a field, because the state it belongs
+/// to is built. `screen_permissions` is not here because it no longer exists — see the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Brief {
     /// Where this loop is ultimately going. Never rewritten by reflection.
@@ -202,6 +206,21 @@ pub struct Brief {
     pub max_turns: i64,
     /// How often the loop stops to improve its own setup.
     pub reflect_every: i64,
+    /// **STANDING INSTRUCTIONS FOR DIALOGS THIS CALLER HAS ALREADY DECIDED ABOUT** — the authored
+    /// `screen_rules`, supplied by somebody who did not edit the file.
+    ///
+    /// # ⚠⚠ Why this travels with the brief and not on [`AiLoopSpec`]
+    ///
+    /// [`AiLoopSpec::may_answer`] is the caller's consent and it is a construction argument,
+    /// because the barrier holds it and the barrier is built once. These are the loop DOCUMENT's
+    /// own data: the author writes them in the file, `screening` reads them out of the datamodel at
+    /// the moment it acts, and a reflection may one day rewrite them. A field on the spec would be
+    /// a SECOND place the same rules live, and the failure of letting two copies drift is silent.
+    ///
+    /// ⚠ [`None`] means *keep what the document says*, and it is not the same as an empty list —
+    /// which is why the field is an `Option` and [`ScreenRules`] cannot be empty. A caller who says
+    /// nothing about screening gets the author's rules; one who supplies rules replaces them.
+    pub screen_rules: Option<ScreenRules>,
 }
 
 /// **HOW A LOOP DRIVES THE PANE IT RUNS IN** — the three declared contracts a turn-owning plugin
@@ -413,7 +432,13 @@ impl Owed {
                 // peer has just been handed its answer by the driver's own keystroke and is
                 // working on it. A prompt on either edge types over a peer mid-turn, which is the
                 // failure class this crate keeps paying for.
-                AiLoopEvent::PromptSent
+                // ⚠⚠ `screening --screen.moot-->` carries none for a sharper version of
+                // `ScreenMatched`'s reason: NOTHING was pressed and the turn was never
+                // interrupted, so the peer is still working on the prompt it already has and this
+                // loop's `Completion` is still armed from it. A prompt here would be a second
+                // question inside one turn.
+                AiLoopEvent::ScreenMoot
+                | AiLoopEvent::PromptSent
                 | AiLoopEvent::ScreenMatched
                 | AiLoopEvent::Brief
                 | AiLoopEvent::Cancel
@@ -516,7 +541,7 @@ pub enum Pumped {
 /// REPORT, and the event that carries them is a bare word: `turn.blocked` says a peer stopped to
 /// ask and not WHAT it is asking, `turn.interrupted` says a person is here and not how much they
 /// typed. The driver had both in its hand — [`Reached::Asking`] carries the whole
-/// [`Unanswered`](crate::consent::Unanswered), [`Reached::Interrupted`] the
+/// [`Unanswered`], [`Reached::Interrupted`] the
 /// [`Interruption`](crate::readiness::Interruption) — and dropped them on the floor.
 ///
 /// A consumer could ask the pane again. It must not: the screen moves, so a second read is a
@@ -530,11 +555,16 @@ pub enum Pumped {
 pub enum Noticed {
     /// **THE PEER STOPPED TO ASK** — the question, and why this run answered nothing.
     ///
-    /// ⚠ The refusal is [`Refusal::NoConsent`](crate::consent::Refusal::NoConsent) whenever the
-    /// question came from the turn's own end rather than from the barrier, and that is the literal
-    /// truth rather than a default: this loop declares no consents at all (see
-    /// [`OuterLoop::new`]), because answering a dialog is `screening`'s job in the document and
-    /// not the barrier's.
+    /// ⚠⚠ **THE REFUSAL IS THE BARRIER'S OWN**, whichever door the question arrived by — see
+    /// [`OuterLoop::barrier_says`](OuterLoop), which both of them go through. This doc used to say
+    /// the reason was always `no_consent` *"because answering a dialog is `screening`'s job in the
+    /// document and not the barrier's"*, and that sentence outlived its own truth twice: R382 gave
+    /// the loop a caller's consents, and R384 built `screening`.
+    ///
+    /// ⚠ So a run's report can now name any of the ten reasons, and the last authority to look at
+    /// the dialog is the one whose word heads it — `screening`'s, when a run got that far, with
+    /// what the consents said kept underneath in free text
+    /// ([`Unanswered::unscreened`](crate::consent::Unanswered::unscreened)).
     Asking(crate::consent::Unanswered),
     /// **A PERSON TOOK THE PANE**, and how much they wrote into it.
     Interrupted(crate::readiness::Interruption),
@@ -546,11 +576,45 @@ pub enum Noticed {
     /// **THE PEER ASKED AND THIS RUN ANSWERED IT**, on a consent the caller declared before the
     /// run started — see [`AiLoopSpec::may_answer`].
     ///
-    /// ⚠⚠ THE ONE NOTICE THAT IS NOT TERMINAL, and the one a consumer must report exactly ONCE.
-    /// The other three are read at the end of a run; this is a decision taken on somebody's behalf
-    /// DURING one, and a run whose journal spells that `continue` is a run in which approvals are
-    /// indexed by nothing. [`OuterLoop::took_answer`] is how a reporter consumes it.
+    /// ⚠⚠ NOT TERMINAL, and one a consumer must report exactly ONCE. The three above it are read
+    /// at the end of a run; this is a decision taken on somebody's behalf DURING one, and a run
+    /// whose journal spells that `continue` is a run in which approvals are indexed by nothing.
+    /// [`OuterLoop::took_answer`] is how a reporter consumes it.
     Answered(crate::consent::Answered),
+    /// **THE PEER ASKED, A STANDING INSTRUCTION REFUSED THE CALL AND TOLD IT WHAT TO DO INSTEAD** —
+    /// see [`crate::screen`].
+    ///
+    /// ⚠⚠ THE SECOND NON-TERMINAL NOTICE, and it is a separate arm from [`Answered`](Self::Answered)
+    /// for the reason [`Verdict::Screened`](crate::plugin::Verdict::Screened) is a separate word:
+    /// they are OPPOSITE decisions. One takes an option the peer offered; this one turns the peer's
+    /// call down. [`OuterLoop::took_screening`] consumes it.
+    Screened(Screened),
+}
+
+/// **WHY THE AUTHOR'S STANDING INSTRUCTIONS COULD NOT BE READ** — a loop that cannot be screened,
+/// and which part of the document says so.
+///
+/// ⚠ Answered at the DOOR ([`AiLoop::new`](crate::ai_loop::AiLoop::new)) rather than when a dialog
+/// arrives, this crate's house rule: a caller's — or an author's — mistake is a synchronous refusal
+/// naming what to change, not a run that prompts a live agent and then meets its own document being
+/// unreadable half an hour later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotScreenable {
+    /// A rule the author wrote is not one this build can carry out — WHICH one, and why.
+    ///
+    /// ⚠ The index is carried because the reasons are about a rule's own fields and a document may
+    /// hold several: *"a screen rule with an empty `when`"* does not say which line to go and look
+    /// at.
+    Malformed {
+        /// Its position in the authored list, counting from zero.
+        at: usize,
+        /// What is wrong with it.
+        why: Malformed,
+    },
+    /// `screen_rules` is not a list of objects carrying `when` and `text` at all — a datamodel this
+    /// driver cannot read as standing instructions, which is the same class of answer
+    /// `Authored::read`'s [`None`] gives about the prompts.
+    Unreadable,
 }
 
 /// A run of `ai_loop.scxml`'s machine against one pane.
@@ -665,18 +729,60 @@ impl OuterLoop {
         // it holds quotes, newlines and non-ASCII, and a hand-spliced payload would either lose
         // the brief or end the object early — the second of which reaches the datamodel as a
         // PARTIAL brief and prompts an agent with half a sentence.
+        // ⚠⚠⚠ THE RULES ARE ALWAYS SENT, AND A CALLER WHO SUPPLIED NONE GETS THE DOCUMENT'S OWN
+        // ECHOED BACK. The transition's `<assign>` is unconditional — SCXML executable content
+        // has no *"only if the caller said so"* without a construct this document has never been
+        // measured with — so omitting the key would assign nil and DELETE the author's rules for
+        // every caller that did not happen to care about screening.
+        //
+        // ⚠ The echo is not free and that is the point: what comes back is read back below like
+        // every other part, so the round trip through a JSON payload and a Lua table is PROVEN on
+        // every run rather than assumed on the ones that use it. PR-87 was a round in which
+        // exactly that crossing was silently lossy.
+        // ⚠⚠⚠ AND AN UNREADABLE AUTHORED LIST IS REFUSED RATHER THAN ECHOED AS NOTHING. The first
+        // draft wrote `self.screening().unwrap_or_default()`, which turned *"this document's rules
+        // are a shape I cannot read"* into `null` — assigned over the author's own data, read back
+        // as agreeing, and started. `AiLoop::new`'s door check runs AFTER the brief, so it would
+        // then find the wiped list perfectly readable: **the one refusal that exists for the
+        // document's own rules was unreachable, by the code that was supposed to carry them.**
+        let rules = match (&brief.screen_rules, self.screening()) {
+            (Some(supplied), _) => Some(supplied.clone()),
+            (None, Ok(authored)) => authored,
+            (None, Err(why)) => {
+                // The document is what it is; nothing here can mend it, and `fail` is what stops a
+                // caller pumping past the answer — the same treatment a part that did not come
+                // back gets, for the same reason.
+                self.machine.process_event(AiLoopEvent::Fail);
+                return Briefed::NotHeld {
+                    part: ScreenRules::WIRE_KEY,
+                    held: Some(format!("{why:?}")),
+                };
+            }
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "milestone": brief.milestone,
             "reference": brief.reference,
             "max_turns": brief.max_turns,
             "reflect_every": brief.reflect_every,
+            ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
+                rules
+                    .rules()
+                    .iter()
+                    .map(|rule| {
+                        serde_json::json!({
+                            ScreenRule::WHEN_KEY: rule.when(),
+                            ScreenRule::TEXT_KEY: rule.text(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }),
         });
         self.machine
             .raise_external(AiLoopEvent::Brief, &payload.to_string(), "");
         self.machine.step();
 
-        let held = self.held_as_briefed(brief);
+        let held = self.held_as_briefed(brief, rules.as_ref());
         if held != Briefed::Took {
             // The mangled or missing part is already in the datamodel; there is no un-assigning it
             // from out here. `fail` is what the document says happens to a run that cannot go on,
@@ -686,8 +792,9 @@ impl OuterLoop {
         held
     }
 
-    /// Whether every part of `brief` came back out of the datamodel unchanged.
-    fn held_as_briefed(&self, brief: &Brief) -> Briefed {
+    /// Whether every part of `brief` came back out of the datamodel unchanged — with `rules` the
+    /// standing instructions actually sent, which are the caller's or the document's own echo.
+    fn held_as_briefed(&self, brief: &Brief, rules: Option<&ScreenRules>) -> Briefed {
         for (part, sent) in [
             ("north_star", &brief.north_star),
             ("milestone", &brief.milestone),
@@ -717,6 +824,28 @@ impl OuterLoop {
                     };
                 }
                 _ => return Briefed::NotHeld { part, held: None },
+            }
+        }
+        // ⚠⚠⚠ AND THE STANDING INSTRUCTIONS, READ BACK THROUGH THE PRODUCT'S OWN READER — the one
+        // `screening` will use when a dialog arrives, not a second walk of the same table. A brief
+        // that reported success on rules `screening` cannot read is a run that stops on the first
+        // dialog with an answer sitting in its datamodel.
+        //
+        // ⚠ This is the only part whose crossing is a LIST OF OBJECTS, and it is the part most
+        // likely to carry a person's own language — both routes PR-87 was about, on one value.
+        match (self.screening(), rules) {
+            (Ok(held), wanted) if held.as_ref() == wanted => {}
+            (Ok(held), _) => {
+                return Briefed::NotHeld {
+                    part: ScreenRules::WIRE_KEY,
+                    held: Some(format!("{held:?}")),
+                };
+            }
+            (Err(why), _) => {
+                return Briefed::NotHeld {
+                    part: ScreenRules::WIRE_KEY,
+                    held: Some(format!("{why:?}")),
+                };
             }
         }
         Briefed::Took
@@ -770,6 +899,80 @@ impl OuterLoop {
         }
     }
 
+    /// **TAKE THE REFUSAL THIS RUN JUST GAVE ON THE AUTHOR'S BEHALF**, leaving every other notice
+    /// where it is — [`took_answer`](Self::took_answer)'s contract for the other decision.
+    pub fn took_screening(&mut self) -> Option<Screened> {
+        match self.noticed {
+            Some(Noticed::Screened(_)) => match self.noticed.take() {
+                Some(Noticed::Screened(screened)) => Some(screened),
+                // Unreachable: the arm was just matched. Answering `None` rather than panicking
+                // keeps a driver bug from taking a live agent's pane down with it.
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// **THE AUTHOR'S STANDING INSTRUCTIONS, AS THE DATAMODEL HOLDS THEM NOW** — or [`None`] for a
+    /// loop that screens nothing.
+    ///
+    /// # ⚠⚠ Read live, for [`authored`](Self::authored)'s reason
+    ///
+    /// A snapshot taken in [`new`](Self::new) cannot see a [`brief`](Self::brief), so a caller who
+    /// supplied their own rules would have them assigned into the datamodel and then screened
+    /// against the document's. That is the exact staleness the composed prompts were carrying
+    /// before R380, met one field over.
+    ///
+    /// # ⚠⚠⚠ Why the LIST is read through the script session at all
+    ///
+    /// PR-86's third ask — SCE emits no read accessor for a lowered scalar `<data>` — is why every
+    /// string in this driver goes through the interpreter. Measured for this one: a COMPOSITE
+    /// `<data>` is not lowered into a Rust field at all, so the interpreter is not a workaround
+    /// here but the only representation there is, and the missing accessor bounds what the POLICY
+    /// can answer rather than what a driver can see.
+    ///
+    /// # Errors
+    ///
+    /// [`NotScreenable`], naming the rule or the shape.
+    pub fn screening(&self) -> Result<Option<ScreenRules>, NotScreenable> {
+        let Ok(held) = self
+            .script
+            .get_variable(&self.session, ScreenRules::WIRE_KEY)
+        else {
+            return Err(NotScreenable::Unreadable);
+        };
+        let items = match held {
+            ScriptValue::Array(items) => items,
+            // ⚠ A datamodel that answers NOTHING for this variable is a loop that screens nothing,
+            // which is a legitimate thing to be — an author may delete the list. Anything else
+            // (a string, a number, a bare object) is a document whose author meant something this
+            // driver cannot read, and guessing at it is how a rule fires on a dialog nobody wrote
+            // it for.
+            ScriptValue::Null | ScriptValue::Undefined => return Ok(None),
+            _ => return Err(NotScreenable::Unreadable),
+        };
+        let mut rules = Vec::with_capacity(items.len());
+        for (at, item) in items.iter().enumerate() {
+            let ScriptValue::Object(fields) = item else {
+                return Err(NotScreenable::Unreadable);
+            };
+            let text_of = |key: &str| match fields.get(key) {
+                Some(ScriptValue::String(held)) => Some(held.clone()),
+                _ => None,
+            };
+            let (Some(when), Some(text)) =
+                (text_of(ScreenRule::WHEN_KEY), text_of(ScreenRule::TEXT_KEY))
+            else {
+                return Err(NotScreenable::Unreadable);
+            };
+            rules.push(
+                ScreenRule::parse(when, text)
+                    .map_err(|why| NotScreenable::Malformed { at, why })?,
+            );
+        }
+        Ok(ScreenRules::of(rules))
+    }
+
     /// What the document says NOW.
     ///
     /// # ⚠⚠⚠ Read live, because a snapshot is the defect this replaced
@@ -801,6 +1004,30 @@ impl OuterLoop {
     pub fn turns(&self) -> Option<i64> {
         match self.script.get_variable(&self.session, "turns") {
             Ok(ScriptValue::Int(turns)) => Some(turns),
+            _ => None,
+        }
+    }
+
+    /// **HOW MANY CALLS THE DOCUMENT COUNTS A STANDING INSTRUCTION HAVING TURNED DOWN** — its own
+    /// `screened`, incremented on `screen.matched`.
+    ///
+    /// # ⚠⚠⚠ Why this exists when the run already has a tally
+    ///
+    /// It did not, and the omission is the shape this workspace keeps paying for. The document
+    /// counts screenings and [`Outcome::screened`](crate::driver::Outcome::screened) counts
+    /// `Verdict::Screened` steps — **two authorities over one fact**, and the machine's was read by
+    /// nothing, which is the definition of a number that is a comment (R355's rule, and debt 49's
+    /// shape exactly).
+    ///
+    /// ⚠ The two are not merged, because they are counted for different reasons and by different
+    /// parties: the DOCUMENT's is what a future `judging` guard could compare against, the way
+    /// `max_turns` compares against `turns`; the RUN's is what a person auditing the run reads. What
+    /// makes two safe is that a gate asserts they AGREE — see
+    /// `a_loop_carries_out_the_standing_instruction_its_author_wrote`.
+    #[must_use]
+    pub fn screened(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, "screened") {
+            Ok(ScriptValue::Int(screened)) => Some(screened),
             _ => None,
         }
     }
@@ -852,19 +1079,26 @@ impl OuterLoop {
             // `_event.data.done`, which is the one event on this surface that carries data.
             AiLoopState::Judging => AiLoopEvent::Judge,
 
-            // ⚠⚠ REGISTERED DEBT, NOT AN OVERSIGHT — and each has its own reason, kept where a
+            // ⚠⚠⚠ THE AUTHOR'S STANDING INSTRUCTIONS, CARRIED OUT. A dialog no consent covered is
+            // here; whether one of the document's own rules claims it — and what happens if one
+            // does — is [`screen`](Self::screen).
+            AiLoopState::Screening => self.screen(panes, run)?,
+
+            // ⚠⚠ REGISTERED DEBT, NOT AN OVERSIGHT, and each has its own reason kept where a
             // reader meets it:
             //
-            // * `screening` has two OWNER decisions in front of it: the document matches a dialog
-            //   by KIND (`design-decision`, …) and `sprag-detect` classifies no kinds, and the
-            //   rules want Escape-then-type where `Consents` can only SELECT an offered option.
+            // * `awaiting_human` is a WAITING state whose two producers (`hold`, `unattended`) this
+            //   driver has none of — so a run reaching it stops, which is what
+            //   `Attended::NoOne` means anyway and is unchanged by the round that built
+            //   `screening` beside it. ⚠ **DECLARED OUT OF SCOPE rather than missed**: screening's
+            //   `screen.none` edge leads here, so a rule that claims nothing ends the run exactly
+            //   as an unanswered dialog always has.
             // * `reflecting` + `restarting` need the session REPLACE lifecycle — close the pane,
             //   write the improvements, open a fresh one that reads them on the way up.
             //
             // Reported rather than skipped: a driver that treated these as no-ops would take the
             // loop somewhere the author did not write.
-            state @ (AiLoopState::Screening
-            | AiLoopState::AwaitingHuman
+            state @ (AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting) => return Ok(Pumped::Unbuilt(state)),
 
@@ -1022,6 +1256,97 @@ impl OuterLoop {
                 Over::RunEnded => AiLoopEvent::Cancel,
             },
         )
+    }
+
+    /// **CARRY OUT A STANDING INSTRUCTION ON THE DIALOG THAT IS UP** — `screening`'s whole effect.
+    ///
+    /// # ⚠⚠⚠ The act, and why it is in this order
+    ///
+    /// 1. **What is being screened comes from the NOTICE**, never from a fresh read of the pane.
+    ///    The barrier already parsed this question and decided about it; reading again would be a
+    ///    second authority on one fact, which R367 moved this crate away from.
+    /// 2. **A rule has to claim it.** None does — or the loop holds none — and the run stops with
+    ///    [`Refusal::NoRule`](crate::consent::Refusal::NoRule) naming the dialog, so an author
+    ///    learns what to quote.
+    /// 3. **The call is refused** with the product's own key, and the dialog must be PROVABLY GONE.
+    /// 4. **Only then is anything typed**, through [`say`](Self::say) — the same delivery, turn
+    ///    contract and cost accounting every prompt this loop sends goes through.
+    ///
+    /// ⚠⚠⚠ **STEP 4 MAY NOT BE REORDERED IN FRONT OF STEP 3, AND THAT IS MEASURED.** A live probe
+    /// pressed `Tab` at a real permission dialog, which leaves it up, then typed into what was left
+    /// — `deliver` read the text back off the screen and reported `Confirmed`, and the Enter behind
+    /// it **approved the file write the agent had asked about**. A read-back proves the pane painted
+    /// what was typed; only *the question is gone* says what an Enter will then MEAN.
+    ///
+    /// ⚠ The record is written AFTER `say`, because `say` clears the notice — a new turn is a new
+    /// question, and the three things armed per turn must not come apart.
+    fn screen(
+        &mut self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) -> Result<AiLoopEvent, PaneError> {
+        // ⚠⚠ THE BARRIER'S OWN REFUSAL IS CARRIED, not just its question: it says what the
+        // CONSENTS made of this dialog, and that reason has a different remedy from anything
+        // screening can report. See [`Unanswered::unscreened`].
+        let unanswered = match self.noticed.as_ref() {
+            Some(Noticed::Asking(unanswered)) => unanswered.clone(),
+            _ => Unanswered::unreadable(),
+        };
+        // ⚠ A blocked pane whose question nothing could read reaches here too — `barrier_says`
+        // records `Unanswered::unreadable()` for it. No rule can quote what nobody parsed, and the
+        // honest answer is the one that arm already carries: the remedy is a person.
+        let Some(question) = unanswered.question().cloned() else {
+            self.noticed = Some(Noticed::Asking(Unanswered::unreadable()));
+            return Ok(AiLoopEvent::ScreenNone);
+        };
+        let rules = match self.screening() {
+            Ok(rules) => rules,
+            // ⚠ The door refuses an unreadable rule list before a run starts, so arriving here
+            // means the datamodel stopped answering MID-RUN — the same class as a prompt that
+            // cannot be read at the moment of delivery, and it gets that class's answer.
+            Err(_) => {
+                self.noticed = Some(Noticed::Undrivable(ScreenRules::WIRE_KEY));
+                return Ok(AiLoopEvent::Fail);
+            }
+        };
+        let Some(rule) = rules.as_ref().and_then(|rules| rules.claiming(&question)) else {
+            // ⚠⚠⚠ RE-HEADED, NOT REPLACED. A caller reading `no_rule` alone would be sent to write
+            // a standing instruction about a dialog whose own `Yes` a consent could have taken,
+            // which is the commoner case by far.
+            self.noticed = Some(Noticed::Asking(Unanswered::unscreened(unanswered)));
+            return Ok(AiLoopEvent::ScreenNone);
+        };
+        // Owned before the act, because saying the rule's text borrows `self` mutably and the rule
+        // lives in a list read out of the datamodel.
+        let (when, said) = (rule.when().to_owned(), rule.text().to_owned());
+
+        match crate::screen::refuse(panes, self.pane, &question, run)? {
+            // ⚠⚠ NOTHING WAS TYPED — see the paragraph above, and `Refusal::NotDismissed`.
+            Refused::StillUp(unanswered) => {
+                self.noticed = Some(Noticed::Asking(unanswered));
+                Ok(AiLoopEvent::ScreenNone)
+            }
+            // ⚠⚠⚠ AND NOTHING WAS PRESSED. The notice is CLEARED because there is no longer a
+            // question to publish — leaving it would have the next `Blocked` this run reports be
+            // about a dialog that is already gone.
+            Refused::AlreadyGone => {
+                self.noticed = None;
+                Ok(AiLoopEvent::ScreenMoot)
+            }
+            Refused::Gone { bytes } => {
+                let spent = self.say(panes, run, &said)?;
+                self.noticed = Some(Noticed::Screened(Screened {
+                    question,
+                    when,
+                    said,
+                    // ⚠ BOTH HALVES. The refusing key and the redirect are one act to whoever pays
+                    // for it, and a cost ceiling that could not see what a run typed into somebody's
+                    // dialog would be a ceiling with a hole in it.
+                    bytes: bytes + spent,
+                }));
+                Ok(AiLoopEvent::ScreenMatched)
+            }
+        }
     }
 
     /// How long one of the inner agent's turns may take — the caller's [`Turn`], or the run's own
@@ -1563,6 +1888,9 @@ mod tests {
             reference: "~/herdr, ~/ghostty, 그리고 DESIGN.md §5".to_string(),
             max_turns: 3,
             reflect_every: 99,
+            // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
+            // caller that supplies none is the case the echo has to survive.
+            screen_rules: None,
         };
         assert_eq!(
             loops.brief(&brief),
@@ -1657,6 +1985,9 @@ mod tests {
             reference: "r".to_string(),
             max_turns: 3,
             reflect_every: 99,
+            // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
+            // caller that supplies none is the case the echo has to survive.
+            screen_rules: None,
         };
 
         // ── the value came back DIFFERENT: the shape SCE PR-87 produced ──
@@ -1722,6 +2053,7 @@ mod tests {
                 reference: "r".to_string(),
                 max_turns: 3,
                 reflect_every: 99,
+                screen_rules: None,
             }),
             Briefed::NotHeld {
                 part: "milestone",
@@ -1843,6 +2175,9 @@ mod tests {
             reference: "none".to_string(),
             max_turns: 3,
             reflect_every: 99,
+            // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
+            // caller that supplies none is the case the echo has to survive.
+            screen_rules: None,
         };
         assert_eq!(loops.brief(&first), Briefed::Took, "the control");
 
@@ -2120,6 +2455,9 @@ mod tests {
             reference: "this gate".to_string(),
             max_turns: 40,
             reflect_every: 99,
+            // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
+            // caller that supplies none is the case the echo has to survive.
+            screen_rules: None,
         };
         assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
         // ⚠⚠⚠ AND NOTHING IS COMPOSED YET, which is the CONTROL for the whole arrangement. The
@@ -2239,5 +2577,78 @@ mod tests {
              own cost, which is the one thing a bounded run always owes. Walked: {walked:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **WHAT SHAPE THE AUTHORED `screen_rules` CROSS THE DATAMODEL IN** — asked of the engine
+    /// before anything is built to read them, because the whole of `screening` rests on the answer.
+    ///
+    /// The document declares them as an ECMAScript array of objects and the engine that evaluates
+    /// it is LUA — `ai_loop.scxml`'s own measured warning, with the codegen rewriting `[...]` into
+    /// `{...}` and `key:` into `key =` on the way in. A Lua table is one construct for both a list
+    /// and a map, so *"an array of three objects"* is a **prediction** about what
+    /// [`IScriptEngine::get_variable`] hands back, and this workspace has been wrong about exactly
+    /// this kind of prediction before.
+    ///
+    /// ⚠⚠ **AND IT SETTLES WHETHER PR-86's THIRD ASK BLOCKS THIS.** SCE emits no read accessor for a
+    /// lowered SCALAR `<data>`, which is why every string in this driver is read through the script
+    /// session. Measured here: a COMPOSITE `<data>` is not lowered at all, so the interpreter route
+    /// reads it whole — the missing accessor bounds what the policy can answer, not what a driver
+    /// can see.
+    ///
+    /// ⚠ The non-ASCII half is asserted too, and not for symmetry: the replies in that list are
+    /// Korean, and PR-87 was a round in which non-ASCII crossed one route into this datamodel and
+    /// not the other. This is the AUTHORED route, on a value shape nothing had read before.
+    #[test]
+    fn the_authored_screen_rules_cross_the_datamodel_as_a_readable_list() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut machine = Engine::new(AiLoopPolicy::new(Arc::clone(&lua)));
+        machine.initialize();
+        let session = machine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+
+        let Ok(ScriptValue::Array(rules)) = lua.get_variable(&session, "screen_rules") else {
+            panic!(
+                "⚠⚠⚠ the document's standing instructions must reach a driver as a LIST. Anything \
+                 else and `screening` cannot read what the author wrote: {:?}",
+                lua.get_variable(&session, "screen_rules"),
+            );
+        };
+        assert!(
+            !rules.is_empty(),
+            "⚠ the control: the document ships rules, so an empty list here would make every \
+             assertion below vacuous",
+        );
+        for (at, rule) in rules.iter().enumerate() {
+            let ScriptValue::Object(fields) = rule else {
+                panic!("⚠⚠ rule {at} must cross as an object with named fields, not {rule:?}");
+            };
+            for field in [ScreenRule::WHEN_KEY, ScreenRule::TEXT_KEY] {
+                assert!(
+                    matches!(fields.get(field), Some(ScriptValue::String(held)) if !held.is_empty()),
+                    "⚠⚠ rule {at} must carry a non-empty {field:?} — a rule missing either half is \
+                     one that claims nothing or says nothing: {fields:?}",
+                );
+            }
+            assert!(
+                fields.get("keys").is_none(),
+                "⚠⚠⚠ and it must NOT carry a key of its own. The key that refuses a call is the \
+                 product's and was measured; a rule able to name one could name the key that \
+                 APPROVES, which a live probe demonstrated by having a file written: {fields:?}",
+            );
+        }
+        assert!(
+            rules.iter().any(|rule| matches!(
+                rule,
+                ScriptValue::Object(fields)
+                    if matches!(fields.get("text"), Some(ScriptValue::String(text))
+                        if !text.is_ascii())
+            )),
+            "⚠⚠⚠ and a reply in the author's OWN LANGUAGE must survive the crossing. The shipped \
+             replies are Korean; PR-87 was a round in which non-ASCII reached this datamodel by one \
+             route mangled and by the other whole, and this is the route nothing had measured",
+        );
     }
 }

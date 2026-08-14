@@ -899,6 +899,96 @@ done"
     (workspace, pane)
 }
 
+/// A stand-in AGENT CLI **THAT ASKS SOMETHING NO CONSENT CAN TAKE, AND TAKES THE REFUSING KEY** —
+/// the peer `screening` exists for.
+///
+/// # ⚠⚠⚠ How it differs from [`standin_agent_asking`], and why each difference is a product claim
+///
+/// That one raises a dialog whose menu carries the answer a caller would write (`Yes`), so a consent
+/// gets the run past it. This one is the case a consent **cannot** reach, which is the whole reason
+/// the loop document has a `screening` state:
+///
+/// * **It reads [`REFUSES`](crate::screen::REFUSES) as a keypress**, in raw mode, exactly as
+///   [`standin_agent_asking`] reads a digit — and it is the ONLY key it acts on, so a run that
+///   pressed anything else sits there and the gate says so rather than passing.
+/// * ⚠⚠⚠ **AND ITS DIALOG STAYS UP UNTIL THAT KEY ARRIVES.** The fidelity claim R384 measured is
+///   that a live agent's dialog is dismissed by this key in ~25 ms and by `Tab` not at all — so a
+///   fixture that cleared its menu on any input would make the product's *"prove the question is
+///   gone"* step pass for free, which is precisely the step whose absence approved a file write.
+/// * **What it does after the refusal is what a real agent did**: it CLEARS the menu, reports the
+///   call turned down, and comes back for the next prompt. The redirect then arrives as ordinary
+///   text.
+///
+/// ⚠ It answers the redirect with the done marker, so a run that gets past the dialog CONVERGES and
+/// one that does not cannot — which is what makes *"the standing instruction worked"* an ending
+/// rather than a note.
+///
+/// ⚠⚠⚠ **AND ITS REFUSAL LINE CARRIES `ACK`, WHICH IS NOT DECORATION — R375's TRAP, MET AGAIN.**
+/// [`supervised_asking`] derives `seq` by counting tokens on the COLLAPSED SCREEN and holds it
+/// monotone by hand, because a screen that scrolls would otherwise make the count go DOWN and
+/// `seq > armed` could never hold again. This peer does something worse than scroll: it CLEARS, so
+/// the first turn's token goes with the menu. The first draft printed a refusal line with no token
+/// in it and the count was pinned at its old high for the rest of the run — measured, as a run
+/// whose screening plainly worked (`Working --TurnBlocked--> Screening`, the refusal in its
+/// journal) and then sat in `Working --Null--> Working` until its wall clock. **A fixture's
+/// counting has to survive the fixture's own repaint.**
+/// ⚠⚠⚠ **`takes_the_key` IS THE HAZARD, PARAMETERISED.** `false` builds the peer the live probe's
+/// `Tab` arm measured: a dialog that stays up whatever arrives. What the product must do there is
+/// **type nothing at all**, and a fixture that could not be that peer would leave the one assertion
+/// that matters — *the redirect never reached the pane* — with nothing to make it fail.
+pub(crate) fn standin_agent_refusing(takes_the_key: bool) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    // ⚠ `27` is Escape's byte, and `0` is a byte no key sends — so the un-dismissable peer is the
+    // SAME program waiting for something that never arrives, rather than a different fixture whose
+    // difference a reader has to take on trust.
+    let breaks_on = if takes_the_key { "27" } else { "0" };
+    let script = "\
+stty -echo; printf 'AGENT-READY\\n'; asked=0; k=''; \
+readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
+while read line; do \
+  printf '%s\\n' \"$line\"; \
+  if [ $asked -eq 1 ]; then \
+    asked=2; printf 'MILESTONE REACHED\\n'; continue; \
+  fi; \
+  case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
+  if [ $asked -eq 0 ]; then \
+    printf 'Choose an approach\\n'; \
+    printf 'Which way should I build this?\\n'; \
+    printf '\\342\\235\\257 1. The quick one\\n'; \
+    printf '  2. The thorough one\\n'; \
+    stty -icanon; \
+    while :; do \
+      k=$(readbyte); \
+      [ -n \"$k\" ] || exit 0; \
+      case \"$k\" in BREAKS_ON) break;; esac; \
+    done; \
+    stty icanon; \
+    asked=1; \
+    printf '\\033[2J\\033[H'; printf 'ACK rejected the choice\\n'; \
+    continue; \
+  fi; \
+  printf 'MILESTONE REACHED\\n'; \
+done"
+        .replace("BREAKS_ON", breaks_on);
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 80, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
 /// The supervision a real host would provide for [`standin_agent_asking`] — **the shipping dialog
 /// parser for what it is asking, and the peer's own output for how far it has got**.
 ///

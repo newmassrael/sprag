@@ -77,6 +77,13 @@ pub enum NotStarted {
     /// `max_turns` or above"*, which the caller can act on before anything happens, and a run that
     /// prompts a live agent eight times and then stops somewhere with no answer for it.
     Unbuilt(AiLoopState),
+    /// ⚠⚠ **THE LOOP'S STANDING INSTRUCTIONS ARE NOT ONES THIS BUILD CAN CARRY OUT**, and which.
+    ///
+    /// The rules live in the document's authored half and reach the datamodel either from the file
+    /// or through the [`Brief`]. A rule that claims every dialog would refuse every tool call the
+    /// agent ever asks about, and one that says nothing leaves it turned down with nothing to do —
+    /// so both are answered here, before a byte is typed, exactly as an unreachable state is.
+    Screening(crate::outer::NotScreenable),
 }
 
 /// A BOUNDED, CANCELLABLE RUN of `ai_loop.scxml`'s machine against one pane — the door onto
@@ -133,9 +140,15 @@ impl AiLoop {
         }
         let mut inner = OuterLoop::new(script, pane, spec).ok_or(NotStarted::Undrivable)?;
         match inner.brief(brief) {
-            Briefed::Took => Ok(Self { inner, pane }),
-            refused => Err(NotStarted::Brief(refused)),
+            Briefed::Took => {}
+            refused => return Err(NotStarted::Brief(refused)),
         }
+        // ⚠⚠ ASKED AFTER THE BRIEF, because the brief may REPLACE the rules — so validating first
+        // would be validating a document the run is not going to use. A caller's own rules are
+        // already typed and cannot be malformed; what this reaches is the author's, and the round
+        // trip that just carried either of them.
+        inner.screening().map_err(NotStarted::Screening)?;
+        Ok(Self { inner, pane })
     }
 
     /// Where the machine is — the loop's own state, for a caller that wants it beside the run's.
@@ -165,6 +178,16 @@ impl AiLoop {
     #[must_use]
     pub fn turns(&self) -> Option<i64> {
         self.inner.turns()
+    }
+
+    /// How many of its peer's calls a standing instruction turned down — **the DOCUMENT's own
+    /// count**, beside the run's.
+    ///
+    /// ⚠⚠ There are deliberately two, and the gate that drives them asserts they AGREE — see
+    /// [`OuterLoop::screened`].
+    #[must_use]
+    pub fn screened(&self) -> Option<i64> {
+        self.inner.screened()
     }
 
     /// Whether `state` is one of the document's five finals.
@@ -270,20 +293,30 @@ impl AiLoop {
     /// facts every other plugin here reports, and they get the same two words. Only
     /// `reflecting`/`restarting` are this build's own gap, and they are refused at the door
     /// ([`NotStarted::Unbuilt`]) so a run cannot reach them.
+    ///
+    /// ⚠⚠⚠ **AND IT CHARGES WHAT THE REFUSAL SPENT**, which is a hole this round opened and closed
+    /// in the same breath. `Orchestrator`, `Agent` and `Answer` all report `Cost::Bytes(asking
+    /// .bytes())` on a `Blocked`, and a loop reported zero — true for as long as a loop could not
+    /// type at a dialog, and false the moment `screening` could press a key and give up
+    /// ([`Refusal::NotDismissed`](crate::consent::Refusal::NotDismissed)). **A cost ceiling that
+    /// cannot see what a run typed into somebody's dialog is a ceiling with a hole in it.**
     fn unbuilt(&self, state: AiLoopState) -> Result<Step, PaneError> {
+        let spent = match self.inner.noticed() {
+            Some(Noticed::Asking(unanswered)) => unanswered.bytes(),
+            _ => 0,
+        };
         let verdict = match (state, self.inner.noticed()) {
             // A PERSON TOOK THE PANE. `awaiting_human` is where the document waits for them, and
             // `taken_over` is this substrate's word for the same fact.
             (AiLoopState::AwaitingHuman, Some(Noticed::Interrupted(who))) => {
                 Verdict::TakenOver(*who)
             }
-            // THE PEER STOPPED TO ASK. `screening` is where the document answers such a question
-            // from a person's standing rules — two owner decisions in front of it — so until it is
-            // built the answer is the one every unattended run gives: stop, and publish what is
-            // being asked.
-            (AiLoopState::Screening | AiLoopState::AwaitingHuman, _) => {
-                Verdict::Blocked(self.asking())
-            }
+            // THE PEER STOPPED TO ASK AND NOTHING GOT THE RUN PAST IT. `screening` is built now, so
+            // reaching `awaiting_human` means it ran and answered `screen.none` — no rule claimed
+            // the dialog, or one did and the refusing key did not take it. Either way the answer is
+            // the one every unattended run gives: stop, and publish what is being asked, with the
+            // driver's own refusal saying which of the two it was.
+            (AiLoopState::AwaitingHuman, _) => Verdict::Blocked(self.asking()),
             (state, _) => {
                 return Err(PaneError::Undrivable(format!(
                     "it reached {state:?}, which this build has no effect for — and the brief that \
@@ -291,7 +324,7 @@ impl AiLoop {
                 )));
             }
         };
-        Ok(Step::new(Cost::Bytes(0), verdict).noting(format!(
+        Ok(Step::new(Cost::Bytes(spent), verdict).noting(format!(
             "the loop is in {state:?}, which no driver serves yet"
         )))
     }
@@ -329,6 +362,24 @@ impl Plugin for AiLoop {
                     return Ok(Step::new(
                         Cost::Bytes(spent + answered.bytes),
                         Verdict::Answered(answered),
+                    )
+                    .noting(note));
+                }
+                // ⚠⚠⚠ AND A REFUSAL GIVEN ON THE AUTHOR'S STANDING INSTRUCTION, reported the same
+                // way and for a sharper version of the same reason: this step **stopped the
+                // caller's agent doing something it had decided to do** and told it something else
+                // instead. An act with that much consequence outside the loop cannot reach a
+                // person's report as the word `continue`.
+                //
+                // ⚠⚠ ITS BYTES JOIN THE STEP'S, exactly as an answer's do — the refusing key and
+                // the redirect were both typed by `screening` rather than by the transition's own
+                // prompt, so `Pumped::Moved`'s `spent` cannot see either. `screen.matched` owes no
+                // prompt (`Owed::on`), so that number is zero and this is the whole cost.
+                if let Some(screened) = self.inner.took_screening() {
+                    let note = screened.describe();
+                    return Ok(Step::new(
+                        Cost::Bytes(spent + screened.bytes),
+                        Verdict::Screened(screened),
                     )
                     .noting(note));
                 }
@@ -474,6 +525,10 @@ mod tests {
             // ⚠ EQUAL, which is what makes `reflecting` unreachable — `judging` tests the turn
             // budget first. `AiLoop::new` refuses anything smaller, and the gate below drives that.
             reflect_every: max_turns,
+            // ⚠ The document's own placeholder rule, which claims nothing — so every gate below
+            // that does NOT set this measures a loop with screening available and unarmed, which
+            // is the shipped shape.
+            screen_rules: None,
         }
     }
 
@@ -722,12 +777,27 @@ mod tests {
                  {unarmed:?} — anything else is a run that typed at a menu or died silently",
             );
         };
+        // ⚠⚠⚠ THE HEAD REASON MOVED WHEN `screening` WAS BUILT, and keeping BOTH halves asserted
+        // is the point rather than a repair. Screening is now the last authority to look at this
+        // dialog, so the arm is its answer — but the CONSENT-level reason is what makes the second
+        // half of this pair possible, and a report that lost it would send a caller to write a
+        // standing rule about a dialog whose own `Yes` a clause could take. See
+        // `Unanswered::unscreened`.
         assert_eq!(
             unanswered.why(),
-            crate::consent::Refusal::NoConsent,
-            "⚠⚠ and it must say WHY nothing was answered. `no_consent` is the one reason whose \
-             remedy is a change to the CALL, which is what makes the other half of this pair \
-             possible: {unanswered:?}",
+            crate::consent::Refusal::NoRule,
+            "⚠⚠ the LAST authority to look at the dialog is what the arm names, and after \
+             `screening` exists that is the rules: {unanswered:?}",
+        );
+        assert!(
+            unanswered
+                .explain()
+                .contains(crate::consent::Refusal::NoConsent.wire_str()),
+            "⚠⚠⚠ AND THE CONSENT-LEVEL REASON MUST SURVIVE UNDERNEATH. `no_consent` is the reason \
+             whose remedy is a change to the CALL — the very change the second half of this pair \
+             makes — and a run that reported only `no_rule` would send its caller to write a \
+             standing instruction about a dialog that offers `Yes`: {}",
+            unanswered.explain(),
         );
         assert!(
             unanswered.question().is_some(),
@@ -761,6 +831,251 @@ mod tests {
             armed_turns.is_some_and(|turns| turns >= 1),
             "⚠⚠ and the agent must have taken a real turn on the other side of the question, or \
              `converged` would be a word about a run that never got past it: {armed_turns:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **A LOOP CARRIES OUT ITS AUTHOR'S STANDING INSTRUCTION ON A DIALOG NO CONSENT CAN
+    /// ANSWER** — register items 119, 5 and 142, and the state `screening` was built for.
+    ///
+    /// # ⚠⚠⚠ Why the peer here asks something a consent structurally cannot reach
+    ///
+    /// The gate above this one arms a [`Consents`](crate::consent::Consents) clause and the run goes
+    /// through, which settles the case where the answer is ON THE MENU. This peer asks *"Which way
+    /// should I build this?"* and offers *"The quick one"* / *"The thorough one"* — **there is no
+    /// option a caller could authorise in advance**, because the whole point of the question is that
+    /// the answer is not one of the things being offered. That is the dialog `screen_rules` exist
+    /// for, and until this round it ended the run.
+    ///
+    /// ⚠⚠ **IT IS A PAIR, and the pair is the claim:**
+    ///
+    /// * **with no rule that claims it**, the run stops and says `no_rule` — naming the dialog, so
+    ///   the author learns what to quote;
+    /// * **with one rule quoting the dialog**, the same peer and the same brief CONVERGE: the call
+    ///   is turned down, the agent is told what to do instead, and it does it.
+    ///
+    /// ⚠⚠⚠ **AND THE RUN SAYS WHICH KIND OF DECISION IT TOOK.** `screened` is 1 and `answered` is
+    /// **0** — measured, because the act refuses rather than approves and a person auditing this run
+    /// must not find it counted among the things their agent was allowed to do.
+    #[test]
+    fn a_loop_carries_out_the_standing_instruction_its_author_wrote() {
+        /// The words the stand-in's dialog carries, which a rule quotes.
+        const ASKS: &str = "Which way should I build this?";
+        /// What the standing instruction says instead. ⚠ It carries no marker and no `exactly:`, so
+        /// a peer that converged off THIS text rather than off its own next turn could not.
+        const INSTEAD: &str = "neither; do the smallest verifiable thing and report";
+
+        /// One run against the peer that asks an unanswerable question, with whatever standing
+        /// instructions the author left it — and what became of it.
+        fn run_with(
+            screen_rules: Option<crate::screen::ScreenRules>,
+        ) -> (
+            crate::driver::Outcome,
+            Option<i64>,
+            String,
+            Vec<String>,
+            Option<i64>,
+        ) {
+            run_against(screen_rules, true)
+        }
+
+        /// One run against a peer that asks an unanswerable question and either does or does not
+        /// take the key that refuses it — and, beside the run's own account, **the DOCUMENT's
+        /// count of what it screened**, so the two authorities can be compared.
+        fn run_against(
+            screen_rules: Option<crate::screen::ScreenRules>,
+            takes_the_key: bool,
+        ) -> (
+            crate::driver::Outcome,
+            Option<i64>,
+            String,
+            Vec<String>,
+            Option<i64>,
+        ) {
+            let (workspace, pane) = crate::testing::standin_agent_refusing(takes_the_key);
+            let access = crate::testing::supervised_asking(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    screen_rules,
+                    ..brief_for(40)
+                },
+                // ⚠ NO CONSENT AT ALL, which is the control for the whole gate: nothing this run
+                // holds can take an option, so whatever gets it past the dialog is `screening`.
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            // ⚠⚠ THE WALK IS CARRIED INTO EVERY FAILURE MESSAGE BELOW, R378's lesson: a loop that
+            // does not reach its ending is diagnosable by its total alone only if nobody thought
+            // to keep the journal, and this gate's first run stalled with `exhausted — duration`
+            // saying nothing about where.
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 40,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            let turns = loops.turns();
+            let screened = loops.screened();
+            let typed = access
+                .input_echo()
+                .and_then(|echo| echo.pane_recent_input(pane))
+                .unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (outcome, turns, typed, walk, screened)
+        }
+
+        // ── THE DEFECT: A DIALOG THE AUTHOR NEVER QUOTED ──
+        //
+        // ⚠ The document's shipped rule is an `(edit me)` placeholder that claims nothing, so this
+        // is the SHIPPED loop meeting a real question.
+        let (unarmed, unarmed_turns, _, unarmed_walk, unarmed_screened) = run_with(None);
+        let OutcomeState::Blocked(Some(unanswered)) = &unarmed.state else {
+            panic!(
+                "⚠⚠⚠ a loop whose agent asks something nothing covers must report BLOCKED with the \
+                 question: {:?} — walked {unarmed_walk:?}",
+                unarmed.state,
+            );
+        };
+        assert_eq!(
+            unanswered.why(),
+            crate::consent::Refusal::NoRule,
+            "⚠⚠⚠ and the reason must be the one whose remedy is a RULE. `no_consent` here would \
+             send an author to write a clause about a menu that offers nothing they could have \
+             authorised — the exact dead end this state exists to end: {unanswered:?}",
+        );
+        assert!(
+            unanswered.question().is_some(),
+            "⚠⚠ and it must publish the dialog, or the author cannot see what to quote",
+        );
+        assert_eq!(
+            unarmed_turns,
+            Some(0),
+            "⚠⚠⚠ THE NUMBER THIS COSTS: the loop stops on the FIRST such question, with ZERO turns \
+             judged",
+        );
+        assert_eq!(
+            (unarmed.screened, unarmed.answered),
+            (0, 0),
+            "⚠ the control: a run that got past nothing decided nothing",
+        );
+        assert_eq!(
+            unarmed_screened,
+            Some(0),
+            "⚠⚠ and the DOCUMENT counts none either — its `screened` is incremented on \
+             `screen.matched` and NOT on entering the state, so a loop that only LOOKED at a \
+             dialog must not have counted it. Walked {unarmed_walk:?}",
+        );
+
+        // ── AND THE SAME EVERYTHING, PLUS ONE STANDING INSTRUCTION ──
+        let rules = crate::screen::ScreenRules::of(vec![
+            crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                .expect("both halves are non-empty"),
+        ])
+        .expect("a non-empty list");
+        let (armed, armed_turns, typed, walk, armed_screened) = run_with(Some(rules));
+        assert_eq!(
+            armed.state,
+            OutcomeState::Converged,
+            "⚠⚠⚠ the author's own standing instruction must carry the loop THROUGH the dialog and \
+             on to its milestone. Nothing else about this run differs from the one above: {:?} — \
+             walked {walk:?}",
+            armed.state,
+        );
+        assert_eq!(
+            (armed.screened, armed.answered),
+            (1, 0),
+            "⚠⚠⚠ AND THE RUN MUST SAY WHICH DECISION IT TOOK. This act REFUSED a call; a run that \
+             counted it among the things it approved would answer *what did my agent get to do?* \
+             with the opposite fact. Walked {walk:?}",
+        );
+        assert_eq!(
+            armed_screened.map(|count| u32::try_from(count).unwrap_or(u32::MAX)),
+            Some(armed.screened),
+            "⚠⚠⚠ AND THE DOCUMENT'S OWN COUNT MUST AGREE WITH THE RUN'S. There are two authorities \
+             over this one fact — `screened` in the datamodel, incremented on `screen.matched`, and \
+             the Driver's tally of `Verdict::Screened` steps — and two numbers nobody compares is \
+             how one of them quietly becomes folklore. Walked {walk:?}",
+        );
+        assert!(
+            armed_turns.is_some_and(|turns| turns >= 1),
+            "⚠⚠ and the agent must have taken a real turn on the other side of the question, or \
+             `converged` would be a word about a run that never got past it: {armed_turns:?}",
+        );
+        assert!(
+            typed.contains(INSTEAD),
+            "⚠⚠⚠ and the REDIRECT must have reached the pane. A run that refused the call and said \
+             nothing would leave the agent turned down with no next thing to do, which is the \
+             failure `Malformed::SaysNothing` refuses at construction. Typed: {typed:?}",
+        );
+
+        // ── ⚠⚠⚠ AND THE THIRD ARM: A DIALOG THAT WILL NOT GO ──
+        //
+        // The same rule, the same brief, and a peer whose dialog ignores the refusing key. This is
+        // the `Tab` arm of the live probe rebuilt where it can be run for free, and what it asserts
+        // is a NEGATIVE: **nothing was typed**. A dialog still on the screen reads an Enter as an
+        // answer to ITSELF — the probe measured a file being written by exactly this — so a
+        // screening act that cannot prove the question is gone must say its piece to nobody.
+        let same_rule = crate::screen::ScreenRules::of(vec![
+            crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                .expect("both halves are non-empty"),
+        ])
+        .expect("a non-empty list");
+        let (stuck, stuck_turns, stuck_typed, stuck_walk, stuck_screened) =
+            run_against(Some(same_rule), false);
+        let OutcomeState::Blocked(Some(unmoved)) = &stuck.state else {
+            panic!(
+                "⚠⚠⚠ a rule that fired against a dialog that will not go must end the run BLOCKED, \
+                 not carry on as though it had been carried out: {:?} — walked {stuck_walk:?}",
+                stuck.state,
+            );
+        };
+        assert_eq!(
+            unmoved.why(),
+            crate::consent::Refusal::NotDismissed,
+            "⚠⚠ and the reason must separate *nothing claimed this* from *something did and the \
+             key did not land* — the second is a fact about the AGENT, since the key is the \
+             product's: {unmoved:?}",
+        );
+        assert!(
+            !stuck_typed.contains(INSTEAD),
+            "⚠⚠⚠ **THE ONE ASSERTION THIS WHOLE ACT IS ORDERED FOR.** The redirect must NOT have \
+             reached a pane whose dialog is still up. A live probe typed into exactly this and the \
+             Enter behind it APPROVED THE FILE WRITE the agent had asked permission for — and \
+             `deliver` reported the text confirmed on screen while it happened. Typed: \
+             {stuck_typed:?}",
+        );
+        assert!(
+            unmoved.bytes() > 0,
+            "⚠⚠ THE CONTROL: the refusing key really was pressed, or the assertion above is about \
+             an act that never began: {unmoved:?}",
+        );
+        assert_eq!(
+            (stuck.screened, stuck_turns, stuck_screened),
+            (0, Some(0), Some(0)),
+            "⚠⚠ and NEITHER authority counted it, and no turn was judged — a run that counted this \
+             among the calls it got past would be reporting a decision it did not manage to take. \
+             Walked {stuck_walk:?}",
+        );
+        // ⚠⚠⚠ AND THE KEY WAS CHARGED FOR. Every other plugin reports `Cost::Bytes(asking.bytes())`
+        // on a `Blocked`, and a loop reported zero — true for as long as a loop could not type at a
+        // dialog, and false the moment `screening` could press a key and give up. A ceiling that
+        // cannot see what a run typed into somebody's dialog is a ceiling with a hole in it.
+        assert!(
+            matches!(stuck.cost, Some(crate::plugin::Cost::Bytes(spent)) if spent >= unmoved.bytes()),
+            "⚠⚠ the run must charge for the refusing key it really pressed. The refusal says it \
+             cost {} and the run reports {:?}",
+            unmoved.bytes(),
+            stuck.cost,
         );
     }
 
@@ -1261,22 +1576,31 @@ mod tests {
             Ok(ScriptValue::Array(rules)) => rules,
             other => panic!(
                 "⚠⚠ `screening` cannot be built on a datamodel that cannot hold its \
-                 rules. The document writes three; the engine answered {other:?}",
+                 rules. The engine answered {other:?}",
             ),
         };
-        assert_eq!(
-            rules.len(),
-            3,
-            "the document declares three rules: {rules:?}"
-        );
+        // ⚠⚠ ONE, and it is the document's `(edit me)` PLACEHOLDER — this used to be three, matched
+        // by dialog KIND. R383 measured that quoting the agent covers what a taxonomy would, and
+        // R384 measured that a shipped needle would have to be INVENTED for the one dialog family
+        // nobody has captured. So the file ships the shape and claims nothing with it.
+        assert_eq!(rules.len(), 1, "the document declares one rule: {rules:?}");
         let first = match &rules[0] {
             ScriptValue::Object(fields) => fields,
-            other => panic!("a rule is an object of `when`/`keys`/`text`: {other:?}"),
+            other => panic!("a rule is an object of `when`/`text`: {other:?}"),
         };
         assert!(
-            matches!(first.get("when"), Some(ScriptValue::String(w)) if w == "design-decision"),
+            matches!(first.get("when"), Some(ScriptValue::String(w)) if w.contains("(edit me)")),
             "⚠ and its FIELDS must survive the `key:` → `key =` rewrite, not just \
              its shape: {first:?}",
+        );
+        // ⚠ AND `keys` MUST BE GONE. It is asserted as an ABSENCE because its presence would be a
+        // rule able to name the key that APPROVES — a live probe pressed `Tab` at a real permission
+        // dialog, typed into what was left, and the agent's file was written. See
+        // [`crate::screen::REFUSES`].
+        assert!(
+            first.get("keys").is_none(),
+            "⚠⚠⚠ a screen rule must NOT author its own key. The key that refuses is the product's, \
+             measured, and that is what stops a standing rule granting a permission: {first:?}",
         );
 
         // ── a scalar: what the outer `judging` budget compares against ──

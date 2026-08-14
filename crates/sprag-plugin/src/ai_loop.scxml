@@ -29,9 +29,25 @@
   goes back to work and the loop resumes where it was. `blocked` stays as the
   terminal for the case that actually ends a run: nobody came.
 
-  The loop still never answers a dialog itself. That was never about whether a
-  human is present — it is about whose decision a tool permission is. Waiting is
-  what changes; answering is still not this machine's to do.
+  ⚠⚠⚠ THIS DOCUMENT USED TO SAY *"the loop still never answers a dialog itself
+  … answering is still not this machine's to do"*, and that sentence is now
+  FALSE IN BOTH DIRECTIONS. It is kept here, struck through, because what
+  replaced it is the shape of the whole feature rather than a detail:
+
+  * A CALLER may declare consents (`AiLoopSpec::may_answer`), and the barrier
+    takes an offered option on them. That is somebody saying *yes* in advance,
+    and R382 measured what its absence cost: a loop whose agent asked one
+    permission question stopped with ZERO turns judged, and every milestone
+    that touches a file ends there.
+  * The AUTHOR may write standing instructions (`screen_rules`), and `screening`
+    carries them out by REFUSING the call and saying what to do instead.
+
+  The sentence was right about the principle and wrong about the conclusion.
+  Whose decision a tool permission is has not changed: it is the person's — and
+  both of these are the person having made it IN ADVANCE, in writing, rather
+  than the machine deciding. What the loop still never does is decide something
+  nobody wrote down; a dialog neither a consent nor a rule reaches still stops
+  the run and waits for somebody.
 
   datamodel="ecmascript" (not the `null` its two siblings use) because a loop's
   prompts and goals ARE its definition: the whole point is that a person edits
@@ -179,42 +195,62 @@
 
     <!--
       Standing instructions for dialogs the person has already decided about.
-      When the inner agent raises a question, `screening` matches it against
-      these before anybody is woken; a match is answered with the reply written
-      here and the run carries on.
+      When the inner agent raises a question no consent covers, `screening`
+      matches it against these before anybody is woken; a match TURNS THE CALL
+      DOWN and tells the agent what to do instead, and the run carries on.
 
       This is not the loop deciding. It is the loop CARRYING OUT a decision the
       person made in advance and wrote down — which is why the rules live in the
       authored half of this document and not in the driver. A rule with no match
       wakes the person, exactly as before.
 
-      Each rule is `when` (what shape of dialog it claims) and `reply` (the keys
-      and text to send). `keys` is sent first, then `text`.
+      ⚠⚠⚠ EACH RULE IS `when` (WORDS THE DIALOG CARRIES) AND `text` (WHAT TO SAY
+      ONCE THE CALL IS REFUSED), and both halves of that shape were decided by
+      measurement rather than by argument.
+
+      * `when` USED TO NAME A DIALOG *KIND* — 'design-decision', 'multiple-choice'
+        — which needed somebody to classify other people's dialogs into a
+        taxonomy, and `sprag-detect` classifies none. R383 asked a live agent
+        instead: three tool families ask three DIFFERENT questions and one clause
+        quoting the agent's own words covers all three. A taxonomy buys nothing
+        quoting does not already have, and it would rot the first time an agent
+        reworded anything. So a rule quotes, exactly as a consent's `asked` does,
+        and they share one matcher.
+
+      * `keys` IS GONE, AND ITS ABSENCE IS THE SAFETY PROPERTY. R384 pressed
+        Escape, Tab and the offered `3` at a live claude's permission dialog:
+        **Escape REFUSES THE TOOL CALL** (`User rejected write to PROBE.txt`, the
+        file never created) in 25 ms, identically to `3. No` — while **Tab leaves
+        the dialog up** and rewrites option 1 into *"Yes, and tell Claude what to
+        do next"*, so the probe that typed into it **had its file written**.
+
+        A rule that could name its own key could therefore name the key that
+        APPROVES. The key is the product's now (`sprag_plugin::screen::REFUSES`),
+        and a rule authors only which dialog and what to say — so a standing
+        instruction cannot grant a permission, structurally rather than by hope.
+
+      ⚠⚠ AND THAT IS WHY THERE IS NO `screen_permissions` FLAG ANY MORE. It read:
+      *"approving a permission grants an agent the ability to act, and a standing
+      yes is a different kind of promise than a standing think-about-it-again;
+      nobody gets it by writing a rule that happened to match."* Every word of
+      that is still true and none of it needs a flag: the act's first key is a
+      REFUSAL, so no rule can reach the promise the flag was guarding. What the
+      flag could never have done is tell a permission dialog from a design one —
+      it needed the very taxonomy R383 measured away.
+
+      ⚠ THE SHIPPED RULE IS A PLACEHOLDER, in this document's own `(edit me)`
+      idiom, and deliberately claims nothing. A shipped needle would have to be
+      invented: the dialogs a loop meets are MEASURED for tool permissions and
+      unmeasured for design questions, and quoting words nobody has seen is the
+      mistake this file made the last time. A loop that meets a dialog no rule
+      claims says so in its own report (`no_rule`, naming the dialog), so an
+      unedited placeholder is visible rather than silent.
     -->
     <data id="screen_rules"
           expr="[
-            { when: 'design-decision',
-              keys: 'Escape',
-              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' },
-            { when: 'design-proposal',
-              keys: 'Escape',
-              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' },
-            { when: 'multiple-choice',
-              keys: 'Escape',
+            { when: '(edit me) words the dialog carries, quoted from the agent',
               text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' }
           ]"/>
-
-    <!--
-      ⚠ Tool-permission dialogs are NOT screened by default, and the flag is
-      separate from the rules on purpose.
-
-      Redirecting a design question costs a turn. Approving a permission grants
-      an agent the ability to act — delete files, push, spend money — and a
-      standing "yes" to that is a different kind of promise than a standing
-      "think about it again". Someone who wants it can turn it on knowingly;
-      nobody gets it by writing a rule that happened to match.
-    -->
-    <data id="screen_permissions" expr="false"/>
 
     <!-- Budgets. `max_turns` bounds the run; `reflect_every` sets how often
          the loop stops to improve itself. -->
@@ -224,8 +260,15 @@
     <!-- ── below the line: loop bookkeeping, not authored ── -->
     <data id="turns" expr="0"/>
     <data id="turns_since_reflect" expr="0"/>
-    <!-- How many dialogs a standing instruction answered. Counted so an
-         auto-answered run does not read like a hand-answered one. -->
+    <!-- ⚠⚠ How many calls a standing instruction TURNED DOWN. Counted so an
+         auto-screened run does not read like a hand-answered one.
+
+         ⚠ Incremented on `screen.matched` and NOT on entry to `screening`,
+         which is where it used to sit and where it counted the wrong thing:
+         entering that state means a dialog was LOOKED at, and this variable's
+         name promises the ones a rule actually acted on. A loop whose rules
+         claim nothing would have counted every question it declined to
+         answer. -->
     <data id="screened" expr="0"/>
   </datamodel>
 
@@ -256,6 +299,13 @@
       <assign location="reference" expr="_event.data.reference"/>
       <assign location="max_turns" expr="_event.data.max_turns"/>
       <assign location="reflect_every" expr="_event.data.reflect_every"/>
+      <!--
+        ⚠⚠ THE STANDING INSTRUCTIONS TOO, and this assignment is UNCONDITIONAL, which is why the
+        driver always sends them: a caller that says nothing about screening has the document's own
+        rules read out and echoed back here. Omitting the key would assign nil and delete an
+        author's rules for every caller that did not happen to care about them.
+      -->
+      <assign location="screen_rules" expr="_event.data.screen_rules"/>
     </transition>
     <transition event="start" target="priming"/>
     <!--
@@ -367,13 +417,44 @@
   -->
   <state id="screening">
     <onentry>
-      <assign location="screened" expr="screened + 1"/>
       <send event="screen.begin"/>
     </onentry>
-    <!-- A rule claimed it; the driver sent the keys and the reply. -->
-    <transition event="screen.matched" target="working"/>
-    <!-- Nothing covers this one. The person decides. -->
+    <!--
+      A rule claimed it. The driver refused the call and told the agent what to
+      do instead, and the agent is working on that — which is why this edge
+      sends NO prompt (see `Owed::on`): a prompt here would type over a peer
+      that has just been spoken to.
+    -->
+    <transition event="screen.matched" target="working">
+      <assign location="screened" expr="screened + 1"/>
+    </transition>
+    <!--
+      NO STANDING INSTRUCTION GOT THE RUN PAST THIS ONE. The person decides.
+
+      ⚠⚠ Two different things reach this edge and the driver's own report is
+      what tells them apart, because a state cannot carry a reason: no rule
+      claimed the dialog (`no_rule`), or one did and the refusing key did not
+      take it off the screen (`not_dismissed`, and NOTHING was typed). The
+      second matters most — a dialog still up reads an Enter as an answer to
+      itself, which is measured, so the run stops rather than saying its piece.
+    -->
     <transition event="screen.none" target="awaiting_human"/>
+    <!--
+      ⚠⚠⚠ THE DIALOG WENT AWAY BEFORE THE RULE COULD ACT, so nothing was pressed and the turn
+      simply carries on.
+
+      The question reaches `screening` from the reading the BARRIER took on the pump before, and in
+      the gap a person can answer it or the agent can withdraw it. Without this edge the driver's
+      only choices were to press into whatever is there now — Escape into a composer discards what
+      a person was in the middle of typing — or to end the run over a dialog that resolved itself.
+      Neither is what happened, and a machine that cannot say *nothing happened* forces its driver
+      to pick a lie.
+
+      ⚠ It carries no prompt and does NOT count as screened, for the same reason: the turn was
+      never interrupted, the peer is still working on the prompt it already has, and this loop's
+      `Completion` is still armed from it.
+    -->
+    <transition event="screen.moot" target="working"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
   </state>

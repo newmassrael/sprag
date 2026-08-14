@@ -1925,6 +1925,32 @@ fn argument_help(name: &str) -> &'static str {
              entries that fit ONE question and pick DIFFERENT options answer neither: the run \
              stops and says `contradicted`, because which of your own rules wins is not its call."
         }
+        "screen_rules" => {
+            "STANDING INSTRUCTIONS FOR DIALOGS YOU HAVE ALREADY DECIDED ABOUT — a LIST, and the \
+             OTHER half of `may_answer`. A consent PICKS AN OPTION the agent offered; a screen rule \
+             **turns the call down and tells the agent what to do instead**. Use it for the \
+             question a consent cannot reach: when your agent asks *which way should I build \
+             this?*, the answer you want is not one of the things on its menu. ⚠ You do NOT name a \
+             key. The key that refuses is the product's and was measured against a live agent — \
+             pressing it makes the agent report the call rejected and nothing is written — which is \
+             what stops a rule that happened to match from ever granting a permission. ⚠ Leave it \
+             out and the loop keeps whatever its own template's author wrote; that is not the same \
+             as screening nothing, and an empty list is refused rather than treated as either."
+        }
+        "when" => {
+            "WHICH DIALOG this rule claims — text the dialog must carry, quoted from the agent's \
+             own screen exactly as `asked` is. Matching is exact and case-sensitive. ⚠ Quote the \
+             QUESTION and not a word that could appear in your own work: a dialog carries the file \
+             it is about, contents and diff included, so a rule quoting `ready` fires on any dialog \
+             showing a file with that word in it."
+        }
+        "text" => {
+            "WHAT TO TELL THE AGENT once the call is turned down — free prose, in whatever language \
+             you write in. It is typed into the agent's composer as a fresh instruction, and it is \
+             typed ONLY after the dialog is proven gone. ⚠ It may not be empty: a refusal with no \
+             instruction leaves the agent turned down with nothing to do next, and the loop then \
+             waits out its clock on a peer that is waiting for you."
+        }
         "asked" => {
             "WHICH QUESTION the consent is about — text the dialog's own sentence must contain. It \
              is not optional and it is not decoration: without it, a `Yes` you authorised for \
@@ -7908,6 +7934,7 @@ mod tests {
             failure: None,
             stopped: None,
             answered,
+            screened: 0,
         }
     }
 

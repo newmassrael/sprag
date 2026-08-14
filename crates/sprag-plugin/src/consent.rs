@@ -75,6 +75,35 @@ use core::time::Duration;
 
 use sprag_detect::{Choice, Question};
 
+/// **WHETHER `question` CARRIES `needle`** — what it means for a written clause to be ABOUT a
+/// dialog, in one place.
+///
+/// ⚠ The question's lines are joined with a space rather than tested one at a time: an agent's
+/// sentence wraps across the lines of its own box, so a needle spanning the break would be carried
+/// by no single line while being plainly on the screen.
+///
+/// ⚠ **CASE-SENSITIVE, deliberately.** A clause is written by reading the agent's own dialog, so
+/// its words are available exactly; folding case widens what a needle covers, and every widening
+/// here is in the direction of acting on something the caller did not picture.
+///
+/// # ⚠⚠⚠ Why this is a function and not two `contains` calls
+///
+/// TWO things in this crate now decide whether a written clause is about a dialog by quoting it:
+/// [`Consent::asked`], and [`ScreenRule::when`](crate::screen::ScreenRule::when) — the second
+/// because R383 measured that quoting works and took a dialog-KIND taxonomy out of the loop
+/// document. Both are described to their authors as *"quote the words of the dialog"*, so the two
+/// must not be able to come to mean different things; a shared reader is what makes that
+/// structural instead of a promise.
+///
+/// ⚠⚠ And the hazard the captures made visible applies to BOTH: a real dialog's `asked` carries the
+/// file's CONTENTS and its DIFF, not only the question sentence, so a clause quoting a word that
+/// appears in the caller's own files fires on a dialog they were not picturing. Narrowing to *the
+/// question line* is not available — `sprag_detect::question` does not mark which line is the
+/// sentence — and inventing that here would be guessing at another program's layout.
+pub(crate) fn question_carries(question: &Question, needle: &str) -> bool {
+    question.asked.join(" ").contains(needle)
+}
+
 /// WHAT A RUN MAY ANSWER when its peer stops to ask — one question, one option, both in the agent's
 /// own words.
 ///
@@ -149,10 +178,7 @@ impl Consent {
     /// so its words are available exactly; folding case widens what a needle covers, and every
     /// widening here is in the direction of answering something the caller did not picture.
     pub fn covers<'q>(&self, question: &'q Question) -> Result<&'q Choice, Refusal> {
-        // ⚠ The question's lines are joined with a space rather than tested one at a time: an
-        // agent's sentence wraps across the lines of its own box, so a needle spanning the break
-        // would be carried by no single line while being plainly on the screen.
-        if !question.asked.join(" ").contains(&self.asked) {
+        if !question_carries(question, &self.asked) {
             return Err(Refusal::OtherQuestion);
         }
         let exact: Vec<&Choice> = question
@@ -391,6 +417,27 @@ pub enum Refusal {
     /// lost** — it rides in `Unanswered`'s free-text detail, the field `contradicted` established,
     /// so a caller learns both that nobody came AND what they would have been answering.
     Unattended,
+    /// ⚠⚠ **NO STANDING INSTRUCTION CLAIMS THIS DIALOG** — the loop got past its consents, reached
+    /// `screening`, and none of the author's [`ScreenRule`](crate::screen::ScreenRule)s quotes it.
+    ///
+    /// The one arm about the loop DOCUMENT rather than about the call: its remedy is to edit the
+    /// `screen_rules` a person authored, or to brief some, where every arm above is answered by
+    /// changing the call or by fetching somebody. It covers a loop holding no rules at all for the
+    /// same reason — *"write a rule"* and *"widen the rule you wrote"* are one remedy at two
+    /// distances, and the dialog it names is what tells them apart.
+    NoRule,
+    /// ⚠⚠⚠ **A STANDING INSTRUCTION FIRED, THE REFUSING KEY WENT IN, AND THE DIALOG IS STILL UP.**
+    ///
+    /// [`NotTaken`](Self::NotTaken)'s sibling for the other act, and separate from it because the
+    /// remedy differs: `not_taken` is a peer that ignored the OPTION a consent named, and this is a
+    /// peer that did not take [`REFUSES`](crate::screen::REFUSES) — a fact about the AGENT, since
+    /// that key is the product's and was measured against one agent at one version.
+    ///
+    /// ⚠⚠ **NOTHING WAS TYPED**, and that is the arm's whole value. A dialog still on the screen
+    /// reads an Enter as an answer to ITSELF: the live probe pressed `Tab`, typed into what was
+    /// left, and the file the agent had asked permission to write **was written**. So a screening
+    /// act that cannot prove the question is gone stops here rather than saying its piece.
+    NotDismissed,
 }
 
 impl Refusal {
@@ -409,7 +456,7 @@ impl Refusal {
     };
 
     /// Every arm, so the published vocabulary and the readers below are one list.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Unreadable,
         Self::NotTaken,
         Self::NoConsent,
@@ -418,6 +465,8 @@ impl Refusal {
         Self::Ambiguous,
         Self::Contradicted,
         Self::Unattended,
+        Self::NoRule,
+        Self::NotDismissed,
     ];
 
     /// This reason's word on the wire.
@@ -432,6 +481,8 @@ impl Refusal {
             Self::Ambiguous => "ambiguous",
             Self::Contradicted => "contradicted",
             Self::Unattended => "unattended",
+            Self::NoRule => "no_rule",
+            Self::NotDismissed => "not_dismissed",
         }
     }
 
@@ -480,6 +531,16 @@ impl Refusal {
             Self::Unattended => {
                 "this run was told a person was watching and waited for them, and the dialog was \
                  still up when that patience ran out — give them longer, or stop expecting one"
+            }
+            Self::NoRule => {
+                "no standing instruction in this loop claims the dialog on screen, so there was \
+                 nothing to carry out — quote it in a `screen_rules` entry, or answer it with a \
+                 consent if the answer is one of its own options"
+            }
+            Self::NotDismissed => {
+                "a standing instruction fired and the key that refuses a call did not take the \
+                 dialog off the screen, so NOTHING was typed — the run stopped rather than \
+                 submitting into a question that is still up, and the remedy is a person"
             }
         }
     }
@@ -587,11 +648,31 @@ impl Unanswered {
     /// kind, since the whole selling point of a bounded run is that what it spent is what it says.
     #[must_use]
     pub fn not_taken(question: Question, bytes: u64) -> Self {
-        Self {
-            question: Some(question),
-            why: Refusal::NotTaken,
-            bytes,
-            detail: None,
+        Self::refused_after(question, Refusal::NotTaken, bytes)
+    }
+
+    /// **A REFUSAL THAT COST KEYSTROKES** — [`not_taken`](Self::not_taken) generalised, for the
+    /// second act that types before it gives up.
+    ///
+    /// [`Refusal::NotDismissed`] is that act: a standing instruction fired, the key that refuses a
+    /// tool call went in, and the dialog stayed. The bytes travel for `not_taken`'s reason, which is
+    /// about the CEILING and not about which contract was running — a run that charged zero for
+    /// keys it really pressed would under-report its own spend.
+    ///
+    /// ⚠ `Unreadable` collapses exactly as in [`refused`](Self::refused): the question is dropped,
+    /// which keeps the invariant that arm's doc states. ⚠ Spending bytes on a question this host
+    /// could not read is not reachable — nothing types at a dialog it did not parse — so nothing is
+    /// lost by that collapse.
+    #[must_use]
+    pub fn refused_after(question: Question, why: Refusal, bytes: u64) -> Self {
+        match why {
+            Refusal::Unreadable => Self::unreadable(),
+            _ => Self {
+                question: Some(question),
+                why,
+                bytes,
+                detail: None,
+            },
         }
     }
 
@@ -633,6 +714,43 @@ impl Unanswered {
         }
     }
 
+    /// **NO STANDING INSTRUCTION CLAIMED THE DIALOG `unclaimed` STOPPED ON** — that refusal
+    /// re-headed as [`Refusal::NoRule`], keeping what the consents had said underneath.
+    ///
+    /// # ⚠⚠⚠ Why the earlier reason is kept rather than replaced
+    ///
+    /// [`unattended`](Self::unattended)'s argument, met one authority further out. Two facts are
+    /// true at once and their remedies are different things: **no consent covered the question**
+    /// (widen a needle, or write a clause) and **no rule claimed it either** (quote it in
+    /// `screen_rules`). A report that kept only the second would send a caller to write a standing
+    /// instruction about a dialog whose own `Yes` a consent could have taken — which is the
+    /// commoner case by far, since most dialogs a working agent raises DO offer the answer.
+    ///
+    /// So the ARM says what is new — screening is the last thing that could have got the run past
+    /// this, and it did not — and the consent-level reason rides in the free-text `detail` that
+    /// `contradicted` established, which costs the protocol number nothing.
+    ///
+    /// ⚠ Bytes carry over for `unattended`'s reason: a consent that was typed and not taken has
+    /// spent them whether or not a rule was consulted afterwards.
+    #[must_use]
+    pub fn unscreened(unclaimed: Self) -> Self {
+        let earlier = format!(
+            "no consent covered it either; without a standing rule this would have ended as {}",
+            unclaimed.why.wire_str(),
+        );
+        Self {
+            question: unclaimed.question,
+            why: Refusal::NoRule,
+            bytes: unclaimed.bytes,
+            // ⚠ APPENDED, never overwritten — `unattended`'s rule, and for its reason: the earlier
+            // refusal may be a `contradicted` whose detail names the clauses that collided.
+            detail: Some(match unclaimed.detail {
+                Some(had) => format!("{had}; {earlier}"),
+                None => earlier,
+            }),
+        }
+    }
+
     /// What the peer is asking, or `None` when this host could not read it.
     #[must_use]
     pub const fn question(&self) -> Option<&Question> {
@@ -645,7 +763,8 @@ impl Unanswered {
         self.why
     }
 
-    /// PTY bytes this step spent — non-zero only for [`Refusal::NotTaken`].
+    /// PTY bytes this step spent — non-zero only for the two arms that TYPED before giving up,
+    /// [`Refusal::NotTaken`] and [`Refusal::NotDismissed`].
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.bytes
@@ -1086,14 +1205,19 @@ mod tests {
         );
         assert_eq!(
             Refusal::ALL.len(),
-            8,
-            "the eight reasons a blocked peer goes unanswered: this host could not READ the menu, \
+            10,
+            "the ten reasons a blocked peer goes unanswered: this host could not READ the menu, \
              the answer was typed and NOT TAKEN, the caller consented to NOTHING, the consent is \
              about ANOTHER question, the question does not OFFER the answer, SEVERAL options \
-             carry it, the caller's own consents CONTRADICT each other about it, or a person was \
-             expected and NOBODY CAME. \
-             ⚠ The last is the only one about a human rather than about a clause, and the only \
-             one a run reaches having already waited — see `Refusal::Unattended`",
+             carry it, the caller's own consents CONTRADICT each other about it, a person was \
+             expected and NOBODY CAME, NO STANDING RULE claims the dialog, or one did and the key \
+             that refuses a call DID NOT DISMISS it. \
+             ⚠ `unattended` is the only one about a human rather than about a clause, and the only \
+             one a run reaches having already waited — see `Refusal::Unattended`. \
+             ⚠⚠ The last two are the only ones about the loop DOCUMENT and the AGENT rather than \
+             about the call: `no_rule` is answered by editing `screen_rules`, and `not_dismissed` \
+             is answered by nobody, because the key it names is the product's — which is why that \
+             one's whole value is that NOTHING WAS TYPED",
         );
     }
 

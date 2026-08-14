@@ -335,6 +335,10 @@ impl RunRegistry {
                         // does not carry this column, and inventing one would be the record
                         // asserting something nobody wrote down.
                         answered: 0,
+                        // ⚠ AND THE SCREENING TALLY WITH IT, on the same argument for the opposite
+                        // decision: this one counts the peer's tool calls a run REFUSED, and the
+                        // log has no column for it either.
+                        screened: 0,
                     }),
                     output: saved.output.clone(),
                 }
@@ -359,6 +363,8 @@ impl RunRegistry {
                     // the durable log has no column for it, and `0` would be this record asserting
                     // that a restored run approved nothing when nobody wrote that down.
                     answered: 0,
+                    // ⚠ Nor the count of calls it refused, for the same reason.
+                    screened: 0,
                 })),
                 cancel: Arc::new(AtomicBool::new(false)),
             });
@@ -440,6 +446,7 @@ mod tests {
                 failure: None,
                 stopped: None,
                 answered: 0,
+                screened: 0,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -478,6 +485,7 @@ mod tests {
                     failure: None,
                     stopped: None,
                     answered: 0,
+                    screened: 0,
                 }),
                 output: None,
             };

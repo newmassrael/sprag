@@ -1097,6 +1097,49 @@ impl PluginGrammar {
     )
     .optional();
 
+    /// **WHAT A LOOP TURNS DOWN AND WHAT IT SAYS INSTEAD** — the AUTHOR's standing instructions,
+    /// where [`MAY_ANSWER`](Self::MAY_ANSWER) is the CALLER's consent.
+    ///
+    /// # ⚠⚠⚠ Two authorities over one dialog, and why the second is not the first widened
+    ///
+    /// A consent TAKES AN OPTION THE PEER OFFERED. That covers every dialog whose answer is on the
+    /// menu — measured, one clause quoting *"Do you want to"* covers what three tool families ask —
+    /// and it structurally cannot cover the question a loop meets when its agent wants a DECISION:
+    /// *"Which way should I build this — the quick one, or the thorough one?"* has no option a
+    /// caller could have authorised in advance, because the answer they want is not being offered.
+    ///
+    /// A screen rule is the other act. It **refuses the call** and tells the agent what to do
+    /// instead, which is what a person does all day and what no consent can express.
+    ///
+    /// ⚠⚠⚠ **A RULE NAMES NO KEY, AND THAT IS THE SAFETY PROPERTY.** The key belongs to the product
+    /// (`sprag_plugin::REFUSES`), measured against a live `claude` 2.1.232: Escape makes it report
+    /// `User rejected` and the file is never written, identically to the offered `3. No`, in 25 ms.
+    /// The same probe found that `Tab` — the agent's own *"amend"* — leaves the dialog UP and
+    /// rewrites option 1 into *"Yes, and tell Claude what to do next"*, so typing into it APPROVES.
+    /// If a rule could name its own key it could name that one, and *"nobody gets a standing
+    /// permission by writing a rule that happened to match"* would be a hope. Here it is a property.
+    ///
+    /// ⚠ **`when` QUOTES THE DIALOG**, exactly as [`Consent::asked`](sprag_plugin::Consent::asked)
+    /// does and through the same matcher. The loop document used to match a dialog KIND
+    /// (`design-decision`, …), which needed somebody to classify another program's dialogs into a
+    /// taxonomy nothing in this workspace maintains; R383 measured that quoting the agent's own
+    /// words covers what a taxonomy would have.
+    ///
+    /// ⚠ **ABSENT MEANS THE DOCUMENT'S OWN RULES**, not *"screen nothing"* — these live in the loop
+    /// template, so a caller who says nothing is not overriding an author who did. An EMPTY list is
+    /// malformed for [`MAY_ANSWER`](Self::MAY_ANSWER)'s reason: it is a second spelling of absent.
+    ///
+    /// ⚠ Nested and never flattened, [`MAY_ANSWER`](Self::MAY_ANSWER)'s rule: N flat `--when`s
+    /// beside N flat `--text`s cannot say which belongs with which.
+    pub const SCREEN_RULES: ArgGrammar = ArgGrammar::nested_list(
+        sprag_plugin::ScreenRules::WIRE_KEY,
+        &[
+            ArgGrammar::open(sprag_plugin::ScreenRule::WHEN_KEY, "string"),
+            ArgGrammar::open(sprag_plugin::ScreenRule::TEXT_KEY, "string"),
+        ],
+    )
+    .optional();
+
     /// **WHETHER ANYBODY IS WATCHING the pane this run drives, and for how long** — the other half
     /// of [`MAY_ANSWER`](Self::MAY_ANSWER), and the argument that makes a SUPERVISED loop
     /// expressible.
@@ -1377,6 +1420,10 @@ impl PluginGrammar {
         ArgGrammar::open(sprag_plugin::Turn::WIRE_KEY, "int").optional(),
         ArgGrammar::open("shows_prompt", "bool").optional(),
         Self::MAY_ANSWER,
+        // ⚠⚠⚠ THE OTHER AUTHORITY, and the only form that has it: `screen_rules` are the loop
+        // DOCUMENT's, so they exist nowhere else. See [`SCREEN_RULES`](Self::SCREEN_RULES) for why
+        // a consent cannot be widened into one.
+        Self::SCREEN_RULES,
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
         Self::OPENED_BY,
@@ -7414,6 +7461,27 @@ mod tests {
             // exhausts, blocks and is taken over exactly as before. Nothing a peer decodes whole
             // learnt a word, because nothing about the ANSWER changed — only how long the run was
             // willing to wait before speaking again.
+            // ⚠⚠⚠ R384: THREE WORDS JOIN AT ONCE — a SEVENTH verdict (`screened`) and a NINTH and
+            // TENTH refusal (`no_rule`, `not_dismissed`) — and none of them costs the number, on
+            // R381's specific fact rather than on a general rule.
+            //
+            // All three are produced by ONE state of ONE plugin, `ai_loop.scxml`'s `screening`, and
+            // that plugin is selected by a `plugin` value no client older than this build knows. An
+            // old client never sends `ai_loop`, so it never receives a journal or an `asking.why`
+            // that can carry any of them; a new client that sends `ai_loop` to an old daemon meets
+            // an ordinary vocabulary refusal at the door, because the `plugins` slot publishes the
+            // word and it can ask first. **Neither half of a skewed pair can misread anything.**
+            //
+            // ⚠⚠ AND `screen_rules` IS AN ADDED ARGUMENT ON THAT SAME FORM, which is normally this
+            // wire's second-commonest bump cause because the surface SWALLOWS an undeclared key and
+            // the run succeeds. It is free here for the identical reason and NOT for a general one.
+            // ⚠⚠⚠ THE RESIDUE, WHICH IS THE SAME ONE R382 LEFT AND IS NOW LARGER: the day `ai_loop`
+            // ships, the next argument added to it — and the next word `screening` learns — earns
+            // the number by the ordinary rule.
+            //
+            // ⚠ `screen_permissions` was NEVER on this wire, so its removal from the loop document
+            // moves nothing here. It is recorded because a reader looking for it should find out
+            // that a measurement removed the need for it rather than that somebody forgot it.
             34,
             &[
                 "check:pane-isolation",
@@ -7478,6 +7546,12 @@ mod tests {
                 // ⚠ The same argument covers `ceiling: "turns"`, which this pin deliberately does
                 // not walk (see `sprag_plugin::Ceiling`).
                 "verdict:exhausted",
+                // ⚠⚠⚠ R384: THE SEVENTH VERDICT — a step that REFUSED its peer's tool call on the
+                // loop author's standing instruction and told it what to do instead. Not folded
+                // into `answered` because the two are opposite decisions: one takes an option the
+                // peer offered, and a reader asking *what did my run let its agent DO* must not be
+                // handed a count that also includes what it stopped.
+                "verdict:screened",
                 // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
                 // needle, write a consent, or fetch a person — so they are words and not prose.
                 "refusal:unreadable",
@@ -7495,6 +7569,13 @@ mod tests {
                 // patience), which is why it is a word and not the clause-level reason it carries
                 // underneath in free text.
                 "refusal:unattended",
+                // ⚠⚠⚠ R384: the two `screening` made possible, and each has a remedy no arm above
+                // it has. `no_rule` is about the loop DOCUMENT — no standing instruction quotes the
+                // dialog, so edit the rules — where every arm above is answered by changing the
+                // call or fetching somebody. `not_dismissed` is about the AGENT: a rule fired, the
+                // key that refuses a call went in, and the dialog stayed, so **nothing was typed**.
+                "refusal:no_rule",
+                "refusal:not_dismissed",
             ],
         );
 
@@ -8018,7 +8099,7 @@ mod tests {
                 // happen HERE while no released daemon serves `ai_loop` at all: the whole form is
                 // refused, key and all. ⚠ **THE RESIDUE, STATED: the day this form ships, an
                 // argument added to it earns the number by the ordinary rule.**
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

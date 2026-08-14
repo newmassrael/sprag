@@ -100,13 +100,33 @@ pub enum Verdict {
     /// arithmetic. The Driver's ordering already says so — a step reports one verdict, and a
     /// plugin that can see both reports the other one.
     Exhausted(crate::driver::Ceiling),
+    /// ⚠⚠⚠ **THE PEER ASKED, THIS STEP REFUSED THE CALL AND TOLD IT WHAT TO DO INSTEAD**, on a
+    /// standing instruction the loop's author wrote — see [`ScreenRules`](crate::screen::ScreenRules).
+    /// The run continues.
+    ///
+    /// # ⚠⚠⚠ Why this is not [`Answered`](Self::Answered), when both are decisions
+    ///
+    /// They are two different decisions and a reader has to be able to count them apart. `answered`
+    /// TAKES AN OFFERED OPTION — usually an approval, which is the thing a person auditing a run
+    /// most needs indexed. This one **turns the tool call down**: measured against a live `claude`
+    /// 2.1.232, the key it presses produces `User rejected write to PROBE.txt` and the file is
+    /// never created.
+    ///
+    /// A run that spelled both `answered` would answer *"what did this run approve?"* with a number
+    /// that includes every refusal, which is the opposite fact.
+    ///
+    /// ⚠ It is also not a `Continue` with a note, for `Answered`'s reason exactly: an act with
+    /// consequences outside the loop must be reportable in the loop's own vocabulary, or the only
+    /// record of it is prose. **This one has more consequence than an approval, not less** — the
+    /// caller's agent was stopped from doing something it had decided to do.
+    Screened(crate::screen::Screened),
 }
 
 impl Verdict {
     /// This verdict's word in a run's published journal — the ONE place the variant → name mapping
     /// lives, so the host never spells a `Verdict` variant ([`Cost::unit`]'s rule).
     ///
-    /// Exhaustive, so a fifth verdict cannot reach the wire without a word.
+    /// Exhaustive, so a further verdict cannot reach the wire without a word.
     #[must_use]
     pub const fn wire_str(&self) -> &'static str {
         match self {
@@ -116,6 +136,7 @@ impl Verdict {
             Self::Answered(_) => "answered",
             Self::TakenOver(_) => "taken_over",
             Self::Exhausted(_) => "exhausted",
+            Self::Screened(_) => "screened",
         }
     }
 
@@ -132,6 +153,7 @@ impl Verdict {
         "answered",
         "taken_over",
         "exhausted",
+        "screened",
     ];
 }
 
@@ -377,6 +399,12 @@ mod tests {
             }),
             Verdict::TakenOver(crate::readiness::Interruption::of(1)),
             Verdict::Exhausted(crate::driver::Ceiling::Turns),
+            Verdict::Screened(crate::screen::Screened {
+                question: question.clone(),
+                when: "Do you want to".to_owned(),
+                said: "think again".to_owned(),
+                bytes: 1,
+            }),
         ]
         .iter()
         .map(Verdict::wire_str)

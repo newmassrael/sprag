@@ -7356,6 +7356,7 @@ mod tests {
             failure: None,
             stopped: None,
             answered,
+            screened: 0,
         }
     }
 

@@ -47,7 +47,8 @@ use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Attended, Brief, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec,
     DoneWhen, Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState,
-    Pipe, PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, Turn, WorkspacePaneAccess,
+    Pipe, PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, ScreenRule, ScreenRules, Turn,
+    WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -609,6 +610,11 @@ impl PluginsExternal {
                     // end, and one who names a smaller number is told why it is refused rather
                     // than discovering it eight turns in.
                     reflect_every: opt_count(map, "reflect_every")?.unwrap_or(max_turns),
+                    // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
+                    // The rules live in the loop template, so a caller who says nothing about
+                    // screening is not overriding it — and the driver echoes the document's own
+                    // rules back through the brief rather than deleting them.
+                    screen_rules: opt_screen_rules(map)?,
                 };
                 // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
                 // loop's first prompt goes into a pane whose program may still be starting — see
@@ -1026,6 +1032,35 @@ fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consents>, InvokeEr
         .map(Some)
 }
 
+/// Read the optional `screen_rules` — WHAT THIS LOOP TURNS DOWN AND WHAT IT SAYS INSTEAD.
+///
+/// [`opt_may_answer`]'s shape, for the other authority: a consent takes an option the peer OFFERED,
+/// and a screen rule refuses the call and redirects the agent in words. Absent (or `null`) is
+/// [`None`], which the loop reads as *"keep whatever the document's author wrote"* — NOT as an
+/// empty list, which is why [`ScreenRules`] cannot be empty and an empty array is malformed here.
+///
+/// ⚠⚠ A rule's own refusals are the plugin's ([`sprag_plugin::Malformed`]) and reach the caller as a
+/// type mismatch, exactly as a `Consent` with an empty needle does. A rule that claims every dialog
+/// would refuse every tool call the agent ever asks about, so the door is where it is turned away.
+fn opt_screen_rules(map: &Map<String, Value>) -> Result<Option<ScreenRules>, InvokeError> {
+    if declined(map, ScreenRules::WIRE_KEY) {
+        return Ok(None);
+    }
+    let listed = map[ScreenRules::WIRE_KEY]
+        .as_array()
+        .ok_or(InvokeError::TypeMismatch)?;
+    let mut rules = Vec::with_capacity(listed.len());
+    for rule in listed {
+        let object = rule.as_object().ok_or(InvokeError::TypeMismatch)?;
+        let when = require_str(object, ScreenRule::WHEN_KEY)?.to_string();
+        let text = require_str(object, ScreenRule::TEXT_KEY)?.to_string();
+        rules.push(ScreenRule::parse(when, text).map_err(|_| InvokeError::TypeMismatch)?);
+    }
+    ScreenRules::of(rules)
+        .ok_or(InvokeError::TypeMismatch)
+        .map(Some)
+}
+
 /// Read the optional `await_person_ms` — WHETHER ANYBODY IS WATCHING the pane this run drives, and
 /// for how long. Absent (or `null`) is [`Attended::NoOne`], which is what every run did before the
 /// key existed and is the conservative half of the contract.
@@ -1184,6 +1219,22 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
         }
         sprag_plugin::NotStarted::Brief(sprag_plugin::Briefed::Took) => {
             "the loop took its brief and did not start anyway".to_owned()
+        }
+        sprag_plugin::NotStarted::Screening(sprag_plugin::NotScreenable::Malformed { at, why }) => {
+            format!(
+                "screen rule {at} (counting from zero) is not one this build can carry out: {}",
+                why.describe(),
+            )
+        }
+        sprag_plugin::NotStarted::Screening(sprag_plugin::NotScreenable::Unreadable) => {
+            format!(
+                "this loop's `{}` is not a list of {{{}: …, {}: …}} objects, so nothing could be \
+                 read as a standing instruction — the document, or what was sent for it, is not \
+                 the shape `screening` carries out",
+                ScreenRules::WIRE_KEY,
+                ScreenRule::WHEN_KEY,
+                ScreenRule::TEXT_KEY,
+            )
         }
     }
 }
@@ -2164,6 +2215,7 @@ mod tests {
             failure: None,
             stopped: None,
             answered,
+            screened: 0,
         }
     }
 
@@ -2892,8 +2944,12 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            24,
-            "one probe per open string argument of every form: an orchestrator's stimulus, \
+            26,
+            "one probe per open string argument of every form. ⚠⚠ THE NEWEST TWO ARE A SCREEN \
+             RULE's `when` and `text`, open for the consent needles' reason exactly: `when` quotes \
+             the AGENT's own dialog and `text` is the AUTHOR's own prose about their own work, so \
+             a closed vocabulary at either could only ever be sprag's guess. THE OLD SENTENCE \
+             FOLLOWS. An orchestrator's stimulus, \
              sentinel and ready_when, a PIPE's ready_when, an agent's prompt and ready_when, and \
              a dialogue's seed and two labels — PLUS the ANSWERING CONTRACT's two needles on each \
              of the FOUR forms that inject, the newest pair being the loop's. \
@@ -2930,10 +2986,18 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            68,
+            69,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠ THE THREE NEWEST ARE THE ANSWERING CONTRACT ON \
+             malformed rather than declined. ⚠⚠⚠ THE NEWEST IS `screen_rules`, and declining it \
+             means something no other optional here means: NOT *screen nothing*, but *keep whatever \
+             the loop document's author wrote*. The rules live in the template, so a caller who \
+             says nothing about screening is not overriding one who did — and the driver echoes the \
+             document's own rules back through the brief rather than deleting them. ⚠⚠ ITS TWO \
+             NESTED FIELDS ARE **NOT** AMONG THESE, and this gate is what said so rather than a \
+             reading of the grammar: a nested field is REQUIRED inside its object, so `null` for it \
+             is malformed and not declined — exactly as the consent's two needles are absent here. \
+             THE OLD SENTENCE FOLLOWS. THE THREE BEFORE IT ARE THE ANSWERING CONTRACT ON \
              THE LOOP, and their declinability is the whole default: a loop that names no consent \
              answers nothing and reports the question, which is what every loop did before the \
              keys existed — and what was measured costing it every turn it had. \
@@ -2974,8 +3038,19 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            110,
+            113,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
+             orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
+             TEN to answer a pane, TWENTY-EIGHT to run an AI loop, and one to cancel. ⚠⚠⚠ THE \
+             NEWEST THREE ARE `screen_rules` AND ITS TWO NESTED FIELDS — the loop author's standing \
+             instructions, and the SECOND authority over one dialog. A consent takes an option the \
+             peer OFFERED, which structurally cannot cover the question a loop meets when its \
+             agent wants a DECISION (*the quick way or the thorough way?* offers nothing anybody \
+             could authorise in advance); a rule refuses the call and says what to do instead. ⚠ It \
+             names no KEY, and that is a safety property rather than a simplification: the key is \
+             the product's, measured, and a rule that could name its own could name the one that \
+             APPROVES — a live probe pressed `Tab` and had the agent's file written. THE OLD \
+             SENTENCE FOLLOWS. TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
              TEN to answer a pane, TWENTY-FIVE to run an AI loop, and one to cancel. \
              ⚠⚠⚠ THE NEWEST FIVE ARE THE ANSWERING CONTRACT REACHING THE LOOP — `may_answer` with \

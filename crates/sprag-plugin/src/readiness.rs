@@ -146,19 +146,43 @@ fn marker_arrived(
 /// unreadable dialog with another keeps the run waiting, which is right, since nothing here can
 /// tell the two apart and resuming would type into whichever it is.
 fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Question>) -> bool {
-    match peer_asking(panes, pane) {
-        // Not blocked at all: whatever it was asking, it is asking no longer.
-        None => true,
-        Some(now) => match (question, now) {
-            // ⚠ Blocked with no readable menu, having been blocked on one this host COULD read.
-            // `marker_arrived` merges this with "gone" for a measured reason — it is what the
-            // settle window looks like from the outside, so treating it as still-asking would wait
-            // out the very answer being waited for.
-            (Some(_), None) => true,
-            (Some(asked), Some(shown)) => shown.asked != asked.asked,
-            (None, _) => false,
-        },
+    match question {
+        Some(asked) => left_the_question(panes, pane, asked),
+        // ⚠ A peer blocked on something this host cannot read is the one case that cannot be
+        // answered by comparing sentences, so it asks the weaker question it can answer: is this
+        // pane still blocked at all.
+        None => peer_asking(panes, pane).is_none(),
     }
+}
+
+/// **IS `question` OFF THE PANE** — [`Arrival::LeftTheQuestion`]'s test, with no authorised choice
+/// in it.
+///
+/// # ⚠⚠⚠ THE QUESTION, NOT THE STATE, and this crate has paid for the difference
+///
+/// A supervisor's verdict SETTLES: a real detector goes on calling a pane blocked for its hysteresis
+/// window after the dialog has left the screen. Asked as *"is the pane still blocked"*, a wait for a
+/// peer to move outlived its own bound and a run that HAD been answered reported
+/// [`Refusal::NotTaken`] — measured end to end through a real daemon, and invisible to every fixture
+/// here because a fixture derives its state from the screen and so has no lag to model.
+///
+/// ⚠ A DIFFERENT question is also *gone*: the one being watched for is no longer up, and whatever
+/// the peer asked next is the next step's business — where it meets the whole contract again rather
+/// than a decision already in flight.
+///
+/// ⚠⚠ **THREE ACTS SHARE IT**, and that is why it is a function: the answering wait, the wait for a
+/// person, and — since the round that built `screening` — the proof a refused dialog is really gone
+/// before anything is typed at the pane. A live probe measured what happens when that last one is
+/// skipped: text typed into a dialog that was still up **approved the file write it was asking
+/// about**.
+pub(crate) fn left_the_question(panes: &dyn PaneAccess, pane: PaneId, question: &Question) -> bool {
+    // ⚠⚠ FLATTENED, and the two `None`s it merges are both this question being over. Not blocked
+    // at all is obvious; blocked with NO READABLE MENU is the settle window — a detector goes on
+    // calling a pane blocked after the dialog left its screen — and it is also a peer that moved on
+    // to something this host cannot parse.
+    peer_asking(panes, pane)
+        .flatten()
+        .is_none_or(|now| now.asked != question.asked)
 }
 
 /// How long the whole answering act may take — the keystroke, the peer moving off the question, and

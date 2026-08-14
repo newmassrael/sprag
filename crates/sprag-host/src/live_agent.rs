@@ -752,6 +752,9 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         // path. `AiLoop::new` refuses anything smaller, so this is the door's own rule rather than
         // a number chosen here.
         reflect_every: LIVE_MAX_TURNS,
+        // ⚠ The document's own placeholder, which claims nothing: this gate is about arithmetic
+        // that raises no dialog, so screening must not be armed or it would be a second variable.
+        screen_rules: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -915,6 +918,9 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
             .to_string(),
         max_turns: LIVE_MAX_TURNS,
         reflect_every: LIVE_MAX_TURNS,
+        // ⚠ Unarmed: this gate's claim is about the CONSENT carrying the loop through the dialog,
+        // so a standing rule that could also get past it would make the finding ambiguous.
+        screen_rules: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -1002,6 +1008,200 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
          answered none, this agent was configured to ask for nothing and the gate measured the \
          arithmetic case with extra steps — which is exactly the hole it was built to close. \
          Journal: {walked:?}",
+    );
+}
+
+/// ⚠⚠⚠ **A LIVE LOOP IS CARRIED PAST A DIALOG BY ITS AUTHOR'S STANDING INSTRUCTION** — register
+/// items 119, 5 and 142, end to end against a real agent.
+///
+/// # ⚠⚠⚠ Why this is the OPPOSITE gate to the one above it, and needs both to mean anything
+///
+/// `a_live_loop_does_work_that_changes_something_on_the_callers_consent` proves a consent carries a
+/// loop THROUGH a permission dialog and the file gets written. This one arms **no consent at all**
+/// and a standing rule instead, and its assertion is that **the file is never written** — the agent
+/// asked, the run refused on the author's behalf, and redirected it to something else, which it
+/// then did.
+///
+/// So the two gates use the same agent, the same tool and the same dialog, and the world ends up in
+/// opposite states. That is what makes each of them a claim about the CONTRACT rather than about
+/// the agent's mood.
+///
+/// # ⚠⚠⚠ The file's ABSENCE is the assertion, and it is the strongest one this module can make
+///
+/// Everything else a run reports is bookkeeping about a screen. `Escape` refusing the tool call was
+/// measured by `what_a_key_does_to_a_live_agents_permission_dialog` reading the agent's own words
+/// (`User rejected write to …`), and words are what an agent chose to print. **A file that does not
+/// exist is not a rendering.**
+///
+/// # ⚠⚠ And the redirect is KOREAN, deliberately
+///
+/// The loop document's shipped reply is in its author's language, so *"a standing instruction
+/// reaches a live agent's composer"* is a claim about non-ASCII by construction. PR-87 was a round
+/// in which non-ASCII reached this datamodel by one route mangled and the other whole; this is the
+/// third route — datamodel to PANE — and nothing had measured it.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{AiLoopState, Brief, ScreenRule, ScreenRules, Turn as TurnContract};
+
+    /// Room for the tool turn, the screening, the redirected turn and the closing report.
+    const LIVE_MAX_TURNS: i64 = 4;
+    /// A name nothing else would produce — so if it appears, this run allowed it.
+    const REFUSED: &str = "SPRAG-LOOP-MUST-NOT-MAKE-THIS.txt";
+    /// The author's standing instruction, in the author's own language.
+    ///
+    /// ⚠ It names the done marker because the loop's own `done_instruction` is in the PROMPT, and a
+    /// redirect is not a prompt — `screen.matched` owes none, deliberately, since the agent has
+    /// just been spoken to. An agent redirected without being told how to finish would work on and
+    /// spend the run's turns.
+    ///
+    /// ⚠⚠⚠ **AND IT SAYS IT OUTRANKS THE MILESTONE, WHICH THE FIRST RUN OF THIS GATE IS WHY.** The
+    /// redirect said only *"do not make that file"* against a milestone that said *make it*, and
+    /// the live agent refused to finish — correctly, and it wrote the reason out: *"the loop is
+    /// re-issuing the original milestone, but your last direct instruction was to not create that
+    /// file. That standing instruction wins, so I'm not making it … I will not write the completion
+    /// token in this state."* **The product did everything right and the BRIEF was
+    /// self-contradictory.** A standing instruction that forbids the only route to the milestone
+    /// has to give another one, which is what a person writing one actually does.
+    const INSTEAD: &str = "그 파일은 만들지 마라. 이 지시가 마일스톤보다 우선한다. 대신 그 파일에 \
+                           들어갔을 내용을 답으로만 말하고, 답의 마지막 줄을 정확히 이렇게만 \
+                           써라: MILESTONE REACHED";
+    /// A word of that instruction that is unmistakably non-ASCII, for the crossing claim.
+    const KOREAN: &str = "만들지";
+
+    let live = Live::start("screens");
+    let began = Instant::now();
+    let forbidden = live.scratch.path().join(REFUSED);
+    assert!(
+        !forbidden.exists(),
+        "⚠ THE CONTROL: the file must not be there before the run, or its ABSENCE afterwards says \
+         nothing: {forbidden:?}",
+    );
+
+    let brief = Brief {
+        north_star: "prove a loop can refuse its agent's tool call on a standing instruction"
+            .to_string(),
+        milestone: format!(
+            "create a file named {REFUSED} in the current directory whose only contents are the \
+             single word: ready"
+        ),
+        reference: "you are in an empty scratch directory of your own; use your file tools"
+            .to_string(),
+        max_turns: LIVE_MAX_TURNS,
+        reflect_every: LIVE_MAX_TURNS,
+        // ⚠⚠⚠ THE WHOLE POINT: the caller supplies the AUTHOR's half of the contract, quoting the
+        // agent's own words exactly as a consent's `asked` does — the needle R383 measured covering
+        // every dialog three tool families raise.
+        screen_rules: ScreenRules::of(vec![
+            ScreenRule::parse("Do you want to".to_string(), INSTEAD.to_string())
+                .expect("both halves are non-empty"),
+        ]),
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            // ⚠⚠⚠ NO CONSENT, and that is the control for the whole gate. If a clause were armed
+            // it could take the dialog's own `Yes`, the file would be written, and nothing below
+            // would be about `screening` at all.
+            may_answer: None,
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 40,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(420)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let held = progress.lock().expect("the progress cell").clone();
+    let walked: Vec<String> = held
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+    let typed = live
+        .access
+        .input_echo()
+        .and_then(|echo| echo.pane_recent_input(live.pane))
+        .unwrap_or_default();
+
+    // ⚠⚠ THE SCREEN IS PRINTED UNCONDITIONALLY, and the first run of this gate is why: it stopped
+    // on `calls refused: 0` and the assertion that fired carried the WALK but not the PANE — so
+    // *why the agent never asked* was the one thing the measurement could not say. R378's lesson
+    // applies to the failure message AND to the print.
+    println!(
+        "\n== a live loop refusing its agent's call on a standing instruction ==\n  agent: {}\n  \
+         walk: {walked:?}\n  turns: {:?}\n  iterations: {}\n  calls refused: {}\n  dialogs \
+         answered: {}\n  spent: {:?}\n  through the loop: {:?}\n  {REFUSED} exists: {}\n  \
+         detector: {}\n  screen:\n{}\n",
+        live.agent,
+        loops.turns(),
+        outcome.iterations,
+        held.screened,
+        held.answered,
+        outcome.cost,
+        began.elapsed(),
+        forbidden.exists(),
+        live.seen(),
+        live.tail(20),
+    );
+
+    // ⚠⚠⚠ THE ABSENCE IS THE ASSERTION.
+    assert!(
+        !forbidden.exists(),
+        "⚠⚠⚠ THE AGENT'S TOOL CALL MUST NOT HAVE HAPPENED. The file is there, so the run either \
+         approved a dialog nobody consented to or typed into one that was still up — which is the \
+         exact hazard `Tab` demonstrated. Walked: {walked:?}, screen: {}",
+        live.tail(14),
+    );
+    assert!(
+        held.screened >= 1,
+        "⚠⚠⚠ AND THE RUN MUST HAVE REFUSED AT LEAST ONE CALL ON THE AUTHOR'S BEHALF. Zero means \
+         this agent asked for nothing — so the file's absence is about a milestone it never \
+         attempted, and this gate measured nothing. Walked: {walked:?}",
+    );
+    assert_eq!(
+        held.answered, 0,
+        "⚠⚠ and it must have APPROVED nothing. A run whose two tallies were one number could not \
+         tell a person what their agent was allowed to do: {walked:?}",
+    );
+    assert!(
+        typed.contains(KOREAN),
+        "⚠⚠⚠ AND THE AUTHOR'S OWN LANGUAGE MUST HAVE REACHED THE AGENT'S COMPOSER. This is the \
+         third route non-ASCII takes into this loop — the datamodel to the PANE — and the two \
+         before it were the round PR-87 came from. Typed: {typed:?}",
+    );
+    assert_eq!(
+        outcome.state,
+        sprag_plugin::OutcomeState::Converged,
+        "⚠⚠ and the redirected agent must have reached the end the instruction gave it. Anything \
+         else means the refusal landed and the agent was left with nothing to do — the failure \
+         `Malformed::SaysNothing` refuses at construction, met at the other end. Walked: \
+         {walked:?}, screen: {}",
+        live.tail(14),
+    );
+    assert_eq!(
+        loops.state(),
+        AiLoopState::Converged,
+        "and the document agrees with the run's word",
+    );
+    assert!(
+        walked
+            .iter()
+            .any(|note| note.contains("refused the peer's call")),
+        "⚠⚠ and the run's JOURNAL must carry the refusal in its own words, or a person auditing \
+         this run finds a converged loop and no record of what it turned down: {walked:?}",
     );
 }
 
@@ -1271,6 +1471,285 @@ fn what_a_live_agent_asks_while_it_works() {
         "every probe that expects a dialog must have reached one, or the claim above is about the \
          ones that did",
     );
+}
+
+/// ⚠⚠⚠ **WHAT A KEY ACTUALLY DOES TO A LIVE AGENT'S PERMISSION DIALOG** — the measurement
+/// `screening` has to be built on, taken before anything is built.
+///
+/// # ⚠⚠⚠ The question, and why reading the screen cannot answer it
+///
+/// R383 captured three real dialogs and every one of them ends with the same footer:
+///
+/// ```text
+///  ❯ 1. Yes
+///    2. Yes, allow all edits during this session (shift+tab)
+///    3. No
+///  Esc to cancel · Tab to amend
+/// ```
+///
+/// From that text alone, **the one thing a screening act needs is unknown**: *cancel* does not say
+/// whether Escape merely closes the dialog or REFUSES THE TOOL CALL, and those are different acts
+/// with different reporting duties. If Escape only dismisses, a rule that presses it and then types
+/// is *"get past the dialog and redirect"*. If Escape refuses the call, it is the same decision as
+/// option `3. No` — a decision taken on somebody's behalf, which this crate's own rule says must be
+/// reported in the run's vocabulary rather than logged as housekeeping.
+///
+/// And `Tab to amend` may already be this agent's *"tell it to do it differently"* door, in which
+/// case building on Escape is building on the wrong one.
+///
+/// # ⚠⚠ Why each key gets its own session
+///
+/// [`what_a_live_agent_asks_while_it_works`]'s rule: a probe that presses a key CHANGES the session,
+/// so a second probe on the same screen measures the first one's aftermath. ⚠ **And unlike that
+/// gate, this one presses keys at a live agent** — which is why it does its pressing inside the
+/// scratch directory whose existence is what makes any of this safe, and why the file it watches for
+/// is created there or nowhere.
+///
+/// # ⚠⚠⚠ WHAT IT MEASURED (`claude` 2.1.232, 2026-08-14), and what each answer licenses
+///
+/// | key | the dialog | the tool call | typing afterwards |
+/// |---|---|---|---|
+/// | `Escape` | gone in **25 ms** | ⚠ **`User rejected write to PROBE.txt`** | reached the composer; the agent answered it |
+/// | `3` | gone in **23 ms** | **rejected, identically** | the same |
+/// | `Tab` | ⚠ **still up after 10 s** | — | ⚠⚠⚠ **`Wrote 1 line to PROBE.txt`** |
+///
+/// * **ESCAPE IS A DECISION, NOT A DISMISSAL.** It refuses the tool call — the same outcome as the
+///   offered `3. No`, which is an option [`Consents`](sprag_plugin::Consents) can already take. So a
+///   standing rule that presses it is **answering on somebody's behalf**, and this crate's rule is
+///   that such an act gets a word in the run's own vocabulary rather than a note. That is why
+///   `screening` reports [`Verdict::Screened`](sprag_plugin::Verdict::Screened) and not a
+///   `Continue`. ⚠ What Escape buys over `3` is that it needs no matching OPTION to exist, which is
+///   exactly the case a consent cannot reach.
+/// * **`Tab to amend` IS NOT A TEXT BOX.** It leaves the dialog up and rewrites option 1 into
+///   *"Yes, and tell Claude what to do next"* — so the amend flow is an APPROVAL that carries an
+///   instruction. ⚠⚠⚠ **The probe typed into that and the write went through.** Building the
+///   redirect on Tab would have been building a standing rule that grants permissions.
+/// * ⚠⚠⚠ **AND `deliver`'s CONFIRMATION IS NOT PROOF OF A COMPOSER.** In the `Tab` arm the text was
+///   read back off the screen — `Confirmed { attempts: 1 }` — and the Enter behind it approved a
+///   file write. **The two proofs a screening act needs are ORDERED and neither is sufficient
+///   alone**: first the question must be gone, and only then does a read-back mean what it looks
+///   like it means.
+/// * ⚠ A Tab-amended dialog also renames option 1, so a consent quoting `Yes` exactly stops
+///   matching it and falls to a substring that reaches two options — [`Refusal::Ambiguous`], which
+///   is the safe direction.
+///
+/// [`Refusal::Ambiguous`]: sprag_plugin::Refusal::Ambiguous
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn what_a_key_does_to_a_live_agents_permission_dialog() {
+    /// How long to wait for the agent to reach its permission question.
+    const ASKS_WITHIN: Duration = Duration::from_secs(90);
+    /// How long a key gets to take the dialog off the screen.
+    ///
+    /// ⚠ Generous next to a repaint, and sized for the reason the answering bound in
+    /// `sprag_plugin::readiness` is: the slowest party is not the pane but the SUPERVISOR, whose
+    /// verdict only settles after `sprag_detect::DEFAULT_SETTLE`.
+    const DISMISSED_WITHIN: Duration = Duration::from_secs(10);
+    /// The rows of a capture — [`what_a_live_agent_asks_while_it_works`]'s number.
+    const CAPTURE_ROWS: usize = 14;
+    /// The work that raises a dialog, and the file whose existence says whether it went through.
+    const ASK: &str = "Create a file called PROBE.txt whose only contents are the word ready.";
+    const MADE: &str = "PROBE.txt";
+    /// What is typed once the dialog is off the screen. ⚠ It asks for NO tool, deliberately: what
+    /// is being measured is *where does typing go*, and work that raises a second dialog would
+    /// answer a different question on top of it.
+    const REDIRECT: &str = "Say only the word REDIRECTED-OK and do nothing else.";
+    const REDIRECTED: &str = "REDIRECTED-OK";
+
+    /// The keys worth asking about, each named as the agent's own footer names it, **with what
+    /// this gate measured them to do**: whether the key takes the dialog off the screen, and
+    /// whether the tool call has happened by the time the probe is finished with the session.
+    ///
+    /// ⚠ `3` is here as the CONTROL, and it is the one this product can already press: selecting an
+    /// offered option is exactly what [`Consents`](sprag_plugin::Consents) does. Measured, Escape
+    /// behaves like it — which is the finding that decides how `screening` REPORTS.
+    ///
+    /// ⚠⚠⚠ **THE `Tab` ROW IS AN ASSERTION THAT A KEY IS DANGEROUS**, and it is deliberately the
+    /// only row whose call goes through: the probe types into a dialog that is still up, and the
+    /// file gets written. That is the hazard stated as a fact rather than as a warning, and if
+    /// upstream ever makes Tab open a real text box this row goes red and whoever meets it should
+    /// read this table before changing anything.
+    const KEYS: &[(&str, bool, bool)] = &[
+        ("Escape", true, false),
+        ("Tab", false, true),
+        ("3", true, false),
+    ];
+
+    for (key, dismisses, call_goes_through) in KEYS {
+        let live = Live::start(&format!("keys-{}", key.to_lowercase()));
+        let began = Instant::now();
+        let made = live.scratch.path().join(MADE);
+        let run = RunContext::uncancellable();
+
+        let reached = Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+        assert_eq!(
+            reached,
+            Reached::Yes,
+            "{key}: the agent must be up and at rest before it is spoken to: {}",
+            live.tail(3),
+        );
+        assert!(
+            !made.exists(),
+            "⚠ {key}: THE CONTROL — {MADE} must not exist before the agent is asked to make it, or \
+             what this measures about the tool call is about somebody else's file",
+        );
+
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&live.access, live.pane);
+        deliver(
+            &live.access,
+            &run,
+            live.pane,
+            ASK,
+            &Delivery {
+                confirm: Some(ASK.chars().take(40).collect()),
+                then_press: vec![KeyStroke::named("Enter")],
+                ..Delivery::new()
+            },
+        )
+        .expect("the pane must take the prompt");
+        let Over::Asking(Some(question)) = done.wait(&live.access, live.pane, ASKS_WITHIN, &run)
+        else {
+            panic!(
+                "⚠⚠⚠ {key}: this measurement needs a real dialog on the screen and did not get \
+                 one. Nothing below is about anything. Screen: {}",
+                live.tail(8),
+            );
+        };
+        step(
+            began,
+            &format!("{key}: dialog up — asked={:?}", question.asked),
+        );
+
+        // ── THE KEY ──
+        let stroke = if sprag_input::is_key_name(key) {
+            vec![KeyStroke::named(key)]
+        } else {
+            KeyStroke::text(key)
+        };
+        let pressed_at = Instant::now();
+        let spent = live
+            .access
+            .inject(live.pane, &stroke)
+            .expect("the pane must take the key");
+        // ⚠⚠ THE QUESTION, NOT THE STATE — `Arrival::LeftTheQuestion`'s measured rule. A detector's
+        // verdict settles, so a pane goes on reading `Blocked` for its hysteresis window after the
+        // menu has left the screen, and a probe keyed on the STATE would time out on a key that
+        // plainly worked.
+        let dismissed = sprag_plugin::poll_until(&run, DISMISSED_WITHIN, || {
+            live.access
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(live.pane))
+                .is_none_or(|seen| seen.asking.is_none_or(|now| now.asked != question.asked))
+        });
+        let dismissed_in = pressed_at.elapsed();
+        let rows: Vec<String> = live
+            .access
+            .pane_rows(live.pane)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.text.trim_end().to_owned())
+            .filter(|row| !row.trim().is_empty())
+            .rev()
+            .take(CAPTURE_ROWS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        println!(
+            "\n== {key} ==\n  {} after {dismissed_in:?} ({spent:?})\n  the tool call: {MADE} {}\n  \
+             detector: {}\n  screen:\n{}",
+            match dismissed {
+                sprag_plugin::Waited::Ready => "THE DIALOG WENT AWAY",
+                sprag_plugin::Waited::TimedOut => "⚠ THE DIALOG IS STILL UP",
+                sprag_plugin::Waited::Stopped => "the run ended underneath",
+            },
+            if made.exists() {
+                "EXISTS — the call went through"
+            } else {
+                "is absent — the call did not happen (yet)"
+            },
+            live.seen(),
+            rows.iter()
+                .map(|row| format!("    {row}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        // ── AND WHERE DOES TYPING GO NOW? ──
+        //
+        // ⚠ Through `deliver` rather than a bare inject, because the question is exactly the one
+        // `deliver` answers: is the text READ BACK OFF THE SCREEN before Enter. A composer that
+        // paints it is a peer ready to be spoken to; anything else is a run about to submit into
+        // something it cannot see.
+        let mut after = Completion::new(DoneWhen::Settles);
+        after.begin(&live.access, live.pane);
+        let typed = deliver(
+            &live.access,
+            &run,
+            live.pane,
+            REDIRECT,
+            &Delivery {
+                confirm: Some(REDIRECT.chars().take(40).collect()),
+                then_press: vec![KeyStroke::named("Enter")],
+                ..Delivery::new()
+            },
+        );
+        let landed = match &typed {
+            Ok(Delivered::Unconfirmed { attempts, written }) => {
+                format!("⚠ NEVER APPEARED on screen ({attempts} attempts, {written:?})")
+            }
+            Ok(other) => format!("was confirmed on screen ({other:?})"),
+            Err(error) => format!("⚠ could not be typed at all ({error:?})"),
+        };
+        let over = after.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        println!(
+            "  the redirect {landed}\n  the turn then ended {}\n  the agent said {REDIRECTED}: \
+             {}\n  {MADE} at the end: {}\n  final screen:\n{}",
+            match &over {
+                Over::Yes => "NORMALLY".to_owned(),
+                Over::Asking(Some(q)) => format!("ASKING AGAIN: {:?}", q.asked),
+                Over::Asking(None) => "BLOCKED, unreadable".to_owned(),
+                other => format!("{other:?}"),
+            },
+            live.screen().contains(REDIRECTED),
+            if made.exists() { "EXISTS" } else { "absent" },
+            live.tail(8),
+        );
+
+        // ── ⚠⚠⚠ WHAT THE PRODUCT IS BUILT ON, ASSERTED ──
+        assert_eq!(
+            dismissed == sprag_plugin::Waited::Ready,
+            *dismisses,
+            "⚠⚠⚠ {key}: whether this key takes the dialog off the screen is the FIRST of the two \
+             proofs `screening` needs, and it moved. `Escape` dismissing is what the act rests on; \
+             `Tab` NOT dismissing is why the act refuses to type when the question is still up. \
+             Waited {dismissed:?} after {dismissed_in:?}. Screen: {}",
+            live.tail(8),
+        );
+        assert_eq!(
+            made.exists(),
+            *call_goes_through,
+            "⚠⚠⚠ {key}: whether the TOOL CALL happened is the fact that decides how a standing \
+             rule must REPORT. A key that refuses the call is a decision taken on somebody's \
+             behalf; one that lets it through is a standing permission nobody wrote. Screen: {}",
+            live.tail(8),
+        );
+        assert!(
+            live.screen().contains(REDIRECTED),
+            "⚠⚠ {key}: and the free text must have reached the agent AS AN INSTRUCTION — the \
+             second half of the feature. Screen: {}",
+            live.tail(8),
+        );
+        step(began, &format!("{key}: done"));
+    }
 }
 
 /// What one live turn cost and how it ended.

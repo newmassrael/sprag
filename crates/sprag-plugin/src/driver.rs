@@ -359,6 +359,17 @@ pub struct Outcome {
     /// that mentioned the approval only on convergence would hide it in exactly the cases somebody
     /// is reading the outcome to understand.
     pub answered: u32,
+    /// ⚠⚠⚠ **HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN REFUSED AND REDIRECTED**, on a standing
+    /// instruction the loop's author wrote — see [`ScreenRules`](crate::screen::ScreenRules).
+    ///
+    /// # ⚠⚠ Why this is not folded into [`answered`](Self::answered), when both count decisions
+    ///
+    /// They are opposite decisions, and the question a person reads a tally to ask is *"what did my
+    /// run let it do?"*. `answered` takes an offered option — an approval, usually — and this one
+    /// **turns a call down**: measured, the key it presses makes the agent report `User rejected`
+    /// and the file is never written. One number covering both would answer that question with a
+    /// count that includes every refusal.
+    pub screened: u32,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -421,6 +432,9 @@ pub struct Driver {
     /// [`Step::note`](crate::plugin::Step::note) is capped for. The count says how many to go
     /// looking for; the journal says what they were, for as far back as it reaches.
     answered: u32,
+    /// HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN REFUSED AND REDIRECTED, on the loop author's
+    /// standing instructions — [`Self::answered`]'s argument, for the other decision.
+    screened: u32,
 }
 
 /// WHAT A RUN HAS SPENT SO FAR — the counters the [`Driver`] keeps, readable while it is still
@@ -455,6 +469,13 @@ pub struct Progress {
     /// behalf while there is still time to stop it. Available only in the outcome, it would reach
     /// the reader after every approval had already been given.
     pub answered: u32,
+    /// HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN HAS REFUSED AND REDIRECTED SO FAR —
+    /// [`Outcome::screened`] read mid-flight, under the same name for this type's stated reason.
+    ///
+    /// ⚠⚠ Watched for `answered`'s reason and with more urgency: a run refusing calls in a cycle is
+    /// one whose standing rule is too broad, and this count is the only thing that says so while
+    /// there is still time to stop it.
+    pub screened: u32,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -512,6 +533,7 @@ impl Driver {
             asking: None,
             taken_over: None,
             answered: 0,
+            screened: 0,
         }
     }
 
@@ -540,6 +562,7 @@ impl Driver {
                 cost: self.cost,
                 journal: self.journal.clone(),
                 answered: self.answered,
+                screened: self.screened,
             };
         }
     }
@@ -649,6 +672,12 @@ impl Driver {
                     if matches!(step.verdict, Verdict::Answered(_)) {
                         self.answered += 1;
                     }
+                    // ⚠ Counted BESIDE the approval tally and never inside it: the two are opposite
+                    // decisions, and a reader asking what a run let its agent DO must not be handed
+                    // a number that also counts what it stopped.
+                    if matches!(step.verdict, Verdict::Screened(_)) {
+                        self.screened += 1;
+                    }
                     self.record(&step);
                     self.publish();
                     match &step.verdict {
@@ -698,7 +727,12 @@ impl Driver {
                         // is already spent, so reporting `cancelled` would tell the reader to
                         // start it again when the answer is to give it more turns.
                         Verdict::Exhausted(ceiling) => self.exhaust(*ceiling),
-                        Verdict::Continue | Verdict::Answered(_) => {
+                        // ⚠⚠ A SCREENED STEP TAKES THE SAME ARM AS AN ANSWERED ONE, and sharing it
+                        // is the claim: a step that refused its peer's call and redirected it
+                        // continues under exactly the same guardrails as any other, because a
+                        // refusal is no more a licence to exceed a ceiling than an approval is.
+                        // What makes it different is a RECORD and a tally, not a control path.
+                        Verdict::Continue | Verdict::Answered(_) | Verdict::Screened(_) => {
                             match self.ended_from_outside(run) {
                                 Some(event) => event,
                                 None => match self.budget_exhausted() {
@@ -837,6 +871,7 @@ impl Driver {
             failure: self.failure,
             stopped: self.stopped,
             answered: self.answered,
+            screened: self.screened,
         }
     }
 }
