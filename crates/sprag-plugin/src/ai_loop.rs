@@ -104,21 +104,6 @@ pub struct AiLoop {
     /// the run reported having stopped it. **The one field this type could hold is the one that made
     /// `driving` lie.**
     inner: OuterLoop,
-    /// ⚠⚠⚠ **WHICH OF THE RUN'S OWN CEILINGS STOPPED IT**, when one did — recorded at the moment
-    /// the Driver asked this plugin for an account, and reported back as the terminal step's
-    /// [`Verdict::Exhausted`].
-    ///
-    /// # ⚠⚠ Why a run stopped from outside must not report the DOCUMENT's budget
-    ///
-    /// The machine reaches `exhausted` through `stopping` either way, and `Verdict::Exhausted`
-    /// means *the plugin's own declared budget is spent, and which one*. For a run the wall clock
-    /// stopped that sentence is false: `max_turns` was never reached, and a journal saying `turns`
-    /// tells its reader to raise a number that would have bought them nothing. The Driver already
-    /// knows which ceiling it was, so it says so when it asks — and this is where the answer is
-    /// kept until the step that has to spell it.
-    ///
-    /// ⚠ [`None`] for every run that ends on its own terms, where [`Ceiling::Turns`] is the truth.
-    stopped_by: Option<Ceiling>,
 }
 
 impl std::fmt::Debug for AiLoop {
@@ -174,10 +159,7 @@ impl AiLoop {
         // already typed and cannot be malformed; what this reaches is the author's, and the round
         // trip that just carried either of them.
         inner.screening().map_err(NotStarted::Screening)?;
-        Ok(Self {
-            inner,
-            stopped_by: None,
-        })
+        Ok(Self { inner })
     }
 
     /// Where the machine is — the loop's own state, for a caller that wants it beside the run's.
@@ -284,8 +266,18 @@ impl AiLoop {
     /// the datamodel under `reflect_reason` with nothing but a livelock guard reading it.
     ///
     /// So a pass that ENTERED `reflecting` says why — [`Pumped::Moved`]'s `because`, which is a
-    /// [`ReflectReason`](crate::outer::ReflectReason) and not a level, and whose doc holds why an
+    /// [`Because`](crate::outer::Because) and not a level, and whose doc holds why an
     /// ENTRY test rather than 240's diff is the right reader for a variable each edge rewrites.
+    ///
+    /// # ⚠⚠⚠ AND THE SAME AGAIN AT THE OTHER MANY-DOORED STATE — register item 265
+    ///
+    /// `stopping` is reached by two transitions carrying FOUR ceilings between them — this
+    /// document's `max_turns`, and the run's `iterations`, `cost` and `duration` through
+    /// [`Plugin::ask_for_an_account`] — and every one of them wrote one arrow. The only thing that
+    /// separated them in a walk was whether the Driver's own `note_to_itself` line PRECEDED the
+    /// edge, which is telling two facts apart BY THE ABSENCE OF A KEY: the reading this workspace
+    /// has burned wire numbers over, arrived at again one state along. It is the same `because`
+    /// slot and not a second field, for the reason [`Because`](crate::outer::Because) holds.
     ///
     /// ⚠⚠ **THE TWO FACTS ARE APPENDED SEPARATELY AND IN A FIXED ORDER**, cause before finding: the
     /// first says why the arrow was drawn and the second what the pass ran into on the way. They
@@ -298,7 +290,7 @@ impl AiLoop {
         raised: AiLoopEvent,
         to: AiLoopState,
         found: Option<&crate::consent::Unanswered>,
-        because: Option<crate::outer::ReflectReason>,
+        because: Option<crate::outer::Because>,
     ) -> String {
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
@@ -405,13 +397,25 @@ impl AiLoop {
             // ⚠⚠⚠ **AND WHICH BUDGET IT WAS IS NOT ALWAYS THIS DOCUMENT'S.** Since a ceiling of the
             // RUN's can route the machine here too ([`Plugin::ask_for_an_account`]), naming
             // `turns` unconditionally would tell a caller whose wall clock ran out to raise a
-            // number they never came near. The Driver said which when it asked; this reports it
-            // back — see [`stopped_by`](Self#structfield.stopped_by).
+            // number they never came near. The Driver said which when it asked, the loop latched
+            // it, and this reports it back — see [`OuterLoop::stopped_short_by`].
+            // ⚠ READ RATHER THAN COPIED. This plugin used to keep a `stopped_by` of its own beside
+            // the loop's latch: two records of one fact, written in the same breath, and the one
+            // that went stale would send a caller to the wrong knob.
+            //
+            // ⚠⚠ THE VERDICT AND THE WALK'S ARROW ANSWER TWO DIFFERENT QUESTIONS AND MAY DIFFER,
+            // stated rather than hidden. The arrow says WHICH CEILING SENT THE MACHINE TO
+            // `stopping`; this says WHICH ENDED THE RUN. A loop that spends `max_turns` and then
+            // hangs on the account question runs its own clock out during it, so the arrow reads
+            // `turns` and this reads `duration` — the document already accepts that trade in
+            // `stopping`'s own comment (*"the same ending, reported against a different ceiling"*),
+            // and both lines are true. ⚠ A reader is not left to guess between them: the Driver's
+            // `note_to_itself` sits between the two, saying which ceiling fell due and when.
             AiLoopState::Exhausted => {
                 if let Some(unfinished) = self.left_behind() {
                     note.push_str(&unfinished);
                 }
-                Verdict::Exhausted(self.stopped_by.unwrap_or(Ceiling::Turns))
+                Verdict::Exhausted(self.inner.stopped_short_by().unwrap_or(Ceiling::Turns))
             }
             // Reached from `awaiting_human --unattended-->`, which nothing produces yet (registered
             // debt), and kept exhaustive rather than folded into the arm below it.
@@ -805,8 +809,7 @@ impl Plugin for AiLoop {
             | AiLoopState::Redirecting
             | AiLoopState::Closing
             | AiLoopState::Stopping => {
-                self.stopped_by = Some(ceiling);
-                self.inner.stop_short();
+                self.inner.stop_short(ceiling);
                 // ⚠⚠⚠ TWO TURNS, AND A LIVE RUN IS WHAT PRICED THE SECOND ONE — see the doc above.
                 Accounting::Within(
                     self.inner
@@ -1468,6 +1471,186 @@ mod tests {
                  document's own: {:?}",
                 journal.last(),
             );
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+    }
+
+    /// ⚠⚠⚠ **THE QUESTION A STOPPED RUN IS ASKED NAMES THE CEILING THAT STOPPED IT** — register
+    /// item 264, and its walk half, item 265.
+    ///
+    /// # ⚠⚠⚠ What was measured here before it was built
+    ///
+    /// `stop_prompt` was ONE authored sentence — *"This run has spent its whole turn budget and is
+    /// ending here, short of what it was asked for"* — and `stopping` is reached by FOUR ceilings:
+    /// the document's own `max_turns`, and the run's `iterations`, `cost` and `duration` through
+    /// [`Plugin::ask_for_an_account`]. **So for three of the four it was false.** Driven at all four
+    /// with today's API before anything was changed, the identical sentence came back every time.
+    ///
+    /// ⚠⚠⚠ AND IT IS NOT A JOURNAL LINE A READER CAN WEIGH — IT IS TYPED INTO THE AGENT'S PANE, in
+    /// the one turn that asks that agent *what a run picking this up should do first*. A run a wall
+    /// clock stopped was told it had run out of turns, and everything it wrote back was reasoned
+    /// from that. **Register item 261's class, one state over and one layer worse**: 261 misled a
+    /// reader of a journal; this misled the WITNESS.
+    ///
+    /// # ⚠⚠ Why all four ceilings, in one gate, and why each asserts the OTHER THREE are absent
+    ///
+    /// The defect was a document that said the same true-for-one thing to all four, so a gate
+    /// asserting only that SOME clause is present would have passed it unchanged the moment the
+    /// clause happened to be `turns`'. What separates a fixed document from the broken one is that
+    /// the wrong three clauses are gone — so that is the assertion, and the four needles are checked
+    /// mutually exclusive first or it tests nothing.
+    ///
+    /// ⚠ The prompt is read back through [`AiLoop::authored`] rather than off the pane. It is the
+    /// same string [`OuterLoop::advance`] delivered — read out of the same variable, which nothing
+    /// assigns after `stopping` composes it — and the pane cannot answer: this peer's account is
+    /// twenty-eight lines and scrolls the question off a sixteen-row screen, which the gate above
+    /// asserts of the same fixture.
+    ///
+    /// ⚠⚠ THE THREE READERS MUST AGREE. The agent's question, the walk's word and the run's terminal
+    /// `Verdict::Exhausted` are three publications of one fact, and until this round two of them
+    /// were fed by two different fields. They are asserted together so a fix that satisfies one and
+    /// drifts on another cannot pass.
+    #[test]
+    fn the_question_a_stopped_run_is_asked_names_the_ceiling_that_stopped_it() {
+        // ⚠ THE PREMISE OF THE ABSENCE ASSERTIONS BELOW, CHECKED FIRST: a needle that appeared in
+        // another ceiling's clause would make *the wrong three are gone* unfalsifiable.
+        for ceiling in Ceiling::ALL {
+            for other in Ceiling::ALL {
+                assert!(
+                    ceiling == other
+                        || !crate::testing::stop_said(ceiling)
+                            .contains(crate::testing::stop_said(other)),
+                    "⚠⚠ the fixture's needles must be mutually exclusive, or the assertions below \
+                     cannot tell one ceiling's clause from another: {:?} contains {:?}",
+                    crate::testing::stop_said(ceiling),
+                    crate::testing::stop_said(other),
+                );
+            }
+        }
+
+        // ⚠ The two doors, driven as four runs. The document's own budget is reached by briefing a
+        // SMALL `max_turns` under guardrails that cannot bite; the run's three by putting
+        // `max_turns` out of reach and letting each guardrail bind in turn — the gate above's own
+        // table, and its comments hold why each number is the number.
+        for (guardrails, max_turns, ceiling) in [
+            (
+                Guardrails {
+                    max_iterations: 4_000,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+                2,
+                Ceiling::Turns,
+            ),
+            (
+                Guardrails {
+                    max_iterations: 8,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+                1_000_000,
+                Ceiling::Iterations,
+            ),
+            (
+                Guardrails {
+                    max_iterations: 4_000,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_millis(120)),
+                },
+                1_000_000,
+                Ceiling::Duration,
+            ),
+            (
+                Guardrails {
+                    max_iterations: 4_000,
+                    max_cost: Some(Cost::Bytes(1)),
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+                1_000_000,
+                Ceiling::Cost,
+            ),
+        ] {
+            let (workspace, pane) = crate::testing::standin_agent_reporting(
+                crate::testing::Accounts::ForARunThatRanOutOfTurns,
+                NO_THINKING,
+            );
+            let access = supervised(&workspace);
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(max_turns), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(guardrails)
+                .reporting_to(Arc::clone(&progress))
+                .run(&mut loops, &access, &RunContext::uncancellable());
+            let walked: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|entry| entry.note.clone())
+                .collect();
+
+            // ── THE CONTROL: this run really did stop on the ceiling the row is about ──
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Exhausted(ceiling),
+                "⚠⚠ the control: the row must have driven the ceiling it names, or the prompt \
+                 asserted below is a claim about some other run. Walked {walked:?}",
+            );
+
+            // ── 1. THE AGENT WAS TOLD THE TRUTH (item 264) ──
+            let asked = loops
+                .authored()
+                .expect("the datamodel must still answer for its prompts")
+                .stop;
+            assert!(
+                asked.contains(crate::testing::stop_said(ceiling)),
+                "⚠⚠⚠ REGISTER ITEM 264: a run stopped by its {ceiling:?} ceiling was asked \
+                 {asked:?}, which does not name that ceiling. This sentence is TYPED INTO THE \
+                 AGENT'S PANE in the turn that asks it what a run picking this up should do first, \
+                 so the agent reasons from whatever it says. Expected the clause \
+                 {:?}",
+                crate::testing::stop_said(ceiling),
+            );
+            for other in Ceiling::ALL {
+                assert!(
+                    other == ceiling || !asked.contains(crate::testing::stop_said(other)),
+                    "⚠⚠⚠ AND IT NAMED A CEILING THAT DID NOT STOP IT. A run stopped by \
+                     {ceiling:?} was asked {asked:?}, which carries {other:?}'s clause \
+                     ({:?}) — the exact defect item 264 is about, since the agent cannot check.",
+                    crate::testing::stop_said(other),
+                );
+            }
+
+            // ── 2. AND SO WAS THE READER OF THE WALK (item 265) ──
+            //
+            // ⚠⚠ The arrow itself has to carry it. Before this, the only thing separating the two
+            // doors in a walk was whether the Driver's own `note_to_itself` line PRECEDED the edge
+            // — telling them apart by the ABSENCE of a key, and for `turns` there is no such line
+            // at all, so that reading had nothing to work with in a quarter of the cases.
+            let arrows: Vec<&String> = walked
+                .iter()
+                .filter(|note| note.contains("--> Stopping"))
+                .collect();
+            assert!(
+                arrows
+                    .iter()
+                    .all(|note| note.contains(&format!("— {}:", ceiling.wire_str())))
+                    && !arrows.is_empty(),
+                "⚠⚠⚠ REGISTER ITEM 265: the edge into `stopping` must say WHICH ceiling took it \
+                 there. Four ceilings arrive on two transitions, so an arrow that names none reads \
+                 identically for a run that spent `max_turns` and one a wall clock stopped. \
+                 Arrows: {arrows:?}, walked {walked:?}",
+            );
+            for other in Ceiling::ALL {
+                assert!(
+                    other == ceiling
+                        || arrows
+                            .iter()
+                            .all(|note| !note.contains(&format!("— {}:", other.wire_str()))),
+                    "⚠⚠⚠ AND THE WALK NAMED A CEILING THAT DID NOT STOP IT: the run ended on \
+                     {ceiling:?} and an arrow into `stopping` says {other:?}. Arrows: {arrows:?}",
+                );
+            }
             access.lifecycle().expect("lifecycle").close(pane);
         }
     }

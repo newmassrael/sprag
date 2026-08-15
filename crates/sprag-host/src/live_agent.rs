@@ -974,6 +974,20 @@ fn a_briefed_loop_converges_against_a_live_agent() {
     );
 }
 
+/// **A VERBATIM SLICE OF THE CLAUSE `ai_loop.scxml` COMPOSES INTO `stop_prompt`** when the
+/// DOCUMENT's own turn budget ended the run.
+///
+/// ⚠⚠⚠ The two live endings below reach `stopping` by the two different doors, and register item 264
+/// is that they used to be asked the SAME sentence — one that named the turn budget, whatever had
+/// actually bound. So each gate asserts its own clause is there AND the other's is not, and these
+/// are the needles.
+///
+/// ⚠ Claims about the document's wording, exactly as *"where you got to"* already is here, and held
+/// in step by nothing but these gates going red when somebody edits one and not the other.
+const STOP_SAID_TURNS: &str = "every turn its document budgeted";
+/// [`STOP_SAID_TURNS`]'s counterpart for the run a WALL CLOCK stopped.
+const STOP_SAID_DURATION: &str = "wall-clock time";
+
 /// ⚠⚠⚠ **A RUN THAT RAN OUT OF TURNS SAYS WHERE IT GOT TO, IN A REAL AGENT'S WORDS** — register
 /// item 201, against the program the whole feature exists for.
 ///
@@ -1052,6 +1066,14 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         "⚠ the stopping question must be the DOCUMENT's, or what follows measures nothing: \
          {asked:?}",
     );
+    // ⚠⚠ AND BEFORE THE RUN IT NAMES NO CEILING, which is the premise of the assertion after it:
+    // `stopping` composes that clause in, so reading it here would be reading the preview.
+    assert!(
+        !asked.contains(STOP_SAID_TURNS) && !asked.contains(STOP_SAID_DURATION),
+        "⚠⚠ the shipped question must carry no ceiling clause — which ceiling ends a run is not \
+         knowable before one does, and a preview that named one would be register item 264 a layer \
+         out: {asked:?}",
+    );
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
@@ -1095,11 +1117,30 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         "and the DOCUMENT agrees with the run's word, or the two are counting different things",
     );
 
+    // ⚠⚠⚠ WHAT THE MODEL WAS ACTUALLY TOLD — register item 264, on the ONE door a live agent can
+    // reach through this document's own arithmetic. The sentence typed into a real pane has to name
+    // the ceiling that ended the run, and this is where that is a claim about a MODEL's input rather
+    // than about a fixture's.
+    let typed = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .stop;
+    assert!(
+        typed.contains(STOP_SAID_TURNS) && !typed.contains(STOP_SAID_DURATION),
+        "⚠⚠⚠ REGISTER ITEM 264: this run spent the DOCUMENT's own turn budget and the question put \
+         to the live agent was {typed:?}. It must name that ceiling and no other — the agent cannot \
+         check, and whatever it says about what a run picking this up should do first is reasoned \
+         from this sentence",
+    );
+
     let report = sprag_plugin::Plugin::captured(&loops).unwrap_or_else(|| {
         panic!(
             "⚠⚠⚠ A RUN THAT RAN OUT OF TURNS MUST HAND BACK THE ACCOUNT IT WAS ASKED FOR. This is \
              register item 201: `stopping` asked a real agent where it got to, and a caller who \
-             briefed the run gets the word `exhausted` and nothing else without this. Screen: {}",
+             briefed the run gets the word `exhausted` and nothing else without this. ⚠ It is also \
+             what says the RECOMPOSED question still reads as a question to a model — the wording \
+             changed for item 264, and a model that took it as a statement would answer nothing. \
+             Screen: {}",
             live.tail(12),
         )
     });
@@ -1309,6 +1350,35 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         AiLoopState::Exhausted,
         "and the DOCUMENT agrees with the run's word, or the two are counting different things",
     );
+
+    // ⚠⚠⚠ **THIS IS THE RUN REGISTER ITEM 264 WAS LYING TO, AND HERE IT IS MEASURED AGAINST THE
+    // MODEL.** Until this round `stop_prompt` was one authored sentence opening *"This run has spent
+    // its whole turn budget"*, and this run's `max_turns` is a thousand and untouched: a real
+    // `claude`, in the one turn that asks it what a run picking this up should do first, was told it
+    // had run out of turns by a run its WALL CLOCK had stopped. The stand-in gates prove the
+    // composition; only this proves the sentence a model actually read.
+    let typed = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .stop;
+    assert!(
+        typed.contains(STOP_SAID_DURATION) && !typed.contains(STOP_SAID_TURNS),
+        "⚠⚠⚠ REGISTER ITEM 264: a live agent whose run the WALL CLOCK stopped was asked {typed:?}. \
+         It must name the clock and must not name the turn budget — this run never came near \
+         `max_turns` and the agent has no way to check. Walked: {walked:?}",
+    );
+    // ⚠⚠ AND THE WALK SAYS IT TOO (register item 265). The Driver's own `note_to_itself` line is a
+    // SEPARATE entry, so before this the only way to tell the two doors apart in a journal was by
+    // whether that line preceded the arrow — reading the absence of a key as a guarantee.
+    assert!(
+        walked
+            .iter()
+            .filter(|note| note.contains("--> Stopping"))
+            .all(|note| note.contains("— duration:")),
+        "⚠⚠⚠ REGISTER ITEM 265: the arrow into `stopping` must name the ceiling that took it there, \
+         and this run's is the clock: {walked:?}",
+    );
+
     assert!(
         report.contains('1'),
         "⚠⚠ the account must be about the work — this run's whole milestone was counting, so an \
@@ -1318,6 +1388,13 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         !report.contains(asked.as_str()) && !report.contains("what you left half-done"),
         "⚠⚠⚠ THE CALLER'S OWN STOPPING QUESTION CAME BACK AS THE AGENT'S ACCOUNT — whole, or as the \
          wrapped fragment a live composer paints: {report:?}",
+    );
+    // ⚠ `asked` above is the PREVIEW, taken before the run; the discount the driver applies is over
+    // the COMPOSED question, so the ceiling clause has to be absent from the account too.
+    assert!(
+        !report.contains(STOP_SAID_DURATION),
+        "⚠⚠ the ceiling clause `stopping` composed in came back inside the agent's account, so the \
+         echo discount is reading a stale copy of the question: {report:?}",
     );
 }
 

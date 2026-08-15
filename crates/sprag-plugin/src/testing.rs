@@ -358,6 +358,7 @@ use sprag_terminal::{CommandBuilder, PaneId, Workspace};
 use crate::access::{
     AgentObservation, AgentStateSource, Authority, PaneAccess, WorkspacePaneAccess,
 };
+use crate::driver::Ceiling;
 
 /// A peer that draws a bottom-anchored numbered menu and reacts to single keystrokes, in one of
 /// the four dialog behaviours a run has to survive.
@@ -1307,6 +1308,34 @@ pub(crate) const STOP_QUESTION: &str = "where you got to";
 /// ahead of an account it wrote for `stopping`. See [`REPORT_ECHO_SLICE`], which is this for
 /// `closing`.
 pub(crate) const STOP_ECHO_SLICE: &str = "what you left half-done";
+
+/// **A VERBATIM SLICE OF THE CLAUSE `ai_loop.scxml` COMPOSES INTO `stop_prompt`** for the ceiling
+/// that ended the run — one per [`Ceiling`], and the needle register item 264 is measured with.
+///
+/// # ⚠⚠⚠ Why a slice per ceiling rather than one needle
+///
+/// `stopping` is reached by FOUR ceilings and used to ask ONE authored sentence: *"This run has
+/// spent its whole turn budget"*. For three of them that is false, and it is not a journal line
+/// somebody can weigh — it is typed into a live agent's pane in the one turn that asks that agent
+/// what a run picking this up should do first. A gate that only asserted *some* clause is there
+/// would pass a document that told every run the same lie, so the gate asserts the ceiling's OWN
+/// clause is present AND that no other ceiling's is.
+///
+/// ⚠⚠ THE SLICES MUST THEREFORE BE MUTUALLY EXCLUSIVE — no one of them a substring of another
+/// ceiling's clause — or the second half of that assertion tests nothing. `the_question_a_stopped_run_
+/// is_asked_names_the_ceiling_that_stopped_it` checks it of the four before it uses them.
+///
+/// ⚠ Claims about the document's wording, exactly as [`STOP_QUESTION`] is, and held in step by the
+/// same discipline: edited apart from `ai_loop.scxml`, the gate that reads them goes red rather than
+/// quietly stopping being about anything.
+pub(crate) const fn stop_said(ceiling: Ceiling) -> &'static str {
+    match ceiling {
+        Ceiling::Turns => "every turn its document budgeted",
+        Ceiling::Iterations => "every step its run was allowed",
+        Ceiling::Cost => "allowed to spend",
+        Ceiling::Duration => "wall-clock time",
+    }
+}
 
 /// How many filler lines the reporting peer's account carries between its ends.
 ///

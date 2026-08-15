@@ -192,6 +192,12 @@ pub struct Authored {
     /// ⚠ PUBLISHED BESIDE `end` RATHER THAN INSTEAD OF IT, because a caller previewing a loop is
     /// deciding what its agent will be asked at EVERY ending it can reach, and the two questions
     /// differ: one presumes the work is finished and the other does not.
+    ///
+    /// ⚠⚠ **BEFORE THE RUN STOPS THIS CARRIES NO CEILING, AND THAT IS THE HONEST PREVIEW.**
+    /// `stopping` composes in which budget ended the run — four can — and which one it will be is
+    /// not knowable in advance. A preview that named one would be register item 264 one layer out:
+    /// a true-looking sentence about a ceiling nobody has met. What is shipped is the question
+    /// without the clause, which is true of every ending this state can reach.
     pub stop: String,
     /// **WHAT THE LOOP ASKS ITS AGENT BEFORE REPLACING ITS SESSION** — `reflecting`'s own prompt.
     ///
@@ -210,8 +216,10 @@ impl Authored {
     ///
     /// ⚠⚠ IT ASKS WHETHER THEY ARE THERE, NOT WHETHER THEY SAY ANYTHING. Three of them are composed
     /// by `priming`'s `onentry`, so a machine still sitting in `idle` holds them empty and that is
-    /// correct rather than broken — see [`OuterLoop::authored`]. The two ENDING prompts are literals
-    /// the document ships, so those are readable from the moment the engine is built.
+    /// correct rather than broken — see [`OuterLoop::authored`]. The two ENDING prompts are readable
+    /// from the moment the engine is built: `end_prompt` is a literal the document ships, and
+    /// `stop_prompt` is composed in the `<datamodel>` itself out of the two parts that do not depend
+    /// on how the run ends. ⚠ `stopping` composes the third part in later — see [`Self::stop`].
     fn read(script: &Arc<dyn IScriptEngine>, session: &str) -> Option<Self> {
         let text = |name: &str| match script.get_variable(session, name) {
             Ok(ScriptValue::String(value)) => Some(value),
@@ -242,6 +250,12 @@ const NORTH_STAR_MARKER: &str = "north_star_marker";
 /// The datamodel variable saying **WHY this reflection was asked for** — written by whichever
 /// `judge` transition reached `reflecting`. See the document, and register item 179.
 const REFLECT_REASON: &str = "reflect_reason";
+
+/// The datamodel variable saying **WHICH CEILING ended the run** — written by whichever `judge`
+/// transition reached `stopping`, and read by two parties that must not disagree: the document's own
+/// `stopping` composes the sentence its agent is asked out of it, and [`OuterLoop::stopping_because`]
+/// puts the same fact in the run's walk. See the document, and register items 264 and 265.
+const STOP_REASON: &str = "stop_reason";
 
 /// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
 /// the prompt that asks for it — see [`OuterLoop::proposed`].
@@ -513,7 +527,12 @@ pub(crate) enum Owed {
     End,
     /// The `stop_prompt` — **where did you get to?**, asked of a run that is ending WITHOUT having
     /// got there. [`End`](Self::End)'s twin, and a different question: see the document, which says
-    /// why an agent that ran out of turns cannot be asked to summarise finished work.
+    /// why an agent that ran out of budget cannot be asked to summarise finished work.
+    ///
+    /// ⚠⚠ THE ONLY PROMPT COMPOSED OUTSIDE `priming`, and the reason is that its last part does not
+    /// exist until the edge that delivers it is taken: `stopping` writes WHICH CEILING ended the run
+    /// into the sentence, and four of them can. See the document's `stop_said`, and register item
+    /// 264 for what one sentence for four ceilings cost.
     Stop,
     /// The `reflect_prompt` — **what should this run do next?**, asked of the agent that has been
     /// doing the work, and answered into the session that replaces it.
@@ -837,6 +856,52 @@ impl ReflectReason {
     }
 }
 
+/// **WHY THIS PASS'S EDGE WAS TAKEN**, for a state that several edges reach with several different
+/// meanings — [`Pumped::Moved`]'s `because`.
+///
+/// # ⚠⚠⚠ Why one slot rather than one field per state
+///
+/// `ai_loop.scxml` has two such states and they were found one round apart. `reflecting` is reached
+/// three ways and every one of them wrote the same arrow (register item 261); `stopping` is reached
+/// by two transitions carrying FOUR ceilings and every one of them wrote the same arrow too
+/// (register item 265). A second field beside the first would have made the third such state a
+/// third field, and the walk that composes them a longer and longer list of *did this one happen* —
+/// the flat driver this crate already owes for. **The question is one question**: *this pass took an
+/// edge into a many-doored state; which door was it?* So it is one slot, and a state that grows the
+/// same ambiguity adds an arm here.
+///
+/// # ⚠⚠ Why the two arms carry DIFFERENT vocabularies, and that is correct
+///
+/// [`ReflectReason`] is a word the DOCUMENT assigns and this driver transcribes;
+/// [`Ceiling`](crate::driver::Ceiling) is the
+/// driver's own type, three of whose four values the document only ever echoes back. Which half owns
+/// the fact is exactly what each arm records, and flattening them into one word list would lose it —
+/// see `stop_reason` in the document, which says the same thing from the other side.
+///
+/// ⚠ Rendered through [`noted`](Self::noted) alone, so a consumer never spells either vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Because {
+    /// The pass ENTERED `reflecting`, and this is which of the three `judge` edges took it there.
+    Reflected(ReflectReason),
+    /// The pass ENTERED `stopping`, and this is WHICH CEILING ended the run — the document's own
+    /// `max_turns` ([`Ceiling::Turns`](crate::driver::Ceiling::Turns)) or one of the run's three,
+    /// which reach the machine through
+    /// the driver's `stop_short` and are echoed back out of the datamodel here.
+    Stopped(crate::driver::Ceiling),
+}
+
+impl Because {
+    /// **THE WORD AND THE WHOLE SENTENCE**, whichever vocabulary owns it — see each arm's own
+    /// `noted`.
+    #[must_use]
+    pub fn noted(self) -> String {
+        match self {
+            Self::Reflected(reason) => reason.noted(),
+            Self::Stopped(ceiling) => ceiling.noted(),
+        }
+    }
+}
+
 /// **WHAT ONE PASS OF THE DRIVER DID** — and, when it could not, exactly what it was asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pumped {
@@ -886,13 +951,13 @@ pub enum Pumped {
         /// it. ⚠ Two identical refusals in a row are one finding and are reported once, which is
         /// what stops a paused run writing its reason into every poll of its own wait.
         found: Option<crate::consent::Unanswered>,
-        /// **WHY THIS PASS'S EDGE WAS TAKEN**, for the one state several edges reach with several
-        /// different meanings — [`None`] for every other pass. See [`ReflectReason`].
+        /// **WHY THIS PASS'S EDGE WAS TAKEN**, for a state several edges reach with several
+        /// different meanings — [`None`] for every other pass. See [`Because`].
         ///
         /// # ⚠⚠⚠ Read ON ENTRY, and why that is not [`found`](Self::Moved::found)'s diff
         ///
-        /// `reflect_reason` is a datamodel variable, so it is a LEVEL exactly as
-        /// [`OuterLoop::noticed`] is, and reading it on any other pass would write *the loop
+        /// `reflect_reason` and `stop_reason` are datamodel variables, so each is a LEVEL exactly as
+        /// [`OuterLoop::noticed`] is, and reading one on any other pass would write *the loop
         /// reflected because its budget came round* onto every step of the restart that followed —
         /// R396's thirteen identical lines, one round later.
         ///
@@ -905,8 +970,9 @@ pub enum Pumped {
         /// but *did this pass take an edge that assigns it*.**
         ///
         /// ⚠ Which edges those are is not a list out here: every transition into `reflecting`
-        /// assigns the variable, and a gate over the document holds that true.
-        because: Option<ReflectReason>,
+        /// assigns its variable and every transition into `stopping` assigns its own, and a gate
+        /// over the document holds each of those true.
+        because: Option<Because>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -1247,7 +1313,14 @@ pub struct OuterLoop {
     /// ⚠ It reaches the machine as `_event.data.stop_short` rather than as a `<data>` assignment,
     /// because the fact belongs to THIS judgement and the machine's own guard is what decides on
     /// it — the same shape `judged` and `done` already have.
-    stopping_short: bool,
+    ///
+    /// ⚠⚠⚠ **IT CARRIES WHICH CEILING AND NOT MERELY THAT ONE FELL.** A boolean was enough to ROUTE
+    /// the machine and not enough to tell it anything: `stopping` asks its agent where the run got
+    /// to, and with only a flag to go on the document's own question told every one of these three
+    /// runs it had spent its turn budget — false for all of them, typed into a live agent's pane
+    /// (register item 264). The word is [`Ceiling::wire_str`](crate::driver::Ceiling::wire_str)'s,
+    /// so the vocabulary the machine echoes back is the one the Driver already publishes.
+    stopping_short: Option<crate::driver::Ceiling>,
     /// ⚠⚠⚠ **THE LAST PROMPT WAS TYPED AND NEVER SUBMITTED** — the run's clock landed between the
     /// two. Written by [`say`](Self::say) on every prompt, so it describes the CURRENT turn and
     /// cannot go stale; read by [`asked_nothing`](Self::asked_nothing).
@@ -1317,7 +1390,7 @@ impl OuterLoop {
             awaiting: None,
             reported: None,
             ended: Vec::new(),
-            stopping_short: false,
+            stopping_short: None,
             unasked: false,
         })
     }
@@ -1340,9 +1413,30 @@ impl OuterLoop {
     /// in flight is a real agent mid-reply, and a driver that jumped to `stopping` would type the
     /// account's question over a peer that is still working — the failure class every silent edge
     /// in `Owed::on` exists to avoid. The turn ends the way it was always going to, `judging` is
-    /// entered the way it always is, and the flag decides only what happens NEXT.
-    pub const fn stop_short(&mut self) {
-        self.stopping_short = true;
+    /// entered the way it always is, and the latch decides only what happens NEXT.
+    ///
+    /// ⚠⚠ `ceiling` IS CARRIED RATHER THAN DISCARDED, and it is the run's answer to *which budget*.
+    /// It reaches the document on the next `judge`, becomes the sentence the agent is asked
+    /// (register item 264) and the word in the run's walk (item 265), and comes back out as the
+    /// terminal [`Verdict::Exhausted`](crate::plugin::Verdict::Exhausted) — so this is the ONE place
+    /// the fact enters the plugin, and nothing downstream keeps a second copy of it.
+    ///
+    /// ⚠ FIRST WRITER WINS is not asserted here because there is only ever one: the Driver asks for
+    /// an account exactly once per run (`Driver::spend_or_account`, which pins its own
+    /// `exhausted_by` before it calls).
+    pub const fn stop_short(&mut self, ceiling: crate::driver::Ceiling) {
+        self.stopping_short = Some(ceiling);
+    }
+
+    /// **WHICH OF THE RUN'S OWN CEILINGS STOPPED THIS LOOP**, or [`None`] for a loop ending on its
+    /// own terms — where the document's `max_turns` is the truth.
+    ///
+    /// ⚠ The plugin's terminal verdict reads this rather than keeping a copy beside it: two records
+    /// of one fact are two things to keep right, and the one that got stale would send a caller to
+    /// raise a budget their run never came near.
+    #[must_use]
+    pub const fn stopped_short_by(&self) -> Option<crate::driver::Ceiling> {
+        self.stopping_short
     }
 
     /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its caller declared it — [`None`] where
@@ -1840,14 +1934,23 @@ impl OuterLoop {
             // out here is whether the agent said it was done — `judge`'s first guard reads
             // `_event.data.done`.
             // ⚠⚠⚠ AND THE SECOND FACT IS ONE THE MACHINE STRUCTURALLY CANNOT READ: whether the
-            // run's budget — the DRIVER's, not the document's `max_turns` — is already spent. See
-            // [`stop_short`](Self::stop_short). A boolean beside the name for `judged`'s measured
-            // reason: in Lua the only false values are `nil` and `false`.
+            // run's budget — the DRIVER's, not the document's `max_turns` — is already spent, and
+            // WHICH of the three it was. See [`stop_short`](Self::stop_short).
+            //
+            // ⚠⚠ A WORD OR `false`, NEVER AN EMPTY STRING, and that is what keeps the document's
+            // `cond="_event.data.stop_short"` a truth test: this datamodel is Lua, where the only
+            // false values are `nil` and `false`, so an empty word would send EVERY judgement of
+            // EVERY run to `stopping`. Nothing can publish one — every `Ceiling::wire_str` is a
+            // non-empty literal, and a gate holds that rather than this comment. `judged`'s
+            // measured reason for a boolean beside a name, one key over, is the same fact.
             AiLoopState::Judging => Raise::carrying(
                 AiLoopEvent::Judge,
                 serde_json::json!({
                     "done": self.said_done(panes),
-                    "stop_short": self.stopping_short,
+                    "stop_short": match self.stopping_short {
+                        Some(ceiling) => serde_json::Value::from(ceiling.wire_str()),
+                        None => serde_json::Value::Bool(false),
+                    },
                 }),
             ),
 
@@ -1908,14 +2011,41 @@ impl OuterLoop {
             Some(now) if held.as_ref() != Some(now) => Some(now.clone()),
             _ => None,
         };
-        // ⚠⚠⚠ ON THE EDGE THAT ENTERS `reflecting`, AND ON NO OTHER PASS — see
+        // ⚠⚠⚠ ON THE EDGE THAT ENTERS A MANY-DOORED STATE, AND ON NO OTHER PASS — see
         // [`Pumped::Moved`]'s `because` for why this is an entry test rather than the diff one
-        // line above it. `from != to` is what keeps a `Null` look inside `reflecting` (and the
+        // line above it. `from != to` is what keeps a `Null` look inside such a state (and the
         // state's own re-entry, if the document ever grows one) off this channel.
-        let because = if from != to && to == AiLoopState::Reflecting {
-            self.reflecting_because()
-        } else {
+        //
+        // ⚠⚠ EXHAUSTIVE over the machine's states rather than an `if` per state, so a THIRD state
+        // that grows several meanings meets a reader deciding about it here instead of being
+        // silently absent — `Owed::on`'s discipline, in the other direction.
+        let because = if from == to {
             None
+        } else {
+            match to {
+                AiLoopState::Reflecting => self.reflecting_because().map(Because::Reflected),
+                // ⚠⚠⚠ FOUR CEILINGS ARRIVE ON TWO EDGES and a reader could tell them apart only by
+                // whether the Driver's own `note_to_itself` line PRECEDED the arrow — i.e. by the
+                // ABSENCE of a key, which is the reading this workspace has burned wire numbers
+                // over. Register item 265; the document assigns the word on both doors.
+                AiLoopState::Stopping => self.stopping_because().map(Because::Stopped),
+                AiLoopState::Idle
+                | AiLoopState::Priming
+                | AiLoopState::Working
+                | AiLoopState::Judging
+                | AiLoopState::Screening
+                | AiLoopState::Redirecting
+                | AiLoopState::AwaitingHuman
+                | AiLoopState::Reviewing
+                | AiLoopState::Restarting
+                | AiLoopState::Resuming
+                | AiLoopState::Closing
+                | AiLoopState::Converged
+                | AiLoopState::Exhausted
+                | AiLoopState::Failed
+                | AiLoopState::Cancelled
+                | AiLoopState::Blocked => None,
+            }
         };
         Ok(Pumped::Moved {
             from,
@@ -1936,6 +2066,23 @@ impl OuterLoop {
     /// going perfectly well over a fact nobody has yet acted on.
     fn reflecting_because(&self) -> Option<ReflectReason> {
         ReflectReason::named(&self.text_of(REFLECT_REASON)?)
+    }
+
+    /// **WHICH CEILING PUT THE MACHINE IN `stopping`** — the word its incoming transition assigned,
+    /// read back through the closed vocabulary the Driver spells.
+    ///
+    /// ⚠ Read from the DOCUMENT and not from [`stopping_short`](Self#structfield.stopping_short),
+    /// though this loop is holding that too, and the difference is the whole point: the run's three
+    /// ceilings arrive here as the driver's own latch, and `max_turns` never touches it. Reading the
+    /// latch would answer [`None`] for the one ceiling only the document can see — and would be a
+    /// SECOND authority on the other three, free to disagree with the sentence the agent was
+    /// actually asked. One variable feeds the prompt and this line both, so they cannot come apart.
+    ///
+    /// [`None`] for a datamodel that has stopped answering, and — unreachably, by the document
+    /// gate — for a word this driver has no ceiling for. ⚠ Not a failure either way, for
+    /// [`reflecting_because`](Self::reflecting_because)'s reason.
+    fn stopping_because(&self) -> Option<crate::driver::Ceiling> {
+        crate::driver::Ceiling::from_wire(&self.text_of(STOP_REASON)?)
     }
 
     /// **THE REFUSAL THIS LOOP IS HOLDING**, or [`None`] when its notice is anything else — the one
@@ -3066,6 +3213,12 @@ impl OuterLoop {
     /// report has to carry about itself. Kept there because every one of those rules was decided by
     /// a measurement of what a live agent's pane holds, and the measurement, the rules and their
     /// gates read together or not at all.
+    ///
+    /// ⚠⚠ READ AT THE MOMENT OF THE ACCOUNT, which is what keeps the discount honest now that one
+    /// of the two questions is COMPOSED. `stop_prompt` gains its ceiling clause on entry to
+    /// `stopping`, so the string discounted here is the one that was actually typed — a cached copy
+    /// taken any earlier would leave that clause in the agent's report as if the agent had written
+    /// it.
     fn account(&self, panes: &dyn PaneAccess, asked: Owed) -> Option<String> {
         crate::report::account(
             &self.driving.since.taken(panes, self.driving.pane),
@@ -3722,6 +3875,190 @@ mod tests {
              `Pumped::Unbuilt`'s finding (register item 260) arriving before the fact instead of \
              four rounds after it: decide whether the arm should exist, and say so where the type \
              is",
+        );
+    }
+
+    /// ⚠⚠⚠ **EVERY EDGE INTO `stopping` SAYS WHICH CEILING, IN A WORD THIS DRIVER HAS A `Ceiling`
+    /// FOR** — register item 265's other half, and item 264's premise.
+    ///
+    /// # ⚠⚠⚠ Why this reads the `.scxml`, and why it is not the gate next door with a name changed
+    ///
+    /// `the_question_a_stopped_run_is_asked_names_the_ceiling_that_stopped_it` drives all four
+    /// ceilings and proves each is REACHABLE and each says the right thing. What no run can prove is
+    /// that the document has not grown a THIRD way into `stopping` that assigns nothing: such an
+    /// edge is silent by construction — `stop_reason` is not cleared on entry, so the run would be
+    /// told, and would tell its agent, the PREVIOUS reason — and every existing gate stays green
+    /// because none of them takes it.
+    ///
+    /// ⚠⚠ **AND ONE HALF IS GENUINELY DIFFERENT FROM `reflecting`'s.** There, every edge assigns a
+    /// literal this driver transcribes. Here only ONE does: `turns` is the document's own ceiling
+    /// and nothing outside can see it. The other door assigns `_event.data.stop_short`, whose value
+    /// is the DRIVER's word for whichever of its three ceilings bound — so the check is *a literal
+    /// this driver knows, or the driver's own key*, and a third spelling of either is what it
+    /// catches.
+    ///
+    /// ⚠⚠⚠ **AND THE GUARD'S PREMISE, WHICH IS ARITHMETIC RATHER THAN PROSE.** That door's guard is
+    /// bare truthiness (`cond="_event.data.stop_short"`) over a Lua datamodel, where the only false
+    /// values are `nil` and `false`. A `Ceiling` that spelled itself `''` would therefore send EVERY
+    /// judgement of EVERY run straight to `stopping` — a whole-product failure from one empty string
+    /// literal. It cannot happen and nothing said so; now something does.
+    #[test]
+    fn every_edge_into_stopping_says_which_ceiling_in_a_word_this_driver_knows() {
+        /// The authority. ⚠ Read as TEXT, for the gate next door's reason.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The attribute that names an edge arriving at the state in question.
+        const INTO: &str = "target=\"stopping\"";
+        /// And the one that publishes its cause.
+        const ASSIGNS: &str = "location=\"stop_reason\"";
+        /// What the driver publishes the ceiling under — see `pump`'s `Judging` arm.
+        const DRIVERS_KEY: &str = "_event.data.stop_short";
+
+        // ── THE PREMISE OF THE OUTSIDE DOOR'S GUARD ──
+        let empty: Vec<crate::driver::Ceiling> = crate::driver::Ceiling::ALL
+            .into_iter()
+            .filter(|it| it.wire_str().is_empty())
+            .collect();
+        assert!(
+            empty.is_empty(),
+            "⚠⚠⚠ a `Ceiling` whose word is EMPTY makes `cond=\"{DRIVERS_KEY}\"` fire on every \
+             judgement of every run — this datamodel is Lua and an empty string is TRUE there, so \
+             the loop would go to `stopping` on its first judged turn, always. Got {empty:?}",
+        );
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        // Each edge into `stopping`, as (the line an author would open, the expression it assigns).
+        let mut edges: Vec<(usize, Option<&str>)> = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            if !line.contains(INTO) {
+                continue;
+            }
+            let body = lines[at + 1..]
+                .iter()
+                .take_while(|body| !body.contains("</transition>"));
+            let assigned = if line.trim_end().ends_with("/>") {
+                None
+            } else {
+                body.filter_map(|body| body.split_once(ASSIGNS))
+                    .find_map(|(_, rest)| rest.split_once("expr=\""))
+                    .and_then(|(_, rest)| rest.split_once('"'))
+                    .map(|(expr, _)| expr.trim())
+            };
+            edges.push((at + 1, assigned));
+        }
+
+        // ── THE CONTROL: the document really does have several edges into that state ──
+        assert!(
+            edges.len() > 1,
+            "⚠⚠⚠ the control: `ai_loop.scxml` must have SEVERAL transitions carrying {INTO}, or \
+             this gate is holding a document that no longer has the ambiguity register item 265 is \
+             about — and the answer then is to delete it and say so, not to leave it passing. \
+             Found {edges:?}",
+        );
+
+        // ── 1. EVERY ONE OF THEM SAYS WHICH ──
+        let silent: Vec<usize> = edges
+            .iter()
+            .filter(|(_, assigned)| assigned.is_none())
+            .map(|(line, _)| *line)
+            .collect();
+        assert!(
+            silent.is_empty(),
+            "⚠⚠⚠ REGISTER ITEM 265: `ai_loop.scxml` line(s) {silent:?} take an edge into \
+             `stopping` and assign no {ASSIGNS}. `stop_reason` is not cleared on entry and TWO \
+             readers take it — the walk, and the very sentence the agent is asked — so such an \
+             edge does not merely leave them silent, it tells a live agent the PREVIOUS ceiling \
+             ended its run",
+        );
+
+        // ── 2. AND IN A WORD THIS DRIVER HAS A CEILING FOR, OR ITS OWN KEY ──
+        let unknown: Vec<(usize, Option<&str>)> = edges
+            .iter()
+            .filter(|(_, assigned)| {
+                assigned.is_none_or(|expr| {
+                    expr != DRIVERS_KEY
+                        && expr
+                            .strip_prefix('\'')
+                            .and_then(|it| it.strip_suffix('\''))
+                            .and_then(crate::driver::Ceiling::from_wire)
+                            .is_none()
+                })
+            })
+            .copied()
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "⚠⚠⚠ the document assigns a `stop_reason` this driver cannot read back: {unknown:?}. \
+             It must be a literal naming one of {:?} — `turns` is the only one it can know, since \
+             the rest are the RUN's — or the driver's own {DRIVERS_KEY}, whose value is already one \
+             of those words. Anything else loses the ceiling in the walk AND leaves the agent's \
+             question composing `nil`",
+            crate::driver::Ceiling::ALL.map(crate::driver::Ceiling::wire_str),
+        );
+    }
+
+    /// ⚠⚠⚠ **EVERY CEILING THIS DRIVER KNOWS HAS A SENTENCE THE DOCUMENT SAYS TO THE AGENT** —
+    /// register item 264's other direction, and the one a run structurally cannot reach.
+    ///
+    /// # ⚠⚠⚠ Why the map has to be TOTAL, and why no run can hold it so
+    ///
+    /// `stopping` composes what its agent is asked out of `stop_said[stop_reason]`. ⚠⚠⚠ MEASURED by
+    /// deleting the `duration` clause and running the ceiling gate: a missing key does NOT fail the
+    /// assignment and leave the shipped question standing — **the concatenation succeeds and the
+    /// agent is asked *"…short of what it was asked for. nil Say where you got to…"***. The word
+    /// `nil`, typed into a live agent's pane, in the turn that asks it to account for the run.
+    ///
+    /// The gates that DRIVE the loop can only prove the ceilings that exist TODAY are covered; the
+    /// failure this catches arrives with a `Ceiling` added in Rust months from now by somebody who
+    /// never opened the document — and lands on a person's agent rather than on a screen anybody is
+    /// watching.
+    ///
+    /// **A list with no glob decides alone** (R376/R381). The list is `Ceiling::ALL`, the authority
+    /// is `ai_loop.scxml`, and the only thing that can hold them together is a reader of the file.
+    ///
+    /// ⚠ BOTH DIRECTIONS, as the reflection gate takes both: a key the driver has no ceiling for is
+    /// prose nothing can ever select — `Pumped::Unbuilt`'s finding (register item 260) before the
+    /// fact rather than four rounds after it.
+    #[test]
+    fn every_ceiling_this_driver_knows_has_a_sentence_the_document_says_to_the_agent() {
+        /// The authority.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The `<data>` the composition indexes.
+        const MAP: &str = "<data id=\"stop_said\"";
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        let opens = lines
+            .iter()
+            .position(|line| line.contains(MAP))
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠ the control: `ai_loop.scxml` must declare {MAP}, which is what `stopping` \
+                     composes its agent's question out of. Without it register item 264 is back: \
+                     one sentence for four ceilings, and false for three of them"
+                )
+            });
+        // ⚠ The declaration's own body, ending at its close — tolerant of the entries moving or
+        // being re-indented, and deliberately not of the whole thing being folded onto one line,
+        // which is a shape a reader of this file could not check by eye either.
+        let authored: std::collections::BTreeSet<&str> = lines[opens + 1..]
+            .iter()
+            .take_while(|line| !line.contains("/>"))
+            .filter_map(|line| line.split_once(':'))
+            .map(|(key, _)| key.trim())
+            .filter(|key| {
+                !key.is_empty() && key.chars().all(|it| it.is_alphanumeric() || it == '_')
+            })
+            .collect();
+        let known: std::collections::BTreeSet<&str> = crate::driver::Ceiling::ALL
+            .iter()
+            .map(|it| it.wire_str())
+            .collect();
+        assert_eq!(
+            authored, known,
+            "⚠⚠⚠ REGISTER ITEM 264: `stop_said` must have one clause per `Ceiling` and no others. \
+             A ceiling missing from it composes `nil`, the assignment in `stopping` fails, and a \
+             live agent is asked where it got to WITHOUT being told which budget ended its run — \
+             silently, because the ceiling-free question is still true. A key with no ceiling is \
+             the mirror: prose nothing can select"
         );
     }
 
@@ -4529,10 +4866,13 @@ mod tests {
                     // A pass reporting any OTHER cause means some guard fired that this walk's
                     // assertions do not describe.
                     assert!(
-                        because.is_none_or(|reason| reason == ReflectReason::Milestone),
-                        "⚠⚠ {from:?} --{raised:?}--> {to:?} says the run stopped to reflect \
-                         because {because:?}, and the only reason available to this brief is a \
-                         reached milestone. Walked {walked:?}",
+                        because.is_none_or(
+                            |reason| reason == Because::Reflected(ReflectReason::Milestone)
+                        ),
+                        "⚠⚠ {from:?} --{raised:?}--> {to:?} says the edge was taken because \
+                         {because:?}, and the only reason available to this brief is a reached \
+                         milestone — this run has budget to spare, so it cannot reach `stopping` \
+                         either. Walked {walked:?}",
                     );
                     walked.push((from, raised, to));
                 }

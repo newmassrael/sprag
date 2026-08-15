@@ -403,6 +403,12 @@ pub trait Plugin {
     /// ⚠ `&mut self`, because answering is a DECISION the plugin then has to remember: `ai_loop`
     /// records that its next judgement must route to `stopping` rather than back to work.
     ///
+    /// ⚠⚠ AND `ceiling` IS PART OF WHAT IT REMEMBERS, not merely of how it decides. A plugin that
+    /// kept only *some ceiling fell* can route correctly and still say the wrong thing: `ai_loop`
+    /// asks its agent where the run got to, and with a flag alone the document's question told a
+    /// run stopped by a wall clock that it had spent its turn budget — false, and typed into that
+    /// agent's pane (register item 264). Whoever answers this owns the only copy of the fact.
+    ///
     /// [`Driver`]: crate::driver::Driver
     fn ask_for_an_account(&mut self, _ceiling: crate::driver::Ceiling) -> Accounting {
         Accounting::Nothing

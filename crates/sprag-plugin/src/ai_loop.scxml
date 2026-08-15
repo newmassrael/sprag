@@ -297,13 +297,89 @@
       thing that does not exist. What a person picking this run up needs instead
       is where it got to and what to do first — so this asks for that.
 
-      ⚠ A PLAIN LITERAL for `end_prompt`'s reason, and there is nothing to
-      compose in anyway: the agent being asked has been briefed with the north
-      star and the milestone since `priming`, and naming them back at it buys
-      nothing it does not already hold.
+      ⚠ NOTHING OF THE BRIEF IS COMPOSED IN, for `end_prompt`'s reason: the agent
+      being asked has been briefed with the north star and the milestone since
+      `priming`, and naming them back at it buys nothing it does not already
+      hold. What IS composed in is the one thing the agent cannot know and this
+      document can — WHICH CEILING ended the run. See `stop_said` below.
+
+      ⚠⚠⚠ AND IT USED TO SAY THE WRONG ONE, TO THE ONE PARTY THAT COULD NOT CHECK.
+      This was a single literal opening *"This run has spent its whole turn
+      budget"*, and `stopping` is reached by FOUR ceilings: this document's own
+      `max_turns`, and the RUN's three (`stop_short`, below). So for three of the
+      four the sentence was FALSE — and it is not a journal line a reader can
+      weigh, it is TYPED INTO A LIVE AGENT'S PANE in the one turn that asks that
+      agent to account for itself. A run a wall clock stopped was told it had run
+      out of turns, and whatever it wrote back about *what a run picking this up
+      should do first* was reasoned from that. Register item 264, and item 261's
+      class one state over: 261 misled a reader of a journal, this misled the
+      WITNESS.
     -->
-    <data id="stop_prompt"
-          expr="'This run has spent its whole turn budget and is ending here, short of what it was asked for. Say where you got to: what you finished, what you left half-done, and what a run picking this up should do first.'"/>
+    <data id="stop_opening"
+          expr="'This run is ending here, short of what it was asked for.'"/>
+    <!--
+      ⚠⚠⚠ WHICH CEILING ENDED IT, IN THIS DOCUMENT'S OWN WORDS — one clause per
+      ceiling, keyed by the word the driver spells (`Ceiling::wire_str`).
+
+      ⚠⚠⚠ THE KEYS ARE A CLOSED SET AND THIS MAP IS TOTAL OVER IT — AND THAT IS
+      NOT A TIDINESS RULE. MEASURED, by deleting the `duration` clause and
+      running the ceiling gate: a missing key does NOT make the `<assign>` in
+      `stopping` fail and leave the shipped question standing. The concatenation
+      SUCCEEDS and the agent is asked
+
+        "This run is ending here, short of what it was asked for. nil Say where
+         you got to: …"
+
+      — the word `nil`, typed into a live agent's pane, in the turn that asks it
+      to account for the run. So the gate that holds these keys equal to
+      `Ceiling::ALL` is the only thing between a ceiling added in Rust months
+      from now and that sentence. It reads THIS FILE, and it goes red the day the
+      type grows an arm nobody wrote a clause for.
+
+      ⚠ A DEFENSIVE FALLBACK WAS CONSIDERED AND REFUSED: `stop_said[stop_reason]`
+      falling back to an empty clause would compose a true, ceiling-free question
+      and nothing anywhere would say the map had a hole. The loud version is the
+      one a gate can hold and a reader can see.
+
+      ⚠ ONE PLACE, NOT ONE PER EDGE. `stopping` has two doors and four reasons —
+      the outside one carries any of the run's three ceilings — so a clause
+      written on the transitions would be the copy-drift this file warns against
+      wherever it composes rather than repeats. A ceiling is one line to add here
+      and one to delete.
+
+      ⚠ THE PROSE IS THE AUTHOR'S BECAUSE AN AGENT READS IT. The driver knows
+      which ceiling fell and says so in the run's JOURNAL, in its own words, to a
+      person. What is said to somebody's agent, in somebody's language, is never
+      the driver's to write — `done_instruction`'s rule, and the standing rules'.
+    -->
+    <data id="stop_said"
+          expr="{
+            turns:      'This run has spent every turn its document budgeted for it.',
+            iterations: 'This run has taken every step its run was allowed.',
+            cost:       'This run has spent everything its run was allowed to spend.',
+            duration:   'This run has run out of the wall-clock time its run was given.'
+          }"/>
+    <!--
+      ⚠⚠ WHAT IS ACTUALLY ASKED, kept apart from the opening so the ceiling
+      clause has somewhere to go BETWEEN them. Every stand-in peer in this crate
+      keys its answer on a verbatim slice of this, and one paints a second slice
+      as its wrapped echo — reworded, a peer stops recognising the question, its
+      turn never ends, and the gate reports a wall clock instead of a budget.
+    -->
+    <data id="stop_asking"
+          expr="'Say where you got to: what you finished, what you left half-done, and what a run picking this up should do first.'"/>
+    <!--
+      ⚠⚠ SHIPPED WITHOUT A CEILING CLAUSE AND TRUE THAT WAY, which is what a
+      caller previewing a loop should see: WHICH ceiling will end a run is not
+      known until one does, and a preview that named one would be this defect one
+      layer out. `stopping` composes the clause in when the answer exists.
+
+      ⚠ COMPOSED FROM THE PARTS RATHER THAN FROM ITSELF, so entering `stopping`
+      twice would compose the same sentence twice rather than accumulate — the
+      state cannot be re-entered today (every one of its transitions targets a
+      final), and this does not rest on that staying true.
+    -->
+    <data id="stop_prompt" expr="stop_opening + ' ' + stop_asking"/>
 
     <!--
       Standing instructions for dialogs the person has already decided about.
@@ -642,6 +718,37 @@
       list by a gate that reads this file.
     -->
     <data id="reflect_reason" expr="''"/>
+    <!--
+      ⚠⚠⚠ WHICH CEILING ENDED THE RUN, written by whichever `judge` transition
+      reached `stopping` — `reflect_reason`'s twin, one state over, and for the
+      same finding.
+
+      Two transitions reach `stopping` and FOUR facts arrive on them: this
+      document's own `turns >= max_turns`, and the run's `iterations`, `cost` and
+      `duration`, which all come in through the one outside door
+      (`_event.data.stop_short`, whose value IS the driver's word for the ceiling
+      that bound). Before this existed neither reader could tell them apart:
+
+        the AGENT   was told, in `stop_prompt`, that it had run out of turns —
+                    false for three of the four, and typed into its pane
+                    (register item 264)
+        a READER    saw one `judge` arrow from `judging` to `stopping` and
+                    nothing else, whichever ceiling had fallen. The only
+                    thing separating the two doors in a run's journal was
+                    whether a `note_to_itself` line PRECEDED the edge — telling
+                    them apart BY THE ABSENCE OF A KEY, which is the reading this
+                    workspace has burned wire numbers over (register item 265)
+
+      ⚠ It holds the DRIVER's word (`Ceiling::wire_str`) and not a word of this
+      document's own, which is the one difference from `reflect_reason`: the fact
+      is the run's, three quarters of the time. `turns` is spelled here because
+      that ceiling is this document's and no driver can see it.
+
+      ⚠ Read by the driver, in Rust, and never by a `cond` here — `==` over this
+      datamodel is unverified (see `judged_rules`). `stop_said` above is indexed
+      by it, which is a lookup rather than a comparison.
+    -->
+    <data id="stop_reason" expr="''"/>
   </datamodel>
 
   <state id="idle">
@@ -1083,9 +1190,22 @@
 
       ⚠⚠ IT DOES NOT COST A RUN THAT IS NOT STOPPING SHORT ANYTHING: the driver
       publishes `false` on every other judgement, and Lua's only false values are
-      `nil` and `false` — which is why this is a boolean and not a name.
+      `nil` and `false`.
+
+      ⚠⚠⚠ AND WHEN IT IS NOT `false` IT IS THE CEILING'S OWN WORD, not merely
+      `true`. Three of the run's ceilings come through this one door and they are
+      three different facts about what to raise — a step count, a spend, a wall
+      clock — so a boolean here left `stop_prompt` telling every one of them it
+      had run out of TURNS (register item 264). The value is
+      `Ceiling::wire_str`'s, a closed set of non-empty words, which is what keeps
+      this guard a truth test: Lua's only false values are `nil` and `false`, so
+      an EMPTY word would fire this edge on every judgement of every run. Nothing
+      can publish one — there is no `Ceiling` that spells itself `''` — and a
+      gate holds that rather than this comment.
     -->
-    <transition event="judge" cond="_event.data.stop_short" target="stopping"/>
+    <transition event="judge" cond="_event.data.stop_short" target="stopping">
+      <assign location="stop_reason" expr="_event.data.stop_short"/>
+    </transition>
     <!--
       ⚠⚠⚠ THE MILESTONE IS REACHED, SO ASK WHAT THE NEXT ONE IS. This used to go
       straight to `closing`, and that made a run exactly as long as its first
@@ -1140,8 +1260,16 @@
 
       So the run's account is asked for wherever it CAN be, and where it cannot
       the reason is a fact about the pane rather than a decision anybody took.
+
+      ⚠⚠ AND THIS IS THE ONE CEILING NO DRIVER CAN SEE, so this edge is the only
+      place `turns` can be written down — see `stop_reason`. The word is spelled
+      here rather than left to the absence of the other door's: a reader that
+      told the two apart by *which key is missing* is the reading register items
+      264 and 265 are about.
     -->
-    <transition event="judge" cond="turns &gt;= max_turns" target="stopping"/>
+    <transition event="judge" cond="turns &gt;= max_turns" target="stopping">
+      <assign location="stop_reason" expr="'turns'"/>
+    </transition>
     <!--
       ⚠⚠⚠ A STANDING INSTRUCTION HAS FIRED THAT THE PROMPTS DO NOT YET CARRY, so
       reflect NOW rather than at the next multiple of `reflect_every`.
@@ -1473,6 +1601,15 @@
     question, the same reader, the same three endings. A second state would have
     been a second account to keep right.
 
+    ⚠⚠⚠ BUT FOUR REASONS, NOT TWO — the outside door carries any of the run's
+    three — AND THE QUESTION USED TO NAME THE WRONG ONE. `stop_prompt` was a
+    single sentence opening *"This run has spent its whole turn budget"*, so
+    three runs in four were told something false in the one turn where they are
+    asked to account for themselves, and that sentence is not a journal line a
+    reader can weigh: IT IS TYPED INTO THE AGENT'S PANE. So both doors now write
+    `stop_reason`, and the entry below composes the ceiling's own clause into the
+    question. Register item 264, and 265 for the walk that reads the same word.
+
     ⚠⚠⚠ EVERY WAY THIS TURN CAN END ARRIVES AT `exhausted`, AND THAT IS THE
     WHOLE SHAPE OF THE STATE. The ending was decided by the guard that got here:
     the run is out of turns, and nothing the agent does with this last question
@@ -1506,6 +1643,20 @@
   -->
   <state id="stopping">
     <onentry>
+      <!--
+        ⚠⚠⚠ THE CEILING GOES INTO THE QUESTION, and this is the whole of register
+        item 264. Both doors above have just written `stop_reason`; this is where
+        the word becomes a sentence the agent can act on. Composed on ENTRY, for
+        `priming`'s reason one state over: the parts cannot have changed since,
+        and the answer does not exist until the edge that got here was taken.
+
+        ⚠⚠ AN UNKNOWN REASON PUTS THE WORD `nil` IN THE SENTENCE — measured, not
+        assumed: the concatenation succeeds and the agent reads it. `stop_said`
+        is held TOTAL over the driver's ceilings by a gate that reads this file,
+        which is what makes that unreachable; see its own comment.
+      -->
+      <assign location="stop_prompt"
+              expr="stop_opening + ' ' + stop_said[stop_reason] + ' ' + stop_asking"/>
       <send event="prompt.stop"/>
     </onentry>
     <transition event="turn.done" target="exhausted"/>

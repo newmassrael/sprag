@@ -178,6 +178,49 @@ impl Ceiling {
             Self::Turns => "turns",
         }
     }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — which knob this ceiling is, in prose, and
+    /// deliberately not the word itself so a caller that needs to match gets it from
+    /// [`wire_str`](Self::wire_str).
+    ///
+    /// ⚠ Prose for a PERSON reading a journal, which is why it lives out here and not in any
+    /// document: what a plugin's agent is told is that plugin's own authored business
+    /// (`ai_loop.scxml`'s `stop_said`), and a driver that wrote sentences into somebody's prompt
+    /// would be a second author. These are the two audiences and they get two texts.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Iterations => {
+                "the run took every step it was allowed — raise `max_iterations` to buy it more"
+            }
+            Self::Cost => {
+                "the run spent everything it was allowed, in its own unit — raise `max_cost` to buy \
+                 it more"
+            }
+            Self::Duration => {
+                "the run ran out of wall-clock time — raise `max_duration` to buy it more"
+            }
+            // ⚠ NAMES NO KNOB, alone among the four, and cannot: this ceiling is the PLUGIN's, so
+            // the number lives in whatever that plugin was briefed with. Naming one plugin's
+            // variable here would be the substrate guessing at documents nobody has written yet —
+            // `Accounting::Cannot`'s reason, one type over.
+            Self::Turns => {
+                "the plugin's own declared budget is spent — no guardrail bounds it, so raising \
+                 one buys nothing; the number is in the brief the plugin was given"
+            }
+        }
+    }
+
+    /// **THE WORD AND THE WHOLE SENTENCE**, for a reader who has only this one journal line.
+    ///
+    /// ⚠⚠ [`ReflectReason::noted`](crate::outer::ReflectReason::noted)'s reason, one state over: the
+    /// step that walks `judge` into `stopping` answers [`Verdict::Continue`] — the machine is
+    /// mid-run — so the LINE is the publication, and a reader scanning a walk for *which ceiling
+    /// ended this* has nothing to scan for unless the word is in it.
+    #[must_use]
+    pub fn noted(self) -> String {
+        format!("{}: {}", self.wire_str(), self.describe())
+    }
 }
 
 /// Which terminal statechart state a run reached.
