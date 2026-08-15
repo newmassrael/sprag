@@ -2007,7 +2007,12 @@ fn argument_help(name: &str) -> &'static str {
              it to the longest a turn of YOUR peer plausibly takes, not to how fast you want the \
              loop back — running out means the run gives up on that turn and speaks again. Leave \
              it out (with `done_when` set) to wait as long as the run's own `max_seconds` allows. \
-             Zero is refused."
+             Zero is refused. ⚠⚠⚠ ON `ai_loop` IT BOUNDS ONE LOOK AND NOT A TURN, and nothing is \
+             said again when it runs out: that document has no transition for a turn that overran, \
+             so the driver reports that it looked and found nothing, the machine stays exactly \
+             where it was, and the next look asks again. What bounds a loop whose agent has stopped \
+             answering is the run's own `max_seconds`, and until it falls due a stalled peer and a \
+             working one are the same picture."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \

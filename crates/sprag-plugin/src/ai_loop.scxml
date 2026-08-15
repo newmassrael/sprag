@@ -713,7 +713,7 @@
       <assign location="start_prompt"
               expr="'North star: ' + north_star + '\n' +
                     'Milestone: ' + milestone + '\n' +
-                    'Reference: ' + reference + '\n' +
+                    'What to carry: ' + reference + '\n' +
                     standing +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
@@ -742,6 +742,30 @@
         dialog in a state that cannot screen one (see `reflecting`'s own
         comment). Asking for an answer from what it already knows is the cheapest
         way to keep the turn inside the state that owns it.
+
+        ⚠⚠⚠ THE SECOND QUESTION ASKS FOR KNOWLEDGE, NOT FOR AN ADDRESS, AND A
+        MEASUREMENT IS WHY. It used to ask *"what the next session should read
+        first"*, and what came back was an address — one live reflection answered
+        `debt-open.md의 208·212·213과 섹션 P 전체`. A pointer costs its reader the
+        whole read. Measured across that replacement:
+
+          the session that was replaced   reached its first change at 161,507
+          the fresh one it briefed        reached its first change at 285,599
+
+        The restart discarded 348,000 tokens of context and the replacement had
+        bought 266,000 of it back within eighty requests. **A handover that names
+        where to look hands over nothing; it hands over an errand.**
+
+        So the question changed and the slot's own clause with it (`What to
+        carry:`, above): a caller's first briefing may still be prior art, and
+        everything a reflection puts there afterwards is what the last session had
+        to work out.
+
+        ⚠⚠ WHAT JUDGES IT IS NOT A UNIT TEST. This is authored prose, and prose
+        cannot be gated by asserting the words back — that is a test agreeing with
+        the renderer. What settles it is `Warmup` (`spend.rs`) on the NEXT
+        replacement: **285,599 is the number to beat**, on comparable work. If it
+        does not fall, the fault was not the wording and a distiller is owed.
       -->
       <assign location="reflect_prompt"
               expr="'North star: ' + north_star + '\n' +
@@ -750,7 +774,7 @@
                     'Stop and decide what comes next, from what you have just done and what you now know. Answer from what you already have; do not use a tool.' + '\n' +
                     'Reply with exactly two lines and nothing else. Open the first with the label ' + milestone_marker +
                     ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
-                    ' and then what the next session should read first.' + '\n' +
+                    ' and then, in one line, what the next session must KNOW that you had to work out — not what it should read.' + '\n' +
                     'If the north star itself is fully reached and nothing is left to do, ignore both labels and make the last line of your reply exactly: ' + north_star_marker"/>
       <send event="prompt.start"/>
     </onentry>
