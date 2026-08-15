@@ -54,6 +54,12 @@ pub(crate) mod sm {
         #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
         include!(concat!(env!("OUT_DIR"), "/probe_parent_sm.rs"));
     }
+
+    // ⚠ `<stem>_sm` because `ai_loop.scxml` will reach it as a child — see the note above.
+    pub(crate) mod context_review_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/context_review_sm.rs"));
+    }
 }
 
 pub mod access;

@@ -2134,6 +2134,169 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **A GUARD READS ECMASCRIPT TRUTH, NOT LUA TRUTH** — the fact this workspace's own
+    /// document asserted the opposite of, in writing, with no gate.
+    ///
+    /// # ⚠⚠⚠ The claim that was wrong, and what it was holding up
+    ///
+    /// `ai_loop.scxml` said, as the stated reason for publishing a boolean beside a rule's name:
+    /// *"it is Lua, where the only false values are `nil` and `false`; an empty string is TRUE, so
+    /// a guard reading the rule's name directly would fire on every blocked turn of a run that
+    /// matched nothing."*
+    ///
+    /// That is Lua's rule and not this engine's. The generator wraps every `cond` it emits as
+    /// `_scxml_truthy(...)`, and the runtime defines that in one line — `nil/false -> false,
+    /// 0/0.0/"" -> false, else true`. **So the failure that paragraph predicted cannot happen**, and
+    /// a design was defended by a fact about the engine that nothing had ever asked the engine.
+    ///
+    /// ⚠⚠ **HOW IT WAS FOUND IS THE POINT.** Nobody re-read that paragraph. A NEW document needed a
+    /// guard over a count, a gate asserted what `0` does, and the answer disagreed with what the old
+    /// document said about `""`. **Writing a second thing is what audits the first.**
+    ///
+    /// ⚠ The design it was defending stands on its own: a name and a verdict are two facts, and
+    /// *nothing matched* is not *nobody judged*. What is gone is the false reason.
+    #[test]
+    fn a_guard_reads_ecmascript_truth_and_not_lua_truth() {
+        use crate::sm::context_review_sm::{
+            ContextReviewEvent, ContextReviewPolicy, ContextReviewState,
+        };
+
+        /// Raise `read.done` carrying `records` and say whether the guard took the transition.
+        fn guard_fired(records: &str) -> bool {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut engine = Engine::new(ContextReviewPolicy::new(lua));
+            engine.initialize();
+            engine.raise_external(
+                ContextReviewEvent::ReadDone,
+                &format!(r#"{{"records": {records}}}"#),
+                "",
+            );
+            engine.step();
+            engine.get_current_state() != ContextReviewState::Reading
+        }
+
+        assert!(
+            !guard_fired("0"),
+            "⚠⚠⚠ ZERO IS FALSE HERE. In Lua it is TRUE — so a document written against Lua's rules \
+             would have a guard fire on a count of nothing, which is the exact shape of a review \
+             that found no records deciding it had found some",
+        );
+        assert!(
+            !guard_fired(r#""""#),
+            "⚠⚠⚠ AND SO IS THE EMPTY STRING — the case `ai_loop.scxml` asserted was TRUE, in \
+             writing, as the reason for a design",
+        );
+        assert!(
+            !guard_fired("null"),
+            "⚠ and an absent value, which is the only one every rule set agrees about",
+        );
+
+        // ── THE CONTROLS: a guard that never fires is not a guard ──
+        assert!(
+            guard_fired("3"),
+            "⚠⚠ the control. A gate where nothing fires would pass for an engine that had stopped \
+             reading `_event.data` at all, which is the failure this whole family is about",
+        );
+        assert!(
+            guard_fired(r#""some""#),
+            "⚠ and a non-empty string is true, which is what makes the empty one's falsity a \
+             statement about the VALUE rather than about strings",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE CONTEXT REVIEW WALKS, AND EVERY WAY OUT OF IT IS REACHABLE** — the child machine
+    /// `ai_loop.scxml` will invoke before it replaces a session.
+    ///
+    /// # ⚠⚠⚠ What this gate is for, and what it deliberately is not
+    ///
+    /// `context_review.scxml` is a DOCUMENT and this asserts the document: that its states are
+    /// wired the way its prose says, that each of its three early exits can actually be taken, and
+    /// that a run which finds a habit ends carrying something while one that finds none ends
+    /// carrying nothing. **It says nothing about whether the analysis is any good** — that is the
+    /// `Warmup` axis's job, on real sessions, and no unit test can stand in for it.
+    ///
+    /// ⚠⚠ **THE EXITS ARE THE POINT.** Three of the five states can end the review early — no
+    /// records, no habit, no usable answer — and they are separate states rather than one because a
+    /// reader of a finished review has to be able to tell *there was nothing to look at* from
+    /// *there was nothing worth carrying*. A machine whose failure paths all collapse into one is a
+    /// machine that cannot be diagnosed, which is this crate's most expensive shape.
+    ///
+    /// ⚠ Driven event by event rather than through a driver, because the driver's half does not
+    /// exist yet: what is being settled here is that the DOCUMENT is drivable at all before
+    /// anything is written against it.
+    #[test]
+    fn the_context_review_walks_and_each_of_its_endings_is_reachable() {
+        use crate::sm::context_review_sm::{
+            ContextReviewEvent, ContextReviewPolicy, ContextReviewState,
+        };
+
+        /// Walk a fresh review through `events`, each carrying `data`, and say where it landed.
+        fn walked(events: &[(ContextReviewEvent, &str)]) -> ContextReviewState {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut engine = Engine::new(ContextReviewPolicy::new(lua));
+            engine.initialize();
+            for (event, data) in events {
+                engine.raise_external(*event, data, "");
+                engine.step();
+            }
+            engine.get_current_state()
+        }
+
+        // ── THE WHOLE WALK: records found, a habit counted, an answer given, a file written ──
+        assert_eq!(
+            walked(&[
+                (ContextReviewEvent::ReadDone, r#"{"records": 3}"#),
+                (ContextReviewEvent::CountDone, r#"{"habits": 2}"#),
+                (
+                    ContextReviewEvent::AskDone,
+                    r#"{"carry": "wait for the build, do not poll it"}"#
+                ),
+                (ContextReviewEvent::WriteDone, ""),
+            ]),
+            ContextReviewState::Carried,
+            "⚠⚠⚠ a review that found records, counted a habit, got an answer and kept it must end \
+             CARRYING — this is the only path that hands the next session anything",
+        );
+
+        // ── AND THE THREE EARLY EXITS, each its own reason ──
+        assert_eq!(
+            walked(&[(ContextReviewEvent::ReadNone, "")]),
+            ContextReviewState::Nothing,
+            "⚠⚠ NO RECORDS AT ALL is the ordinary case, not an error: an agent whose transcript is \
+             off writes none, which is exactly what a nested-agent marker causes",
+        );
+        assert_eq!(
+            walked(&[
+                (ContextReviewEvent::ReadDone, r#"{"records": 3}"#),
+                (ContextReviewEvent::CountNone, ""),
+            ]),
+            ContextReviewState::Nothing,
+            "⚠⚠ NOTHING REPEATED ENOUGH TO NAME — the answer a healthy run should give most of the \
+             time, and it must not look like a failure",
+        );
+        assert_eq!(
+            walked(&[
+                (ContextReviewEvent::ReadDone, r#"{"records": 3}"#),
+                (ContextReviewEvent::CountDone, r#"{"habits": 2}"#),
+                (ContextReviewEvent::AskNone, ""),
+            ]),
+            ContextReviewState::Nothing,
+            "⚠⚠⚠ AND AN UNUSABLE ANSWER CARRIES NOTHING. The failure of this mechanism must be its \
+             own absence — never a line invented to fill the slot, which is the rule `judged` \
+             already follows when it answers false on silence",
+        );
+
+        // ── THE GUARD IS REAL: records of zero is not records ──
+        assert_eq!(
+            walked(&[(ContextReviewEvent::ReadDone, r#"{"records": 0}"#)]),
+            ContextReviewState::Reading,
+            "⚠⚠⚠ `cond=\"_event.data.records\"` must actually read the number. ⚠ THIS DATAMODEL IS \
+             LUA, where the only false values are nil and false — so a ZERO that took the guard \
+             would be the same class of bug the loop's own `judged` boolean exists to avoid, and \
+             this is the gate that says which way it goes here",
+        );
+    }
+
     /// ⚠⚠⚠ **CAN A DOCUMENT IN THIS TREE OWN A CHILD MACHINE?** — asked of the engine, before
     /// anything is designed on the answer.
     ///

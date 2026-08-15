@@ -43,6 +43,8 @@ const STATECHARTS: &[&str] = &[
     // would answer about that harness. See `probe_parent.scxml`.
     "probe_child",
     "probe_parent",
+    // ⚠⚠ WHAT A RUN LEARNED ABOUT ITS OWN SESSIONS — a child machine, and inert until it is here.
+    "context_review",
 ];
 
 fn main() {

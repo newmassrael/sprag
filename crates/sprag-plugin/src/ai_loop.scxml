@@ -840,10 +840,30 @@
       run. Add it to `ai_loop.rs`'s datamodel gate before writing it into a
       document somebody depends on.
 
-      ⚠ THE BOOLEAN IS PUBLISHED SEPARATELY FOR THIS DATAMODEL'S OWN REASON: it
-      is Lua, where the only false values are `nil` and `false`. An empty string
-      is TRUE, so a guard reading the rule's name directly would fire on every
-      blocked turn of a run that matched nothing.
+      ⚠⚠⚠ THE BOOLEAN IS PUBLISHED SEPARATELY, AND THE REASON THIS USED TO GIVE
+      WAS FALSE. It read: *"it is Lua, where the only false values are `nil` and
+      `false`; an empty string is TRUE, so a guard reading the rule's name would
+      fire on every blocked turn of a run that matched nothing."* That is Lua's
+      rule and NOT this engine's — measured, and the engine's own source says so
+      in one line:
+
+          _scxml_truthy(val): nil/false -> false, 0/0.0/"" -> false, else true
+
+      Every `cond` in every document here is wrapped in that call by the code
+      generator, so an empty string is FALSE and the failure that paragraph
+      predicted cannot happen.
+
+      ⚠⚠ THE SHAPE STAYS, WITH ITS REAL REASON. A name and a verdict are two
+      facts — *nothing matched* and *nobody judged* are different answers, and a
+      document that wants to route on WHICH rule fired needs the name whatever
+      the truthiness rules are. What changed is that this is no longer defended
+      by a fact about the engine that was never driven by a gate.
+
+      ⚠⚠⚠ AND THAT IS THE LESSON, not the correction: the paragraph above this
+      one says *"a shape not driven by a gate is not known to work here — add it
+      to `ai_loop.rs`'s datamodel gate before writing it into a document"*, and
+      the sentence four lines below it made an engine claim with no gate at all.
+      `a_guard_reads_ecmascript_truth_and_not_lua_truth` is now that gate.
     -->
 
     <!--

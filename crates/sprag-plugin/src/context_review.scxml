@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WHAT A RUN LEARNED ABOUT ITS OWN SESSIONS — a child machine `ai_loop.scxml`
+  invokes before it replaces one, so the session that comes next starts from
+  something better than a fresh reading of the same files.
+
+  ⚠⚠⚠ WHY THIS IS A DOCUMENT AND NOT A FUNCTION. The analysis has STEPS with
+  different failure modes — the records may not be readable, the counting may
+  find nothing worth carrying, the narrow question may come back unusable — and
+  a caller has to be able to tell those apart. A function returning
+  `Option<String>` collapses all three into "nothing came back". Written as a
+  machine, each is a state somebody can read in the run's own journal.
+
+  ⚠⚠ AND BECAUSE THE PARENT OWNS ITS LIFECYCLE. `<invoke>` means the loop that
+  asked for the analysis also cancels it by leaving the state — measured in this
+  tree by `a_document_here_can_invoke_a_child_machine_and_hear_what_it_answered`,
+  which is what licensed this file to exist at all.
+
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠⚠⚠ WHAT WAS MEASURED BEFORE ANY OF THIS WAS DESIGNED, and it corrected the
+  design twice. One real session of this repo, 759,676 tokens of accumulated
+  context, opened and counted:
+
+    tool RESULTS              753,645 bytes    (99%)
+    the agent's own words       7,144 bytes    ( 1%)
+
+      Read   457,492 bytes over  54 calls   of which 18% overlapping line ranges
+      Bash   272,090 bytes over 618 calls   of which 44% is repeated commands
+      Edit    23,181 bytes over 140 calls
+
+  ⚠⚠⚠ THE FIRST DESIGN AIMED AT THE 1%. It was going to write a better handover
+  note — the agent's own summary of what it had learned — which is a lever over
+  seven thousand bytes of seven hundred and fifty thousand.
+
+  ⚠⚠⚠ THE SECOND AIMED AT A NUMBER THAT WAS WRONG. Counting Reads BY FILE PATH
+  said "45% of the context is re-reading", and opening one file's history showed
+  eleven reads at eleven DIFFERENT offsets — a large file read in pieces, which
+  is correct behaviour. By line range the real overlap is 18%, and most of that
+  is unavoidable boundary overlap between adjacent windows.
+
+  What survived both corrections is the one that was measured rather than
+  assumed: 618 Bash calls, 44% of them repeats, and the top five are all one
+  thing —
+
+     84x  grep for failures in the build log
+     74x  tail the background build's output
+     50x  grep for a failing test
+     27x  tail the newest build log
+     25x  grep for the test result
+
+  Two hundred and sixty calls asking "is the build finished yet?", each answer
+  kept in the context for ever, and all but the last of them already stale.
+
+  ⚠⚠ SO THE THING WORTH CARRYING IS NOT A SUMMARY OF THE WORK. It is the small
+  set of facts that would have stopped the next session doing the same thing —
+  and POLLING is the one this measurement can actually see.
+
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠⚠⚠ WHO DECIDES WHAT. The driver COUNTS and this document DECIDES, which is
+  the arrangement `ai_loop.scxml` already uses for a judged dialog and for the
+  same reason: a threshold in the driver is a policy nobody can read, and a
+  count in the document is arithmetic nobody can do here.
+
+    the driver   opens the records, counts commands and line ranges, and
+                 publishes totals as event data
+    this file    when to look, how many repeats are too many, what to ask,
+                 where the answer may be written
+    a model      one line per candidate, and nothing else — it never chooses
+                 WHICH candidates there are
+
+  ⚠ The last of those is the safety property. A model that picked the candidates
+  would be summarising a session, which is the thing measured above as a 1%
+  lever and an unbounded prompt.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="context_review"
+       datamodel="ecmascript"
+       initial="reading">
+
+  <datamodel>
+    <!--
+      ⚠⚠⚠ HOW MANY TIMES A COMMAND MUST HAVE BEEN RUN BEFORE IT COUNTS AS A
+      HABIT. Authored, because it is the whole judgement: two is "it happened
+      again", and a hundred is "nothing will ever be reported".
+
+      ⚠ It is deliberately NOT tuned. The measurement above found repeats at 84,
+      74, 50, 27 and 25 — an order of magnitude above any plausible threshold —
+      so the number does not need to be right to be useful, and pretending to
+      have derived it would be the folklore this workspace keeps finding.
+    -->
+    <data id="repeat_limit" expr="8"/>
+
+    <!--
+      HOW MANY SESSIONS BACK TO LOOK. A run replaces its session on every
+      adopted reflection, so this is a count of ENDED sessions, and each one is
+      a whole transcript the driver reads.
+
+      ⚠⚠ A SESSION IS NOT A UNIT OF ANYTHING EITHER — the same warning
+      `ai_loop.scxml` carries about `max_turns`. Measured across this run's own
+      sessions: one ended after 170 tool calls and another after 650. So three
+      sessions is three transcripts, not three of anything comparable.
+    -->
+    <data id="look_back" expr="3"/>
+
+    <!--
+      ⚠⚠⚠ WHERE THE ANSWER MAY BE WRITTEN, and its default writes nowhere.
+
+      An empty path is a review that COUNTS and REPORTS and changes no file,
+      which is the honest default for a machine whose output is advice about
+      somebody else's work. Setting it is the author saying *I have read what
+      this writes and I want it kept*.
+
+      ⚠⚠⚠ IT IS NOT `CLAUDE.md` AND MUST NOT BECOME IT BY ACCIDENT. That file is
+      instructions a person depends on; a loop rewriting it every few sessions
+      drifts somewhere nobody is watching, and the drift then drives the next
+      session. The owner's ruling: the loop writes its own file, and promoting
+      anything out of it into CLAUDE.md is a separate act with a person in it.
+      The same shape as promoting a daemon binary, and for the same reason.
+    -->
+    <data id="write_into" expr="''"/>
+
+    <!--
+      WHAT A SECOND AGENT IS ASKED ABOUT ONE CANDIDATE — authored, because it is
+      said to somebody's agent, and the driver must never be the thing that
+      writes words into a prompt.
+
+      ⚠ It asks for a HABIT TO BREAK rather than for a summary: the candidate is
+      already chosen by counting, so the only thing left for a model to do is
+      say what the next session should do instead, in one line.
+    -->
+    <data id="ask"
+          expr="'A session repeated this command many times over one piece of work. In ONE line, say what the next session should do instead. If nothing would have helped, answer exactly: NOTHING TO CARRY'"/>
+
+    <!-- The label a usable answer opens its line with, read back the way
+         `ai_loop.scxml` reads a reflection's. -->
+    <data id="carry_marker" expr="'INSTEAD:'"/>
+
+    <!-- ── below the line: what the driver publishes, not what an author writes ── -->
+
+    <!-- How many ended sessions the driver actually found records for. -->
+    <data id="records" expr="0"/>
+    <!-- How many candidates met `repeat_limit`. -->
+    <data id="habits" expr="0"/>
+    <!-- What is being handed back to the parent. -->
+    <data id="carry" expr="''"/>
+  </datamodel>
+
+  <!--
+    Open the ended sessions' records. The driver knows which they are because the
+    run minted an identity for each session it started.
+
+    ⚠⚠ A RECORD THAT CANNOT BE READ IS THE ORDINARY CASE, not an error: an agent
+    whose transcript is off writes none, and that is exactly what a nested agent
+    marker does. So `read.none` is an EXIT rather than a failure — the review
+    reports that it had nothing to look at, and the loop carries on unchanged.
+  -->
+  <state id="reading">
+    <onentry>
+      <send event="read.begin"/>
+    </onentry>
+    <transition event="read.done" cond="_event.data.records" target="counting">
+      <assign location="records" expr="_event.data.records"/>
+    </transition>
+    <transition event="read.none" target="nothing"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <!--
+    Count what was done more than once.
+
+    ⚠⚠⚠ COUNT ACTS, NOT NAMES. The driver counts a COMMAND's repeats and a
+    read's LINE RANGES, and the difference is not pedantry: counting reads by
+    file path said 45% of a session was re-reading, and the same session counted
+    by line range said 18%, because a large file read in eleven pieces is eleven
+    reads of one path and nothing repeated at all. **An aggregate is not a
+    finding until somebody opens one of its members.**
+  -->
+  <state id="counting">
+    <onentry>
+      <send event="count.begin"/>
+    </onentry>
+    <transition event="count.done" cond="_event.data.habits" target="asking">
+      <assign location="habits" expr="_event.data.habits"/>
+    </transition>
+    <transition event="count.none" target="nothing"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <!--
+    Ask a second agent for one line per habit — and only per habit. The list it
+    is given was decided by arithmetic before it was ever asked.
+
+    ⚠ An answer that carries no `carry_marker` is `ask.none`, for the reason a
+    judged dialog answers `false` on silence: the failure of this mechanism must
+    be its own absence, never a line invented to fill the slot.
+  -->
+  <state id="asking">
+    <onentry>
+      <send event="ask.begin"/>
+    </onentry>
+    <transition event="ask.done" target="writing">
+      <assign location="carry" expr="_event.data.carry"/>
+    </transition>
+    <transition event="ask.none" target="nothing"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <!--
+    Keep it where the author said, if the author said anywhere.
+
+    ⚠ `write_into` is empty by default, so the ordinary review REPORTS and writes
+    nothing. The parent still hears `carry` either way — a review that changed no
+    file has still learned something, and hiding that behind an unset path would
+    make the default look like a failure.
+  -->
+  <state id="writing">
+    <onentry>
+      <send event="write.begin"/>
+    </onentry>
+    <transition event="write.done" target="carried"/>
+    <transition event="write.skipped" target="carried"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <!--
+    ⚠⚠ TWO ENDINGS THAT ARE BOTH SUCCESS, and they are separate because the
+    parent may want to know which. `carried` means the next session is being
+    handed something; `nothing` means the review ran and found no habit worth
+    naming — which is the answer a healthy run should give most of the time.
+  -->
+  <final id="carried">
+    <donedata>
+      <param name="carry" expr="carry"/>
+      <param name="habits" expr="habits"/>
+    </donedata>
+  </final>
+
+  <final id="nothing">
+    <donedata>
+      <param name="carry" expr="''"/>
+      <param name="habits" expr="0"/>
+    </donedata>
+  </final>
+
+  <final id="failed"/>
+</scxml>
