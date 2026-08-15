@@ -87,7 +87,7 @@ use sprag_terminal::PaneId;
 use crate::access::{PaneAccess, PaneError};
 use crate::completion::{Completion, DoneWhen, Over, Turn};
 use crate::consent::Unanswered;
-use crate::deliver::{Delivered, Delivery, deliver};
+use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::RunContext;
 use crate::screen::{Malformed, Refused, ScreenRule, ScreenRules, Screened};
@@ -156,6 +156,21 @@ fn confirmable(text: &str) -> Option<String> {
 /// turn contract out of it, and the daemon's `ai_loop` form uses it as the default a caller who
 /// names no `done_when` gets.
 pub const INNER_SESSION_ENDS: DoneWhen = DoneWhen::Settles;
+
+/// **WHICH EVIDENCE SAYS THIS LOOP'S PROMPT WAS SUBMITTED**, given the contract its caller already
+/// declared for the turn's other end — see [`OuterLoop::submit_lands_when`], where the argument is.
+///
+/// ⚠ A free function so the mapping can be gated without building a machine: it is a total
+/// function of one enum onto another, and a test that had to start a statechart to ask it would be
+/// measuring the statechart.
+const fn submit_lands_when(turn: DoneWhen) -> SubmittedWhen {
+    match turn {
+        DoneWhen::Settles => SubmittedWhen::Stirs {
+            within: crate::deliver::DEFAULT_SUBMIT_GRACE,
+        },
+        DoneWhen::Exits => SubmittedWhen::Unchecked,
+    }
+}
 
 /// **WHAT THE DOCUMENT AUTHORS**, read out of the machine's own datamodel rather than retyped.
 ///
@@ -2557,6 +2572,7 @@ impl OuterLoop {
                 // A prompt longer than the pane is wide arrives in pieces — see the constant.
                 confirm: confirmable(text),
                 then_press: vec![crate::access::KeyStroke::named("Enter")],
+                submitted_when: self.submit_lands_when(),
                 ..Delivery::new()
             },
         )?;
@@ -2567,6 +2583,28 @@ impl OuterLoop {
             return Err(PaneError::NeverTook {
                 attempts,
                 written: written.bytes(),
+            });
+        }
+        // ⚠⚠⚠ **AND A PROMPT THAT WAS TYPED AND NOT SUBMITTED IS THE SAME REFUSAL ONE KEYSTROKE
+        // LATER**, which is register item 222's live symptom read from the loop's side: the prompt
+        // inside the composer's box rule, the agent idle underneath it, and this loop waiting out
+        // its whole turn bound for an answer to a question nobody had been asked. `deliver` used to
+        // report that as `Confirmed`, because *delivered* was a claim about the TEXT.
+        //
+        // ⚠ It is REFUSED rather than retried. The pane's composer is holding the prompt, so a
+        // second delivery would concatenate onto it (and a second Enter, if the first one did land,
+        // asks an empty question) — so what a supervisor does here is look at the pane, which is
+        // exactly what `Delivered::Unconfirmed`'s remedy already is.
+        if let Delivered::Unsubmitted {
+            attempts,
+            written,
+            wanted,
+        } = delivered
+        {
+            return Err(PaneError::NeverSubmitted {
+                attempts,
+                written: written.bytes(),
+                wanted,
             });
         }
         // ⚠⚠⚠ **AND A DELIVERY THE RUN'S OWN CLOCK CUT SHORT IS NOT A PROMPT EITHER**, which is a
@@ -2588,8 +2626,39 @@ impl OuterLoop {
         // prompt, and reporting `failed` would send its reader looking for a break. What it is, is
         // a turn that does not exist — recorded here, read by
         // [`asked_nothing`](Self::asked_nothing), and turned into a stated reason by the plugin.
+        //
+        // ⚠⚠ **AND `Delivered::Unwitnessed` IS DELIBERATELY NOT `unasked`.** That answer is the
+        // run's clock expiring INSIDE the wait for the submit's evidence — the Enter is on the
+        // pseudoterminal, so the peer may be answering right now, and recording *no question was
+        // asked* about it would be the same sentence the other way round. The two endings differ by
+        // one keystroke and a supervisor acts on them oppositely.
         self.unasked = matches!(delivered, Delivered::Stopped { .. });
         Ok(delivered.written().bytes())
+    }
+
+    /// **WHAT WOULD SHOW THIS LOOP THAT ITS PROMPT WAS SUBMITTED**, read off the contract its
+    /// caller already declared for the turn's other end.
+    ///
+    /// # ⚠⚠⚠ Why it is derived rather than asked for
+    ///
+    /// [`SubmittedWhen`]'s whole argument is that only the caller knows — and this loop's caller
+    /// has already said it. [`DoneWhen::Settles`] means *my peer is a long-lived agent this host
+    /// supervises*, which is precisely the peer whose turn STARTING is what a submit is for, and
+    /// precisely the host that can see it start. A second argument asking the same person the same
+    /// thing in different words is how two answers to one question get out of step, which is the
+    /// shape this workspace keeps paying for.
+    ///
+    /// ⚠ [`DoneWhen::Exits`] gets [`SubmittedWhen::Unchecked`], and that is the honest answer
+    /// rather than the lazy one: a peer that will EXIT is a one-shot tool, its state is nothing this
+    /// host supervises, and it may think in silence for as long as it likes before painting
+    /// anything. A screen rule there would refuse turns that were perfectly asked.
+    ///
+    /// ⚠⚠ The residue, stated: a run whose `done_when` is `settles` on a host with **no detector**
+    /// now refuses its first delivery instead of waiting out every turn's bound in silence. That
+    /// run was already broken — nothing could ever end one of its turns — and a named refusal on
+    /// the first prompt is the better half of the same fact.
+    const fn submit_lands_when(&self) -> SubmittedWhen {
+        submit_lands_when(self.turn.when())
     }
 
     /// **WHAT THE INNER SESSION HAS BEEN CHARGED TO READ**, as of its most recent billed request —
@@ -3064,6 +3133,171 @@ mod tests {
                 .expect("spawn pane")
         };
         (workspace, pane)
+    }
+
+    /// ⚠⚠ **THE LOOP ASKS ITS SUBMIT THE QUESTION ITS CALLER ALREADY ANSWERED** — the mapping,
+    /// asked directly.
+    ///
+    /// One enum onto another, and both arms matter: `settles` is the caller saying *my peer is a
+    /// long-lived agent this host supervises*, which is the peer whose turn STARTING is what a
+    /// submit is for; `exits` is a one-shot tool that may think in silence, where a screen rule
+    /// would refuse prompts that were perfectly asked.
+    ///
+    /// ⚠ A third `DoneWhen` cannot be added without deciding this, because the mapping is an
+    /// exhaustive `match` — the compiler is the ratchet here and this gate says what the two
+    /// answers are.
+    #[test]
+    fn a_loops_submit_contract_is_read_off_the_turn_contract_its_caller_declared() {
+        assert_eq!(
+            submit_lands_when(DoneWhen::Settles),
+            SubmittedWhen::Stirs {
+                within: crate::deliver::DEFAULT_SUBMIT_GRACE,
+            },
+            "a supervised long-lived peer is asked the strong question: did the agent MOVE",
+        );
+        assert_eq!(
+            submit_lands_when(DoneWhen::Exits),
+            SubmittedWhen::Unchecked,
+            "and a one-shot tool is asked nothing — see the function's own doc",
+        );
+        assert_eq!(
+            submit_lands_when(INNER_SESSION_ENDS),
+            SubmittedWhen::Stirs {
+                within: crate::deliver::DEFAULT_SUBMIT_GRACE,
+            },
+            "⚠ AND THE CONTRACT THIS LOOP ACTUALLY SHIPS WITH lands on the strong arm, which is \
+             what makes the two above more than an exercise",
+        );
+    }
+
+    /// ⚠⚠⚠ **A LOOP WHOSE PROMPT WAS TYPED AND NEVER SUBMITTED REFUSES, INSTEAD OF WAITING OUT A
+    /// TURN NOBODY STARTED** — register item 225 from the caller's side, and the first fixture in
+    /// this module to go through [`deliver`] at all.
+    ///
+    /// The peer is `stty raw -echo; cat`: it paints every character as it arrives, which is what a
+    /// prompt box does and what `shows_the_prompt` means, and it takes the Enter and does nothing
+    /// anybody can see with it — which is what an agent's composer does with a keystroke it has
+    /// absorbed. Under [`DoneWhen::Settles`] the loop asks the supervisor whether the agent MOVED,
+    /// and here nothing did.
+    ///
+    /// ⚠⚠ **THE SUBJECT IS ALSO THE RESIDUE `submit_lands_when` DECLARES**: this access carries no
+    /// detector, so the contract can never be satisfied. That run was already broken — nothing
+    /// could end one of its turns either — and what it does now is say so on the first prompt
+    /// instead of spending every turn's bound in silence. The refusal is asserted as a SENTENCE,
+    /// because that is what its reader gets.
+    ///
+    /// ⚠ THE CONTROL is the same peer under a supervisor that CAN see a turn start, and it must
+    /// move on: a rule that refused here would refuse every loop there is.
+    #[test]
+    fn a_loop_refuses_a_prompt_its_peer_took_and_never_submitted() {
+        /// A peer that paints what it is given, character by character, and acts on none of it.
+        const PAINTS_EVERYTHING: &str = "stty raw -echo; printf 'GO'; exec cat";
+
+        let start = |supervised: bool| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(PAINTS_EVERYTHING);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            // ⚠⚠ THE STAND-IN SUPERVISOR READS A FACT OF THE PANE and not a value this test sets:
+            // the pty's own record of what was WRITTEN into it. A `/bin/sh` peer paints no spinner
+            // for a detector to scrape, so what stands in for *this agent started a turn* is *the
+            // submit reached the pane* — which is the one thing a real detector would see the
+            // consequences of. It is a seam and it is named as one.
+            let published = Arc::new(Mutex::new(0_u64));
+            let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
+                let submitted = reader
+                    .input_echo()
+                    .and_then(|echo| echo.pane_recent_input(id))
+                    .is_some_and(|typed| typed.contains('\r'));
+                let mut seq = published.lock().expect("the published verdict");
+                if submitted && *seq == 0 {
+                    *seq = 1;
+                }
+                Some(crate::access::AgentObservation {
+                    state: if submitted {
+                        sprag_detect::AgentState::Working
+                    } else {
+                        sprag_detect::AgentState::Idle
+                    },
+                    agent: Some("sh".to_owned()),
+                    authority: crate::access::Authority::Scraped {
+                        rule: Some("what the pane was sent".to_owned()),
+                    },
+                    seq: *seq,
+                    asking: None,
+                })
+            });
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .with_agent_state(supervised.then_some(source));
+            let mut loops = OuterLoop::new(
+                lua,
+                pane,
+                &AiLoopSpec {
+                    // ⚠ THE PATH UNDER TEST. Every other fixture here is `false`, which is why the
+                    // delivery path had no offline driver at all — see the register's item 228.
+                    shows_the_prompt: true,
+                    ..spec(None, turn_of(Duration::from_secs(1)))
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            // The peer has to be past its `stty` before anything is typed, or the line discipline
+            // echoes the prompt and this measures the kernel — `deliver`'s own fixtures learned it.
+            let up = Instant::now();
+            while !access
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pumped = loops.pump(&access, &RunContext::uncancellable());
+            access.lifecycle().expect("lifecycle").close(pane);
+            pumped
+        };
+
+        let refused = start(false).expect_err(
+            "⚠⚠⚠ a prompt the peer took and never submitted is not a turn to wait out: the loop \
+             must refuse it",
+        );
+        assert!(
+            matches!(
+                refused,
+                PaneError::NeverSubmitted {
+                    wanted: SubmittedWhen::Stirs { .. },
+                    ..
+                },
+            ),
+            "and the refusal names the contract that went unsatisfied: {refused:?}",
+        );
+        let said = refused.to_string();
+        for clause in ["composer", "sitting in the pane", "did not stir"] {
+            assert!(
+                said.contains(clause),
+                "⚠⚠ THE SENTENCE IS WHAT ITS READER GETS, and it must say where the prompt ended \
+                 up and what was watched for. {clause:?} is not in: {said:?}",
+            );
+        }
+
+        let moved = start(true).expect("the control must not refuse");
+        assert!(
+            matches!(moved, Pumped::Moved { .. }),
+            "⚠⚠⚠ THE CONTROL: under a supervisor that CAN see the turn start, the same peer and \
+             the same prompt go through — a rule that refused here would refuse every loop there \
+             is. Got {moved:?}",
+        );
     }
 
     /// ⚠⚠⚠ **THE LOOP STOPS ON A WORD, AND SOMETHING HAS TO ASK THE AGENT FOR IT.**

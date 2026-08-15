@@ -230,8 +230,17 @@ impl Prompted {
             Self::Delivered(Delivered::OnScreenOnly { echo, .. }) | Self::Written { echo, .. } => {
                 *echo
             }
-            Self::Delivered(Delivered::Unconfirmed { .. } | Delivered::Stopped { .. }) => {
-                // Neither reaches a capture: the step returns before one is taken.
+            Self::Delivered(
+                Delivered::Unconfirmed { .. }
+                | Delivered::Stopped { .. }
+                | Delivered::Unsubmitted { .. }
+                | Delivered::Unwitnessed { .. },
+            ) => {
+                // None of the four reaches a capture: the step returns before one is taken. ⚠ The
+                // last two cannot arise here at all while this adapter asks nothing of its submit
+                // (see `deliver_prompt`), and they are ANSWERED rather than left to a panic,
+                // because the day it does ask is a one-line change and a panic is a poor way for
+                // that to announce itself.
                 return true;
             }
         };
@@ -249,8 +258,13 @@ impl Prompted {
             Self::Delivered(Delivered::Confirmed { .. }) => return None,
             Self::Delivered(Delivered::OnScreenOnly { echo, .. }) => *echo,
             Self::Written { echo, .. } => *echo,
-            // Neither reaches here: the step returns before building a note for both.
-            Self::Delivered(Delivered::Unconfirmed { .. } | Delivered::Stopped { .. }) => {
+            // None of these reaches here: the step returns before building a note for any of them.
+            Self::Delivered(
+                Delivered::Unconfirmed { .. }
+                | Delivered::Stopped { .. }
+                | Delivered::Unsubmitted { .. }
+                | Delivered::Unwitnessed { .. },
+            ) => {
                 return None;
             }
         };
@@ -466,6 +480,9 @@ impl Agent {
     ///   it, and the run proceeds — saying which it had.
     /// * [`Delivered::Unconfirmed`] — every injection was written and none ever appeared. Nothing
     ///   was submitted, so there is no turn to wait for.
+    /// * [`Delivered::Unsubmitted`] and [`Delivered::Unwitnessed`] — the two answers about the
+    ///   SUBMIT, and this adapter cannot reach either, because it asks nothing of its submit. Why
+    ///   it does not is below, at the argument itself.
     ///
     /// ⚠ The submit moved INTO the delivery ([`Delivery::then_press`]) and that is the ordering
     /// this buys: `Enter` and the optional `Ctrl-D` are sent only once the prompt is on the pane.
@@ -509,6 +526,14 @@ impl Agent {
                         .collect::<String>()
                 }),
                 then_press: self.submit_keys(eof),
+                // ⚠⚠ AND NOTHING IS ASKED OF THE SUBMIT, WHICH IS A DECISION AND IS WRITTEN DOWN
+                // AS ONE. This adapter's peer is a ONE-SHOT tool: it may think in silence for
+                // seconds before its first byte, and `Ctrl-D` — the end-of-input this delivery may
+                // be pressing — is a keystroke no screen shows at all. A contract picked here
+                // would refuse those peers' every prompt. The caller who knows better cannot say
+                // so yet, and that is the register's item rather than a hidden default: see
+                // `SubmittedWhen`, whose whole argument is that only the caller knows.
+                submitted_when: crate::deliver::SubmittedWhen::Unchecked,
                 ..Delivery::new()
             },
         )
@@ -624,12 +649,39 @@ impl Agent {
                     written: written.bytes(),
                 });
             }
+            // The prompt is in the pane and the submit after it established nothing, so the peer
+            // was not asked and the text is sitting in its composer. A REFUSAL for
+            // `Delivered::Unconfirmed`'s reason exactly, one keystroke later.
+            //
+            // ⚠ Unreachable while this adapter asks nothing of its submit — see `deliver_prompt`.
+            Prompted::Delivered(Delivered::Unsubmitted {
+                attempts,
+                written,
+                wanted,
+            }) => {
+                return Err(PaneError::NeverSubmitted {
+                    attempts,
+                    written: written.bytes(),
+                    wanted,
+                });
+            }
             // The run ended under the delivery. Continue, so the Driver's loop top decides whether
             // that was a cancel or the deadline — the same hand-off the reply wait makes.
             Prompted::Delivered(Delivered::Stopped { .. }) => {
                 return Ok(Asked::Ended(
                     Step::new(Cost::Bytes(written), Verdict::Continue)
                         .noting("the run ended while delivering the prompt; nothing was asked"),
+                ));
+            }
+            // ⚠ THE SAME HAND-OFF, AND A DIFFERENT SENTENCE. The submit went out before the run
+            // ended, so *nothing was asked* would be the wrong way round — the peer may be
+            // answering right now, and the next thing anybody does with this pane has to know that.
+            Prompted::Delivered(Delivered::Unwitnessed { .. }) => {
+                return Ok(Asked::Ended(
+                    Step::new(Cost::Bytes(written), Verdict::Continue).noting(
+                        "the run ended just after the prompt was submitted; whether the peer took \
+                         it was never established",
+                    ),
                 ));
             }
         }

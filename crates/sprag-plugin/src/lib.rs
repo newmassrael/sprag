@@ -75,7 +75,7 @@ pub use ai_loop::{AiLoop, NotStarted};
 pub use answer::Answer;
 pub use completion::{Completion, DoneWhen, Over, Turn};
 pub use consent::{Answered, Consent, Consents, Refusal, Taken, Unanswered};
-pub use deliver::{Delivered, Delivery, deliver, has_painted};
+pub use deliver::{DEFAULT_SUBMIT_GRACE, Delivered, Delivery, SubmittedWhen, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use driver::{
     Ceiling, Driver, Guardrails, JOURNAL_LIMIT, Outcome, OutcomeState, Progress, ProgressCell,

@@ -69,6 +69,45 @@
 //! being avoided by not waiting rather than by the peer being fast. It is a trade this module has
 //! always declared, and it is now paid where it is owed.
 //!
+//! ## ⚠⚠⚠ And pressing the submit is not the same as the peer taking it
+//!
+//! Everything above is about the TEXT. The last act of a delivery is a keystroke — [`Delivery::
+//! then_press`] — and until [`SubmittedWhen`] existed **nobody asked what became of it**. The
+//! delivery pressed Enter and returned, and the answer it returned was the same one it would have
+//! given for a peer that started a turn.
+//!
+//! Measured over a real pty, two peers that differ only in whether they ever read the submit byte —
+//! one goes on to `sleep 60` after taking the prompt, the other reads one more byte and prints:
+//!
+//! | peer | what a delivery said | did the screen move again? |
+//! |---|---|---|
+//! | deaf to the submit | `Confirmed { attempts: 1, written: 18 }` in 10.22 ms | never, in 2 s |
+//! | takes the submit | `Confirmed { attempts: 1, written: 18 }` in 10.22 ms | in **2.10 ms** |
+//!
+//! **The same answer, byte for byte, for the peer that was asked and the peer that was not.** That
+//! is how a live `claude` came to sit for sixty seconds with a prompt in its composer while the run
+//! that put it there waited out a turn nobody had started: the delivery path's last act had no
+//! evidence behind it, so *"delivered"* was a claim about the text alone.
+//!
+//! So a caller may say WHAT WOULD SHOW THEM the submit landed — [`SubmittedWhen`] — and a delivery
+//! that presses on a contract it cannot satisfy answers [`Delivered::Unsubmitted`] instead of
+//! reporting success. ⚠ It is the caller's to name for [`ReadyWhen`](crate::readiness::ReadyWhen)'s
+//! reason at the other end of the same turn — and the three readings that say so were taken in one
+//! live `claude` session, in this order:
+//!
+//! | pressed | contract | answer | took | the turn |
+//! |---|---|---|---|---|
+//! | `Enter` | `Stirs` | `Confirmed` | 100.51 ms | ran, and answered |
+//! | `k` | `Stirs` | **`Unsubmitted`** | the whole 2 s grace | never started |
+//! | `k` | `Repaints` | `Confirmed` | 32.18 ms | never started |
+//!
+//! The last two rows are why the kind is a WORD and not a rule this module picked. *The screen
+//! moved* is the only evidence a general observer of a pane has, and it is wrong in both
+//! directions: satisfied by a key an agent's composer merely absorbed (row three), and never
+//! satisfied by a peer that reads a line and prints nothing (`exec cat`, and every relay that
+//! answers only when it has an answer). A type that chose for the caller would be wrong for a whole
+//! class of peers in silence.
+//!
 //! ## Why this is not a method on `PaneAccess`
 //!
 //! It waits, so it is bounded, so it must be cancellable, so it needs the run-scoped
@@ -76,7 +115,7 @@
 //! decision once, when cancellation was bolted onto `PaneAccess` and then moved out; `poll_until`
 //! lives beside `RunContext` for the same reason and this is its second caller.
 //!
-//! ## The one hazard, named
+//! ## The retry hazard, named — and why the submit has no retry at all
 //!
 //! A retry can DOUBLE the text: if the pane took the first injection but echoed it more slowly than
 //! [`Delivery::echo_timeout`], the second injection lands on top of the first. There is no way to
@@ -84,6 +123,13 @@
 //! there yet" — so the bound is a real trade and not an oversight. Size `echo_timeout` above the
 //! pane's echo latency and the trade is bought; the default is generous for that reason, and the
 //! attempt count is small.
+//!
+//! ⚠⚠ **AND THE SUBMIT IS NEVER RETRIED, which is the same trade answered the other way.** The
+//! text can be re-injected because a second copy of a prompt nobody read is text; a second Enter
+//! cannot, because the first one may have worked — and an Enter on a composer the first one emptied
+//! submits an EMPTY prompt, which an agent answers. That is the failure [`Delivery::then_press`]'s
+//! whole ordering exists to prevent, met from the other side, so an unsatisfied submit contract is
+//! REPORTED and never re-pressed.
 
 use std::time::Duration;
 
@@ -108,6 +154,141 @@ pub const DEFAULT_ECHO_TIMEOUT: Duration = Duration::from_secs(2);
 /// [`DEFAULT_ECHO_TIMEOUT`]-long grace each is the cheap side of a bound whose other side is
 /// waiting forever for a turn that never started.
 pub const DEFAULT_ATTEMPTS: u32 = 3;
+
+/// How long a caller who asks a [`SubmittedWhen`] should give it, unless they know better.
+///
+/// Two seconds, sized above what has been MEASURED of the evidence it waits for. A peer that paints
+/// what it took does so in **2.10 ms** over a local pty; a live `claude` 2.1.233, asked the
+/// strongest question there is ([`SubmittedWhen::Stirs`] — its supervisor publishing a change),
+/// answered in **100.51 ms** of the Enter going in, and its composer repainted for a key it merely
+/// absorbed in **32.18 ms**.
+///
+/// What the number BUYS is the difference between a slow peer and a deaf one, and the cost of being
+/// generous is paid only where the submit really did not land — so it sits an order above the
+/// slowest observation rather than tight to it.
+///
+/// ⚠ It is deliberately NOT the number a caller must use. [`Turn`](crate::completion::Turn)'s rule:
+/// how long a peer may take is the caller's to say, and a delivery into a box on the far side of an
+/// ssh hop is a different peer from this one.
+pub const DEFAULT_SUBMIT_GRACE: Duration = Duration::from_secs(2);
+
+/// **WHAT WOULD SHOW A CALLER THAT THEIR SUBMIT LANDED** — the contract [`deliver`] holds
+/// [`Delivery::then_press`] to, and the twin of [`ReadyWhen`](crate::readiness::ReadyWhen) and
+/// [`DoneWhen`](crate::completion::DoneWhen) at the two ends of the same turn.
+///
+/// # ⚠⚠⚠ Why the caller says, and a default could not
+///
+/// The evidence a general observer of a pane has is that its SCREEN MOVED, and that reading is
+/// wrong in both directions for peers this workspace drives every day:
+///
+/// * **False negative.** A peer in raw mode that reads a line and prints nothing took the submit
+///   perfectly and moved no pixel. `exec cat` is the whole class, and so is every relay that
+///   answers only when it has an answer.
+/// * **False positive.** A keystroke a composer merely ABSORBS repaints the screen exactly as a
+///   submitted one does. Measured against `claude` 2.1.233: a printable key pressed instead of
+///   Enter had the pane repainted in **32.18 ms** and started no turn, while the same session's
+///   real submit was reported by its supervisor in **100.51 ms**. That is the shape register item
+///   222's coalesced `…prompt…\r` took when the agent read it as a paste.
+///
+/// Nothing about a pane says which of those a peer is. **Only the caller knows**, which is
+/// [`ReadyWhen`](crate::readiness::ReadyWhen)'s reason for existing, asked one keystroke later.
+///
+/// ⚠ There is no wire word for these yet, deliberately: [`deliver`] is a Rust API no surface
+/// publishes, and a published word nothing serves is the defect
+/// `every_published_word_is_a_word_the_plugin_host_accepts` exists to catch. The round that gives a
+/// wire client a delivery to configure is the round that spells them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmittedWhen {
+    /// **NOBODY ASKS.** The submit is pressed and the delivery answers about the TEXT alone.
+    ///
+    /// The honest contract for a peer whose taking of a line is invisible — a raw-mode reader that
+    /// prints nothing, a tool that thinks in silence before its first byte — and the one a caller
+    /// who has not thought about it gets, because the alternative is a rule that refuses those
+    /// peers' every delivery.
+    ///
+    /// ⚠ It is a WORD and not the absence of one. A caller reading this type must meet *"nothing
+    /// verifies the submit"* as a choice somebody made, since that is exactly the state the
+    /// delivery path was in when a live agent sat for a minute with a prompt in its composer.
+    Unchecked,
+    /// The pane's SCREEN is no longer the one it was showing when the submit went in, within
+    /// `within`.
+    ///
+    /// The rule for a peer that PAINTS what it takes and takes what it is given — a REPL that
+    /// prints a result, a tool that echoes a command. It is the same *a condition already true when
+    /// you started is not evidence* the text's own read-back is held to, asked about the keystroke
+    /// after it.
+    ///
+    /// ⚠⚠ **A COMPOSER THAT MERELY ABSORBS THE KEY SATISFIES THIS**, and that is the residue rather
+    /// than a defect in it: an agent's prompt box repaints for a printable character as readily as
+    /// for a submit. Where the peer is an agent this host supervises, [`Stirs`](Self::Stirs) is the
+    /// stronger question and it is one word away.
+    Repaints {
+        /// How long to wait for that, after which the delivery answers
+        /// [`Delivered::Unsubmitted`].
+        within: Duration,
+    },
+    /// The AGENT the delivery was addressed to has MOVED — the supervisor has published a change of
+    /// its state since the submit went in, within `within`.
+    ///
+    /// The strongest of the three, and the rule for the peer this whole module was written for: an
+    /// interactive agent CLI whose turn STARTING is the thing a submit is for. A prompt sitting
+    /// unsent in a composer leaves the agent exactly where it was, which is why this catches what a
+    /// screen predicate cannot.
+    ///
+    /// # ⚠⚠ The evidence is `seq`, not the state
+    ///
+    /// [`AgentObservation::seq`](crate::access::AgentObservation::seq) counts PUBLISHED CHANGES and
+    /// never decreases, so a turn that began and ended between two polls is still visible in it —
+    /// where *"the agent is working"* asked a moment too late reads `Idle` and would call a
+    /// submitted prompt unsubmitted. Its own doc says it is for exactly this comparison, and
+    /// [`DoneWhen::Settles`](crate::completion::DoneWhen::Settles) arms itself the same way at the
+    /// other end of the turn.
+    ///
+    /// # ⚠ What is deliberately NOT evidence
+    ///
+    /// * An observation naming a DIFFERENT agent than the one that was there when the submit went
+    ///   in, or naming none. A pane whose agent changed under the delivery is not a pane this can
+    ///   say anything about.
+    /// * A host with no supervisor at all ([`PaneAccess::supervision`] is `None`), and a pane no
+    ///   manifest claims. Neither is ever satisfied, on
+    ///   [`ReadyWhen::Runs`](crate::readiness::ReadyWhen::Runs)' terms: a contract that cannot be
+    ///   answered says so rather than being read as a yes.
+    Stirs {
+        /// How long to wait for that, after which the delivery answers
+        /// [`Delivered::Unsubmitted`].
+        within: Duration,
+    },
+}
+
+impl SubmittedWhen {
+    /// How long this contract may be waited for, or [`None`] where nothing is waited for at all.
+    #[must_use]
+    pub const fn within(self) -> Option<Duration> {
+        match self {
+            Self::Unchecked => None,
+            Self::Repaints { within } | Self::Stirs { within } => Some(within),
+        }
+    }
+
+    /// This contract as the clause of a sentence about a submit that never satisfied it —
+    /// *"repaint"*, *"stir"*.
+    ///
+    /// ⚠ The reason [`PaneError::NeverSubmitted`] carries the whole contract rather than a
+    /// duration: its sentence is what an agent reads when a run refuses, and *"the pane did not
+    /// repaint"* is false of the kind that watches the supervisor. Same rule as
+    /// [`ReadyWhen::describe`](crate::readiness::ReadyWhen::describe) one door over.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            // Never reaches a refusal — nothing is waited for, so nothing can go unsatisfied — and
+            // it answers rather than being unreachable, because a caller printing a spec is a
+            // reader too.
+            Self::Unchecked => "was not asked to show anything",
+            Self::Repaints { .. } => "did not repaint",
+            Self::Stirs { .. } => "did not stir",
+        }
+    }
+}
 
 /// How to deliver text to a pane, and what to do once it is there.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,11 +317,23 @@ pub struct Delivery {
     /// is worse than sending nothing at all. Defaults to Enter; give an empty list to deliver text
     /// without submitting it.
     pub then_press: Vec<KeyStroke>,
+    /// **WHAT WOULD SHOW THIS CALLER THE SUBMIT LANDED** — see [`SubmittedWhen`], which is where
+    /// the whole argument for a caller-chosen contract lives.
+    ///
+    /// [`SubmittedWhen::Unchecked`] by default, which is what this module did for its whole life
+    /// before the word existed: press, and answer about the text. A caller whose peer can show them
+    /// the difference says so and gets [`Delivered::Unsubmitted`] instead of a success they would
+    /// have had to wait out a turn to disbelieve.
+    ///
+    /// ⚠ Consulted only when something is PRESSED. A delivery with an empty
+    /// [`then_press`](Self::then_press) submits nothing, so there is nothing for a contract to be
+    /// about — and a caller who spells both has said something that cannot be true of any pane.
+    pub submitted_when: SubmittedWhen,
 }
 
 impl Delivery {
     /// The defaults: confirm on the text itself, a generous echo grace, three attempts, submit with
-    /// Enter.
+    /// Enter, and nothing asked about what became of it.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -148,7 +341,19 @@ impl Delivery {
             echo_timeout: DEFAULT_ECHO_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
             then_press: vec![KeyStroke::named("Enter")],
+            // ⚠ THE UNCHECKED SUBMIT IS THE DEFAULT, and it is a decision rather than an
+            // oversight: this module cannot know whether a caller's peer shows anything at all when
+            // it takes a line, and the rule that guessed would refuse every delivery to the peers
+            // that show nothing. See `SubmittedWhen`.
+            submitted_when: SubmittedWhen::Unchecked,
         }
+    }
+
+    /// The defaults, but the submit is held to `contract` — see [`SubmittedWhen`].
+    #[must_use]
+    pub fn submitted_when(mut self, contract: SubmittedWhen) -> Self {
+        self.submitted_when = contract;
+        self
     }
 
     /// The defaults, but confirmed on `needle` instead of on the whole text.
@@ -176,7 +381,7 @@ impl Default for Delivery {
 
 /// How a [`deliver`] ended.
 ///
-/// Three outcomes and not a `bool`, because "the pane never took it" is a thing a supervisor must
+/// Six outcomes and not a `bool`, because "the pane never took it" is a thing a supervisor must
 /// be able to act on — hand the pane to a person — and is not the same as an error. An unknown
 /// pane or an unencodable key IS an error and comes back as [`PaneError`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +393,10 @@ pub enum Delivered {
     /// ⚠⚠ **AND THE SCREEN IS ONE THIS DELIVERY CHANGED**, which is the other half of *put it
     /// there*: a needle the pane was already carrying says nothing about the bytes just written,
     /// whoever painted the old copy. See the module docs' third hazard.
+    ///
+    /// ⚠⚠ **AND THE SUBMIT SATISFIED WHATEVER THE CALLER ASKED OF IT** — see
+    /// [`Delivery::submitted_when`]. Under the default ([`SubmittedWhen::Unchecked`]) that clause
+    /// is empty and this answer means what it always meant: a claim about the TEXT.
     Confirmed { attempts: u32, written: Written },
     /// The text is on the pane's screen and **nothing here can say the program is what put it
     /// there**, so it is not evidence the program read a byte.
@@ -218,9 +427,68 @@ pub enum Delivered {
     /// Every attempt was written and none of them ever appeared. The bytes went to the pty; the
     /// program behind it did not show them.
     Unconfirmed { attempts: u32, written: Written },
-    /// THE RUN ENDED part-way — cancelled, or out of time. Nothing is claimed about what the pane
-    /// holds. Which of the two it was is the [`crate::run::RunContext`]'s to answer.
+    /// **THE TEXT ARRIVED, THE SUBMIT WAS PRESSED, AND THE CALLER'S EVIDENCE FOR IT NEVER CAME** —
+    /// typed, and as far as anything here can tell not sent.
+    ///
+    /// # ⚠⚠⚠ Why this is a fourth answer and not a slower `Confirmed`
+    ///
+    /// It is the state a live `claude` sat in for sixty seconds: the prompt inside its composer's
+    /// box rule, the agent idle underneath it, and the run that put it there waiting out a turn
+    /// nobody had started. The delivery reported `Confirmed { attempts: 1 }` — measured, and the
+    /// same answer to the digit that a peer which took the submit gives — because *delivered* was a
+    /// claim about the text and nothing asked about the keystroke after it.
+    ///
+    /// What a caller does with it is what makes it worth a word: the prompt is IN the pane's
+    /// composer, so the next delivery would concatenate onto it, and nothing here presses a second
+    /// Enter (see the module docs' hazard). It is the [`Unconfirmed`](Self::Unconfirmed) of the
+    /// submit — *hand this pane to a person* — and it is not an error, because a peer that ignores
+    /// a keystroke has broken no contract of the pane's.
+    ///
+    /// `wanted` is the contract that went unsatisfied, carried for
+    /// [`PaneError::NeverReady`]'s reason: the refusal built
+    /// from this is a sentence somebody reads, and *"the pane did not repaint"* is false of the
+    /// kind that watches the supervisor.
+    Unsubmitted {
+        /// How many injections carried the TEXT — the submit is pressed once and never retried.
+        attempts: u32,
+        /// Every byte that reached the pty, the submit's own among them. It was paid for whatever
+        /// the peer did with it.
+        written: Written,
+        /// The contract that went unsatisfied.
+        wanted: SubmittedWhen,
+    },
+    /// THE RUN ENDED part-way, BEFORE ANYTHING WAS SUBMITTED — cancelled, or out of time. Nothing
+    /// is claimed about what the pane holds. Which of the two it was is the
+    /// [`crate::run::RunContext`]'s to answer.
+    ///
+    /// ⚠⚠ **The prompt may be TYPED AND UNSUBMITTED**, which is what a caller acts on: a delivery
+    /// writes the text and presses only once the text is on the screen, so a run that ends between
+    /// those two leaves the composer holding it. The outer loop reads this answer as *no question
+    /// was asked* for exactly that reason.
     Stopped { attempts: u32, written: Written },
+    /// **THE SUBMIT WENT OUT AND THE RUN ENDED BEFORE ITS EVIDENCE COULD ARRIVE.** Nothing is
+    /// claimed about whether it landed — and, unlike [`Stopped`](Self::Stopped), the keystroke IS
+    /// on the pseudoterminal, so a question may well have been asked.
+    ///
+    /// # ⚠⚠⚠ Why a stop needed two words the moment the submit gained a contract
+    ///
+    /// `Stopped` means *nothing was asked* to every caller that reads it — the outer loop turns it
+    /// into a stated *"the run ended while delivering the prompt; nothing was asked"*. That is true
+    /// of every stop this module could produce before there was anything to wait for AFTER the
+    /// press, and it becomes FALSE the moment there is: a run whose clock expires inside the submit
+    /// wait has sent the Enter, and reporting it as *nothing was asked* would be this crate's
+    /// favourite defect — a sentence about a run that is confidently the wrong way round.
+    ///
+    /// ⚠ A caller with no submit contract can never see this: with
+    /// [`SubmittedWhen::Unchecked`] there is no wait to be stopped inside.
+    Unwitnessed {
+        /// How many injections carried the TEXT.
+        attempts: u32,
+        /// Every byte that reached the pty, the submit's own among them.
+        written: Written,
+        /// The contract whose evidence the run did not stay alive long enough to see.
+        wanted: SubmittedWhen,
+    },
 }
 
 impl Delivered {
@@ -238,9 +506,20 @@ impl Delivered {
     ///
     /// The weaker question, named so that a caller that genuinely wants it does not reach for
     /// [`is_confirmed`](Self::is_confirmed) and get the strong claim by accident.
+    ///
+    /// ⚠⚠ **TRUE FOR THE TWO SUBMIT ANSWERS**, and that is the point of them rather than a
+    /// leniency: [`Unsubmitted`](Self::Unsubmitted) and [`Unwitnessed`](Self::Unwitnessed) are
+    /// reached only through the same read-back the two above are, so the text is on that screen —
+    /// which is exactly why a caller must not deliver again on top of it.
     #[must_use]
     pub const fn is_on_screen(self) -> bool {
-        matches!(self, Self::Confirmed { .. } | Self::OnScreenOnly { .. })
+        matches!(
+            self,
+            Self::Confirmed { .. }
+                | Self::OnScreenOnly { .. }
+                | Self::Unsubmitted { .. }
+                | Self::Unwitnessed { .. }
+        )
     }
 
     /// How many bytes reached the pty across every attempt — what a plugin charges as its
@@ -250,7 +529,9 @@ impl Delivered {
             Self::Confirmed { written, .. }
             | Self::OnScreenOnly { written, .. }
             | Self::Unconfirmed { written, .. }
-            | Self::Stopped { written, .. } => written,
+            | Self::Unsubmitted { written, .. }
+            | Self::Stopped { written, .. }
+            | Self::Unwitnessed { written, .. } => written,
         }
     }
 }
@@ -270,11 +551,18 @@ impl Delivered {
 /// the second delivery confirmed off the first one's echo, and the submit lands on text no program
 /// has read.
 ///
+/// ⚠⚠⚠ **AND THE SUBMIT IS HELD TO [`Delivery::submitted_when`]**, which is a SECOND baseline —
+/// taken at the press, since that is the moment the evidence has to be new against. Under the
+/// default nothing is asked and the answer is about the text alone; under a contract, a keystroke
+/// that showed nothing comes back [`Delivered::Unsubmitted`] rather than as a success a caller
+/// would need a whole turn to disbelieve.
+///
 /// # Errors
 ///
 /// [`PaneError`] when the pane is unknown, a key cannot be encoded, or a write fails — the same
 /// causes [`PaneAccess::inject`] has, and none of them are "the pane did not take it", which is
-/// [`Delivered::Unconfirmed`].
+/// [`Delivered::Unconfirmed`], nor "the peer ignored the submit", which is
+/// [`Delivered::Unsubmitted`].
 pub fn deliver(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -321,7 +609,32 @@ pub fn deliver(
                 // rather than a byte appended to the same unread pty read as the prompt. Sent for
                 // BOTH on-screen answers — see `Delivered::OnScreenOnly`.
                 if !spec.then_press.is_empty() {
+                    // ⚠⚠⚠ THE SECOND BASELINE, TAKEN BEFORE THE PRESS AND NOT AFTER IT — the same
+                    // guarantee `before` is above and `Completion::begin` is at the turn's other
+                    // end. Armed after the keystroke, the change it looks for is one it may already
+                    // have missed, and a peer quick enough to answer would be reported as having
+                    // ignored the submit.
+                    let witness = Submission::arm(panes, pane, spec.submitted_when);
                     written += panes.inject(pane, &spec.then_press)?.bytes();
+                    match witness.await_landing(panes, run, pane) {
+                        Seen::No => {
+                            return Ok(Delivered::Unsubmitted {
+                                attempts,
+                                written: Written::of(written),
+                                wanted: spec.submitted_when,
+                            });
+                        }
+                        Seen::Stopped => {
+                            // ⚠ NOT `Stopped`: the keystroke is on the pseudoterminal, so *nothing
+                            // was asked* is a claim this cannot make. See `Delivered::Unwitnessed`.
+                            return Ok(Delivered::Unwitnessed {
+                                attempts,
+                                written: Written::of(written),
+                                wanted: spec.submitted_when,
+                            });
+                        }
+                        Seen::Yes => {}
+                    }
                 }
                 let written = Written::of(written);
                 // ⚠⚠ THE READING IS TAKEN HERE, not at the top: a program that takes its terminal
@@ -397,9 +710,9 @@ enum Seen {
 /// gone away can never show anything, and saying so at once is not the same answer as "not yet".
 /// What it must not have of its own is the STOP condition — a wait that knew about cancellation and
 /// not about the deadline would let a delivery outlive a run that is over, which is exactly the
-/// hole the deadline was added to close. So both waits ask
-/// [`RunContext::stopped`](crate::run::RunContext::stopped), which is the one definition of
-/// *the run is over*.
+/// hole the deadline was added to close. So EVERY wait in this crate asks
+/// [`RunContext::stopped`](crate::run::RunContext::stopped) — this one, `poll_until`, and the
+/// submit's own ([`Submission::await_landing`]) — which is the one definition of *the run is over*.
 fn await_text(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -426,6 +739,124 @@ fn await_text(
             return Seen::No;
         }
         std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// The ARMED evaluator of a [`SubmittedWhen`] — the contract, plus what the pane was like at the
+/// moment the submit went in.
+///
+/// Mirrors [`Completion`](crate::completion::Completion) at the turn's other end, and for the same
+/// reason: some conditions are not predicates over the present. *The screen moved* and *the agent
+/// stirred* are both comparisons against a moment, and the moment is the press — so the type holds
+/// what a bare `match` on the contract could not.
+///
+/// ⚠ Private, and not for [`Completion`](crate::completion::Completion)'s one-door reason: this is
+/// one step of one function. What
+/// makes it a type rather than two locals is that ARMING and ASKING must not drift apart — the
+/// whole defect this closes is a question asked against the wrong moment.
+struct Submission {
+    /// What the caller said would show them the submit landed.
+    wanted: SubmittedWhen,
+    /// The pane's collapsed screen as the submit went in — [`SubmittedWhen::Repaints`]' baseline.
+    ///
+    /// `None` both for a contract that never reads it and for a pane that could not be read, which
+    /// [`landed`](Self::landed) answers the same way: any screen it can read afterwards is a
+    /// different one.
+    screen: Option<String>,
+    /// WHO the pane's agent was and how many published changes it had been through, as the submit
+    /// went in — [`SubmittedWhen::Stirs`]' baseline.
+    ///
+    /// `None` where nothing could be armed: no supervisor on this host, no observation for this
+    /// pane, or an observation naming no agent. That is not evidence about a keystroke, so the
+    /// contract is never satisfied — see the kind's own doc.
+    agent: Option<(String, u64)>,
+}
+
+impl Submission {
+    /// Read what this contract will be compared against — **called before the submit is injected**.
+    fn arm(panes: &dyn PaneAccess, pane: PaneId, wanted: SubmittedWhen) -> Self {
+        let (screen, agent) = match wanted {
+            // Nothing is asked, so nothing is read. A baseline taken for an unchecked submit would
+            // be a pane read every delivery pays for and nothing consults.
+            SubmittedWhen::Unchecked => (None, None),
+            SubmittedWhen::Repaints { .. } => (panes.pane_collapsed(pane), None),
+            SubmittedWhen::Stirs { .. } => (
+                None,
+                panes
+                    .supervision()
+                    .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                    .and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
+            ),
+        };
+        Self {
+            wanted,
+            screen,
+            agent,
+        }
+    }
+
+    /// Whether the submit's evidence is here YET — `None` where it can never come.
+    ///
+    /// Three answers for [`await_text`]'s reason one door up: *not yet* and *never* end the wait
+    /// differently, and spending a whole grace on a question nothing can answer is a delay with no
+    /// information in it.
+    fn landed(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<bool> {
+        match self.wanted {
+            // Unreachable: `await_landing` returns before asking. Answered rather than panicking,
+            // because *nobody asked* is satisfied by anything at all.
+            SubmittedWhen::Unchecked => Some(true),
+            // ⚠ `map`, so a pane nobody knows (`None`) stays `None` — it can never repaint, and
+            // saying so at once beats spending the window on it.
+            SubmittedWhen::Repaints { .. } => panes
+                .pane_collapsed(pane)
+                .map(|now| Some(now.as_str()) != self.screen.as_deref()),
+            SubmittedWhen::Stirs { .. } => {
+                // Nothing was armed — no supervisor, no observation, or no agent named — so no
+                // reading taken later could be evidence about this keystroke.
+                let (addressed, pressed_at) = self.agent.as_ref()?;
+                Some(
+                    panes
+                        .supervision()
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                        .is_some_and(|seen| {
+                            // ⚠⚠ BOTH, and the name is what makes this a claim about the peer the
+                            // submit went to rather than about whatever is in the pane now.
+                            seen.seq > *pressed_at
+                                && seen.agent.as_deref() == Some(addressed.as_str())
+                        }),
+                )
+            }
+        }
+    }
+
+    /// Wait, bounded by this contract's own window AND by the run's deadline, for the submit's
+    /// evidence.
+    ///
+    /// ⚠⚠ **THE THIRD BOUNDED WAIT IN THIS CRATE**, held to the same stop condition as the other
+    /// two: a delivery that outlived a run that is over would be typing into somebody's pane after
+    /// it ended. ⚠ Where this one differs is what a stop MEANS — the keystroke is already out, so
+    /// the answer is [`Delivered::Unwitnessed`] rather than [`Delivered::Stopped`].
+    fn await_landing(&self, panes: &dyn PaneAccess, run: &RunContext, pane: PaneId) -> Seen {
+        // Nothing to wait for: the caller asked nothing of the submit, which is this module's
+        // whole behaviour before the contract existed.
+        let Some(within) = self.wanted.within() else {
+            return Seen::Yes;
+        };
+        let start = std::time::Instant::now();
+        loop {
+            if run.stopped() {
+                return Seen::Stopped;
+            }
+            match self.landed(panes, pane) {
+                Some(true) => return Seen::Yes,
+                None => return Seen::No,
+                Some(false) => {}
+            }
+            if start.elapsed() >= within {
+                return Seen::No;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 }
 
@@ -465,6 +896,64 @@ mod tests {
         peer("dd bs=1 count=5 of=/dev/null 2>/dev/null; exec cat")
     }
 
+    /// A peer that PAINTS a prompt of `bytes` and then reacts to the submit after it in one of
+    /// three ways — the three a delivery has to tell apart.
+    ///
+    /// `dd bs=1 count=N` copies exactly the prompt to the screen, which is what makes the text's
+    /// own read-back succeed deterministically and puts every peer below on the same footing at the
+    /// moment the submit is pressed. What follows it is the whole experiment:
+    ///
+    /// * [`Reacts::Nothing`] — `sleep`, so the submit byte sits unread in the pty for ever. **The
+    ///   peer a delivery used to report as `Confirmed`.**
+    /// * [`Reacts::Paints`] — it READS the submit and prints a character. The screen moves and
+    ///   nothing else happened, which is an agent's composer absorbing a keystroke.
+    /// * [`Reacts::Works`] — it reads the submit and prints the marker a supervisor over this pane
+    ///   reads as *the peer started working*.
+    fn takes_a_prompt_of(bytes: usize, then: Reacts) -> String {
+        peer(&format!(
+            "dd bs=1 count={bytes} 2>/dev/null; {}",
+            match then {
+                Reacts::Nothing => "exec sleep 60".to_owned(),
+                Reacts::Paints =>
+                    "dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '_'; exec sleep 60".to_owned(),
+                Reacts::Works => format!(
+                    "dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '{WORKING}'; exec sleep 60",
+                ),
+            },
+        ))
+    }
+
+    /// What a peer does with the submit that follows its prompt — see [`takes_a_prompt_of`].
+    #[derive(Clone, Copy)]
+    enum Reacts {
+        Nothing,
+        Paints,
+        Works,
+    }
+
+    /// The marker a [`Reacts::Works`] peer prints, and the one the stand-in supervisor below reads
+    /// as *this agent is working*.
+    const WORKING: &str = "TOOK";
+
+    /// HOW the stand-in supervisor publishes the turn its peer started — see [`supervised_peer`].
+    ///
+    /// Three shapes, and each is a claim [`SubmittedWhen::Stirs`] makes that nothing held until a
+    /// fixture could stage it. **A mutation that deletes one of those clauses passes every other
+    /// test in this module**, which is how the last two got here.
+    #[derive(Clone, Copy)]
+    enum Publishes {
+        /// Working while the marker is on the screen, under the name the delivery was addressed to.
+        Plainly,
+        /// The same change, published about a DIFFERENT agent — a pane whose program changed under
+        /// the delivery.
+        AsSomebodyElse,
+        /// **THE TURN BEGAN AND ENDED BETWEEN TWO POLLS**: every look reports the peer at REST, and
+        /// the two changes nobody saw are in `seq`. A rule reading the STATE calls this a submit
+        /// that never landed; the number says otherwise, and the number is what the real
+        /// [`AgentObservation`](crate::access::AgentObservation) exists to carry.
+        BetweenTwoPolls,
+    }
+
     fn access(script: &str) -> (WorkspacePaneAccess, PaneId) {
         let workspace = Arc::new(Mutex::new(Workspace::new((40, 6))));
         let mut command = CommandBuilder::new("/bin/sh");
@@ -499,6 +988,86 @@ mod tests {
     /// A peer that has said [`GO`], so nothing below is racing its `stty`.
     fn ready_peer(script: &str) -> (WorkspacePaneAccess, PaneId) {
         let (access, pane) = access(script);
+        assert!(
+            shows(&access, pane, GO, Duration::from_secs(10)),
+            "the peer never configured its terminal",
+        );
+        (access, pane)
+    }
+
+    /// The same peer, WITH A SUPERVISOR OVER IT — a stand-in for the daemon's detector that
+    /// publishes [`AgentState::Working`] once the peer has printed [`WORKING`].
+    ///
+    /// # ⚠⚠ Its verdict is DERIVED FROM THE PANE, not set by hand
+    ///
+    /// A double whose observation a test moves with a `Mutex` decides its own result, and the fact
+    /// under test here is whether a delivery notices a change **the peer caused**. So this reads
+    /// the pane's own screen through the same [`PaneAccess::pane_collapsed`] everything else does,
+    /// and the only thing it invents is the RULE — which is what a real ruleset is.
+    ///
+    /// ⚠ `seq` counts PUBLISHED CHANGES, which is the contract the real
+    /// [`AgentObservation::seq`](crate::access::AgentObservation::seq) states and the number
+    /// [`SubmittedWhen::Stirs`] compares against: bumped when the verdict differs from the last one
+    /// handed out and never otherwise, so a pane repainting the same state does not move it.
+    ///
+    /// ⚠ [`Authority::Scraped`], honestly: this reads a screen. A stand-in claiming
+    /// [`Authority::Reported`](crate::access::Authority::Reported) would be asserting that an agent
+    /// hook it does not have said so.
+    ///
+    /// ⚠ `publishes` is HOW it publishes that turn, and each shape is there because the product
+    /// makes a claim that nothing held until a fixture could stage it — see [`Publishes`].
+    fn supervised_peer(script: &str, publishes: Publishes) -> (WorkspacePaneAccess, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 6))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        let pane = workspace
+            .lock()
+            .expect("the workspace")
+            .spawn(command, "peer".to_string(), 40, 6)
+            .expect("spawn the pane");
+
+        let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let published = Arc::new(Mutex::new((sprag_detect::AgentState::Idle, 0_u64)));
+        let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
+            let screen = reader.pane_collapsed(id)?;
+            let working = screen.contains(WORKING);
+            let now = match (working, publishes) {
+                // ⚠ THE TURN THAT BEGAN AND ENDED BETWEEN TWO POLLS: this look never catches the
+                // peer working, and the two published changes it missed are in `seq` — which is
+                // the whole reason `Stirs` compares that number and not the state.
+                (true, Publishes::BetweenTwoPolls) => sprag_detect::AgentState::Idle,
+                (true, _) => sprag_detect::AgentState::Working,
+                (false, _) => sprag_detect::AgentState::Idle,
+            };
+            let mut last = published.lock().expect("the published verdict");
+            if matches!(publishes, Publishes::BetweenTwoPolls) {
+                // Idle throughout, so the state cannot say the turn happened; the counter can.
+                if working && last.1 == 0 {
+                    *last = (now, 2);
+                }
+            } else if last.0 != now {
+                *last = (now, last.1 + 1);
+            }
+            Some(crate::access::AgentObservation {
+                state: last.0,
+                agent: Some(
+                    match (working, publishes) {
+                        (true, Publishes::AsSomebodyElse) => "somebody-else",
+                        _ => "peer",
+                    }
+                    .to_owned(),
+                ),
+                authority: crate::access::Authority::Scraped {
+                    rule: Some("printed the marker".to_owned()),
+                },
+                seq: last.1,
+                asking: None,
+            })
+        });
+
+        let access = WorkspacePaneAccess::new(workspace).with_agent_state(Some(source));
         assert!(
             shows(&access, pane, GO, Duration::from_secs(10)),
             "the peer never configured its terminal",
@@ -811,6 +1380,14 @@ mod tests {
         /// Empty for a pane that starts blank; equal to [`text`](Self::text) for the pane that
         /// stages the hazard — a screen already showing the needle and never changing again.
         showing_before: String,
+        /// ⚠⚠⚠ **WHAT THE SCREEN BECOMES ONCE THE SUBMIT HAS BEEN INJECTED** — the fact
+        /// [`SubmittedWhen::Repaints`] is about, and the second thing this double refused to model
+        /// until the submit had a contract to satisfy.
+        ///
+        /// `None` is the peer that takes the keystroke and paints nothing, which is the whole
+        /// hazard: a screen that stops moving is the only sign a general observer gets that a
+        /// submit did nothing.
+        after_submit: Option<String>,
         hidden_reads: Mutex<u32>,
         injected: Mutex<Vec<Vec<String>>>,
         /// Raised on the first read-back AFTER an injection, so a cancel lands INSIDE the wait
@@ -820,18 +1397,38 @@ mod tests {
         /// baseline read happens before the loop's first stop check, so a flag raised on it would
         /// end the delivery having written nothing — a different arm from the one this stages.
         cancel_on_read: Option<Arc<std::sync::atomic::AtomicBool>>,
+        /// Raised on the first read-back AFTER THE SUBMIT, so a cancel lands inside the wait for
+        /// the submit's own evidence rather than inside the wait for the text's.
+        ///
+        /// ⚠ A second flag rather than a reused one: the two waits are what
+        /// [`Delivered::Stopped`] and [`Delivered::Unwitnessed`] tell apart, and a fixture that
+        /// could only stage one of them could not measure the difference.
+        cancel_on_submit: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl Recorder {
-        /// A blank-screened double showing `text` once something has been injected.
+        /// A blank-screened double showing `text` once something has been injected, and never
+        /// moving again after the submit.
         fn showing(text: &str) -> Self {
             Self {
                 text: text.to_owned(),
                 showing_before: String::new(),
+                after_submit: None,
                 hidden_reads: Mutex::new(0),
                 injected: Mutex::new(Vec::new()),
                 cancel_on_read: None,
+                cancel_on_submit: None,
             }
+        }
+
+        /// Whether the submit has been injected — the moment this double's screen changes for the
+        /// second time.
+        fn submitted(&self) -> bool {
+            self.injected
+                .lock()
+                .expect("the log")
+                .iter()
+                .any(|keys| keys == &vec!["Enter".to_owned()])
         }
 
         /// One delivery against this double, with a short grace and no retries.
@@ -855,6 +1452,19 @@ mod tests {
             // the swallowed-input window is about that moment.
             if self.injected.lock().expect("the log").is_empty() {
                 return Some(self.showing_before.clone());
+            }
+            // ⚠ THE SUBMIT'S OWN SCREEN, and it is asked FIRST: from the press onwards this pane
+            // shows what the peer made of the keystroke, which for the peer that made nothing of it
+            // is the same screen the text arrived on.
+            if self.submitted() {
+                if let Some(cancel) = &self.cancel_on_submit {
+                    cancel.store(true, std::sync::atomic::Ordering::Release);
+                }
+                return Some(
+                    self.after_submit
+                        .clone()
+                        .unwrap_or_else(|| self.text.clone()),
+                );
             }
             if let Some(cancel) = &self.cancel_on_read {
                 cancel.store(true, std::sync::atomic::Ordering::Release);
@@ -1001,6 +1611,289 @@ mod tests {
             log.len(),
             2,
             "both attempts wrote the text, and only the text: {log:?}"
+        );
+    }
+
+    /// ⚠⚠ **A CHANGE PUBLISHED ABOUT A DIFFERENT AGENT IS NOT THIS SUBMIT'S EVIDENCE.**
+    ///
+    /// The pane's supervisor here does everything the satisfied case does — it publishes a state
+    /// change, the `seq` moves, and it moves because THIS keystroke was read — and it names a
+    /// different agent while doing it. That is a pane whose program changed under the delivery, and
+    /// the submit went to the one that was there before.
+    ///
+    /// ⚠ It exists because the rule had no gate: dropping the name comparison from
+    /// [`SubmittedWhen::Stirs`] left every test in this module green. A claim a mutation cannot
+    /// break is a claim nothing is holding.
+    #[test]
+    fn a_change_published_about_a_different_agent_is_not_this_submits_evidence() {
+        assert!(
+            delivered_watching_the_supervisor(Publishes::Plainly).is_confirmed(),
+            "⚠ THE CONTROL: the same peer, the same change, named as the agent that was there when \
+             the submit was pressed",
+        );
+        assert!(
+            matches!(
+                delivered_watching_the_supervisor(Publishes::AsSomebodyElse),
+                Delivered::Unsubmitted { .. },
+            ),
+            "⚠⚠ a state change published about ANOTHER agent says nothing about the keystroke this \
+             delivery sent to the one before it",
+        );
+    }
+
+    /// ⚠⚠⚠ **A TURN THAT BEGAN AND ENDED BETWEEN TWO POLLS IS STILL A SUBMIT THAT LANDED** — why
+    /// [`SubmittedWhen::Stirs`] compares `seq` and not the state.
+    ///
+    /// The supervisor here reports the peer AT REST at every look, and it is telling the truth
+    /// every time: the turn was over before anybody looked. What it also carries is the two
+    /// published changes nobody saw, which is exactly what
+    /// [`AgentObservation::seq`](crate::access::AgentObservation::seq)'s own doc says it is for.
+    ///
+    /// ⚠ A rule reading *is it working?* would answer NO here and refuse a prompt that was asked
+    /// and answered — and against a fast peer that is not an edge case, it is the common one. The
+    /// mutation is one word (`seen.state == Working`), and until this existed nothing in the module
+    /// noticed it.
+    #[test]
+    fn a_turn_that_began_and_ended_between_two_polls_still_counts_as_a_stir() {
+        assert!(
+            delivered_watching_the_supervisor(Publishes::BetweenTwoPolls).is_confirmed(),
+            "the counter is the evidence; the state at a glance is not",
+        );
+    }
+
+    /// One delivery over a peer that takes the submit, watched through a supervisor that
+    /// [`Publishes`] its turn in the named way.
+    fn delivered_watching_the_supervisor(publishes: Publishes) -> Delivered {
+        const PROMPT: &str = "what is 2 plus 2?";
+        let (access, pane) =
+            supervised_peer(&takes_a_prompt_of(PROMPT.len(), Reacts::Works), publishes);
+        let outcome = deliver(
+            &access,
+            &RunContext::uncancellable(),
+            pane,
+            PROMPT,
+            &Delivery {
+                attempts: 1,
+                submitted_when: SubmittedWhen::Stirs {
+                    within: Duration::from_millis(150),
+                },
+                ..Delivery::new()
+            },
+        )
+        .expect("no error");
+        access.lifecycle().expect("lifecycle").close(pane);
+        outcome
+    }
+
+    /// ⚠⚠⚠ **THE SUBMIT'S BASELINE IS TAKEN AT THE PRESS, AND NOT WHEN THE DELIVERY BEGAN** — the
+    /// ORDER claim for the module's fourth hazard, which is the one a screen cannot show.
+    ///
+    /// The double's screen moves TWICE: once when the text is injected and once when the submit
+    /// is. A witness armed at the wrong moment gets the wrong answer in a way no amount of waiting
+    /// fixes — armed before the TEXT went in, the text's own arrival satisfies it and every peer on
+    /// earth looks submitted-to; armed after the PRESS, the change it is looking for has already
+    /// happened and a peer that answered instantly looks deaf.
+    ///
+    /// ⚠ Both halves, because either alone passes for a build that always answers the same way:
+    /// the peer whose screen moves for the submit is `Confirmed`, and the peer whose screen stops
+    /// moving is [`Delivered::Unsubmitted`] — one double, one field apart.
+    #[test]
+    fn the_submit_is_witnessed_from_the_moment_it_is_pressed() {
+        let watching = SubmittedWhen::Repaints {
+            within: Duration::from_millis(50),
+        };
+        let deliver_onto = |after_submit: Option<&str>| {
+            let panes = Recorder {
+                after_submit: after_submit.map(ToOwned::to_owned),
+                ..Recorder::showing("hello")
+            };
+            let outcome = deliver(
+                &panes,
+                &RunContext::uncancellable(),
+                PaneId(1),
+                "hello",
+                &Delivery {
+                    echo_timeout: Duration::from_millis(1),
+                    attempts: 1,
+                    submitted_when: watching,
+                    ..Delivery::new()
+                },
+            )
+            .expect("no error");
+            (outcome, panes.injected.lock().expect("the log").clone())
+        };
+
+        let (took_it, log) = deliver_onto(Some("hello\u{2502} thinking"));
+        assert!(
+            took_it.is_confirmed(),
+            "a peer whose screen moved AFTER the press submitted it — and the move is only \
+             visible against a baseline read at the press: {took_it:?} with {log:?}",
+        );
+
+        let (absorbed, log) = deliver_onto(None);
+        assert_eq!(
+            absorbed,
+            Delivered::Unsubmitted {
+                attempts: 1,
+                written: Written::of(6),
+                wanted: watching,
+            },
+            "a screen that stopped moving at the press is a prompt sitting in a composer: {log:?}",
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|keys| keys == &&vec!["Enter".to_owned()])
+                .count(),
+            1,
+            "⚠⚠ AND THE SUBMIT IS NEVER PRESSED TWICE. A second Enter onto a composer the first \
+             one emptied asks an empty question, which an agent answers — the module's own hazard, \
+             met from the other side: {log:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **A RUN THAT ENDS INSIDE THE SUBMIT'S WAIT HAS ALREADY SENT THE KEYSTROKE**, and says
+    /// so — [`Delivered::Unwitnessed`], which is not [`Delivered::Stopped`].
+    ///
+    /// The pair is the claim. Both runs are cancelled and the two answers are opposite in the one
+    /// way a caller acts on: the first has typed a prompt and asked nothing, so its supervisor may
+    /// deliver it again; the second has pressed Enter, so the peer may be answering right now and a
+    /// second delivery would be a second question.
+    #[test]
+    fn a_run_cancelled_after_the_submit_says_the_keystroke_went_out() {
+        let watching = SubmittedWhen::Repaints {
+            within: Duration::from_secs(2),
+        };
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let panes = Recorder {
+            // Never moves again after the press, so only the cancel can end the second wait.
+            after_submit: None,
+            cancel_on_submit: Some(Arc::clone(&cancel)),
+            ..Recorder::showing("hello")
+        };
+        let began = Instant::now();
+        let outcome = deliver(
+            &panes,
+            &RunContext::new(cancel),
+            PaneId(1),
+            "hello",
+            &Delivery {
+                echo_timeout: Duration::from_millis(1),
+                attempts: 1,
+                submitted_when: watching,
+                ..Delivery::new()
+            },
+        )
+        .expect("no error");
+        assert_eq!(
+            outcome,
+            Delivered::Unwitnessed {
+                attempts: 1,
+                written: Written::of(6),
+                wanted: watching,
+            },
+            "the run ended in the submit's wait, and the Enter is on the pseudoterminal — so \
+             `nothing was asked` is the one thing this may not say",
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "and it stops INSIDE the wait rather than riding out the contract's window: {:?}",
+            began.elapsed(),
+        );
+        let log = panes.injected.lock().expect("the log").clone();
+        assert_eq!(
+            log.last(),
+            Some(&vec!["Enter".to_owned()]),
+            "the submit really was the last thing sent, which is what makes the answer above \
+             different from `Stopped`: {log:?}",
+        );
+
+        // ⚠ THE TWIN, one moment earlier: cancelled while waiting for the TEXT, where nothing has
+        // been submitted and `Stopped` means exactly what it says.
+        let earlier = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let panes = Recorder {
+            cancel_on_read: Some(Arc::clone(&earlier)),
+            ..Recorder::showing("")
+        };
+        let outcome = deliver(
+            &panes,
+            &RunContext::new(earlier),
+            PaneId(1),
+            "hello",
+            &Delivery {
+                submitted_when: watching,
+                ..Delivery::new()
+            },
+        )
+        .expect("no error");
+        assert_eq!(
+            outcome,
+            Delivered::Stopped {
+                attempts: 1,
+                written: Written::of(5),
+            },
+            "a run cancelled before the press submitted nothing, and its caller may act on that",
+        );
+        assert!(
+            !panes
+                .injected
+                .lock()
+                .expect("the log")
+                .iter()
+                .any(|keys| keys == &vec!["Enter".to_owned()]),
+            "no submit was sent at all",
+        );
+    }
+
+    /// ⚠⚠ **A CONTRACT THIS HOST CANNOT ANSWER IS REFUSED AT ONCE, not waited out.**
+    ///
+    /// [`SubmittedWhen::Stirs`] over a host with no supervisor at all is never satisfiable — there
+    /// is no observation to compare against, now or in two seconds — and spending the window on it
+    /// would be a delay with no information in it. The BOUND is the assertion: a build that polled
+    /// its way to the same answer would take the whole grace, and the number here is a fiftieth of
+    /// it.
+    ///
+    /// ⚠ It is the same direction [`ReadyWhen::Runs`](crate::readiness::ReadyWhen::Runs) takes on a
+    /// host that cannot see the process table — *a question nothing can answer is answered NO* —
+    /// and a caller who meets it wanted [`SubmittedWhen::Repaints`] or nothing at all.
+    #[test]
+    fn a_submit_contract_no_host_can_answer_is_refused_rather_than_waited_out() {
+        let unanswerable = SubmittedWhen::Stirs {
+            within: Duration::from_secs(5),
+        };
+        // ⚠ ITS SCREEN DOES MOVE FOR THE SUBMIT, which is what makes this about the contract
+        // rather than about the pane: `Repaints` would be satisfied here in a millisecond.
+        let panes = Recorder {
+            after_submit: Some("hello, and the peer answered".to_owned()),
+            ..Recorder::showing("hello")
+        };
+        let began = Instant::now();
+        let outcome = deliver(
+            &panes,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            "hello",
+            &Delivery {
+                echo_timeout: Duration::from_millis(1),
+                attempts: 1,
+                submitted_when: unanswerable,
+                ..Delivery::new()
+            },
+        )
+        .expect("no error");
+        let took = began.elapsed();
+        assert_eq!(
+            outcome,
+            Delivered::Unsubmitted {
+                attempts: 1,
+                written: Written::of(6),
+                wanted: unanswerable,
+            },
+            "a pane no supervisor can see never stirs, however loudly its screen moves",
+        );
+        assert!(
+            took < Duration::from_millis(100),
+            "and the answer is immediate: nothing arriving later could change it, so the window is \
+             not spent. Took {took:?} of a five-second contract",
         );
     }
 
@@ -1152,6 +2045,172 @@ mod tests {
         assert!(
             panes.injected.lock().expect("the log").is_empty(),
             "a run cancelled before it began writes nothing",
+        );
+    }
+
+    /// ⚠⚠⚠ **A SUBMIT NO PROGRAM EVER READ USED TO COME BACK AS A DELIVERY** — register item 225,
+    /// and the gate that says it does not any more.
+    ///
+    /// Measured over this fixture's own peers, with the rule that preceded [`SubmittedWhen`]:
+    ///
+    /// | peer | what a delivery said | did the screen move again? |
+    /// |---|---|---|
+    /// | deaf to the submit | `Confirmed { attempts: 1, written: 18 }` in 10.22 ms | never, in 2 s |
+    /// | takes the submit | `Confirmed { attempts: 1, written: 18 }` in 10.22 ms | in 2.10 ms |
+    ///
+    /// **The same answer, to the digit, for the peer that was asked and the peer that was not.**
+    ///
+    /// ⚠ THREE READINGS, and the third is what stops this being a gate about one arm: the SAME deaf
+    /// peer, delivered to by a caller who asked nothing of the submit, must still be `Confirmed` —
+    /// or the fix would have made *"deliver to a peer whose reaction you cannot see"* impossible,
+    /// and `exec cat` is that peer.
+    #[test]
+    fn a_submit_the_peer_never_read_is_not_reported_as_a_delivery() {
+        const PROMPT: &str = "what is 2 plus 2?";
+        /// Short: the SUBJECT spends this whole window before answering, and it is a fixture's
+        /// wait rather than a peer's — nothing here paints slowly.
+        const GRACE: Duration = Duration::from_millis(150);
+
+        let deliver_over = |reacts: Reacts, submitted_when: SubmittedWhen| {
+            let (access, pane) = ready_peer(&takes_a_prompt_of(PROMPT.len(), reacts));
+            let outcome = deliver(
+                &access,
+                &RunContext::uncancellable(),
+                pane,
+                PROMPT,
+                &Delivery {
+                    // ⚠ ONE ATTEMPT. A retry would inject the prompt a second time into a `dd`
+                    // that has already counted its bytes out, which is a different experiment.
+                    attempts: 1,
+                    submitted_when,
+                    ..Delivery::new()
+                },
+            )
+            .expect("a peer that ignores a keystroke is not an error");
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (outcome, screen)
+        };
+
+        let watching = SubmittedWhen::Repaints { within: GRACE };
+        let (subject, subject_screen) = deliver_over(Reacts::Nothing, watching);
+        assert_eq!(
+            subject,
+            Delivered::Unsubmitted {
+                attempts: 1,
+                // 17 bytes of prompt and the Enter after it: the submit is PAID FOR, whatever
+                // became of it.
+                written: Written::of(PROMPT.len() as u64 + 1),
+                wanted: watching,
+            },
+            "⚠⚠⚠ THE PEER IS BLOCKED IN `sleep` WITH THE SUBMIT BYTE UNREAD, so no reading of it \
+             as a delivered question is true. Screen: {subject_screen:?}",
+        );
+        // THE CONTROL WITHIN THE SUBJECT: the text really did arrive, so this is a gate about the
+        // KEYSTROKE and not one that passes because nothing was ever delivered.
+        assert!(
+            subject_screen.contains(PROMPT),
+            "the prompt itself must be plainly on that screen — otherwise this measures the text's \
+             own read-back a second time: {subject_screen:?}",
+        );
+        assert!(
+            subject.is_on_screen(),
+            "and the answer must SAY the text is there, because that is what stops a caller \
+             delivering again on top of it: {subject:?}",
+        );
+
+        let (control, control_screen) = deliver_over(Reacts::Works, watching);
+        assert!(
+            control.is_confirmed(),
+            "⚠⚠⚠ THE CONTROL: a peer that READS the submit and paints must still be confirmed, or \
+             the rule refuses every delivery there is. Got {control:?} over {control_screen:?}",
+        );
+
+        let (unasked, _) = deliver_over(Reacts::Nothing, SubmittedWhen::Unchecked);
+        assert!(
+            unasked.is_confirmed(),
+            "⚠⚠ THE DEFAULT, over the SAME deaf peer: a caller who asks nothing of the submit gets \
+             the answer this module always gave — see `SubmittedWhen::Unchecked`, which exists so \
+             that a peer whose reaction is invisible can still be delivered to: {unasked:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **A SCREEN THAT MOVED IS NOT A TURN THAT STARTED** — the two contracts, told apart by
+    /// the peer that satisfies one and not the other.
+    ///
+    /// The peer here READS the submit and paints one character for it, which is what an agent's
+    /// composer does with a printable key: [`SubmittedWhen::Repaints`] is satisfied and no question
+    /// was asked. Measured live against `claude` before this existed — a coalesced `…prompt…\r`
+    /// read as a paste repaints the composer exactly like a submitted one, which is why register
+    /// item 222's prompt sat unsent under an idle agent for a minute.
+    ///
+    /// So the pane is put under a SUPERVISOR — a stand-in for the daemon's detector, deriving its
+    /// verdict from what the peer PRINTED rather than from a value this test sets by hand — and
+    /// [`SubmittedWhen::Stirs`] asks it. ⚠ The pair in the middle is the whole finding: the same
+    /// delivery, the same screen, opposite answers. The CONTROL (a peer that really does start
+    /// working) is what proves the strict rule is satisfiable at all.
+    #[test]
+    fn a_screen_that_only_repainted_is_not_an_agent_that_stirred() {
+        const PROMPT: &str = "what is 2 plus 2?";
+        const GRACE: Duration = Duration::from_millis(150);
+
+        let deliver_over = |reacts: Reacts, submitted_when: SubmittedWhen| {
+            let (access, pane) =
+                supervised_peer(&takes_a_prompt_of(PROMPT.len(), reacts), Publishes::Plainly);
+            let outcome = deliver(
+                &access,
+                &RunContext::uncancellable(),
+                pane,
+                PROMPT,
+                &Delivery {
+                    attempts: 1,
+                    submitted_when,
+                    ..Delivery::new()
+                },
+            )
+            .expect("a peer that ignores a keystroke is not an error");
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (outcome, screen)
+        };
+
+        let watching = SubmittedWhen::Repaints { within: GRACE };
+        let supervising = SubmittedWhen::Stirs { within: GRACE };
+
+        let (repainted, repainted_screen) = deliver_over(Reacts::Paints, watching);
+        assert!(
+            repainted.is_confirmed(),
+            "⚠ THE RESIDUE `Repaints` DECLARES, MEASURED: a peer that merely paints a character for \
+             the keystroke satisfies it. That is not a defect in the kind — it is why the kind is \
+             the caller's to choose. Got {repainted:?} over {repainted_screen:?}",
+        );
+
+        let (absorbed, absorbed_screen) = deliver_over(Reacts::Paints, supervising);
+        assert_eq!(
+            absorbed,
+            Delivered::Unsubmitted {
+                attempts: 1,
+                written: Written::of(PROMPT.len() as u64 + 1),
+                wanted: supervising,
+            },
+            "⚠⚠⚠ THE SAME PEER AND THE SAME SCREEN, asked the stronger question: it took the \
+             keystroke, painted for it, and never started working — which is a prompt sitting in a \
+             composer. Screen: {absorbed_screen:?}",
+        );
+
+        let (stirred, stirred_screen) = deliver_over(Reacts::Works, supervising);
+        assert!(
+            stirred.is_confirmed(),
+            "⚠⚠⚠ THE CONTROL: a peer whose supervisor publishes a change must be confirmed, or \
+             `Stirs` is a contract nothing can satisfy and the gate above proves nothing. Got \
+             {stirred:?} over {stirred_screen:?}",
+        );
+
+        let (deaf, deaf_screen) = deliver_over(Reacts::Nothing, supervising);
+        assert!(
+            matches!(deaf, Delivered::Unsubmitted { .. }),
+            "and a peer that read nothing at all is refused by this kind too: {deaf:?} over \
+             {deaf_screen:?}",
         );
     }
 

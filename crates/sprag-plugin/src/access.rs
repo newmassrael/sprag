@@ -247,6 +247,32 @@ pub enum PaneError {
         /// How many bytes reached the pseudoterminal across all of them. Paid for, and gone.
         written: u64,
     } = { attempts: 0, written: 0 },
+    /// ⚠⚠ THE PROMPT ARRIVED AND THE SUBMIT AFTER IT SHOWED NOTHING, so the text is sitting in the
+    /// pane and the peer was never asked.
+    ///
+    /// The sibling of [`NeverTook`](Self::NeverTook) ONE KEYSTROKE later, and the two are a pair
+    /// for the reason that one is a pair with [`NeverReady`](Self::NeverReady): each is the same
+    /// run failing at a further point along, and which one a caller meets is what they act on. The
+    /// text never appeared — a peer swallowing input. The text appeared and the submit did nothing
+    /// — a peer that took the keystroke and started nothing, which is what a live agent looks like
+    /// when its composer treats a coalesced `…prompt…\r` as a paste.
+    ///
+    /// ⚠ It carries the CONTRACT that went unsatisfied ([`SubmittedWhen`](crate::deliver::SubmittedWhen))
+    /// for [`NeverReady`](Self::NeverReady)'s reason: *"the pane did not repaint"* is a false
+    /// sentence about a run that was watching the supervisor instead, and the failure text is what
+    /// an agent reads.
+    NeverSubmitted {
+        /// How many injections carried the TEXT before it was read back.
+        attempts: u32,
+        /// How many bytes reached the pseudoterminal, the submit's own among them.
+        written: u64,
+        /// What the caller said would show them the submit had landed.
+        wanted: crate::deliver::SubmittedWhen,
+    } = {
+        attempts: 0,
+        written: 0,
+        wanted: crate::deliver::SubmittedWhen::Repaints { within: std::time::Duration::ZERO },
+    },
     /// ⚠⚠ **THE MACHINE DRIVING THIS RUN COULD NOT BE DRIVEN ON**, and the clause saying why.
     ///
     /// The one arm that is not about the pane, and it is here because this type is what
@@ -475,6 +501,22 @@ impl std::fmt::Display for PaneError {
                      this run's. Two panes answer this with the text plainly arrived: one too \
                      narrow to carry the confirmation on one row, and one whose screen never moved \
                      at all — a peer that took the bytes and painted nothing"
+                )
+            }
+            Self::NeverSubmitted {
+                attempts,
+                written,
+                wanted,
+            } => {
+                write!(
+                    f,
+                    "the prompt reached the pane and the submit after it showed nothing: \
+                     {attempts} injections put {written} bytes on its pseudoterminal, the text was \
+                     read back off a screen this delivery changed, and then the pane {} inside the \
+                     window this run allowed. The prompt is therefore sitting in the pane — a \
+                     composer holding an unsent question — and nothing pressed again, because a \
+                     second submit onto a composer the first one emptied asks an empty one",
+                    wanted.describe(),
                 )
             }
             Self::Undrivable(why) => {

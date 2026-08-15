@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use sprag_plugin::access::WorkspacePaneAccess;
 use sprag_plugin::{
     Attended, Completion, Delivered, Delivery, DoneWhen, KeyStroke, Over, PaneAccess, Reached,
-    Readiness, ReadyWhen, RunContext, deliver,
+    Readiness, ReadyWhen, RunContext, SubmittedWhen, deliver,
 };
 use sprag_terminal::{CommandBuilder, Pane, PaneId, Workspace};
 
@@ -4358,6 +4358,186 @@ fn a_prompt_whose_confirmation_was_already_on_the_screen_still_starts_a_turn() {
         refused.is_empty(),
         "⚠⚠⚠ A PROMPT WAS DELIVERED, REPORTED AS SUCCESS, AND STARTED NO TURN — register item \
          222's live symptom, reproduced. The shape is the finding: {refused:#?}",
+    );
+}
+
+/// ⚠⚠⚠ **WHAT A LIVE AGENT DOES WITH A SUBMIT, AND WHAT A DELIVERY CAN SEE OF IT** — register
+/// item 225, asked of the peer it was written for.
+///
+/// # What is staged, and why it is not item 222's own failure
+///
+/// 222's symptom was a coalesced `…prompt…\r` that `claude` read as a PASTE: the text landed in the
+/// composer, the carriage return with it, and no turn began. That coalescing is fixed — a delivery
+/// is confirmed only against a screen it changed, so the submit is now its own pty read — which
+/// means the failing shape cannot be re-created here on purpose any more.
+///
+/// So what is staged is the OBSERVABLE rather than the mechanism: a delivery that presses **a
+/// printable key instead of Enter**. The composer takes it, repaints for it, and starts nothing —
+/// which is what item 222's pane looked like for sixty seconds, and what a future agent release
+/// could produce again with this workspace's half correct.
+///
+/// # The three readings
+///
+/// * **CONTROL** — Enter, [`SubmittedWhen::Stirs`]. The turn must run, and the delivery must be
+///   `Confirmed`. Without it the two below are compared against nothing.
+/// * **SUBJECT** — the stray key, `Stirs`. Must be [`Delivered::Unsubmitted`], and the agent must
+///   still be at rest.
+/// * **THE WEAKER CONTRACT** — the stray key, [`SubmittedWhen::Repaints`]. Expected to be
+///   CONFIRMED, and that is the point: it is the residue that kind's own doc declares, measured on
+///   the peer it matters for, and the reason the contract is the caller's to choose rather than
+///   this module's to pick.
+///
+/// ⚠ Faults are COLLECTED, not asserted where they are found: which readings disagree is the
+/// finding, and a panic on the first would hide the rest.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn what_a_live_agent_does_with_a_submit_it_was_never_given() {
+    /// How long one of these one-word turns may take.
+    const REPLY_WITHIN: Duration = Duration::from_secs(60);
+    /// A key a composer takes and does nothing with — a submit that is not one.
+    const NOT_A_SUBMIT: &str = "k";
+
+    let live = Live::start("never-submitted");
+    let began = Instant::now();
+    let run = RunContext::uncancellable();
+    let grace = sprag_plugin::DEFAULT_SUBMIT_GRACE;
+
+    let reached = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    )
+    .reached(&live.access, live.pane, &run)
+    .expect("the pane must stay readable");
+    assert_eq!(
+        reached,
+        Reached::Yes,
+        "the agent must be up and at rest before it is spoken to: {}",
+        live.tail(3),
+    );
+    step(began, "the agent is up");
+
+    // ⚠ ONE closure for all three readings, so they differ ONLY in what is pressed and what is
+    // watched for. Three hand-written deliveries would be three instruments.
+    let delivery = |ask: &str, press: &str, submitted_when: SubmittedWhen, label: &str| {
+        let seq_before = live.seq();
+        let screen_before = live.screen();
+        let began_delivery = Instant::now();
+        let delivered = deliver(
+            &live.access,
+            &run,
+            live.pane,
+            ask,
+            &Delivery {
+                confirm: Some(ask.chars().take(40).collect()),
+                // ⚠⚠⚠ `named`, NOT `text`. The first run of this gate pressed
+                // `KeyStroke::text("Enter")` — the five CHARACTERS — and the control's own pane
+                // shows the word `Enter` sitting in the composer behind the prompt. It failed for
+                // the reason it was written to detect, which is what a fixture that types a key
+                // name instead of pressing a key looks like from the inside.
+                then_press: vec![KeyStroke::named(press)],
+                submitted_when,
+                ..Delivery::new()
+            },
+        )
+        .expect("the pane must take the prompt");
+        let took = began_delivery.elapsed();
+        let seq_after = live.seq();
+        step(
+            began,
+            &format!(
+                "{label}: pressed {press:?} watching {submitted_when:?} -> {delivered:?} in \
+                 {took:?}; seq {seq_before:?} -> {seq_after:?}; the screen {} while it waited",
+                if live.screen() == screen_before {
+                    "never moved"
+                } else {
+                    "moved"
+                },
+            ),
+        );
+        (delivered, took)
+    };
+
+    let mut faults: Vec<String> = Vec::new();
+
+    // ── THE CONTROL ────────────────────────────────────────────────────────────────────────────
+    let mut done = Completion::new(DoneWhen::Settles);
+    done.begin(&live.access, live.pane);
+    let (control, control_took) = delivery(
+        "Reply with one word and no tool: what is 1 plus 1 in English?",
+        "Enter",
+        SubmittedWhen::Stirs { within: grace },
+        "control",
+    );
+    let over = done.wait(&live.access, live.pane, REPLY_WITHIN, &run);
+    let answered = live
+        .access
+        .pane_full_text(live.pane)
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("two");
+    step(
+        began,
+        &format!("control: turn ended {over:?}, answered={answered}"),
+    );
+    if !control.is_confirmed() || over != Over::Yes || !answered {
+        faults.push(format!(
+            "⚠⚠⚠ THE CONTROL FAILED, so nothing below is measured against a working delivery: \
+             {control:?} in {control_took:?}, turn {over:?}, answered={answered}. Pane: {}",
+            live.tail(8),
+        ));
+    }
+
+    // ── THE SUBJECT: a submit that is not one, watched by the supervisor ───────────────────────
+    let (subject, subject_took) = delivery(
+        "Reply with one word and no tool: what is 2 plus 2 in English?",
+        NOT_A_SUBMIT,
+        SubmittedWhen::Stirs { within: grace },
+        "subject",
+    );
+    let at_rest = live.seen();
+    if !matches!(subject, Delivered::Unsubmitted { .. }) {
+        faults.push(format!(
+            "⚠⚠⚠ A PROMPT NOBODY SUBMITTED CAME BACK AS {subject:?} in {subject_took:?} — this is \
+             register item 225's whole question, and the answer here is the one it had before the \
+             contract existed. The detector says {at_rest}. Pane: {}",
+            live.tail(8),
+        ));
+    }
+
+    // ── THE WEAKER CONTRACT, over the same peer and the same non-submit ────────────────────────
+    let (weaker, weaker_took) = delivery(
+        "Reply with one word and no tool: what is 3 plus 3 in English?",
+        NOT_A_SUBMIT,
+        SubmittedWhen::Repaints { within: grace },
+        "weaker",
+    );
+    if !weaker.is_confirmed() {
+        faults.push(format!(
+            "⚠⚠ `Repaints` DID NOT accept a keystroke the composer merely absorbed: {weaker:?} in \
+             {weaker_took:?}. That is not a failure of the product — it is this measurement's \
+             premise being wrong about the peer, and the doc that calls it a residue would need \
+             re-writing. Pane: {}",
+            live.tail(8),
+        ));
+    }
+
+    println!(
+        "\n== item 225 / a live {} ==\n  \
+         control (Enter, stirs)     : {control:?} in {control_took:?} -> {over:?}, answered \
+         {answered}\n  \
+         subject ({NOT_A_SUBMIT:?}, stirs)       : {subject:?} in {subject_took:?}\n  \
+         weaker  ({NOT_A_SUBMIT:?}, repaints)    : {weaker:?} in {weaker_took:?}\n  \
+         detector after the subject : {at_rest}\n  the pane:\n{}\n",
+        live.agent,
+        live.tail(16),
+    );
+
+    assert!(
+        faults.is_empty(),
+        "⚠⚠⚠ WHAT A DELIVERY CAN SEE OF A LIVE AGENT'S SUBMIT — the readings that disagreed: \
+         {faults:#?}",
     );
 }
 
