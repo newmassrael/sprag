@@ -470,9 +470,11 @@ impl std::fmt::Display for PaneError {
                 write!(
                     f,
                     "the prompt could not be read back off the pane: {attempts} injections put \
-                     {written} bytes on its pseudoterminal and none of them could be FOUND on it, \
-                     so nothing was submitted and no reply is this run's. A pane too narrow to \
-                     carry the confirmation on one row answers this even when the text arrived"
+                     {written} bytes on its pseudoterminal and none of them CHANGED it into a \
+                     screen carrying the confirmation, so nothing was submitted and no reply is \
+                     this run's. Two panes answer this with the text plainly arrived: one too \
+                     narrow to carry the confirmation on one row, and one whose screen never moved \
+                     at all — a peer that took the bytes and painted nothing"
                 )
             }
             Self::Undrivable(why) => {

@@ -4332,21 +4332,26 @@ fn a_prompt_whose_confirmation_was_already_on_the_screen_still_starts_a_turn() {
         // ⚠⚠⚠ THE MEASUREMENT, COLLECTED RATHER THAN ASSERTED PER SHAPE. Which shapes fail is the
         // finding; a gate that panicked on the first would never report the second, and the
         // difference BETWEEN them is the whole diagnosis.
-        if second_over != Over::Yes || !answered {
+        //
+        // ⚠ THE `Unconfirmed` CASE IS COLLECTED HERE TOO rather than asserted on the spot, for the
+        // same reason: it is the OPPOSITE fault — a rule that refused a repeat delivery would
+        // refuse every turn an outer loop takes after its first — and a gate that panicked on it
+        // would still have measured only one shape.
+        let unconfirmed = matches!(second_delivered, Delivered::Unconfirmed { .. });
+        if second_over != Over::Yes || !answered || unconfirmed {
             refused.push(format!(
                 "{shape}: {} byte(s) over {} line(s) -> {second_over:?}, answered={answered}, \
-                 delivered {second_delivered:?} in {second_took:?}; pane: {}",
+                 delivered {second_delivered:?} in {second_took:?}{}; pane: {}",
                 second.len(),
                 second.lines().count(),
+                if unconfirmed {
+                    " — ⚠ UNCONFIRMED, the opposite fault: a repeat delivery was REFUSED"
+                } else {
+                    ""
+                },
                 live.tail(6),
             ));
         }
-        assert!(
-            !matches!(second_delivered, Delivered::Unconfirmed { .. }),
-            "⚠⚠ {shape}: the delivery must still be CONFIRMABLE. A rule that refused a repeat \
-             delivery would refuse every turn an outer loop takes after its first: \
-             {second_delivered:?}",
-        );
     }
 
     assert!(

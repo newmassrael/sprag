@@ -63,6 +63,12 @@
 //! is a change this cannot tell from the program taking the text. It narrows the hole rather than
 //! closing it, and what closes it is a peer that paints what it read — which every agent CLI does.
 //!
+//! ⚠⚠ **AND IT MAKES THE RETRY HAZARD BELOW REACHABLE AGAIN, which is the honest way round.** A
+//! needle the screen already carried used to end the wait on its first poll, so a peer slower to
+//! paint than [`Delivery::echo_timeout`] never got a second injection — the double-text trade was
+//! being avoided by not waiting rather than by the peer being fast. It is a trade this module has
+//! always declared, and it is now paid where it is owed.
+//!
 //! ## Why this is not a method on `PaneAccess`
 //!
 //! It waits, so it is bounded, so it must be cancellable, so it needs the run-scoped
@@ -108,6 +114,11 @@ pub const DEFAULT_ATTEMPTS: u32 = 3;
 pub struct Delivery {
     /// What must appear on the pane's screen for the text to count as arrived. `None` means the
     /// text itself.
+    ///
+    /// ⚠⚠ **APPEAR, not BE THERE.** A needle the screen was already carrying when the delivery
+    /// began is not evidence — see the module docs' third hazard — so a caller is free to pick a
+    /// fragment their peer prints on every turn without that fragment confirming their next
+    /// delivery before it lands.
     ///
     /// Overridable because an agent's prompt box is a BOX: a long line wraps inside it and the
     /// border characters land between the halves, so the pane's text contains the prompt in pieces
@@ -305,8 +316,10 @@ pub fn deliver(
                 });
             }
             Seen::Yes => {
-                // Only now: the text is on the screen, so a submit submits the text rather than an
-                // empty line. Sent for BOTH on-screen answers — see `Delivered::OnScreenOnly`.
+                // Only now: the text is on a screen THIS DELIVERY CHANGED, so a submit submits the
+                // text rather than an empty line — and, measured live, it is a keystroke of its own
+                // rather than a byte appended to the same unread pty read as the prompt. Sent for
+                // BOTH on-screen answers — see `Delivered::OnScreenOnly`.
                 if !spec.then_press.is_empty() {
                     written += panes.inject(pane, &spec.then_press)?.bytes();
                 }
