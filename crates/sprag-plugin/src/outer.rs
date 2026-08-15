@@ -618,6 +618,9 @@ impl Owed {
                 | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
                 | AiLoopEvent::ReflectApplied
+                | AiLoopEvent::ReviewBegin
+                | AiLoopEvent::ReviewDone
+                | AiLoopEvent::ReviewNone
                 // ⚠ `reflecting --reflect.done-->` reaches `closing`, never here: it is the
                 // agent saying there is nothing left, and what `closing` owes is the END prompt,
                 // which this table answers by the STATE.
@@ -640,6 +643,7 @@ impl Owed {
             | AiLoopState::Screening
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
+            | AiLoopState::Reviewing
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Converged
@@ -677,6 +681,7 @@ impl Owed {
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
+            | AiLoopState::Reviewing
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Converged
@@ -1082,6 +1087,30 @@ pub struct OuterLoop {
     /// would mean publishing a WORK turn's output as the run's account, which is a different claim
     /// than the one the agent was asked to make.
     reported: Option<String>,
+    /// ⚠⚠⚠ **THE NAMES OF THE SESSIONS THIS RUN HAS CLOSED**, oldest first — the only handle
+    /// anything downstream has on a transcript whose pane is gone.
+    ///
+    /// # ⚠⚠⚠ Why the run holds these and [`Session`] cannot
+    ///
+    /// [`Session::identity`] is latched per pane and [`Session::replacing`] deliberately drops it:
+    /// *"a replacement is a different session and must be named afresh"*, which is right, and which
+    /// means the outgoing name reaches nobody. The pane is then closed. **A record whose name was
+    /// never kept is a record nothing can open** — the run cannot ask what its own earlier sessions
+    /// did, because it no longer knows what they were called.
+    ///
+    /// This is [`reported`](Self::reported)'s argument one step further: the sessions are what a
+    /// run has to outlive, so what outlives them lives here.
+    ///
+    /// ⚠⚠ IT IS A LIST OF NAMES AND NOT A SUMMARY, and that is the point. A count, a total or a
+    /// digest computed at replacement time would fix — at the moment of least knowledge — which
+    /// questions can ever be asked. A name is a door: whatever the record holds is still there to
+    /// be counted later, by something that has since learned what to count.
+    ///
+    /// ⚠ Sessions this build could not NAME are absent rather than represented by a placeholder —
+    /// see [`Session::identity`], where `None` is not an error. A reader that must know how many
+    /// sessions there were counts replacements; this answers *which ones can be opened*, and those
+    /// are different questions that a filler entry would silently merge.
+    ended: Vec<String>,
     /// ⚠⚠⚠ **THE RUN IS STOPPING SHORT ON A CEILING THIS MACHINE CANNOT SEE** — set by
     /// [`stop_short`](Self::stop_short) and read into every `judge` the driver raises after it.
     ///
@@ -1166,6 +1195,7 @@ impl OuterLoop {
             claimed: None,
             awaiting: None,
             reported: None,
+            ended: Vec::new(),
             stopping_short: false,
             unasked: false,
         })
@@ -1712,6 +1742,10 @@ impl OuterLoop {
             // the question was delivered by the transition that landed here (`Owed::Reflect`), and
             // what the agent answers is what the replacement session is briefed with.
             AiLoopState::Reflecting => self.reflect(panes, run)?,
+            // ⚠⚠⚠ AND BEFORE THE REPLACEMENT, WHAT THE CLOSED SESSIONS DID — see `reviewing`, and
+            // [`crate::review::ContextReview`] for why this is a machine driven here rather than an
+            // `<invoke>` of the document's.
+            AiLoopState::Reviewing => self.review(),
             AiLoopState::Restarting => self.replace(panes)?,
             AiLoopState::Resuming => self.resume(panes, run)?,
 
@@ -2485,6 +2519,23 @@ impl OuterLoop {
                     .to_owned(),
             )
         })?;
+        // ⚠⚠⚠ THE OUTGOING SESSION IS NAMED BEFORE IT IS LET GO, AND THIS IS THE LAST MOMENT AT
+        // WHICH IT CAN BE. `replacing` answers a session with `identity: None` — correct, because
+        // the replacement really is a different session — and `respawn` closes the pane the name is
+        // recovered from. Between those two the name reaches nobody, which is why every session
+        // this run has closed so far is a transcript nothing can open. See [`Self::ended`].
+        //
+        // ⚠ `identify` is ASKED once more rather than read off its latch. It recovers the name from
+        // the pane's foreground job, so it needs the old pane to still be there and to still have
+        // the agent in front — true here and nowhere after here. A run whose agent held the
+        // foreground only briefly may not have been named yet, and this is its last chance.
+        //
+        // ⚠ `None` pushes nothing. A session this build cannot name is one whose record cannot be
+        // opened either, so a placeholder would only promise a door that does not exist.
+        let closing = self.driving.identify(panes).map(str::to_owned);
+        if let Some(name) = closing {
+            self.ended.push(name);
+        }
         // ⚠⚠⚠ ONE ASSIGNMENT, and that is the point — see [`Session`]. Setting the pane and leaving
         // the barrier behind is a defect NO STAND-IN IN THIS CRATE CATCHES (measured, as a mutation
         // that left every gate green), so the shape is what forbids it: `replacing` answers a WHOLE
@@ -2497,6 +2548,44 @@ impl OuterLoop {
         // one's.
         self.noticed = None;
         Ok(AiLoopEvent::SessionReplaced.into())
+    }
+
+    /// **LOOK AT WHAT THIS RUN'S OWN CLOSED SESSIONS DID** — `reviewing`'s effect.
+    ///
+    /// # ⚠⚠⚠ The review is BUILT HERE AND DROPPED HERE, and that is the lifetime guarantee
+    ///
+    /// `context_review.scxml` was written to be `<invoke>`d, where leaving the state cancels the
+    /// child. That is not available (see [`crate::review::ContextReview`]), so the property has to
+    /// be held some other way — and a field on this struct would be the weak way: a review left
+    /// there would outlive the state, and the next reader would have to remember it was stale.
+    ///
+    /// **Nothing stores it.** The value is created, run and dropped inside one effect, so a review
+    /// that outlived `reviewing` is not something a gate has to catch — it is something no caller
+    /// can express. That is this workspace's own preference for a SHAPE over a check.
+    ///
+    /// # ⚠⚠ Every failure here is `review.none`, and the document has no other edge
+    ///
+    /// A run that could not open a script session, could not read a record, or found nothing worth
+    /// naming has learned the same thing as far as the loop is concerned: there is no line to brief
+    /// the next session with. None of them is a reason to stop a run that was working — see
+    /// `reviewing`, which deliberately has no edge to `failed`.
+    fn review(&mut self) -> Raise {
+        let Some(mut review) = crate::review::ContextReview::new(Arc::clone(&self.script)) else {
+            return AiLoopEvent::ReviewNone.into();
+        };
+        // ⚠ The CLOSED sessions only. The one being driven has not ended, and counting a transcript
+        // that is still being written would report a habit that is halfway through happening.
+        match review.run(&self.ended).ending {
+            crate::review::Ending::Carried(line) if !line.trim().is_empty() => Raise::carrying(
+                AiLoopEvent::ReviewDone,
+                // ⚠ THE TERMINATOR IS THE DRIVER'S because the slot's contract is the document's:
+                // `carried` is composed into `start_prompt` with no separator of its own, exactly
+                // as `standing` is, so a line handed over without one would run into the sentence
+                // after it.
+                serde_json::json!({ "carried": format!("{}\n", line.trim()) }),
+            ),
+            _ => AiLoopEvent::ReviewNone.into(),
+        }
     }
 
     /// **WAIT FOR THE REPLACEMENT SESSION'S AGENT TO COME UP** — `resuming`'s effect, and the same
