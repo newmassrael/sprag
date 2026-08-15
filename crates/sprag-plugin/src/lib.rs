@@ -38,6 +38,28 @@ pub(crate) mod sm {
         #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
         include!(concat!(env!("OUT_DIR"), "/ai_loop_sm.rs"));
     }
+
+    // ⚠⚠⚠ THE `<invoke>` PROBE, and its MODULE NAMES ARE A CONTRACT rather than a preference: the
+    // generated parent reaches its child as `super::probe_child_sm::ProbeChildPolicy`, so a
+    // statechart that invokes another must be included under `<stem>_sm`. The three above are named
+    // for their documents because none of them invokes anything; the day one does, it joins this
+    // convention. See `probe_parent.scxml` for what is being asked and why it is asked before
+    // anything is built on it.
+    pub(crate) mod probe_child_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/probe_child_sm.rs"));
+    }
+
+    pub(crate) mod probe_parent_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/probe_parent_sm.rs"));
+    }
+
+    // ⚠ `<stem>_sm` because `ai_loop.scxml` will reach it as a child — see the note above.
+    pub(crate) mod context_review_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/context_review_sm.rs"));
+    }
 }
 
 pub mod access;

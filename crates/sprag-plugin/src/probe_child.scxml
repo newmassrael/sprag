@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A CHILD SESSION, INVOKED BY probe_parent.scxml.
+
+  It exists to answer ONE question about this tree: does `<invoke>` compile and
+  run here, and does a child's `<donedata>` reach the parent as `_event.data`?
+  The pinned SCE's own invoke tests are C++ AOT ones; nothing on the Rust path
+  this workspace uses has ever driven one.
+
+  Why the question is worth a document: the analysis a loop needs before it can
+  improve its own context is a PROCESS with steps of its own, and a process with
+  steps is a machine rather than a function. If a parent can own a child's
+  lifecycle, that analysis is its own file which somebody can read and change
+  without touching the loop.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_child"
+       datamodel="ecmascript"
+       initial="running">
+
+  <datamodel>
+    <data id="answer" expr="'the child ran'"/>
+  </datamodel>
+
+  <state id="running">
+    <onentry>
+      <send event="finish"/>
+    </onentry>
+    <transition event="finish" target="over"/>
+  </state>
+
+  <final id="over">
+    <donedata>
+      <param name="carried" expr="answer"/>
+    </donedata>
+  </final>
+</scxml>

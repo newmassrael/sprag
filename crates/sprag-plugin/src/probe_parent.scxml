@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A PARENT THAT INVOKES A CHILD SESSION — the smallest thing that can answer
+  whether `<invoke>` is usable in this tree.
+
+  ⚠⚠⚠ WHY THIS IS ASKED BEFORE ANYTHING IS BUILT ON IT. This workspace's own
+  rule is that a shape no gate has driven is not known to work here: the
+  `ai_loop` document carries the same warning about `===`, `JSON.stringify` and
+  template literals, every one of which the engine's NAME promises and the
+  pinned engine has never been shown to do. `<invoke>` is exactly that kind of
+  promise — the generator has invoke filters and the conformance suite has
+  invoke tests, and both of those are facts about SOMEWHERE ELSE until a
+  document in THIS crate compiles and runs one.
+
+  What is being asked, precisely:
+
+    1. does a document carrying `<invoke type="scxml" src="...">` compile at all
+       through this crate's build script;
+    2. does the child actually run;
+    3. does the child's `<donedata>` arrive at the parent as `_event.data` on
+       `done.invoke.<id>`.
+
+  Answering NO to any of them is as useful as YES: it is the difference between
+  designing a sub-machine and filing an upstream ask.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_parent"
+       datamodel="ecmascript"
+       initial="asking">
+
+  <datamodel>
+    <data id="carried" expr="''"/>
+  </datamodel>
+
+  <state id="asking">
+    <invoke type="scxml" src="probe_child.scxml" id="probe"/>
+    <transition event="done.invoke.probe" target="heard">
+      <assign location="carried" expr="_event.data.carried"/>
+    </transition>
+  </state>
+
+  <final id="heard"/>
+</scxml>

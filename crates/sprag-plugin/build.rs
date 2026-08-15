@@ -34,7 +34,18 @@
 use std::path::Path;
 
 /// The control statecharts, by file stem (the generated file is `<stem>_sm.rs`).
-const STATECHARTS: &[&str] = &["orchestration", "session", "ai_loop"];
+const STATECHARTS: &[&str] = &[
+    "orchestration",
+    "session",
+    "ai_loop",
+    // ⚠⚠ A PROBE, and it is in the shipped list on purpose: the question it asks is *does
+    // `<invoke>` compile and run in THIS crate*, and a document compiled by some other harness
+    // would answer about that harness. See `probe_parent.scxml`.
+    "probe_child",
+    "probe_parent",
+    // ⚠⚠ WHAT A RUN LEARNED ABOUT ITS OWN SESSIONS — a child machine, and inert until it is here.
+    "context_review",
+];
 
 fn main() {
     let sources: Vec<String> = STATECHARTS
