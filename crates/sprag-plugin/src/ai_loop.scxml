@@ -632,6 +632,14 @@
       ⚠ It is read by the DRIVER, in Rust, and never by a `cond` here: `==` over
       this datamodel is unverified (see `judged_rules`), and a guard that
       compared strings would be the first place to find that out.
+
+      ⚠⚠⚠ AND IT REACHES A PERSON NOW, WHICH IS THE HALF THAT WAS MISSING. The
+      paragraph above says the three need different ENDINGS and that was all this
+      variable ever bought: the driver read it to decide one of them, and a reader
+      of the run got the same six words whichever had fired. It is now also the
+      journal's word for the edge into `reflecting` — see the driver's
+      `ReflectReason`, whose arms are these three and no others, held against this
+      list by a gate that reads this file.
     -->
     <data id="reflect_reason" expr="''"/>
   </datamodel>
@@ -1147,11 +1155,26 @@
 
       ⚠ A SEPARATE TRANSITION from the budget one rather than an `or` in its
       guard, because they are different reasons and a reader of this document
-      should meet them separately. ⚠⚠ WHAT THAT DOES NOT BUY: a run's TRACE
-      cannot tell them apart — both raise `judge` and land in `reflecting`, so
-      the walk reads identically either way. Which one fired is not published
-      anywhere, and saying so here is cheaper than a comment that implies it is.
-      The order is therefore for the reader, not for the machine.
+      should meet them separately.
+
+      ⚠⚠⚠ AND A RUN'S TRACE NOW TELLS THEM APART, WHICH IT DID NOT. This comment
+      used to end *"which one fired is not published anywhere, and saying so here
+      is cheaper than a comment that implies it is"* — and it was true for as long
+      as both edges existed. Every one of these three assignments was written and
+      read by nothing but the livelock guard in `reflecting`, so three runs with
+      three different remedies — *look at the checkpoint the agent chose*, *look
+      at the instruction and the dialog behind it*, *nothing, this is the loop's
+      own housekeeping* — left journals that were byte-for-byte identical on the
+      line that mattered.
+
+      The driver reads `reflect_reason` ON THE EDGE THAT ENTERS `reflecting` and
+      puts it in that line. **So the assignments below are load-bearing**: an edge
+      into this state that assigns nothing does not merely leave the walk silent,
+      it reports the PREVIOUS reflection's cause, because nothing clears the
+      variable on entry. A gate reads this file to hold that
+      (`every_edge_into_reflecting_says_why_in_a_word_this_driver_knows`) and
+      three runs hold what each word means
+      (`the_walk_says_why_a_run_stopped_to_reflect`).
     -->
     <transition event="judge" cond="screened &gt; screened_carried" target="reflecting">
       <assign location="reflect_reason" expr="'instruction'"/>

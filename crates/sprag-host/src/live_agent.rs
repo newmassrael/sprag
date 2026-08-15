@@ -662,18 +662,33 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 raised,
                 to,
                 found,
-                ..
+                because,
+                spent: _,
             } => {
-                // ⚠⚠ THE REFUSAL A PASS ARRIVED AT GOES INTO THE LINE, and this is the harness
-                // whose reader is a PERSON watching a live agent. Register item 240 is about the
-                // plugin's journal; this composes its own sentence one layer down, so the same
-                // edge would have read `Working --TurnBlocked--> Screening` and nothing more the
-                // moment a real dialog came up. ⚠ The `..` above is why it had to be looked for:
-                // a new field on `Pumped::Moved` reaches a wildcard pattern silently.
+                // ⚠⚠ THE REFUSAL A PASS ARRIVED AT GOES INTO THE LINE, and so does WHY IT TOOK THE
+                // EDGE, and this is the harness whose reader is a PERSON watching a live agent.
+                // Register items 240 and 261 are about the plugin's journal; this composes its own
+                // sentence one layer down, so the same edges would have read
+                // `Working --TurnBlocked--> Screening` and `Judging --Judge--> Reflecting` and
+                // nothing more the moment a real dialog or a real reflection came up.
+                //
+                // ⚠⚠⚠ THE WILDCARD IS GONE, which is half of register item 263: this pattern used
+                // to end in `..`, so 240's new field reached it in SILENCE while the compiler
+                // stopped every exhaustive site in the workspace. A wildcard pattern is a list
+                // with no glob one layer down (R376/R381's rule, in a `match` rather than in a
+                // `const`), and `spent: _` is the same fact declared where a reader meets it. ⚠ The
+                // other half — that this is a SECOND composer of `AiLoop::walked`'s sentence, kept
+                // in step by nobody — is still owed.
                 let arrived = found
                     .map(|unanswered| format!(" — {}", unanswered.noted()))
                     .unwrap_or_default();
-                step(began, &format!("{from:?} --{raised:?}--> {to:?}{arrived}"));
+                let cause = because
+                    .map(|reason| format!(" — {}", reason.noted()))
+                    .unwrap_or_default();
+                step(
+                    began,
+                    &format!("{from:?} --{raised:?}--> {to:?}{cause}{arrived}"),
+                );
                 walked.push((from, raised, to));
 
                 if to == AiLoopState::Priming {

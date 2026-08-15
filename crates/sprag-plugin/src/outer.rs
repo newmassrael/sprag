@@ -243,15 +243,6 @@ const NORTH_STAR_MARKER: &str = "north_star_marker";
 /// `judge` transition reached `reflecting`. See the document, and register item 179.
 const REFLECT_REASON: &str = "reflect_reason";
 
-/// [`REFLECT_REASON`]'s value when the agent has just SAID THE MILESTONE IS REACHED.
-///
-/// ⚠⚠ The one reason whose reflection may not go back to work. A reflection asked because the
-/// budget came round, or because a standing instruction fired, returns to a milestone that is still
-/// ahead of the run; this one returns to a milestone the agent has just declared BEHIND it — so a
-/// reflection that names no successor has to end the run rather than ask for it again. Spelled here
-/// and in the document, and the two are held together by `a_reached_milestone_asks_what_is_next`.
-const REACHED: &str = "milestone";
-
 /// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
 /// the prompt that asks for it — see [`OuterLoop::proposed`].
 ///
@@ -737,6 +728,115 @@ impl Raise {
     }
 }
 
+/// **WHY A RUN STOPPED TO REFLECT** — the word the document assigns on whichever `judge`
+/// transition reached `reflecting`.
+///
+/// # ⚠⚠⚠ Three edges, one arrow, and the reason was written down and never read
+///
+/// `judging` has three transitions into `reflecting` and they are three different facts about a
+/// run: the agent said the milestone was REACHED, a standing instruction FIRED that the prompts do
+/// not carry yet, or the reflection BUDGET came round. Each one wants something different from
+/// whoever reads the run — *look at what the agent chose next*, *look at the instruction and at
+/// the dialog that produced it*, *nothing, this is the loop's own housekeeping* — and all three
+/// were rendered `Judging --Judge--> Reflecting` and nothing more.
+///
+/// The document already knew. Each of those transitions carries an
+/// `<assign location="reflect_reason">`, and `ai_loop.scxml` says so about itself in the comment
+/// above them: *"a run's TRACE cannot tell them apart … which one fired is not published
+/// anywhere."* So the fact was in the datamodel with one reader — the livelock guard that stops a
+/// reached milestone being asked for twice — and no way out to a person. **Register item 261,
+/// which is item 49's shape: a value computed, stored, and read by nobody.**
+///
+/// # ⚠⚠ Why a closed vocabulary rather than the string
+///
+/// The words are the DOCUMENT's, not the wire's, which is why this type says
+/// [`word`](Self::word) rather than `wire_str`: nothing publishes a `reflect_reason` as a key or a
+/// value anywhere: it reaches a reader inside a journal LINE, which is a string answer getting
+/// richer (R374). What a type buys over the string is that the driver's own livelock guard stops
+/// comparing prose — *is this reflection the one that may not go back to work* is now
+/// `== Self::Milestone` — and that a fourth `<assign>` in the document is a RED rather than a word
+/// nobody renders. See `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReflectReason {
+    /// **THE AGENT SAID THE MILESTONE WAS REACHED**, so the reflection is being asked what the next
+    /// one is.
+    ///
+    /// ⚠⚠ The one reason whose reflection may not go back to work. A reflection asked because the
+    /// budget came round, or because a standing instruction fired, returns to a milestone that is
+    /// still ahead of the run; this one returns to a milestone the agent has just declared BEHIND
+    /// it — so a reflection that names no successor has to end the run rather than ask for it
+    /// again. Spelled here and in the document, and the two are held together by
+    /// `a_reached_milestone_asks_what_is_next`.
+    Milestone,
+    /// **A STANDING INSTRUCTION FIRED THAT THE PROMPTS DO NOT CARRY YET** — `screening` refused a
+    /// call and said what to do instead, and adopting that means composing it into the prompts,
+    /// which happens in `priming`, which is reached only through a restart.
+    ///
+    /// ⚠ A correctness edge and not a budget: measured on a six-turn run, ONE instruction against
+    /// SIX re-issues of the milestone it overrides.
+    Instruction,
+    /// **THE REFLECTION BUDGET CAME ROUND** — `turns_since_reflect` reached `reflect_every` and
+    /// nothing in particular happened.
+    Budget,
+}
+
+impl ReflectReason {
+    /// Every arm, so the document's words and the readers below are one list.
+    pub const ALL: [Self; 3] = [Self::Milestone, Self::Instruction, Self::Budget];
+
+    /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
+    ///
+    /// ⚠ `ai_loop.scxml` is the authority and this is the transcription; the two are held together
+    /// by a gate that reads the document rather than by anybody remembering.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Milestone => "milestone",
+            Self::Instruction => "instruction",
+            Self::Budget => "budget",
+        }
+    }
+
+    /// The reason named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.word() == word)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// word, so a caller that needs to match gets it from [`word`](Self::word).
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Milestone => {
+                "the agent said the milestone was reached, so this reflection is asking what the \
+                 next one is — and a run whose agent names no successor ends here rather than \
+                 going back to work it has just declared finished"
+            }
+            Self::Instruction => {
+                "a standing instruction fired during a screened dialog and the prompts do not \
+                 carry it yet, so the run is reflecting NOW rather than at the next multiple of \
+                 `reflect_every` — read the instruction and the dialog that produced it"
+            }
+            Self::Budget => {
+                "the reflection budget came round (`turns_since_reflect` reached `reflect_every`) \
+                 and nothing else made this happen — the loop's own housekeeping"
+            }
+        }
+    }
+
+    /// **THE DOCUMENT'S WORD AND THE WHOLE SENTENCE**, for a reader who has only this one line.
+    ///
+    /// ⚠⚠⚠ Its reason is [`Unanswered::noted`](crate::consent::Unanswered::noted)'s, one state
+    /// over: the step that walks `judge` into `reflecting` answers `Verdict::Continue` — the
+    /// machine is mid-run — so the LINE is the publication, and a reader scanning a walk for
+    /// *which of these three stopped the work* has nothing to scan for unless the word is in it.
+    #[must_use]
+    pub fn noted(self) -> String {
+        format!("{}: {}", self.word(), self.describe())
+    }
+}
+
 /// **WHAT ONE PASS OF THE DRIVER DID** — and, when it could not, exactly what it was asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pumped {
@@ -786,6 +886,27 @@ pub enum Pumped {
         /// it. ⚠ Two identical refusals in a row are one finding and are reported once, which is
         /// what stops a paused run writing its reason into every poll of its own wait.
         found: Option<crate::consent::Unanswered>,
+        /// **WHY THIS PASS'S EDGE WAS TAKEN**, for the one state several edges reach with several
+        /// different meanings — [`None`] for every other pass. See [`ReflectReason`].
+        ///
+        /// # ⚠⚠⚠ Read ON ENTRY, and why that is not [`found`](Self::Moved::found)'s diff
+        ///
+        /// `reflect_reason` is a datamodel variable, so it is a LEVEL exactly as
+        /// [`OuterLoop::noticed`] is, and reading it on any other pass would write *the loop
+        /// reflected because its budget came round* onto every step of the restart that followed —
+        /// R396's thirteen identical lines, one round later.
+        ///
+        /// ⚠⚠ **BUT A DIFF WOULD BE WRONG HERE, WHERE IT IS RIGHT THERE**, and the difference is
+        /// worth reading twice. A refusal is one the loop goes on HOLDING, so the interesting
+        /// moment is the change. A reflection reason belongs to ONE edge and is rewritten by every
+        /// edge that lands here, so two reflections in a row for the same reason — the ordinary
+        /// shape of a long run, whose budget comes round again and again — are two edges and a
+        /// diff would report the second as nothing at all. **The question is not *did this change*
+        /// but *did this pass take an edge that assigns it*.**
+        ///
+        /// ⚠ Which edges those are is not a list out here: every transition into `reflecting`
+        /// assigns the variable, and a gate over the document holds that true.
+        because: Option<ReflectReason>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -1787,13 +1908,34 @@ impl OuterLoop {
             Some(now) if held.as_ref() != Some(now) => Some(now.clone()),
             _ => None,
         };
+        // ⚠⚠⚠ ON THE EDGE THAT ENTERS `reflecting`, AND ON NO OTHER PASS — see
+        // [`Pumped::Moved`]'s `because` for why this is an entry test rather than the diff one
+        // line above it. `from != to` is what keeps a `Null` look inside `reflecting` (and the
+        // state's own re-entry, if the document ever grows one) off this channel.
+        let because = if from != to && to == AiLoopState::Reflecting {
+            self.reflecting_because()
+        } else {
+            None
+        };
         Ok(Pumped::Moved {
             from,
             raised: event,
             to,
             spent,
             found,
+            because,
         })
+    }
+
+    /// **WHY THE MACHINE IS IN `reflecting`** — the word its incoming transition assigned, read
+    /// back through the closed vocabulary that renders it.
+    ///
+    /// [`None`] for a datamodel that has stopped answering, and — unreachably, by the document
+    /// gate — for a word this driver has no arm for. ⚠ Not a failure either way: the cost is a
+    /// journal line that says less, where `Noticed::Undrivable` would end a run that is otherwise
+    /// going perfectly well over a fact nobody has yet acted on.
+    fn reflecting_because(&self) -> Option<ReflectReason> {
+        ReflectReason::named(&self.text_of(REFLECT_REASON)?)
     }
 
     /// **THE REFUSAL THIS LOOP IS HOLDING**, or [`None`] when its notice is anything else — the one
@@ -2405,11 +2547,11 @@ impl OuterLoop {
         // exists to prevent (see [`REACHED`]). ⚠ It is the SAFE direction as well as the terminating
         // one: the thing the caller asked for was met, so ending reports the truth, where continuing
         // would report a budget running out on work nobody had left.
-        if decided.is_none()
-            && self
-                .text_of(REFLECT_REASON)
-                .is_some_and(|reason| reason == REACHED)
-        {
+        // ⚠ THROUGH THE SAME VOCABULARY THE JOURNAL RENDERS, not a second spelling of the word:
+        // this guard and `Pumped::Moved`'s `because` are two readers of one datamodel variable, and
+        // a document that respelled it would take them both out in the compile rather than leaving
+        // this one quietly matching nothing. See [`ReflectReason`].
+        if decided.is_none() && self.reflecting_because() == Some(ReflectReason::Milestone) {
             return Ok(AiLoopEvent::ReflectDone.into());
         }
         // ⚠⚠ NOTHING NEW AND NOTHING LEARNED, so a restart would throw away an agent's whole
@@ -3466,6 +3608,123 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **EVERY EDGE INTO `reflecting` SAYS WHY, IN A WORD THIS DRIVER HAS AN ARM FOR** —
+    /// register item 261's other half, held against the document itself.
+    ///
+    /// # ⚠⚠⚠ Why this reads the `.scxml` rather than driving the machine
+    ///
+    /// `the_walk_says_why_a_run_stopped_to_reflect` drives three runs and proves every arm of
+    /// [`ReflectReason`] is REACHABLE. What no run can prove is the other direction: that the
+    /// document has not grown a FOURTH way into `reflecting` whose word this driver has no arm
+    /// for, or one that assigns nothing at all. Such an edge is silent by construction — the
+    /// reason reads back as [`None`], the journal line loses its clause, and every existing gate
+    /// stays green because none of them takes that edge.
+    ///
+    /// **That is the shape this workspace keeps paying for: a list with no glob decides alone**
+    /// (R376/R381). The list here is `ReflectReason::ALL`, the authority is `ai_loop.scxml`, and
+    /// the only thing that can hold them together is a reader of the document.
+    ///
+    /// ⚠⚠ It asserts THREE facts, and each closes a hole the others cannot:
+    ///
+    /// 1. **Every transition into `reflecting` carries an assignment.** An edge that assigns
+    ///    nothing leaves the variable holding the PREVIOUS reflection's reason, so the journal
+    ///    would not merely be silent — it would name the wrong cause, confidently.
+    /// 2. **Every word it assigns is one this driver knows.** A respelling reaches the walk AND
+    ///    the livelock guard that stops a reached milestone being asked for twice.
+    /// 3. **And every word this driver knows is one the document assigns**, so an arm that no edge
+    ///    can produce is a red rather than prose nothing renders — [`Pumped::Unbuilt`]'s lesson
+    ///    (register item 260), applied before the fact rather than four rounds after it.
+    #[test]
+    fn every_edge_into_reflecting_says_why_in_a_word_this_driver_knows() {
+        /// The authority. ⚠ Read as TEXT: what is being asked is what an author wrote, and the
+        /// compiled machine cannot answer *which transitions exist and what each one assigns*.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The attribute that names an edge arriving at the state in question.
+        const INTO: &str = "target=\"reflecting\"";
+        /// And the one that publishes its cause.
+        const ASSIGNS: &str = "location=\"reflect_reason\"";
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        // Each edge into `reflecting`, as (the line an author would open, what it assigns).
+        let mut edges: Vec<(usize, Option<&str>)> = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            if !line.contains(INTO) {
+                continue;
+            }
+            // ⚠ The transition's own body, ending at its close tag — tolerant of the assignment
+            // moving or gaining siblings, and deliberately NOT of a self-closing element, which
+            // can hold no assignment at all and is the defect this looks for.
+            let body = lines[at + 1..]
+                .iter()
+                .take_while(|body| !body.contains("</transition>"));
+            let assigned = if line.trim_end().ends_with("/>") {
+                None
+            } else {
+                body.filter_map(|body| body.split_once(ASSIGNS))
+                    .find_map(|(_, rest)| rest.split_once("expr=\"'"))
+                    .and_then(|(_, word)| word.split_once("'\""))
+                    .map(|(word, _)| word)
+            };
+            edges.push((at + 1, assigned));
+        }
+
+        // ── THE CONTROL: the document really does have edges into that state ──
+        assert!(
+            edges.len() > 1,
+            "⚠⚠⚠ the control: `ai_loop.scxml` must have SEVERAL transitions carrying {INTO}, or \
+             this gate is holding a document that no longer has the ambiguity register item 261 is \
+             about — and the answer then is to delete it and say so, not to leave it passing. \
+             Found {edges:?}",
+        );
+
+        // ── 1. EVERY ONE OF THEM SAYS WHY ──
+        let silent: Vec<usize> = edges
+            .iter()
+            .filter(|(_, assigned)| assigned.is_none())
+            .map(|(line, _)| *line)
+            .collect();
+        assert!(
+            silent.is_empty(),
+            "⚠⚠⚠ REGISTER ITEM 261: `ai_loop.scxml` line(s) {silent:?} take an edge into \
+             `reflecting` and assign no {ASSIGNS}. `reflect_reason` is not cleared on entry, so \
+             such an edge does not merely leave the walk silent — the run reports the PREVIOUS \
+             reflection's cause on this one. Add the assignment, and an arm to `ReflectReason` if \
+             the reason is a new one",
+        );
+
+        // ── 2. AND IN A WORD THIS DRIVER HAS AN ARM FOR ──
+        let unknown: Vec<(usize, Option<&str>)> = edges
+            .iter()
+            .filter(|(_, assigned)| {
+                assigned.is_none_or(|word| ReflectReason::named(word).is_none())
+            })
+            .copied()
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "⚠⚠⚠ the document assigns a `reflect_reason` this driver cannot read back: \
+             {unknown:?}. `ReflectReason::named` answers `None` for it, so the journal line loses \
+             its cause AND the livelock guard that keeps a reached milestone from being asked for \
+             twice stops matching — silently, in both places. Known words: {:?}",
+            ReflectReason::ALL.map(ReflectReason::word),
+        );
+
+        // ── 3. AND EVERY WORD THIS DRIVER KNOWS IS ONE THE DOCUMENT ASSIGNS ──
+        let authored: std::collections::BTreeSet<&str> =
+            edges.iter().filter_map(|(_, assigned)| *assigned).collect();
+        let known: std::collections::BTreeSet<&str> =
+            ReflectReason::ALL.iter().map(|it| it.word()).collect();
+        assert_eq!(
+            authored, known,
+            "⚠⚠⚠ AND THE OTHER DIRECTION: an arm of `ReflectReason` that no transition in \
+             `ai_loop.scxml` assigns is an arm nothing can ever produce — prose, a `describe` \
+             nobody renders, and a reader who goes looking for a cause that cannot happen. That is \
+             `Pumped::Unbuilt`'s finding (register item 260) arriving before the fact instead of \
+             four rounds after it: decide whether the arm should exist, and say so where the type \
+             is",
+        );
+    }
+
     /// ⚠⚠⚠ **THE LOOP STOPS ON A WORD, AND SOMETHING HAS TO ASK THE AGENT FOR IT.**
     ///
     /// `judging`'s first guard is `_event.data.done`, which the driver answers by looking for
@@ -3861,6 +4120,8 @@ mod tests {
                 // about somebody's dialog — so this pass arrived at none, and the journal line for
                 // it carries no reason beyond the edge itself.
                 found: None,
+                // ⚠ AND IT DID NOT ENTER `reflecting`, which is the only edge that carries one.
+                because: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
              own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
@@ -4248,6 +4509,7 @@ mod tests {
                     to,
                     spent,
                     found,
+                    because,
                 } => {
                     spent_total += spent;
                     // ⚠ A HAPPY PATH ARRIVES AT NO REFUSAL, and this is where that stops being an
@@ -4258,6 +4520,19 @@ mod tests {
                         "⚠⚠ {from:?} --{raised:?}--> {to:?} arrived at a refusal, so this is no \
                          longer the unobstructed run the assertions below are about. Walked \
                          {walked:?}",
+                    );
+                    // ⚠⚠ AND THE ONE REFLECTION IT DOES MAKE IS THE MILESTONE'S. This brief's
+                    // `reflect_every` equals its `max_turns` and this peer asks nothing, so
+                    // neither the budget guard nor the standing-instruction one can fire — the
+                    // agent saying the marker is the only thing that can reach `reflecting`, and
+                    // the reflection then names no successor and ends the run through `closing`.
+                    // A pass reporting any OTHER cause means some guard fired that this walk's
+                    // assertions do not describe.
+                    assert!(
+                        because.is_none_or(|reason| reason == ReflectReason::Milestone),
+                        "⚠⚠ {from:?} --{raised:?}--> {to:?} says the run stopped to reflect \
+                         because {because:?}, and the only reason available to this brief is a \
+                         reached milestone. Walked {walked:?}",
                     );
                     walked.push((from, raised, to));
                 }

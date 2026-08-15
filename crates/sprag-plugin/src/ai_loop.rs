@@ -273,21 +273,45 @@ impl AiLoop {
     /// arm asserting that would be an arm no production path can reach (R373 turned round, register
     /// item 247's argument). If one ever does, a reader sees a look that says it found something,
     /// which is a visible contradiction rather than a silent loss.
+    ///
+    /// # ⚠⚠⚠ AND AN EDGE IS NOT ITS OWN CAUSE EITHER — register item 261
+    ///
+    /// The same finding one state over, and the document says it about itself: `judging` has THREE
+    /// transitions into `reflecting` — the milestone was reached, a standing instruction fired, the
+    /// budget came round — and every one of them wrote `Judging --Judge--> Reflecting`. Three
+    /// causes, three remedies, one arrow; *"which one fired is not published anywhere"* was a
+    /// comment in `ai_loop.scxml` for as long as the edges existed, while the fact itself sat in
+    /// the datamodel under `reflect_reason` with nothing but a livelock guard reading it.
+    ///
+    /// So a pass that ENTERED `reflecting` says why — [`Pumped::Moved`]'s `because`, which is a
+    /// [`ReflectReason`](crate::outer::ReflectReason) and not a level, and whose doc holds why an
+    /// ENTRY test rather than 240's diff is the right reader for a variable each edge rewrites.
+    ///
+    /// ⚠⚠ **THE TWO FACTS ARE APPENDED SEPARATELY AND IN A FIXED ORDER**, cause before finding: the
+    /// first says why the arrow was drawn and the second what the pass ran into on the way. They
+    /// are disjoint today — the transition into `reflecting` delivers a prompt, which CLEARS the
+    /// notice, so nothing can be arrived at on it — and this composes both anyway rather than
+    /// choosing, because a line that silently dropped one of two true things is the failure this
+    /// whole function keeps being about.
     fn walked(
         from: AiLoopState,
         raised: AiLoopEvent,
         to: AiLoopState,
         found: Option<&crate::consent::Unanswered>,
+        because: Option<crate::outer::ReflectReason>,
     ) -> String {
-        let step = if raised == AiLoopEvent::Null {
+        let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
         } else {
             format!("{from:?} --{raised:?}--> {to:?}")
         };
-        match found {
-            Some(unanswered) => format!("{step} — {}", unanswered.noted()),
-            None => step,
+        if let Some(reason) = because {
+            note = format!("{note} — {}", reason.noted());
         }
+        if let Some(unanswered) = found {
+            note = format!("{note} — {}", unanswered.noted());
+        }
+        note
     }
 
     /// Whether `state` is one of the document's five finals.
@@ -514,6 +538,7 @@ impl Plugin for AiLoop {
                 to,
                 spent,
                 found,
+                because,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
                 // is reported once. The barrier answered the peer's question inside this pump, on
@@ -552,7 +577,7 @@ impl Plugin for AiLoop {
                     )
                     .noting(note));
                 }
-                let note = Self::walked(from, raised, to, found.as_ref());
+                let note = Self::walked(from, raised, to, found.as_ref(), because);
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
                 } else {
@@ -2417,15 +2442,23 @@ mod tests {
         // `ended` is written by the REPLACEMENT, so on the way to a run's first restart there are
         // no closed sessions to read and a review that answered anything else would be reporting on
         // a transcript that does not exist.
+        //
+        // ⚠⚠ AND THE FIRST OF THEM NAMES ITS CAUSE, exactly, because this fixture arranged one:
+        // the budget is off, so `instruction` is the only reason this run can be reflecting for —
+        // register item 261, held here as well as in its own gate, since a run that reflected for
+        // the BUDGET would satisfy every other assertion in this test.
         for edge in [
-            "Judging --Judge--> Reflecting",
-            "Reflecting --ReflectApplied--> Reviewing",
-            "Reviewing --ReviewNone--> Restarting",
-            "Restarting --SessionReplaced--> Resuming",
-            "Resuming --SessionReady--> Priming",
+            format!(
+                "Judging --Judge--> Reflecting — {}",
+                crate::outer::ReflectReason::Instruction.noted()
+            ),
+            "Reflecting --ReflectApplied--> Reviewing".to_owned(),
+            "Reviewing --ReviewNone--> Restarting".to_owned(),
+            "Restarting --SessionReplaced--> Resuming".to_owned(),
+            "Resuming --SessionReady--> Priming".to_owned(),
         ] {
             assert!(
-                walked.iter().any(|note| note == edge),
+                walked.iter().any(|note| note == &edge),
                 "⚠⚠⚠ the replacement must be these FIVE acts and the run's journal must say so — \
                  `{edge}` is missing. Walked {walked:?}",
             );
@@ -3009,6 +3042,7 @@ mod tests {
             AiLoopEvent::Null,
             AiLoopState::Working,
             None,
+            None,
         );
         assert!(
             !looked.contains("-->"),
@@ -3034,12 +3068,16 @@ mod tests {
             AiLoopEvent::Judge,
             AiLoopState::Reflecting,
             None,
+            None,
         );
         assert_eq!(
             moved, "Judging --Judge--> Reflecting",
             "⚠⚠⚠ and the fix must not have been *stop drawing arrows*. A transition the document \
              really took is the thing this journal exists to record",
         );
+        // ⚠ AND THE ARROW IS STILL THE WHOLE LINE WHEN NOTHING ELSE IS KNOWN. A driver that could
+        // not read `reflect_reason` reports the edge it took and no cause, rather than an empty
+        // clause after a dash that a reader has to decide the meaning of.
     }
 
     /// ⚠⚠⚠ **A REACHED MILESTONE ASKS WHAT IS NEXT — IT DOES NOT END THE RUN** — and the run ends
@@ -3122,12 +3160,18 @@ mod tests {
              keep going until everything is done paid ONE item, said the marker, and converged — \
              the document had no edge from *this step is done* to *what is next*. Walked {walked:?}",
         );
+        // ⚠⚠ THE CAUSE IS ASSERTED WITH THE EDGE, and this fixture is the only one that can: the
+        // budget is off and nothing is screened, so `milestone` is the only reason a reflection
+        // here can have — register item 261, and the arm of it whose word the driver's own
+        // livelock guard also reads.
+        let reflected = format!(
+            "Judging --Judge--> Reflecting — {}",
+            crate::outer::ReflectReason::Milestone.noted()
+        );
         assert!(
-            walked
-                .iter()
-                .any(|note| note == "Judging --Judge--> Reflecting"),
+            walked.iter().any(|note| note == &reflected),
             "⚠⚠⚠ and it must go to the state that DECIDES what comes next, which is the one already \
-             built for it. Walked {walked:?}",
+             built for it — SAYING that a reached milestone is what sent it there. Walked {walked:?}",
         );
         assert!(
             replaced.is_some_and(|fresh| fresh != pane),
@@ -3991,6 +4035,321 @@ mod tests {
             "⚠⚠⚠ AND THE THREE LINES MUST DIFFER FROM ONE ANOTHER. Naming the refusal is worth \
              nothing if two causes still render one string — which is exactly what {THE_EDGE:?} did \
              for all three of them before this gate existed: {lines:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE WALK SAYS WHY THE RUN STOPPED TO REFLECT** — register item 261, which is item
+    /// 240's class one state over and which `ai_loop.scxml` had been confessing to in prose.
+    ///
+    /// # ⚠⚠⚠ What was measured, and where the fact already was
+    ///
+    /// `judging` has three edges into `reflecting` and they are three different runs:
+    ///
+    /// | what happened | what a reader should do |
+    /// |---|---|
+    /// | the agent said the milestone was reached | look at the checkpoint it chose next |
+    /// | a standing instruction fired | look at the instruction, and at the dialog behind it |
+    /// | the reflection budget came round | nothing — this is the loop's own housekeeping |
+    ///
+    /// All three rendered `Judging --Judge--> Reflecting`, byte for byte. And the reason was
+    /// already computed: each of those transitions carries an `<assign location="reflect_reason">`
+    /// whose value NOTHING read but a livelock guard — **debt item 49's shape, a value stored and
+    /// never used**, with the document's own comment saying so: *"which one fired is not published
+    /// anywhere."*
+    ///
+    /// # ⚠⚠ Why three runs and not three calls to the renderer
+    ///
+    /// The renderer will say whatever it is handed. What has to be true is that a run which
+    /// reflects for one reason PRODUCES that word — so each arm arranges its cause and nothing
+    /// else, and the controls below are what stop three runs reflecting for the same reason and
+    /// this gate passing on it:
+    ///
+    /// * the **milestone** arm's peer says the marker after one prompt, with the budget off;
+    /// * the **instruction** arm's peer raises a dialog a `screen_rule` claims, with the budget
+    ///   off — and `Screening --ScreenMatched--> Working` must be in its walk, because a run that
+    ///   never screened cannot have reflected for an instruction and an arm asserting otherwise
+    ///   would be measuring nothing;
+    /// * the **budget** arm's peer needs nine prompts and never asks anything, with
+    ///   `reflect_every: 2` — so nothing but the count can have sent it there, and the other two
+    ///   arms' walks must contain no `Screening` at all.
+    ///
+    /// ⚠⚠⚠ AND THE THREE COVER THE WHOLE VOCABULARY, asserted rather than assumed: a
+    /// `ReflectReason` arm no run here reaches would be a word rendered by nobody, and
+    /// `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows` holds the other end of
+    /// that against the document itself.
+    #[test]
+    fn the_walk_says_why_a_run_stopped_to_reflect() {
+        use crate::outer::ReflectReason;
+
+        /// The one edge this gate is about — one arrow, three meanings.
+        const THE_EDGE: &str = "Judging --Judge--> Reflecting";
+        /// What a reflecting stand-in proposes when it is finally asked.
+        const NEXT: &str = "the debt this run picked after the last one";
+        /// And where it says the replacement should start reading.
+        const READ_NEXT: &str = "the register entry for it";
+        /// The dialog the refusing stand-in raises, quoted by the instruction arm's rule.
+        const ASKS: &str = "Which way should I build this?";
+        /// What that rule says to do instead.
+        const INSTEAD: &str = "neither; do the smallest verifiable thing and report";
+
+        /// Pump until the loop has replaced its session `sessions` times, ended, or run past this
+        /// gate's own patience — and hand back everything the run wrote down.
+        ///
+        /// ⚠ STOPPING AT A REPLACEMENT is what keeps a walk to a known number of reflections:
+        /// driven on, the budget arm would reflect again every two turns and *exactly one line*
+        /// below would be a claim about this gate's stamina rather than about the product.
+        fn walk_of<A: PaneAccess>(loops: &mut AiLoop, access: &A, sessions: usize) -> Vec<String> {
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut replaced = 0;
+            while walked.len() < 120 {
+                let before = loops.state();
+                let step = loops
+                    .step(access, &run)
+                    .expect("every step of a reflecting run must be readable");
+                if let Some(note) = step.note.clone() {
+                    walked.push(note);
+                }
+                if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
+                    replaced += 1;
+                }
+                if replaced == sessions || AiLoop::is_final(loops.state()) {
+                    break;
+                }
+            }
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            walked
+        }
+
+        /// The one line each arm is about, off its walk — and a failure that prints the whole
+        /// walk, because *which line* is the first question of any red here.
+        fn the_line<'a>(label: &str, walk: &'a [String]) -> &'a str {
+            let mut lines = walk.iter().filter(|note| note.starts_with(THE_EDGE));
+            let found = lines.next().unwrap_or_else(|| {
+                panic!(
+                    "⚠ the control for {label}: this run must have taken {THE_EDGE:?}, or what \
+                     follows is about an edge it never took. Walked {walk:?}"
+                )
+            });
+            assert!(
+                lines.next().is_none(),
+                "⚠ the control for {label}: the run reflected more than once, so the line read \
+                 below is not the one whose cause is being asserted. Walked {walk:?}",
+            );
+            found
+        }
+
+        // ── ARM 1: THE AGENT SAID THE MILESTONE WAS REACHED ──
+        // ⚠ ONE working prompt and it says the marker, with `brief_for`'s equal pair leaving the
+        // budget off — so `done` is the only guard that can fire.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(1, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let reached_walk = walk_of(&mut loops, &access, 1);
+        let reached_screened = loops.screened();
+
+        // ── ARM 2: A STANDING INSTRUCTION FIRED ──
+        // ⚠ The budget is off here too, so `screened > screened_carried` is the only guard left —
+        // and it can only be true if `screening` really carried the rule out.
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, u32::MAX, None);
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                screen_rules: Some(
+                    crate::screen::ScreenRules::of(vec![
+                        crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                            .expect("both halves are non-empty"),
+                    ])
+                    .expect("a non-empty list"),
+                ),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let instructed_walk = walk_of(&mut loops, &access, 1);
+        let instructed_screened = loops.screened();
+
+        // ── ARM 3: THE BUDGET CAME ROUND ──
+        // ⚠ NINE prompts before the marker and a reflection due after TWO, and this peer asks
+        // nothing — so neither of the guards above can be what sent it.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(9, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reflect_every: 2,
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let budget_walk = walk_of(&mut loops, &access, 1);
+        let budget_screened = loops.screened();
+
+        let arms = [
+            (
+                "the milestone was reached",
+                ReflectReason::Milestone,
+                &reached_walk,
+            ),
+            (
+                "a standing instruction fired",
+                ReflectReason::Instruction,
+                &instructed_walk,
+            ),
+            ("the budget came round", ReflectReason::Budget, &budget_walk),
+        ];
+
+        // ── THE CONTROL THE INSTRUCTION ARM STANDS ON: `screening` REALLY FIRED ──
+        //
+        // ⚠⚠⚠ ASKED OF THE MACHINE'S OWN COUNTER, which is the very quantity the guard reads
+        // (`cond="screened > screened_carried"`), and not of the walk. `screen.matched` reports a
+        // `Verdict::Screened` whose note is the REFUSAL's own sentence rather than the edge, so a
+        // walk-shaped control here would be asserting how that step happens to render — a second
+        // authority on a fact the datamodel holds exactly.
+        assert!(
+            instructed_screened.is_some_and(|screened| screened > 0),
+            "⚠⚠⚠ the control: this arm's whole claim is that a STANDING INSTRUCTION sent the run \
+             to `reflecting`, and `screened` is incremented by `screening` carrying one out. This \
+             run's counter says {instructed_screened:?}, so nothing was carried out and a green \
+             below would be measuring some other guard. Walked {instructed_walk:?}",
+        );
+        assert!(
+            instructed_walk
+                .iter()
+                .any(|note| note.starts_with("Working --TurnBlocked--> Screening")),
+            "⚠⚠ and its journal must show the run going there, or the counter above moved by some \
+             route this gate is not describing. ⚠ `starts_with` because that edge carries register \
+             item 240's own clause — the refusal the pass arrived at. Walked {instructed_walk:?}",
+        );
+        for (label, screened, walk) in [
+            ("the milestone was reached", reached_screened, &reached_walk),
+            ("the budget came round", budget_screened, &budget_walk),
+        ] {
+            assert_eq!(
+                screened,
+                Some(0),
+                "⚠⚠ AND THE OTHER TWO ARMS MUST NEVER SCREEN — {label}: any `screened` above zero \
+                 makes `screened > screened_carried` true and takes the instruction edge, which is \
+                 the guard tested ABOVE this one. Walked {walk:?}",
+            );
+        }
+
+        // ── THE CONTROL ON THE VOCABULARY: these three are all of it ──
+        let covered: std::collections::BTreeSet<ReflectReason> =
+            arms.iter().map(|(_, reason, _)| *reason).collect();
+        assert_eq!(
+            covered,
+            ReflectReason::ALL.into_iter().collect(),
+            "⚠⚠⚠ the control: this gate must arrange EVERY reason a reflection can have. An arm \
+             no run here reaches is a word nothing renders and a sentence nobody has read — and \
+             the document half of that is \
+             `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows`",
+        );
+
+        // ── AND THE WALK SAYS WHICH ──
+        for (label, reason, walk) in arms {
+            let line = the_line(label, walk);
+            assert_eq!(
+                line,
+                format!("{THE_EDGE} — {}", reason.noted()),
+                "⚠⚠⚠ REGISTER ITEM 261: this run reflected because {label}, and the one line its \
+                 walk wrote about leaving `judging` must say so. Three causes with three different \
+                 remedies — *look at the checkpoint the agent chose*, *look at the instruction and \
+                 the dialog behind it*, *nothing, this is housekeeping* — were one arrow and \
+                 nothing else, while `reflect_reason` held the answer the whole time. Walked \
+                 {walk:?}",
+            );
+            // ⚠⚠⚠ AND EXACTLY ONE LINE CARRIES IT — the same half as register item 240's, for the
+            // same reason and against a sharper trap: `reflect_reason` is a datamodel variable, so
+            // a reader that took it on every pass instead of on the ENTERING edge would write *the
+            // budget came round* onto every step of the restart that followed, and go on doing it
+            // until the next reflection overwrote it. ⚠ The colon is what makes this the reason's
+            // own heading rather than a mention of the word inside some other sentence.
+            let heading = format!("{}: ", reason.word());
+            assert_eq!(
+                walk.iter().filter(|note| note.contains(&heading)).count(),
+                1,
+                "⚠⚠⚠ {label}: {heading:?} must head exactly ONE line of this walk — the step that \
+                 ENTERED `reflecting`. More than one is a level being written down as a series of \
+                 edges, which puts a cause on transitions it is not the cause of. Walked {walk:?}",
+            );
+        }
+        let lines = [
+            the_line("the milestone was reached", &reached_walk),
+            the_line("a standing instruction fired", &instructed_walk),
+            the_line("the budget came round", &budget_walk),
+        ];
+        let distinct: std::collections::BTreeSet<&str> = lines.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            lines.len(),
+            "⚠⚠⚠ AND THE THREE LINES MUST DIFFER FROM ONE ANOTHER. Naming the cause is worth \
+             nothing if two of them still render one string — which is exactly what {THE_EDGE:?} \
+             did for all three before this gate existed: {lines:?}",
+        );
+
+        // ── ⚠⚠⚠ AND THE SAME REASON TWICE IS TWO EDGES, NOT ONE ──
+        //
+        // This is the arm that says why `because` is read ON ENTRY rather than as the DIFF that
+        // register item 240 built one round earlier, and it is the only thing standing between
+        // this feature and that mistake. `reflect_reason` is a level: a run whose budget comes
+        // round again writes the SAME word a second time, so a reader comparing *what did this
+        // change* would report the second reflection as no reflection at all — silently, and on
+        // the shape a long run has most of, since a bounded loop's ordinary life is one budgeted
+        // reflection after another with nothing else happening.
+        //
+        // ⚠ TWO REPLACEMENTS, so the run is genuinely round the loop twice: the first reflection
+        // restarts the session, the fresh peer works two more turns, and the budget falls due
+        // again against a `screened` that has not moved and an agent that has said nothing.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(9, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reflect_every: 2,
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let twice_walk = walk_of(&mut loops, &access, 2);
+        let twice: Vec<&String> = twice_walk
+            .iter()
+            .filter(|note| note.starts_with(THE_EDGE))
+            .collect();
+        assert_eq!(
+            twice.len(),
+            2,
+            "⚠ the control: this run must have reflected TWICE — one reflection cannot show that a \
+             repeat is reported. Walked {twice_walk:?}",
+        );
+        let budgeted = format!("{THE_EDGE} — {}", ReflectReason::Budget.noted());
+        for (nth, line) in twice.iter().enumerate() {
+            assert_eq!(
+                **line,
+                budgeted,
+                "⚠⚠⚠ REFLECTION {} OF 2: a run's second budgeted reflection must say `budget` \
+                 exactly as its first did. A cause read as a DIFF — *has this changed since the \
+                 last pass* — reports it once and leaves the rest of a long run's reflections \
+                 unexplained, which is the ordinary shape of a bounded loop rather than an edge \
+                 case. Walked {twice_walk:?}",
+                nth + 1,
+            );
+        }
+        assert_eq!(
+            loops.screened(),
+            Some(0),
+            "⚠ and the control on both of them: a screened dialog would have taken the \
+             instruction edge instead. Walked {twice_walk:?}",
         );
     }
 
