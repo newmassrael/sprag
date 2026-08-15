@@ -529,6 +529,14 @@ mod tests {
             !unanswered.explain().is_empty(),
             "and the report still names the dialog left in an unknown state",
         );
+        assert!(
+            stopping.typed_after_the_stop().is_empty(),
+            "⚠⚠⚠ AND NOTHING FOLLOWED THE KEY. `StillUp` licenses no second keystroke whichever \
+             refusal it carries, and this arm is the one where the reason is that nobody looked — \
+             so a run that said its piece anyway would be typing an Enter at a question that may \
+             still be up. It pressed: {:?}",
+            stopping.typed_after_the_stop(),
+        );
         stopping.pane.lifecycle().expect("lifecycle").close(pane);
     }
 

@@ -3138,6 +3138,13 @@ mod tests {
              merely unproven — the option the caller authorised was chosen, by the Enter, and the \
              run that had just sent it was stopped before it could look: {screen:?}",
         );
+        assert!(
+            stopping.typed_after_the_stop().is_empty(),
+            "⚠⚠ AND IT PRESSED NOTHING ELSE. The escalation is the last key this act is licensed \
+             to send, and a run whose report says nobody watched must not go on typing at a dialog \
+             in a state it cannot see. It pressed: {:?}",
+            stopping.typed_after_the_stop(),
+        );
         stopping.pane.lifecycle().expect("lifecycle").close(pane);
     }
 
@@ -3167,6 +3174,13 @@ mod tests {
             "⚠ the digit really did reach the peer, which is what separates this from a run that \
              stopped before it typed — that one is `Reached::RunEnded` and charges nothing: \
              {screen:?}",
+        );
+        assert!(
+            stopping.typed_after_the_stop().is_empty(),
+            "⚠⚠ AND NO SECOND KEY WENT IN. This act's escalation is exactly what a stopped run may \
+             not reach for — the dialog's state is unknown from here, so the digit is the last \
+             thing this run is entitled to have sent. It pressed: {:?}",
+            stopping.typed_after_the_stop(),
         );
         stopping.pane.lifecycle().expect("lifecycle").close(pane);
     }
