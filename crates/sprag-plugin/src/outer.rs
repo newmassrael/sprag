@@ -2098,6 +2098,15 @@ impl OuterLoop {
     /// ⚠ `redirect.none` is `screen.none`'s exit and for its measured reason: the refusing key may
     /// not take the dialog off the screen, and a dialog still up reads an Enter as an answer to
     /// itself. Nothing is typed and the person is woken.
+    ///
+    /// ⚠⚠⚠ **AND A STOPPED RUN NEVER GETS HERE AT ALL**, which is the other half of register item
+    /// 241's claim — this is the second state that presses the refusing key, and `screening`'s gate
+    /// says nothing about it. The reason is not a check on this path: reaching `redirecting` needs
+    /// [`judged`](Self::judged) to answer, `judged` needs a judgement, and a judgement is waited on
+    /// through the RUN — so a run that ended inside the answering wait gets `None` and the document
+    /// takes the `screening` edge instead. Held by
+    /// `judge::tests::a_stopped_run_gets_no_judgement_however_fast_the_judge_answers`, whose
+    /// mutation is one line: wait on an uncancellable context and a cancelled run collects a `YES`.
     fn redirect(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
         let question = match &self.noticed {
             Some(Noticed::Asking(unanswered)) => unanswered.question().cloned(),

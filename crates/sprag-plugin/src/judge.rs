@@ -363,6 +363,7 @@ mod tests {
     use crate::access::{KeyStroke, PaneError, PaneRow, Written};
     use sprag_detect::Choice;
     use sprag_terminal::PaneId;
+    use std::sync::{Arc, Mutex};
 
     /// A host with panes but NO LIFECYCLE — so a judgement that tried to spawn would answer `None`
     /// for that reason and not for the one under test.
@@ -477,6 +478,100 @@ mod tests {
                 },
             ),
             None,
+        );
+    }
+
+    /// ⚠⚠⚠ **A STOPPED RUN GETS NO JUDGEMENT — AND THAT IS WHAT KEEPS `redirecting` OUT OF ITS
+    /// REACH** — the half of R395's claim that lives one door over from `screening`.
+    ///
+    /// # ⚠⚠⚠ Why this is about a state in another file
+    ///
+    /// `ai_loop.scxml` has TWO states that press [`REFUSES`] into somebody's dialog: `screening`,
+    /// on a quoted rule, and `redirecting`, on a judgement. R395's loop-level gate holds *a stopped
+    /// run types nothing further* for the first. The second is reached only when this function
+    /// answers `Some` with `holds`, and **it is reached on the pump that NOTICED** — by which time
+    /// a run cancelled inside the answering wait is already over. So the sentence *"a stopped run
+    /// cannot even get to the other door"* rests entirely on the arm below, and it was held by
+    /// reading [`Completion::wait`] rather than by anything that runs.
+    ///
+    /// ⚠⚠ **IT IS A PAIR, and the control half is the first thing in this module to spawn a judge
+    /// at all.** Every other gate here measures a path that asks NOBODY, so `spawn` → wait → read
+    /// the reply → parse the verdict had no offline coverage: a judge that could not be started, or
+    /// whose reply was read from the wrong place, would have answered `None` and looked exactly
+    /// like the arm under test.
+    ///
+    /// ⚠ The judge is `/bin/sh`, so the pair differs in the RUN and in nothing else — same argv,
+    /// same criterion, same dialog. A judge that exits instantly is also the hardest case for the
+    /// claim: there is no window in which the cancel could win a race it should not have to.
+    #[test]
+    fn a_stopped_run_gets_no_judgement_however_fast_the_judge_answers() {
+        /// Answers the verdict and exits at once — [`DoneWhen::Exits`] is what the judge waits on.
+        fn instant_judge() -> JudgeSpec {
+            JudgeSpec {
+                argv: vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "printf 'YES\\n'".to_owned(),
+                ],
+                within: Duration::from_secs(20),
+            }
+        }
+        /// A real workspace, which is what gives the judgement a lifecycle to spawn into.
+        fn host() -> crate::access::WorkspacePaneAccess {
+            crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+                sprag_terminal::Workspace::new((80, 24)),
+            )))
+        }
+        const CRITERION: &str = "going ahead would commit a design decision";
+
+        // ── THE CONTROL: a live run really does get a verdict out of this judge ──
+        let alive = host();
+        let judged = judges(
+            &alive,
+            &RunContext::uncancellable(),
+            CRITERION,
+            &question(),
+            &instant_judge(),
+        );
+        let Some(verdict) = judged else {
+            panic!(
+                "⚠⚠⚠ the control must reach a verdict, or the arm below is `None` for a reason \
+                 that has nothing to do with the run: spawn, wait, read and parse all have to work",
+            );
+        };
+        assert!(
+            verdict.holds && verdict.said.eq_ignore_ascii_case("YES"),
+            "⚠⚠ and the verdict must be the one the judge actually said: {verdict:?}",
+        );
+        assert!(
+            alive.pane_ids().is_empty(),
+            "⚠⚠ AND THE JUDGE'S PANE IS GONE. One left running holds a pty and a process for the \
+             rest of the run, once per blocked turn: {:?}",
+            alive.pane_ids(),
+        );
+
+        // ── AND THE SAME EVERYTHING, ON A RUN THAT IS ALREADY OVER ──
+        let stopped = host();
+        let cancelled = RunContext::new(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+        assert_eq!(
+            judges(
+                &stopped,
+                &cancelled,
+                CRITERION,
+                &question(),
+                &instant_judge(),
+            ),
+            None,
+            "⚠⚠⚠ a run that is over may not collect a judgement, and this is not a nicety: a \
+             `Some` here sends the loop to `redirecting`, whose act presses {REFUSES:?} into a \
+             dialog the run has stopped being allowed to touch. **Silence is never a yes**, and a \
+             stopped run's silence least of all",
+        );
+        assert!(
+            stopped.pane_ids().is_empty(),
+            "⚠⚠ and it leaves nothing behind either — the judge is closed on every exit path, \
+             including this one: {:?}",
+            stopped.pane_ids(),
         );
     }
 
