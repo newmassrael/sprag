@@ -3415,11 +3415,215 @@ mod tests {
              must end the run — sent back to `working` it asks an agent to reach a checkpoint it \
              has just reached, and the run turns over until its budget. Walked {walk:?}",
         );
+        // ⚠⚠⚠ REPURPOSED RATHER THAN DELETED (register item 267). This asserted the bare arrow by
+        // EQUALITY, which is what made it the canary for the defect: the moment the ending's own
+        // word was added it went red, printing the very walk that proves the clause is there. What
+        // it holds now is the same claim plus the one it could not make — that a run which ended
+        // for THIS reason says so. `the_walk_says_which_ending_closed_the_run` holds the other
+        // ending against it; here the point is that the livelock's own exit is the one named.
+        let ended = format!(
+            "Reflecting --ReflectDone--> Closing — {}",
+            crate::outer::DoneReason::NoSuccessor.noted()
+        );
         assert!(
-            walk.iter()
-                .any(|note| note == "Reflecting --ReflectDone--> Closing"),
+            walk.iter().any(|note| note == &ended),
             "⚠⚠ and it must end THROUGH the reflection, which is now the only route to a closing \
-             report: a run's account is written once, about the whole run. Walked {walk:?}",
+             report: a run's account is written once, about the whole run — SAYING that nobody \
+             declared the north star met, only that this agent had no next checkpoint. Walked \
+             {walk:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE WALK SAYS WHICH OF THE TWO ENDINGS CLOSED THE RUN** — register item 267, which is
+    /// 261's and 265's class a third time and the one their method would not have found.
+    ///
+    /// # ⚠⚠⚠ What was measured, and why counting the document's edges misses it
+    ///
+    /// Both of its elders are *several `<transition>`s, one arrow*, and both were found by reading
+    /// `ai_loop.scxml` and counting doors. `closing` has ONE door. What arrives through it is two
+    /// different runs, because [`OuterLoop::reflect`](crate::outer::OuterLoop) raises `reflect.done`
+    /// from two `return`s:
+    ///
+    /// | what happened | what a reader should do |
+    /// |---|---|
+    /// | the agent said `north_star_marker` | weigh its closing account against what was asked |
+    /// | a reached milestone whose reflection named no successor | look at that milestone and decide — **nobody said the north star was met** |
+    ///
+    /// Both publish `Verdict::Converged`, and both wrote `Reflecting --ReflectDone--> Closing` and
+    /// nothing else. ⚠⚠ The second is the sharper loss: it is a run that quietly STOPPED. The
+    /// livelock guard ends it because there is nothing left to ask THIS agent for, which is a fact
+    /// about one session's imagination rather than about the job.
+    ///
+    /// # ⚠⚠⚠ The control, and why this gate needs one its elders did not
+    ///
+    /// `said_marker` has no echo discount — unlike
+    /// [`OuterLoop::proposed`](crate::outer::OuterLoop), which discounts what the loop itself just
+    /// said — and `reflect_prompt`'s last line ENDS with the marker it asks for. So a pane that
+    /// wrapped that line exactly at the marker would converge a run on its own instruction, and
+    /// arm 1 below would go green having measured the ECHO.
+    ///
+    /// **The control is the same prompt with the answer taken away**: [`standin_agent_reflecting`]
+    /// is asked the identical reflection, paints the identical echo, and answers with a successor
+    /// instead of the marker. Its run must never reach `closing` at all. ⚠ Registered as debt in its
+    /// own right, because a control proves this pane's width is safe and not that every width is.
+    ///
+    /// ⚠⚠ AND THE TWO ARMS MUST COVER THE WHOLE VOCABULARY, asserted rather than assumed — a
+    /// `DoneReason` arm no run here reaches is a sentence nobody has ever read.
+    #[test]
+    fn the_walk_says_which_ending_closed_the_run() {
+        use crate::outer::DoneReason;
+
+        /// The one edge this gate is about — one arrow, two runs.
+        const THE_EDGE: &str = "Reflecting --ReflectDone--> Closing";
+        /// What the control peer proposes when it is asked, so that it does NOT end the run.
+        const NEXT: &str = "the debt this run picked after the last one";
+        /// And where it says the replacement should start reading.
+        const READ_NEXT: &str = "the register entry for it";
+
+        /// Drive a loop to its ending and hand back what it wrote down, with its outcome.
+        fn run_of<A: PaneAccess>(loops: &mut AiLoop, access: &A) -> (OutcomeState, Vec<String>) {
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 60,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(loops, access, &RunContext::uncancellable());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            (outcome.state, walk)
+        }
+
+        // ── ARM 1: THE AGENT SAID THE NORTH STAR WAS REACHED ──
+        // ⚠ The first peer in this crate ever to say it. Two working turns, then the reflection it
+        // is sent asks whether the whole thing is finished, and it says that it is.
+        let (workspace, pane) = crate::testing::standin_agent_finishing(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let (declared_state, declared_walk) = run_of(&mut loops, &access);
+
+        // ── ARM 2: A REACHED MILESTONE WHOSE REFLECTION NAMED NO SUCCESSOR ──
+        // ⚠ The ORDINARY peer — it says the milestone marker and has no opinion about what is next,
+        // which is precisely the run the livelock guard ends.
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let (no_successor_state, no_successor_walk) = run_of(&mut loops, &access);
+
+        // ── THE CONTROL: THE SAME PROMPT, THE SAME ECHO, NO MARKER ──
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(2, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let (_, echoed_walk) = run_of(&mut loops, &access);
+        assert!(
+            !echoed_walk.iter().any(|note| note.starts_with(THE_EDGE)),
+            "⚠⚠⚠ THE CONTROL: this peer is asked the SAME reflection and paints the SAME echo of \
+             it, and answers with a successor rather than the marker — so it must never reach \
+             `closing`. If it does, `reflect_prompt`'s own last line has been read as the agent \
+             saying the north star was reached (`said_marker` has no echo discount, and that line \
+             ENDS with the marker), and arm 1 below is measuring this loop's own instruction. \
+             Walked {echoed_walk:?}",
+        );
+
+        let arms = [
+            (
+                "the agent declared it",
+                DoneReason::Declared,
+                &declared_walk,
+            ),
+            (
+                "no successor was named",
+                DoneReason::NoSuccessor,
+                &no_successor_walk,
+            ),
+        ];
+
+        // ── BOTH REALLY CONVERGED, which is what makes the ambiguity worth closing ──
+        for (label, state, walk) in [
+            ("the agent declared it", declared_state, &declared_walk),
+            (
+                "no successor was named",
+                no_successor_state,
+                &no_successor_walk,
+            ),
+        ] {
+            assert_eq!(
+                state,
+                OutcomeState::Converged,
+                "⚠⚠⚠ the control for {label}: BOTH endings publish `Verdict::Converged` — that is \
+                 exactly why the walk had to be the thing that tells them apart. An arm that ended \
+                 any other way is not the run this gate is describing. Walked {walk:?}",
+            );
+        }
+
+        // ── THE CONTROL ON THE VOCABULARY: these two are all of it ──
+        let covered: std::collections::BTreeSet<DoneReason> =
+            arms.iter().map(|(_, ending, _)| *ending).collect();
+        assert_eq!(
+            covered,
+            DoneReason::ALL.into_iter().collect(),
+            "⚠⚠⚠ the control: this gate must arrange EVERY way a run can be closed. An arm no run \
+             here reaches is a word nothing renders and a sentence nobody has read — `Pumped::\
+             Unbuilt`'s finding (register item 260) arriving before the fact",
+        );
+
+        // ── AND THE WALK SAYS WHICH ──
+        let mut lines: Vec<&str> = Vec::new();
+        for (label, ending, walk) in arms {
+            let mut found = walk.iter().filter(|note| note.starts_with(THE_EDGE));
+            let line = found.next().unwrap_or_else(|| {
+                panic!(
+                    "⚠ the control for {label}: this run must have taken {THE_EDGE:?}, or what \
+                     follows is about an edge it never took. Walked {walk:?}"
+                )
+            });
+            assert!(
+                found.next().is_none(),
+                "⚠ the control for {label}: a run closes ONCE, and a second such line means the \
+                 line read below is not the one whose cause is being asserted. Walked {walk:?}",
+            );
+            assert_eq!(
+                line,
+                &format!("{THE_EDGE} — {}", ending.noted()),
+                "⚠⚠⚠ REGISTER ITEM 267: this run closed because {label}, and the one line its walk \
+                 wrote about ending must say so. Two runs with opposite remedies — *weigh the \
+                 account it wrote* against *nobody said the job was done, look at the milestone* — \
+                 were one arrow and nothing else, and both reported `converged`. Walked {walk:?}",
+            );
+            // ⚠⚠⚠ AND EXACTLY ONE LINE CARRIES IT — `done_reason` is a datamodel variable, so a
+            // reader that took it on every pass instead of on the ENTERING edge would write *the
+            // agent declared it* onto every step of the closing turn that followed. ⚠ The colon is
+            // what makes this the ending's own heading rather than a mention inside some other
+            // sentence.
+            let heading = format!("{}: ", ending.word());
+            assert_eq!(
+                walk.iter().filter(|note| note.contains(&heading)).count(),
+                1,
+                "⚠⚠⚠ {label}: {heading:?} must head exactly ONE line of this walk — the step that \
+                 arrived at `closing`. More than one is a level being written down as a series of \
+                 findings. Walked {walk:?}",
+            );
+            lines.push(line);
+        }
+        let distinct: std::collections::BTreeSet<&str> = lines.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            lines.len(),
+            "⚠⚠⚠ AND THE TWO LINES MUST DIFFER FROM ONE ANOTHER. Naming the ending is worth nothing \
+             if two causes still render one string — which is exactly what {THE_EDGE:?} did for \
+             both of them before this gate existed: {lines:?}",
         );
     }
 

@@ -1106,6 +1106,76 @@ done"
     (workspace, pane)
 }
 
+/// **A STAND-IN AGENT THAT SAYS THE WHOLE JOB IS FINISHED WHEN A REFLECTION ASKS** — the peer the
+/// run's OTHER ending is measured against, and the first thing in this tree ever to say
+/// `north_star_marker`.
+///
+/// # ⚠⚠⚠ What was untested until this existed
+///
+/// `ai_loop.scxml` calls that marker *"the ONE way a run reaches its closing report"*, and
+/// [`OuterLoop::reflect`](crate::outer::OuterLoop) reads it before anything else — yet no fixture in
+/// this crate had ever said it. Every `converged` run in the suite got there the OTHER way: a
+/// reached milestone whose reflection proposed no successor, which is the livelock guard's exit and
+/// **not a claim that the work is done**. So the product's own headline ending had no run behind it,
+/// and register item 267 is what made that visible: two causes, one arrow, and only one of them
+/// reachable by any gate.
+///
+/// # ⚠⚠ Why it does NOT stage the wrapped echo its siblings stage
+///
+/// [`standin_agent_reflecting`] paints a wrapped echo on purpose because
+/// [`OuterLoop::proposed`](crate::outer::OuterLoop) has a rule that discounts one.
+/// `said_marker` has no such rule — it rests on FRESH plus STANDING ALONE — so an echo staged here
+/// would not test a reader, it would converge the run on the loop's own instruction and the gate
+/// above it would pass for the wrong reason. ⚠ **That is a live hazard and it is registered rather
+/// than staged**: the prompt's last line ENDS with the marker, so a pane whose width breaks the line
+/// exactly there puts the marker alone on a row. The gate that uses this peer carries a control run
+/// — the same prompt, the same echo, a peer that never says the marker — which is what says the
+/// answer and not the echo is doing the work.
+pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let script = format!(
+        "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
+         while read line; do \
+           printf '%s\\n' \"$line\"; \
+           case \"$line\" in \
+             *'{REFLECT}'*) \
+               printf 'there is nothing left to pick up\\n'; \
+               printf '{NORTH_STAR}\\n'; \
+               s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; continue;; \
+           esac; \
+           case \"$line\" in \
+             *exactly:*|*Summarise*|*'{STOP}'*) ;; \
+             *) continue;; \
+           esac; \
+           n=$((n+1)); \
+           if [ $n -ge {prompts_before_done} ]; then printf 'MILESTONE REACHED\\n'; \
+           else printf 'ACK %s\\n' \"$n\"; fi; \
+           s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; \
+         done",
+        SEQ = SEQ_MARKER,
+        REFLECT = REFLECTION_MILESTONE_LABEL,
+        NORTH_STAR = NORTH_STAR_SAID,
+        STOP = STOP_QUESTION,
+    );
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 80, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
 /// **A STAND-IN AGENT THAT ACTUALLY WRITES A REPORT WHEN IT IS ASKED TO CLOSE** — the peer the
 /// captured closing report is measured against.
 ///
@@ -1360,6 +1430,15 @@ pub(crate) const REPORT_ECHO_SLICE: &str = "what was verified";
 /// above obeys it. ⚠ The document is the authority; this is a fixture's copy, held in step by the
 /// gate that asserts the composed prompt carries it.
 pub(crate) const REFLECTION_MILESTONE_LABEL: &str = "NEXT MILESTONE:";
+
+/// **WHAT AN AGENT SAYS WHEN THE WHOLE JOB IS FINISHED** — `ai_loop.scxml`'s `north_star_marker`, as
+/// [`standin_agent_finishing`] obeys it.
+///
+/// ⚠ The document is the authority and this is a fixture's copy, held in step exactly as
+/// `MILESTONE REACHED` is: a peer cannot read a datamodel that has not been initialised, and what
+/// keeps the two from drifting is that a run spelling it wrong never converges — loudly, in the one
+/// gate that asks for this ending.
+pub(crate) const NORTH_STAR_SAID: &str = "NORTH STAR REACHED";
 /// See [`REFLECTION_MILESTONE_LABEL`].
 pub(crate) const REFLECTION_REFERENCE_LABEL: &str = "NEXT REFERENCE:";
 

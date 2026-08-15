@@ -749,6 +749,66 @@
       by it, which is a lookup rather than a comparison.
     -->
     <data id="stop_reason" expr="''"/>
+    <!--
+      ⚠⚠⚠ WHICH OF THE TWO ENDINGS CLOSED THE RUN — `reflect_reason`'s and
+      `stop_reason`'s third, one state further on, and the same finding again.
+
+      ONE transition reaches `closing` and TWO different runs take it:
+
+        declared       the agent said `north_star_marker` — the whole job is
+                       finished, and it says so
+        no_successor   the milestone was reached and this reflection named no
+                       next checkpoint, so there was nothing left to ask THIS
+                       agent for. **Nobody said the work was done.**
+
+      Both end `converged`, so before this existed a run that reported its own
+      completion and a run that merely ran out of things to propose were the
+      same three words in a journal — and they want opposite things from a
+      reader. The first is an account to weigh against what was asked; the
+      second is a checkpoint to look at and a north star to decide about.
+
+      ⚠⚠⚠ THE WORD IS THE DRIVER'S, LIKE `stop_reason`'s AND UNLIKE
+      `reflect_reason`'s, and here it is the driver's for BOTH of them. Neither
+      fact is visible from this document: one is a marker on somebody's pane,
+      the other is that marker's absence together with a reflection reason. So
+      the value arrives as `_event.data.done_reason`, whose vocabulary is the
+      driver's `DoneReason::word`, and this file spells no ending of its own.
+
+      ⚠⚠⚠ AND THE TRANSITION IS GUARDED ON IT, which is the difference between
+      this and its two elders. There the causes are EDGES, so a cause that
+      forgot to say why is a missing `<assign>` and a gate over this file finds
+      it. Here they are `return`s in Rust, and no reader of this document can
+      count them — so the guard is what holds the direction instead.
+
+      ⚠⚠⚠ WHAT THE GUARD ACTUALLY BUYS, MEASURED BOTH WAYS by raising this event
+      with no word (the first draft of this comment claimed something else and
+      the mutation said otherwise):
+
+        guarded     the edge does not fire. The walk writes a SELF-ARROW —
+                    `reflecting` to `reflecting` on `reflect.done` — which no
+                    correct run ever produces, and the pass falls through to
+                    whichever ending the next look decides, so the run ends
+                    saying the wrong one. Wrong, and visibly wrong.
+        unguarded   the edge fires, `done_reason` is assigned `nil`, and the
+                    walk writes the ordinary `reflecting` to `closing` line
+                    with no clause on it: the shipped defect exactly, and
+                    indistinguishable from a correct run.
+
+      So the guard does NOT stop the run, which is what the first draft said it
+      would. What it does is make a wordless raise unable to REACH this state,
+      and leave a shape in the journal that cannot otherwise happen. That is the
+      reading register items 264, 265 and 269 were all about, kept on the side
+      where an absence is loud instead of silent.
+
+      ⚠ Truthiness over Lua, exactly as `_event.data.stop_short` is: the only
+      false values are `nil` and `false`, so an ending whose word was EMPTY
+      would pass the guard and then read back as nothing. No `DoneReason` can
+      spell itself `''` and a gate holds that rather than this comment.
+
+      ⚠ Read by the driver, in Rust, and never by a `cond` here — `==` over this
+      datamodel is unverified (see `judged_rules`).
+    -->
+    <data id="done_reason" expr="''"/>
   </datamodel>
 
   <state id="idle">
@@ -1435,8 +1495,18 @@
       ⚠ `north_star` is the one part a reflection may never rewrite (see
       `reflect.applied`), which is what makes this answer meaningful — the agent
       is reporting against a destination it could not have moved.
+
+      ⚠⚠⚠ AND *THERE IS NOTHING LEFT* IS TWO DIFFERENT SENTENCES. The driver
+      raises this event from two places and they are not the same run: the agent
+      said `north_star_marker`, or the milestone was reached and the reflection
+      named no successor — the livelock this state exists to prevent. Both end
+      `converged` and, until `done_reason` existed, both wrote one arrow. The
+      word says which; the guard is why a raise that forgot to say cannot close
+      a run in silence. See `done_reason`'s own comment for both.
     -->
-    <transition event="reflect.done" target="closing"/>
+    <transition event="reflect.done" cond="_event.data.done_reason" target="closing">
+      <assign location="done_reason" expr="_event.data.done_reason"/>
+    </transition>
     <transition event="turn.blocked" target="awaiting_human"/>
     <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>

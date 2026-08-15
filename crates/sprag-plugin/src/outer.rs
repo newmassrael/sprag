@@ -257,6 +257,11 @@ const REFLECT_REASON: &str = "reflect_reason";
 /// puts the same fact in the run's walk. See the document, and register items 264 and 265.
 const STOP_REASON: &str = "stop_reason";
 
+/// The datamodel variable saying **WHICH OF THE TWO ENDINGS closed the run** — carried into the one
+/// transition that reaches `closing` by whichever `reflect.done` this driver raised, and read back
+/// by [`OuterLoop::closing_because`]. See the document, and register item 267.
+const DONE_REASON: &str = "done_reason";
+
 /// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
 /// the prompt that asks for it — see [`OuterLoop::proposed`].
 ///
@@ -856,29 +861,149 @@ impl ReflectReason {
     }
 }
 
+/// **WHICH OF THE TWO ENDINGS CLOSED THE RUN** — the word this driver puts on the one
+/// `reflect.done` it raises, and register item 267.
+///
+/// # ⚠⚠⚠ One arrow, two runs, and they want opposite things from a reader
+///
+/// `OuterLoop::reflect` raises `reflect.done` from two places and they are not the same finding:
+///
+/// | what happened | what a reader should do |
+/// |---|---|
+/// | the agent said `north_star_marker` | read its closing account against what the run was asked |
+/// | the milestone was reached and the reflection named no successor | look at that milestone and decide whether the north star really is met — **nobody said it was** |
+///
+/// The second is a run that quietly stopped. Nothing declared the work finished; one agent had no
+/// next checkpoint to name, and ending was the only thing left that was not a livelock (see
+/// [`ReflectReason::Milestone`]). Both publish `Verdict::Converged`, so before this existed the
+/// difference reached nobody — **`Reflecting --ReflectDone--> Closing`, byte for byte, for both**.
+///
+/// # ⚠⚠ Why the vocabulary is this driver's, where `reflecting`'s is the document's
+///
+/// [`ReflectReason`]'s three words are literals in `ai_loop.scxml` because three EDGES carry them
+/// and the document can see what each guard means. Neither of these two is visible from there: one
+/// is a marker on somebody's pane, the other is that marker's absence together with a reflection
+/// reason. So this is [`Ceiling`](crate::driver::Ceiling)'s side of the same seam — the driver owns
+/// the fact and the word, the document assigns what it is handed — and the guard on that transition
+/// is what stops a raise that forgot to say from closing a run in silence.
+///
+/// ⚠ Rendered through [`noted`](Self::noted) into a walk and nowhere else: nothing publishes a
+/// `done_reason` as a wire key or value, so this is a string answer getting richer (R374).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DoneReason {
+    /// **THE AGENT SAID THE NORTH STAR WAS REACHED** — the whole job, not a checkpoint, and it said
+    /// so itself.
+    ///
+    /// ⚠ The one claim a reflection may make that the loop cannot check: `north_star` is the single
+    /// part a reflection may never rewrite (see the document's `reflect.applied`), so the agent is
+    /// reporting against a destination it could not have moved.
+    Declared,
+    /// **THE MILESTONE WAS REACHED AND THIS REFLECTION NAMED NO SUCCESSOR**, so there was nothing
+    /// left to ask this agent for — and going back to `working` would ask it to reach a checkpoint
+    /// it had just reached, for ever.
+    ///
+    /// ⚠⚠ **NOBODY SAID THE WORK WAS DONE.** The run ended because it had run out of things to
+    /// propose, which is a different fact from the north star being met and is the one a reader has
+    /// to weigh. Ending is the SAFE direction (the caller's checkpoint was met, so the account is
+    /// true) and it is the terminating one — but it is not a claim about the destination.
+    NoSuccessor,
+}
+
+impl DoneReason {
+    /// Every arm, so the runs that produce them and the readers below are one list.
+    pub const ALL: [Self; 2] = [Self::Declared, Self::NoSuccessor];
+
+    /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.done_reason`.
+    ///
+    /// ⚠ Non-empty, and a gate says so rather than this line: the document's transition guards on
+    /// bare truthiness over a Lua datamodel, where `''` is TRUE — so an empty word would take the
+    /// edge and then read back as no ending at all.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::NoSuccessor => "no_successor",
+        }
+    }
+
+    /// The ending named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|ending| ending.word() == word)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// word, for [`ReflectReason::describe`]'s reason.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Declared => {
+                "the agent said the north star itself was reached, so this run is reporting the \
+                 whole job finished — read the closing account against what the run was asked for"
+            }
+            Self::NoSuccessor => {
+                "the milestone was reached and the reflection named no next checkpoint, so NOBODY \
+                 declared the north star met — the run ended because there was nothing left to ask \
+                 this agent for; read the milestone it finished and decide whether the run is \
+                 really done"
+            }
+        }
+    }
+
+    /// **THE WORD AND THE WHOLE SENTENCE**, for a reader who has only this one line — see
+    /// [`ReflectReason::noted`].
+    #[must_use]
+    pub fn noted(self) -> String {
+        format!("{}: {}", self.word(), self.describe())
+    }
+
+    /// **THE ONE PLACE `reflect.done` IS RAISED** — the event and the word, together, because the
+    /// document's transition will not fire without both.
+    ///
+    /// ⚠⚠⚠ A funnel rather than two call sites spelling the same JSON, for
+    /// [`Pumped::Moved`]'s `found` reason: the defect this type exists to close is *two returns, one
+    /// arrow*, and two independent constructions of the payload is the same shape one layer down —
+    /// the day a third ending is added, the third `return` is what must not be able to forget.
+    fn raised(self) -> Raise {
+        Raise::carrying(
+            AiLoopEvent::ReflectDone,
+            serde_json::json!({DONE_REASON: self.word()}),
+        )
+    }
+}
+
 /// **WHY THIS PASS'S EDGE WAS TAKEN**, for a state that several edges reach with several different
 /// meanings — [`Pumped::Moved`]'s `because`.
 ///
 /// # ⚠⚠⚠ Why one slot rather than one field per state
 ///
-/// `ai_loop.scxml` has two such states and they were found one round apart. `reflecting` is reached
-/// three ways and every one of them wrote the same arrow (register item 261); `stopping` is reached
-/// by two transitions carrying FOUR ceilings and every one of them wrote the same arrow too
-/// (register item 265). A second field beside the first would have made the third such state a
-/// third field, and the walk that composes them a longer and longer list of *did this one happen* —
-/// the flat driver this crate already owes for. **The question is one question**: *this pass took an
-/// edge into a many-doored state; which door was it?* So it is one slot, and a state that grows the
-/// same ambiguity adds an arm here.
+/// `ai_loop.scxml` has THREE such states and they were found one round apart each. `reflecting` is
+/// reached three ways and every one of them wrote the same arrow (register item 261); `stopping` is
+/// reached by two transitions carrying FOUR ceilings and every one of them wrote the same arrow too
+/// (register item 265); `closing` is reached by ONE transition that this driver raises for two
+/// different runs, and it wrote the same arrow for both (register item 267). A second field beside
+/// the first would have made the third such state a third field, and the walk that composes them a
+/// longer and longer list of *did this one happen* — the flat driver this crate already owes for.
+/// **The question is one question**: *this pass took an edge into a many-doored state; which door
+/// was it?* So it is one slot, and a state that grows the same ambiguity adds an arm here.
 ///
-/// # ⚠⚠ Why the two arms carry DIFFERENT vocabularies, and that is correct
+/// # ⚠⚠ Why the arms carry DIFFERENT vocabularies, and that is correct
 ///
 /// [`ReflectReason`] is a word the DOCUMENT assigns and this driver transcribes;
 /// [`Ceiling`](crate::driver::Ceiling) is the
-/// driver's own type, three of whose four values the document only ever echoes back. Which half owns
-/// the fact is exactly what each arm records, and flattening them into one word list would lose it —
-/// see `stop_reason` in the document, which says the same thing from the other side.
+/// driver's own type, three of whose four values the document only ever echoes back; [`DoneReason`]
+/// is this driver's for BOTH its values, because neither of the two facts behind it is visible from
+/// the document at all. Which half owns the fact is exactly what each arm records, and flattening
+/// them into one word list would lose it — see `stop_reason` and `done_reason` in the document,
+/// which say the same thing from the other side.
 ///
-/// ⚠ Rendered through [`noted`](Self::noted) alone, so a consumer never spells either vocabulary.
+/// ⚠⚠ **A DOOR IS NOT ALWAYS A `<transition>`.** The first two arms are ambiguous because several
+/// edges arrive; the third is ambiguous because several `return`s raise ONE event. A reader who
+/// went looking for the next one by counting transitions would have missed it — the question is
+/// *how many different runs take this arrow*, and the answer is not always in the document.
+///
+/// ⚠ Rendered through [`noted`](Self::noted) alone, so a consumer never spells any of the
+/// vocabularies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Because {
     /// The pass ENTERED `reflecting`, and this is which of the three `judge` edges took it there.
@@ -888,6 +1013,10 @@ pub enum Because {
     /// which reach the machine through
     /// the driver's `stop_short` and are echoed back out of the datamodel here.
     Stopped(crate::driver::Ceiling),
+    /// The pass ENTERED `closing`, and this is WHICH OF THE TWO ENDINGS got there — the agent
+    /// declaring the north star reached, or a reached milestone with no successor named. See
+    /// [`DoneReason`].
+    Closed(DoneReason),
 }
 
 impl Because {
@@ -898,6 +1027,7 @@ impl Because {
         match self {
             Self::Reflected(reason) => reason.noted(),
             Self::Stopped(ceiling) => ceiling.noted(),
+            Self::Closed(ending) => ending.noted(),
         }
     }
 }
@@ -2029,6 +2159,10 @@ impl OuterLoop {
                 // ABSENCE of a key, which is the reading this workspace has burned wire numbers
                 // over. Register item 265; the document assigns the word on both doors.
                 AiLoopState::Stopping => self.stopping_because().map(Because::Stopped),
+                // ⚠⚠⚠ ONE TRANSITION AND TWO RUNS — a many-doored state whose doors are not
+                // `<transition>`s but `return`s in [`Self::reflect`], which is why counting the
+                // document's edges would not have found it. Register item 267.
+                AiLoopState::Closing => self.closing_because().map(Because::Closed),
                 AiLoopState::Idle
                 | AiLoopState::Priming
                 | AiLoopState::Working
@@ -2039,7 +2173,6 @@ impl OuterLoop {
                 | AiLoopState::Reviewing
                 | AiLoopState::Restarting
                 | AiLoopState::Resuming
-                | AiLoopState::Closing
                 | AiLoopState::Converged
                 | AiLoopState::Exhausted
                 | AiLoopState::Failed
@@ -2083,6 +2216,22 @@ impl OuterLoop {
     /// [`reflecting_because`](Self::reflecting_because)'s reason.
     fn stopping_because(&self) -> Option<crate::driver::Ceiling> {
         crate::driver::Ceiling::from_wire(&self.text_of(STOP_REASON)?)
+    }
+
+    /// **WHICH OF THE TWO ENDINGS PUT THE MACHINE IN `closing`** — the word this driver sent in on
+    /// the edge, read back out of the datamodel it was assigned to.
+    ///
+    /// ⚠⚠ Read from the DOCUMENT rather than remembered from the raise, which is not bookkeeping
+    /// for its own sake: what a reader is told must be what the machine was told, and a driver that
+    /// reported its own intention could say *the agent declared it* about a run whose transition
+    /// never fired. One variable, one authority — [`stopping_because`](Self::stopping_because)'s
+    /// argument, arriving at the same answer from the other direction.
+    ///
+    /// [`None`] for a datamodel that has stopped answering, and — unreachably, because the only
+    /// producer is [`DoneReason::raised`] — for a word this driver has no ending for. ⚠ Not a
+    /// failure either way, for [`reflecting_because`](Self::reflecting_because)'s reason.
+    fn closing_because(&self) -> Option<DoneReason> {
+        DoneReason::named(&self.text_of(DONE_REASON)?)
     }
 
     /// **THE REFUSAL THIS LOOP IS HOLDING**, or [`None`] when its notice is anything else — the one
@@ -2665,13 +2814,19 @@ impl OuterLoop {
         if ended != AiLoopEvent::TurnDone {
             return Ok(ended.into());
         }
-        // ⚠⚠⚠ ASKED FIRST, because it is the only answer that ends the RUN. The reflection puts two
-        // questions in one prompt — *what is the next checkpoint* and *is the whole thing finished*
-        // — and an agent that says the second has nothing to say to the first. Reading the milestone
-        // first would take a run whose agent had just declared itself finished and hand its
-        // replacement a checkpoint.
+        // ⚠⚠⚠ ASKED FIRST, because it is the answer the AGENT gave about the whole job. The
+        // reflection puts two questions in one prompt — *what is the next checkpoint* and *is the
+        // whole thing finished* — and an agent that says the second has nothing to say to the
+        // first. Reading the milestone first would take a run whose agent had just declared itself
+        // finished and hand its replacement a checkpoint.
+        //
+        // ⚠⚠⚠ AND IT IS ONE OF **TWO** ENDINGS THAT RAISE THIS EVENT, which is register item 267:
+        // the other is a reached milestone with no successor, forty lines down. They publish the
+        // same `Verdict::Converged` and wrote the same arrow, and they are not the same finding —
+        // this one is a CLAIM ABOUT THE DESTINATION and that one is a run that ran out of things to
+        // propose. The word travels with the event so the walk can say which. See [`DoneReason`].
         if self.said_marker(panes, NORTH_STAR_MARKER) {
-            return Ok(AiLoopEvent::ReflectDone.into());
+            return Ok(DoneReason::Declared.raised());
         }
         let (Some(standing), Some(next)) =
             (self.text_of(STANDING), self.text_of(Owed::Turn.variable()))
@@ -2698,8 +2853,12 @@ impl OuterLoop {
         // this guard and `Pumped::Moved`'s `because` are two readers of one datamodel variable, and
         // a document that respelled it would take them both out in the compile rather than leaving
         // this one quietly matching nothing. See [`ReflectReason`].
+        // ⚠⚠⚠ AND WHAT IT ENDS THE RUN WITH IS NOT WHAT THE BRANCH ABOVE ENDS IT WITH. **Nobody
+        // said the north star was met.** One agent had no next checkpoint to name, and ending was
+        // the only thing left that was not a livelock — so the reader is told that, in those words,
+        // rather than being handed the same three words as a run that reported itself finished.
         if decided.is_none() && self.reflecting_because() == Some(ReflectReason::Milestone) {
-            return Ok(AiLoopEvent::ReflectDone.into());
+            return Ok(DoneReason::NoSuccessor.raised());
         }
         // ⚠⚠ NOTHING NEW AND NOTHING LEARNED, so a restart would throw away an agent's whole
         // context having changed nothing — the document's own words, and the predicate is still
@@ -3996,6 +4155,122 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **EVERY EDGE INTO `closing` CARRIES THE ENDING THIS DRIVER NAMED, AND WILL NOT FIRE
+    /// WITHOUT IT** — register item 267's other half, and the one thing about this state a run
+    /// cannot say.
+    ///
+    /// # ⚠⚠⚠ Why it is not the two gates next door with a name changed
+    ///
+    /// Those hold *several transitions, each assigning a literal*. `closing` has ONE transition and
+    /// the ambiguity is on the DRIVER's side — two `return`s in [`OuterLoop::reflect`] — so the
+    /// thing to hold is not *does every door say why* but **can a door open without saying why**.
+    ///
+    /// The answer is the guard, and what the guard is worth was measured both ways by raising
+    /// `reflect.done` bare:
+    ///
+    /// * **guarded** — the edge does not fire. The walk gets a `Reflecting --ReflectDone-->
+    ///   Reflecting` self-arrow, which no correct run produces, and the pass falls through to
+    ///   whichever ending the NEXT look decides — so the run ends naming the wrong one, loudly.
+    /// * **unguarded** — the edge fires, `done_reason` is assigned `nil`, and the walk writes
+    ///   `Reflecting --ReflectDone--> Closing`: **the shipped defect, byte for byte, and
+    ///   indistinguishable from a correct run.**
+    ///
+    /// ⚠⚠ The first draft of the document's comment claimed the guard would stop the run outright.
+    /// It does not; the mutation said so and the comment now says what was measured. **A comment is
+    /// a claim about the product and this one was wrong within the hour** (R398's lesson, again).
+    ///
+    /// ⚠⚠⚠ **AND THE GUARD'S PREMISE IS ARITHMETIC, exactly as `stopping`'s is.** It is bare
+    /// truthiness over a Lua datamodel, where the only false values are `nil` and `false` — so a
+    /// [`DoneReason`] that spelled itself `''` would pass the guard and then read back as no ending
+    /// at all, which is the silence the guard exists to prevent, reintroduced from the other side.
+    #[test]
+    fn the_one_edge_into_closing_carries_the_ending_this_driver_named() {
+        /// The authority. ⚠ Read as TEXT, for the two gates above's reason.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The attribute that names an edge arriving at the state in question.
+        const INTO: &str = "target=\"closing\"";
+        /// And the one that publishes its cause.
+        const ASSIGNS: &str = "location=\"done_reason\"";
+        /// What the driver publishes the ending under — see [`DoneReason::raised`].
+        const DRIVERS_KEY: &str = "_event.data.done_reason";
+
+        // ── THE PREMISE OF THE GUARD ──
+        let empty: Vec<DoneReason> = DoneReason::ALL
+            .into_iter()
+            .filter(|it| it.word().is_empty())
+            .collect();
+        assert!(
+            empty.is_empty(),
+            "⚠⚠⚠ a `DoneReason` whose word is EMPTY passes `cond=\"{DRIVERS_KEY}\"` — this \
+             datamodel is Lua and an empty string is TRUE there — and then reads back as no ending \
+             at all, which is the very silence the guard is for. Got {empty:?}",
+        );
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        // Each edge into `closing`, as (the line an author would open, whether it is guarded on the
+        // driver's key, the expression it assigns).
+        let mut edges: Vec<(usize, bool, Option<&str>)> = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            if !line.contains(INTO) {
+                continue;
+            }
+            let body = lines[at + 1..]
+                .iter()
+                .take_while(|body| !body.contains("</transition>"));
+            let assigned = if line.trim_end().ends_with("/>") {
+                None
+            } else {
+                body.filter_map(|body| body.split_once(ASSIGNS))
+                    .find_map(|(_, rest)| rest.split_once("expr=\""))
+                    .and_then(|(_, rest)| rest.split_once('"'))
+                    .map(|(expr, _)| expr.trim())
+            };
+            edges.push((
+                at + 1,
+                line.contains(&format!("cond=\"{DRIVERS_KEY}\"")),
+                assigned,
+            ));
+        }
+
+        // ── THE CONTROL: the document really does reach that state ──
+        assert!(
+            !edges.is_empty(),
+            "⚠⚠⚠ the control: `ai_loop.scxml` must have a transition carrying {INTO}, or this gate \
+             is holding a document with no closing report in it at all",
+        );
+
+        // ── 1. EVERY ONE OF THEM REFUSES TO FIRE WITHOUT AN ENDING ──
+        let unguarded: Vec<usize> = edges
+            .iter()
+            .filter(|(_, guarded, _)| !guarded)
+            .map(|(line, _, _)| *line)
+            .collect();
+        assert!(
+            unguarded.is_empty(),
+            "⚠⚠⚠ REGISTER ITEM 267: `ai_loop.scxml` line(s) {unguarded:?} take an edge into \
+             `closing` without `cond=\"{DRIVERS_KEY}\"`. Measured: unguarded, a `reflect.done` \
+             raised with no word still fires, assigns `nil`, and writes the bare arrow this item is \
+             about — a run that ended for one of two opposite reasons, reported as neither. The \
+             guard is what makes a wordless raise unable to reach this state",
+        );
+
+        // ── 2. AND EVERY ONE OF THEM CARRIES THE DRIVER'S OWN WORD ──
+        let unknown: Vec<(usize, bool, Option<&str>)> = edges
+            .iter()
+            .filter(|(_, _, assigned)| *assigned != Some(DRIVERS_KEY))
+            .copied()
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "⚠⚠⚠ the document assigns a `done_reason` this driver did not send: {unknown:?}. Both \
+             endings are facts only the driver can see — a marker on somebody's pane, and that \
+             marker's absence beside a reflection reason — so unlike `reflect_reason` there is no \
+             literal this file could correctly spell. It must be {DRIVERS_KEY}, whose value is \
+             already one of {:?}",
+            DoneReason::ALL.map(DoneReason::word),
+        );
+    }
+
     /// ⚠⚠⚠ **EVERY CEILING THIS DRIVER KNOWS HAS A SENTENCE THE DOCUMENT SAYS TO THE AGENT** —
     /// register item 264's other direction, and the one a run structurally cannot reach.
     ///
@@ -4858,21 +5133,30 @@ mod tests {
                          longer the unobstructed run the assertions below are about. Walked \
                          {walked:?}",
                     );
-                    // ⚠⚠ AND THE ONE REFLECTION IT DOES MAKE IS THE MILESTONE'S. This brief's
-                    // `reflect_every` equals its `max_turns` and this peer asks nothing, so
-                    // neither the budget guard nor the standing-instruction one can fire — the
-                    // agent saying the marker is the only thing that can reach `reflecting`, and
-                    // the reflection then names no successor and ends the run through `closing`.
-                    // A pass reporting any OTHER cause means some guard fired that this walk's
-                    // assertions do not describe.
+                    // ⚠⚠ AND THIS RUN PASSES EXACTLY TWO MANY-DOORED STATES, BY THE ONE DOOR EACH
+                    // THAT ITS BRIEF LEAVES OPEN. This brief's `reflect_every` equals its
+                    // `max_turns` and this peer asks nothing, so neither the budget guard nor the
+                    // standing-instruction one can fire — the agent saying the marker is the only
+                    // thing that can reach `reflecting`. The reflection then names no successor,
+                    // which is the only way this peer reaches `closing`: it has no opinion about
+                    // what comes next and never says the north star marker. A pass reporting any
+                    // OTHER cause means some guard fired that this walk's assertions do not
+                    // describe — and `stopping` is unreachable here, because there is budget to
+                    // spare.
+                    //
+                    // ⚠ It was ONE reason until register item 267 split `closing`'s arrow, and the
+                    // list is spelled rather than loosened: a run that reported `Closed(Declared)`
+                    // would mean this peer had claimed the whole job finished, which it cannot do.
+                    const DOORS: [Because; 2] = [
+                        Because::Reflected(ReflectReason::Milestone),
+                        Because::Closed(DoneReason::NoSuccessor),
+                    ];
                     assert!(
-                        because.is_none_or(
-                            |reason| reason == Because::Reflected(ReflectReason::Milestone)
-                        ),
+                        because.is_none_or(|reason| DOORS.contains(&reason)),
                         "⚠⚠ {from:?} --{raised:?}--> {to:?} says the edge was taken because \
-                         {because:?}, and the only reason available to this brief is a reached \
-                         milestone — this run has budget to spare, so it cannot reach `stopping` \
-                         either. Walked {walked:?}",
+                         {because:?}, and the only doors this brief leaves open are {DOORS:?} — \
+                         this run has budget to spare, so it cannot reach `stopping`, and its peer \
+                         never says the north star marker. Walked {walked:?}",
                     );
                     walked.push((from, raised, to));
                 }
