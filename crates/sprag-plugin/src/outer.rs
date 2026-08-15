@@ -1032,6 +1032,29 @@ pub struct OuterLoop {
     /// would mean publishing a WORK turn's output as the run's account, which is a different claim
     /// than the one the agent was asked to make.
     reported: Option<String>,
+    /// ⚠⚠⚠ **THE RUN IS STOPPING SHORT ON A CEILING THIS MACHINE CANNOT SEE** — set by
+    /// [`stop_short`](Self::stop_short) and read into every `judge` the driver raises after it.
+    ///
+    /// The document knows about its own `max_turns` and nothing else. A run that meets one of the
+    /// [`Guardrails`](crate::driver::Guardrails) instead is stopped from OUTSIDE, and before this
+    /// existed it was simply not stepped again — so the account `stopping` asks for was reached by
+    /// one of the three ways a run can run out and by neither of the other two.
+    ///
+    /// ⚠⚠ IT IS A LATCH AND NEVER CLEARED. The ceiling that set it stays true for the rest of the
+    /// run, so a judgement that read it once and forgot would send the loop back to work on a
+    /// budget that is already spent — `stopping`'s own arithmetic, from the other side.
+    ///
+    /// ⚠ It reaches the machine as `_event.data.stop_short` rather than as a `<data>` assignment,
+    /// because the fact belongs to THIS judgement and the machine's own guard is what decides on
+    /// it — the same shape `judged` and `done` already have.
+    stopping_short: bool,
+    /// ⚠⚠⚠ **THE LAST PROMPT WAS TYPED AND NEVER SUBMITTED** — the run's clock landed between the
+    /// two. Written by [`say`](Self::say) on every prompt, so it describes the CURRENT turn and
+    /// cannot go stale; read by [`asked_nothing`](Self::asked_nothing).
+    ///
+    /// A turn that was never started can never end, so there is nothing here to wait for and
+    /// nothing to judge — see `say`, which holds the live measurement this field exists for.
+    unasked: bool,
 }
 
 impl OuterLoop {
@@ -1093,7 +1116,43 @@ impl OuterLoop {
             claimed: None,
             awaiting: None,
             reported: None,
+            stopping_short: false,
+            unasked: false,
         })
+    }
+
+    /// **WAS THE TURN IN FLIGHT EVER ACTUALLY ASKED?** — [`false`] for a prompt that reached the
+    /// composer and never the program, because the run's clock landed between the typing and the
+    /// Enter. See `say`, which holds the live measurement this exists for.
+    #[must_use]
+    pub const fn asked_nothing(&self) -> bool {
+        self.unasked
+    }
+
+    /// ⚠⚠⚠ **THE RUN IS OUT OF BUDGET — ROUTE THE NEXT JUDGEMENT TO `stopping`.**
+    ///
+    /// The one writer of [`stopping_short`](Self#structfield.stopping_short), called by
+    /// [`AiLoop::ask_for_an_account`](crate::plugin::Plugin::ask_for_an_account) when a
+    /// [`Guardrails`](crate::driver::Guardrails) ceiling has bound the run.
+    ///
+    /// ⚠ It does NOT push the machine anywhere itself, and that is the whole safety of it: the turn
+    /// in flight is a real agent mid-reply, and a driver that jumped to `stopping` would type the
+    /// account's question over a peer that is still working — the failure class every silent edge
+    /// in `Owed::on` exists to avoid. The turn ends the way it was always going to, `judging` is
+    /// entered the way it always is, and the flag decides only what happens NEXT.
+    pub const fn stop_short(&mut self) {
+        self.stopping_short = true;
+    }
+
+    /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its caller declared it — [`None`] where
+    /// they declared nothing.
+    ///
+    /// ⚠ Read by the plugin to size the window an account turn is given
+    /// ([`Accounting::Within`](crate::plugin::Accounting::Within)), which is the one place a number
+    /// out here has to be somebody else's rather than this crate's.
+    #[must_use]
+    pub const fn turn_within(&self) -> Option<Duration> {
+        self.turn.within()
     }
 
     /// **TELL THE MACHINE WHAT THIS RUN IS FOR** — the template filled in by a caller that did not
@@ -1575,9 +1634,16 @@ impl OuterLoop {
             // One turn has landed. The document decides in priority order, and what it needs from
             // out here is whether the agent said it was done — `judge`'s first guard reads
             // `_event.data.done`.
+            // ⚠⚠⚠ AND THE SECOND FACT IS ONE THE MACHINE STRUCTURALLY CANNOT READ: whether the
+            // run's budget — the DRIVER's, not the document's `max_turns` — is already spent. See
+            // [`stop_short`](Self::stop_short). A boolean beside the name for `judged`'s measured
+            // reason: in Lua the only false values are `nil` and `false`.
             AiLoopState::Judging => Raise::carrying(
                 AiLoopEvent::Judge,
-                serde_json::json!({"done": self.said_done(panes)}),
+                serde_json::json!({
+                    "done": self.said_done(panes),
+                    "stop_short": self.stopping_short,
+                }),
             ),
 
             // ⚠⚠⚠ THE AUTHOR'S STANDING INSTRUCTIONS, CARRIED OUT. A dialog no consent covered is
@@ -1723,8 +1789,9 @@ impl OuterLoop {
                     self.noticed = Some(Noticed::Interrupted(who));
                     Some(AiLoopEvent::TurnInterrupted)
                 }
-                // The run ended underneath — cancelled, or out of time.
-                Reached::RunEnded(_) => Some(AiLoopEvent::Cancel),
+                // The run ended underneath — see [`ended_underneath`](Self::ended_underneath) for
+                // why the two ways that happens are not one answer.
+                Reached::RunEnded(_) => Some(Self::ended_underneath(run)),
                 // The peer is asking and NOTHING this run holds answers it — the barrier's own reason
                 // rides along, so a caller learns whether to write a clause or fix the one they wrote.
                 Reached::Asking(unanswered) => {
@@ -1787,9 +1854,46 @@ impl OuterLoop {
                 // the driver that belongs in the document. The run's own clock bounds it, and the next
                 // pump asks again.
                 Over::NotYet => AiLoopEvent::Null,
-                Over::RunEnded => AiLoopEvent::Cancel,
+                Over::RunEnded => Self::ended_underneath(run),
             },
         )
+    }
+
+    /// ⚠⚠⚠ **A PERSON'S STOP AND A CLOCK RUNNING OUT ARE NOT THE SAME EVENT**, and this document
+    /// only ever spelled one of them.
+    ///
+    /// Both doors above answer *the run ended underneath this turn*, and both used to raise
+    /// `cancel` — putting the machine straight into a FINAL state on a fact that is not always
+    /// about a person at all.
+    ///
+    /// # ⚠⚠⚠ What that cost, and why it could not be seen from in here before
+    ///
+    /// It read correctly for as long as an ended run was an ended run: whichever it was, the
+    /// [`Driver`](crate::driver::Driver) was about to end the run at its very next loop top, and
+    /// `cancelled` versus `exhausted` was ITS to decide. That is still true of a CANCEL. It stopped
+    /// being true of a deadline the moment a run out of time could be asked where it got to: the
+    /// account is one more turn of THIS machine, and a machine already sitting in `cancelled` has
+    /// no turn left to give. **A wall clock is the commonest way a real loop ends, and it was the
+    /// one ending that landed inside a wait rather than between two steps** — so it, above all
+    /// others, arrived with the document already shut.
+    ///
+    /// So a clock answers [`Null`](AiLoopEvent::Null): *nothing happened here that this document
+    /// has a word for*. The machine stays exactly where it was, the pump returns, and the Driver —
+    /// the one authority on its own ceilings — decides on the next loop top whether to end the run
+    /// or to spend a window on an account. Nothing is lost by waiting one pump: that decision was
+    /// always the Driver's, and the run cannot take another turn's work in the meantime because
+    /// this pass raised no transition.
+    ///
+    /// ⚠ A CANCEL still raises `cancel`, and it must: `cancelled` is the document's word for *a
+    /// person stopped this*, and it is the only producer left. A run stopped by somebody is not
+    /// asked for an account — there is no time left to spend on one, and the Driver is about to
+    /// interrupt the very pane the question would go into.
+    fn ended_underneath(run: &RunContext) -> AiLoopEvent {
+        if run.cancelled() {
+            AiLoopEvent::Cancel
+        } else {
+            AiLoopEvent::Null
+        }
     }
 
     /// **WAIT FOR THE PERSON** — `awaiting_human`'s whole effect, and the last state of
@@ -1876,7 +1980,17 @@ impl OuterLoop {
                 AiLoopEvent::TurnDone,
                 serde_json::json!({ "context": self.context_now(panes) }),
             ),
-            Over::RunEnded => AiLoopEvent::Cancel.into(),
+            // ⚠⚠ THE THIRD DOOR ONTO *the run ended underneath* — see
+            // [`ended_underneath`](Self::ended_underneath), which holds the whole reason a clock
+            // and a person's stop are not one answer.
+            Over::RunEnded => match Self::ended_underneath(run) {
+                // A person's stop ends this wait as it ends everything else.
+                AiLoopEvent::Cancel => AiLoopEvent::Cancel.into(),
+                // ⚠ A CLOCK IS THE DRIVER'S CEILING AND NOT AN EVENT THIS STATE HAS A WORD FOR, and
+                // the anchor STAYS: the person is no less expected than they were a poll ago, and
+                // clearing it would restart their patience if the run turned out to have time left.
+                _ => return Ok(AiLoopEvent::Null.into()),
+            },
             // ⚠ The question is still on the screen, or the peer has not finished what the person
             // unblocked. Neither is a thing that HAPPENED — so unless the caller's patience has run
             // out, the machine stays exactly where it is.
@@ -2446,6 +2560,26 @@ impl OuterLoop {
                 written: written.bytes(),
             });
         }
+        // ⚠⚠⚠ **AND A DELIVERY THE RUN'S OWN CLOCK CUT SHORT IS NOT A PROMPT EITHER**, which is a
+        // distinction this driver did not make until a LIVE run showed what it costs.
+        //
+        // [`deliver`] writes the text and presses Enter only once the text is on the screen — so
+        // the run stopping between those two leaves the prompt SITTING IN THE COMPOSER, typed and
+        // unsubmitted. `Delivered::Stopped` says exactly that and this function used to fall
+        // through it into `Ok`: the transition landed, `Completion` was armed, and the loop then
+        // waited out its whole bound for a turn that had never started.
+        //
+        // ⚠⚠ **Measured against a real `claude`, twice in a row**: the pane's last rows were the
+        // turn prompt inside the composer's own box rule, with the agent idle underneath it, and
+        // the run reported `no account: the window it was given to say so ran out first` — about an
+        // agent nobody had asked anything. A delivery is a large fraction of a short turn, so the
+        // clock lands inside one often rather than rarely.
+        //
+        // ⚠ It is NOT an error: the run's clock running out is not a fault of the pane or of the
+        // prompt, and reporting `failed` would send its reader looking for a break. What it is, is
+        // a turn that does not exist — recorded here, read by
+        // [`asked_nothing`](Self::asked_nothing), and turned into a stated reason by the plugin.
+        self.unasked = matches!(delivered, Delivered::Stopped { .. });
         Ok(delivered.written().bytes())
     }
 

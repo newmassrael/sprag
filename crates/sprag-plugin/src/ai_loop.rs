@@ -45,9 +45,9 @@ use crate::access::{PaneAccess, PaneError};
 use crate::consent::Unanswered;
 use crate::driver::Ceiling;
 use crate::outer::{AiLoopSpec, AiLoopState, Brief, Briefed, Noticed, OuterLoop, Pumped};
-use crate::plugin::{Cost, Plugin, Step, Verdict};
+use crate::plugin::{Accounting, Cost, Plugin, Step, Verdict};
 use crate::readiness::Reached;
-use crate::run::RunContext;
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext};
 
 /// **WHY A LOOP DID NOT START** — every refusal is answered at the door, before a byte is typed.
 ///
@@ -102,6 +102,21 @@ pub struct AiLoop {
     /// the run reported having stopped it. **The one field this type could hold is the one that made
     /// `driving` lie.**
     inner: OuterLoop,
+    /// ⚠⚠⚠ **WHICH OF THE RUN'S OWN CEILINGS STOPPED IT**, when one did — recorded at the moment
+    /// the Driver asked this plugin for an account, and reported back as the terminal step's
+    /// [`Verdict::Exhausted`].
+    ///
+    /// # ⚠⚠ Why a run stopped from outside must not report the DOCUMENT's budget
+    ///
+    /// The machine reaches `exhausted` through `stopping` either way, and `Verdict::Exhausted`
+    /// means *the plugin's own declared budget is spent, and which one*. For a run the wall clock
+    /// stopped that sentence is false: `max_turns` was never reached, and a journal saying `turns`
+    /// tells its reader to raise a number that would have bought them nothing. The Driver already
+    /// knows which ceiling it was, so it says so when it asks — and this is where the answer is
+    /// kept until the step that has to spell it.
+    ///
+    /// ⚠ [`None`] for every run that ends on its own terms, where [`Ceiling::Turns`] is the truth.
+    stopped_by: Option<Ceiling>,
 }
 
 impl std::fmt::Debug for AiLoop {
@@ -157,7 +172,10 @@ impl AiLoop {
         // already typed and cannot be malformed; what this reaches is the author's, and the round
         // trip that just carried either of them.
         inner.screening().map_err(NotStarted::Screening)?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            stopped_by: None,
+        })
     }
 
     /// Where the machine is — the loop's own state, for a caller that wants it beside the run's.
@@ -297,11 +315,17 @@ impl AiLoop {
             // RUN, on a pane the run has just let go of. So the ONE authority that saw it says so.
             // ⚠ `Verdict::Blocked` is deliberately not used: the run's ending is the budget, and a
             // reader sent to raise `max_turns` is being sent to the right knob.
+            //
+            // ⚠⚠⚠ **AND WHICH BUDGET IT WAS IS NOT ALWAYS THIS DOCUMENT'S.** Since a ceiling of the
+            // RUN's can route the machine here too ([`Plugin::ask_for_an_account`]), naming
+            // `turns` unconditionally would tell a caller whose wall clock ran out to raise a
+            // number they never came near. The Driver said which when it asked; this reports it
+            // back — see [`stopped_by`](Self#structfield.stopped_by).
             AiLoopState::Exhausted => {
                 if let Some(unfinished) = self.left_behind() {
                     note.push_str(&unfinished);
                 }
-                Verdict::Exhausted(Ceiling::Turns)
+                Verdict::Exhausted(self.stopped_by.unwrap_or(Ceiling::Turns))
             }
             // Reached from `awaiting_human --unattended-->`, which nothing produces yet (registered
             // debt), and kept exhaustive rather than folded into the arm below it.
@@ -607,6 +631,127 @@ impl Plugin for AiLoop {
     fn captured(&self) -> Option<String> {
         self.inner.report().map(ToOwned::to_owned)
     }
+
+    /// ⚠⚠⚠ **A RUN THE DRIVER'S OWN CEILING STOPPED IS ASKED WHERE IT GOT TO, TOO** — register item
+    /// 208, and the half of `stopping` that the document could not reach on its own.
+    ///
+    /// # ⚠⚠⚠ Why this is not the same as `max_turns`, and why it needed a second door
+    ///
+    /// `judging`'s `turns >= max_turns` is the DOCUMENT's budget: the loop can see it coming, so it
+    /// routes itself into `stopping` and asks. The [`Guardrails`](crate::driver::Guardrails) cannot
+    /// be seen from in here at all — they are counted outside, between steps — so a run stopped by
+    /// `max_iterations` or `max_duration` was simply not stepped again. **Measured before this
+    /// existed: the loop was left standing in `working` or `judging`, its agent at rest, and the
+    /// run handed back `exhausted` and nothing** — the same silence `stopping` had just removed
+    /// from the ending next door.
+    ///
+    /// So the answer is the SAME ROUTE, entered by a different door: this records that the run is
+    /// stopping short, `judging` reads it off the very next `judge` and goes to `stopping`, and
+    /// everything downstream — the question, the echo discount, the capture — is the one that was
+    /// already built and gated. **A second way to ask would have been a second account to keep
+    /// right.**
+    ///
+    /// # ⚠⚠⚠ The states that cannot be asked, and the mechanism in each
+    ///
+    /// Exhaustive, and each group refuses for a fact about the PANE rather than for a policy —
+    /// `stopping`'s own table, one layer out:
+    ///
+    /// * a machine that never started has an agent that was never asked anything, so there is no
+    ///   account to give and no turn to give it in;
+    /// * `awaiting_human` means somebody else has that pane — a question this run may not answer is
+    ///   on it, or a person is typing in it — and typing a question there ANSWERS THE DIALOG or
+    ///   types under a hand. That is the refusal `screen.none` and `turn.interrupted` already make;
+    /// * a run between sessions has closed the one that did the work, and its replacement has
+    ///   nothing to account for: the account would be written by an agent that has done none of it;
+    /// * a machine already in a final state has ended, and the run's word for it is published.
+    ///
+    /// ⚠⚠ AND ONE MORE, which is a bound rather than a pane: a run whose caller put NO limit on a
+    /// turn would be asking for an account inside a window with no end. The window is the caller's
+    /// own `turn_within_ms` where they gave one, and where they gave none the substrate's published
+    /// [`DEFAULT_REPLY_TIMEOUT`] stands in, because *how long one AI reply may take* is exactly the
+    /// quantity being bounded and it is the number two other plugins in this crate already run on.
+    /// Neither is invented here.
+    ///
+    /// # ⚠⚠⚠ Why it is TWO of those turns, which a live run priced and no stand-in could
+    ///
+    /// The account cannot be asked until the turn in flight ENDS. Nothing here may type at a peer
+    /// that is mid-reply — that is the whole reason [`OuterLoop::stop_short`] sets a latch instead
+    /// of pushing the machine — so a ceiling that falls due while the agent is working buys a wait
+    /// before it buys a question. **Measured against a real `claude`, first run: the clock fell due
+    /// one step after a turn prompt went in, the window was spent entirely on
+    /// `Working --Null--> Working`, and the account was never asked at all.** Every stand-in in this
+    /// tree answers in microseconds, so every offline gate passed with a window of one.
+    ///
+    /// ⚠ So the window covers both turns, and both are the same declared number: one for the peer
+    /// to finish what nobody will now read — the run's ending is already decided, and the pane is
+    /// simply not this run's until it stops — and one for the answer. A turn already part-spent
+    /// leaves the remainder as slack, which is the honest direction to be wrong in.
+    ///
+    /// [`OuterLoop::stop_short`]: crate::outer::OuterLoop::stop_short
+    fn ask_for_an_account(&mut self, ceiling: Ceiling) -> Accounting {
+        let state = self.inner.state();
+        match state {
+            // ⚠⚠⚠ FIRST, BECAUSE IT CUTS ACROSS THE STATES BELOW, and a LIVE run is what found it.
+            // A prompt the run's clock cut short between the typing and the Enter is a turn that
+            // NEVER STARTED — so it can never end, `judging` is never reached, and the account
+            // would be waited for until the window ran out. Worse, the composer still holds that
+            // text, so a question typed now would be submitted WITH it (register item 197).
+            // Measured twice against a real `claude`; see [`OuterLoop::say`].
+            state if self.inner.asked_nothing() => Accounting::Cannot(format!(
+                "the run's clock landed between typing its last prompt and submitting it, so in \
+                 {state:?} its agent was never asked anything and the composer still holds text \
+                 nobody sent"
+            )),
+            // A turn is in flight or one has just landed: the flag reaches `judging` on the very
+            // next judgement, which is the door `stopping` is already entered by.
+            //
+            // ⚠ `closing` and `stopping` are in this list and are already asking their own
+            // question. The flag changes nothing for them, and leaving them out would have been an
+            // exception nobody could state a reason for.
+            AiLoopState::Priming
+            | AiLoopState::Working
+            | AiLoopState::Judging
+            | AiLoopState::Screening
+            | AiLoopState::Redirecting
+            | AiLoopState::Closing
+            | AiLoopState::Stopping => {
+                self.stopped_by = Some(ceiling);
+                self.inner.stop_short();
+                // ⚠⚠⚠ TWO TURNS, AND A LIVE RUN IS WHAT PRICED THE SECOND ONE — see the doc above.
+                Accounting::Within(
+                    self.inner
+                        .turn_within()
+                        .unwrap_or(DEFAULT_REPLY_TIMEOUT)
+                        .saturating_mul(2),
+                )
+            }
+            AiLoopState::Idle => Accounting::Cannot(
+                "the loop never got its pane, so its agent was never asked anything and has \
+                 nothing to account for"
+                    .to_owned(),
+            ),
+            AiLoopState::AwaitingHuman => Accounting::Cannot(
+                "the pane is not this run's to type in: it is showing a question nothing here \
+                 could answer, or somebody is typing in it — asking where the run got to would \
+                 answer that dialog or type under their hand"
+                    .to_owned(),
+            ),
+            AiLoopState::Reflecting | AiLoopState::Restarting | AiLoopState::Resuming => {
+                Accounting::Cannot(format!(
+                    "the run is between sessions ({state:?}): the agent that did the work is being \
+                     replaced, and its successor has done none of it"
+                ))
+            }
+            AiLoopState::Converged
+            | AiLoopState::Exhausted
+            | AiLoopState::Failed
+            | AiLoopState::Cancelled
+            | AiLoopState::Blocked => Accounting::Cannot(format!(
+                "the loop had already ended in {state:?} when its {} ceiling fell due",
+                ceiling.wire_str(),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -625,7 +770,7 @@ mod tests {
     // them drove the layer UNDER the door in order to reach a state the door refused. The door no
     // longer refuses it, so the PLUGIN reaches it, which is the only height a caller has.
     use crate::outer::{AiLoopSpec, Brief, INNER_SESSION_ENDS};
-    use crate::plugin::Plugin;
+    use crate::plugin::{Accounting, Cost, Plugin, Verdict};
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
     use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
@@ -633,6 +778,10 @@ mod tests {
 
     /// The document's own composed prompt, as a person reading the file expects it.
     const COMPOSED_START_PROMPT: &str = "North star: ";
+
+    /// A peer that answers a working prompt at once — every gate here but the one measuring what
+    /// happens when a run's clock expires INSIDE a turn. See `standin_agent_reporting`.
+    const NO_THINKING: Duration = Duration::ZERO;
 
     /// A real script engine, as the daemon's construction site builds one.
     fn engine() -> Arc<dyn IScriptEngine> {
@@ -796,8 +945,10 @@ mod tests {
     /// the two readers agree and the first assertion above would pass through either one.
     #[test]
     fn a_converged_run_hands_back_the_report_its_agent_wrote() {
-        let (workspace, pane) =
-            crate::testing::standin_agent_reporting(crate::testing::Accounts::ForARunThatGotThere);
+        let (workspace, pane) = crate::testing::standin_agent_reporting(
+            crate::testing::Accounts::ForARunThatGotThere,
+            NO_THINKING,
+        );
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
@@ -897,6 +1048,7 @@ mod tests {
     fn a_run_that_ran_out_of_turns_hands_back_the_account_it_was_asked_for() {
         let (workspace, pane) = crate::testing::standin_agent_reporting(
             crate::testing::Accounts::ForARunThatRanOutOfTurns,
+            NO_THINKING,
         );
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(2), &standin_spec())
@@ -1082,6 +1234,417 @@ mod tests {
             loops.state(),
             AiLoopState::Exhausted,
             "and the document agrees it is the one that ended the run",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A RUN THE *DRIVER'S* OWN CEILING STOPPED SAYS WHERE IT GOT TO** — register item 208,
+    /// and the two thirds of *"a run that stops short accounts for itself"* that the document could
+    /// not reach on its own.
+    ///
+    /// # ⚠⚠⚠ What was measured here before it was built
+    ///
+    /// `stopping` is entered from `judging`'s `turns >= max_turns` — this DOCUMENT's budget. A run
+    /// meets the [`Guardrails`] instead at least as often, and those are counted OUTSIDE the plugin,
+    /// between steps. Measured with today's API at four iteration ceilings and five wall clocks:
+    /// **every one ended `exhausted` with the machine standing in `working` or `judging`, its agent
+    /// at rest, and [`Plugin::captured`] answering `None`.** Three ways to run out, one of them
+    /// explained — and the two that explained nothing are the two a caller sets by hand.
+    ///
+    /// # ⚠⚠ Why ALL THREE ceilings, in one gate, over one peer
+    ///
+    /// They are the same claim reached by three arithmetics, and the register names two of them.
+    /// Running them as a table rather than as three gates is what keeps them from drifting: the
+    /// assertions below are written once, so a fix that satisfies the step count and not the clock
+    /// cannot pass.
+    ///
+    /// ⚠ THE CEILING IS ASSERTED, not merely the ending. `exhausted — turns` here would mean the run
+    /// had reported the DOCUMENT's budget for a run that never came near it — telling its reader to
+    /// raise `max_turns` when the knob they set is the one that bound. That is the same assertion
+    /// `a_loop_that_uses_the_turns_it_was_briefed_with_reports_that_ceiling` makes in the other
+    /// direction, and one of them is worth nothing without the other.
+    #[test]
+    fn a_run_stopped_by_the_runs_own_ceiling_says_where_it_got_to() {
+        // ⚠ A ceiling that bites AFTER at least one whole turn and well before the peer could
+        // finish: measured, this fixture's turns take three steps each and it never says the
+        // marker, so eight steps is two turns of work and no possibility of converging.
+        for (guardrails, ceiling) in [
+            (
+                Guardrails {
+                    max_iterations: 8,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+                Ceiling::Iterations,
+            ),
+            (
+                Guardrails {
+                    max_iterations: 4_000,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_millis(120)),
+                },
+                Ceiling::Duration,
+            ),
+            // ⚠ THE THIRD GUARDRAIL, and it binds on the very first thing this loop spends: the
+            // start prompt. So this row also drives the account being asked for from `priming` —
+            // a run stopped before its agent has answered anything once — which the other two do
+            // not reach.
+            (
+                Guardrails {
+                    max_iterations: 4_000,
+                    max_cost: Some(Cost::Bytes(1)),
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+                Ceiling::Cost,
+            ),
+        ] {
+            let (workspace, pane) = crate::testing::standin_agent_reporting(
+                crate::testing::Accounts::ForARunThatRanOutOfTurns,
+                NO_THINKING,
+            );
+            let access = supervised(&workspace);
+            // ⚠⚠ THE DOCUMENT'S OWN BUDGET IS PUT OUT OF REACH, which is what makes this gate about
+            // the guardrails at all: a run that spent `max_turns` would reach `stopping` by the
+            // door that already existed and prove nothing about the new one.
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(1_000_000), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(guardrails)
+                .reporting_to(Arc::clone(&progress))
+                .run(&mut loops, &access, &RunContext::uncancellable());
+            let journal = progress.lock().expect("the progress cell").journal.clone();
+            let walked: Vec<String> = journal
+                .iter()
+                .filter_map(|entry| entry.note.clone())
+                .collect();
+
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Exhausted(ceiling),
+                "⚠⚠⚠ THE RUN MUST STILL END ON THE CEILING THAT STOPPED IT. The account is one \
+                 more TURN, and the machine reaches its own `exhausted` through `stopping` — so a \
+                 ceiling that moved to `turns` would send a caller to raise a budget their run \
+                 never came near. Walked: {walked:?}",
+            );
+            assert!(
+                walked.iter().any(|note| note.contains("Stopping")),
+                "⚠⚠⚠ THE RUN MUST HAVE BEEN ASKED. Without the outside door into `stopping` the \
+                 machine is simply never stepped again — measured, it was left standing in \
+                 `working` or `judging` with its agent at rest: {walked:?}",
+            );
+            assert!(
+                walked
+                    .iter()
+                    .any(|note| note
+                        .contains(&format!("own {} ceiling fell due", ceiling.wire_str()))),
+                "⚠⚠ AND THE WALK MUST SAY WHICH BUDGET SENT IT THERE. Both budgets reach `stopping` \
+                 by the same edge, so `Judging --Judge--> Stopping` reads identically for a run \
+                 that spent its `max_turns` and one a wall clock stopped — and only the Driver \
+                 knows which: {walked:?}",
+            );
+            // ⚠⚠ THE PREMISE OF THE ASSERTION BELOW, CHECKED FIRST — the converged gate's rule: an
+            // account that still fits on its pane is one both readers can see.
+            let rendered = access.pane_collapsed(pane).unwrap_or_default();
+            assert!(
+                !rendered.contains(crate::testing::REPORT_OPENS),
+                "⚠⚠ the account must have scrolled off the pane, or this proves nothing about the \
+                 reader; the screen still holds {:?}",
+                crate::testing::REPORT_OPENS,
+            );
+            let report = loops.captured().unwrap_or_default();
+            assert!(
+                report.contains(crate::testing::REPORT_OPENS)
+                    && report.contains(crate::testing::REPORT_CLOSES),
+                "⚠⚠⚠ A RUN STOPPED BY ITS OWN {ceiling:?} CEILING HANDED BACK NO ACCOUNT. This is \
+                 register item 208: `exhausted` is the ending a person can least read from its own \
+                 word, and it was the one that said nothing. Got {report:?}, walked {walked:?}",
+            );
+            assert!(
+                !report.contains("ACK"),
+                "⚠⚠⚠ THE LAST WORK TURN'S OUTPUT CAME BACK AS THE RUN'S ACCOUNT — *what did it say \
+                 last* answered to somebody who asked *what did it do*: {report:?}",
+            );
+            // ⚠⚠⚠ AND THE JOURNAL'S OWN LAST WORD, which the outcome cannot stand in for.
+            // `Verdict::Exhausted` carries the ceiling INSIDE it and means *the plugin's own
+            // declared budget is spent*: a run the wall clock stopped that spelled `turns` there
+            // would be false in the one record a reader diagnoses a loop from.
+            assert!(
+                matches!(
+                    journal.last().map(|entry| &entry.verdict),
+                    Some(Verdict::Exhausted(named)) if *named == ceiling,
+                ),
+                "⚠⚠⚠ the terminal step must name the ceiling that stopped the run, not the \
+                 document's own: {:?}",
+                journal.last(),
+            );
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+    }
+
+    /// ⚠⚠⚠ **A CLOCK THAT RUNS OUT *INSIDE* A TURN IS NOT A PERSON'S CANCEL** — the one shape a
+    /// fast stand-in cannot stage, and the one a real agent meets every time.
+    ///
+    /// # ⚠⚠⚠ Why the gate above is not enough
+    ///
+    /// Measured at five wall clocks against a peer that answers in microseconds, the deadline
+    /// always passed BETWEEN two of the driver's steps, so the loop was never inside a wait when it
+    /// expired. A real agent's turn is tens of seconds, so a real run's clock expires **inside
+    /// `Completion::wait`** — which answers `Over::RunEnded`, and which this driver used to
+    /// translate to the machine's `cancel`. That puts the document into a FINAL state, and a
+    /// machine already in one has no turn left to give: the account would be asked for on the very
+    /// path where it is most wanted and refused every time.
+    ///
+    /// So the peer here takes a whole second over a working prompt and the run's clock is a
+    /// fraction of that. What the gate asserts is the CONSEQUENCE rather than the translation —
+    /// the run still ends on its clock, and it still comes back with its agent's account.
+    ///
+    /// ⚠ The account is asked for AFTER the turn in flight ends, never on top of it. That is the
+    /// whole reason `stop_short` sets a flag instead of pushing the machine: the peer is mid-reply,
+    /// and a question typed there is typed over a working agent.
+    #[test]
+    fn a_clock_that_runs_out_while_the_agent_is_working_still_gets_an_account() {
+        let (workspace, pane) = crate::testing::standin_agent_reporting(
+            crate::testing::Accounts::ForARunThatRanOutOfTurns,
+            Duration::from_secs(1),
+        );
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(1_000_000), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let started = Instant::now();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 4_000,
+            max_cost: None,
+            // ⚠ A FRACTION OF ONE TURN, so the deadline lands inside the wait rather than between
+            // two steps — which is the whole hazard being staged.
+            max_duration: Some(Duration::from_millis(200)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let took = started.elapsed();
+        let walked: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|entry| entry.note.clone())
+            .collect();
+
+        // ⚠ THE CONTROL: the clock has to have expired while the peer was still thinking, or this
+        // gate is the one above with a slower fixture.
+        assert!(
+            took > Duration::from_millis(600),
+            "⚠ the run must have been inside a turn when its clock ran out; it took {took:?}",
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "⚠⚠⚠ A CLOCK RUNNING OUT IS THE RUN'S OWN CEILING, NOT SOMEBODY'S STOP. `cancelled` \
+             here means the loop reported a person's decision about a clock nobody watched — and \
+             it is a FINAL state, so the account can never be asked for. Walked: {walked:?}",
+        );
+        assert!(
+            loops
+                .captured()
+                .is_some_and(|report| report.contains(crate::testing::REPORT_CLOSES)),
+            "⚠⚠⚠ AND THE ACCOUNT STILL ARRIVES. This is the path a live run takes every time: a \
+             turn of tens of seconds and a clock that expires inside it. Walked: {walked:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A LOOP THAT CANNOT BE ASKED FOR AN ACCOUNT SAYS SO, AND THE REASON IS ABOUT THE
+    /// PANE** — the mechanism table item 208's answer rests on, driven at the door itself.
+    ///
+    /// # ⚠⚠⚠ Why this is asked directly rather than through a run
+    ///
+    /// The two states below are ones a ceiling has to fall due *while the loop is in them*, and
+    /// arranging that through a wall clock is a race: measured, a clock set to 400 ms landed in
+    /// `working` on one pass and `screening` on the next, and a gate written that way asserts
+    /// whatever the machine happened to be doing. **The claim is about the door, so the door is
+    /// what is asked** — and the exhaustive match behind it is what covers the states this gate
+    /// does not name.
+    ///
+    /// ⚠⚠ THE TWO REASONS MUST DIFFER, and that assertion is the half a per-state check cannot
+    /// make. One polite sentence would satisfy every *"it refused"* claim while telling a reader
+    /// the two situations apart from none — [`Stopped`]'s own distinctness argument, one type over.
+    #[test]
+    fn a_loop_that_cannot_be_asked_for_an_account_says_what_stops_it() {
+        // ── a machine nobody has stepped: its agent was never asked anything ──
+        let (idle_workspace, idle_pane) = standin_agent(u32::MAX);
+        let idle_access = supervised(&idle_workspace);
+        let mut never_started = AiLoop::new(engine(), idle_pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        assert_eq!(
+            never_started.state(),
+            AiLoopState::Idle,
+            "⚠ the control: a loop that has not been stepped has not spoken to anybody",
+        );
+        let never = never_started.ask_for_an_account(Ceiling::Duration);
+        let Accounting::Cannot(never) = never else {
+            panic!(
+                "⚠⚠⚠ a loop whose agent was never asked anything has nothing to account for, and \
+                 taking a window for it would spend a caller's ceiling on a turn that cannot \
+                 happen: {never:?}"
+            );
+        };
+        idle_access.lifecycle().expect("lifecycle").close(idle_pane);
+
+        // ── a machine waiting for a person: the pane is not this run's to type in ──
+        //
+        // ⚠ THE SAME PEER AND SPEC `a_question_no_rule_claims_pauses_the_run_and_a_person_resumes_
+        // it` uses, deliberately: reaching this state is that gate's subject, and a second
+        // arrangement for reaching it would be a second thing to keep working.
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, 2, None);
+        let access = crate::testing::supervised_asking(&workspace);
+        // ⚠⚠ SOMEBODY IS EXPECTED, which is what makes the loop STAY in `awaiting_human` rather
+        // than ending on the first dialog — `Attended::NoOne`, this file's usual value, is the
+        // honest answer for a pane nobody is looking at and passes through the state in one pump.
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &brief_for(1_000_000),
+            &AiLoopSpec {
+                // ⚠ A SHORT TURN BOUND, about this gate's COST rather than its claim: a pump that
+                // finds nothing blocks for the turn's whole patience, and this one pumps until the
+                // dialog has been met and screened. It stays above `supervised_asking`'s settle.
+                turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                    .expect("a non-zero bound"),
+                attended: crate::readiness::Attended::of(
+                    Duration::from_secs(30),
+                    crate::readiness::Handback::of(Duration::from_millis(300))
+                        .expect("a non-zero stillness"),
+                )
+                .expect("a non-zero patience"),
+                ..standin_spec()
+            },
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        // ⚠ NO CONSENT AND NO RULE, so the first dialog is one nothing here can answer, and
+        // `screen.none` leads to the wait. Stepped by hand for this gate's stated reason.
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            if loops.state() == AiLoopState::AwaitingHuman {
+                break;
+            }
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a paused run must be readable");
+            if let Some(note) = step.note {
+                walked.push(note);
+            }
+        }
+        assert_eq!(
+            loops.state(),
+            AiLoopState::AwaitingHuman,
+            "⚠ the control: the loop must be waiting for the person before the door is asked: \
+             {walked:?}",
+        );
+        let waiting = loops.ask_for_an_account(Ceiling::Duration);
+        let Accounting::Cannot(waiting) = waiting else {
+            panic!(
+                "⚠⚠⚠ THE PANE IS NOT THIS RUN'S TO TYPE IN. A dialog nothing here may answer is on \
+                 it, or somebody is typing — and asking *where did you get to* would ANSWER THAT \
+                 DIALOG or type under a hand. That is the same refusal `screen.none` and \
+                 `turn.interrupted` already make: {waiting:?}"
+            );
+        };
+        assert_ne!(
+            never, waiting,
+            "⚠⚠⚠ TWO SITUATIONS, ONE SENTENCE. A reader told only *there is no account* cannot act \
+             on it; the whole value of the refusal is that it names what would have to change \
+             first",
+        );
+        assert!(
+            waiting.contains("not this run's to type in"),
+            "⚠⚠ and the sentence has to be about the PANE rather than about a policy anybody \
+             chose: {waiting:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A WINDOW THAT RAN OUT BEFORE THE ACCOUNT ARRIVED SAYS SO, IN THE RUN'S JOURNAL** —
+    /// the silence item 208 removes, put back one step later and removed again.
+    ///
+    /// # ⚠⚠⚠ Why the Driver can say this without reading a word of the account
+    ///
+    /// A plugin that FINISHES its account reports a terminal verdict, and the run ends there. So
+    /// the only way the account window's own clock can run out is that the turn asking for it never
+    /// ended — which the Driver knows from having reached its own loop top a second time, and which
+    /// it says without ever touching [`Plugin::captured`]. **`exhausted` with an empty report is
+    /// otherwise indistinguishable from a build that captures nothing at all**, which is the exact
+    /// confusion the whole capture exists to remove.
+    ///
+    /// ⚠ The staging is deterministic rather than timed: the clock is short enough to fall due
+    /// while the loop is still working, and the peer then meets a dialog nothing may answer — so
+    /// the account turn provably cannot end, whatever else the machine is doing when the ceiling
+    /// arrives.
+    #[test]
+    fn an_account_that_never_arrives_says_that_its_window_ran_out() {
+        let (workspace, pane) =
+            crate::testing::standin_agent_asking(crate::testing::Asks::OnItsFirstPrompt);
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &brief_for(1_000_000),
+            &AiLoopSpec {
+                // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW — the plugin sizes the turn it is granted
+                // from the bound its caller declared for a turn, so a short one here is what keeps
+                // this gate cheap AND what it is measuring.
+                turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                    .expect("a non-zero bound"),
+                attended: crate::readiness::Attended::of(
+                    Duration::from_secs(60),
+                    crate::readiness::Handback::Never,
+                )
+                .expect("a non-zero patience"),
+                ..standin_spec()
+            },
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 4_000,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(400)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let journal = progress.lock().expect("the progress cell").journal.clone();
+        let walked: Vec<String> = journal
+            .iter()
+            .filter_map(|entry| entry.note.clone())
+            .collect();
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "⚠ the control: the run's own CLOCK must be what ended it. Walked {walked:?}",
+        );
+        assert_eq!(
+            loops.captured(),
+            None,
+            "⚠ and the control's other half: there is no account, which is what makes the line \
+             below the only thing a reader has",
+        );
+        let last = walked.last().expect("a run writes a journal");
+        assert!(
+            last.contains("no account") && last.contains("ran out first"),
+            "⚠⚠⚠ THE RUN MUST SAY THAT ITS ACCOUNT WAS CUT SHORT. Without it a caller cannot tell \
+             *the agent was never asked*, *the agent said nothing*, and *this build captures \
+             nothing* apart — and only the first two are things they can do anything about: \
+             {last:?}",
+        );
+        assert!(
+            matches!(
+                journal.last().map(|entry| &entry.verdict),
+                Some(Verdict::Exhausted(Ceiling::Duration)),
+            ),
+            "⚠⚠ and the line names the ceiling that fell due, so a reader is sent to the knob they \
+             set: {:?}",
+            journal.last(),
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

@@ -20,7 +20,7 @@ use sce_rust_runtime::Engine;
 use sprag_terminal::{Reach, Stop, Unstopped};
 
 use crate::access::{PaneAccess, PaneError, Signalled};
-use crate::plugin::{Cost, Plugin, Step, Verdict};
+use crate::plugin::{Accounting, Cost, Plugin, Step, Verdict};
 use crate::run::RunContext;
 use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
@@ -65,6 +65,21 @@ pub struct Guardrails {
     /// ([`RunContext::deadline_in`]), which is what carries it into the waits
     /// inside a step; a ceiling checked only between steps would be no ceiling
     /// at all for a run stuck inside one.
+    ///
+    /// # ⚠⚠⚠ A RUN MAY OUTLIVE THIS BY ONE ACCOUNT TURN, and that is stated rather than hidden
+    ///
+    /// When this passes the plugin is asked whether it can say where the run got to
+    /// ([`Plugin::ask_for_an_account`]), and one that can is given a window of its own to do it in.
+    /// So a run declaring five minutes may take five minutes plus one turn of its peer. Two
+    /// alternatives were available and both are worse: ending in silence is the defect this
+    /// answers, and carving the window OUT of this number would quietly spend work the caller
+    /// asked for on a report they did not.
+    ///
+    /// ⚠ The window is finite, declared by whoever set the plugin's per-turn bound, and granted
+    /// exactly once — see [`crate::plugin::Accounting`], which is where the reasoning
+    /// about *whose number it is* lives.
+    ///
+    /// [`Plugin::ask_for_an_account`]: crate::plugin::Plugin::ask_for_an_account
     ///
     /// [`RunContext`]: crate::run::RunContext
     /// [`RunContext::deadline_in`]: crate::run::RunContext::deadline_in
@@ -347,6 +362,13 @@ pub struct Outcome {
     /// — at which point the last step has returned and there is nothing in flight to stop. Only the
     /// two outside endings can land mid-step, and they are exactly the two this answers for.
     ///
+    /// ⚠⚠ **A PER-STEP CEILING CAN NOW REACH THIS TOO, through the one door it did not have
+    /// before**: a run given a window to account for itself
+    /// ([`crate::plugin::Plugin::ask_for_an_account`]) is stepped
+    /// again, and a window that runs out is a run cut short with a peer mid-answer. The rule is
+    /// unchanged — *what became of the work, for a run that could still have had some in flight* —
+    /// and the set of endings that satisfy it grew by one.
+    ///
     /// ⚠ `None` ALSO for a run RESTORED from a previous daemon's log, which carries a run's summary
     /// and not its whole outcome — the same lossiness `failure` already has there, and harmless for
     /// the same reason: the daemon that had work running is the one that died.
@@ -435,6 +457,14 @@ pub struct Driver {
     /// HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN REFUSED AND REDIRECTED, on the loop author's
     /// standing instructions — [`Self::answered`]'s argument, for the other decision.
     screened: u32,
+    /// ⚠⚠⚠ **WHETHER THE RUN IS SPENDING ITS LAST MOMENTS SAYING WHERE IT GOT TO** — set once, by
+    /// the single site that asks a plugin for an account, and never cleared.
+    ///
+    /// While it is set the run is OVER in every sense that matters to a reader: which ceiling
+    /// stopped it is already recorded, no further ceiling is consulted, and whatever the plugin
+    /// decides in this window can add an ACCOUNT but never change the ending — see
+    /// [`only_an_account`](Self::only_an_account).
+    winding: bool,
 }
 
 /// WHAT A RUN HAS SPENT SO FAR — the counters the [`Driver`] keeps, readable while it is still
@@ -534,6 +564,7 @@ impl Driver {
             taken_over: None,
             answered: 0,
             screened: 0,
+            winding: false,
         }
     }
 
@@ -572,15 +603,51 @@ impl Driver {
     /// ⚠ The step's OWN cost, not the running total: a journal of totals could not answer *"which
     /// step was the expensive one?"*, which is the question a cost ceiling makes people ask.
     fn record(&mut self, step: &Step) {
-        if self.journal.len() == JOURNAL_LIMIT {
-            self.journal.remove(0);
-        }
-        self.journal.push(StepRecord {
+        self.remember(StepRecord {
             iteration: self.iterations,
             cost: step.cost,
             verdict: step.verdict.clone(),
             note: step.note.clone(),
         });
+    }
+
+    /// Keep `record`, dropping the oldest once the journal is full.
+    fn remember(&mut self, record: StepRecord) {
+        if self.journal.len() == JOURNAL_LIMIT {
+            self.journal.remove(0);
+        }
+        self.journal.push(record);
+    }
+
+    /// ⚠⚠⚠ **THE LINES THE DRIVER WRITES INTO A RUN'S JOURNAL ABOUT ITSELF** — what it did when a
+    /// ceiling fell due, which is the one thing in a run's walk that no step can report.
+    ///
+    /// # ⚠⚠ Why this is published here and not as a field of [`Outcome`]
+    ///
+    /// A journal is *what happened in there*, it is already published as a run goes
+    /// ([`Progress::journal`]), and *"the budget ran out, so the loop was asked where it got to"*
+    /// is exactly that kind of fact. An outcome field would have been a second place a consumer has
+    /// to know to look, published on every run to say nothing on almost all of them — and the one
+    /// thing a reader wants beside `exhausted` is the WALK, which is here.
+    ///
+    /// ⚠⚠ **AND WITHOUT IT THE WALK CANNOT SAY WHICH BUDGET SENT A LOOP TO ITS ACCOUNT.** A run
+    /// stopped by a wall clock and one that spent the document's own `max_turns` produce the same
+    /// two lines — `Judging --Judge--> Stopping`, `Stopping --TurnDone--> Exhausted` — because both
+    /// budgets reach that state by the same edge. This is where they differ.
+    ///
+    /// ⚠ It borrows the run's own [`Cost`] unit at nothing spent
+    /// ([`Cost::none_of`]) rather than defaulting to bytes: this record cost the peer nothing, and
+    /// a zero in the wrong currency is a lie in a column somebody sums. A run that never took a
+    /// step has no unit at all, and bytes is then the substrate's own — nothing was typed, and
+    /// saying so in the unit every relay uses is the least wrong answer available.
+    fn note_to_itself(&mut self, ceiling: Ceiling, note: String) {
+        self.remember(StepRecord {
+            iteration: self.iterations,
+            cost: self.cost.map_or(Cost::Bytes(0), Cost::none_of),
+            verdict: Verdict::Exhausted(ceiling),
+            note: Some(note),
+        });
+        self.publish();
     }
 
     /// Drive `plugin` over `panes` until a terminal state, reporting the
@@ -606,7 +673,7 @@ impl Driver {
         panes: &dyn PaneAccess,
         run: &RunContext,
     ) -> Outcome {
-        let run = &run.deadline_in(self.guardrails.max_duration);
+        let run = run.deadline_in(self.guardrails.max_duration);
         // ⚠⚠ THE STEPPING IS GUARDED AGAINST AN UNWIND, and `AssertUnwindSafe` is an assertion this
         // makes rather than an escape: what the closure borrows is this Driver's own counters, a
         // `Vec`, and the statechart engine, none of which a `plugin.step` panic can leave
@@ -635,11 +702,16 @@ impl Driver {
 
     /// Step the plugin until the statechart is final — [`run`](Self::run)'s loop, split out so the
     /// unwind guard has one call to wrap rather than a closure holding the whole body.
+    ///
+    /// ⚠⚠ THE CONTEXT IS OWNED HERE rather than borrowed, and that is what the account turn needs:
+    /// a run granted a window to say where it got to is a run whose deadline MOVES, once, and the
+    /// waits inside the plugin have to see the new one. Re-arming a borrowed context would have
+    /// meant a second authority on *when is this run over*.
     fn step_to_a_terminal_state(
         &mut self,
         plugin: &mut dyn Plugin,
         panes: &dyn PaneAccess,
-        run: &RunContext,
+        mut run: RunContext,
     ) {
         self.engine.initialize();
         self.engine.process_event(OrchestrationEvent::Start);
@@ -654,11 +726,11 @@ impl Driver {
             // advisory. Checked before, the run's LAST step is the last one that
             // began in time — and the waits inside it are bounded by the same
             // deadline, so it cannot outlive it by more than a poll interval.
-            if let Some(event) = self.ended_from_outside(run) {
+            if let Some(event) = self.ended_from_outside(plugin, &mut run) {
                 self.engine.process_event(event);
                 continue;
             }
-            let event = match plugin.step(panes, run) {
+            let event = match plugin.step(panes, &run) {
                 Err(error) => {
                     self.failure = Some(error);
                     OrchestrationEvent::Fail
@@ -680,7 +752,7 @@ impl Driver {
                     }
                     self.record(&step);
                     self.publish();
-                    match &step.verdict {
+                    let decided = match &step.verdict {
                         // A step that saw the goal SAW IT. A stop or a deadline arriving in the
                         // same instant does not un-reach it, and the plugins hand back `Continue`
                         // rather than a verdict off a screen nobody finished reading precisely so
@@ -733,18 +805,146 @@ impl Driver {
                         // refusal is no more a licence to exceed a ceiling than an approval is.
                         // What makes it different is a RECORD and a tally, not a control path.
                         Verdict::Continue | Verdict::Answered(_) | Verdict::Screened(_) => {
-                            match self.ended_from_outside(run) {
+                            match self.ended_from_outside(plugin, &mut run) {
                                 Some(event) => event,
+                                // ⚠⚠ THE PER-STEP CEILINGS ARE NOT RE-ASKED ONCE THE RUN IS
+                                // ACCOUNTING FOR ITSELF. They are already spent — that is what got
+                                // us here — and the counters go on rising, so consulting them would
+                                // end the account turn on the very step after it began.
+                                None if self.winding => OrchestrationEvent::Continue,
                                 None => match self.budget_exhausted() {
-                                    Some(ceiling) => self.exhaust(ceiling),
+                                    Some(ceiling) => self
+                                        .spend_or_account(plugin, &mut run, ceiling)
+                                        .unwrap_or(OrchestrationEvent::Continue),
                                     None => OrchestrationEvent::Continue,
                                 },
                             }
                         }
-                    }
+                    };
+                    self.only_an_account(decided)
                 }
             };
             self.engine.process_event(event);
+        }
+    }
+
+    /// ⚠⚠⚠ **A RUN SAYING WHERE IT GOT TO CANNOT BE SENT SOMEWHERE ELSE BY WHAT HAPPENS WHILE IT
+    /// SAYS IT** — the endings that are facts about the ACCOUNT collapse into the ceiling that
+    /// stopped the run.
+    ///
+    /// This is [`ai_loop.scxml`]'s own rule about `stopping`, one layer out and for the same
+    /// reason. A peer that stops to ask in the middle of writing its account, or a person who takes
+    /// the pane while it is being written, would end the run `blocked` or `taken_over` — **sending
+    /// its reader off to answer a dialog when the knob they need is the ceiling they set
+    /// themselves.** Neither fact is about the work; both are about a courtesy turn granted after
+    /// the run was already over.
+    ///
+    /// # ⚠⚠⚠ Why `Converge` is NOT one of them, which is the arm worth arguing
+    ///
+    /// It looks like the same shape and it is the opposite fact. A plugin only converges by
+    /// reaching the goal it was given, and a window cannot manufacture one: the loop routes a run
+    /// that is stopping short to its account state ahead of every other judgement, so the only way
+    /// a `Converge` arrives inside a window is that the plugin was ALREADY writing its closing
+    /// report when the ceiling fell due. Collapsing it would tell a caller their finished work ran
+    /// out of time, and they would run it again. **The word is about the work; the window changed
+    /// only when the work stopped being paid for.**
+    ///
+    /// ⚠ `Fail` passes for a nearby reason: a plugin whose step returned an error has recorded a
+    /// [`PaneError`] in [`Outcome::failure`], and an outcome that said `exhausted` while carrying a
+    /// failure would be two answers to one question.
+    ///
+    /// ⚠ `Cancel` passes because a person's stop is somebody's decision and outranks arithmetic
+    /// everywhere else in this file; a grace window is not where that changes.
+    ///
+    /// ⚠⚠ EXHAUSTIVE, so a further orchestration event has to be classified here rather than
+    /// silently inheriting *changes the ending*.
+    ///
+    /// [`ai_loop.scxml`]: ../../ai_loop.scxml
+    const fn only_an_account(&self, event: OrchestrationEvent) -> OrchestrationEvent {
+        if !self.winding {
+            return event;
+        }
+        match event {
+            OrchestrationEvent::Block | OrchestrationEvent::Taken | OrchestrationEvent::Exhaust => {
+                OrchestrationEvent::Exhaust
+            }
+            // ⚠ `Null` is W3C SCXML 3.13's eventless sentinel: this Driver never raises it, and an
+            // arm that mapped it to anything would be inventing a transition for a non-event.
+            OrchestrationEvent::Start
+            | OrchestrationEvent::Continue
+            | OrchestrationEvent::Converge
+            | OrchestrationEvent::Fail
+            | OrchestrationEvent::Cancel
+            | OrchestrationEvent::Null => event,
+        }
+    }
+
+    /// ⚠⚠⚠ **A CEILING HAS BOUND — END THE RUN, OR GIVE IT ONE WINDOW TO SAY WHERE IT GOT TO.**
+    ///
+    /// Answers [`None`] when the plugin took the window and the loop should carry on stepping it,
+    /// and `Some(Exhaust)` when there is nothing more to do.
+    ///
+    /// # ⚠⚠⚠ Why the ceiling is recorded BEFORE the plugin is asked anything
+    ///
+    /// The account is one more turn of the plugin's own machine, and that machine has budgets of
+    /// its own: `ai_loop.scxml` reaches its `exhausted` through `stopping`, so the very step that
+    /// hands back the account reports [`Verdict::Exhausted`] with [`Ceiling::Turns`]. Recorded
+    /// afterwards, that would overwrite the ceiling that actually stopped the run — and a caller
+    /// told to raise `max_turns` about a run their WALL CLOCK ended is being sent to a knob that
+    /// would have bought them nothing. [`exhaust`](Self::exhaust) keeps the first answer for
+    /// exactly this reason.
+    fn spend_or_account(
+        &mut self,
+        plugin: &mut dyn Plugin,
+        run: &mut RunContext,
+        ceiling: Ceiling,
+    ) -> Option<OrchestrationEvent> {
+        let ceiling = *self.exhausted_by.get_or_insert(ceiling);
+        // ⚠ ASKED ONCE. A second window would be a second courtesy, and the first one's own clock
+        // running out is the answer to whether the plugin could use it.
+        //
+        // ⚠⚠⚠ AND REACHING HERE A SECOND TIME MEANS THE ACCOUNT NEVER ARRIVED, which the Driver can
+        // say without reading a word of it: a plugin that finished its account reported a terminal
+        // verdict, and the run ended on that. So the only way the window's own clock runs out is
+        // that the turn asking for the account did not end — and a run that says nothing about that
+        // is back to the silence this whole method exists to remove, one step later.
+        if self.winding {
+            self.note_to_itself(
+                ceiling,
+                "no account: the window it was given to say so ran out first".to_owned(),
+            );
+            return Some(OrchestrationEvent::Exhaust);
+        }
+        match plugin.ask_for_an_account(ceiling) {
+            Accounting::Nothing => Some(OrchestrationEvent::Exhaust),
+            Accounting::Cannot(why) => {
+                self.note_to_itself(ceiling, format!("no account: {why}"));
+                Some(OrchestrationEvent::Exhaust)
+            }
+            Accounting::Within(window) => {
+                self.note_to_itself(
+                    ceiling,
+                    format!(
+                        "the run's own {} ceiling fell due; the plugin was given {window:?} to say \
+                         where it got to",
+                        ceiling.wire_str(),
+                    ),
+                );
+                self.winding = true;
+                // ⚠⚠⚠ THE DEADLINE MOVES, AND THIS IS THE ONLY PLACE IT EVER DOES. Every bounded
+                // wait under the plugin consults this context, so a run whose clock has just run
+                // out would otherwise abandon the account turn at its first poll — the account
+                // would be asked for and never waited for.
+                //
+                // ⚠⚠ IT IS `window` FROM NOW rather than an extension of the old deadline, which
+                // for a run stopped by `max_duration` means the run may last that much longer than
+                // the caller asked. Stated rather than hidden: the window is the plugin's caller's
+                // own number for ONE TURN of their peer, and the alternative — carving the account
+                // out of the ceiling — silently spends work the caller asked for on a report they
+                // did not.
+                *run = run.deadline_in(Some(window));
+                None
+            }
         }
     }
 
@@ -758,14 +958,24 @@ impl Driver {
     ///
     /// ⚠ Cancel is asked before the deadline at both sites, so a person's stop beats a clock that
     /// ran out in the same instant — a cancel is somebody's decision and an exhaustion is nobody's.
-    fn ended_from_outside(&mut self, run: &RunContext) -> Option<OrchestrationEvent> {
+    ///
+    /// ⚠⚠⚠ A PASSED DEADLINE NO LONGER ENDS THE RUN ON THE SPOT: it asks the plugin whether it can
+    /// account for itself first, and [`None`] here then means *carry on into that window* rather
+    /// than *still working* — see [`spend_or_account`](Self::spend_or_account). Once the window is
+    /// armed this reads the NEW deadline, so the second expiry is the account's own and ends the
+    /// run for good.
+    fn ended_from_outside(
+        &mut self,
+        plugin: &mut dyn Plugin,
+        run: &mut RunContext,
+    ) -> Option<OrchestrationEvent> {
         if run.cancelled() {
             self.cut_short = true;
             return Some(OrchestrationEvent::Cancel);
         }
         if run.expired() {
             self.cut_short = true;
-            return Some(self.exhaust(Ceiling::Duration));
+            return self.spend_or_account(plugin, run, Ceiling::Duration);
         }
         None
     }
@@ -774,8 +984,15 @@ impl Driver {
     ///
     /// The single writer of [`exhausted_by`](Self::exhausted_by), so the recorded reason and the
     /// statechart transition cannot be raised apart from one another.
+    ///
+    /// ⚠⚠⚠ **THE FIRST CEILING WINS**, and that is a claim rather than tidiness. A run given a
+    /// window to account for itself is STEPPED AGAIN, and the plugin's own budget falls due inside
+    /// that window as a matter of course — `ai_loop.scxml`'s account turn ends in its `exhausted`,
+    /// which reports [`Ceiling::Turns`]. Overwriting here would report the courtesy's ceiling
+    /// instead of the one that stopped the run, and every remedy this word exists to name would be
+    /// the wrong one.
     fn exhaust(&mut self, ceiling: Ceiling) -> OrchestrationEvent {
-        self.exhausted_by = Some(ceiling);
+        self.exhausted_by.get_or_insert(ceiling);
         OrchestrationEvent::Exhaust
     }
 
@@ -1189,6 +1406,197 @@ mod tests {
              person is working in, and an unrelated timeout must not reach into them",
         );
         assert_eq!(outcome.stopped, Some(Stopped::Nothing));
+    }
+
+    /// A plugin that takes the account window and then reports **its own** budget as spent — the
+    /// shape `ai_loop` has, written out here so the substrate's guarantee is measured without it.
+    ///
+    /// ⚠ `steps_before` is what makes the ceiling bite at a known step; everything after
+    /// [`ask_for_an_account`](Plugin::ask_for_an_account) is the account turn.
+    struct Accounts {
+        asked: Option<Ceiling>,
+        after: u32,
+        /// How it ends the last step of its account — a terminal verdict of its OWN, deliberately
+        /// not the one it was told about: a plugin's own budget falls due inside the window as a
+        /// matter of course, and the run's word must not follow it.
+        ends_with: Verdict,
+    }
+
+    impl Accounts {
+        /// A plugin that will take a window and then end its account with `ends_with`.
+        const fn ending_with(ends_with: Verdict) -> Self {
+            Self {
+                asked: None,
+                after: 0,
+                ends_with,
+            }
+        }
+    }
+
+    impl Plugin for Accounts {
+        fn step(&mut self, _panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
+            let Some(_) = self.asked else {
+                return Ok(Step::new(Cost::Bytes(1), Verdict::Continue).noting("working"));
+            };
+            self.after += 1;
+            // ⚠ Two steps of account, so the gate can tell *the window was granted* from *one more
+            // step happened to run*.
+            if self.after < 2 {
+                return Ok(Step::new(Cost::Bytes(1), Verdict::Continue).noting("accounting"));
+            }
+            Ok(Step::new(Cost::Bytes(1), self.ends_with.clone()).noting("accounted"))
+        }
+
+        fn captured(&self) -> Option<String> {
+            self.asked.map(|_| "where it got to".to_owned())
+        }
+
+        fn ask_for_an_account(&mut self, ceiling: Ceiling) -> Accounting {
+            self.asked = Some(ceiling);
+            Accounting::Within(Duration::from_secs(30))
+        }
+
+        fn driving(&self) -> Option<PaneId> {
+            None
+        }
+    }
+
+    /// ⚠⚠⚠ **A RUN GIVEN A WINDOW TO ACCOUNT FOR ITSELF STILL ENDS ON THE CEILING THAT STOPPED
+    /// IT** — the substrate half of register item 208, measured without a statechart in sight.
+    ///
+    /// # ⚠⚠⚠ Why the ceiling has to be frozen, and what would happen if it were not
+    ///
+    /// The account is one more turn of the plugin's OWN machine, and that machine has budgets of
+    /// its own — `ai_loop.scxml` reaches its `exhausted` through the state that writes the account,
+    /// so the very step handing it back reports [`Verdict::Exhausted`]. Recorded in the ordinary
+    /// way that would overwrite the ceiling that actually stopped the run, and **a caller whose
+    /// wall clock ran out would be told to raise a turn budget they never came near.** The
+    /// stand-in claims exactly that, on purpose.
+    ///
+    /// ⚠⚠ THE CONTROL IS THE DEFAULT, driven in the same gate: a plugin that inherits
+    /// [`Accounting::Nothing`] must end at its ceiling and not one step later, which is what every
+    /// run did before this method existed and what three of the four bundled plugins still do.
+    #[test]
+    fn a_run_given_a_window_to_account_for_itself_still_ends_on_the_ceiling_that_stopped_it() {
+        const CEILING: u32 = 3;
+        let bounded = Guardrails {
+            max_iterations: CEILING,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        };
+
+        /// A plugin that inherits every default this trait has — the shape three of the four
+        /// bundled ones have, and the control for the window below.
+        struct NeverAsked;
+        impl Plugin for NeverAsked {
+            fn step(
+                &mut self,
+                _panes: &dyn PaneAccess,
+                _run: &RunContext,
+            ) -> Result<Step, PaneError> {
+                Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+            }
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
+        }
+
+        let control = Driver::new(bounded).run(
+            &mut NeverAsked,
+            &RecordingPanes::new(),
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(
+            (control.state, control.iterations),
+            (OutcomeState::Exhausted(Ceiling::Iterations), CEILING),
+            "⚠⚠ THE CONTROL: a plugin that inherits the default is stepped exactly as far as its \
+             ceiling allows. A window granted to a plugin that never asked for one would move \
+             every existing run's bound",
+        );
+
+        let mut accounting = Accounts::ending_with(Verdict::Exhausted(Ceiling::Turns));
+        let outcome = Driver::new(bounded).run(
+            &mut accounting,
+            &RecordingPanes::new(),
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            "⚠⚠⚠ THE RUN'S CEILING IS THE FIRST ONE THAT BOUND IT. This plugin reported `turns` on \
+             the way out — as `ai_loop` genuinely does — and a Driver that took the later answer \
+             would send its caller to a knob that never bound this run",
+        );
+        assert!(
+            outcome.iterations > CEILING,
+            "⚠⚠ and the window really was granted: {} of a ceiling of {CEILING}",
+            outcome.iterations,
+        );
+        assert_eq!(
+            accounting.asked,
+            Some(Ceiling::Iterations),
+            "⚠⚠ the plugin is TOLD which ceiling stopped it, because what it says to its peer — and \
+             what it reports back — depends on which one it was",
+        );
+        assert_eq!(
+            accounting.captured().as_deref(),
+            Some("where it got to"),
+            "⚠⚠⚠ and the account exists at all, which is the whole of item 208",
+        );
+    }
+
+    /// ⚠⚠⚠ **AN ACCOUNT THAT GOES WRONG DOES NOT CHANGE THE ENDING** — `ai_loop.scxml`'s own rule
+    /// about its `stopping` state, one layer out and enforced for every plugin.
+    ///
+    /// The ceiling was reached before the question was asked, and nothing that happens inside a
+    /// courtesy window can un-reach it. A peer that stops to ask while writing its account, or a
+    /// person who takes the pane in the middle of it, would otherwise end the run `blocked` or
+    /// `taken_over` — **sending its reader off to answer a dialog when the knob they need is the
+    /// ceiling they set themselves.**
+    ///
+    /// ⚠ Driven for both, because they are two different facts that arrive by two different
+    /// verdicts, and a collapse written for one of them is a collapse that misses the other.
+    ///
+    /// ⚠⚠⚠ **AND `converged` IS DRIVEN AS THE COUNTER-CASE IN THE SAME GATE.** A collapse that
+    /// swallowed it would tell a caller whose plugin was already writing its closing report when
+    /// the ceiling fell due that their finished work ran out of time — and they would run it
+    /// again. The two halves are asserted together because the rule is *which facts are about the
+    /// account*, and a gate that only drove the collapsing ones would pass for a Driver that
+    /// collapsed everything.
+    #[test]
+    fn a_run_that_stumbles_while_accounting_still_reports_the_ceiling() {
+        for (ends_with, expected) in [
+            (
+                Verdict::Blocked(crate::consent::Unanswered::unreadable()),
+                OutcomeState::Exhausted(Ceiling::Iterations),
+            ),
+            (
+                Verdict::TakenOver(crate::readiness::Interruption::of(1)),
+                OutcomeState::Exhausted(Ceiling::Iterations),
+            ),
+            (Verdict::Converged, OutcomeState::Converged),
+        ] {
+            let mut accounting = Accounts::ending_with(ends_with.clone());
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .run(
+                &mut accounting,
+                &RecordingPanes::new(),
+                &RunContext::uncancellable(),
+            );
+            assert_eq!(
+                outcome.state,
+                expected,
+                "⚠⚠⚠ a {} verdict inside the account window sent the run to the wrong ending. A \
+                 question or a hand is a fact about the ACCOUNT and cannot change a verdict already \
+                 reached; reaching the GOAL is a fact about the work and must not be swallowed by a \
+                 window granted after it",
+                ends_with.wire_str(),
+            );
+        }
     }
 
     /// ⚠⚠ **EVERY WAY A RUN'S WORK CAN END READS AS ITS OWN SENTENCE**, and the two that mean the

@@ -1100,6 +1100,198 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
     );
 }
 
+/// ⚠⚠⚠ **A RUN THE WALL CLOCK STOPPED SAYS WHERE IT GOT TO, TOO** — register item 208, against
+/// the program the feature exists for and on the path only a real agent takes.
+///
+/// # ⚠⚠⚠ Why the stand-in cannot answer this and a live agent can
+///
+/// The gate above proves the account for the DOCUMENT's own budget. `max_turns` is arithmetic the
+/// loop can see coming, so it routes itself into `stopping` between two turns. A
+/// [`Guardrails`](sprag_plugin::Guardrails) ceiling is counted OUTSIDE the plugin and can fall due
+/// at any instant — **including inside the wait for a turn**, which is where a real agent spends
+/// almost all of a run. Measured against a stand-in at five different wall clocks, the deadline
+/// landed BETWEEN two steps every single time, because that peer answers in microseconds. The path
+/// this gate takes is the one a real caller's run takes on every timeout, and no fixture in the
+/// tree reaches it.
+///
+/// # ⚠⚠ What the numbers are chosen to make certain
+///
+/// * `max_turns` is far out of reach, so the ending cannot be the document's own budget — the
+///   ceiling asserted below is the one this gate is about;
+/// * the milestone needs more replies than the clock allows, so the run genuinely stops short;
+/// * and `max_duration` is a few of this agent's turns, so the clock expires while the model is
+///   mid-reply rather than while the loop is between them.
+///
+/// ⚠ A run that came back `converged` would mean the agent claimed a milestone it had not reached;
+/// one that came back `exhausted — turns` would mean the budget bit first and this gate measured
+/// the one next door. Both are asserted against.
+///
+/// ⚠ The assertion is the ARITHMETIC and the SHAPE, never a wording — the convergence gate's rule.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{AiLoopState, Brief, Turn as TurnContract};
+
+    /// Out of reach on purpose: this run must end on the CLOCK, and a budget the agent could spend
+    /// would make the ending ambiguous between two ceilings.
+    const UNSPENDABLE_TURNS: i64 = 1_000;
+    /// A few of this agent's turns — long enough that at least one lands, short enough that the
+    /// clock runs out while the model is mid-reply.
+    const CLOCK: Duration = Duration::from_secs(45);
+    /// ⚠⚠ LONGER THAN [`TURN_BOUND`], and this gate is the one place that difference is a claim
+    /// rather than a cost. That constant is short because *a contract that cannot be satisfied pays
+    /// it in full every time*; here the same number is ALSO the window the account turn is granted,
+    /// and a live account is a real reply a model is genuinely writing — R390 measured a whole
+    /// stopping run, prompt to report, at 19.7 s. Sized at 20 s this gate would be asserting that a
+    /// model writes faster than a number this module chose for stalls.
+    const ACCOUNT_BOUND: Duration = Duration::from_secs(60);
+
+    let live = Live::start("outoftime");
+    let began = Instant::now();
+
+    let brief = Brief {
+        north_star: "prove a run stopped by its own clock can still say where it got to"
+            .to_string(),
+        milestone: "count upward from 1, exactly ONE number per reply, until you have said 50"
+            .to_string(),
+        reference: "no tools and no files are needed; the numbers are the whole task".to_string(),
+        max_turns: UNSPENDABLE_TURNS,
+        reflect_every: UNSPENDABLE_TURNS,
+        screen_rules: None,
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW. The plugin sizes the turn it is granted from
+            // the bound its caller declared for a turn — see `Accounting::Within` — so a gate that
+            // declared none would be measuring the substrate's default instead of this contract.
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(ACCOUNT_BOUND))
+                .expect("a non-zero bound"),
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
+
+    let asked = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .stop;
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 4_000,
+        max_cost: None,
+        max_duration: Some(CLOCK),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let walked: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    // ⚠⚠ THE PANE IS PRINTED WHATEVER HAPPENS, and the first live run of this gate is why: it
+    // failed with the account never asked, and the walk alone could not say whether the agent was
+    // thinking, asking, or gone. A live measurement that has to be re-run to be diagnosed costs a
+    // real agent session to learn what one `println!` would have said.
+    println!(
+        "\n== a live loop that ran out of TIME ==\n  agent: {}\n  walk: {walked:?}\n  \
+         turns: {:?}\n  iterations: {}\n  spent: {:?}\n  through the loop: {:?} (clock {CLOCK:?})\
+         \n  the pane:\n{}\n",
+        live.agent,
+        loops.turns(),
+        outcome.iterations,
+        outcome.cost,
+        began.elapsed(),
+        live.tail(16),
+    );
+
+    assert_eq!(
+        outcome.state,
+        sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Duration),
+        "⚠⚠⚠ THE CONTROL, AND IT IS THREE CLAIMS AT ONCE. `converged` would mean the agent claimed \
+         a milestone it never reached; `exhausted — turns` would mean the DOCUMENT's budget bit \
+         first, so this gate measured the one next door; and `cancelled` would mean the loop read \
+         its own clock running out as somebody's stop — which puts the machine in a final state \
+         where no account can ever be asked for. Walked: {walked:?}, screen: {}",
+        live.tail(12),
+    );
+    assert!(
+        began.elapsed() > CLOCK,
+        "⚠ the clock must be what ended it: the run took {:?} against a ceiling of {CLOCK:?}",
+        began.elapsed(),
+    );
+    assert!(
+        walked
+            .iter()
+            .any(|note| note.contains("own duration ceiling fell due")),
+        "⚠⚠ the run must have been ASKED — the walk's own line is the only place that says which \
+         budget sent a loop to its account, because both budgets reach `stopping` by one edge: \
+         {walked:?}",
+    );
+
+    // ⚠⚠⚠ **THE INVARIANT, AND IT IS THE WHOLE OF ITEM 208 SAID IN ONE SENTENCE: a run stopped by
+    // its own ceiling either hands back its agent's account or SAYS WHY IT HAS NONE.** Before this
+    // round it did neither — `exhausted` and silence, indistinguishable from a build that captures
+    // nothing at all.
+    //
+    // ⚠⚠ It is asserted as an alternation because which branch a LIVE run takes is not this gate's
+    // to fix: a live delivery is a large fraction of a short turn, so the clock lands INSIDE one
+    // often, and a prompt cut short between its text and its Enter is a turn that never started —
+    // measured twice here, and registered. **Both branches are correct answers; neither is
+    // silence**, and a build that lost the account would have to lose the reason too to pass.
+    let report = sprag_plugin::Plugin::captured(&loops);
+    let excuse = walked
+        .last()
+        .is_some_and(|note| note.starts_with("no account:"));
+    assert!(
+        report.is_some() != excuse,
+        "⚠⚠⚠ A RUN STOPPED BY ITS OWN WALL CLOCK MUST EITHER HAND BACK ITS AGENT'S ACCOUNT OR SAY \
+         WHY IT HAS NONE — and exactly one of those, or a reader cannot tell an empty report from a \
+         build that captures none. Account: {report:?}. Walk: {walked:?}",
+    );
+
+    let Some(report) = report else {
+        // ⚠ The other branch is a measurement, not a failure: it is register item 222, and the
+        // sentence the run gives is what a person acts on.
+        println!(
+            "    | no account, and the run said why: {:?}",
+            walked.last(),
+        );
+        return;
+    };
+    step(
+        began,
+        &format!("the account, {} chars", report.chars().count()),
+    );
+    for line in report.lines() {
+        println!("    | {line}");
+    }
+    assert_eq!(
+        loops.state(),
+        AiLoopState::Exhausted,
+        "and the DOCUMENT agrees with the run's word, or the two are counting different things",
+    );
+    assert!(
+        report.contains('1'),
+        "⚠⚠ the account must be about the work — this run's whole milestone was counting, so an \
+         account carrying none of what it counted is not an account of this run: {report:?}",
+    );
+    assert!(
+        !report.contains(asked.as_str()) && !report.contains("what you left half-done"),
+        "⚠⚠⚠ THE CALLER'S OWN STOPPING QUESTION CAME BACK AS THE AGENT'S ACCOUNT — whole, or as the \
+         wrapped fragment a live composer paints: {report:?}",
+    );
+}
+
 /// ⚠⚠⚠ **A LIVE LOOP THAT DOES WORK WHICH CHANGES SOMETHING** — register item 112, and the one
 /// claim every other measurement of this loop has deliberately avoided making.
 ///

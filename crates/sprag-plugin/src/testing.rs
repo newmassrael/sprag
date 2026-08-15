@@ -970,7 +970,23 @@ done"
 /// slice of the prompt the peer is answering, and a peer that painted `end_prompt`'s fragment while
 /// answering `stop_prompt` would stage no echo at all — the discount would have nothing to find, and
 /// the gate would pass through a reader that had stopped discounting.
-pub(crate) fn standin_agent_reporting(accounts: Accounts) -> (Arc<Mutex<Workspace>>, PaneId) {
+/// # ⚠⚠⚠ `thinks_for` — A SECOND AXIS, AND THE ONE HAZARD A FAST PEER CANNOT STAGE
+///
+/// Every stand-in here answers in microseconds, so a run's own wall clock always expires BETWEEN
+/// two of the driver's steps. A real agent's turn is tens of seconds, so a real run's clock expires
+/// **inside the wait for one** — and that is a different code path with a different answer:
+/// `Completion::wait` reports `Over::RunEnded` and the loop has to decide what to tell its machine.
+/// Measured with a fast peer at five different deadlines, the document was left in `working` or
+/// `judging` every time and the case simply never arose.
+///
+/// So the peer can be told to take whole seconds over a WORKING prompt. ⚠ It answers the ACCOUNT's
+/// question at once whatever this says: the hazard being staged is a clock that runs out mid-work,
+/// and a peer that also dawdled over the account would make the gate a measurement of its own
+/// `sleep` rather than of the run's window.
+pub(crate) fn standin_agent_reporting(
+    accounts: Accounts,
+    thinks_for: Duration,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     let mut report = vec![
         accounts.echo_slice().to_owned(),
@@ -998,10 +1014,20 @@ while read line; do \
     *'ACCOUNT_QUESTION'*) REPORT bump; continue;; \
   esac; \
   case \"$line\" in *exactly:*) ;; *) continue;; esac; \
-  n=$((n+1)); WORK_ANSWER bump; \
+  THINK n=$((n+1)); WORK_ANSWER bump; \
 done"
         .replace("REPORT ", &prints)
         .replace("ACCOUNT_QUESTION", accounts.question())
+        // ⚠ WHOLE SECONDS, because POSIX `sleep` takes an integer and a fixture that relied on
+        // GNU's fractional one would be a gate that passes on this machine and not on a `dash`.
+        // Nothing at all when the caller asked for nothing, so the fast peer stays exactly as fast.
+        .replace(
+            "THINK ",
+            &match thinks_for.as_secs() {
+                0 => String::new(),
+                seconds => format!("sleep {seconds}; "),
+            },
+        )
         .replace("WORK_ANSWER ", accounts.work_answer());
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");

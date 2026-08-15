@@ -87,7 +87,7 @@ pub use outer::{
     NotScreenable, Noticed, OuterLoop, Pumped,
 };
 pub use pipe::{Pipe, PipeSpec};
-pub use plugin::{Cost, Plugin, Step, Verdict};
+pub use plugin::{Accounting, Cost, Plugin, Step, Verdict};
 pub use readiness::{
     Attended, Attention, DEFAULT_READY_TIMEOUT, Handback, Handover, Interruption, Reached,
     Readiness, ReadyWhen,

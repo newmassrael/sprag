@@ -957,6 +957,35 @@
       <assign location="context" expr="_event.data.context"/>
     </onentry>
     <!--
+      ⚠⚠⚠ THE RUN'S BUDGET IS SPENT ON A CEILING THIS DOCUMENT CANNOT SEE, so ask
+      for the account and end — the SAME state `max_turns` reaches below, entered
+      by the only door the outside has.
+
+      `max_turns` is this document's own budget and the guard below reads it. The
+      run is ALSO bounded by its host's guardrails — a step count, a spend, a wall
+      clock — and none of those is expressible here: they count things the machine
+      has no name for, and they are decided between steps rather than inside one.
+      Before this edge a run stopped by one of them was simply never stepped
+      again: measured, the loop was left standing in `working` or `judging` with
+      its agent at rest, and the run answered `exhausted` and nothing at all —
+      exactly the silence the guard below had just removed from the ending next
+      door. **Three ways to run out, one of them explained.**
+
+      ⚠⚠⚠ IT IS FIRST, ABOVE *the milestone was reached*, and that is the OPPOSITE
+      order from `max_turns` below. The reason is who decided. `max_turns` is a
+      number in this document, so an agent that reaches its milestone on the last
+      turn has plainly done what it was asked and deserves the reflection. This
+      one is a ceiling the run has ALREADY been stopped by, from outside, and
+      nothing said in a courtesy turn can un-end it — sending such a run to
+      `reflecting` would spend the window replacing a session for work that will
+      never happen.
+
+      ⚠⚠ IT DOES NOT COST A RUN THAT IS NOT STOPPING SHORT ANYTHING: the driver
+      publishes `false` on every other judgement, and Lua's only false values are
+      `nil` and `false` — which is why this is a boolean and not a name.
+    -->
+    <transition event="judge" cond="_event.data.stop_short" target="stopping"/>
+    <!--
       ⚠⚠⚠ THE MILESTONE IS REACHED, SO ASK WHAT THE NEXT ONE IS. This used to go
       straight to `closing`, and that made a run exactly as long as its first
       checkpoint: the owner's own debt-repayment loop paid ONE item, said the
@@ -1254,10 +1283,17 @@
   </state>
 
   <!--
-    ⚠⚠⚠ THE TURN BUDGET IS SPENT; ASK WHERE THE RUN GOT TO, THEN END IT.
+    ⚠⚠⚠ THE BUDGET IS SPENT; ASK WHERE THE RUN GOT TO, THEN END IT.
 
     `closing`'s twin for the ending that did NOT get there — see `stop_prompt`
     for why the question is a different one and not that one reused.
+
+    ⚠⚠ TWO DOORS, ONE STATE, and they are two different budgets rather than two
+    routes to one. `turns >= max_turns` is this document's own; `stop_short` is a
+    ceiling of the RUN's that this machine cannot see at all (a step count, a
+    spend, a wall clock). What they share is everything after the guard: the same
+    question, the same reader, the same three endings. A second state would have
+    been a second account to keep right.
 
     ⚠⚠⚠ EVERY WAY THIS TURN CAN END ARRIVES AT `exhausted`, AND THAT IS THE
     WHOLE SHAPE OF THE STATE. The ending was decided by the guard that got here:
@@ -1268,13 +1304,14 @@
     with no account rather than being routed somewhere that would treat this
     turn as work.
 
-    ⚠⚠⚠ AND THE ALTERNATIVE IS NOT MERELY UNTIDY, IT IS UNBOUNDED. The guard
-    that reaches here is `turns >= max_turns`, which stays true for the rest of
-    the run — so any edge from here back into the working cycle would come round
-    to `judging`, take this same transition, and ask for another account, for
-    ever. `screening` and `awaiting_human` are both such edges, and they are what
-    `closing` uses. This state must not have them, and the reason is arithmetic
-    rather than taste.
+    ⚠⚠⚠ AND THE ALTERNATIVE IS NOT MERELY UNTIDY, IT IS UNBOUNDED. Both guards
+    that reach here stay true for the rest of the run — `turns >= max_turns` is
+    arithmetic that cannot go back down, and `stop_short` is a latch over a
+    ceiling that has already bound — so any edge from here back into the working
+    cycle would come round to `judging`, take the same transition, and ask for
+    another account, for ever. `screening` and `awaiting_human` are both such
+    edges, and they are what `closing` uses. This state must not have them, and
+    the reason is arithmetic rather than taste.
 
     ⚠⚠ WHAT IT COSTS, STATED. A run out of turns now spends one more turn before
     it ends, and that turn is bounded by the run's own guardrails rather than by

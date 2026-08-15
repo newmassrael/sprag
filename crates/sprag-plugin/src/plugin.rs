@@ -8,6 +8,8 @@
 //!
 //! [`Driver`]: crate::driver::Driver
 
+use std::time::Duration;
+
 use sprag_terminal::PaneId;
 
 use crate::access::{PaneAccess, PaneError};
@@ -204,6 +206,18 @@ impl Cost {
         }
     }
 
+    /// THIS COST'S UNIT AT NOTHING SPENT — what a record the Driver writes about ITSELF costs.
+    ///
+    /// ⚠ Derived from an existing cost rather than defaulted to bytes, because a run's unit is
+    /// established by its first step and a zero in the wrong currency is a lie in a journal a
+    /// reader sums.
+    pub(crate) const fn none_of(self) -> Self {
+        match self {
+            Self::Bytes(_) => Self::Bytes(0),
+            Self::Tokens(_) => Self::Tokens(0),
+        }
+    }
+
     /// Sum two costs of the SAME unit (saturating). `None` if the units differ —
     /// which a single run never produces (one plugin reports one unit), so this
     /// is a defensive guard, not an expected path.
@@ -290,6 +304,47 @@ impl Step {
     }
 }
 
+/// **WHAT A PLUGIN CAN STILL SAY ONCE THE RUN'S BUDGET IS SPENT** — the answer to
+/// [`Plugin::ask_for_an_account`].
+///
+/// # ⚠⚠⚠ Why the plugin names the window and the Driver does not
+///
+/// Every other bound in this substrate is the [`Driver`](crate::driver::Driver)'s, and this one
+/// looks like it should be too — *"what is uniform lives in the Driver"*. It cannot be, and the
+/// reason is that an account is **one turn of the plugin's own peer**, whose length is a fact
+/// about that peer and about what its caller declared. The Driver's three ceilings are spent by
+/// the time this is asked, so there is nothing left in them to carve a window out of, and a
+/// number invented here would end somebody's account on a duration nobody chose — the objection
+/// [`OuterLoop::attend`](crate::outer::OuterLoop) records against inventing a patience.
+///
+/// So the plugin answers with a bound its CALLER already gave it (`ai_loop`'s `turn_within_ms`,
+/// or the substrate's published [`DEFAULT_REPLY_TIMEOUT`](crate::run::DEFAULT_REPLY_TIMEOUT) for
+/// a caller who declared none), and the Driver grants exactly that and no more. What stops this
+/// being a hole in the guardrails is the shape: it is granted ONCE, at the end of a run whose
+/// ending is already decided and cannot be changed by anything that happens inside it, and a
+/// plugin with no bound to name answers [`Cannot`](Self::Cannot) rather than an open window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum Accounting {
+    /// **THIS PLUGIN HAS NO ACCOUNT TO GIVE** — the answer of every plugin that relays bytes.
+    ///
+    /// A run of `orchestrator`, `pipe` or `agent` has already published everything it knows: what
+    /// it typed, what came back, and which ceiling stopped it. There is nobody to ask *where did
+    /// you get to* and no second party who would know the answer.
+    Nothing,
+    /// **THE PLUGIN WILL ACCOUNT FOR THE RUN, AND NEEDS THIS LONG.** The Driver keeps stepping it
+    /// until it reaches a terminal verdict or the window passes.
+    Within(Duration),
+    /// **IT WOULD, AND HERE IS WHAT STOPS IT.** The run ends at once, and the sentence goes into
+    /// the run's journal — see [`Driver::run`](crate::driver::Driver::run).
+    ///
+    /// ⚠ Prose rather than a typed cause, on [`Step::note`]'s exact terms: what makes an account
+    /// unaskable is the plugin's own business (a pane somebody else is typing in, a session that
+    /// has been closed, a machine that never started), and a vocabulary out here would be the
+    /// substrate guessing at the shapes of plugins nobody has written yet.
+    Cannot(String),
+}
+
 /// A control plugin driven over the [`PaneAccess`] extension API.
 pub trait Plugin {
     /// Perceive the panes, act on them, and judge — one step.
@@ -315,6 +370,40 @@ pub trait Plugin {
     /// [`Driver`]: crate::driver::Driver
     fn captured(&self) -> Option<String> {
         None
+    }
+
+    /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
+    ///
+    /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and
+    /// exactly once. A plugin that answers [`Accounting::Within`] is stepped on until it reaches a
+    /// terminal verdict or that window passes; whatever it publishes through
+    /// [`captured`](Self::captured) by then is the run's own account of itself.
+    ///
+    /// # ⚠⚠⚠ Why this method has to exist at all, and what its absence cost
+    ///
+    /// A plugin's own budget reaches the Driver as [`Verdict::Exhausted`], so the plugin sees it
+    /// coming and can spend a last turn on it — which is how `ai_loop.scxml`'s `stopping` came to
+    /// ask a run that had spent its `max_turns` where it got to. **The Driver's own three ceilings
+    /// have no such door.** They are decided out here, between steps, and the run is over before
+    /// the plugin is asked anything: measured, a loop stopped by `max_iterations` was left standing
+    /// in `working` or `judging` with its agent at rest and its account never requested, and a run
+    /// stopped by `max_duration` the same. **Three ways to run out, and only one of them explained
+    /// itself** — with a wall clock expiring at least as common as a turn budget.
+    ///
+    /// # ⚠⚠ Why it has a DEFAULT, where [`driving`](Self::driving) deliberately has none
+    ///
+    /// `driving`'s wrong answer is harmful: a plugin that inherits `None` leaves a peer running and
+    /// says it stopped one. This one's is not. A plugin that inherits [`Accounting::Nothing`] ends
+    /// exactly as every run ended before this existed — the account is a courtesy a plugin either
+    /// has something to put in or has not, and three of the four bundled plugins genuinely have
+    /// not. That is [`captured`](Self::captured)'s reasoning, and this is its other half.
+    ///
+    /// ⚠ `&mut self`, because answering is a DECISION the plugin then has to remember: `ai_loop`
+    /// records that its next judgement must route to `stopping` rather than back to work.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn ask_for_an_account(&mut self, _ceiling: crate::driver::Ceiling) -> Accounting {
+        Accounting::Nothing
     }
 
     /// THE PANE WHOSE JOB THIS PLUGIN IS CAUSING TO WORK — what a run that is cut short must stop.
