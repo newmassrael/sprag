@@ -14,9 +14,11 @@
 #        pinion — UNLIKE `cargo fmt --all`, which walks path-deps INTO pinion
 #        (never use `--all` here; the never-touch-pinion rule).
 #
-#   3. `cargo clippy --workspace --all-targets`
+#   3. `cargo clippy --workspace --all-targets -- -D warnings`
 #      - only runs when a Cargo workspace exists (Cargo.toml present) AND
 #        staged files include `*.rs`. docs/atomic-only commits stay cheap.
+#      - `-D warnings` is load-bearing: without it the line printed findings
+#        and exited 0, and three lints rode through on that.
 #
 #   4. the rustdoc gate (`.githooks/doc-gate.sh`)
 #      - same condition as clippy. Catches a broken intra-doc link at the
@@ -67,9 +69,18 @@ if [ -n "$staged_rs" ]; then
     rustfmt --edition 2024 --check $staged_rs
 fi
 
+# ⚠⚠⚠ `-D warnings`, AND ITS ABSENCE WAS MEASURED RATHER THAN SUSPECTED. Without it this line
+# PRINTED lint findings and exited 0, so a warning was a thing the gate said and then let through —
+# and three of them (two `type_complexity`, one `manual_contains`, all in `live_agent.rs`) rode
+# through several commits until somebody ran clippy by hand with the flag. That is the same failure
+# the doc gate below was wired in to stop: a check nothing enforces accumulates silently, and the
+# only cheap place to catch a lint is the commit that writes it.
+#
+# ⚠ The toolchain is PINNED (`rust-toolchain.toml`), so this cannot go red under somebody's newer
+# clippy without the pin moving first — which is a decision somebody takes rather than a drift.
 if [ -f Cargo.toml ] && git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
-    echo "pre-commit: cargo clippy --workspace --all-targets ..." >&2
-    cargo clippy --workspace --all-targets
+    echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
+    cargo clippy --workspace --all-targets -- -D warnings
 
     doc_gate
 fi
