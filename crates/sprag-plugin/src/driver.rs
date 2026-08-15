@@ -70,14 +70,15 @@ pub struct Guardrails {
     ///
     /// When this passes the plugin is asked whether it can say where the run got to
     /// ([`Plugin::ask_for_an_account`]), and one that can is given a window of its own to do it in.
-    /// So a run declaring five minutes may take five minutes plus one turn of its peer. Two
-    /// alternatives were available and both are worse: ending in silence is the defect this
-    /// answers, and carving the window OUT of this number would quietly spend work the caller
+    /// So a run declaring five minutes may take five minutes plus that window — for `ai_loop`, TWO
+    /// of its peer's declared turns, because the account cannot be asked until the turn in flight
+    /// ends. Two alternatives were available and both are worse: ending in silence is the defect
+    /// this answers, and carving the window OUT of this number would quietly spend work the caller
     /// asked for on a report they did not.
     ///
-    /// ⚠ The window is finite, declared by whoever set the plugin's per-turn bound, and granted
-    /// exactly once — see [`crate::plugin::Accounting`], which is where the reasoning
-    /// about *whose number it is* lives.
+    /// ⚠ The window is finite, derived from a bound whoever set the plugin's per-turn ceiling
+    /// already declared, and granted exactly once — see [`crate::plugin::Accounting`], which is
+    /// where the reasoning about *whose number it is* lives.
     ///
     /// [`Plugin::ask_for_an_account`]: crate::plugin::Plugin::ask_for_an_account
     ///

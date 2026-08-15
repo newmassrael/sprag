@@ -317,12 +317,14 @@ impl Step {
 /// number invented here would end somebody's account on a duration nobody chose — the objection
 /// [`OuterLoop::attend`](crate::outer::OuterLoop) records against inventing a patience.
 ///
-/// So the plugin answers with a bound its CALLER already gave it (`ai_loop`'s `turn_within_ms`,
-/// or the substrate's published [`DEFAULT_REPLY_TIMEOUT`](crate::run::DEFAULT_REPLY_TIMEOUT) for
-/// a caller who declared none), and the Driver grants exactly that and no more. What stops this
-/// being a hole in the guardrails is the shape: it is granted ONCE, at the end of a run whose
-/// ending is already decided and cannot be changed by anything that happens inside it, and a
-/// plugin with no bound to name answers [`Cannot`](Self::Cannot) rather than an open window.
+/// So the plugin answers with a bound derived from what its CALLER already gave it (`ai_loop`
+/// counts TWO of its `turn_within_ms`, or of the substrate's published
+/// [`DEFAULT_REPLY_TIMEOUT`](crate::run::DEFAULT_REPLY_TIMEOUT) for a caller who declared none —
+/// see its own `ask_for_an_account`, and the live run that priced the second turn), and the Driver
+/// grants exactly that and no more. What stops this being a hole in the guardrails is the shape:
+/// it is granted ONCE, at the end of a run whose ending is already decided and cannot be changed by
+/// anything that happens inside it, and a plugin with no bound to name answers
+/// [`Cannot`](Self::Cannot) rather than an open window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub enum Accounting {

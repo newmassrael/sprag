@@ -1142,10 +1142,11 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
     const CLOCK: Duration = Duration::from_secs(45);
     /// ⚠⚠ LONGER THAN [`TURN_BOUND`], and this gate is the one place that difference is a claim
     /// rather than a cost. That constant is short because *a contract that cannot be satisfied pays
-    /// it in full every time*; here the same number is ALSO the window the account turn is granted,
-    /// and a live account is a real reply a model is genuinely writing — R390 measured a whole
-    /// stopping run, prompt to report, at 19.7 s. Sized at 20 s this gate would be asserting that a
-    /// model writes faster than a number this module chose for stalls.
+    /// it in full every time*; here the same number ALSO SIZES THE ACCOUNT'S WINDOW — the plugin
+    /// asks for TWO of it, one for the turn in flight to end and one for the answer — and a live
+    /// account is a real reply a model is genuinely writing, which R390 measured at 19.7 s for a
+    /// whole stopping run. Sized at 20 s this gate would be asserting that a model writes faster
+    /// than a number this module chose for stalls.
     const ACCOUNT_BOUND: Duration = Duration::from_secs(60);
 
     let live = Live::start("outoftime");
