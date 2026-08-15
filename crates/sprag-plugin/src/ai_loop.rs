@@ -227,6 +227,7 @@ impl AiLoop {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
@@ -307,6 +308,7 @@ impl AiLoop {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
@@ -496,6 +498,7 @@ impl Plugin for AiLoop {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting

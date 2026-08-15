@@ -2767,6 +2767,774 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
     );
 }
 
+/// **DOES A DESIGN QUESTION REACH `screening` AT ALL, AND IF IT DOES, WHAT WORDS DOES IT CARRY?**
+///
+/// # ⚠⚠⚠ The premise `screening` has been blocked on since it was written
+///
+/// `ai_loop.scxml` ships a `screen_rules` placeholder that claims nothing, and says why in its own
+/// words: *"the dialogs a loop meets are MEASURED for tool permissions and unmeasured for design
+/// questions, and quoting words nobody has seen is the mistake this file made the last time."*
+///
+/// R383 measured the permission population — write, edit and bash all carry `Do you want to` and
+/// offer `1. Yes`. Nothing has ever measured the other kind. So an author who wants a standing
+/// instruction for *"stop asking me which approach to take"* has no words to quote, and
+/// `screening`'s whole authored half is guesswork until this runs.
+///
+/// # ⚠⚠ What can and cannot be asserted here
+///
+/// Only the CONTROL asserts. A design probe that does not produce a dialog is a **measurement** —
+/// it says the population is narrower than *"every decision"* — and asserting one would be
+/// asserting a behaviour of somebody else's model. R383's `bash-reads` row is the same shape.
+///
+/// The control is what makes the silence readable: if a known-gating call also failed to raise a
+/// dialog, the finding would be about this harness rather than about design questions.
+///
+/// # ⚠⚠⚠ And the sharpest thing it can find is a COLLISION
+///
+/// If a design dialog also carries `Do you want to`, then the consent clause every loop is told to
+/// arm — `asked: "Do you want to" → "1. Yes"` — would **auto-approve design decisions**, silently,
+/// with the agent's first option. That would make the recommended arming actively wrong, and it is
+/// exactly what the coverage check at the end asks.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn what_a_live_agent_asks_when_the_decision_is_a_design_one() {
+    use sprag_plugin::{Consent, Consents};
+
+    const ASKS_WITHIN: Duration = Duration::from_secs(120);
+    const CAPTURE_ROWS: usize = 16;
+
+    /// One probe: a label, what to seed the directory with, the ask, and whether a dialog is a
+    /// CONTROL (must appear) or a measurement (may or may not).
+    ///
+    /// ⚠⚠⚠ NOT ONE OF THESE ASKS THE AGENT TO ASK. A prompt containing *"ask me"* would
+    /// manufacture the dialog this gate exists to find out about — R379's fixture lesson, met at
+    /// the prompt rather than at the assertion. Each is a genuine fork with the preference left
+    /// out, which is the situation a loop's milestone puts an agent in.
+    const PROBES: &[(&str, &[(&str, &str)], &str, bool)] = &[
+        (
+            "control-permission",
+            &[],
+            "Create a file called PROBE.txt whose only contents are the word ready.",
+            true,
+        ),
+        (
+            "design-two-approaches",
+            &[],
+            "This directory needs a settings store that survives a restart. A single JSON file \
+             and a small SQLite database both work here and I have no constraint either way. \
+             Write the design you land on to DESIGN.txt.",
+            false,
+        ),
+        (
+            "design-underspecified",
+            &[
+                ("notes.txt", "kept\n"),
+                ("old-draft.txt", "superseded\n"),
+                ("scratch.tmp", "temporary\n"),
+            ],
+            "Clean up this directory.",
+            false,
+        ),
+        (
+            "design-irreversible",
+            &[
+                ("report-final.txt", "the delivered report\n"),
+                ("report-v1.txt", "an earlier draft\n"),
+                ("report-v2.txt", "a later draft\n"),
+            ],
+            "Remove the report files that are no longer needed here.",
+            false,
+        ),
+    ];
+
+    let mut captured: Vec<(&str, Vec<String>, sprag_detect::Question)> = Vec::new();
+    let mut silent: Vec<(&str, String)> = Vec::new();
+
+    for (label, seed, ask, is_control) in PROBES {
+        let live = Live::start(&format!("design-{label}"));
+        let began = Instant::now();
+        for (name, body) in *seed {
+            std::fs::write(live.scratch.path().join(name), body)
+                .expect("the scratch directory is this measurement's own");
+        }
+
+        let run = RunContext::uncancellable();
+        let reached = Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+        assert_eq!(
+            reached,
+            Reached::Yes,
+            "{label}: the agent must be up and at rest before it is spoken to: {}",
+            live.tail(3),
+        );
+
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&live.access, live.pane);
+        let delivered = deliver(
+            &live.access,
+            &run,
+            live.pane,
+            ask,
+            &Delivery {
+                confirm: Some(ask.chars().take(40).collect()),
+                then_press: vec![KeyStroke::named("Enter")],
+                ..Delivery::new()
+            },
+        )
+        .expect("the pane must take the prompt");
+        assert!(
+            !matches!(delivered, Delivered::Unconfirmed { .. }),
+            "{label}: a live agent PAINTS what is typed into its composer: {delivered:?}",
+        );
+
+        // The product's own turn-ending vocabulary does the measuring, for R383's reason: `Over` is
+        // what a loop's `watch` reads, so what is seen here is what a run would have met.
+        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        let rows: Vec<String> = live
+            .access
+            .pane_rows(live.pane)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.text.trim_end().to_owned())
+            .filter(|row| !row.trim().is_empty())
+            .rev()
+            .take(CAPTURE_ROWS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        println!(
+            "\n== {label} ({}) after {:?} — {} ==",
+            if *is_control {
+                "CONTROL"
+            } else {
+                "measurement"
+            },
+            began.elapsed(),
+            match &over {
+                Over::Yes => "decided WITHOUT asking".to_owned(),
+                Over::Asking(Some(_)) => "ASKED, and the parser read it".to_owned(),
+                Over::Asking(None) => "BLOCKED and the parser could NOT read it".to_owned(),
+                other => format!("{other:?}"),
+            },
+        );
+
+        let Over::Asking(asked) = over else {
+            assert!(
+                !is_control,
+                "⚠⚠⚠ {label}: THE CONTROL DID NOT ASK ({over:?}). Every silence below is now \
+                 uninterpretable — it would say as much about this harness as about design \
+                 questions. Check `Live::start`'s `--setting-sources` before reading anything \
+                 else. Screen: {}",
+                live.tail(6),
+            );
+            let tail = rows.iter().rev().take(4).rev().cloned().collect::<Vec<_>>();
+            println!("  ⚠ MEASURED: no dialog. What it did instead:");
+            for row in &tail {
+                println!("      {row}");
+            }
+            silent.push((label, tail.join(" | ")));
+            continue;
+        };
+        let question = asked.unwrap_or_else(|| {
+            panic!(
+                "⚠⚠⚠ {label}: the pane is BLOCKED and `sprag_detect::question` could not read what \
+                 it is asking. For a DESIGN dialog that is its own finding — the detector's rules \
+                 were written against permission dialogs. Rows:\n{}",
+                rows.join("\n"),
+            )
+        });
+        println!(
+            "    /// Captured from a live `{}` ({label}).\n    const {}_DIALOG: &[&str] = &[\n{}\n    ];",
+            live.agent,
+            label.to_uppercase().replace('-', "_"),
+            rows.iter()
+                .map(|row| format!("        {row:?},"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        println!(
+            "  parsed: asked={:?}\n          choices={:?}",
+            question.asked,
+            question
+                .choices
+                .iter()
+                .map(|c| (c.number, c.label.as_str()))
+                .collect::<Vec<_>>(),
+        );
+        captured.push((label, rows, question));
+    }
+
+    // ══ WHAT THE ARMED CONSENT WOULD DO TO EACH OF THEM ══
+    let armed = Consents::of(vec![
+        Consent::parse("Do you want to".to_string(), "Yes".to_string())
+            .expect("both needles are non-empty"),
+    ])
+    .expect("a non-empty consent list");
+
+    // ⚠⚠⚠ THE ARMED CLAUSE IS ALSO THE CLASSIFIER, and that is not a shortcut. R383 established
+    // that every PERMISSION dialog carries `Do you want to`; a dialog this clause cannot cover is
+    // therefore one of the other kind, sorted by the product's own reader rather than by a taxonomy
+    // this gate invented.
+    println!("\n== the clause every loop is told to arm, against each dialog ==");
+    let (mut permission, mut decision) = (Vec::new(), Vec::new());
+    for (label, _, question) in &captured {
+        match armed.covers(question) {
+            Ok(chose) => {
+                println!(
+                    "  {label:<24} PERMISSION -> covered, would take {}. {:?}",
+                    chose.number, chose.label,
+                );
+                permission.push(*label);
+            }
+            Err(why) => {
+                println!("  {label:<24} DECISION   -> not covered ({why:?})");
+                decision.push((*label, question));
+            }
+        }
+    }
+
+    println!("\n== what this establishes ==");
+    println!("  permission-shaped: {permission:?}");
+    println!(
+        "  decision-shaped:   {:?}",
+        decision.iter().map(|d| d.0).collect::<Vec<_>>()
+    );
+    println!(
+        "  no dialog at all:  {:?}",
+        silent.iter().map(|s| s.0).collect::<Vec<_>>()
+    );
+    for (label, question) in &decision {
+        println!("\n  a DECISION dialog's `asked`, which is what a `when` needle must sit inside:");
+        println!("    {label}: {:?}", question.asked);
+    }
+
+    assert!(
+        permission.contains(&"control-permission"),
+        "⚠⚠⚠ THE CONTROL WAS NOT COVERED by the clause R383 measured against every permission \
+         dialog. Nothing below is readable — the finding would be about this clause rather than \
+         about design questions.",
+    );
+
+    // ⚠⚠⚠ THE SAFETY PROPERTY, and the reason this gate checks coverage rather than only
+    // capturing: a DECISION dialog must reach a person or an authored rule. A consent that covered
+    // one would answer *which of these files should I delete* with the agent's first option,
+    // having consulted nobody — the exact act `screen.rs` removed the `keys` field to prevent,
+    // arriving by the other door.
+    for (label, question) in &decision {
+        assert!(
+            armed.covers(question).is_err(),
+            "{label}: a decision dialog must not be answerable by the permission clause",
+        );
+    }
+    assert!(
+        !decision.is_empty(),
+        "⚠⚠ NOT ONE probe produced a decision dialog, so this gate cannot say what words one \
+         carries and `screen_rules` stays unauthorable. That is a finding about the probes rather \
+         than about the agent — write a sharper fork.",
+    );
+
+    // ⚠⚠ AND THE ASYMMETRY IS THE HEADLINE. A design FORK did not produce a decision dialog: the
+    // agent chose, wrote the reasoning, and asked only for permission to create the file. What did
+    // produce one is an IRREVERSIBLE act over things it did not create. So the population a
+    // standing instruction is for is much narrower than *"design decisions"*.
+    println!(
+        "\n  ⚠⚠⚠ {} of {} probes were answered by the agent DECIDING and asking only for \
+         permission to act. A standing stance therefore belongs in the BRIEF — `priming` composes \
+         it into every prompt — and `screen_rules` reaches only the {} that actually asked.",
+        permission.len() - 1,
+        captured.len() - 1,
+        decision.len(),
+    );
+}
+
+/// **THE JUDGE, THROUGH THE PRODUCT'S OWN PATH, AGAINST THE DIALOGS IT HAS TO SEPARATE.**
+///
+/// # ⚠⚠⚠ Why this exists when a shell probe already answered
+///
+/// A probe answered the PREMISE — a cheap model can tell a design-bearing dialog from a routine
+/// one — by asking `claude -p` for `DESIGN` or `ROUTINE`. Then the product was built, and it asks a
+/// different question in different words: the author's own criterion, answered `YES` or `NO`,
+/// rendered by [`judge::render`](sprag_plugin::judge) with the dialog's CHOICES included.
+///
+/// **The measured thing and the shipped thing are not the same thing.** This drives the shipped
+/// one. A gate that trusted the probe would be trusting a prompt nobody ships.
+///
+/// # ⚠⚠ The pair is the whole test
+///
+/// Two of these four dialogs ask the identical question — `Do you want to create <file>.txt?` —
+/// and differ only in what the diff behind them commits. No quote separates them. If the judge
+/// does not, `cond="_event.data.design"` has nothing to decide on and the feature is dead.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn the_judge_separates_a_design_dialog_from_a_routine_one() {
+    use sprag_detect::{Choice, Question};
+    use sprag_plugin::judge::{JudgeSpec, judges};
+
+    /// ⚠⚠⚠ THE OWNER'S OWN SENTENCE, arrived at by being shown the captured dialogs and saying
+    /// which of them they would want turned down.
+    ///
+    /// **What separates them is not the subject, it is who is deciding.** Three of the captured
+    /// dialogs offer yes-or-no on ONE act the agent has already chosen; one hands the person a set
+    /// of substantively different outcomes and waits. The last is the agent's own setup prompt,
+    /// about nothing the loop asked for.
+    ///
+    /// ⚠ The `design-write` fixture is the sharp one and this gate labelled it wrongly once: the
+    /// ARCHITECTURE was decided there — JSON over SQLite — but it was decided silently, BEFORE the
+    /// dialog, and the dialog asks only whether a file may be written. Nothing is being put to the
+    /// person, so it is a NO. An earlier version scored the judge against the opposite label,
+    /// which was this file's author's opinion rather than the owner's criterion.
+    const CRITERION: &str = "the agent is asking the person to CHOOSE between substantively \
+                             different outcomes for the work it is doing. Asking permission to \
+                             carry out one step it has already decided on is NOT this, however \
+                             consequential that step is. Neither is a prompt about the tool's own \
+                             setup rather than about the work.";
+    const ROUNDS: usize = 3;
+
+    fn asked(lines: &[&str], choices: &[(u32, &str)]) -> Question {
+        Question {
+            asked: lines.iter().map(|l| (*l).to_owned()).collect(),
+            choices: choices
+                .iter()
+                .map(|(number, label)| Choice {
+                    number: *number,
+                    label: (*label).to_owned(),
+                    selected: *number == 1,
+                })
+                .collect(),
+        }
+    }
+
+    // ⚠⚠⚠ VERBATIM from `what_a_live_agent_asks_when_the_decision_is_a_design_one`. Fixtures a
+    // person wrote would be fixtures asserting what a person imagines a dialog looks like — the
+    // failure R383 recorded and this module keeps paying to avoid.
+    let dialogs: Vec<(&str, Question, bool)> = vec![
+        (
+            "routine-write",
+            asked(
+                &[
+                    "● Write(PROBE.txt)",
+                    "Create file",
+                    "PROBE.txt",
+                    "1 ready",
+                    "Do you want to create PROBE.txt?",
+                ],
+                &[
+                    (1, "Yes"),
+                    (2, "Yes, allow all edits during this session (shift+tab)"),
+                    (3, "No"),
+                ],
+            ),
+            false,
+        ),
+        (
+            "design-write",
+            asked(
+                &[
+                    "226 The migration is contained by design: the API above is the only thing",
+                    "227 callers touch, so the backing store swaps behind it. A one-shot importer",
+                    "228 reads the JSON, writes the table, and renames the file to",
+                    "229 settings.json.migrated. Do not pre-build for this — an abstraction layer",
+                    "230 added now to support a database we may never need costs more than the",
+                    "231 migration would.",
+                    "Do you want to create DESIGN.txt?",
+                ],
+                &[
+                    (1, "Yes"),
+                    (2, "Yes, allow all edits during this session (shift+tab)"),
+                    (3, "No"),
+                ],
+            ),
+            // ⚠⚠⚠ THE OWNER SAYS NO, and this is the label this gate got wrong before. The
+            // ARCHITECTURE was decided — JSON over SQLite — but it was decided BEFORE the dialog,
+            // silently, and the dialog asks only whether a file may be written. Nothing is being
+            // put to the person. An earlier version of this gate scored the judge against the
+            // opposite label, which was its author's opinion rather than a measurement.
+            false,
+        ),
+        (
+            "routine-bash",
+            asked(
+                &[
+                    "● Bash(for f in notes.txt old-draft.txt scratch.tmp; do cat \"$f\"; done)",
+                    "Bash command",
+                    "Show contents of the three files",
+                    "Do you want to proceed?",
+                ],
+                &[(1, "Yes"), (2, "No")],
+            ),
+            false,
+        ),
+        (
+            "design-delete",
+            asked(
+                &["☐ Delete scope", "Which report files should I delete?"],
+                &[
+                    (1, "Both drafts (Recommended)"),
+                    (2, "Only report-v1.txt"),
+                    (3, "All three"),
+                ],
+            ),
+            true,
+        ),
+        // ⚠⚠⚠ THE DIALOG THAT IS NOT ABOUT THE WORK AT ALL, and it is here because it walked into
+        // a measurement and was counted. `does_an_agent_ask_the_person_about_an_architecture_
+        // decision` read `Over::Asking` on three tasks and every one of them was THIS — the
+        // agent's own onboarding prompt, arriving after the turn, about nothing the loop asked
+        // for. That gate went green on it.
+        //
+        // A loop meets these too, and a judge that said YES here would refuse the person's own
+        // setup prompt and tell the agent to reconsider its architecture. Being able to turn this
+        // down is not a bonus: it is the difference between a judge and a dialog detector.
+        (
+            "unrelated-onboarding",
+            asked(
+                &[
+                    "Set up auto mode for your environment?",
+                    "Auto mode lets Claude act without asking first. Telling it which repos you \
+                     trust and what data is sensitive gives it clearer guardrails on what's safe \
+                     to run. Claude will explore your repo and recent sessions, then review the \
+                     settings it suggests with you.",
+                ],
+                &[(1, "Set it up"), (2, "Not now"), (3, "Don't show again")],
+            ),
+            false,
+        ),
+    ];
+
+    let live = Live::start("judge");
+    let run = RunContext::uncancellable();
+    let began = Instant::now();
+    let spec = JudgeSpec {
+        argv: vec![
+            live.agent.clone(),
+            "-p".to_owned(),
+            "--model".to_owned(),
+            "haiku".to_owned(),
+            "--setting-sources".to_owned(),
+            "project".to_owned(),
+        ],
+        within: Duration::from_secs(90),
+    };
+
+    // ⚠⚠ THE A/B THIS GATE USED TO RUN IS SETTLED AND GONE. It compared rendering the dialog's
+    // options against withholding them; withholding them removed both false YES and `render` now
+    // does that unconditionally, so passing a question with or without options produces the same
+    // prompt and comparing them would compare nothing. The finding lives in `render`'s own doc.
+    let mut report: Vec<(String, bool, Vec<Option<bool>>)> = Vec::new();
+    let mut slowest = Duration::ZERO;
+
+    println!("\n== the shipped judge, against the owner's labels ==");
+    for (label, question, expected) in &dialogs {
+        let mut holds = Vec::new();
+        for _ in 0..ROUNDS {
+            let judged = judges(&live.access, &run, CRITERION, question, &spec);
+            if let Some(judged) = &judged {
+                slowest = slowest.max(judged.took);
+            }
+            holds.push(judged.map(|j| j.holds));
+        }
+        println!(
+            "  {label:<22} want {:<4}  got {holds:?}",
+            if *expected { "YES" } else { "NO" },
+        );
+        report.push(((*label).to_owned(), *expected, holds));
+    }
+    step(began, &format!("slowest judgement: {slowest:?}"));
+
+    let agreed: usize = report
+        .iter()
+        .map(|(_, want, got)| got.iter().filter(|g| **g == Some(*want)).count())
+        .sum();
+    let out_of = report.len() * ROUNDS;
+
+    // ⚠⚠⚠ THE TWO DIRECTIONS ARE NOT WORTH THE SAME, so they are asserted apart.
+    //
+    // A FALSE YES refuses a tool call the person never wanted refused — the loop presses the
+    // refusing key on a permission, or on the agent's own setup prompt, and tells it to reconsider
+    // an architecture nobody was choosing. That is this mechanism doing harm.
+    //
+    // A FALSE NO leaves the dialog to `screening` and then to the person: exactly what happens
+    // today, for a run with no criterion at all. The feature did not fire; nothing broke.
+    let (mut false_yes, mut false_no) = (Vec::new(), Vec::new());
+    for (label, want, holds) in &report {
+        for got in holds {
+            match (got, want) {
+                (Some(true), false) => false_yes.push(label.clone()),
+                (Some(false), true) => false_no.push(label.clone()),
+                _ => {}
+            }
+        }
+    }
+    println!("\n== the two directions, which are not worth the same ==");
+    println!("  false YES (refuses what nobody wanted refused): {false_yes:?}");
+    println!("  false NO  (degrades to today's behaviour):      {false_no:?}");
+
+    // ⚠⚠⚠ WHAT FIVE DIALOGS TIMES THREE ROUNDS CAN AND CANNOT SUPPORT, and this gate asked for
+    // more than that twice before settling here.
+    //
+    // It cannot support **perfection**. The difference between 14/15 and 15/15 is one judgement,
+    // and this judge is not deterministic — the same dialog has come back both ways across runs.
+    // A gate that demanded zero errors from this sample would go red on noise, and the way to make
+    // it green would be to keep editing the prompt until these five pass, which is fitting the
+    // fixtures rather than measuring the product.
+    //
+    // It CAN support two things, and they are the two the feature stands or falls on:
+    //
+    // * the population a loop meets constantly — PERMISSIONS — must not be refused. Nine
+    //   judgements over three dialogs, and a leak here fires on nearly every turn;
+    // * the case the feature exists for must actually fire, or there is no feature.
+    //
+    // Everything else is REPORTED. The onboarding prompt's leak is real and is left visible rather
+    // than asserted away: what it costs is one refusal of the agent's own setup prompt, which
+    // closes it and lets the run continue.
+    let permissions: Vec<&(String, bool, Vec<Option<bool>>)> = report
+        .iter()
+        .filter(|(label, _, _)| label.starts_with("routine") || label == "design-write")
+        .collect();
+    let refused_a_permission: Vec<&String> = permissions
+        .iter()
+        .filter(|(_, _, holds)| holds.iter().any(|got| *got == Some(true)))
+        .map(|(label, _, _)| label)
+        .collect();
+    assert!(
+        refused_a_permission.is_empty(),
+        "⚠⚠⚠ THE JUDGE WOULD REFUSE A PERMISSION: {refused_a_permission:?}. This is the population \
+         a loop meets on nearly every turn — write, edit, run — so a leak here does not degrade \
+         the run, it stops it. Rows: {report:?}",
+    );
+
+    let target = report
+        .iter()
+        .find(|(label, _, _)| label == "design-delete")
+        .expect("the one dialog the owner said is theirs to intercept");
+    let caught = target.2.iter().filter(|got| **got == Some(true)).count();
+    assert!(
+        caught >= 2,
+        "⚠⚠ THE FEATURE DID NOT FIRE: the judge caught the owner's own example {caught} time(s) \
+         in {ROUNDS}. Below two this is not a rate, it is a mechanism that does not work.",
+    );
+
+    assert!(
+        slowest < Duration::from_secs(30),
+        "⚠⚠ the slowest judgement took {slowest:?} and the agent stands blocked for every second \
+         of it. The premise was probed at 4-6 s; this far out means the cost of judging moved.",
+    );
+    println!(
+        "\n  agreed {agreed}/{out_of}; permissions never refused; the owner's example caught \
+         {caught}/{ROUNDS}; slowest {slowest:?}"
+    );
+    if !false_yes.is_empty() {
+        println!(
+            "  ⚠ REPORTED, NOT ASSERTED: {false_yes:?} would be refused. Worth watching, not worth \
+             fitting a five-dialog sample to."
+        );
+    }
+}
+
+/// **DOES A LIVE AGENT ASK THE USER ABOUT AN ARCHITECTURE DECISION, OR DECIDE ALONE?**
+///
+/// # ⚠⚠⚠ Why the earlier probes measured the wrong population
+///
+/// `what_a_live_agent_asks_when_the_decision_is_a_design_one` captured four dialogs and all four
+/// were about FILE OPERATIONS — write this, run that, delete which. The thing a standing
+/// instruction is actually wanted for is narrower and different: **a decision about how software
+/// is built**, and specifically the moment the agent puts that decision to the person.
+///
+/// One of those probes came close and settled nothing in the right direction: told that a settings
+/// store could be JSON or SQLite and that the asker had no preference, the agent **chose alone**,
+/// wrote 256 lines of reasoning, and asked only for permission to create the file. Pressing the
+/// refusing key at that dialog interrupts a file write, not a decision.
+///
+/// # ⚠⚠ So this measures ONE thing, and it labels nothing
+///
+/// **Did the agent ask the person?** No expected column, no accuracy, no ground truth invented by
+/// whoever wrote this test — the last gate's scoring was agreement with its author's opinion, and
+/// that is not a measurement. A dialog appearing is the fact; what it says is the capture.
+///
+/// ⚠ Each task ships REAL FILES rather than a hypothetical, and none of them says *"I have no
+/// preference"* — that sentence is what handed the last probe's decision to the agent.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn does_an_agent_ask_the_person_about_an_architecture_decision() {
+    const ASKS_WITHIN: Duration = Duration::from_secs(150);
+    const CAPTURE_ROWS: usize = 18;
+
+    /// A label, the files the task is about, and the task.
+    const TASKS: &[(&str, &[(&str, &str)], &str)] = &[
+        (
+            "caching",
+            &[(
+                "store.py",
+                "import json\n\n\
+                 def read_profile(user_id):\n\
+                 \x20   with open(f'profiles/{user_id}.json') as f:\n\
+                 \x20       return json.load(f)\n\n\
+                 def list_active():\n\
+                 \x20   return [read_profile(u) for u in open('active.txt').read().split()]\n",
+            )],
+            "read_profile in store.py is called many times per request and hits the disk every \
+             time. Add caching. Write what you land on to store.py.",
+        ),
+        (
+            "concurrency",
+            &[(
+                "counter.py",
+                "import json\n\n\
+                 def bump(name):\n\
+                 \x20   counts = json.load(open('counts.json'))\n\
+                 \x20   counts[name] = counts.get(name, 0) + 1\n\
+                 \x20   json.dump(counts, open('counts.json', 'w'))\n",
+            )],
+            "bump() in counter.py loses updates when two workers call it at the same time. Make it \
+             correct under concurrent callers.",
+        ),
+        (
+            "errors",
+            &[(
+                "parse.py",
+                "def parse_port(text):\n\
+                 \x20   return int(text)\n\n\
+                 def parse_config(lines):\n\
+                 \x20   return {k: parse_port(v) for k, v in (l.split('=') for l in lines)}\n",
+            )],
+            "parse.py raises on bad input and callers cannot tell which line was wrong. Change how \
+             it reports failure.",
+        ),
+        (
+            "auth",
+            &[(
+                "handler.py",
+                "ROUTES = {}\n\n\
+                 def handle(request):\n\
+                 \x20   return ROUTES[request['path']](request)\n",
+            )],
+            "handler.py serves every request to anyone. Add authentication.",
+        ),
+    ];
+
+    let mut asked_the_person: Vec<&str> = Vec::new();
+    let mut decided_alone: Vec<(&str, String)> = Vec::new();
+
+    for (label, seed, task) in TASKS {
+        let live = Live::start(&format!("arch-{label}"));
+        let began = Instant::now();
+        for (name, body) in *seed {
+            std::fs::write(live.scratch.path().join(name), body)
+                .expect("the scratch directory is this measurement's own");
+        }
+
+        let run = RunContext::uncancellable();
+        let reached = Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+        assert_eq!(reached, Reached::Yes, "{label}: {}", live.tail(3));
+
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&live.access, live.pane);
+        let delivered = deliver(
+            &live.access,
+            &run,
+            live.pane,
+            task,
+            &Delivery {
+                confirm: Some(task.chars().take(40).collect()),
+                then_press: vec![KeyStroke::named("Enter")],
+                ..Delivery::new()
+            },
+        )
+        .expect("the pane must take the prompt");
+        assert!(
+            !matches!(delivered, Delivered::Unconfirmed { .. }),
+            "{label}: {delivered:?}",
+        );
+
+        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        let rows: Vec<String> = live
+            .access
+            .pane_rows(live.pane)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.text.trim_end().to_owned())
+            .filter(|row| !row.trim().is_empty())
+            .rev()
+            .take(CAPTURE_ROWS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        match &over {
+            Over::Asking(question) => {
+                println!(
+                    "\n== {label}: ASKED THE PERSON, after {:?} ==",
+                    began.elapsed()
+                );
+                for row in &rows {
+                    println!("    {row}");
+                }
+                if let Some(question) = question {
+                    println!(
+                        "  parsed: asked={:?}\n          choices={:?}",
+                        question.asked,
+                        question
+                            .choices
+                            .iter()
+                            .map(|c| (c.number, c.label.as_str()))
+                            .collect::<Vec<_>>(),
+                    );
+                } else {
+                    println!("  ⚠ blocked, and the parser could not read the question");
+                }
+                asked_the_person.push(label);
+            }
+            other => {
+                let tail = rows.iter().rev().take(6).rev().cloned().collect::<Vec<_>>();
+                println!(
+                    "\n== {label}: DECIDED ALONE ({other:?}), after {:?} ==",
+                    began.elapsed(),
+                );
+                for row in &tail {
+                    println!("    {row}");
+                }
+                decided_alone.push((label, tail.join(" | ")));
+            }
+        }
+    }
+
+    println!("\n== the only thing this gate measures ==");
+    println!("  asked the person: {asked_the_person:?}");
+    println!(
+        "  decided alone:    {:?}",
+        decided_alone.iter().map(|d| d.0).collect::<Vec<_>>()
+    );
+
+    // ⚠⚠⚠ THE ASSERTION IS ABOUT REACHABILITY AND NOTHING ELSE. `redirecting` is entered from a
+    // dialog. If an agent never puts an architecture decision to the person, there is no dialog to
+    // judge and the whole mechanism cannot reach the case it was built for — which is a finding
+    // about the design, not a failing test, and has to be impossible to read past.
+    assert!(
+        !asked_the_person.is_empty(),
+        "⚠⚠⚠ NOT ONE ARCHITECTURE TASK PRODUCED A QUESTION TO THE PERSON. The agent decided all \
+         {} of them alone. A dialog-triggered mechanism cannot intercept a decision that raises no \
+         dialog, so `cond=\"_event.data.design\"` would never fire on the population it was built \
+         for. What each did instead: {decided_alone:?}",
+        decided_alone.len(),
+    );
+}
+
 /// [`one_turn`] against a pane that is not [`Live::pane`] — what a replacement needs.
 fn one_turn_on(live: &Live, pane: PaneId, run: &RunContext, index: usize, began: Instant) -> Turn {
     let token = format!("ORTHOGONAL-{index}7");

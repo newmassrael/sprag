@@ -253,6 +253,43 @@
           ]"/>
 
     <!--
+      ⚠⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP TURNS DOWN, and what it says instead.
+
+      A `screen_rule` above QUOTES a dialog. This JUDGES one — and the difference
+      is not a preference, it is a measured limit. These two dialogs ask the
+      identical question:
+
+          Do you want to create PROBE.txt?    <- writes the word "ready"
+          Do you want to create DESIGN.txt?   <- commits 256 lines that chose
+                                                 JSON over SQLite
+
+      No quote separates them, because what differs is what the action MEANS,
+      and that is in the diff the dialog carries rather than in its wording.
+
+      ⚠⚠ THIS IS NOT THE DIALOG-KIND TAXONOMY COMING BACK. R383 removed one
+      because it asked an author to name a KIND from a list somebody else
+      maintained, and `sprag-detect` classifies none. A criterion is the author's
+      own sentence about their own run, decided per dialog against that dialog's
+      actual contents rather than looked up in a table.
+
+      ⚠ MEASURED, which is why it is spellable at all: a cheap judge (haiku, in
+      print mode) separated four captured live dialogs 3 times
+      out of 3, the identical-sentence pair included, at 4-6 s per call. The
+      verdict is the FIRST WORD of the reply — the same model answers some
+      dialogs in one word and others with a paragraph, so a reader taking the
+      whole reply would call a stable verdict unstable.
+
+      ⚠⚠ AN EMPTY CRITERION DECLINES THIS ENTIRELY: no judge is asked, no model
+      call is paid for, and every blocked turn goes to `screening` exactly as it
+      did before this existed. That is the default, because a run that did not
+      ask for a second agent must not acquire one.
+    -->
+    <data id="design_criterion" expr="''"/>
+    <data id="design_reply"
+          expr="'Ignore cost. Reconsider and proceed with the approach that is ' +
+                'most correct in the long term.'"/>
+
+    <!--
       ⚠⚠⚠ HOW A STANDING INSTRUCTION IS INTRODUCED once it has been carried out,
       and this prose is AUTHORED for the same reason the rules' own `text` is: it
       is said to somebody's agent, in somebody's language, and the driver must
@@ -278,7 +315,8 @@
 
     <!--
       Budgets. `max_turns` bounds the run; `reflect_every` sets how often
-      the loop stops to improve itself.
+      the loop stops to improve itself. `design_criterion` is beside them
+      because a judged dialog costs a model call too — see its own comment.
 
       ⚠⚠⚠ BOTH ARE COUNTS OF TURNS, AND A TURN IS NOT A UNIT OF ANYTHING THE
       BILL IS DENOMINATED IN. Measured over 39 local sessions: what one billed
@@ -366,6 +404,12 @@
          claim nothing would have counted every question it declined to
          answer. -->
     <data id="screened" expr="0"/>
+    <!-- ⚠⚠ How many dialogs a JUDGEMENT turned down, kept apart from `screened`
+         for the reason that variable is kept apart from a hand-answered run: two
+         different authorities acted, and a reader of a finished run must be able
+         to tell which. A quote the author wrote is auditable by re-reading the
+         document; a judgement is not, so its count is the only trace it leaves. -->
+    <data id="redirected" expr="0"/>
     <!--
       ⚠⚠⚠ THE STANDING INSTRUCTIONS THIS RUN HAS CARRIED OUT, one labelled line
       each, accumulated on `screen.matched` and composed into both working
@@ -534,10 +578,40 @@
       <assign location="turns_since_reflect" expr="turns_since_reflect + 1"/>
     </transition>
     <!--
-      The agent asked. Try the person's standing instructions before waking
-      them; `screening` is what decides whether this is a question they already
-      answered.
+      ⚠⚠⚠ THE AGENT ASKED, AND THE FIRST QUESTION IS WHAT KIND OF QUESTION IT IS.
+
+      A dialog that would commit a DESIGN DECISION is turned down and redirected;
+      anything else goes to `screening`, where the author's quoted rules and then
+      the person decide as they always have.
+
+      ⚠⚠⚠ WHY THIS IS A `cond` AND NOT A FLAG THE DRIVER READS. The routing IS
+      the decision, so it belongs where a person editing this file can see it —
+      two lines, in order, saying what happens to each kind. A driver that
+      branched internally on the same fact would make this document say
+      *"a blocked turn goes to screening"* while the product did something else.
+
+      ⚠⚠ WHAT THE GUARD CANNOT DO, and why the driver still measures. Deciding
+      whether a dialog commits a design decision needs a second agent reading the
+      dialog's own contents — MEASURED, because the two dialogs it must separate
+      say the identical sentence:
+
+          Do you want to create PROBE.txt?    <- writes the word "ready"
+          Do you want to create DESIGN.txt?   <- commits 256 lines that chose
+                                                 JSON over SQLite
+
+      No expression over this datamodel can tell those apart. And a guard must
+      not try: SCXML does not promise how often it evaluates one, and the
+      measured judgement takes 4-6 seconds. So the driver judges ONCE, when it
+      raises the event, and publishes the verdict as `_event.data.design` — the
+      same arrangement `judge`'s own `_event.data.done` has always used. The
+      driver measures; the document decides.
+
+      ⚠ A run with no judge configured, a judge that errs, and a judge that
+      answers something which is not a verdict all arrive here as FALSE. Silence
+      is not a yes: the alternative would refuse an agent's tool call on nobody's
+      decision, which is the act `screen.rs` removed the `keys` field to prevent.
     -->
+    <transition event="turn.blocked" cond="_event.data.design" target="redirecting"/>
     <transition event="turn.blocked" target="screening"/>
     <!--
       The person reached into the inner pane and interrupted the agent
@@ -804,6 +878,35 @@
   -->
   <state id="resuming">
     <transition event="session.ready" target="priming"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    ⚠⚠⚠ A DIALOG THAT WOULD COMMIT A DESIGN DECISION, TURNED DOWN AND REDIRECTED.
+
+    The same act `screening` performs on a matched rule — refuse the call with
+    the product's key, then say what to do instead — reached by a different
+    route. It is a state of its own rather than an arm of `screening` because a
+    reader of a finished run has to be able to tell WHICH authority acted: a
+    quote the author wrote, or a judgement about this one dialog. `screening`
+    carries the rule's own words out on `Screened::when`; this carries the
+    criterion.
+
+    ⚠ `redirect.none` is the honest exit and not a defensive one. The refusing
+    key may not take the dialog off the screen — measured as `NotDismissed` for
+    `screening`'s own path — and a dialog still up reads an Enter as an answer to
+    itself. So nothing is typed and the person is woken, exactly as they are when
+    no rule claims a question.
+  -->
+  <state id="redirecting">
+    <onentry>
+      <send event="redirect.begin"/>
+    </onentry>
+    <transition event="redirect.done" target="working">
+      <assign location="redirected" expr="redirected + 1"/>
+    </transition>
+    <transition event="redirect.none" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
   </state>

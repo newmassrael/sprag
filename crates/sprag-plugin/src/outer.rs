@@ -451,7 +451,14 @@ impl Owed {
                 // interrupted, so the peer is still working on the prompt it already has and this
                 // loop's `Completion` is still armed from it. A prompt here would be a second
                 // question inside one turn.
-                AiLoopEvent::ScreenMoot
+                // ⚠⚠ `redirecting --redirect.done-->` carries none for exactly `ScreenMatched`'s
+                // reason, and it is the same act: the peer has just been refused and told what to
+                // do instead by this driver's own keystrokes, so it is working on that. A prompt
+                // here would type over a peer that has just been spoken to.
+                AiLoopEvent::RedirectDone
+                | AiLoopEvent::RedirectBegin
+                | AiLoopEvent::RedirectNone
+                | AiLoopEvent::ScreenMoot
                 | AiLoopEvent::PromptSent
                 | AiLoopEvent::ScreenMatched
                 | AiLoopEvent::Brief
@@ -480,6 +487,7 @@ impl Owed {
             AiLoopState::Idle
             | AiLoopState::Judging
             | AiLoopState::Screening
+            | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
@@ -1287,6 +1295,16 @@ impl OuterLoop {
             // Reported rather than skipped: a driver that treated it as a no-op would take the loop
             // somewhere the author did not write.
             state @ AiLoopState::AwaitingHuman => return Ok(Pumped::Unbuilt(state)),
+
+            // ⚠⚠⚠ THE DOCUMENT HAS THE ROUTE AND THIS DRIVER HAS NOT BUILT THE ACT YET, reported
+            // as such rather than skipped. `working`'s `cond="_event.data.design"` is what reaches
+            // here, and nothing yet publishes a `true` for it — the judge that would is the next
+            // piece — so today this state is unreachable and says so if it is ever reached.
+            //
+            // ⚠ `Unbuilt` and not a no-op, for `awaiting_human`'s reason: a driver that treated an
+            // undriven state as *carry on* would take the loop somewhere the author did not write,
+            // and a route that silently does nothing is worse than one that is missing.
+            state @ AiLoopState::Redirecting => return Ok(Pumped::Unbuilt(state)),
 
             // `is_in_final_state` answered above; these are the same five, and naming them keeps
             // the match exhaustive without a wildcard that would swallow a sixth.

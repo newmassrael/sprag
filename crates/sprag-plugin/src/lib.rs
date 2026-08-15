@@ -49,6 +49,7 @@ pub mod consent;
 pub mod deliver;
 pub mod dialogue;
 pub mod driver;
+pub mod judge;
 pub mod orchestrator;
 pub mod outer;
 pub mod pipe;
