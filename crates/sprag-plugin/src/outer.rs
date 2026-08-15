@@ -312,6 +312,19 @@ pub struct AiLoopSpec {
     /// ends rather than waiting, which is the only honest answer for a pane on a screen nobody is
     /// looking at.
     pub attended: crate::readiness::Attended,
+    /// **WHO ANSWERS THE DOCUMENT'S `judged_rules`**, or [`None`] for a run that asked for nobody.
+    ///
+    /// # ⚠⚠⚠ Two halves, and neither implies the other
+    ///
+    /// The AUTHOR writes the rules into the document — what makes a dialog theirs to turn down.
+    /// The CALLER supplies this — which agent answers them, at what price. Rules with nobody to
+    /// ask change nothing; a judge with no rules is asked nothing. **Both are needed and each is
+    /// somebody else's to give**, which is why they are not one argument.
+    ///
+    /// ⚠ [`None`] is the default and costs exactly nothing: no pane spawned, no model asked, every
+    /// blocked turn to `screening` as before. A run that did not ask for a second agent must not
+    /// acquire one, so this crate names no model of its own.
+    pub judge: Option<crate::judge::JudgeSpec>,
 }
 
 impl AiLoopSpec {
@@ -337,6 +350,9 @@ impl AiLoopSpec {
             // would be this constructor deciding something nobody said.
             may_answer: None,
             attended: crate::readiness::Attended::NoOne,
+            // ⚠ NOR IS THIS. A judge is a second agent with a bill; naming one here would have
+            // every loop built from this constructor quietly acquire one.
+            judge: None,
         }
     }
 }
@@ -640,6 +656,12 @@ pub enum Noticed {
     Asking(crate::consent::Unanswered),
     /// **A PERSON TOOK THE PANE**, and how much they wrote into it.
     Interrupted(crate::readiness::Interruption),
+    /// **A JUDGED RULE CLAIMED A DIALOG AND THIS RUN TURNED IT DOWN** — beside
+    /// [`Screened`](Self::Screened), and separate for the reason that one is separate from a
+    /// hand-answered run: two authorities can act here, and a reader of a finished run must be
+    /// able to tell which did. A quote can be re-read in the document forever; a judgement
+    /// happened once, to one dialog, and this is its only trace.
+    Redirected(crate::judge::Redirected),
     /// **THE DATAMODEL STOPPED ANSWERING** for this variable, so the machine was sent to `failed`.
     ///
     /// Names the variable rather than the fact alone: the run's failure sentence is the only thing
@@ -803,6 +825,16 @@ pub struct OuterLoop {
     /// bound.** The multi-line prompts got through only because their own embedded newlines made
     /// the peer paint mid-delivery, which is an accident of how they are authored.
     shows_the_prompt: bool,
+    /// **WHO ANSWERS THIS RUN'S `judged_rules`**, or [`None`] for a run that asked for nobody.
+    judge: Option<crate::judge::JudgeSpec>,
+    /// **THE RULE A JUDGE JUST CLAIMED THIS DIALOG WITH**, held between raising `turn.blocked` and
+    /// carrying the refusal out in `redirecting`.
+    ///
+    /// ⚠ It is the DRIVER's and not the document's on purpose. The document routes on a boolean;
+    /// what to SAY is the rule's own `text`, and putting it through the datamodel and back would
+    /// make the words a run types into somebody's dialog a round trip through a script engine that
+    /// has already been measured mangling non-ASCII once.
+    claimed: Option<crate::judge::JudgedRule>,
     /// This turn's evaluator, armed before the prompt goes in.
     done: Completion,
     /// What the last pump saw behind the event it raised — see [`Noticed`].
@@ -867,6 +899,8 @@ impl OuterLoop {
             session,
             turn: spec.turn.clone(),
             shows_the_prompt: spec.shows_the_prompt,
+            judge: spec.judge.clone(),
+            claimed: None,
         })
     }
 
@@ -1134,6 +1168,49 @@ impl OuterLoop {
         Ok(ScreenRules::of(rules))
     }
 
+    /// **THE JUDGED DECISIONS THE DOCUMENT CARRIES**, read live for
+    /// [`authored`](Self::authored)'s reason.
+    ///
+    /// ⚠⚠ AN ABSENT OR EMPTY LIST IS AN EMPTY LIST, not a refusal — declining to judge is the
+    /// ordinary state of a run and its default. Anything that is neither (a string, a number, a
+    /// bare object) is a document whose author meant something this driver cannot read, and
+    /// guessing at that is how a decision fires on a dialog nobody wrote it for. That is
+    /// [`NotScreenable::Unreadable`], the same answer `screening` gives.
+    fn judged_rules(&self) -> Result<crate::judge::JudgedRules, NotScreenable> {
+        use crate::judge::{JudgedRule, JudgedRules};
+
+        let Ok(held) = self.script.get_variable(&self.session, JudgedRules::KEY) else {
+            return Err(NotScreenable::Unreadable);
+        };
+        let items = match held {
+            ScriptValue::Array(items) => items,
+            ScriptValue::Null | ScriptValue::Undefined => return Ok(JudgedRules::default()),
+            _ => return Err(NotScreenable::Unreadable),
+        };
+        let mut rules = Vec::with_capacity(items.len());
+        for (at, item) in items.iter().enumerate() {
+            let ScriptValue::Object(fields) = item else {
+                return Err(NotScreenable::Unreadable);
+            };
+            let text_of = |key: &str| match fields.get(key) {
+                Some(ScriptValue::String(held)) => Some(held.clone()),
+                _ => None,
+            };
+            let (Some(name), Some(criterion), Some(text)) = (
+                text_of(JudgedRule::NAME_KEY),
+                text_of(JudgedRule::JUDGE_KEY),
+                text_of(JudgedRule::TEXT_KEY),
+            ) else {
+                return Err(NotScreenable::Unreadable);
+            };
+            rules.push(
+                JudgedRule::parse(name, criterion, text)
+                    .map_err(|why| NotScreenable::Malformed { at, why })?,
+            );
+        }
+        Ok(JudgedRules::of(rules))
+    }
+
     /// What the document says NOW.
     ///
     /// # ⚠⚠⚠ Read live, because a snapshot is the defect this replaced
@@ -1263,6 +1340,25 @@ impl OuterLoop {
                     AiLoopEvent::TurnDone,
                     serde_json::json!({ "context": self.context_now(panes) }),
                 ),
+                // ⚠⚠⚠ THE VERDICT IS TAKEN HERE, ONCE, and the document decides on it — see
+                // `working`'s `cond="_event.data.judged"`. A guard cannot do this: the pinned
+                // engine has no seam to register a host function on, and SCXML does not promise
+                // how often it evaluates one, so a judgement inside a `cond` would be a model
+                // call of unknown multiplicity inside a microstep.
+                AiLoopEvent::TurnBlocked => {
+                    let rule = self.judged(panes, run);
+                    Raise::carrying(
+                        AiLoopEvent::TurnBlocked,
+                        // ⚠ A BOOLEAN BESIDE THE NAME, because this datamodel is Lua and the only
+                        // false values there are `nil` and `false`. A guard reading the name alone
+                        // would fire on the empty string, i.e. on every blocked turn of every run
+                        // that matched nothing.
+                        serde_json::json!({
+                            "judged": rule.is_some(),
+                            "rule": rule.unwrap_or_default(),
+                        }),
+                    )
+                }
                 other => other.into(),
             },
 
@@ -1304,7 +1400,7 @@ impl OuterLoop {
             // ⚠ `Unbuilt` and not a no-op, for `awaiting_human`'s reason: a driver that treated an
             // undriven state as *carry on* would take the loop somewhere the author did not write,
             // and a route that silently does nothing is worse than one that is missing.
-            state @ AiLoopState::Redirecting => return Ok(Pumped::Unbuilt(state)),
+            AiLoopState::Redirecting => self.redirect(panes, run)?,
 
             // `is_in_final_state` answered above; these are the same five, and naming them keeps
             // the match exhaustive without a wildcard that would swallow a sixth.
@@ -1505,6 +1601,96 @@ impl OuterLoop {
     ///
     /// ⚠ The record is written AFTER `say`, because `say` clears the notice — a new turn is a new
     /// question, and the three things armed per turn must not come apart.
+    /// **WHICH OF THE AUTHOR'S JUDGED RULES CLAIMS THE DIALOG THE AGENT IS SHOWING**, by its name,
+    /// or [`None`] when none does — what `working`'s `cond="_event.data.judged"` decides on.
+    ///
+    /// # ⚠⚠⚠ Every road to *"do not know"* ends at NONE, and that is the safety property
+    ///
+    /// No rules authored, no judge supplied, a question nothing could parse, a judge that timed
+    /// out or replied with something that is not a verdict — every one of them answers [`None`],
+    /// and `None` sends the dialog to `screening` and then to the person. **That is exactly what a
+    /// run with no rules at all does, so the mechanism's failure mode is its own absence.**
+    ///
+    /// A match on silence would press [`REFUSES`](crate::screen::REFUSES) at somebody's dialog on
+    /// nobody's decision — the act `screen.rs` removed the `keys` field to keep out of a rule's
+    /// reach. It must not arrive by this door either.
+    ///
+    /// ⚠ The rule that claimed it is kept in [`claimed`](Self#structfield.claimed) for
+    /// [`redirect`](Self::redirect) to carry out. The document is told the NAME and nothing else:
+    /// what to say is prose, and a round trip through this script engine is what PR-87 measured
+    /// mangling non-ASCII.
+    fn judged(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Option<String> {
+        self.claimed = None;
+        let spec = self.judge.clone()?;
+        let rules = self.judged_rules().ok()?;
+        if rules.rules().is_empty() {
+            return None;
+        }
+        // ⚠ The question comes from the NOTICE `watch` just recorded, never from a fresh read of
+        // the pane — `screen`'s rule, for its reason: a second look is a dialog's worth of time
+        // later, and what is judged must be what ended the turn.
+        let Some(Noticed::Asking(unanswered)) = &self.noticed else {
+            return None;
+        };
+        let question = unanswered.question().cloned()?;
+        let (rule, _judged) = rules.claiming(panes, run, &question, &spec)?;
+        let name = rule.name().to_owned();
+        self.claimed = Some(rule.clone());
+        Some(name)
+    }
+
+    /// **A DIALOG A JUDGE CLAIMED, REFUSED AND REDIRECTED** — [`screen`](Self::screen)'s act, on the
+    /// other authority.
+    ///
+    /// ⚠⚠ A method of its own and not an arm of `screen`, because a reader of a finished run has to
+    /// be able to tell WHICH authority acted. A rule's quote can be re-read in the document forever;
+    /// a judgement happened once, to one dialog, and [`Noticed::Redirected`] is its only trace.
+    ///
+    /// ⚠ `redirect.none` is `screen.none`'s exit and for its measured reason: the refusing key may
+    /// not take the dialog off the screen, and a dialog still up reads an Enter as an answer to
+    /// itself. Nothing is typed and the person is woken.
+    fn redirect(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
+        let question = match &self.noticed {
+            Some(Noticed::Asking(unanswered)) => unanswered.question().cloned(),
+            _ => None,
+        };
+        let (Some(question), Some(rule)) = (question, self.claimed.take()) else {
+            // Reaching here means the document routed on a verdict whose subject this driver can no
+            // longer see. `screen`'s class, and its answer: the person.
+            self.noticed = Some(Noticed::Asking(Unanswered::unreadable()));
+            return Ok(AiLoopEvent::RedirectNone.into());
+        };
+
+        match crate::screen::refuse(panes, self.driving.pane, &question, run)? {
+            Refused::StillUp(unanswered) => {
+                self.noticed = Some(Noticed::Asking(unanswered));
+                Ok(AiLoopEvent::RedirectNone.into())
+            }
+            // ⚠ The dialog went before anything was pressed, so there is no question left to
+            // publish — `ScreenMoot`'s reason. The peer is still working on the prompt it has, which
+            // is why `redirect.done` sends no prompt either.
+            Refused::AlreadyGone => {
+                self.noticed = None;
+                Ok(AiLoopEvent::RedirectDone.into())
+            }
+            Refused::Gone { bytes } => {
+                let spent = self.say(panes, run, rule.text())?;
+                self.noticed = Some(Noticed::Redirected(crate::judge::Redirected {
+                    question,
+                    rule: rule.name().to_owned(),
+                    criterion: rule.criterion().to_owned(),
+                    // ⚠ `judged` reduced the verdict to the bool the document routed on; the word
+                    // itself is not carried back here, and inventing one would be a second
+                    // authority on what the judge said.
+                    said: "YES".to_owned(),
+                    told: rule.text().to_owned(),
+                    bytes: bytes + spent,
+                }));
+                Ok(AiLoopEvent::RedirectDone.into())
+            }
+        }
+    }
+
     fn screen(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
         // ⚠⚠ THE BARRIER'S OWN REFUSAL IS CARRIED, not just its question: it says what the
         // CONSENTS made of this dialog, and that reason has a different remedy from anything
@@ -2150,6 +2336,9 @@ mod tests {
             // `ai_loop`'s own gates drive the other half.
             may_answer: None,
             attended: crate::readiness::Attended::NoOne,
+            // ⚠ AND NO JUDGE, for the same reason: a judge would put a spawned agent in the middle
+            // of every blocked turn these gates drive.
+            judge: None,
         }
     }
 

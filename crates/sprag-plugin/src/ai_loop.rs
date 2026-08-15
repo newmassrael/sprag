@@ -563,6 +563,10 @@ mod tests {
             shows_the_prompt: false,
             may_answer: None,
             attended: crate::readiness::Attended::NoOne,
+            // ⚠ NO JUDGE, so `working`'s `cond="_event.data.judged"` is always false here and
+            // every blocked turn takes the `screening` edge. A stand-in gate that acquired one
+            // would spawn a real agent per dialog, which is what these gates exist to avoid.
+            judge: None,
         }
     }
 

@@ -1,5 +1,6 @@
 //! **A SECOND AGENT, ASKED ONE YES-OR-NO QUESTION ABOUT ONE DIALOG** — what
-//! `ai_loop.scxml`'s `cond="_event.data.design"` is decided by.
+//! `ai_loop.scxml`'s `cond="_event.data.judged"` is decided by, once per rule in its
+//! `judged_rules`.
 //!
 //! # ⚠⚠⚠ Why quoting could not reach this, measured
 //!
@@ -22,12 +23,12 @@
 //! register a host function on ([`IScriptEngine`](sce_rust_runtime) exposes `execute_script`,
 //! `evaluate_expression`, `validate_expression` and the variable accessors, and nothing else). So
 //! a guard cannot do this and must not try: the driver judges ONCE, when it raises the event, and
-//! the document reads `_event.data.design`. The driver measures; the document decides — the same
+//! the document reads `_event.data.judged`. The driver measures; the document decides — the same
 //! arrangement `_event.data.done` has always used.
 //!
 //! # ⚠⚠⚠ The failure direction is the safety property
 //!
-//! No criterion, no judge, a timeout, a crash, a reply that is not a verdict — every one of them
+//! No rules, no judge, a timeout, a crash, a reply that is not a verdict — every one of them
 //! answers [`None`], and the caller publishes `false`. **Silence is never a yes.** A `true` on
 //! silence would refuse the agent's tool call on nobody's decision, which is the act
 //! [`REFUSES`] is structured to keep out of reach.
@@ -73,6 +74,134 @@ impl JudgeSpec {
     /// from the pane's full text once the process has exited, so the only thing a width could do
     /// is wrap a one-word answer.
     const PANE: (u16, u16) = (80, 24);
+}
+
+/// **ONE JUDGED DECISION**: what to call it, the sentence a judge answers, and what to say once the
+/// dialog it claims has been refused.
+///
+/// # ⚠⚠⚠ A list of these, so a decision is one element to add and one to delete
+///
+/// Shaped after [`ScreenRule`](crate::screen::ScreenRule) deliberately. The two differ in ONE
+/// thing — whether the claim is quoted or judged — and an author who has written one has written
+/// the other. A decision welded in as a pair of scalars would be a decision nobody can add a
+/// second of.
+///
+/// ⚠ [`name`](Self::name) exists so a DOCUMENT can fork per decision: the driver publishes it as
+/// `_event.data.rule` beside the boolean the shipped guard reads. Nothing in this crate branches
+/// on it — it is there for the author, which is the point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JudgedRule {
+    name: String,
+    criterion: String,
+    text: String,
+}
+
+impl JudgedRule {
+    /// The datamodel and wire key of the rule's name, inside one element of [`JudgedRules::KEY`].
+    pub const NAME_KEY: &'static str = "name";
+    /// The datamodel and wire key of the criterion.
+    pub const JUDGE_KEY: &'static str = "judge";
+    /// The datamodel and wire key of what the agent is told.
+    pub const TEXT_KEY: &'static str = "text";
+
+    /// A rule called `name`, claiming the dialogs a judge says `criterion` holds of, answered by
+    /// refusing the call and saying `text`.
+    ///
+    /// # Errors
+    ///
+    /// [`Malformed`](crate::screen::Malformed), naming which field to change. An empty criterion
+    /// is [`ClaimsEverything`](crate::screen::Malformed::ClaimsEverything) for a sharper reason
+    /// than a quote's: an empty quote is carried by every dialog, and an empty criterion is a
+    /// question a judge cannot answer at all, so a rule holding one would spend a model call per
+    /// blocked turn to learn nothing.
+    pub fn parse(
+        name: String,
+        criterion: String,
+        text: String,
+    ) -> Result<Self, crate::screen::Malformed> {
+        if name.trim().is_empty() || criterion.trim().is_empty() {
+            return Err(crate::screen::Malformed::ClaimsEverything);
+        }
+        if text.is_empty() {
+            return Err(crate::screen::Malformed::SaysNothing);
+        }
+        Ok(Self {
+            name,
+            criterion,
+            text,
+        })
+    }
+
+    /// What this decision is called — published as `_event.data.rule`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The sentence a judge answers about one dialog.
+    #[must_use]
+    pub fn criterion(&self) -> &str {
+        &self.criterion
+    }
+
+    /// What the agent is told once the call is refused.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// **WHAT A LOOP JUDGES**, as a list of independent [`JudgedRule`]s.
+///
+/// ⚠ EMPTY IS REPRESENTABLE HERE where [`ScreenRules`](crate::screen::ScreenRules) refuses it, and
+/// the difference is not an inconsistency. A list of quotes is read from a document that ships one
+/// as a placeholder, so *"I wrote no rules"* and *"I wrote an empty list"* had to be distinguished.
+/// This list ships EMPTY as its default — declining a second agent is the ordinary state of a run —
+/// so empty is the answer rather than an ambiguity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JudgedRules {
+    rules: Vec<JudgedRule>,
+}
+
+impl JudgedRules {
+    /// The datamodel variable — and wire argument — these are authored in.
+    pub const KEY: &'static str = "judged_rules";
+
+    /// A list of judged decisions, in the order the author wrote them.
+    #[must_use]
+    pub fn of(rules: Vec<JudgedRule>) -> Self {
+        Self { rules }
+    }
+
+    /// Every rule, in document order.
+    #[must_use]
+    pub fn rules(&self) -> &[JudgedRule] {
+        &self.rules
+    }
+
+    /// The FIRST rule a judge says claims `question`, or [`None`] when none does.
+    ///
+    /// ⚠⚠⚠ EACH RULE COSTS A MODEL CALL, so the order an author writes them in is the order they
+    /// are PAID for, and the first match stops the rest being asked. That is a real reason to put
+    /// the likeliest decision first, and it is worth saying because no other rule list in this
+    /// crate has a per-element price.
+    ///
+    /// ⚠ A rule whose judge answers [`None`] is skipped and the next is tried — silence about one
+    /// criterion says nothing about another.
+    #[must_use]
+    pub fn claiming(
+        &self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+        question: &Question,
+        spec: &JudgeSpec,
+    ) -> Option<(&JudgedRule, Judgement)> {
+        self.rules.iter().find_map(|rule| {
+            judges(panes, run, rule.criterion(), question, spec)
+                .filter(|judged| judged.holds)
+                .map(|judged| (rule, judged))
+        })
+    }
 }
 
 /// **WHAT A JUDGE SAID**, kept whole rather than reduced to the bool, because a run that refused
@@ -201,6 +330,8 @@ fn render(criterion: &str, question: &Question) -> String {
 pub struct Redirected {
     /// The question as it stood when it was turned down.
     pub question: Question,
+    /// What the rule that claimed it is called — the author's own name for this decision.
+    pub rule: String,
     /// The criterion the judge was asked about.
     pub criterion: String,
     /// The verdict word the judge replied with.
@@ -220,8 +351,8 @@ impl Redirected {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "judged {:?} ({}), refused with {REFUSES} and told the agent: {:?}",
-            self.criterion, self.said, self.told,
+            "rule {:?} judged {:?} ({}), refused with {REFUSES} and told the agent: {:?}",
+            self.rule, self.criterion, self.said, self.told,
         )
     }
 }
@@ -354,6 +485,7 @@ mod tests {
     fn a_redirect_describes_what_it_refused_and_what_it_said() {
         let line = Redirected {
             question: question(),
+            rule: "design".to_owned(),
             criterion: "commits a design decision".to_owned(),
             said: "YES".to_owned(),
             told: "Reconsider and take the long-term-correct approach.".to_owned(),
@@ -361,6 +493,10 @@ mod tests {
         }
         .describe();
         assert!(line.contains("commits a design decision"), "{line}");
+        assert!(
+            line.contains("design"),
+            "the rule that fired is named: {line}"
+        );
         assert!(line.contains("YES"), "{line}");
         assert!(
             line.contains("Escape"),

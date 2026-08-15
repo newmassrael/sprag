@@ -279,15 +279,34 @@
       dialogs in one word and others with a paragraph, so a reader taking the
       whole reply would call a stable verdict unstable.
 
-      ⚠⚠ AN EMPTY CRITERION DECLINES THIS ENTIRELY: no judge is asked, no model
-      call is paid for, and every blocked turn goes to `screening` exactly as it
-      did before this existed. That is the default, because a run that did not
-      ask for a second agent must not acquire one.
+      ⚠⚠⚠ A LIST, SO A DECISION IS ONE ELEMENT TO ADD AND ONE TO DELETE. Each
+      carries three things and nothing else:
+
+        name   what to call it. The driver publishes this as
+               `_event.data.rule`, so a document that wants DIFFERENT handling
+               per decision routes on it and one that does not can ignore it.
+        judge  the sentence a second agent answers about ONE dialog.
+        text   what the agent is told once that dialog has been refused.
+
+      Shaped after `screen_rules` above deliberately: an author who has written
+      one has written the other, and the only difference is whether the claim is
+      quoted or judged. To add a decision, add an element:
+
+        { name: 'security',
+          judge: 'going ahead would weaken an authentication or authorisation
+                  boundary',
+          text:  'Stop and state the boundary this crosses before continuing.' }
+
+      ⚠⚠ THE EMPTY LIST IS THE DEFAULT AND DECLINES THIS ENTIRELY: no judge is
+      asked, no model call is paid for, and every blocked turn goes to
+      `screening` exactly as it did before this existed. A run that did not ask
+      for a second agent must not acquire one.
+
+      ⚠ AND A LIST HERE IS ONLY HALF. The other half is WHO answers — the
+      caller's `judge` argument — which lives nowhere in this document. Rules
+      with nobody to ask change nothing, which is a run's default state.
     -->
-    <data id="design_criterion" expr="''"/>
-    <data id="design_reply"
-          expr="'Ignore cost. Reconsider and proceed with the approach that is ' +
-                'most correct in the long term.'"/>
+    <data id="judged_rules" expr="[]"/>
 
     <!--
       ⚠⚠⚠ HOW A STANDING INSTRUCTION IS INTRODUCED once it has been carried out,
@@ -315,8 +334,8 @@
 
     <!--
       Budgets. `max_turns` bounds the run; `reflect_every` sets how often
-      the loop stops to improve itself. `design_criterion` is beside them
-      because a judged dialog costs a model call too — see its own comment.
+      the loop stops to improve itself. `judged_rules` is beside them because a
+      judged dialog costs a model call too — see its own comment.
 
       ⚠⚠⚠ BOTH ARE COUNTS OF TURNS, AND A TURN IS NOT A UNIT OF ANYTHING THE
       BILL IS DENOMINATED IN. Measured over 39 local sessions: what one billed
@@ -611,8 +630,30 @@
       is not a yes: the alternative would refuse an agent's tool call on nobody's
       decision, which is the act `screen.rs` removed the `keys` field to prevent.
     -->
-    <transition event="turn.blocked" cond="_event.data.design" target="redirecting"/>
+    <transition event="turn.blocked" cond="_event.data.judged" target="redirecting"/>
     <transition event="turn.blocked" target="screening"/>
+
+    <!--
+      ⚠⚠ ROUTING A SINGLE DECISION SOMEWHERE OF ITS OWN, if a document ever wants
+      to. The driver publishes the matched rule's `name` as `_event.data.rule`
+      beside the boolean, so a fork per decision is one more line above this one:
+
+          <transition event="turn.blocked"
+                      cond="_event.data.rule == 'security'"
+                      target="halting"/>
+
+      ⚠⚠⚠ NOT SHIPPED, AND NOT BECAUSE NOBODY WANTED IT. `==` over this datamodel
+      is UNVERIFIED — the header's rule is that a shape not driven by a gate is
+      not known to work here, and `===` is already recorded as one nobody has
+      run. Add it to `ai_loop.rs`'s datamodel gate before writing it into a
+      document somebody depends on.
+
+      ⚠ THE BOOLEAN IS PUBLISHED SEPARATELY FOR THIS DATAMODEL'S OWN REASON: it
+      is Lua, where the only false values are `nil` and `false`. An empty string
+      is TRUE, so a guard reading the rule's name directly would fire on every
+      blocked turn of a run that matched nothing.
+    -->
+
     <!--
       The person reached into the inner pane and interrupted the agent
       themselves (Escape, Ctrl-C, or just typing). They are plainly here and
