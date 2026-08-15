@@ -3187,7 +3187,11 @@ mod tests {
     /// because that is what its reader gets.
     ///
     /// ⚠ THE CONTROL is the same peer under a supervisor that CAN see a turn start, and it must
-    /// move on: a rule that refused here would refuse every loop there is.
+    /// move on: a rule that refused here would refuse every loop there is. ⚠⚠ What it proves is
+    /// exactly that — **the refusal is not unconditional** — and NOT that the evidence was real:
+    /// its stand-in supervisor is keyed on the submit reaching the pane, so it is satisfied by
+    /// construction. That the evidence is real is `deliver`'s own claim, held by its own gates over
+    /// peers that paint.
     #[test]
     fn a_loop_refuses_a_prompt_its_peer_took_and_never_submitted() {
         /// A peer that paints what it is given, character by character, and acts on none of it.

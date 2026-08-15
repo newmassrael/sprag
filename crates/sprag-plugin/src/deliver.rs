@@ -193,6 +193,11 @@ pub const DEFAULT_SUBMIT_GRACE: Duration = Duration::from_secs(2);
 /// Nothing about a pane says which of those a peer is. **Only the caller knows**, which is
 /// [`ReadyWhen`](crate::readiness::ReadyWhen)'s reason for existing, asked one keystroke later.
 ///
+/// ⚠⚠ **THE CRATE ALREADY ASKED THIS ABOUT ITS OTHER KEYSTROKE.** Answering a peer's dialog is not
+/// reported until the peer has LEFT the question (`readiness`' own `Arrival::LeftTheQuestion`) —
+/// *"a run that reported one off its own keystroke would report success for a dialog still on the
+/// screen"*. One concept, two doors, and only one of them was looking; this is the other.
+///
 /// ⚠ There is no wire word for these yet, deliberately: [`deliver`] is a Rust API no surface
 /// publishes, and a published word nothing serves is the defect
 /// `every_published_word_is_a_word_the_plugin_host_accepts` exists to catch. The round that gives a
@@ -542,8 +547,9 @@ impl Delivered {
 /// them — so text the pane WRAPPED still matches. What it cannot see through is a border drawn
 /// between the halves, which is what [`Delivery::confirm`] is for.
 ///
-/// Returns as soon as the text is visible; [`Delivery::then_press`] is sent only after that, so an
-/// Enter can never submit an empty prompt.
+/// [`Delivery::then_press`] is sent only once the text is visible, so an Enter can never submit an
+/// empty prompt — and the call returns as soon as that press has whatever evidence its caller asked
+/// for ([`Delivery::submitted_when`]), which under the default is at once.
 ///
 /// ⚠⚠⚠ **VISIBLE MEANS VISIBLE ON A SCREEN THIS DELIVERY CHANGED.** The pane's collapsed screen is
 /// read once before the first injection, and a read-back that finds the needle on that same screen
