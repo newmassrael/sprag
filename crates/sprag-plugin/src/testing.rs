@@ -646,55 +646,13 @@ pub(crate) fn silent_peer() -> (WorkspacePaneAccess, PaneId) {
     (access, pane)
 }
 
-/// A stand-in AGENT CLI: long-lived, echo off, answers every prompt and says the document's
-/// done marker once it has taken `prompts_before_done` turns.
-///
-/// ⚠ SHARED between the outer driver's gates and the loop PLUGIN's, and that is the point: those
-/// two subjects are one pane's behaviour seen from two heights, so a second copy of this peer would
-/// be two fixtures a change could drift between. It moved here the round the plugin was built.
-///
-/// ⚠⚠ **ECHO OFF AND A READINESS MARKER THAT ENDS ITS ROW** — both recorded hazards. With echo
-/// on, the line discipline paints the prompt before the program reads a byte and every wait
-/// ends on the kernel's work rather than the peer's; with the marker mid-row, the first
-/// stimulus merges onto it and reads as the pane's own output.
-///
-/// ⚠ It is `read`-driven, so it consumes what is typed at it. A stand-in that merely SLEEPS
-/// does not stand in for an agent: nothing eats the stimulus, so it waits in the pty buffer
-/// and the run converges either way.
-///
-/// ⚠⚠⚠ **IT ANSWERS ONE PROMPT, NOT ONE LINE, AND THE FIRST RUN OF THAT GATE IS WHY.** The
-/// authored prompts are MULTI-LINE — `start_prompt` is four clauses joined with `\n` — so a
-/// `read line` stand-in took one delivery as four turns and said the done marker during the
-/// first one. The peer therefore keys on each prompt's LAST clause, which is the honest shape:
-/// a real agent CLI takes a whole prompt box and answers it once.
-///
-/// ⚠⚠ **AND THE PRODUCT QUESTION THAT FOUND IS REGISTERED, NOT FIXED HERE**: what a newline
-/// INSIDE an authored prompt does to a peer that submits on Enter is a live question about
-/// delivery, and this fixture is not the place to answer it.
-///
-/// ⚠⚠ **AND IT KEYS ON `exactly:` BECAUSE THE DOCUMENT'S LAST CLAUSE MOVED THERE** (R379): the
-/// working prompts now end with `done_instruction`, so a peer keying on the OLD last clause
-/// (*"Report what you did"*) would count a turn one clause early and answer into the middle of
-/// a delivery.
-///
-/// ⚠⚠⚠ **IT PAINTS WHAT IT READS, AND THE SECOND RUN OF THAT GATE IS WHY.** With echo off and
-/// nothing painted, [`deliver`](crate::deliver::deliver) can never confirm the prompt arrived, so
-/// it RETYPES it — and a peer counting prompts saw two where the driver sent one, converging a
-/// turn early. A real agent CLI paints the prompt into its own box, which is the whole reason
-/// `deliver` reads the screen back; a stand-in that stayed silent was testing the retry path, not
-/// the loop.
-///
-/// ⚠⚠⚠ **AND IT ANSWERS THE REFLECTION PROMPT, NAMING NOTHING** — added the round `reflecting`
-/// became a TURN, and the four gates that went red are the argument. A peer that IGNORES a prompt
-/// is not standing in for an agent: the turn never ends, the loop reports `Reflecting --Null-->
-/// Reflecting` until its wall clock, and four gates measuring something else entirely died of it.
-/// **A stand-in must answer whatever it is asked**, even where the gate driving it does not care
-/// what the answer is.
-///
-/// ⚠ It names NO next milestone on purpose, which keeps this peer's axis exactly what it was. The
-/// arm where an agent DOES decide one is [`standin_agent_reflecting`]'s, and mixing the two would
-/// make every gate here also a gate about the reflection's reader.
 /// The token a stand-in peer publishes ITS OWN reply counter behind — see [`peer_seq`].
+///
+/// ⚠⚠⚠ **THE FORTY-EIGHT LINES THAT USED TO BE HERE WERE [`standin_agent`]'s DOC**, attached to
+/// this three-word constant because a doc comment binds to the NEXT item and the function it
+/// described is a hundred lines further down. Every one of those paragraphs records a run that went
+/// wrong, and all of them were being read as commentary on a string literal — while the peer they
+/// are about carried no doc at all. Found by this round's own sweep.
 const SEQ_MARKER: &str = "SEQ";
 
 /// **THE PEER'S OWN PUBLISHED-CHANGE COUNTER**, read off the screen — what the two supervisors
@@ -784,6 +742,54 @@ fn latched(high: &SeqHighWater, pane: PaneId, rows: &[String]) -> u64 {
     *mark
 }
 
+/// A stand-in AGENT CLI: long-lived, echo off, answers every prompt and says the document's
+/// done marker once it has taken `prompts_before_done` turns.
+///
+/// ⚠ SHARED between the outer driver's gates and the loop PLUGIN's, and that is the point: those
+/// two subjects are one pane's behaviour seen from two heights, so a second copy of this peer would
+/// be two fixtures a change could drift between. It moved here the round the plugin was built.
+///
+/// ⚠⚠ **ECHO OFF AND A READINESS MARKER THAT ENDS ITS ROW** — both recorded hazards. With echo
+/// on, the line discipline paints the prompt before the program reads a byte and every wait
+/// ends on the kernel's work rather than the peer's; with the marker mid-row, the first
+/// stimulus merges onto it and reads as the pane's own output.
+///
+/// ⚠ It is `read`-driven, so it consumes what is typed at it. A stand-in that merely SLEEPS
+/// does not stand in for an agent: nothing eats the stimulus, so it waits in the pty buffer
+/// and the run converges either way.
+///
+/// ⚠⚠⚠ **IT ANSWERS ONE PROMPT, NOT ONE LINE, AND THE FIRST RUN OF THAT GATE IS WHY.** The
+/// authored prompts are MULTI-LINE — `start_prompt` is four clauses joined with `\n` — so a
+/// `read line` stand-in took one delivery as four turns and said the done marker during the
+/// first one. The peer therefore keys on each prompt's LAST clause, which is the honest shape:
+/// a real agent CLI takes a whole prompt box and answers it once.
+///
+/// ⚠⚠ **AND THE PRODUCT QUESTION THAT FOUND IS REGISTERED, NOT FIXED HERE**: what a newline
+/// INSIDE an authored prompt does to a peer that submits on Enter is a live question about
+/// delivery, and this fixture is not the place to answer it.
+///
+/// ⚠⚠ **AND IT KEYS ON `exactly:` BECAUSE THE DOCUMENT'S LAST CLAUSE MOVED THERE** (R379): the
+/// working prompts now end with `done_instruction`, so a peer keying on the OLD last clause
+/// (*"Report what you did"*) would count a turn one clause early and answer into the middle of
+/// a delivery.
+///
+/// ⚠⚠⚠ **IT PAINTS WHAT IT READS, AND THE SECOND RUN OF THAT GATE IS WHY.** With echo off and
+/// nothing painted, [`deliver`](crate::deliver::deliver) can never confirm the prompt arrived, so
+/// it RETYPES it — and a peer counting prompts saw two where the driver sent one, converging a
+/// turn early. A real agent CLI paints the prompt into its own box, which is the whole reason
+/// `deliver` reads the screen back; a stand-in that stayed silent was testing the retry path, not
+/// the loop.
+///
+/// ⚠⚠⚠ **AND IT ANSWERS THE REFLECTION PROMPT, NAMING NOTHING** — added the round `reflecting`
+/// became a TURN, and the four gates that went red are the argument. A peer that IGNORES a prompt
+/// is not standing in for an agent: the turn never ends, the loop reports `Reflecting --Null-->
+/// Reflecting` until its wall clock, and four gates measuring something else entirely died of it.
+/// **A stand-in must answer whatever it is asked**, even where the gate driving it does not care
+/// what the answer is.
+///
+/// ⚠ It names NO next milestone on purpose, which keeps this peer's axis exactly what it was. The
+/// arm where an agent DOES decide one is [`standin_agent_reflecting`]'s, and mixing the two would
+/// make every gate here also a gate about the reflection's reader.
 pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     let script = format!(
@@ -911,6 +917,105 @@ done"
     );
     (workspace, pane)
 }
+
+/// **A STAND-IN AGENT THAT ACTUALLY WRITES A REPORT WHEN IT IS ASKED TO CLOSE** — the peer the
+/// captured closing report is measured against.
+///
+/// # ⚠⚠⚠ Why a peer of its own, and what each part of its answer is for
+///
+/// [`standin_agent`] answers the closing prompt with `ACK 3`, which is enough to end a turn and not
+/// enough to test a READER. Every rule the capture applies was measured off a live `claude`
+/// (`what_a_live_agents_report_looks_like_to_a_reader`), and a fixture that does not reproduce the
+/// hazards proves nothing about any of them. So this peer's closing answer stages all three, and
+/// each has a mutation behind it:
+///
+/// 1. **IT IS TALLER THAN THE PANE.** [`REPORT_LINES`] rows against sixteen, so the opening
+///    SCROLLS. That is what separates the two readers: read through a [`RowTrail`] the account
+///    comes back beginning in the middle, read through the line address it comes back whole. Without
+///    it, both readers agree and the choice between them is untested — R385's rule, *make the two
+///    behaviours disagree, then mutate*.
+/// 2. **A WRAPPED ECHO** ([`REPORT_ECHO_SLICE`]) — a verbatim FRAGMENT of the closing prompt,
+///    printed ahead of the report. The peer already echoes each prompt WHOLE, which the exact-match
+///    half of any echo rule catches; this is the half that needs `asked.contains(line)`, and it is
+///    what a real composer produces when it re-wraps a prompt to the pane's width.
+///    ⚠⚠ **AHEAD OF THE REPORT AND NOT INSIDE IT, because that is where it was MEASURED** — the
+///    live probe found the fragment at index 0 with the whole reply behind it. It was staged inside
+///    the report first, on the invented ground that a re-wrap could put it anywhere, and the rule
+///    that had to be written to satisfy the invention **deleted a line the agent had written**.
+/// 3. **AN INTERIOR BLANK LINE**, with furniture on both ends ([`REPORT_RULE`]). The capture trims
+///    edges and keeps the middle, so a rule that trimmed blanks everywhere would silently re-flow
+///    somebody's report into one paragraph and nothing would say so.
+///
+/// ⚠ Its first and last report lines are [`REPORT_OPENS`] and [`REPORT_CLOSES`], so a gate can
+/// assert the account's ENDS rather than its length — the two places a reader loses text.
+pub(crate) fn standin_agent_reporting() -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let mut report = vec![
+        REPORT_ECHO_SLICE.to_owned(),
+        REPORT_RULE.to_owned(),
+        REPORT_OPENS.to_owned(),
+    ];
+    // ⚠ Numbered filler rather than one repeated line: the emulator's line store is what is being
+    // read, and identical rows cannot show which one was lost.
+    for line in 1..=REPORT_LINES {
+        report.push(format!("did {line}"));
+    }
+    report.push(String::new());
+    report.push(REPORT_CLOSES.to_owned());
+    report.push(REPORT_RULE.to_owned());
+    let prints = report
+        .iter()
+        .map(|line| format!("printf '%s\\n' '{line}'; "))
+        .collect::<String>();
+    let script = "\
+stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
+while read line; do \
+  printf '%s\\n' \"$line\"; \
+  case \"$line\" in \
+    *Summarise*) REPORT bump; continue;; \
+  esac; \
+  case \"$line\" in *exactly:*) ;; *) continue;; esac; \
+  n=$((n+1)); printf 'MILESTONE REACHED\\n'; bump; \
+done"
+        .replace("REPORT ", &prints);
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 80, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
+/// How many filler lines the reporting peer's account carries between its ends.
+///
+/// ⚠ It has to exceed the pane's sixteen rows with the report's own frame on top, or the account
+/// does not scroll and the gate is not measuring a reader at all. The gate asserts the scroll
+/// happened rather than trusting this number.
+pub(crate) const REPORT_LINES: usize = 24;
+/// The first line of the reporting peer's account — the one a rendering reader loses.
+pub(crate) const REPORT_OPENS: &str = "what changed: the file was created";
+/// The last line of its account.
+pub(crate) const REPORT_CLOSES: &str = "what is left: nothing";
+/// Furniture the peer wraps its account in, carrying no word a reader wants — the box rule a real
+/// agent CLI draws, measured at both ends of a live reply.
+pub(crate) const REPORT_RULE: &str = "--------------------------------";
+/// **A VERBATIM SLICE OF `end_prompt`**, printed ahead of the report — the wrapped echo, staged
+/// where a live composer was measured putting it. ⚠ It is a claim about `ai_loop.scxml`'s wording,
+/// and the gate asserts the account does not carry it. Edited apart, this stops being an echo and
+/// the rule it tests stops being tested.
+pub(crate) const REPORT_ECHO_SLICE: &str = "what was verified";
 
 /// The label `ai_loop.scxml` authors for the milestone half of a reflection's answer, as the peer
 /// above obeys it. ⚠ The document is the authority; this is a fixture's copy, held in step by the

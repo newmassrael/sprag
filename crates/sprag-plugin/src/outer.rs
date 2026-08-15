@@ -771,6 +771,15 @@ struct Session {
     /// Marked at the same moment the contract is, for the same reason: a marker that was on the
     /// screen before this turn started is not this turn's answer.
     judged: crate::access::RowTrail,
+    /// **WHERE THIS TURN'S OUTPUT BEGINS**, as an ADDRESS into the pane's logical lines — what the
+    /// closing report is read from, and per-pane for the same reason everything else here is: a
+    /// replacement pane numbers its lines from one again, so an address carried over would name
+    /// somewhere in the middle of a session that has been closed.
+    ///
+    /// ⚠⚠⚠ NOT the trail above, and the difference was MEASURED against a live agent rather than
+    /// argued: a sixty-line reply on a forty-row pane came back through the rendering opening at
+    /// `LINE-29`, and through this opening at `LINE-1`. See [`crate::report`].
+    since: crate::report::Since,
     /// **THE NAME THIS SESSION FILES ITS OWN RECORD UNDER**, latched the first time it can be read.
     ///
     /// # ⚠⚠ Why it is latched rather than read when wanted
@@ -798,6 +807,9 @@ impl Session {
             pane: fresh,
             ready: self.ready.rearmed(),
             judged: crate::access::RowTrail::default(),
+            // ⚠ A LINE ADDRESS IS A FACT ABOUT ONE PANE. The replacement numbers its own lines from
+            // the beginning, so the predecessor's cursor would point into the middle of it.
+            since: crate::report::Since::default(),
             // ⚠⚠⚠ A REPLACEMENT IS A DIFFERENT SESSION AND MUST BE NAMED AFRESH. Carrying the old
             // name over would point every later reading at the record of a session that has been
             // closed — the spend would freeze at whatever the predecessor last spent and look like
@@ -875,6 +887,28 @@ pub struct OuterLoop {
     /// per-PANE. A replacement clears it for a different reason — a question the old session asked is
     /// not the new one's — and so does every prompt.
     noticed: Option<Noticed>,
+    /// **WHAT THE AGENT WROTE WHEN IT WAS ASKED TO ACCOUNT FOR THE RUN** — `closing`'s turn, read
+    /// off the pane and published as [`Plugin::captured`](crate::plugin::Plugin::captured).
+    ///
+    /// # ⚠⚠⚠ Why this belongs to the RUN and not to the session that wrote it
+    ///
+    /// It is the only thing a run produces that a person could not have got by watching. The
+    /// machine's walk is in the journal, the turn count is the document's counter, the ending is
+    /// the outcome — and none of them says *what happened*. The agent's own account does, and
+    /// **before this it reached nobody**: a run that changed a dozen files answered its caller with
+    /// the single word `converged`.
+    ///
+    /// ⚠⚠⚠ **AND A RUN NOW OUTLIVES THE SESSION THAT WROTE ANY GIVEN PART OF IT.** Since
+    /// `restarting`, the pane the closing report lands on is not the pane the run started with, and
+    /// every earlier session has been CLOSED — so scrolling back is not available to anybody, and
+    /// this field is the only place the run's own account can survive its sessions. That is why it
+    /// is here rather than in [`Session`]: the sessions are what it has to outlive.
+    ///
+    /// ⚠ [`None`] until `closing`'s turn ends, and [`None`] FOR EVER on a run that never closed —
+    /// exhausted, cancelled, failed or blocked. Those endings ask for no report, so publishing one
+    /// would mean publishing a WORK turn's output as the run's account, which is a different claim
+    /// than the one the agent was asked to make.
+    reported: Option<String>,
 }
 
 impl OuterLoop {
@@ -921,6 +955,7 @@ impl OuterLoop {
                     spec.attended,
                 ),
                 judged: crate::access::RowTrail::default(),
+                since: crate::report::Since::default(),
                 // Learned on the first look at a pane whose agent is up, not here: at construction
                 // the child may not have `exec`d yet, and a `None` cached now would be indistinguishable
                 // from one that will never be answerable.
@@ -934,6 +969,7 @@ impl OuterLoop {
             judge: spec.judge.clone(),
             claimed: None,
             awaiting: None,
+            reported: None,
         })
     }
 
@@ -1369,10 +1405,20 @@ impl OuterLoop {
             // is still mid-turn, so a number attached to them would be a level nobody had reached.
             // The other endings keep going through `into()`, which sends no data at all.
             AiLoopState::Working | AiLoopState::Closing => match self.watch(panes, run)? {
-                AiLoopEvent::TurnDone => Raise::carrying(
-                    AiLoopEvent::TurnDone,
-                    serde_json::json!({ "context": self.context_now(panes) }),
-                ),
+                AiLoopEvent::TurnDone => {
+                    // ⚠⚠⚠ THE ONLY MOMENT THE CLOSING REPORT EXISTS TO BE TAKEN. The next event
+                    // lands in `converged`, which is final — the Driver stops stepping, and by the
+                    // time anybody could ask, the run is over. Taken here, on the state rather than
+                    // on the event, because `turn.done` is what four states raise and only this
+                    // one's turn was a request for an account.
+                    if from == AiLoopState::Closing {
+                        self.reported = self.account(panes);
+                    }
+                    Raise::carrying(
+                        AiLoopEvent::TurnDone,
+                        serde_json::json!({ "context": self.context_now(panes) }),
+                    )
+                }
                 // ⚠⚠⚠ THE VERDICT IS TAKEN HERE, ONCE, and the document decides on it — see
                 // `working`'s `cond="_event.data.judged"`. A guard cannot do this: the pinned
                 // engine has no seam to register a host function on, and SCXML does not promise
@@ -2212,6 +2258,14 @@ impl OuterLoop {
         // be REJECTED on what it says rather than hidden by where the baseline was taken, or the
         // rule would depend on a race between the terminal and this line.
         self.driving.judged = crate::access::RowTrail::mark(panes, self.driving.pane);
+        // ⚠⚠ AND THE THIRD MARK IN THE SAME BREATH, for the third time for the same reason. This
+        // one addresses the pane's LOGICAL LINES rather than its rendering, so what it bounds is
+        // *everything this turn printed* rather than *what is still on the grid* — see
+        // [`crate::report`], where a live agent measured the difference at twenty-eight lines.
+        // Marked on EVERY prompt and read only after the closing one, because *what did this turn
+        // produce* is the same question whichever turn asks it, and a mark taken only in `closing`
+        // would be a fourth thing to keep in step with the other three.
+        self.driving.since = crate::report::Since::mark(panes, self.driving.pane);
         if !self.shows_the_prompt {
             // The WRITE, not the delivery — see [`shows_the_prompt`](Self::shows_the_prompt). A
             // peer that paints nothing until it is submitted cannot be confirmed before the submit.
@@ -2319,6 +2373,40 @@ impl OuterLoop {
             .fresh(panes, self.driving.pane)
             .iter()
             .any(|row| stands_alone(row, &marker))
+    }
+
+    /// **THE ACCOUNT THE AGENT JUST WROTE**, off the pane the closing turn ran on — or [`None`]
+    /// where it wrote nothing a person would read as one.
+    ///
+    /// ⚠ THE PROMPT IS READ BACK OUT OF THE DATAMODEL rather than remembered from the delivery, for
+    /// [`authored`](Self::authored)'s reason and one of its own: what has to be discounted is what
+    /// the agent was ASKED, and the document is the only authority on that. A datamodel that has
+    /// stopped answering costs the echo discount and not the report — the direction that keeps a
+    /// line nobody meant rather than dropping one somebody wrote.
+    ///
+    /// ⚠⚠ **WHAT AN ACCOUNT IS OUT OF WHAT A PANE PRINTED IS [`crate::report`]'s**, not this
+    /// driver's — the echo discount, the furniture at the edges, and the sentence a truncated
+    /// report has to carry about itself. Kept there because every one of those rules was decided by
+    /// a measurement of what a live agent's pane holds, and the measurement, the rules and their
+    /// gates read together or not at all.
+    fn account(&self, panes: &dyn PaneAccess) -> Option<String> {
+        crate::report::account(
+            &self.driving.since.taken(panes, self.driving.pane),
+            &self.text_of(Owed::End.variable()).unwrap_or_default(),
+        )
+    }
+
+    /// **WHAT THE AGENT WROTE WHEN IT WAS ASKED TO ACCOUNT FOR THE RUN** — `closing`'s turn, read
+    /// off the pane it ran on.
+    ///
+    /// [`None`] on a run that never reached `closing`: exhausted, cancelled, failed and blocked ask
+    /// the agent for nothing, so there is no account to hand back and the last WORK turn's output
+    /// is a different claim. It is the run's rather than the session's, because since `restarting`
+    /// a run outlives the sessions any part of it was written in — see
+    /// [`AiLoop::captured`](crate::plugin::Plugin::captured).
+    #[must_use]
+    pub fn report(&self) -> Option<&str> {
+        self.reported.as_deref()
     }
 }
 

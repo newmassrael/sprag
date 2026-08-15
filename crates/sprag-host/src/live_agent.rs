@@ -907,6 +907,47 @@ fn a_briefed_loop_converges_against_a_live_agent() {
          the ceiling on the same pass cannot be told from one that ran out. Turns: {:?}",
         loops.turns(),
     );
+
+    // ⚠⚠⚠ **AND THE RUN HANDS BACK WHAT ITS AGENT WROTE** — register item 121, asserted here
+    // because this is the only gate in the tree where the report is a REAL agent's prose rather
+    // than a shell script's. Every rule the capture applies was measured off a live `claude`
+    // (`what_a_live_agents_report_looks_like_to_a_reader`), and a fixture cannot say whether they
+    // still hold against the program they were read from.
+    //
+    // ⚠ The assertion is the ARITHMETIC and the SHAPE, not a wording: what the model chooses to
+    // say in a summary is its own, and a gate demanding a phrase would be asserting a model's
+    // style. What it may not do is come back empty, come back as the loop's own question, or come
+    // back wrapped in the terminal's furniture.
+    let report = sprag_plugin::Plugin::captured(&loops).unwrap_or_else(|| {
+        panic!(
+            "⚠⚠⚠ A CONVERGED RUN MUST HAND BACK THE ACCOUNT ITS AGENT WROTE. `closing` asked for \
+             one and the agent answered it on this pane; a caller who started the run gets the \
+             word `converged` and nothing else without this. Screen: {}",
+            live.tail(12),
+        )
+    });
+    step(
+        began,
+        &format!("the account, {} chars", report.chars().count()),
+    );
+    for line in report.lines() {
+        println!("    | {line}");
+    }
+    assert!(
+        report.contains("391"),
+        "⚠⚠ the account must be about the work — this run's whole milestone was one product, so a \
+         summary that does not carry it is not a summary of this run: {report:?}",
+    );
+    assert!(
+        !report.contains("Summarise what changed"),
+        "⚠⚠⚠ THE CALLER'S OWN CLOSING PROMPT CAME BACK AS THE AGENT'S REPORT. A live agent paints \
+         the prompt into its composer and the composer's rows reach the line store: {report:?}",
+    );
+    assert!(
+        report.chars().next().is_some_and(char::is_alphanumeric) || report.starts_with(['●', '⏺']),
+        "⚠⚠ and an account must open on something a person would read rather than on a box rule: \
+         {report:?}",
+    );
 }
 
 /// ⚠⚠⚠ **A LIVE LOOP THAT DOES WORK WHICH CHANGES SOMETHING** — register item 112, and the one
@@ -3532,6 +3573,166 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
          dialog, so `cond=\"_event.data.design\"` would never fire on the population it was built \
          for. What each did instead: {decided_alone:?}",
         decided_alone.len(),
+    );
+}
+
+/// ⚠⚠⚠ **WHICH READER CAN STILL SEE A REPORT THAT SCROLLED** — the premise register item 121's
+/// answer rests on, measured before the answer was built.
+///
+/// # The question, and why it had to be asked of a live agent
+///
+/// A loop's closing report is the one piece of a run that outlives its sessions (item 121), and
+/// capturing it means choosing where to read it from. This workspace has two readers for *what a
+/// pane produced since a mark*, and their difference is stated in [`Agent::capture`]'s own doc:
+///
+/// * [`RowTrail`] compares the RENDERING — repaint-proof, and **the rows that scrolled off were
+///   never in it at all**. Every reader in the outer driver uses it (`said_done`, `judged`,
+///   `proposed`), so it is the one a new reader would reach for by habit.
+/// * [`PaneOutputLines::pane_lines_since`] is an ADDRESS into the pane's logical lines, so it
+///   survives a scroll and reports what the retained history evicted.
+///
+/// The doc calls the trail *"the degradation"* — but that sentence was written about a one-shot CLI
+/// printing to a cooked-mode pty, and a loop's peer is **a full-screen TUI that repaints in place**.
+/// Whether a program like that commits anything to the line store at all is a fact about the
+/// program, not about the reader, and nothing in this tree had asked it. A closing report is
+/// precisely the long output where the difference decides whether a person gets the whole account
+/// or its last page.
+///
+/// # What it does
+///
+/// One session, one turn, and the turn asks for a reply **taller than the pane** — sixty labelled
+/// lines against forty rows, so the top of it is guaranteed to have gone by the time anyone reads.
+/// Both readers are marked before the prompt goes in and both are read after the turn ends, and the
+/// assertion is the discriminator rather than the print-out: **the first line must be readable
+/// through the address and must be gone from the rendering.**
+///
+/// ⚠ Deterministic content on purpose — `LINE-1 … LINE-60`, no prose. What is being measured is a
+/// READER, so the reply has to be something whose loss is unambiguous; asking a model to write an
+/// essay would make the gate's own subject matter a variable.
+///
+/// ⚠⚠ **A FAILURE HERE IS A FINDING, NOT A BROKEN TEST.** If the address loses the line too, then
+/// no reader in this workspace can carry a long report off a TUI pane, and the capture built on it
+/// must say what it cannot promise. That is the sentence the assertion is written to force.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn what_a_live_agents_report_looks_like_to_a_reader() {
+    /// How many lines the agent is asked for — comfortably past [`PANE_SIZE`]'s forty rows, so the
+    /// opening of the reply cannot still be on the grid.
+    const REPORT_LINES: usize = 60;
+    /// A reply this long is many turns' worth of painting; the bound is generous because what is
+    /// being measured is the reader and not the speed.
+    const REPORT_WITHIN: Duration = Duration::from_secs(180);
+
+    let live = Live::start("report-reader");
+    let began = Instant::now();
+    let run = RunContext::uncancellable();
+    let reached = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    )
+    .reached(&live.access, live.pane, &run)
+    .expect("the pane must stay readable");
+    assert_eq!(
+        reached,
+        Reached::Yes,
+        "the agent must be up and at rest before it is spoken to: {}",
+        live.tail(3),
+    );
+
+    // ⚠⚠ BOTH MARKS BEFORE A BYTE GOES IN, and for `Completion::begin`'s reason: a baseline taken
+    // after the injection cannot tell the reply from the prompt's own echo.
+    let trail = sprag_plugin::RowTrail::mark(&live.access, live.pane);
+    let address = live
+        .access
+        .output_lines()
+        .and_then(|stream| stream.pane_lines_since(live.pane, u64::MAX))
+        .map(|since| since.next);
+    step(began, &format!("marked: address={address:?}"));
+
+    let ask = format!(
+        "Print exactly {REPORT_LINES} lines and nothing else. Line n must be LINE-n, so the first \
+         is LINE-1 and the last is LINE-{REPORT_LINES}. Do not number them any other way and do \
+         not add commentary."
+    );
+    let mut done = Completion::new(DoneWhen::Settles);
+    done.begin(&live.access, live.pane);
+    let delivered = deliver(
+        &live.access,
+        &run,
+        live.pane,
+        &ask,
+        &Delivery {
+            confirm: Some(ask.chars().take(40).collect()),
+            then_press: vec![KeyStroke::named("Enter")],
+            ..Delivery::new()
+        },
+    )
+    .expect("the pane must take the prompt");
+    assert!(
+        !matches!(delivered, Delivered::Unconfirmed { .. }),
+        "a live agent PAINTS what is typed into its composer: {delivered:?}",
+    );
+    let over = done.wait(&live.access, live.pane, REPORT_WITHIN, &run);
+    step(began, &format!("the report turn ended {over:?}"));
+
+    let rendered = trail.fresh(&live.access, live.pane);
+    let since = live
+        .access
+        .output_lines()
+        .zip(address)
+        .and_then(|(stream, mark)| stream.pane_lines_since(live.pane, mark));
+    let addressed: Vec<String> = since
+        .as_ref()
+        .map(|since| since.lines.clone())
+        .unwrap_or_default();
+    let lost = since.as_ref().map_or(0, |since| since.lost);
+
+    println!(
+        "  the rendering  : {} row(s) changed, first={:?} last={:?}",
+        rendered.len(),
+        rendered.first(),
+        rendered.last(),
+    );
+    println!(
+        "  the address    : {} logical line(s), {lost} lost, first={:?} last={:?}",
+        addressed.len(),
+        addressed.first(),
+        addressed.last(),
+    );
+    // ⚠⚠⚠ EVERY ADDRESSED LINE, VERBATIM, and this is the half of the probe a capture is written
+    // from. Knowing that the address survives a scroll says nothing about WHAT ELSE is in it — the
+    // prompt this run typed comes back re-wrapped by the agent's own composer, and the TUI's box
+    // rules and footer are output like any other. Anything a capture strips has to be chosen off
+    // this list rather than imagined, because the direction that cannot be undone is deleting a
+    // line the agent meant.
+    for (at, line) in addressed.iter().enumerate() {
+        println!("    [{at:>3}] {line:?}");
+    }
+
+    let opening = "LINE-1 ";
+    let carries = |lines: &[String]| lines.iter().any(|line| line.trim().starts_with("LINE-1"));
+    let closing = format!("LINE-{REPORT_LINES}");
+    assert!(
+        addressed.iter().any(|line| line.contains(&closing)),
+        "⚠⚠⚠ the agent's reply must have reached the pane at all before any reader can be judged \
+         — {over:?}, {} addressed line(s): {addressed:?}",
+        addressed.len(),
+    );
+    assert!(
+        carries(&addressed),
+        "⚠⚠⚠ THE ADDRESS LOST THE OPENING OF A REPLY IT WAS SUPPOSED TO SURVIVE ({lost} line(s) \
+         reported evicted). If neither reader can carry a long report off a TUI pane, a captured \
+         closing report is a LAST PAGE and must say so. Addressed: {addressed:?}",
+    );
+    assert!(
+        !carries(&rendered),
+        "⚠⚠⚠ THE RENDERING STILL HOLDS {opening:?} AFTER A {REPORT_LINES}-LINE REPLY ON A {} ROW \
+         PANE, so this gate did not measure a scroll and its verdict about the two readers is \
+         worthless. Either the agent clipped its own output or it wrote fewer lines than it was \
+         asked for: {rendered:?}",
+        PANE_SIZE.1,
     );
 }
 

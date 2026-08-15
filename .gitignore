@@ -12,3 +12,8 @@
 
 # Claude-specific docs (local analyses, handoff drafts)
 /claudedocs/
+
+# Per-developer Claude Code settings. `.claude/remote-build.toml` IS tracked —
+# where this repo's heavy builds go is a fact about the repo — but the allowlist
+# beside it is one person's answers to one person's permission prompts.
+/.claude/settings.local.json

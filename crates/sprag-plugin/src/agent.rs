@@ -20,7 +20,8 @@
 //!
 //! ⚠⚠ This paragraph has now been WRONG TWICE, which is what a limitations note left to age looks
 //! like. It said *"the projection has no scrollback yet"* years after `sprag-vt` retained history;
-//! corrected, it then said the delta was *"still row-keyed ([`RowTrail`]), repaint-proof but not
+//! corrected, it then said the delta was *"still row-keyed ([`RowTrail`](crate::access::RowTrail)),
+//! repaint-proof but not
 //! scroll-proof"* while the code beside it already addressed the reply by LINE NUMBER. Both
 //! readings survived because nothing drives a doc.
 //!
@@ -34,12 +35,13 @@ use std::time::Duration;
 use sprag_input::Modifiers;
 use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
-use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
+use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::completion::{Completion, DoneWhen, Over};
 use crate::consent::Consents;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
+use crate::report::Since;
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext};
 
 /// How much of a prompt has to appear on the pane before the delivery counts it as arrived.
@@ -271,15 +273,6 @@ impl Prompted {
     }
 }
 
-/// Where a turn's reply starts — an ADDRESS when the host can number its lines, and a mark on the
-/// rendering when it cannot. See [`Agent::capture`] for what the difference costs.
-enum Baseline {
-    /// The absolute line number the reply begins at.
-    Line(u64),
-    /// What the rows held before the prompt — the degradation.
-    Rows(RowTrail),
-}
-
 /// A one-shot AI-tool adapter over one pane.
 /// What a turn did about its end-of-input, decided BEFORE the prompt is submitted.
 ///
@@ -351,7 +344,7 @@ enum Asked {
 
 struct InFlight {
     /// Where this turn's reply starts.
-    baseline: Baseline,
+    baseline: Since,
     /// What putting the prompt in the pane cost, charged on the step that did it and never again.
     written: u64,
     /// Whether the pane's own TERMINAL painted the prompt back.
@@ -557,34 +550,25 @@ impl Agent {
     /// need not end in a newline. On the timeout path it is taken too, which is exactly what that
     /// path's own `PARTIAL` marking already tells the caller.
     ///
-    /// ⚠ [`RowTrail`] remains the fallback for a host with no output stream — repaint-proof, not
-    /// scroll-proof, and named as a degradation rather than an equivalent.
-    fn capture(&self, panes: &dyn PaneAccess, baseline: &Baseline, echoed: bool) -> Captured {
-        match baseline {
-            Baseline::Line(cursor) => {
-                let Some(since) = panes
-                    .output_lines()
-                    .and_then(|stream| stream.pane_lines_since(self.pane, *cursor))
-                else {
-                    return Captured::default();
-                };
-                let mut lines = since.lines;
-                if !since.partial.is_empty() {
-                    lines.push(since.partial);
-                }
-                Captured {
-                    text: without_own_echo(lines, &self.spec.prompt, echoed).join("\n"),
-                    lost: since.lost,
-                }
-            }
-            Baseline::Rows(trail) => Captured {
-                text: without_own_echo(trail.fresh(panes, self.pane), &self.spec.prompt, echoed)
-                    .join("\n"),
-                // ⚠ A rendering comparison cannot report a loss it cannot see — a scrolled-away
-                // row is simply not there to be counted. `0` here means UNKNOWN, and it is the
-                // degradation this fallback is already named as, not a claim of completeness.
-                lost: 0,
-            },
+    /// ⚠ [`RowTrail`](crate::access::RowTrail) remains the fallback for a host with no output
+    /// stream — repaint-proof, not scroll-proof, and named as a degradation rather than an
+    /// equivalent.
+    ///
+    /// ⚠⚠ **THE TWO SHAPES LIVE IN [`crate::report::Since`] NOW**, because the outer loop's closing
+    /// report is the same question asked by a second plugin — *what has this pane produced since I
+    /// spoke?* — and a second copy of the answer is a second place for the address and the trail to
+    /// drift apart. What stayed here is what is genuinely this adapter's: it waits for its child to
+    /// EXIT, so an unfinished last line is final and belongs in the reply; a loop's peer never
+    /// exits, so the same line is a prompt box.
+    fn capture(&self, panes: &dyn PaneAccess, baseline: &Since, echoed: bool) -> Captured {
+        let produced = baseline.taken(panes, self.pane);
+        let mut lines = produced.lines;
+        if !produced.partial.is_empty() {
+            lines.push(produced.partial);
+        }
+        Captured {
+            text: without_own_echo(lines, &self.spec.prompt, echoed).join("\n"),
+            lost: produced.lost,
         }
     }
 
@@ -658,16 +642,8 @@ impl Agent {
         }))
     }
 
-    fn mark(&self, panes: &dyn PaneAccess) -> Baseline {
-        panes
-            .output_lines()
-            // ⚠ `u64::MAX` MARKS WITHOUT TAKING: it is past every line, so nothing is yielded and
-            // `next` is the address the reply will start at.
-            .and_then(|stream| stream.pane_lines_since(self.pane, u64::MAX))
-            .map_or_else(
-                || Baseline::Rows(RowTrail::mark(panes, self.pane)),
-                |since| Baseline::Line(since.next),
-            )
+    fn mark(&self, panes: &dyn PaneAccess) -> Since {
+        Since::mark(panes, self.pane)
     }
 }
 

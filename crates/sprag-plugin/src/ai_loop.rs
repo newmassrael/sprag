@@ -507,14 +507,35 @@ impl Plugin for AiLoop {
         }
     }
 
-    /// ⚠ NOTHING, deliberately. [`captured`](Plugin::captured) is *content the plugin produced* —
-    /// an AI adapter's reply — and everything this loop learns is already published: the machine's
-    /// walk is in the run's journal, its turn count is the document's own counter, and its ending
-    /// is the outcome. The agent's closing REPORT is real content and is on the pane; capturing it
-    /// means reading the screen after `closing`, which is a turn's worth of judgement this round
-    /// did not measure and did not guess.
+    /// **THE ACCOUNT THE AGENT WROTE WHEN THE RUN ASKED FOR ONE** — `closing`'s turn, read off the
+    /// pane and handed to whoever started the loop.
+    ///
+    /// # ⚠⚠⚠ What this answered `None` for, and what that cost
+    ///
+    /// It read: *"everything this loop learns is already published — the walk is in the journal,
+    /// the turn count is the document's counter, the ending is the outcome"*. Every clause is true
+    /// and the conclusion was wrong, because none of those says WHAT HAPPENED. **A person who
+    /// started a run that edited a dozen files got back the single word `converged`.**
+    ///
+    /// The content was never hypothetical. R384's live gate ended with its agent auditing the run
+    /// in its own words — *"The Write call … was rejected at the tool layer — the rejection came
+    /// back as a tool error, not as me declining. That is the north star claim, and it held up"* —
+    /// plus two caveats nobody had asked for. That was on the pane, and it reached nobody.
+    ///
+    /// ⚠⚠⚠ **AND SINCE `restarting`, SCROLLING BACK IS NOT AVAILABLE EITHER.** A run spans several
+    /// agent sessions; the pane the report lands on is not the pane the run started with, and the
+    /// earlier ones have been closed. This is now the only place a run's own account can survive
+    /// its sessions.
+    ///
+    /// # ⚠⚠ The one thing it still will not do
+    ///
+    /// A run that never reached `closing` — exhausted, cancelled, failed, blocked — answers `None`,
+    /// because those endings ask the agent for nothing. Publishing the last WORK turn's output
+    /// instead would be answering *what did it say last* to a caller who asked *what did it do*.
+    ///
+    /// [`OuterLoop::report`]: crate::outer::OuterLoop::report
     fn captured(&self) -> Option<String> {
-        None
+        self.inner.report().map(ToOwned::to_owned)
     }
 }
 
@@ -671,6 +692,143 @@ mod tests {
             None,
             "⚠ and a FINISHED loop names no pane: signalling one a run is done with would \
              interrupt whatever a person started in it next",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **THE RUN HANDS BACK THE ACCOUNT ITS AGENT WROTE** — register item 121, and the thing a
+    /// person who starts a loop actually wants.
+    ///
+    /// # ⚠⚠⚠ What a caller got before this, in full
+    ///
+    /// The word `converged`. `AiLoop::captured` answered `None` with a reason that was true clause
+    /// by clause — the walk is in the journal, the turns are the document's counter, the ending is
+    /// the outcome — and wrong as a conclusion, because not one of those says WHAT HAPPENED. The
+    /// agent's own account did, it was on the pane, and nothing read it. R384's live gate priced it
+    /// by accident: its agent closed by AUDITING the run in its own words, including two caveats
+    /// nobody had asked for, and every one of them was discarded.
+    ///
+    /// # What this asserts, and why each half is a different way of publishing something false
+    ///
+    /// * **THE ACCOUNT ARRIVES WHOLE** — its first line as well as its last. The peer's report is
+    ///   taller than its pane, so it has scrolled by the time anyone reads: through a [`RowTrail`],
+    ///   the reader every other question in this driver is asked through, the opening is **simply
+    ///   not there**. Measured against a live `claude` at sixty lines on a forty-row pane, where the
+    ///   rendering came back opening at `LINE-29`.
+    /// * **AND IT IS THE AGENT'S, NOT THE LOOP'S.** The closing prompt is on that pane too — whole,
+    ///   because the peer echoes it, and again as a FRAGMENT, because a real composer re-wraps. A
+    ///   capture that returned either would answer *what did the agent report?* with the caller's
+    ///   own instruction.
+    /// * **AND WHAT IS BETWEEN THE ENDS SURVIVES**, blank line and all: an interior blank is a
+    ///   paragraph break in somebody's report, and trimming blanks everywhere would re-flow it.
+    ///
+    /// ⚠ The scroll is ASSERTED rather than assumed, because a fixture that fits on its pane makes
+    /// the two readers agree and the first assertion above would pass through either one.
+    #[test]
+    fn a_converged_run_hands_back_the_report_its_agent_wrote() {
+        let (workspace, pane) = crate::testing::standin_agent_reporting();
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 40,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⚠ the control: an account is only asked for by a run that closed",
+        );
+
+        // ⚠⚠ THE PREMISE OF THE FIRST ASSERTION, CHECKED FIRST. A report that still fits on its
+        // pane is one both readers can see, so the gate would pass without the address doing any
+        // work at all — R385's rule about a fixture that agrees with the default by accident.
+        let rendered = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !rendered.contains(crate::testing::REPORT_OPENS),
+            "⚠⚠⚠ THE REPORT MUST HAVE SCROLLED OFF THE PANE, or this gate cannot tell the line \
+             address from the rendering and its verdict about the reader is worthless. The screen \
+             still holds {:?}",
+            crate::testing::REPORT_OPENS,
+        );
+
+        let report = loops.captured().expect(
+            "⚠⚠⚠ A CONVERGED RUN MUST HAND BACK THE ACCOUNT ITS AGENT WROTE. This is register item \
+             121: the closing report is real content, it is on the pane, and a caller who started \
+             the run gets a word without it",
+        );
+        assert!(
+            report.contains(crate::testing::REPORT_OPENS),
+            "⚠⚠⚠ THE ACCOUNT ARRIVED WITHOUT ITS OPENING — which is what reading the RENDERING \
+             gives you once a report is taller than its pane, and a truncated account is worse \
+             than a missing one because nothing in it says it is truncated. Got: {report:?}",
+        );
+        assert!(
+            report.contains(crate::testing::REPORT_CLOSES),
+            "⚠⚠ and without its ending either: {report:?}",
+        );
+        assert!(
+            !report.contains("Summarise what changed"),
+            "⚠⚠⚠ THE CALLER'S OWN CLOSING PROMPT CAME BACK AS THE AGENT'S REPORT. The peer echoes \
+             what it is asked, exactly as a real agent paints it into its composer: {report:?}",
+        );
+        assert!(
+            !report.contains(crate::testing::REPORT_ECHO_SLICE),
+            "⚠⚠⚠ AND THE WRAPPED HALF OF THAT ECHO IS THE ONE AN EXACT MATCH CANNOT SEE. A live \
+             composer re-wraps the prompt to the pane's width, so the line store holds a FRAGMENT \
+             of it — the discount has to ask `does what I said contain this line?`: {report:?}",
+        );
+        assert!(
+            !report.starts_with(crate::testing::REPORT_RULE)
+                && !report.ends_with(crate::testing::REPORT_RULE),
+            "⚠⚠ an account must not open or close in the terminal's furniture: {report:?}",
+        );
+        assert!(
+            report.contains("\n\n"),
+            "⚠⚠ and the blank line INSIDE it is the agent's paragraph break — trimming blanks \
+             everywhere would re-flow somebody's report and nothing would say so: {report:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A RUN THAT NEVER CLOSED HANDS BACK NOTHING**, and this is the half that keeps the one
+    /// above honest.
+    ///
+    /// The peer here never says the marker, so the run ends `exhausted` — it was never ASKED for an
+    /// account, and its pane is nonetheless covered in the agent's output. A capture that answered
+    /// with the last WORK turn's text would be answering *what did it say last* to a caller who
+    /// asked *what did it do*, in the one situation where the difference matters most: a run that
+    /// did not finish.
+    #[test]
+    fn a_run_that_was_never_asked_for_an_account_publishes_none() {
+        let (workspace, pane) = standin_agent(u32::MAX);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(2), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 40,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Turns),
+            "⚠ the control: this peer never finishes, so the run ends on the DOCUMENT's turn \
+             budget rather than on a guardrail",
+        );
+        assert!(
+            !access.pane_collapsed(pane).unwrap_or_default().is_empty(),
+            "⚠ and the second control: the pane is covered in what the agent said, so `None` below \
+             is a decision rather than an empty screen",
+        );
+        assert_eq!(
+            loops.captured(),
+            None,
+            "⚠⚠⚠ A RUN THAT WAS NEVER ASKED TO ACCOUNT FOR ITSELF HAS NO ACCOUNT. Publishing a \
+             work turn's output as the run's report answers a question the caller did not ask",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
