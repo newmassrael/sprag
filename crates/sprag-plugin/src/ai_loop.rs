@@ -1557,6 +1557,364 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **THE RUN OUTLIVES ITS AGENT'S CONTEXT: A REFLECTION ASKS THE AGENT WHAT COMES NEXT,
+    /// AND THE REPLACEMENT SESSION IS BRIEFED ON THE ANSWER.**
+    ///
+    /// # ⚠⚠⚠ What this gate measured before the feature existed, and why it was kept
+    ///
+    /// It was written as a MEASUREMENT of register item 167 and its drive has not changed. What it
+    /// asserted then was the defect, in three parts:
+    ///
+    /// * the loop reflected (`Reflecting --ReflectNone--> Working`) and **replaced nothing**, because
+    ///   the only thing a reflection could carry was a standing instruction — so a run whose agent
+    ///   was never screened could not get a fresh session at all;
+    /// * the milestone label never reached the pane: **the agent was never asked**;
+    /// * and every later prompt still named the milestone the CALLER wrote, for as long as the run
+    ///   lasted.
+    ///
+    /// That is what makes a bounded run bounded by one agent's context: whatever the work turned out
+    /// to need, the loop could only ever ask again for the checkpoint somebody wrote before it
+    /// started. A run meant to carry on across sessions — pay this debt, then the next one — would
+    /// re-issue the first one for ever.
+    ///
+    /// ⚠⚠ **THE PEER IS THE INSTRUMENT AND IT WAS WILLING THE WHOLE TIME.**
+    /// [`standin_agent_reflecting`](crate::testing::standin_agent_reflecting) answers the milestone
+    /// label with a next milestone and a next reference. Before the reflection turn it was never
+    /// spoken to, which is the honest shape of the defect: nothing was broken, something was never
+    /// asked.
+    ///
+    /// ⚠⚠⚠ **AND THE ECHO IS THE TRAP, DELIBERATELY.** The prompt that asks for the label carries the
+    /// label, the peer paints every line it is handed, and the pane is 80 columns — so the driver's
+    /// reader meets its own instruction on screen before the answer. The assertions name the peer's
+    /// words rather than *"something was adopted"*, so a reader that took the first match would
+    /// adopt a milestone made of the prompt and fail here.
+    #[test]
+    fn a_reflection_asks_the_agent_what_comes_next_and_the_replacement_is_told() {
+        /// The milestone the CALLER wrote. ⚠ Distinctive, and it must not survive the reflection.
+        const ORIGINAL: &str = "the checkpoint whoever started this run wrote down";
+        /// What the agent decides instead, once it is asked.
+        const PROPOSED: &str = "the debt the agent picked after doing the work";
+        /// And what it says the next session should read first.
+        const READ_NEXT: &str = "the register entry it had just been reading";
+
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(9, PROPOSED, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                milestone: ORIGINAL.to_string(),
+                // ⚠ The peer needs NINE prompts to say the marker and the budget reflects after
+                // TWO, so the reflection is reached by the turn budget alone — no screening, no
+                // standing instruction, which is exactly the run the defect was about.
+                reflect_every: 2,
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut replaced = None;
+        // ⚠ THE FIRST SESSION'S SCREEN, KEPT AS THE RUN GOES. `restarting` CLOSES this pane, so a
+        // read taken after the assertion loop would be about a pane that no longer exists — and the
+        // claim is that the label reached the session that was ASKED.
+        let mut asked = String::new();
+        while replaced.is_none() && walked.len() < 60 {
+            let before = loops.state();
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a reflection must be readable");
+            if let Some(note) = step.note.clone() {
+                walked.push(note);
+            }
+            let showing = access.pane_full_lines(pane).unwrap_or_default().join("\n");
+            if !showing.trim().is_empty() {
+                asked = showing;
+            }
+            if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
+                replaced = Some(loops.driving().expect("a loop mid-run drives its pane"));
+            }
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+        let authored = loops.authored().expect("the datamodel still answers");
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ── THE CONTROL: it really did reflect, and it really did replace ──
+        assert!(
+            walked
+                .iter()
+                .any(|note| note == "Reflecting --ReflectApplied--> Restarting"),
+            "⚠⚠⚠ the reflection must have been ADOPTED — every assertion below is about what a \
+             replacement session was told, and is worth nothing if the run never reached one. \
+             Walked {walked:?}",
+        );
+        assert!(
+            replaced.is_some_and(|fresh| fresh != pane),
+            "⚠⚠⚠ and a NEW session must exist to be told: a reflection that decided a milestone \
+             and kept the old context has improved nothing a fresh agent will read. Walked \
+             {walked:?}",
+        );
+
+        // ── 1. THE AGENT WAS ASKED, IN THE DOCUMENT'S OWN WORDS ──
+        assert!(
+            authored
+                .reflect
+                .contains(crate::testing::REFLECTION_MILESTONE_LABEL),
+            "⚠⚠⚠ the composed `reflect_prompt` must carry the label the peer answers, or this gate \
+             is measuring a fixture that agrees with a private word: {:?}",
+            authored.reflect,
+        );
+        assert!(
+            authored
+                .reflect
+                .contains(crate::testing::REFLECTION_ECHO_SLICE),
+            "⚠⚠⚠ and it must still carry the words the peer paints back behind the label. That row \
+             is this gate's ECHO — the shape a wrapped prompt has on a pane of another width — and \
+             it only tests the reader's echo rule for as long as it really is a slice of what the \
+             loop said. Prompt: {:?}",
+            authored.reflect,
+        );
+        assert!(
+            asked.contains(crate::testing::REFLECTION_MILESTONE_LABEL),
+            "⚠⚠⚠ and it must have REACHED THE PANE. This is the half that was missing: a loop that \
+             reflects without asking can only ever carry what its author wrote",
+        );
+
+        // ── 2. THE ANSWER IS WHAT THE REPLACEMENT IS BRIEFED WITH ──
+        assert!(
+            authored.start.contains(PROPOSED),
+            "⚠⚠⚠ THE WHOLE POINT. `start_prompt` is what the FRESH agent is greeted with, and it \
+             must name the milestone THE AGENT chose — not the one the caller wrote before any of \
+             the work had been done: {:?}",
+            authored.start,
+        );
+        assert!(
+            authored.start.contains(READ_NEXT),
+            "⚠⚠ and what to read first, which is the other half of what a fresh context needs: {:?}",
+            authored.start,
+        );
+        assert!(
+            !authored.start.contains(ORIGINAL),
+            "⚠⚠⚠ and the caller's original milestone must be GONE. A run that carried both would \
+             hand a fresh agent two checkpoints and no way to tell which is current: {:?}",
+            authored.start,
+        );
+        assert!(
+            authored.turn.contains(PROPOSED),
+            "⚠⚠ every later turn of the replacement session works toward the same new milestone: \
+             {:?}",
+            authored.turn,
+        );
+
+        // ── 3. AND IT IS THE AGENT'S ANSWER, NOT THE TWO THINGS THAT LOOK LIKE ONE ──
+        assert!(
+            !authored
+                .start
+                .contains(crate::testing::REFLECTION_ECHO_SLICE),
+            "⚠⚠⚠ the reader must DISCOUNT WHAT THIS LOOP ITSELF SAID. The peer paints a row that \
+             opens with the label and carries a verbatim slice of the prompt — which is exactly \
+             what a wrapped echo looks like — and adopting it would make the run's own goal out of \
+             the instruction it had just sent: {:?}",
+            authored.start,
+        );
+        assert!(
+            !authored
+                .start
+                .contains(crate::testing::REFLECTION_PROVISIONAL),
+            "⚠⚠ and where the agent named more than one, the LAST is its answer: an agent asked \
+             for two lines writes a paragraph first, and the row it settled on is the one below: \
+             {:?}",
+            authored.start,
+        );
+    }
+
+    /// ⚠⚠⚠ **A QUESTION NOBODY WROTE A RULE FOR PAUSES THE RUN, AND A PERSON'S ANSWER RESUMES IT** —
+    /// `awaiting_human`, the last state of `ai_loop.scxml` this driver had not built.
+    ///
+    /// # ⚠⚠⚠ What was there before, and why it was wrong rather than incomplete
+    ///
+    /// The driver answered `Pumped::Unbuilt` for this state and the [`Driver`] stopped the run. The
+    /// scope note that shipped with it read *"a rule that claims nothing ends the run exactly as an
+    /// unanswered dialog always has"* — a true sentence about the DRIVER and a false one about the
+    /// machine. `awaiting_human` has seven edges and six of them are ways to carry on; the document
+    /// says the loop *"stops prompting and waits"*, and that *"if the person answers the dialog, the
+    /// agent goes back to work and the loop resumes where it was."*
+    ///
+    /// **A state machine with no input stays in the state.** Ending the run instead was the driver
+    /// deciding something the document does not say — which is the one thing this whole arrangement
+    /// exists to prevent.
+    ///
+    /// # ⚠⚠ The two halves, and why the first one needs a control
+    ///
+    /// 1. **IT WAITS.** Pumped repeatedly with the dialog up and nobody there, the machine stays in
+    ///    `awaiting_human` and the run does not end. ⚠ The control is that it is pumped MANY times:
+    ///    a single pump would pass for a driver that ends the run on its second look.
+    /// 2. **A PERSON'S KEYSTROKE MOVES IT ON.** The person presses the key the peer is waiting for,
+    ///    the agent finishes the turn it was blocked in, and `awaiting_human --turn.done--> judging`
+    ///    carries the run to its milestone. ⚠ The keystroke is written as
+    ///    [`Hand::APerson`](sprag_terminal::Hand::APerson), which is what a person's hand at a real
+    ///    pane looks like to this product.
+    #[test]
+    fn a_question_no_rule_claims_pauses_the_run_and_a_person_resumes_it() {
+        /// How many pumps the loop must sit through before anybody touches the pane. ⚠ Large enough
+        /// that a driver ending the run *eventually* fails here rather than passing.
+        const WAITED: usize = 12;
+
+        // ⚠ The peer asks ONE question and takes Escape for an answer — so the "person" below is
+        // pressing the key this dialog is actually waiting for, not a key the fixture invented.
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, 2, None);
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            // ⚠⚠ NO SCREEN RULES AT ALL — this is the shipped shape, whose placeholder claims
+            // nothing. The dialog therefore reaches `screening`, no rule takes it, and
+            // `screen.none` leads here. That is the commonest way a real run meets this state.
+            &brief_for(40),
+            // ⚠ A SHORTER TURN BOUND THAN THE OTHER GATES', and it is about this gate's COST rather
+            // than its claim: a pump that finds nothing blocks for the turn's whole patience, and
+            // this one deliberately pumps many times with nothing happening. ⚠ It stays above
+            // `supervised_asking`'s 300 ms settle, or no turn could ever be seen to end.
+            &AiLoopSpec {
+                turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                    .expect("a non-zero bound"),
+                // ⚠⚠⚠ A PERSON IS DECLARED, AND THIS GATE IS WHERE THAT STOPPED BEING OPTIONAL.
+                // With `Attended::NoOne` — every other gate's value, and the default — a person's
+                // hand at the pane is a TAKEOVER for ever after: measured here as
+                // `AwaitingHuman --TurnDone--> Judging --Judge--> Working
+                // --TurnInterrupted--> AwaitingHuman`, round and round, because the barrier went on
+                // reporting the keystroke that unblocked the dialog. That is the honest reading of
+                // `NoOne` (*nobody is watching, so a hand means somebody took the pane*) and the
+                // wrong contract for a run whose whole point is that a person may answer it.
+                // `WhenStill` is what says the pane is the run's again once they have finished.
+                attended: crate::readiness::Attended::of(
+                    Duration::from_secs(30),
+                    crate::readiness::Handback::of(Duration::from_millis(300))
+                        .expect("a non-zero stillness"),
+                )
+                .expect("a non-zero patience"),
+                ..standin_spec()
+            },
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let step = |loops: &mut AiLoop, walked: &mut Vec<String>| {
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a paused run must be readable");
+            if let Some(note) = step.note.clone() {
+                walked.push(note);
+            }
+        };
+
+        // ── 1. IT REACHES THE PAUSE ──
+        let mut reached = false;
+        for _ in 0..40 {
+            step(&mut loops, &mut walked);
+            if loops.state() == AiLoopState::AwaitingHuman {
+                reached = true;
+                break;
+            }
+        }
+        assert!(
+            reached,
+            "⚠ the control: a dialog no rule claims must reach `awaiting_human`, or what follows is \
+             about a state the run never entered. Walked {walked:?}",
+        );
+
+        // ── 2. AND IT STAYS THERE, FOR AS LONG AS NOBODY COMES ──
+        for look in 0..WAITED {
+            step(&mut loops, &mut walked);
+            assert_eq!(
+                loops.state(),
+                AiLoopState::AwaitingHuman,
+                "⚠⚠⚠ A STATE MACHINE WITH NO INPUT STAYS IN THE STATE. Nobody has touched this pane \
+                 and the document's every exit from `awaiting_human` is something that HAPPENS — so \
+                 look {look} of {WAITED} must find the loop exactly where the last one left it. \
+                 This driver used to answer `Unbuilt` here and the run was over. Walked {walked:?}",
+            );
+        }
+
+        // ── 3. THE PERSON ANSWERS, AND THE RUN CARRIES ON ──
+        crate::testing::person_types(&access, pane, &[27]);
+        // ⚠⚠⚠ WALL CLOCK, AND IT IS LOAD-BEARING RATHER THAN A SLEEP TO BE TIDIED AWAY. A real
+        // supervisor's verdict SETTLES — `supervised_asking` models that with a 300 ms window — and
+        // a gate that pumps in a tight loop polls FASTER than the window it is waiting out: sixty
+        // pumps went by in under 300 ms, every one of them reading the answered dialog as still
+        // blocked, and the run looked stuck when it was merely being asked too quickly. A real
+        // [`Driver`] paces itself; a `while` loop does not.
+        //
+        // ⚠ The samples are kept because they are what the failure message needs: *what did the
+        // supervisor actually say* is the first question of any turn that does not end.
+        let mut samples: Vec<String> = Vec::new();
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(200));
+            let seen = access
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(pane));
+            samples.push(format!(
+                "{:?}/{:?}",
+                seen.as_ref().map(|s| s.state),
+                seen.as_ref().map(|s| s.seq)
+            ));
+        }
+        for _ in 0..60 {
+            step(&mut loops, &mut walked);
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+        let reached = loops.state();
+        // ⚠ WHAT THE ASSERTION ACTUALLY SAW, printed rather than theorised about — the recorded
+        // rule that a green (or red) mutation is re-read from the screen before it is diagnosed.
+        let showing = access.pane_full_lines(pane).unwrap_or_default().join("\n");
+        let seen = access
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(pane));
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert!(
+            walked
+                .iter()
+                .any(|note| note == "AwaitingHuman --TurnDone--> Judging"),
+            "⚠⚠⚠ THE DOCUMENT'S OWN EDGE: *\"the person answered (or typed a turn themselves) and it \
+             completed\"*. Without it the run either never noticed the keystroke or had already been \
+             ended by the driver. The pane was showing:\n{showing}\nThe supervisor said \
+             {seen:?}\nSamples over the second after the keystroke: {samples:?}\nWalked {walked:?}",
+        );
+        assert_eq!(
+            reached,
+            AiLoopState::Converged,
+            "⚠⚠ and the run must go on to REACH ITS MILESTONE. A pause that resumes into anything \
+             else has moved the loop somewhere the person's answer did not ask for. Walked \
+             {walked:?}",
+        );
+    }
+
     /// ⚠⚠⚠ **A REPLACEMENT SESSION THAT COMES UP ASKING ENDS THE RUN, AND THE RUN SAYS SO** — the
     /// `resuming` edge a person meeting this feature is likeliest to hit.
     ///

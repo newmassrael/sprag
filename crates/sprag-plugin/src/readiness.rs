@@ -1043,6 +1043,18 @@ impl Readiness {
         )
     }
 
+    /// **WHO THIS RUN'S CALLER SAID WOULD BE WATCHING** — read back rather than kept twice.
+    ///
+    /// ⚠⚠ The barrier is where this contract lives, because the barrier is what a person's hand
+    /// arrives at. A second copy on the loop beside it would be two authorities on one caller
+    /// declaration, and the failure of letting two copies drift is silent — so
+    /// `awaiting_human`'s wait asks the barrier what the caller declared instead of being handed
+    /// its own.
+    #[must_use]
+    pub const fn attended(&self) -> Attended {
+        self.attended
+    }
+
     /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
     ///
     /// Arms on the first look and compares on every one after — the watermark discipline

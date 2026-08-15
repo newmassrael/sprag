@@ -683,6 +683,17 @@ pub(crate) fn silent_peer() -> (WorkspacePaneAccess, PaneId) {
 /// turn early. A real agent CLI paints the prompt into its own box, which is the whole reason
 /// `deliver` reads the screen back; a stand-in that stayed silent was testing the retry path, not
 /// the loop.
+///
+/// ⚠⚠⚠ **AND IT ANSWERS THE REFLECTION PROMPT, NAMING NOTHING** — added the round `reflecting`
+/// became a TURN, and the four gates that went red are the argument. A peer that IGNORES a prompt
+/// is not standing in for an agent: the turn never ends, the loop reports `Reflecting --Null-->
+/// Reflecting` until its wall clock, and four gates measuring something else entirely died of it.
+/// **A stand-in must answer whatever it is asked**, even where the gate driving it does not care
+/// what the answer is.
+///
+/// ⚠ It names NO next milestone on purpose, which keeps this peer's axis exactly what it was. The
+/// arm where an agent DOES decide one is [`standin_agent_reflecting`]'s, and mixing the two would
+/// make every gate here also a gate about the reflection's reader.
 /// The token a stand-in peer publishes ITS OWN reply counter behind — see [`peer_seq`].
 const SEQ_MARKER: &str = "SEQ";
 
@@ -780,6 +791,11 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
          while read line; do \
            printf '%s\\n' \"$line\"; \
            case \"$line\" in \
+             *'{REFLECT}'*) \
+               printf 'ACK nothing to change\\n'; \
+               s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; continue;; \
+           esac; \
+           case \"$line\" in \
              *exactly:*|*Summarise*) ;; \
              *) continue;; \
            esac; \
@@ -788,7 +804,8 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
            else printf 'ACK %s\\n' \"$n\"; fi; \
            s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; \
          done",
-        SEQ = SEQ_MARKER
+        SEQ = SEQ_MARKER,
+        REFLECT = REFLECTION_MILESTONE_LABEL,
     );
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -808,6 +825,111 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
     );
     (workspace, pane)
 }
+
+/// **A STAND-IN AGENT THAT WILL NAME ITS OWN NEXT MILESTONE IF IT IS EVER ASKED** — the peer a
+/// reflection TURN is measured against.
+///
+/// # ⚠⚠⚠ What it stands in for, and why it is a peer rather than a longer script
+///
+/// [`standin_agent`] answers working prompts and says the done marker. It has no opinion about
+/// where the work should go next, because until a reflection could ASK, nothing in the product
+/// wanted one. This peer has exactly one axis more: **a prompt carrying the document's milestone
+/// LABEL is answered with a next milestone and a next reference**, in the two-line shape the
+/// authored `reflect_prompt` asks for.
+///
+/// ⚠⚠ **IT KEYS ON THE LABEL, WHICH IS THE PRODUCT'S OWN CONTRACT** — the same discipline
+/// [`standin_agent`] uses in keying its done reply on `exactly:`. A peer keying on some private
+/// word would answer a prompt no real agent could recognise, and the gate would measure the
+/// fixture. ⚠ The label is spelled here rather than read from the document for the reason
+/// `MILESTONE REACHED` is spelled in [`standin_agent`]: a fixture cannot read a datamodel that has
+/// not been initialised. What holds the two in step is that the gate asserts the composed
+/// `reflect_prompt` carries this same label.
+///
+/// ⚠⚠⚠ **AND IT STAGES BOTH OF THE READER'S HAZARDS ON PURPOSE, WHICH MUTATION IS WHY.** The peer
+/// answers with FOUR rows and only the last two are its answer:
+///
+/// 1. **A ROW SHAPED LIKE A WRAPPED ECHO** — the label followed by a VERBATIM slice of the prompt
+///    that asked for it ([`REFLECTION_ECHO_SLICE`]). The prompt names the label mid-sentence
+///    precisely so its echo does not open a row with it, and a terminal wraps where it likes, so
+///    the day a pane is a different width this row is what the screen holds.
+/// 2. **A ROW THE AGENT THOUGHT BETTER OF** ([`REFLECTION_PROVISIONAL`]) — an agent asked for two
+///    lines that writes a paragraph first, which is what agents do.
+///
+/// ⚠⚠⚠ **NEITHER WAS REACHABLE BEFORE THEY WERE STAGED, AND THE MUTATIONS SAID SO.** The first
+/// draft of this peer answered with its two real lines alone: dropping the echo discount from
+/// [`OuterLoop::proposed`](crate::outer::OuterLoop) left the gate GREEN, and so did taking the
+/// FIRST match instead of the last — because at 80 columns the prompt's own wrap happened to break
+/// the label across two rows. **Both of the reader's rules were untested and its doc claimed both.**
+/// R374's rule: when a state is only reached by luck, stage it on purpose.
+pub(crate) fn standin_agent_reflecting(
+    prompts_before_done: u32,
+    next_milestone: &str,
+    next_reference: &str,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let script = "\
+stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
+while read line; do \
+  printf '%s\\n' \"$line\"; \
+  case \"$line\" in \
+    *'MILESTONE_LABEL'*) \
+      printf '%s\\n' 'MILESTONE_LABEL ECHO_SLICE'; \
+      printf '%s\\n' 'MILESTONE_LABEL PROVISIONAL'; \
+      printf '%s\\n' 'MILESTONE_LABEL NEXT_MILESTONE'; \
+      printf '%s\\n' 'REFERENCE_LABEL NEXT_REFERENCE'; \
+      bump; continue;; \
+  esac; \
+  case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
+  n=$((n+1)); \
+  if [ $n -ge TURNS_BEFORE_DONE ]; then printf 'MILESTONE REACHED\\n'; \
+  else printf 'ACK %s\\n' \"$n\"; fi; \
+  bump; \
+done"
+        .replace("ECHO_SLICE", REFLECTION_ECHO_SLICE)
+        .replace("PROVISIONAL", REFLECTION_PROVISIONAL)
+        .replace("MILESTONE_LABEL", REFLECTION_MILESTONE_LABEL)
+        .replace("REFERENCE_LABEL", REFLECTION_REFERENCE_LABEL)
+        .replace("NEXT_MILESTONE", next_milestone)
+        .replace("NEXT_REFERENCE", next_reference)
+        .replace("TURNS_BEFORE_DONE", &prompts_before_done.to_string());
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 80, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
+/// The label `ai_loop.scxml` authors for the milestone half of a reflection's answer, as the peer
+/// above obeys it. ⚠ The document is the authority; this is a fixture's copy, held in step by the
+/// gate that asserts the composed prompt carries it.
+pub(crate) const REFLECTION_MILESTONE_LABEL: &str = "NEXT MILESTONE:";
+/// See [`REFLECTION_MILESTONE_LABEL`].
+pub(crate) const REFLECTION_REFERENCE_LABEL: &str = "NEXT REFERENCE:";
+
+/// **A VERBATIM SLICE OF THE PROMPT**, which the peer above paints behind the label — the shape a
+/// wrapped echo has, staged rather than hoped for. See [`standin_agent_reflecting`].
+///
+/// ⚠ It is a claim about `ai_loop.scxml`'s wording and the gate asserts the composed prompt still
+/// contains it. Edited apart, this stops being an echo and the rule it tests stops being tested.
+pub(crate) const REFLECTION_ECHO_SLICE: &str =
+    "and then the next checkpoint in one line. Open the second with the label";
+/// What the peer says behind the label before it settles on its real answer — see
+/// [`standin_agent_reflecting`]. ⚠ It must NOT appear in the prompt, or the echo rule would reject
+/// it and the last-match rule would go untested again.
+pub(crate) const REFLECTION_PROVISIONAL: &str = "a checkpoint it thought better of";
 
 // ── ⚠⚠⚠ THREE DIALOGS CAPTURED FROM A LIVE `claude` 2.1.232 **WHILE IT WAS WORKING** (R383's
 //    probes), by `sprag_host::live_agent::what_a_live_agent_asks_while_it_works`. Not composed.
@@ -1087,6 +1209,9 @@ readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
 bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
 while read line; do \
   printf '%s\\n' \"$line\"; \
+  case \"$line\" in \
+    *'REFLECT_LABEL'*) printf 'ACK nothing to change\\n'; bump; continue;; \
+  esac; \
   if [ $asked -eq 1 ]; then \
     asked=2; printf 'ACK took the redirect\\n'; bump; continue; \
   fi; \
@@ -1114,6 +1239,10 @@ while read line; do \
 done"
         .replace("BREAKS_ON", breaks_on)
         .replace("TURNS_AFTER", &turns_after_redirect.to_string())
+        // ⚠ A REFLECTION IS A TURN AND A PEER MUST ANSWER IT — see [`standin_agent`], whose doc
+        // carries the four gates that measured what a silent one costs. This one names nothing
+        // either: what it is a stand-in FOR is a dialog and a redirect.
+        .replace("REFLECT_LABEL", REFLECTION_MILESTONE_LABEL)
         .replace("ONCE_MARKER", &once);
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");

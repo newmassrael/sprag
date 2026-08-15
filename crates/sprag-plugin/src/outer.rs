@@ -79,7 +79,7 @@
 //! [`IScriptEngine`]: sce_rust_runtime::IScriptEngine
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
 use sprag_terminal::PaneId;
@@ -134,12 +134,17 @@ pub struct Authored {
     pub turn: String,
     /// Sent once before the loop reports converged.
     pub end: String,
+    /// **WHAT THE LOOP ASKS ITS AGENT BEFORE REPLACING ITS SESSION** — `reflecting`'s own prompt.
+    ///
+    /// ⚠ A consumer previewing a loop reads this to see what its agent will be asked to decide,
+    /// which is the one prompt whose ANSWER changes what the run is about.
+    pub reflect: String,
     /// What the agent says when it has reached the milestone.
     pub done_marker: String,
 }
 
 impl Authored {
-    /// Read the four authored strings out of `engine`'s datamodel.
+    /// Read the five authored strings out of `engine`'s datamodel.
     ///
     /// [`None`] for a datamodel that does not hold them as strings, which is a machine this driver
     /// cannot drive — and saying so here is what stops a run being started against one.
@@ -156,6 +161,7 @@ impl Authored {
             start: text(Owed::Start.variable())?,
             turn: text(Owed::Turn.variable())?,
             end: text(Owed::End.variable())?,
+            reflect: text(Owed::Reflect.variable())?,
             done_marker: text(DONE_MARKER)?,
         })
     }
@@ -163,6 +169,16 @@ impl Authored {
 
 /// The datamodel variable holding the word the agent says when it is finished.
 const DONE_MARKER: &str = "done_marker";
+
+/// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
+/// the prompt that asks for it — see [`OuterLoop::proposed`].
+///
+/// ⚠ Read from the datamodel at the moment the answer is parsed, for [`OuterLoop::authored`]'s
+/// reason: an author may edit it, and a driver holding a construction-time copy would look for a
+/// label nobody was asked for.
+const MILESTONE_MARKER: &str = "milestone_marker";
+/// See [`MILESTONE_MARKER`].
+const REFERENCE_MARKER: &str = "reference_marker";
 
 /// **THE PARTS A REFLECTION HANDS BACK**, named once because three readers agree through them: the
 /// brief's read-back, `reflecting`'s own read, and the document's `reflect.applied` assignments.
@@ -410,6 +426,9 @@ enum Owed {
     Turn,
     /// The `end_prompt` — the closing report.
     End,
+    /// The `reflect_prompt` — **what should this run do next?**, asked of the agent that has been
+    /// doing the work, and answered into the session that replaces it.
+    Reflect,
 }
 
 impl Owed {
@@ -429,6 +448,7 @@ impl Owed {
             Self::Start => "start_prompt",
             Self::Turn => "turn_prompt",
             Self::End => "end_prompt",
+            Self::Reflect => "reflect_prompt",
             Self::Nothing => panic!("`Owed::Nothing` names no prompt; the caller matches it first"),
         }
     }
@@ -437,10 +457,11 @@ impl Owed {
     ///
     /// # ⚠⚠ The two halves of `ai_loop.scxml`'s sends, and why only one needs the event
     ///
-    /// `prompt.start` and `prompt.end` are **onentry** sends — `priming`'s and `closing`'s — so
-    /// arriving at those states is the whole condition, whichever transition brought you. Both are
-    /// reached more than one way (`priming` from `idle` and from `restarting`), and keying them on
-    /// the event would have needed that list kept in step by hand.
+    /// `prompt.start`, `prompt.end` and `prompt.reflect` are **onentry** sends — `priming`'s,
+    /// `closing`'s and `reflecting`'s — so arriving at those states is the whole condition,
+    /// whichever transition brought you. All three are reached more than one way (`priming` from
+    /// `idle` and from `restarting`; `reflecting` from the correctness edge and from the budget
+    /// one), and keying them on the event would have needed that list kept in step by hand.
     ///
     /// `prompt.turn` is a **transition** send, on three of the four edges into `working`, and that
     /// is the one place the arrival state is not enough. So the event decides there and only
@@ -453,6 +474,10 @@ impl Owed {
         match landed {
             AiLoopState::Priming => Self::Start,
             AiLoopState::Closing => Self::End,
+            // ⚠⚠⚠ A REFLECTION IS A TURN, so arriving here OWES the agent a question — see
+            // [`OuterLoop::reflect`]. Before it did, this state sat in the silent list below and a
+            // reflection could only ever carry what the document's author had written.
+            AiLoopState::Reflecting => Self::Reflect,
             AiLoopState::Working => match raised {
                 // `judging --judge-->`, `awaiting_human --resume-->` and
                 // `reflecting --reflect.none-->` each carry `<send event="prompt.turn"/>`.
@@ -487,7 +512,7 @@ impl Owed {
                 | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
                 | AiLoopEvent::ReflectApplied
-                | AiLoopEvent::ReflectBegin
+                | AiLoopEvent::PromptReflect
                 | AiLoopEvent::ScreenBegin
                 | AiLoopEvent::ScreenNone
                 | AiLoopEvent::SessionReady
@@ -505,7 +530,6 @@ impl Owed {
             | AiLoopState::Screening
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
-            | AiLoopState::Reflecting
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Converged
@@ -835,6 +859,14 @@ pub struct OuterLoop {
     /// make the words a run types into somebody's dialog a round trip through a script engine that
     /// has already been measured mangling non-ASCII once.
     claimed: Option<crate::judge::JudgedRule>,
+    /// **WHEN THIS RUN STARTED WAITING FOR A PERSON**, or [`None`] when it is not waiting.
+    ///
+    /// ⚠⚠ [`attend`](Self::attend) is the only reader AND the only writer, which is what keeps it
+    /// honest: it is set on the first look at a wait and cleared on every exit from one, so no other
+    /// state of the machine can leave a stale anchor behind. The alternative — a duration threaded
+    /// through the pump — would put the phase in the driver, which is exactly what `restarting` and
+    /// `resuming` are two states to avoid.
+    awaiting: Option<Instant>,
     /// This turn's evaluator, armed before the prompt goes in.
     done: Completion,
     /// What the last pump saw behind the event it raised — see [`Noticed`].
@@ -901,6 +933,7 @@ impl OuterLoop {
             shows_the_prompt: spec.shows_the_prompt,
             judge: spec.judge.clone(),
             claimed: None,
+            awaiting: None,
         })
     }
 
@@ -1378,19 +1411,22 @@ impl OuterLoop {
             // ⚠⚠⚠ THE LOOP IMPROVES ITS OWN SETUP AND THEN REPLACES THE SESSION THAT READS IT —
             // three states, because the three things that happen are genuinely different acts and
             // the document says which by where it is.
-            AiLoopState::Reflecting => self.reflect(),
+            // ⚠⚠⚠ A REFLECTION IS A TURN AND THIS WATCHES IT, which is why this arm takes the pane:
+            // the question was delivered by the transition that landed here (`Owed::Reflect`), and
+            // what the agent answers is what the replacement session is briefed with.
+            AiLoopState::Reflecting => self.reflect(panes, run)?,
             AiLoopState::Restarting => self.replace(panes)?,
             AiLoopState::Resuming => self.resume(panes, run)?,
 
-            // ⚠⚠ REGISTERED DEBT, NOT AN OVERSIGHT: `awaiting_human` is a WAITING state whose two
-            // producers (`hold`, `unattended`) this driver has none of — so a run reaching it stops,
-            // which is what `Attended::NoOne` means anyway. ⚠ **DECLARED OUT OF SCOPE rather than
-            // missed**: screening's `screen.none` edge leads here, so a rule that claims nothing
-            // ends the run exactly as an unanswered dialog always has.
+            // ⚠⚠⚠ THE RUN IS PAUSED AND A PERSON IS EXPECTED. It WAITS — see [`attend`](Self::attend).
             //
-            // Reported rather than skipped: a driver that treated it as a no-op would take the loop
-            // somewhere the author did not write.
-            state @ AiLoopState::AwaitingHuman => return Ok(Pumped::Unbuilt(state)),
+            // ⚠⚠⚠ IT USED TO END THE RUN HERE, and that was the driver deciding something the
+            // document does not say. `awaiting_human` has SEVEN edges and six of them are ways to
+            // carry on; the driver answered `Pumped::Unbuilt` and the [`Driver`] stopped. So a loop
+            // whose agent asked one question no rule claimed was over — *"a rule that claims nothing
+            // ends the run exactly as an unanswered dialog always has"* was written as a scope note
+            // and read as a design, and the machine plainly said otherwise the whole time.
+            AiLoopState::AwaitingHuman => self.attend(panes, run)?,
 
             // ⚠⚠⚠ THE DOCUMENT HAS THE ROUTE AND THIS DRIVER HAS NOT BUILT THE ACT YET, reported
             // as such rather than skipped. `working`'s `cond="_event.data.design"` is what reaches
@@ -1577,6 +1613,103 @@ impl OuterLoop {
                 Over::RunEnded => AiLoopEvent::Cancel,
             },
         )
+    }
+
+    /// **WAIT FOR THE PERSON** — `awaiting_human`'s whole effect, and the last state of
+    /// `ai_loop.scxml` this driver had not built.
+    ///
+    /// # ⚠⚠⚠ A state machine with no input STAYS IN THE STATE
+    ///
+    /// That sentence is the whole of this function and it is worth writing down, because what stood
+    /// here before was `Pumped::Unbuilt` — the driver ENDING a run the document had merely paused.
+    /// The document is unambiguous: `awaiting_human` sends a notification and then holds, and every
+    /// way out of it is something that HAPPENS (the person answers and a turn completes; they wave
+    /// it on; the run is cancelled; nobody comes). None of those is *time passed and the driver gave
+    /// up*.
+    ///
+    /// So the mapping is:
+    ///
+    /// * the turn the person unblocked COMPLETED — `turn.done`, carrying what the session has been
+    ///   charged to read, exactly as `working`'s does, because `judging` reads it on entry from both
+    ///   doors;
+    /// * the run was cancelled — `cancel`, which is the caller's act and not this driver's;
+    /// * **anything else — including a dialog that is still up, and a person mid-keystroke — is
+    ///   [`AiLoopEvent::Null`]**: nothing happened, the machine stays where it is, and the next pump
+    ///   asks again.
+    ///
+    /// ⚠⚠⚠ **THE BARRIER IS NOT ASKED HERE, AND THAT IS THE DOCUMENT'S INSTRUCTION RATHER THAN AN
+    /// OPTIMISATION.** [`watch`](Self::watch) asks it first because *"a person reaching into the pane
+    /// outranks everything the peer is doing"* — true in `working`, where nobody was expected. Here
+    /// somebody IS expected: this state exists because the run asked for them. So the hand that
+    /// [`Readiness`] would report as an INTERRUPTION is the very event
+    /// this state is waiting for, and consulting it means the answer never lands.
+    ///
+    /// **Measured**: with the barrier asked, a person pressing the key the dialog was waiting for
+    /// moved nothing — `Reached::Interrupted` came back on every poll from then on, so
+    /// `Completion` was never even consulted and the run sat in `awaiting_human` for the whole gate.
+    /// The document says the opposite twice over: `turn.interrupted` here is a SELF-LOOP (*"stay put;
+    /// do not start prompting underneath somebody who is typing"*), and `turn.done` is *"the person
+    /// answered (or typed a turn themselves) and it completed."*
+    ///
+    /// ⚠⚠ **AND THE SELF-LOOP IS NOT PRODUCED, DELIBERATELY.** `Null` leaves the machine in exactly
+    /// the same state and reports no transition, where raising the event would write a step into the
+    /// run's journal every poll saying a state changed when it did not. The two are
+    /// indistinguishable to the machine and only one of them is honest to a reader.
+    ///
+    /// ⚠⚠⚠ **AND `unattended` IS THE CALLER'S NUMBER, NOT A CLOCK THIS DRIVER CHOSE.** The document
+    /// ends a wait with *"nobody came within the driver's patience"*, and how long that is, is
+    /// exactly what [`Attended`](crate::readiness::Attended) already declares:
+    ///
+    /// * [`Attended::NoOne`](crate::readiness::Attended::NoOne) — **nobody is watching**, the default and what every run said
+    ///   before this contract existed. Waiting for a person the caller has told us will not come is
+    ///   waiting for nothing, so the wait ends at once and the run reports `blocked` WITH the
+    ///   question. That is the answer this driver used to give by refusing to build the state at
+    ///   all; it is now the document's own edge, and the difference is that the machine says it.
+    /// * [`Attended::APerson`](crate::readiness::Attended::APerson) — wait up to their `patience`,
+    ///   then `unattended`.
+    ///
+    /// A driver that invented a duration here would end somebody's run on a number nobody chose;
+    /// one that never ended would make *waiting* and *dead* the same thing to every reader.
+    ///
+    /// ⚠ The anchor is this function's alone — set on the first look at a wait and cleared on every
+    /// exit from one — so no other code can leave it stale.
+    ///
+    /// # Errors
+    ///
+    /// Whatever watching the pane answers.
+    fn attend(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
+        // ⚠⚠⚠ ASKED BEFORE THE WAIT, AND A pty GATE IS WHY. A caller who declared `NoOne` has said
+        // there is nobody to wait FOR, so waiting even one turn's patience is not patience — it is
+        // the run carrying on underneath somebody who has taken the pane. Measured:
+        // `a_person_at_a_real_keyboard_who_is_not_waited_for_keeps_the_pane` put a real keystroke in
+        // front of a peer that was one turn from its goal, and with the wait first the run TOOK that
+        // turn — *"the pane is the witness: their byte reached the peer, so the goal was ONE turn
+        // away, and the run did not take it"* is the claim, and ordering these two lines is the
+        // whole of it.
+        let Some(patience) = self.driving.ready.attended().patience() else {
+            self.awaiting = None;
+            return Ok(AiLoopEvent::Unattended.into());
+        };
+        let since = *self.awaiting.get_or_insert_with(Instant::now);
+        let raised = match self
+            .done
+            .wait(panes, self.driving.pane, self.patience(), run)
+        {
+            Over::Yes => Raise::carrying(
+                AiLoopEvent::TurnDone,
+                serde_json::json!({ "context": self.context_now(panes) }),
+            ),
+            Over::RunEnded => AiLoopEvent::Cancel.into(),
+            // ⚠ The question is still on the screen, or the peer has not finished what the person
+            // unblocked. Neither is a thing that HAPPENED — so unless the caller's patience has run
+            // out, the machine stays exactly where it is.
+            Over::Asking(_) | Over::NotYet if since.elapsed() < patience => {
+                return Ok(AiLoopEvent::Null.into());
+            }
+            Over::Asking(_) | Over::NotYet => AiLoopEvent::Unattended.into(),
+        };
+        self.awaiting = None;
+        Ok(raised)
     }
 
     /// **CARRY OUT A STANDING INSTRUCTION ON THE DIALOG THAT IS UP** — `screening`'s whole effect.
@@ -1791,42 +1924,124 @@ impl OuterLoop {
     ///   again `reflect.none`. A run that reflected on *"is `standing` non-empty?"* would restart its
     ///   session every `reflect_every` turns for ever, having nothing to change.
     ///
-    /// ⚠⚠ **WHAT IT DOES NOT DO, DECLARED**: it does not decide a NEW milestone. Where the work
-    /// should go next is a judgement about the work, which this driver cannot make and must not
-    /// invent — so the two parts the document's `reflect.applied` assigns are read back and handed
-    /// over UNCHANGED. Registered as owed; the shape that answers it is a reflection TURN, where the
-    /// agent that has been doing the work says what the next milestone is before it is replaced.
+    /// ⚠⚠⚠ **AND IT ASKS THE AGENT WHERE THE WORK GOES NEXT** — the half that makes a run outlive
+    /// its agent's CONTEXT rather than only its constraints.
     ///
-    /// ⚠ The parts are echoed rather than omitted for `brief`'s measured reason: the transition's
+    /// The reflection is a TURN: `reflecting`'s entry owes `reflect_prompt` (see [`Owed::Reflect`]),
+    /// this watches for that turn to end exactly as `working` does, and [`proposed`](Self::proposed)
+    /// reads the answer back. Whatever the agent named becomes the milestone the REPLACEMENT session
+    /// is briefed with.
+    ///
+    /// Until that existed the two parts the document's `reflect.applied` assigns were read back and
+    /// handed over UNCHANGED, on the true argument that *where the work should go next is a judgement
+    /// this driver cannot make*. It still cannot — so it asks the only party that can, and carries
+    /// the answer without editing it.
+    ///
+    /// ⚠⚠ **AN AGENT THAT NAMES NOTHING CHANGES NOTHING**: the milestone and the reference are echoed
+    /// as they were, and the run carries on toward the checkpoint it already had. That is the safe
+    /// direction — the alternative is a run whose goal is rewritten by a reader that guessed — and it
+    /// is also `brief`'s measured reason for echoing rather than omitting: the transition's
     /// `<assign>` is unconditional, so a missing key assigns `nil` and DELETES the milestone.
-    fn reflect(&mut self) -> Raise {
+    ///
+    /// # Errors
+    ///
+    /// Whatever watching the pane answers — the reflection turn is a turn on somebody's terminal.
+    fn reflect(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
+        // ⚠ EVERY OTHER ENDING IS THE DOCUMENT'S. `turn.blocked` and `turn.interrupted` both reach
+        // `awaiting_human` from here — a reflection cannot be screened (no history state to resume
+        // it into) and must not be prompted over — and `Null` leaves the machine where it is.
+        let ended = self.watch(panes, run)?;
+        if ended != AiLoopEvent::TurnDone {
+            return Ok(ended.into());
+        }
         let (Some(standing), Some(next)) =
             (self.text_of(STANDING), self.text_of(Owed::Turn.variable()))
         else {
             // ⚠ The datamodel has stopped answering mid-run — the same class as a prompt that
             // cannot be read at the moment of delivery, and it gets that class's answer.
             self.noticed = Some(Noticed::Undrivable(STANDING));
-            return AiLoopEvent::Fail.into();
+            return Ok(AiLoopEvent::Fail.into());
         };
         let learned = once_each(&standing);
-        // ⚠⚠ NORMALISED WHICHEVER WAY THIS GOES, which is why both exits assign it — see the
-        // document. `reflect.none` that dropped the tidied list would leave the duplicate behind,
-        // and a duplicate is a `standing` the prompts do not carry, which is another restart.
-        if next.contains(&learned) {
-            return Raise::carrying(
-                AiLoopEvent::ReflectNone,
-                serde_json::json!({STANDING: learned}),
-            );
-        }
         let (Some(milestone), Some(reference)) = (self.text_of(MILESTONE), self.text_of(REFERENCE))
         else {
             self.noticed = Some(Noticed::Undrivable(MILESTONE));
-            return AiLoopEvent::Fail.into();
+            return Ok(AiLoopEvent::Fail.into());
         };
-        Raise::carrying(
+        let decided = self.proposed(panes, MILESTONE_MARKER);
+        // ⚠⚠ NOTHING NEW AND NOTHING LEARNED, so a restart would throw away an agent's whole
+        // context having changed nothing — the document's own words, and the predicate is still
+        // *"does what I am about to say already carry what I have learned?"*. ⚠ The tidied standing
+        // list is assigned on BOTH exits: dropping it here would leave a duplicate behind, and a
+        // duplicate is a `standing` the prompts do not carry, which is another restart.
+        if decided.is_none() && next.contains(&learned) {
+            return Ok(Raise::carrying(
+                AiLoopEvent::ReflectNone,
+                serde_json::json!({STANDING: learned}),
+            ));
+        }
+        Ok(Raise::carrying(
             AiLoopEvent::ReflectApplied,
-            serde_json::json!({MILESTONE: milestone, REFERENCE: reference, STANDING: learned}),
-        )
+            serde_json::json!({
+                MILESTONE: decided.unwrap_or(milestone),
+                REFERENCE: self.proposed(panes, REFERENCE_MARKER).unwrap_or(reference),
+                STANDING: learned,
+            }),
+        ))
+    }
+
+    /// **WHAT THE AGENT NAMED BEHIND `marker`'s LABEL IN THE TURN JUST ENDED**, or [`None`] where it
+    /// named nothing a reader may trust.
+    ///
+    /// # ⚠⚠⚠ Two rules, and each closes a hole the other cannot
+    ///
+    /// A reflection's answer is a SENTENCE the agent writes, so unlike [`said_done`](Self::said_done)
+    /// the label cannot be required to stand alone as the whole row. That weaker shape is paid for
+    /// twice:
+    ///
+    /// * **THE ROW OPENS WITH THE LABEL** — nothing before it but decoration. An agent CLI prints its
+    ///   replies behind a bullet and inside a box, so leading `●`, `│`, `>` and whitespace are
+    ///   allowed and a letter or a digit is not. What this closes is the label named in the MIDDLE of
+    ///   a sentence, which is exactly how the prompt itself names it.
+    /// * ⚠⚠⚠ **AND THE ANSWER IS NOT SOMETHING THIS LOOP SAID** — the candidate is rejected when the
+    ///   prompt just delivered contains it. What this closes is the ECHO: the prompt that asks for the
+    ///   label carries the label, an agent's terminal paints the prompt, and a pane wraps where it
+    ///   likes — so a row opening with the label can be the loop reading its own instruction back.
+    ///   R379 measured that exact class on `done_marker` and it converged a run that had proved
+    ///   nothing.
+    ///
+    /// ⚠ **THE LAST MATCH WINS**, because the echo is painted BEFORE the reply that answers it, and
+    /// because an agent asked for two lines writes a paragraph first: with the echo discounted this
+    /// decides between two things the agent itself said, and the later one is its conclusion.
+    /// ⚠⚠ **THE RESIDUE, STATED**: an agent that answers first and then SUMMARISES itself is read
+    /// the other way round, and nothing separates the two orders from out here. The prompt asks for
+    /// *"exactly two lines and nothing else"*, so the tie-break only ever decides a reply that broke
+    /// the contract — and between two answers the same agent wrote, which is the mildest version of
+    /// this failure.
+    ///
+    /// ⚠⚠⚠ **BOTH RULES ARE MEASURED, AND NEITHER WAS UNTIL THE HAZARD WAS STAGED.** The peer's
+    /// first draft answered with its two real lines alone, and dropping either rule left the gate
+    /// green — the prompt's own wrap happened to break the label across two rows at 80 columns.
+    /// `standin_agent_reflecting` now paints both
+    /// hazards deliberately, and the mutations bite: without the echo discount the run adopts
+    /// *"and then the next checkpoint in one line…"* as its own milestone, and with the FIRST match
+    /// it adopts *"a checkpoint it thought better of"*.
+    ///
+    /// ⚠ **IT FAILS SAFE.** An answer this cannot read leaves the milestone as it was — one more turn
+    /// toward a checkpoint somebody chose — where the direction it refuses to fail in is rewriting
+    /// what a run is FOR out of text nobody meant as an answer.
+    fn proposed(&self, panes: &dyn PaneAccess, marker: &str) -> Option<String> {
+        let label = self.text_of(marker)?;
+        let asked = self.text_of(Owed::Reflect.variable())?;
+        if label.trim().is_empty() {
+            return None;
+        }
+        self.driving
+            .judged
+            .fresh(panes, self.driving.pane)
+            .iter()
+            .filter_map(|row| opens_with(row, &label))
+            .rfind(|said| !said.is_empty() && !asked.contains(said.as_str()))
     }
 
     /// **CLOSE THE INNER SESSION AND OPEN A FRESH ONE** — `restarting`'s effect.
@@ -2141,6 +2356,25 @@ fn once_each(standing: &str) -> String {
     let mut once = kept.join("\n");
     once.push('\n');
     once
+}
+
+/// What `row` says after `label`, when the row OPENS with it — see [`OuterLoop::proposed`].
+///
+/// ⚠ The decoration a row may carry in front of the label is deliberately a SET rather than
+/// *"anything not alphanumeric"*, which is [`stands_alone`]'s rule and the wrong one here. That rule
+/// would accept a wrapped echo beginning `"NEXT MILESTONE: …` — a quote mark is not alphanumeric —
+/// and the whole reason this reader is careful is that the prompt naming the label is on the screen
+/// too. What an agent CLI actually puts in front of its own text is a bullet, a box edge or a
+/// prompt glyph, and that is the list.
+fn opens_with(row: &str, label: &str) -> Option<String> {
+    /// What an agent CLI draws in front of a line of its own reply.
+    const DECORATION: &[char] = &['●', '⏺', '│', '|', '>', '❯', '*', '-', '•', ' ', '\t'];
+    Some(
+        row.trim_matches(DECORATION)
+            .strip_prefix(label)?
+            .trim()
+            .to_owned(),
+    )
 }
 
 /// Whether `row` is `marker` and nothing else a reader would call words.

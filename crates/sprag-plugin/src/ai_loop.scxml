@@ -11,10 +11,19 @@
   Why an inner session is REPLACED rather than reconfigured: the things a loop
   wants to improve about itself — the agent's base context, which MCP servers
   are loaded, CLAUDE.md, the memory index — are all read when a session starts.
-  A live session cannot be asked to re-read them. So `reflecting` writes the
-  improvements to disk and `restarting` closes the pane and opens a fresh one,
-  which reads them on the way up. That is the whole reason this machine has a
-  restart state instead of a "reconfigure" event.
+  A live session cannot be asked to re-read them. So `reflecting` settles what
+  the next session should be working on and `restarting` closes the pane and
+  opens a fresh one, which is briefed with it on the way up. That is the whole
+  reason this machine has a restart state instead of a "reconfigure" event.
+
+  ⚠⚠⚠ AND `reflecting` ASKS THE AGENT. The one thing a driver cannot decide is
+  where somebody else's work should go next, so the reflection is a TURN: the
+  agent that has been doing the work says what the next milestone is and what
+  the next session should read, and those two answers are what cross the
+  boundary. Without it a run is bounded by the checkpoint whoever started it
+  wrote down — it can replace its session and greet the replacement with the
+  same instruction for ever, which is a run bounded by one agent's context
+  wearing a longer life.
 
   The terminal outcomes are the Driver's (`orchestration.scxml`) on purpose: a
   loop that ends reports the same shapes any plugin run reports, so one reader
@@ -170,7 +179,32 @@
     <data id="done_marker" expr="'MILESTONE REACHED'"/>
 
     <!--
-      ⚠⚠⚠ THE THREE COMPOSED PROMPTS ARE DECLARED EMPTY HERE AND WRITTEN IN
+      ⚠⚠⚠ THE TWO LABELS A REFLECTION'S ANSWER IS READ BACK THROUGH, and they are
+      authored for `done_marker`'s reason: they are said to somebody's agent, in
+      somebody's language, and the driver must never be the thing that writes
+      words into a prompt. Declared BEFORE the prompts because `priming` composes
+      `reflect_prompt` out of them.
+
+      ⚠⚠⚠ A LABEL AND NOT A WHOLE ROW, where `done_marker` is a whole row, and
+      the difference is what each has to carry. *Done* is a yes or a no, so the
+      marker IS the answer and `said_done` can demand it stand alone. A milestone
+      is a SENTENCE the agent writes, so the label can only ever open the row it
+      is on — which is a weaker rule, and the driver pays for that weakness in
+      two places rather than pretending it does not exist (see
+      `OuterLoop::proposed`): the row must OPEN with the label, and the text
+      after it must not be something this loop itself said.
+
+      ⚠ NEITHER APPEARS AT THE START OF A LINE IN THE PROMPT BELOW, deliberately.
+      The instruction that asks for them names them mid-sentence, so the peer's
+      echo of the prompt does not produce a row that opens with one. That is a
+      mitigation and not a proof — a terminal wraps where it likes — which is
+      why the driver's second rule exists at all.
+    -->
+    <data id="milestone_marker" expr="'NEXT MILESTONE:'"/>
+    <data id="reference_marker" expr="'NEXT REFERENCE:'"/>
+
+    <!--
+      ⚠⚠⚠ THE FOUR COMPOSED PROMPTS ARE DECLARED EMPTY HERE AND WRITTEN IN
       `priming`. Their text is up there, in one place, where a person editing
       this template reads it; declaring them is what makes them assignable, and
       what lets a consumer ask whether this machine is one it can drive at all.
@@ -185,6 +219,30 @@
     <data id="start_prompt" expr="''"/>
     <!-- Sent on every turn after the first. -->
     <data id="turn_prompt" expr="''"/>
+    <!--
+      ⚠⚠⚠ SENT WHEN THE LOOP STOPS TO IMPROVE ITSELF, AND IT IS A TURN LIKE ANY
+      OTHER — the agent is asked, and what it answers is what the NEXT session
+      is briefed with.
+
+      This is the whole difference between a run bounded by one agent's context
+      and one that outlives it. Until this prompt existed a reflection could
+      carry only what the AUTHOR had written down — the standing instructions a
+      `screen_rule` had fired — so a loop replaced its session and greeted the
+      replacement with the same milestone somebody wrote before any of the work
+      had been done. A run meant to carry on past one checkpoint could only
+      re-issue the first one for ever.
+
+      ⚠⚠ WHERE THE WORK SHOULD GO NEXT IS A JUDGEMENT ABOUT THE WORK, so the
+      only party that can make it is the agent that has been doing it. The
+      driver reads the answer back and hands it over; it never writes one.
+
+      ⚠⚠⚠ AND IT DOES NOT SPEND `max_turns`. A reflection turn is not judged —
+      `reflecting` does not pass through `judging` — so the budget still counts
+      the turns the agent spent on the WORK. What bounds reflections is
+      `reflect_every`, which is what makes their number a function of the
+      budget rather than a second unbounded cost.
+    -->
+    <data id="reflect_prompt" expr="''"/>
     <!--
       Sent once before the loop reports converged. NOT composed — it names
       nothing else in this datamodel — so it stays a plain literal, and a
@@ -584,6 +642,35 @@
                     standing +
                     'Do the next smallest thing that is verifiable, then report.' + '\n' +
                     done_instruction"/>
+      <!--
+        ⚠⚠⚠ THE REFLECTION'S OWN PROMPT, composed here for the reason the other
+        three are: it names `north_star`, `milestone` and `standing`, and a
+        reflection that asked about a milestone the run had already moved past
+        would collect an answer about the wrong work.
+
+        ⚠⚠⚠ THE LABELS ARE NAMED MID-SENTENCE AND NEVER OPEN A LINE. The peer
+        paints what it is given, so an instruction that began a line with
+        `NEXT MILESTONE:` would put a row on the screen that the driver's own
+        reader cannot tell from an answer. Written this way the echo carries the
+        label with words in front of it, which is the shape the reader rejects.
+        ⚠ It is a mitigation, not a proof — a terminal wraps where it likes —
+        and the driver's second rule (*discount what this loop itself said*) is
+        what actually decides. See `OuterLoop::proposed`.
+
+        ⚠⚠ NO TOOL IS ASKED FOR, deliberately: a reflection is a question about
+        work already done, and an agent that reaches for a tool here raises a
+        dialog in a state that cannot screen one (see `reflecting`'s own
+        comment). Asking for an answer from what it already knows is the cheapest
+        way to keep the turn inside the state that owns it.
+      -->
+      <assign location="reflect_prompt"
+              expr="'North star: ' + north_star + '\n' +
+                    'You have been working toward: ' + milestone + '\n' +
+                    standing +
+                    'Stop and decide what comes next, from what you have just done and what you now know. Answer from what you already have; do not use a tool.' + '\n' +
+                    'Reply with exactly two lines and nothing else. Open the first with the label ' + milestone_marker +
+                    ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
+                    ' and then what the next session should read first.'"/>
       <send event="prompt.start"/>
     </onentry>
     <transition event="prompt.sent" target="working"/>
@@ -819,11 +906,35 @@
   </state>
 
   <!--
-    Improve the loop's own setup from the record so far: the prompts, the
-    agent's base context, which MCP servers are worth loading, CLAUDE.md, the
-    memory index. Every one of those is a FILE the driver writes; none of them
-    takes effect until a session reads it, which is why this state's only exit
-    is a restart.
+    Improve the loop's own setup from the record so far: what the next milestone
+    is, what the next session should read, and the standing instructions this run
+    has been given. None of those takes effect until a session reads them, which
+    is why this state's only forward exit is a restart.
+
+    ⚠⚠⚠ IT IS A TURN, AND THE AGENT IS THE ONE ASKED. `reflect_prompt` goes into
+    the pane on entry — the same way `priming` sends the start prompt and
+    `closing` the end one — and the driver waits for that turn to end exactly as
+    it waits for a working one. What the agent writes back is what `restarting`
+    hands the replacement.
+
+    Until that existed the only thing a reflection could carry across a session
+    boundary was something the AUTHOR had written (a fired `screen_rule`'s text),
+    so a run's milestone was fixed for its whole life by whoever started it. The
+    shape of the fix is not that the driver became cleverer: it is that the party
+    who has been doing the work is now asked about it, because *where the work
+    should go next* is a judgement about the work and this driver cannot make one.
+
+    ⚠⚠ THE TURN IS NOT JUDGED, which is why there is no edge to `judging`. A
+    reflection is the loop asking about itself, not the agent making progress on
+    the milestone, so it does not spend `max_turns` and cannot converge a run.
+
+    ⚠⚠⚠ AND A DIALOG HERE WAKES SOMEBODY, where the same dialog during work is
+    screened. `screening` returns to `working` unconditionally, and this document
+    has no history state — so a reflection routed through it would resume the WORK
+    loop having silently abandoned the reflection, and the run would carry on with
+    the milestone nobody had updated. Waking a person is the honest answer until
+    the document can resume a screened state; the prompt asks for no tool
+    precisely to keep the case rare. ⚠ Registered as owed rather than hidden.
   -->
   <state id="reflecting">
     <onentry>
@@ -836,7 +947,13 @@
         judgement — for ever, having judged no further turn.
       -->
       <assign location="screened_carried" expr="screened"/>
-      <send event="reflect.begin"/>
+      <!--
+        ⚠ THE SEND `Owed` READS. `priming` and `closing` announce their prompts
+        the same way, and the driver's table keys those two on the STATE rather
+        than on the transition that reached it — which is what makes this one
+        correct however a run arrives here (the correctness edge or the budget).
+      -->
+      <send event="prompt.reflect"/>
     </onentry>
     <!--
       The driver rewrote the loop's parts and/or its environment; adopt them.
@@ -876,6 +993,26 @@
       <assign location="standing" expr="_event.data.standing"/>
       <send event="prompt.turn"/>
     </transition>
+    <!--
+      ⚠⚠⚠ THE REFLECTION TURN'S OTHER TWO ENDINGS, and they go where a turn that
+      nobody can carry on from has always gone.
+
+      A reflection is a turn, so it can be blocked by a dialog or interrupted by
+      a person exactly as a working turn can. Neither can be answered here: see
+      this state's own comment for why `screening` is not reachable from a
+      reflection, and a person typing in the pane is somebody the loop must not
+      prompt underneath. `awaiting_human` is what this document already says
+      happens when the run needs somebody, and both arrive there rather than
+      inventing a new ending.
+
+      ⚠ The reflection is LOST when either fires — the milestone stays what it
+      was and `turns_since_reflect` has already been cleared, so the run carries
+      on toward the old checkpoint and reflects again at the next budget point.
+      That is the safe direction: the alternative is adopting a milestone from a
+      turn that did not finish.
+    -->
+    <transition event="turn.blocked" target="awaiting_human"/>
+    <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
   </state>
