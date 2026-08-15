@@ -179,6 +179,33 @@
     <data id="done_marker" expr="'MILESTONE REACHED'"/>
 
     <!--
+      ⚠⚠⚠ AND WHAT THE AGENT SAYS WHEN THERE IS NOTHING LEFT TO DO AT ALL.
+
+      `done_marker` ends a MILESTONE; this ends the RUN. Until both existed a
+      reached milestone was the end of everything: `judging` sent a run that had
+      finished one step straight to `closing`, so a loop could only ever be as
+      long as its first checkpoint.
+
+      MEASURED, on the owner's own run: an agent asked to repay debt paid ONE
+      item, said `MILESTONE REACHED`, and the run converged after a single
+      working turn — judged straight into `closing`, and converged. The
+      request had been *"keep going until every debt is repaid"*, and no path
+      through this document could express it. There was nothing wrong with the
+      loop; the document simply had no edge from *this step is done* to *what is
+      the next one*.
+
+      ⚠⚠ TWO MARKERS AND NOT ONE, because they are two different claims a person
+      would want reported differently: *"the thing you asked for is done"* and
+      *"and there is no more of it"*. A run that converged on the first would end
+      whenever its agent finished anything.
+
+      ⚠ It is asked for in the REFLECTION and nowhere else. A working turn is
+      about the milestone in front of it; whether the whole journey is over is a
+      judgement about the journey, which is what a reflection is for.
+    -->
+    <data id="north_star_marker" expr="'NORTH STAR REACHED'"/>
+
+    <!--
       ⚠⚠⚠ THE TWO LABELS A REFLECTION'S ANSWER IS READ BACK THROUGH, and they are
       authored for `done_marker`'s reason: they are said to somebody's agent, in
       somebody's language, and the driver must never be the thing that writes
@@ -522,6 +549,32 @@
       on the turn straight after being told not to, which is the defect above.
     -->
     <data id="screened_carried" expr="0"/>
+    <!--
+      ⚠⚠⚠ WHY THIS REFLECTION WAS ASKED FOR, written by whichever `judge`
+      transition reached `reflecting`.
+
+      Three roads lead there and they are NOT the same question:
+
+        milestone     the agent said the checkpoint is reached, so the only
+                      thing left to settle is what the NEXT one is
+        instruction   a standing instruction fired that the prompts do not
+                      carry yet
+        budget        `reflect_every` came round
+
+      Registered as owed before it existed (*"a run cannot say WHY its session
+      was replaced … a person whose agent's session was just replaced has no way
+      to tell because you told it something from because eight turns went by"*),
+      and what forced it is that the three need DIFFERENT endings. A reflection
+      asked because the milestone is done, which then names no next milestone,
+      must END THE RUN: sending it back to `working` would ask an agent to reach
+      a checkpoint it has just reached, for ever. The other two go back to work,
+      because the work is not finished.
+
+      ⚠ It is read by the DRIVER, in Rust, and never by a `cond` here: `==` over
+      this datamodel is unverified (see `judged_rules`), and a guard that
+      compared strings would be the first place to find that out.
+    -->
+    <data id="reflect_reason" expr="''"/>
   </datamodel>
 
   <state id="idle">
@@ -670,7 +723,8 @@
                     'Stop and decide what comes next, from what you have just done and what you now know. Answer from what you already have; do not use a tool.' + '\n' +
                     'Reply with exactly two lines and nothing else. Open the first with the label ' + milestone_marker +
                     ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
-                    ' and then what the next session should read first.'"/>
+                    ' and then what the next session should read first.' + '\n' +
+                    'If the north star itself is fully reached and nothing is left to do, ignore both labels and make the last line of your reply exactly: ' + north_star_marker"/>
       <send event="prompt.start"/>
     </onentry>
     <transition event="prompt.sent" target="working"/>
@@ -875,7 +929,31 @@
     <onentry>
       <assign location="context" expr="_event.data.context"/>
     </onentry>
-    <transition event="judge" cond="_event.data.done" target="closing"/>
+    <!--
+      ⚠⚠⚠ THE MILESTONE IS REACHED, SO ASK WHAT THE NEXT ONE IS. This used to go
+      straight to `closing`, and that made a run exactly as long as its first
+      checkpoint: the owner's own debt-repayment loop paid ONE item, said the
+      marker, and converged after a single working turn — judged straight into
+      `closing` and out — against a request to keep going until every debt was
+      repaid.
+
+      A reflection is already the state that decides where the work goes next, so
+      *this step is done* and *the budget came round* now arrive at the same
+      place and differ only in what brought them. The run ends when the agent
+      says the NORTH STAR is reached, which `reflecting` asks for and nothing
+      else does.
+
+      ⚠⚠ WHAT IT COSTS, STATED: reaching a milestone now spends a reflection turn
+      before anything else happens, where it used to spend a closing one. A run
+      whose LAST turn reaches its milestone therefore reflects, restarts, and
+      then meets the budget guard below on the next judgement — one session
+      replacement for nothing. Accepted rather than guarded around, because the
+      alternative (testing the budget first) would report `exhausted` for a run
+      that had plainly reached what it was asked for.
+    -->
+    <transition event="judge" cond="_event.data.done" target="reflecting">
+      <assign location="reflect_reason" expr="'milestone'"/>
+    </transition>
     <transition event="judge" cond="turns &gt;= max_turns" target="exhausted"/>
     <!--
       ⚠⚠⚠ A STANDING INSTRUCTION HAS FIRED THAT THE PROMPTS DO NOT YET CARRY, so
@@ -896,8 +974,12 @@
       anywhere, and saying so here is cheaper than a comment that implies it is.
       The order is therefore for the reader, not for the machine.
     -->
-    <transition event="judge" cond="screened &gt; screened_carried" target="reflecting"/>
-    <transition event="judge" cond="turns_since_reflect &gt;= reflect_every" target="reflecting"/>
+    <transition event="judge" cond="screened &gt; screened_carried" target="reflecting">
+      <assign location="reflect_reason" expr="'instruction'"/>
+    </transition>
+    <transition event="judge" cond="turns_since_reflect &gt;= reflect_every" target="reflecting">
+      <assign location="reflect_reason" expr="'budget'"/>
+    </transition>
     <transition event="judge" target="working">
       <send event="prompt.turn"/>
     </transition>
@@ -1011,6 +1093,20 @@
       That is the safe direction: the alternative is adopting a milestone from a
       turn that did not finish.
     -->
+    <!--
+      ⚠⚠⚠ THE AGENT SAYS THERE IS NOTHING LEFT — the ONE way a run reaches its
+      closing report, and the only place `north_star_marker` is heard.
+
+      The reflection asks two questions in one prompt: *what is the next
+      checkpoint* and *is the whole thing finished*. This is the second answer,
+      and it is deliberately the ONLY route to `closing`: a run's account is
+      written once, about the whole run, rather than once per milestone.
+
+      ⚠ `north_star` is the one part a reflection may never rewrite (see
+      `reflect.applied`), which is what makes this answer meaningful — the agent
+      is reporting against a destination it could not have moved.
+    -->
+    <transition event="reflect.done" target="closing"/>
     <transition event="turn.blocked" target="awaiting_human"/>
     <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>

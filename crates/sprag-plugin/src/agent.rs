@@ -1810,9 +1810,21 @@ mod tests {
             .map(ToString::to_string)
             .unwrap_or_default();
         assert!(
-            said.contains("never took the prompt") && said.contains("nothing was submitted"),
+            said.contains("could not be read back off the pane")
+                && said.contains("nothing was submitted"),
             "the failure has to name the pane rather than the model, in the sentence a caller \
              reads: {said:?}",
+        );
+        // ⚠⚠⚠ AND IT MUST NOT OVER-CLAIM, which the sentence it replaced did. It promised the
+        // injections *"never appeared on it"*, and a live run met exactly the case where they HAD:
+        // the pane was too narrow to carry the confirmation on one row, so the text was on the
+        // screen and unfindable. A caller reading the old words looked at the wrong end of the
+        // system — measured, in wall-clock, by whoever read it.
+        assert!(
+            !said.contains("never appeared"),
+            "⚠⚠⚠ this refusal is about a READ-BACK that failed, and it must not claim to know the \
+             text is absent. A pane narrower than the needle answers this while plainly holding \
+             the prompt: {said:?}",
         );
         assert!(
             agent.captured().is_none(),

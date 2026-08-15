@@ -212,17 +212,13 @@ impl Live {
         // than inherited, so the measurement is of the program under test rather than of a mode
         // only this harness could produce. (`CommandBuilder` adds to the inherited environment; it
         // has no unset, and an empty value is falsy to everything that reads these.)
-        for nested in [
-            "CLAUDECODE",
-            "CLAUDE_CODE_ENTRYPOINT",
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDE_CODE_CHILD_SESSION",
-            "CLAUDE_CODE_MESSAGING_SOCKET",
-            "CLAUDE_CODE_MESSAGING_TOKEN",
-            "CLAUDE_CODE_EXECPATH",
-            "CLAUDE_PID",
-            "AI_AGENT",
-        ] {
+        //
+        // ⚠⚠⚠ THE LIST IS THE PRODUCT'S NOW ([`NESTED_AGENT_MARKERS`]), and it was this harness's
+        // alone for four rounds — which is why every gate here measured a correctly-launched agent
+        // while a real user's pane inherited the markers and its agent wrote no transcript. **A
+        // barrier only the harness clears is a barrier the product does not have.** Reading the
+        // same constant is what stops the two drifting again.
+        for nested in crate::NESTED_AGENT_MARKERS {
             command.env(nested, "");
         }
 

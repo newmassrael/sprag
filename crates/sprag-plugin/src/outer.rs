@@ -100,12 +100,49 @@ use crate::sm::ai_loop::AiLoopPolicy;
 /// A public answer a consumer cannot spell is not a public answer.
 pub use crate::sm::ai_loop::{AiLoopEvent, AiLoopState};
 
-/// How much of a long prompt has to be read back off the pane before it counts as delivered.
+/// How much of a long prompt has to be read back off the pane before it counts as delivered,
+/// **IN SCREEN COLUMNS**.
 ///
 /// [`Agent`](crate::agent::Agent)'s number, for its reason: an agent's prompt box is a BOX, so a
 /// prompt longer than the pane is wide arrives on screen in pieces and no single run of it is
 /// findable. This is the point at which a leading fragment stops being a coincidence.
+///
+/// # ⚠⚠⚠ Columns, not characters — and a live run is what said so
+///
+/// This was a count of `char`s, and the two are the same number only for narrow text. A Korean
+/// prompt's first forty characters occupy about **eighty columns**, so a needle that reads as *"forty
+/// wide"* demanded a row twice that wide — measured on a real loop against a real `claude`, whose
+/// first run died with `the pane never took the prompt: 3 injections put 2370 bytes on its
+/// pseudoterminal and none of them ever appeared on it` **while the prompt was plainly on the
+/// screen**. The pane was 38 columns; the needle needed 68.
+///
+/// ⚠ The refusal was also a LIE, and that cost more than the defect: the text HAD arrived, and what
+/// had failed was reading it back. [`Delivered::Unconfirmed`] is *"nothing here can confirm it"* and
+/// the sentence promised *"none of them ever appeared"*. See [`PaneError::NeverTook`].
 const CONFIRM_WHOLE_UP_TO: usize = 40;
+
+/// **THE LEADING RUN OF `text` THAT FITS IN [`CONFIRM_WHOLE_UP_TO`] SCREEN COLUMNS**, or [`None`]
+/// where the whole prompt already does and can be confirmed entire.
+///
+/// ⚠⚠ The width authority is [`sprag_vt::char_columns`] — the same one the emulator's print path
+/// classifies a glyph with — so this cannot disagree with what the pane will actually draw. A second
+/// width model here would be a second answer to *"how wide is this?"*, which is the shape this
+/// workspace keeps paying for.
+///
+/// ⚠ It never splits a `char`, so a wide glyph that would straddle the bound is left out entirely:
+/// a needle ending mid-glyph is not text any pane ever painted.
+fn confirmable(text: &str) -> Option<String> {
+    let mut columns = 0_usize;
+    let mut prefix = String::new();
+    for ch in text.chars() {
+        columns += sprag_vt::char_columns(ch);
+        if columns > CONFIRM_WHOLE_UP_TO {
+            return Some(prefix);
+        }
+        prefix.push(ch);
+    }
+    None
+}
 
 /// The contract `DoneWhen` a loop drives its inner session with, named once.
 ///
@@ -169,6 +206,27 @@ impl Authored {
 
 /// The datamodel variable holding the word the agent says when it is finished.
 const DONE_MARKER: &str = "done_marker";
+
+/// The datamodel variable holding the word the agent says when there is **nothing left at all** —
+/// asked for by the reflection, and the only thing that reaches `closing`.
+///
+/// ⚠ Two markers because they are two claims: `DONE_MARKER` ends a MILESTONE and this ends the RUN.
+/// A loop that converged on the first was exactly as long as its first checkpoint, measured on a
+/// real run that paid one debt and stopped.
+const NORTH_STAR_MARKER: &str = "north_star_marker";
+
+/// The datamodel variable saying **WHY this reflection was asked for** — written by whichever
+/// `judge` transition reached `reflecting`. See the document, and register item 179.
+const REFLECT_REASON: &str = "reflect_reason";
+
+/// [`REFLECT_REASON`]'s value when the agent has just SAID THE MILESTONE IS REACHED.
+///
+/// ⚠⚠ The one reason whose reflection may not go back to work. A reflection asked because the
+/// budget came round, or because a standing instruction fired, returns to a milestone that is still
+/// ahead of the run; this one returns to a milestone the agent has just declared BEHIND it — so a
+/// reflection that names no successor has to end the run rather than ask for it again. Spelled here
+/// and in the document, and the two are held together by `a_reached_milestone_asks_what_is_next`.
+const REACHED: &str = "milestone";
 
 /// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
 /// the prompt that asks for it — see [`OuterLoop::proposed`].
@@ -512,6 +570,10 @@ impl Owed {
                 | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
                 | AiLoopEvent::ReflectApplied
+                // ⚠ `reflecting --reflect.done-->` reaches `closing`, never here: it is the
+                // agent saying there is nothing left, and what `closing` owes is the END prompt,
+                // which this table answers by the STATE.
+                | AiLoopEvent::ReflectDone
                 | AiLoopEvent::PromptReflect
                 | AiLoopEvent::ScreenBegin
                 | AiLoopEvent::ScreenNone
@@ -2000,6 +2062,14 @@ impl OuterLoop {
         if ended != AiLoopEvent::TurnDone {
             return Ok(ended.into());
         }
+        // ⚠⚠⚠ ASKED FIRST, because it is the only answer that ends the RUN. The reflection puts two
+        // questions in one prompt — *what is the next checkpoint* and *is the whole thing finished*
+        // — and an agent that says the second has nothing to say to the first. Reading the milestone
+        // first would take a run whose agent had just declared itself finished and hand its
+        // replacement a checkpoint.
+        if self.said_marker(panes, NORTH_STAR_MARKER) {
+            return Ok(AiLoopEvent::ReflectDone.into());
+        }
         let (Some(standing), Some(next)) =
             (self.text_of(STANDING), self.text_of(Owed::Turn.variable()))
         else {
@@ -2015,6 +2085,19 @@ impl OuterLoop {
             return Ok(AiLoopEvent::Fail.into());
         };
         let decided = self.proposed(panes, MILESTONE_MARKER);
+        // ⚠⚠⚠ THE MILESTONE IS BEHIND THE RUN AND THE AGENT NAMED NO SUCCESSOR, so there is nothing
+        // left to ask for. Going back to `working` here is a loop asking an agent to reach a
+        // checkpoint it has just said it reached — for ever, and that livelock is what this reason
+        // exists to prevent (see [`REACHED`]). ⚠ It is the SAFE direction as well as the terminating
+        // one: the thing the caller asked for was met, so ending reports the truth, where continuing
+        // would report a budget running out on work nobody had left.
+        if decided.is_none()
+            && self
+                .text_of(REFLECT_REASON)
+                .is_some_and(|reason| reason == REACHED)
+        {
+            return Ok(AiLoopEvent::ReflectDone.into());
+        }
         // ⚠⚠ NOTHING NEW AND NOTHING LEARNED, so a restart would throw away an agent's whole
         // context having changed nothing — the document's own words, and the predicate is still
         // *"does what I am about to say already carry what I have learned?"*. ⚠ The tidied standing
@@ -2280,8 +2363,7 @@ impl OuterLoop {
             text,
             &Delivery {
                 // A prompt longer than the pane is wide arrives in pieces — see the constant.
-                confirm: (text.chars().count() > CONFIRM_WHOLE_UP_TO)
-                    .then(|| text.chars().take(CONFIRM_WHOLE_UP_TO).collect::<String>()),
+                confirm: confirmable(text),
                 then_press: vec![crate::access::KeyStroke::named("Enter")],
                 ..Delivery::new()
             },
@@ -2365,7 +2447,17 @@ impl OuterLoop {
     /// in: one more turn, never a convergence nobody earned.
     #[must_use]
     pub fn said_done(&self, panes: &dyn PaneAccess) -> bool {
-        let Some(marker) = self.text_of(DONE_MARKER) else {
+        self.said_marker(panes, DONE_MARKER)
+    }
+
+    /// Whether the agent said, IN THIS TURN, the word the datamodel holds under `variable`.
+    ///
+    /// [`said_done`](Self::said_done)'s whole rule, named once because a second marker arrived and
+    /// the two must be read identically: the run's convergence and its continuation would otherwise
+    /// rest on two subtly different notions of *the agent said it*. See `said_done` for the two
+    /// pieces of evidence (FRESH, and STANDING ALONE) and what each closes.
+    fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> bool {
+        let Some(marker) = self.text_of(variable) else {
             return false;
         };
         self.driving
@@ -2490,6 +2582,81 @@ mod tests {
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// ⚠⚠⚠ **THE CONFIRMATION NEEDLE IS MEASURED IN SCREEN COLUMNS, NOT IN CHARACTERS** — and a
+    /// live run against a real `claude` is what measured the difference.
+    ///
+    /// # ⚠⚠⚠ What this cost, in the exact words the product printed
+    ///
+    /// A loop was started on a real agent pane with a Korean brief. Its first run died at once:
+    ///
+    /// ```text
+    /// failed: the pane never took the prompt: 3 injections put 2370 bytes on its pseudoterminal
+    /// and none of them ever appeared on it, so nothing was submitted and no reply is this run's
+    /// ```
+    ///
+    /// **The prompt was plainly on the screen** — the pane's own capture ended
+    /// `❯ reached AND verified, make the last line of your reply exactly: / MILESTONE REACHED`.
+    /// The pane was 38 columns wide, and the needle — the prompt's first FORTY CHARACTERS, most of
+    /// them Korean — needed about SIXTY-EIGHT. No row of that pane could ever have carried it, so no
+    /// delivery to that pane could ever be confirmed, in any language whose glyphs are wide.
+    ///
+    /// [`CONFIRM_WHOLE_UP_TO`]'s own doc had always said what it meant (*"a prompt longer than the
+    /// pane is WIDE"*), and the code counted characters. For ASCII the two are the same number, which
+    /// is why every gate in this crate agreed with the defect.
+    ///
+    /// ⚠ **THE ASSERTION IS THE RATIO, NOT A LENGTH.** A gate demanding "twenty characters" would be
+    /// this test agreeing with an arithmetic I did in my head; what the product owes is that the two
+    /// needles OCCUPY THE SAME SCREEN, whatever they are made of.
+    #[test]
+    fn a_confirmation_needle_is_bounded_by_columns_so_a_wide_language_is_not_asked_for_twice_the_pane()
+     {
+        /// Wide glyphs, and a real sentence rather than one repeated syllable — a needle is a
+        /// prefix, and a fixture whose every character is identical cannot tell a prefix from a
+        /// coincidence.
+        const KOREAN: &str = "부채를 전부 상환한다 비용 무시하고 가장 장기적으로 올바른 방법으로 구현하고 테스트로 증명한다";
+        /// The same claim, in a language whose glyphs are one column.
+        const ASCII: &str =
+            "pay every debt, ignore the cost, build it the way that lasts and prove it with a test";
+
+        let wide =
+            confirmable(KOREAN).expect("a prompt longer than the bound is confirmed by part");
+        let narrow = confirmable(ASCII).expect("the same");
+        let columns = |text: &str| text.chars().map(sprag_vt::char_columns).sum::<usize>();
+
+        assert_eq!(
+            columns(&wide),
+            columns(&narrow),
+            "⚠⚠⚠ THE TWO NEEDLES MUST TAKE THE SAME AMOUNT OF SCREEN. What has to fit on one row of \
+             somebody's terminal is COLUMNS, so a needle counted in characters asks a Korean pane \
+             for twice the width it asks an English one for — measured live as a loop that could \
+             never confirm a delivery on a 38-column pane and reported that the pane had never \
+             taken a prompt it was visibly holding. Wide {wide:?} / narrow {narrow:?}",
+        );
+        assert!(
+            columns(&wide) <= CONFIRM_WHOLE_UP_TO,
+            "⚠⚠ and neither may exceed the bound: {} columns of {CONFIRM_WHOLE_UP_TO} in {wide:?}",
+            columns(&wide),
+        );
+        assert!(
+            wide.chars().count() < narrow.chars().count(),
+            "⚠ the control: a wide language must therefore get FEWER characters, or this gate would \
+             pass for a needle that counts neither — {} vs {}",
+            wide.chars().count(),
+            narrow.chars().count(),
+        );
+        assert!(
+            KOREAN.starts_with(wide.as_str()) && ASCII.starts_with(narrow.as_str()),
+            "⚠ and each must still be a LEADING run of what was typed, or it is not a read-back of \
+             anything",
+        );
+        assert_eq!(
+            confirmable("short enough"),
+            None,
+            "⚠ a prompt that already fits is confirmed WHOLE, which is the stronger evidence and \
+             what `Delivery::confirm`'s `None` means",
+        );
+    }
 
     /// **A REAL SCRIPT ENGINE THAT DISAGREES ABOUT ONE VARIABLE** — the witness this driver's
     /// refusals need, and the only thing that can produce them.

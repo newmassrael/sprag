@@ -1658,6 +1658,49 @@ fn history_limit_source() -> HistoryLimitSource {
 /// Singular, and distinct from the GUI's `SPRAG_GUI_PANES` (a pane COUNT read at start-up).
 pub const PANE_ENV_VAR: &str = "SPRAG_PANE";
 
+/// **THE VARIABLES THAT TELL AN AGENT IT IS NESTED INSIDE ANOTHER ONE**, blanked at every pane's
+/// birth — see [`pane_env_source`].
+///
+/// # ⚠⚠⚠ Why the product carries this, and what it cost that only a harness did
+///
+/// A daemon started from inside an agent session inherits that session's markers, and every pane it
+/// opens inherits them again. The child agent then believes it is a SUB-TASK of the one that
+/// launched the daemon: measured live, a `claude` opened in a sprag pane came up saying
+/// `⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker`, so it wrote **no
+/// transcript at all**. Nothing looked broken; the pane worked. What died silently was every reader
+/// of that transcript — `sprag_plugin::spend`, which is how a loop knows what its session has been
+/// charged to read, so an `ai_loop`'s `context` was `0` for ever and the one signal a restart policy
+/// could ever be argued from was gone.
+///
+/// ⚠⚠⚠ **THIS EXACT LIST ALREADY EXISTED IN THE LIVE-AGENT HARNESS**, with a comment saying the
+/// child *"must be the thing a person gets from a terminal"*. That is R379's rule for the third
+/// time in this workspace: **the harness was clearing a barrier the product was not**, so every gate
+/// measured a correctly-launched agent and no user ever got one. The harness now reads this.
+///
+/// ⚠⚠ **IT REACHES THE CASE `pane_args_source` CANNOT** — an agent a PERSON types at a shell prompt
+/// inside a pane. sprag never sees that argv, so nothing can be appended to it; the ENVIRONMENT is
+/// the one thing both births share.
+///
+/// ⚠ **BLANKED, NOT UNSET**, because `CommandBuilder` adds to the inherited environment and has no
+/// unset. Every reader of these treats an empty value as absent.
+///
+/// ⚠⚠ **A LIST WITH NO GLOB DECIDES ALONE**, and this one is deliberately NOT a `CLAUDE_CODE_*`
+/// prefix sweep: variables in that space also carry a user's own configuration (which model, which
+/// endpoint, how many retries), and blanking those would break the agent this exists to make work.
+/// The residue, stated: a nesting marker added by a future release is not covered until it is added
+/// here, and the symptom is the one measured above.
+pub const NESTED_AGENT_MARKERS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
+    "AI_AGENT",
+];
+
 /// The [`PaneEnvSource`] a DAEMON installs: every pane it births is told which pane it is
 /// ([`PANE_ENV_VAR`]) and where the daemon serving it listens
 /// (`SPRAG_HOST_RPC_SOCK`, named by [`HOST_SOCKET`](sprag_rpc::HOST_SOCKET) rather than respelled
@@ -1684,10 +1727,18 @@ pub fn pane_env_source(socket: &std::path::Path) -> PaneEnvSource {
     let socket = socket.to_string_lossy().into_owned();
     let address_var = sprag_rpc::HOST_SOCKET.path_env;
     Arc::new(move |id: PaneId| {
-        vec![
+        let mut env = vec![
             (PANE_ENV_VAR.to_owned(), id.0.to_string()),
             (address_var.to_owned(), socket.clone()),
-        ]
+        ];
+        // ⚠⚠⚠ A PANE IS A FRESH TERMINAL, NOT A SUB-TASK OF WHOEVER STARTED THE DAEMON — see
+        // [`NESTED_AGENT_MARKERS`], and the live measurement in its doc.
+        env.extend(
+            NESTED_AGENT_MARKERS
+                .iter()
+                .map(|marker| ((*marker).to_owned(), String::new())),
+        );
+        env
     })
 }
 
@@ -3702,7 +3753,15 @@ mod tests {
             Some("/run/sprag/host.sock"),
             "the address travels under the variable a client already overrides",
         );
-        assert_eq!(pane_7.len(), 2, "and nothing else is published");
+        assert_eq!(
+            pane_7.len(),
+            2 + NESTED_AGENT_MARKERS.len(),
+            "and nothing else is published: the rendezvous pair, and the nesting markers this \
+             birth BLANKS — see `NESTED_AGENT_MARKERS`. ⚠ This count used to be 2 and the third \
+             thing a pane is born with is not decoration: a daemon started inside an agent session \
+             handed every pane that session's markers, and the agent in it then wrote no \
+             transcript at all",
+        );
 
         // The identity moves with the pane while the address does not: one source serves every pane.
         assert_eq!(
@@ -3717,6 +3776,66 @@ mod tests {
 
     /// A host with no source installed spawns panes exactly as it did before the seam existed — the
     /// GUI's in-process host, which serves no host socket, is this case.
+    /// ⚠⚠⚠ **A PANE'S CHILD IS NOT A SUB-TASK OF WHOEVER STARTED THE DAEMON** — measured through a
+    /// real pseudoterminal, by asking the CHILD what it inherited.
+    ///
+    /// # ⚠⚠⚠ The live failure this exists for
+    ///
+    /// A daemon started from inside an agent session exports that session's nesting markers, and a
+    /// pane it opens inherits them. A real `claude` opened that way came up saying
+    /// `⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` and wrote **no
+    /// transcript**. Nothing was visibly broken — the agent worked, the pane worked — and every
+    /// reader of that transcript was dead: `sprag_plugin::spend` is how an `ai_loop` learns what its
+    /// session has been charged to read, so `context` was `0` for the life of the run.
+    ///
+    /// ⚠⚠⚠ **AND THE LIVE-AGENT HARNESS HAD BEEN BLANKING THESE ALL ALONG**, which is why no gate
+    /// ever saw it: the harness cleared a barrier the product did not have. This one asks the
+    /// product.
+    ///
+    /// ⚠⚠ **THE CHILD IS THE WITNESS, NOT THE SOURCE.** `pane_env_source` returning the right pairs
+    /// proves the intent; only the process on the far side of the pty proves the pairs were
+    /// APPLIED. The test process sets the marker for real, so what the child reports is an
+    /// inheritance that genuinely happened.
+    #[test]
+    fn a_pane_is_born_without_the_markers_that_would_make_its_agent_a_nested_one() {
+        /// The marker whose absence a real agent named in its own words.
+        const MARKER: &str = "CLAUDE_CODE_CHILD_SESSION";
+        /// What the child prints when it inherited one — distinctive, so a blank screen cannot pass
+        /// for a blanked variable.
+        const INHERITED: &str = "INHERITED";
+
+        assert!(
+            NESTED_AGENT_MARKERS.contains(&MARKER),
+            "⚠ the control: this gate is about a marker the product actually claims to blank",
+        );
+        // ⚠ SET FOR REAL, and this is what makes the claim an inheritance rather than an
+        // arrangement: `CommandBuilder` starts from THIS process's environment, so a variable that
+        // is not here cannot be inherited and the gate would pass against a host that does nothing.
+        // SAFETY: single-threaded at this point in the test; the child reads it through `fork`.
+        unsafe { std::env::set_var(MARKER, INHERITED) };
+
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(format!("printf %s \"${{{MARKER}:-blanked}}\""));
+        command.env("TERM", "dumb");
+
+        let host = Host::new((40, 6))
+            .with_pane_env(pane_env_source(std::path::Path::new("/run/sprag/h.sock")));
+        let id = host
+            .spawn(command, "sh".to_owned(), 40, 6, PaneBirthHooks::default())
+            .expect("spawn a pane");
+        let said = printed_row(&host, id);
+        unsafe { std::env::remove_var(MARKER) };
+
+        assert_eq!(
+            said, "blanked",
+            "⚠⚠⚠ the pane's child must NOT be told it is nested inside another agent session. It \
+             read {said:?}, which is what this process was started with — so an agent opened in \
+             this pane believes it is a sub-task, writes no transcript, and every reader of that \
+             transcript is silently answering about nothing",
+        );
+    }
+
     #[test]
     fn a_host_without_a_pane_environment_publishes_nothing() {
         let host = Host::new((40, 6));

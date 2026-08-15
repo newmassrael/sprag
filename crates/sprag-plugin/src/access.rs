@@ -469,9 +469,10 @@ impl std::fmt::Display for PaneError {
             Self::NeverTook { attempts, written } => {
                 write!(
                     f,
-                    "the pane never took the prompt: {attempts} injections put {written} bytes on \
-                     its pseudoterminal and none of them ever appeared on it, so nothing was \
-                     submitted and no reply is this run's"
+                    "the prompt could not be read back off the pane: {attempts} injections put \
+                     {written} bytes on its pseudoterminal and none of them could be FOUND on it, \
+                     so nothing was submitted and no reply is this run's. A pane too narrow to \
+                     carry the confirmation on one row answers this even when the text arrived"
                 )
             }
             Self::Undrivable(why) => {

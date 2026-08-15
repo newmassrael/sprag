@@ -1899,6 +1899,160 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **A REACHED MILESTONE ASKS WHAT IS NEXT — IT DOES NOT END THE RUN** — and the run ends
+    /// only when the agent says the NORTH STAR is reached.
+    ///
+    /// # ⚠⚠⚠ The live run that made this necessary
+    ///
+    /// The owner started a real debt-repayment loop against a real `claude`: *"keep going until
+    /// every debt is repaid"*. The agent paid ONE item, wrote a live-gated feature, committed it,
+    /// said `MILESTONE REACHED` — and the run **converged after a single working turn**, because
+    /// `judging`'s first guard sent a reached milestone straight to `closing`. Nothing was broken.
+    /// **The document simply had no edge from *this step is done* to *what is the next one*, so a
+    /// run could only ever be as long as its first checkpoint.**
+    ///
+    /// # ⚠⚠ The three things this asserts, and why the third is the sharp one
+    ///
+    /// 1. **A REACHED MILESTONE REFLECTS.** `Judging --Judge--> Reflecting`, not `Closing`.
+    /// 2. **AND THE RUN CARRIES ON INTO THE NEXT ONE** — the agent names it, the session is
+    ///    replaced, and the fresh one is briefed with what the agent chose.
+    /// 3. ⚠⚠⚠ **AND A RUN WHOSE AGENT HAS NOTHING FURTHER STILL ENDS.** This is the half that is
+    ///    easy to lose: a reflection asked because the milestone was reached, which names no
+    ///    successor, must not go back to `working` — that asks an agent to reach a checkpoint it has
+    ///    just reached, for ever. **The livelock is real and this gate is what stands between the
+    ///    feature and it.**
+    #[test]
+    fn a_reached_milestone_asks_what_is_next() {
+        /// What the agent decides to do after the first checkpoint falls.
+        const NEXT: &str = "the second debt, chosen after the first was paid";
+        /// And where its replacement should start reading.
+        const READ_NEXT: &str = "the register entry for it";
+
+        // ⚠ ONE working prompt and it says the marker — so the FIRST judgement is `done`, which is
+        // the exact arrangement that used to converge a run before it had done anything else.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(1, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            // ⚠ THE BUDGET IS OFF (equal pair), so the reflection below is caused by the MILESTONE
+            // being reached and by nothing else — a gate that left `reflect_every` small could not
+            // tell this edge from the budget one.
+            &brief_for(40),
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut replaced = None;
+        while replaced.is_none() && walked.len() < 60 {
+            let before = loops.state();
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a reached milestone must be readable");
+            if let Some(note) = step.note.clone() {
+                walked.push(note);
+            }
+            if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
+                replaced = Some(loops.driving().expect("a loop mid-run drives its pane"));
+            }
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+        let authored = loops.authored().expect("the datamodel still answers");
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert!(
+            !walked.iter().any(|note| note.contains("--> Closing")),
+            "⚠⚠⚠ A REACHED MILESTONE MUST NOT END THE RUN. This is the whole change: a loop asked to \
+             keep going until everything is done paid ONE item, said the marker, and converged — \
+             the document had no edge from *this step is done* to *what is next*. Walked {walked:?}",
+        );
+        assert!(
+            walked
+                .iter()
+                .any(|note| note == "Judging --Judge--> Reflecting"),
+            "⚠⚠⚠ and it must go to the state that DECIDES what comes next, which is the one already \
+             built for it. Walked {walked:?}",
+        );
+        assert!(
+            replaced.is_some_and(|fresh| fresh != pane),
+            "⚠⚠ and the run must carry on into the next milestone with a fresh session, or *keep \
+             going* means nothing. Walked {walked:?}",
+        );
+        assert!(
+            authored.start.contains(NEXT),
+            "⚠⚠⚠ and the replacement is briefed with the milestone THE AGENT named after finishing \
+             the first — which is what makes a run longer than one checkpoint: {:?}",
+            authored.start,
+        );
+    }
+
+    /// ⚠⚠⚠ **AND A RUN WHOSE AGENT HAS NOTHING FURTHER STILL ENDS** — the other half of
+    /// [`a_reached_milestone_asks_what_is_next`], and the one that stands between this feature and a
+    /// livelock.
+    ///
+    /// A reflection asked because the milestone was reached, whose agent names no successor, cannot
+    /// go back to `working`: the milestone it would be sent to work on is the one just reported
+    /// reached, so the agent says the marker again, and the loop turns over for ever having done
+    /// nothing. **Measured as the shape it would take**: every gate here that drives
+    /// [`standin_agent`](crate::testing::standin_agent) — a peer that says the marker and has no
+    /// opinion about what is next — would have run to its budget instead of converging.
+    ///
+    /// ⚠ The peer is the ORDINARY one, deliberately. What this asserts is that the commonest agent
+    /// in this crate still reaches `converged`, so the feature above cannot have been bought by
+    /// making every simple run hang.
+    #[test]
+    fn a_reflection_with_no_successor_after_a_reached_milestone_ends_the_run() {
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 60,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⚠⚠⚠ THE LIVELOCK. A reflection that follows a REACHED milestone and finds no successor \
+             must end the run — sent back to `working` it asks an agent to reach a checkpoint it \
+             has just reached, and the run turns over until its budget. Walked {walk:?}",
+        );
+        assert!(
+            walk.iter()
+                .any(|note| note == "Reflecting --ReflectDone--> Closing"),
+            "⚠⚠ and it must end THROUGH the reflection, which is now the only route to a closing \
+             report: a run's account is written once, about the whole run. Walked {walk:?}",
+        );
+    }
+
     /// ⚠⚠⚠ **A QUESTION NOBODY WROTE A RULE FOR PAUSES THE RUN, AND A PERSON'S ANSWER RESUMES IT** —
     /// `awaiting_human`, the last state of `ai_loop.scxml` this driver had not built.
     ///
@@ -2369,8 +2523,14 @@ mod tests {
     /// driver must send with an event, asked of the engine because getting it wrong is silent.
     ///
     /// `judging`'s first transition is `<transition event="judge" cond="_event.data.done"
-    /// target="closing"/>`, so *did the agent say it was done* travels as event DATA rather than
+    /// target="reflecting"/>`, so *did the agent say it was done* travels as event DATA rather than
     /// as a datamodel variable. Every other event on this machine's ingress surface is bare.
+    ///
+    /// ⚠⚠ **THE TARGET MOVED AND THE CLAIM DID NOT.** It used to be `closing`, and a reached
+    /// milestone ended the run — measured against a real agent as a debt-repayment loop that paid
+    /// ONE item and converged. What this gate is about is the GUARD, not the destination: that
+    /// `_event.data.done` is read at all, and that `false` does not take the finished road. Both
+    /// readings are pinned below, in the machine's own terms.
     ///
     /// The driver's first attempt sent `{"done": false}` as the event data and the machine went to
     /// `closing` anyway — a loop that converges on the turn its agent has NOT finished, reporting
@@ -2400,8 +2560,10 @@ mod tests {
 
         assert_eq!(
             judged("{\"done\": true}"),
-            AiLoopState::Closing,
-            "an agent that said the milestone was reached sends the loop to its closing report",
+            AiLoopState::Reflecting,
+            "an agent that said the milestone was reached sends the loop to the state that decides \
+             what the NEXT one is — not to its closing report, which would make every run exactly \
+             as long as its first checkpoint",
         );
         assert_eq!(
             judged("{\"done\": false}"),
