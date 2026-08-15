@@ -347,7 +347,10 @@ pub(crate) mod grammar {
         // the daemon's `orchestrator` form. That is now twice this pin has moved for a reason no
         // window takes part in, which is exactly the rate the register argued from — and exactly
         // why it is one number rather than three hand-kept copies.
-        34,
+        // ⚠⚠ R394 is the THIRD, one edit again, and the first whose cause is an ANSWER rather than
+        // an argument: an eleventh `asking.why` word (`unwitnessed`), which no window publishes,
+        // serves or reads. Three for three — the rate this pin's own argument was built from.
+        35,
         &[
             (
                 "the command palette",

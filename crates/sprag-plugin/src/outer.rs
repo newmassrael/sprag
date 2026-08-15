@@ -820,7 +820,8 @@ pub enum Noticed {
     /// document and not the barrier's"*, and that sentence outlived its own truth twice: R382 gave
     /// the loop a caller's consents, and R384 built `screening`.
     ///
-    /// ⚠ So a run's report can now name any of the ten reasons, and the last authority to look at
+    /// ⚠ So a run's report can now name any reason the vocabulary has, and the last authority to
+    /// look at
     /// the dialog is the one whose word heads it — `screening`'s, when a run got that far, with
     /// what the consents said kept underneath in free text
     /// ([`Unanswered::unscreened`](crate::consent::Unanswered::unscreened)).
@@ -2168,6 +2169,12 @@ impl OuterLoop {
             // ⚠⚠⚠ RE-HEADED, NOT REPLACED. A caller reading `no_rule` alone would be sent to write
             // a standing instruction about a dialog whose own `Yes` a consent could have taken,
             // which is the commoner case by far.
+            //
+            // ⚠⚠ AND IT CANNOT BURY A `Refusal::Unwitnessed` UNDER *"write a rule"*, which would be
+            // the re-heading doing to that arm what that arm exists to stop. Not by a check here —
+            // by the two facts either side: the barrier only builds one when the RUN has ended, and
+            // this state is reached on the pump AFTER the one that noticed, which the Driver's
+            // loop-top pre-emption never lets happen (`driver_ends_cancelled_without_running_a_step`).
             self.noticed = Some(Noticed::Asking(Unanswered::unscreened(unanswered)));
             return Ok(AiLoopEvent::ScreenNone.into());
         };
@@ -2176,7 +2183,11 @@ impl OuterLoop {
         let (when, said) = (rule.when().to_owned(), rule.text().to_owned());
 
         match crate::screen::refuse(panes, self.driving.pane, &question, run)? {
-            // ⚠⚠ NOTHING WAS TYPED — see the paragraph above, and `Refusal::NotDismissed`.
+            // ⚠⚠ NOTHING WAS TYPED — see the paragraph above. TWO refusals reach here and the
+            // silence is the same for both: `Refusal::NotDismissed`, where the dialog was watched
+            // for the whole bound and did not go, and `Refusal::Unwitnessed`, where the run ended
+            // inside that bound and nobody looked. What differs is the sentence a reader gets, and
+            // it travels inside the refusal rather than being decided here.
             Refused::StillUp(unanswered) => {
                 self.noticed = Some(Noticed::Asking(unanswered));
                 Ok(AiLoopEvent::ScreenNone.into())

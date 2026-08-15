@@ -900,7 +900,39 @@ impl ScopeAsk {
 ///   beside it.
 ///
 ///   ⚠ NOT on `pipe`, whose destination has turns too. A scope cut, named rather than implied.
-pub const WIRE_PROTOCOL: u32 = 34;
+/// * **35 — A RUN THAT WAS STOPPED WITH A KEY ALREADY SENT SAYS SO, INSTEAD OF BLAMING THE PEER.**
+///   An ELEVENTH `asking.why` word, `unwitnessed`, and no new key, argument or form.
+///
+///   ⚠⚠⚠ **WHAT EARNED IT, MEASURED BEFORE ANY OF IT WAS BUILT.** Two acts in this daemon press a
+///   key at a dialog and then wait to see what became of it: the answering act types the option a
+///   consent authorised, and the screening act presses the key that refuses a tool call. Each ended
+///   its wait with a word about the PEER — `not_taken` (*"the run typed the option and did not see
+///   the peer take it"*) and `not_dismissed` (*"the key went in and the dialog stayed"*) — and each
+///   said it just as readily when the wait had not finished at all, because the RUN was cancelled
+///   or out of time inside it. Against a fixture peer that commits the option it is given, the run
+///   typed the digit, saw the marker land, sent the Enter and was stopped: the peer's own screen
+///   read `TOOK 2 VIA 10` and the run reported **`not_taken`**. A supervisor acting on that hands a
+///   person a pane whose dialog is already answered, and a tally of refusals counts an agent's
+///   fault where there was none.
+///
+///   ⚠⚠ **AN ADDED ANSWER WORD, ONE OF THIS WIRE'S FOUR NAMED BUMP CAUSES**, and reachable by
+///   every client that predates this build: `may_answer` has been on the injecting forms since
+///   version 27 and `must_answer` is the whole content of the `answer` form, so an old caller whose
+///   run meets its own `max_duration_ms` mid-answer receives this word today. That is what
+///   separates it from version 34's `no_rule` and `not_dismissed`, which cost nothing because only
+///   `ai_loop` — a plugin no older client can select — can produce them.
+///
+///   ⚠ **THE SAFE BEHAVIOUR IS UNCHANGED, deliberately.** The run still stops, still reports the
+///   question, still charges every byte it really sent, and still types nothing further. What moves
+///   is the SENTENCE: *read the pane, and give the run longer* rather than *your peer ignored it*.
+///   A word rather than free text by this wire's standing test — the remedy differs from every
+///   other arm's, and a caller branches on it.
+///
+///   ⚠ It is the sibling of `Delivered::Unwitnessed`, which the round before this one built for the
+///   submit keystroke and spent no number on, because a delivery is a Rust API this wire does not
+///   publish. **The rule the two share: a run that stopped may report what it did, never what the
+///   other side did about it.**
+pub const WIRE_PROTOCOL: u32 = 35;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

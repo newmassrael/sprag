@@ -1146,8 +1146,9 @@ impl PluginGrammar {
     ///
     /// # ⚠⚠⚠ The case a blocked run could not tell apart, and got wrong for half its callers
     ///
-    /// Every refusal the answering contract can report ends its sentence the same way — **hand the
-    /// pane to a person** — and until this key existed a run acted on that by STOPPING. That is the
+    /// Every refusal the answering contract can report leaves a QUESTION on a pane with nothing
+    /// this run may do about it — most of them saying so outright (**hand the pane to a person**) —
+    /// and until this key existed a run acted on that by STOPPING. That is the
     /// only honest thing to do when the pane is on a screen nobody is looking at, and the wrong
     /// thing when the run IS the inner session of a loop somebody is watching: the pane is on their
     /// desk, they read every turn as it happens, and they can answer the dialog with their own
@@ -7497,7 +7498,13 @@ mod tests {
             // ⚠ `screen_permissions` was NEVER on this wire, so its removal from the loop document
             // moves nothing here. It is recorded because a reader looking for it should find out
             // that a measurement removed the need for it rather than that somebody forgot it.
-            34,
+            // ⚠⚠⚠ R394 IS THE SEVENTH RE-STAMP THIS PIN EARNED ITSELF, and the first since R384
+            // whose word DOES cost the number: an ELEVENTH refusal, `unwitnessed`. R384's escape
+            // does not reach it — `no_rule` and `not_dismissed` are free because only `ai_loop`
+            // produces them, and this word is produced by the ANSWERING act, which every injecting
+            // form has carried since version 27. An old client's run that meets its own
+            // `max_duration_ms` inside an answer's wait receives it today.
+            35,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7591,6 +7598,15 @@ mod tests {
                 // key that refuses a call went in, and the dialog stayed, so **nothing was typed**.
                 "refusal:no_rule",
                 "refusal:not_dismissed",
+                // ⚠⚠⚠ R394: the eleventh, and the only one in this vocabulary about THIS RUN rather
+                // than about the caller's clauses, the loop's rules, the peer or a person. The two
+                // arms that TYPE were being said about a run that never looked: `not_taken` and
+                // `not_dismissed` are earned by a bounded wait that watched the screen not move,
+                // and a run cancelled inside that wait earned neither. Measured — the fixture peer
+                // had committed the authorised option (`TOOK 2 VIA 10`) while the run reported
+                // `not_taken`. Its remedy is its own, which is this pin's test for a word rather
+                // than a sentence: read the pane, or give the run longer.
+                "refusal:unwitnessed",
             ],
         );
 
@@ -7799,7 +7815,11 @@ mod tests {
             // a place it was not. **And this pin's sibling caught the draft that published them
             // there without serving them** — the second time that has happened to this exact
             // argument, so the word is servable ALONE and the bound beside it is optional.
-            34,
+            // ⚠ R394: re-stamped with every published REQUEST vocabulary unchanged. What moved is
+            // an ANSWER's value space (an eleventh `why` word, `unwitnessed`), and this pin walks
+            // the words a CALLER may send — a refusal is not one of them. The pin that owns that
+            // half went red by name first, which is the division of labour these four exist for.
+            35,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -8038,7 +8058,10 @@ mod tests {
             // running. That is what it was built for: an added argument is invisible to the
             // surface pin and to the value-space pins, and the only other thing that would have
             // noticed is a hand-written count.
-            34,
+            // ⚠ R394: re-stamped with every argument SHAPE unchanged. No form gained, lost or
+            // re-typed an argument — the round added a WORD to what a blocked run answers with, and
+            // a caller sends nothing to receive it.
+            35,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -8566,7 +8589,11 @@ mod tests {
         // `done_when` and `turn_within_ms` are ARGUMENTS inside a form served at an address that
         // did not move — this pin's named blind spot, covered by the shape pin, which again went
         // red by name first.
-        34,
+        // ⚠ R394: re-stamped with the SURFACE unchanged. `unwitnessed` added no address and no
+        // action — a blocked run reports it through the `asking.why` key it has had since 27, on
+        // the forms it already served. This pin walking addresses is why it is silent, and the
+        // answer-vocabulary pin going red is why the number moved.
+        35,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

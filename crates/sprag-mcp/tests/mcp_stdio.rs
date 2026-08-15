@@ -5462,7 +5462,7 @@ fn an_agent_answers_a_blocked_peer_in_the_agents_own_words() {
         ambiguous.contains("blocked")
             && ambiguous.contains("more than one option carries the authorised answer"),
         "⚠⚠⚠ two options carry the authorised words, so NOTHING is answered and the run says which \
-         of the six reasons it was — a reader who cannot tell `my needle matched nothing` from `it \
+         reason it was — a reader who cannot tell `my needle matched nothing` from `it \
          matched twice` cannot fix either. ⚠ Asserted as the SENTENCE and not the wire word \
          `ambiguous`, because the sentence is what this mouth owes a reader: a reason with no \
          remedy in it is a diagnostic: {ambiguous}",

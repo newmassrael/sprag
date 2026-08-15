@@ -438,6 +438,35 @@ pub enum Refusal {
     /// left, and the file the agent had asked permission to write **was written**. So a screening
     /// act that cannot prove the question is gone stops here rather than saying its piece.
     NotDismissed,
+    /// ⚠⚠⚠ **A KEY WENT IN AND THE RUN ENDED BEFORE ANYTHING COULD SAY WHAT THE PEER DID WITH IT**
+    /// — cancelled, or out of time, with the keystroke already on the pseudoterminal.
+    ///
+    /// # ⚠⚠⚠ Why the two arms above may not be said about a run nobody watched
+    ///
+    /// [`NotTaken`](Self::NotTaken) and [`NotDismissed`](Self::NotDismissed) are facts about the
+    /// PEER: *the option was typed and it went on asking*, *the refusing key went in and the dialog
+    /// stayed*. Both are earned by WATCHING — a bounded wait that saw the screen not move. A run
+    /// stopped inside that wait earned neither, and until this arm existed it published one of them
+    /// anyway.
+    ///
+    /// It is not a wording preference. Measured, on the fixture peer that commits the option it is
+    /// given: the run typed the digit, saw the marker land, sent the Enter, and was cancelled — and
+    /// the peer's own screen read `TOOK 2 VIA 10` while the run reported `not_taken`. A reader
+    /// acting on that hands a person a pane whose dialog is already answered, and a supervisor
+    /// counting refusals counts an agent's fault where there was none.
+    ///
+    /// ⚠ [`Delivered::Unwitnessed`](crate::deliver::Delivered::Unwitnessed) is the same finding one
+    /// keystroke earlier, and this arm is its sibling rather than its copy: that one is about a
+    /// prompt's submit and lives on a delivery, this one is about a dialog's answer and lives in
+    /// the vocabulary a blocked run reports with. The rule they share is the one worth carrying —
+    /// **a run that stopped may say what it did, never what the other side did about it.**
+    ///
+    /// ⚠⚠ **THE REMEDY IS NOT A PERSON, AND THAT IS WHY IT IS A WORD.** Every arm above ends by
+    /// wanting a clause written or somebody fetched; this one ends by wanting the pane READ, because
+    /// the run that would have read it was stopped. Give the run longer, or look at the pane — and
+    /// in either case do not type at it on the strength of this report, since the last key may well
+    /// have landed.
+    Unwitnessed,
 }
 
 impl Refusal {
@@ -456,7 +485,7 @@ impl Refusal {
     };
 
     /// Every arm, so the published vocabulary and the readers below are one list.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Unreadable,
         Self::NotTaken,
         Self::NoConsent,
@@ -467,6 +496,7 @@ impl Refusal {
         Self::Unattended,
         Self::NoRule,
         Self::NotDismissed,
+        Self::Unwitnessed,
     ];
 
     /// This reason's word on the wire.
@@ -483,6 +513,7 @@ impl Refusal {
             Self::Unattended => "unattended",
             Self::NoRule => "no_rule",
             Self::NotDismissed => "not_dismissed",
+            Self::Unwitnessed => "unwitnessed",
         }
     }
 
@@ -541,6 +572,11 @@ impl Refusal {
                 "a standing instruction fired and the key that refuses a call did not take the \
                  dialog off the screen, so NOTHING was typed — the run stopped rather than \
                  submitting into a question that is still up, and the remedy is a person"
+            }
+            Self::Unwitnessed => {
+                "this run pressed a key at the dialog and then ended — cancelled, or out of time — \
+                 so nothing here knows what the peer did with it; READ THE PANE before driving it \
+                 again, and give the run longer if it is to see its own answers land"
             }
         }
     }
@@ -649,6 +685,27 @@ impl Unanswered {
     #[must_use]
     pub fn not_taken(question: Question, bytes: u64) -> Self {
         Self::refused_after(question, Refusal::NotTaken, bytes)
+    }
+
+    /// **A KEY THIS RUN PRESSED WHOSE LANDING NOBODY IS IN A POSITION TO REPORT** —
+    /// [`Refusal::Unwitnessed`], carrying what it cost.
+    ///
+    /// # ⚠⚠⚠ Why the two acts that type share ONE constructor here
+    ///
+    /// [`not_taken`](Self::not_taken) and the [`Refusal::NotDismissed`] case are two contracts —
+    /// an option a consent authorised, a key the product owns — and each has its own arm because
+    /// their remedies differ. **A run that was stopped has no such difference to report.** What it
+    /// knows is identical in both: a keystroke went out, the wait that would have judged it never
+    /// finished, and the pane is in a state this run cannot describe. Two spellings of that would
+    /// be two sentences nothing could tell apart, and the second one would be written by whoever
+    /// added the third act that types.
+    ///
+    /// ⚠ The BYTES travel, [`not_taken`](Self::not_taken)'s reason exactly and one step harder: a
+    /// run charging nothing for keys it really pressed because it was cancelled would under-report
+    /// its spend at precisely the moment a supervisor is auditing why it stopped.
+    #[must_use]
+    pub fn unwitnessed(question: Question, bytes: u64) -> Self {
+        Self::refused_after(question, Refusal::Unwitnessed, bytes)
     }
 
     /// **A REFUSAL THAT COST KEYSTROKES** — [`not_taken`](Self::not_taken) generalised, for the
@@ -763,8 +820,10 @@ impl Unanswered {
         self.why
     }
 
-    /// PTY bytes this step spent — non-zero only for the two arms that TYPED before giving up,
-    /// [`Refusal::NotTaken`] and [`Refusal::NotDismissed`].
+    /// PTY bytes this step spent — non-zero only for the arms a key went out under:
+    /// [`Refusal::NotTaken`], [`Refusal::NotDismissed`] and [`Refusal::Unwitnessed`], plus whatever
+    /// one of those carried into an arm that re-heads it ([`unattended`](Self::unattended),
+    /// [`unscreened`](Self::unscreened)).
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.bytes
@@ -1205,19 +1264,23 @@ mod tests {
         );
         assert_eq!(
             Refusal::ALL.len(),
-            10,
-            "the ten reasons a blocked peer goes unanswered: this host could not READ the menu, \
+            11,
+            "the eleven reasons a blocked peer goes unanswered: this host could not READ the menu, \
              the answer was typed and NOT TAKEN, the caller consented to NOTHING, the consent is \
              about ANOTHER question, the question does not OFFER the answer, SEVERAL options \
              carry it, the caller's own consents CONTRADICT each other about it, a person was \
-             expected and NOBODY CAME, NO STANDING RULE claims the dialog, or one did and the key \
-             that refuses a call DID NOT DISMISS it. \
+             expected and NOBODY CAME, NO STANDING RULE claims the dialog, one did and the key \
+             that refuses a call DID NOT DISMISS it, or a key went out and THE RUN ENDED before \
+             anything could say what became of it. \
              ⚠ `unattended` is the only one about a human rather than about a clause, and the only \
              one a run reaches having already waited — see `Refusal::Unattended`. \
-             ⚠⚠ The last two are the only ones about the loop DOCUMENT and the AGENT rather than \
-             about the call: `no_rule` is answered by editing `screen_rules`, and `not_dismissed` \
-             is answered by nobody, because the key it names is the product's — which is why that \
-             one's whole value is that NOTHING WAS TYPED",
+             ⚠⚠ `no_rule` and `not_dismissed` are the only ones about the loop DOCUMENT and the \
+             AGENT rather than about the call: `no_rule` is answered by editing `screen_rules`, \
+             and `not_dismissed` is answered by nobody, because the key it names is the \
+             product's — which is why that one's whole value is that NOTHING WAS TYPED. \
+             ⚠⚠⚠ `unwitnessed` is the only one about THIS RUN rather than about anything on the \
+             other side of the pane, and it exists because the two arms that type used to be said \
+             about a peer nobody watched — see `Refusal::Unwitnessed`",
         );
     }
 

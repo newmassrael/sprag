@@ -265,10 +265,11 @@ pub const DEFAULT_READY_TIMEOUT: Duration = crate::run::DEFAULT_REPLY_TIMEOUT;
 ///
 /// # ⚠⚠⚠ Why a blocked run had exactly one behaviour, and why that was wrong for half its callers
 ///
-/// Every refusal this contract can reach ends its sentence the same way: **hand the pane to a
-/// person** ([`Refusal::describe`]). Until this existed the run acted on that instruction by
-/// STOPPING, which is the only honest thing to do when the pane is on a screen nobody is looking
-/// at — and the wrong thing when somebody is looking at it right now.
+/// Every refusal this contract can reach leaves a QUESTION on a pane with nothing this run may do
+/// about it, and most of them say so outright: **hand the pane to a person**
+/// ([`Refusal::describe`]). Until this existed the run acted on that by STOPPING, which is the only
+/// honest thing to do when the pane is on a screen nobody is looking at — and the wrong thing when
+/// somebody is looking at it right now.
 ///
 /// The two cases are not degrees of one another, and no run could tell them apart:
 ///
@@ -1166,15 +1167,22 @@ impl Readiness {
     /// # ⚠⚠⚠ Why EVERY refusal reaches this, and not a chosen few
     ///
     /// The first draft waited only on the arms that read like a missing clause. That was a rule
-    /// with no author: [`Refusal::describe`] gives all seven the same closing instruction —
-    /// **hand the pane to a person** — and this is the caller stating that a person is there to
-    /// hand it to. Picking a subset would mean deciding that some of those sentences meant it less,
-    /// which nothing in the type says and no caller could predict.
+    /// with no author: every refusal this act can build leaves a QUESTION on a pane with nothing
+    /// left to do about it — which is the caller's cue, and this is the caller stating that a
+    /// person is there to take it. Picking a subset would mean deciding that some of those
+    /// sentences meant it less, which nothing in the type says and no caller could predict.
     ///
     /// ⚠ [`Refusal::NotTaken`] is the arm that proves it rather than the exception it looks like: a
     /// consent was typed and the peer went on asking, so the pane is sitting on a dialog in a state
     /// nobody understands — the case where a human is most obviously wanted, and the one a subset
     /// rule would most likely have left out.
+    ///
+    /// ⚠⚠ **AND THE RULE IS NOT *"they all ask for a person"***, which is how it read while every
+    /// arm happened to. [`Refusal::Unwitnessed`]'s remedy is to READ THE PANE and give the run
+    /// longer, and it reaches this door like the rest — where the wait is over before it starts,
+    /// since a run stopped is exactly what that arm reports. A subset rule keyed on the sentence
+    /// would have had to grow a case for it; keyed on *there is a question and this run is done
+    /// with it*, nothing here moved.
     ///
     /// # ⚠⚠ What ends the wait, and why it is the QUESTION and not the STATE
     ///
@@ -1319,11 +1327,13 @@ impl Readiness {
                 Arrival::NotYet => false,
             }
         });
-        // ⚠ A run ending underneath does not un-type the key, and it does not answer the question
-        // either. Both endings are the same sentence to whoever reads the run — see
-        // [`Refusal::NotTaken`] — and both carry what was spent.
+        // ⚠⚠⚠ A run ending underneath does not un-type the key, and it does not learn what became
+        // of it either. The two endings are NOT the same sentence, and saying they were is the
+        // defect this arm was split out of: `not_taken` is a fact about the PEER — it went on
+        // asking while this run watched — and a run stopped inside the wait watched nothing. See
+        // [`Refusal::Unwitnessed`]. Both carry what was spent.
         if settled == Waited::Stopped {
-            return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
+            return Ok(Reached::Asking(Unanswered::unwitnessed(question, bytes)));
         }
 
         // ⚠⚠⚠ THE SECOND KEY, and it is the OTHER one — sent only where the same question is still
@@ -1376,9 +1386,13 @@ impl Readiness {
                 how,
                 bytes,
             })),
-            Waited::Stopped | Waited::TimedOut => {
-                Ok(Reached::Asking(Unanswered::not_taken(question, bytes)))
-            }
+            // ⚠⚠ THE TWO UNSATISFIED ENDINGS SAY DIFFERENT THINGS, and this is the wait where that
+            // matters most: the keys are all sent, so the only question left is what the PEER did,
+            // and a stopped run is the one reader that cannot answer it. Measured — the fixture
+            // peer had already committed the authorised option (`TOOK 2 VIA 10`) when the run this
+            // arm reports on was cancelled.
+            Waited::TimedOut => Ok(Reached::Asking(Unanswered::not_taken(question, bytes))),
+            Waited::Stopped => Ok(Reached::Asking(Unanswered::unwitnessed(question, bytes))),
         }
     }
 
@@ -3060,6 +3074,101 @@ mod tests {
              here would have committed option 1 — the caller authorised the other one: {screen:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A RUN THAT WAS STOPPED INSIDE THE ANSWER'S WAIT SAYS NOBODY LOOKED**, and must not
+    /// say that the peer refused the key.
+    ///
+    /// The measurement is the pair, and the second half is what makes it a defect rather than a
+    /// wording preference: this peer TAKES the option — its own screen says `TOOK 2` — and the
+    /// answering act was cancelled before it could read that. [`Refusal::NotTaken`]'s own sentence
+    /// is *"the run typed the option the consent authorised and did not see the peer take it"*, so
+    /// reporting it here publishes a claim about the AGENT that is not merely unestablished but
+    /// false, and sends a reader to hand a pane to a person over a dialog that is already gone.
+    ///
+    /// ⚠ [`Delivered::Unwitnessed`](crate::deliver::Delivered::Unwitnessed) is the same finding one
+    /// keystroke earlier, and this is the sweep that asked *where else does this crate press a key
+    /// and then report on it*.
+    ///
+    /// ⚠ REVERT-PROOF: return `not_taken` from either stopped arm of `answer` and this reads the
+    /// word the pane disproves.
+    #[test]
+    fn a_run_stopped_inside_the_answers_wait_does_not_blame_the_peer_for_it() {
+        // ⚠ THE ESCALATION'S WAIT, which is the later of the two places this act gives up: the
+        // marker peer moves its highlight on the digit and commits on the Enter, so the run types
+        // the number, sees the marker arrive, and sends the Enter — and THAT is the key this
+        // double's cancel rides in on.
+        let stopping = crate::testing::StopsAtTheKey::nth(asking_peer("marker").0, 2);
+        let pane = stopping.pane.pane_ids()[0];
+        let began = Instant::now();
+        let reached = answering(Some(consent_to("do not ask again")))
+            .reached(&stopping, pane, &stopping.run())
+            .expect("a run ending underneath is not an error");
+        let took = began.elapsed();
+
+        let Reached::Asking(unanswered) = reached else {
+            panic!("the run ended before anything could confirm the answer: {reached:?}");
+        };
+        assert_eq!(
+            unanswered.why(),
+            Refusal::Unwitnessed,
+            "⚠⚠⚠ the run was cancelled with two keys already on the pseudoterminal, so what it \
+             knows is that NOBODY WATCHED — `not_taken` is a claim about the peer that this run \
+             never made an observation about",
+        );
+        assert_eq!(
+            unanswered.bytes(),
+            2,
+            "⚠ and both keys are still charged: a run under a cost ceiling that dropped what it \
+             spent because it was cancelled would under-report its own spend",
+        );
+        assert!(
+            unanswered.question().is_some(),
+            "and the question travels, so a reader knows WHICH dialog is in an unknown state",
+        );
+        assert!(
+            took < ANSWER_WITHIN,
+            "⚠ it gives up INSIDE the wait rather than riding out the answering bound: {took:?}",
+        );
+
+        let screen = screen_showing(&stopping.pane, pane, "TOOK");
+        assert!(
+            screen.contains("TOOK 2 VIA 10"),
+            "⚠⚠⚠ AND THE PEER TOOK IT. That is what makes `not_taken` false here rather than \
+             merely unproven — the option the caller authorised was chosen, by the Enter, and the \
+             run that had just sent it was stopped before it could look: {screen:?}",
+        );
+        stopping.pane.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **AND AT THE FIRST KEY TOO** — the earlier of the two places the answering act gives up,
+    /// staged against a peer that really does ignore everything.
+    ///
+    /// The pair with [`an_answer_the_peer_ignores_is_reported_rather_than_confirmed_anyway`]:
+    /// identical peer, identical consent, one key typed in both — and the two runs differ only in
+    /// whether the run survived the wait that followed. A product that answered `not_taken` to both
+    /// would be telling a reader the same thing about a peer it watched for four seconds and about
+    /// a peer it never looked at once.
+    #[test]
+    fn the_first_keys_wait_reports_the_stop_as_its_own_ending() {
+        let stopping = crate::testing::StopsAtTheKey::nth(asking_peer("deaf").0, 1);
+        let pane = stopping.pane.pane_ids()[0];
+        let reached = answering(Some(consent_to("do not ask again")))
+            .reached(&stopping, pane, &stopping.run())
+            .expect("a run ending underneath is not an error");
+        let Reached::Asking(unanswered) = reached else {
+            panic!("nothing was answered: {reached:?}");
+        };
+        assert_eq!(unanswered.why(), Refusal::Unwitnessed);
+        assert_eq!(unanswered.bytes(), 1, "the digit, and nothing after it");
+        let screen = screen_showing(&stopping.pane, pane, "SAW");
+        assert!(
+            screen.contains("SAW 50"),
+            "⚠ the digit really did reach the peer, which is what separates this from a run that \
+             stopped before it typed — that one is `Reached::RunEnded` and charges nothing: \
+             {screen:?}",
+        );
+        stopping.pane.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠⚠ **A PEER THAT IGNORES THE ENTER ITS OWN MARKER JUSTIFIED IS STILL ANSWERED** — the arm an

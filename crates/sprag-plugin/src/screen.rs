@@ -310,18 +310,27 @@ pub(crate) fn refuse(
         left_the_question(panes, pane, question)
     }) {
         Waited::Ready => Ok(Refused::Gone { bytes }),
-        // ⚠ A run ending underneath does not un-press the key, and it does not get the redirect
-        // said either. Both endings are the same sentence to whoever reads the run, and both carry
-        // what was spent.
-        Waited::TimedOut | Waited::Stopped => Ok(Refused::StillUp(Unanswered::refused_after(
+        // ⚠ The dialog was watched for the whole bound and did not go: that is a fact about the
+        // AGENT, and the arm that says so.
+        Waited::TimedOut => Ok(Refused::StillUp(Unanswered::refused_after(
             question.clone(),
             Refusal::NotDismissed,
+            bytes,
+        ))),
+        // ⚠⚠⚠ A run ending underneath does not un-press the key, and it does not watch the dialog
+        // either — so it may not report that the dialog stayed. The SAFE half is identical (this
+        // is still `StillUp`, and nothing is typed after it, because a question that may be up
+        // reads the next keystroke as an answer to itself); what differs is the sentence, and
+        // `not_dismissed` about an agent nobody looked at is this crate's favourite defect. See
+        // [`Refusal::Unwitnessed`].
+        Waited::Stopped => Ok(Refused::StillUp(Unanswered::unwitnessed(
+            question.clone(),
             bytes,
         ))),
     }
 }
 
-/// What [`refuse`] did — and, when the dialog would not go, the run's report about it.
+/// What [`refuse`] did — and, when the dialog was not PROVEN gone, the run's report about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refused {
     /// The call is turned down and the question is off the screen. **Nothing has been said yet.**
@@ -329,8 +338,13 @@ pub(crate) enum Refused {
         /// What the refusing key cost.
         bytes: u64,
     },
-    /// ⚠⚠ The key went in and the dialog is still there, so **nothing was typed**. See
-    /// [`Refusal::NotDismissed`].
+    /// ⚠⚠ The key went in and this run cannot show the dialog has gone, so **nothing was typed**.
+    ///
+    /// ⚠ TWO refusals arrive here and they are not the same claim: [`Refusal::NotDismissed`] is a
+    /// dialog watched for the whole bound that did not go — a fact about the AGENT — and
+    /// [`Refusal::Unwitnessed`] is a run that ended inside that bound, which establishes nothing
+    /// about the agent at all. The SILENCE is identical for both, because a question that may
+    /// still be up reads the next keystroke as an answer to itself; only the sentence differs.
     StillUp(Unanswered),
     /// ⚠⚠⚠ **THE DIALOG HAD ALREADY GONE, SO NOTHING WAS PRESSED AT ALL** — not a refusal, and not
     /// a screening either.
@@ -470,6 +484,52 @@ mod tests {
              person was typing into the composer",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A RUN STOPPED AFTER THE REFUSING KEY SAYS NOBODY LOOKED**, and must not say the
+    /// dialog stayed up.
+    ///
+    /// [`Refusal::NotDismissed`] is a fact about the AGENT — *a rule fired, [`REFUSES`] went in,
+    /// and the dialog is still there* — and its whole value is that it licenses NOTHING further,
+    /// because a question still on the screen reads the next keystroke as an answer to itself. A
+    /// run cancelled inside that wait has established none of it: the key is on the
+    /// pseudoterminal and nobody read the screen afterwards.
+    ///
+    /// ⚠ The SAFE half is unchanged and asserted below — nothing is said either way, which is what
+    /// the caller acts on. What changes is the sentence a person reads, and it is the difference
+    /// between *your agent ignored the key* and *this run ended holding a key it never saw land*.
+    ///
+    /// ⚠ REVERT-PROOF: fold the stopped arm back in with the timed-out one and this reads
+    /// `not_dismissed` about an agent nobody watched.
+    #[test]
+    fn a_run_stopped_after_the_refusing_key_does_not_blame_the_agent_for_it() {
+        let stopping = crate::testing::StopsAtTheKey::nth(crate::testing::asking_peer("deaf").0, 1);
+        let pane = stopping.pane.pane_ids()[0];
+        let question = crate::readiness::peer_asking(&stopping.pane, pane)
+            .flatten()
+            .expect("the fixture's peer is showing a menu the shipping parser reads");
+
+        let refused = refuse(&stopping, pane, &question, &stopping.run())
+            .expect("a run ending underneath is not an error");
+        let Refused::StillUp(unanswered) = refused else {
+            panic!("the run ended before the dialog could be proven gone: {refused:?}");
+        };
+        assert_eq!(
+            unanswered.why(),
+            Refusal::Unwitnessed,
+            "⚠⚠⚠ the Escape is on the pseudoterminal and this run never looked again, so what it \
+             knows is that nobody watched — `not_dismissed` is a claim about the agent",
+        );
+        assert_eq!(
+            unanswered.bytes(),
+            1,
+            "⚠ and the key is still charged, whichever ending the run met",
+        );
+        assert!(
+            !unanswered.explain().is_empty(),
+            "and the report still names the dialog left in an unknown state",
+        );
+        stopping.pane.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠ **THE KEY THIS ACT PRESSES IS ONE THIS BUILD CAN ACTUALLY SEND** — asked of the shipping

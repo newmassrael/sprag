@@ -8991,7 +8991,7 @@ fn the_cli_answers_a_blocked_agent_in_the_agents_own_words() {
         ambiguous
             .stdout
             .contains("more than one option carries the authorised answer"),
-        "⚠⚠⚠ and it says WHICH of the six reasons it was, as the sentence that names the remedy — \
+        "⚠⚠⚠ and it says WHICH reason it was, as the sentence that names the remedy — \
          a person who cannot tell `my words matched nothing` from `they matched twice` cannot fix \
          either: {:?}",
         ambiguous.stdout,

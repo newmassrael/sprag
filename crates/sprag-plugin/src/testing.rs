@@ -53,6 +53,113 @@ pub(crate) const STANDIN_READS_TTY: &str = "</dev/tty";
 /// ALREADY exited is a perfectly good outcome — the fixture wants it dead, not killed by this line.
 pub(crate) const REAP_THE_STANDIN: &str = "kill $! 2>/dev/null; wait $! 2>/dev/null;";
 
+/// **A PANE THAT ENDS THE RUN AT THE KEYSTROKE IT IS ASKED TO WRITE** — the double for a run
+/// cancelled with a key already on the pseudoterminal.
+///
+/// # ⚠⚠⚠ Why the cancel is tied to the KEYSTROKE and not to a clock
+///
+/// What every act that types is claiming afterwards is *the key went in and then the peer did
+/// something*. The dangerous case is the one where the second half never happened, and a fixture
+/// that cancels on a thread after a sleep stages it only by luck: on a loaded box the flag can land
+/// before the injection, and then the gate is about a run that typed nothing — a different claim,
+/// passing under the same name, and one every act here already reports correctly.
+///
+/// Hanging the flag on the write makes the order a fact of the double rather than of the scheduler.
+/// It is [`crate::deliver`]'s `cancel_on_submit` (R393) said about a pane a real pty is behind.
+///
+/// ⚠ `at` counts injections, so a gate can stop a run inside the FIRST wait (the evidence for the
+/// key just sent) or inside a LATER one (the wait after an escalation) — the two places an
+/// answering act has to give up, and they report different things about different keys.
+pub(crate) struct StopsAtTheKey {
+    /// The real pane. Everything but [`PaneAccess::inject`] is this, untouched.
+    pub(crate) pane: WorkspacePaneAccess,
+    /// The run's own cancel flag — hand [`crate::run::RunContext::new`] a clone of it.
+    pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// WHICH injection ends the run, counting from one.
+    pub(crate) at: usize,
+    seen: std::sync::atomic::AtomicUsize,
+}
+
+impl StopsAtTheKey {
+    /// `pane`, wired to end its run once `at` keystrokes have been written to it.
+    pub(crate) fn nth(pane: WorkspacePaneAccess, at: usize) -> Self {
+        Self {
+            pane,
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            at,
+            seen: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// A context whose run this pane can end — the other half of the pair.
+    pub(crate) fn run(&self) -> crate::run::RunContext {
+        crate::run::RunContext::new(Arc::clone(&self.cancel))
+    }
+}
+
+impl PaneAccess for StopsAtTheKey {
+    fn pane_ids(&self) -> Vec<PaneId> {
+        self.pane.pane_ids()
+    }
+    fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+        self.pane.pane_collapsed(id)
+    }
+    fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+        self.pane.pane_rows(id)
+    }
+    fn pane_eof(&self, id: PaneId) -> Option<bool> {
+        self.pane.pane_eof(id)
+    }
+    fn pane_full_text(&self, id: PaneId) -> Option<String> {
+        self.pane.pane_full_text(id)
+    }
+    fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+        self.pane.pane_full_lines(id)
+    }
+    /// ⚠ THE KEY GOES OUT UNCONDITIONALLY. A double that stopped writing once its own flag was up
+    /// would be withholding the very keystroke the gates above assert reached the peer, so the
+    /// flag is a consequence of the write and never a guard on it.
+    fn inject(
+        &self,
+        id: PaneId,
+        keys: &[crate::access::KeyStroke],
+    ) -> Result<crate::access::Written, crate::access::PaneError> {
+        let written = self.pane.inject(id, keys)?;
+        if self.seen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1 >= self.at {
+            self.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(written)
+    }
+    fn lifecycle(&self) -> Option<&dyn crate::access::PaneLifecycle> {
+        self.pane.lifecycle()
+    }
+    fn raw_capture(&self) -> Option<&dyn crate::access::PaneRawCapture> {
+        self.pane.raw_capture()
+    }
+    fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+        self.pane.supervision()
+    }
+    fn input_echo(&self) -> Option<&dyn crate::access::PaneInputEcho> {
+        self.pane.input_echo()
+    }
+    fn terminal_modes(&self) -> Option<&dyn crate::access::PaneTerminalModes> {
+        self.pane.terminal_modes()
+    }
+    fn foreground_job(&self) -> Option<&dyn crate::access::PaneForegroundJob> {
+        self.pane.foreground_job()
+    }
+    fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+        self.pane.output_lines()
+    }
+    fn job_control(&self) -> Option<&dyn crate::access::PaneJobControl> {
+        self.pane.job_control()
+    }
+    fn hands(&self) -> Option<&dyn crate::access::PaneHands> {
+        self.pane.hands()
+    }
+}
+
 /// Wait (bounded) for `marker` to appear on `pane`, so a run below starts against a peer that is
 /// already up.
 ///
