@@ -44,7 +44,9 @@ use sprag_terminal::PaneId;
 use crate::access::{PaneAccess, PaneError};
 use crate::consent::Unanswered;
 use crate::driver::Ceiling;
-use crate::outer::{AiLoopSpec, AiLoopState, Brief, Briefed, Noticed, OuterLoop, Pumped};
+use crate::outer::{
+    AiLoopEvent, AiLoopSpec, AiLoopState, Brief, Briefed, Noticed, OuterLoop, Pumped,
+};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::Reached;
 use crate::run::RunContext;
@@ -209,6 +211,36 @@ impl AiLoop {
     #[must_use]
     pub fn screened(&self) -> Option<i64> {
         self.inner.screened()
+    }
+
+    /// **WHAT THE MACHINE ACTUALLY DID**, in the journal's own words — and nothing it did not do.
+    ///
+    /// # ⚠⚠⚠ A LOOK IS NOT A STEP, AND THIS USED TO WRITE IT DOWN AS ONE
+    ///
+    /// Every pass through the driver produced `{from} --{raised}--> {to}`. That is the right
+    /// sentence for a transition and a FALSE one for `Null`, which is the sentinel
+    /// [`OuterLoop`]'s `watch` answers when nothing happened — `advance`
+    /// returns on it **before touching the machine**, so `from` and `to` are the same state and no
+    /// transition exists. The journal printed it in the SHAPE OF A TRANSITION anyway, so a walk of
+    /// thirteen entries read as thirteen steps when the machine had moved NINE times and been
+    /// LOOKED AT four.
+    ///
+    /// ⚠⚠⚠ **IT MISLED A READER WHO WAS PAYING ATTENTION.** This round's supervisor read those
+    /// lines as progress and reported them to the owner as progress; the owner asked whether that
+    /// was a real state or an invention, and the honest answer was that the product had invented
+    /// it. **A journal that renders a non-event as an event is not a record — it is a second,
+    /// wrong account of what the machine is.**
+    ///
+    /// ⚠⚠ The DOCUMENT is the single source of truth for which states and transitions exist.
+    /// `null` is not one of its events — there is no `<transition event="null">` anywhere in
+    /// `ai_loop.scxml` — it is W3C SCXML's eventless sentinel, which the driver uses to say *I
+    /// looked and there was nothing to tell you*. So that is what gets written down.
+    fn walked(from: AiLoopState, raised: AiLoopEvent, to: AiLoopState) -> String {
+        if raised == AiLoopEvent::Null {
+            format!("{from:?}: looked, nothing had happened")
+        } else {
+            format!("{from:?} --{raised:?}--> {to:?}")
+        }
     }
 
     /// Whether `state` is one of the document's five finals.
@@ -464,7 +496,7 @@ impl Plugin for AiLoop {
                     )
                     .noting(note));
                 }
-                let note = format!("{from:?} --{raised:?}--> {to:?}");
+                let note = Self::walked(from, raised, to);
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
                 } else {
@@ -2099,6 +2131,62 @@ mod tests {
              for two lines writes a paragraph first, and the row it settled on is the one below: \
              {:?}",
             authored.start,
+        );
+    }
+
+    /// ⚠⚠⚠ **A LOOK THAT FOUND NOTHING IS NOT A TRANSITION, AND THE JOURNAL MAY NOT SAY IT WAS.**
+    ///
+    /// # ⚠⚠⚠ The document is the single source of truth, and the journal was contradicting it
+    ///
+    /// `null` is not an event of `ai_loop.scxml` — there is no `<transition event="null">` in it.
+    /// It is the sentinel [`OuterLoop`](crate::outer::OuterLoop)'s `watch` answers when a pass over
+    /// the pane found nothing, and `advance` returns on it **before touching the machine**. So the
+    /// machine did not move, no transition fired, and there is nothing of the DOCUMENT's to report.
+    ///
+    /// The journal reported it anyway, as `Working --Null--> Working`, which is the exact shape it
+    /// uses for a real transition. **Measured cost: this round's supervisor read a run's thirteen
+    /// journal entries as thirteen steps and told the owner so.** Nine were transitions; four were
+    /// looks. The owner asked whether that state was real or invented, and the honest answer was
+    /// that the product had invented it.
+    ///
+    /// ⚠⚠ **THE ASSERTION IS ON THE SHAPE, NOT ON THE WORDING.** What must never happen again is a
+    /// non-event wearing a transition's arrow — so the gate demands the arrow's ABSENCE, and leaves
+    /// whoever rewrites the sentence free to say it better.
+    #[test]
+    fn a_look_that_found_nothing_is_not_written_down_as_a_step() {
+        let looked = AiLoop::walked(
+            AiLoopState::Working,
+            AiLoopEvent::Null,
+            AiLoopState::Working,
+        );
+        assert!(
+            !looked.contains("-->"),
+            "⚠⚠⚠ THE MACHINE DID NOT MOVE, so the journal must not draw the arrow it draws for a \
+             transition. `null` is not an event this document has; the driver returns on it before \
+             the machine is touched. A reader — human or the run's own supervisor — counts arrows: \
+             {looked:?}",
+        );
+        assert!(
+            !looked.contains("Null"),
+            "⚠⚠ and it must not name the sentinel as though it were one of the document's events, \
+             which is what sent a reader looking for it in the scxml: {looked:?}",
+        );
+        assert!(
+            looked.contains("Working"),
+            "⚠ it must still say WHERE the loop was, or a run that is stuck somewhere is \
+             indistinguishable from one that is stuck somewhere else: {looked:?}",
+        );
+
+        // ── THE CONTROL: a real transition still draws the arrow ──
+        let moved = AiLoop::walked(
+            AiLoopState::Judging,
+            AiLoopEvent::Judge,
+            AiLoopState::Reflecting,
+        );
+        assert_eq!(
+            moved, "Judging --Judge--> Reflecting",
+            "⚠⚠⚠ and the fix must not have been *stop drawing arrows*. A transition the document \
+             really took is the thing this journal exists to record",
         );
     }
 
