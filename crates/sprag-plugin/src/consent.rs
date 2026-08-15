@@ -848,6 +848,29 @@ impl Unanswered {
             None => self.why.describe().to_owned(),
         }
     }
+
+    /// **THE PUBLISHED WORD AND THE WHOLE SENTENCE**, for a reader who has only this one line.
+    ///
+    /// # ⚠⚠ Why the word is here and not left to [`explain`](Self::explain)
+    ///
+    /// [`Refusal::describe`] is prose about a REMEDY and deliberately never spells its own arm:
+    /// *"a standing instruction fired and the key that refuses a call did not take the dialog off
+    /// the screen"* is what a person acts on, and it contains no `not_dismissed` for anything to
+    /// match on. That is right where the refusal also travels as a VALUE — the four plugins that
+    /// wrap `explain` all publish the [`Unanswered`] itself in their verdict, so the arm reaches a
+    /// caller structurally and the note owes only the sentence.
+    ///
+    /// ⚠⚠⚠ **A JOURNAL LINE HAS NO SUCH SECOND CHANNEL.** A step that walks `screen.none` reports
+    /// `Verdict::Continue` — `awaiting_human` is not final — so the line IS the publication, and a
+    /// reader scanning a run's walk for *which of these three stopped it* has nothing to scan for
+    /// unless the word is in it. See [`AiLoop::walked`](crate::ai_loop::AiLoop), register item 240.
+    ///
+    /// ⚠ [`Refusal::wire_str`] is the authority for the word, so a vocabulary that grows or is
+    /// respelled reaches this line in the compile that changes it.
+    #[must_use]
+    pub fn noted(&self) -> String {
+        format!("{}: {}", self.why.wire_str(), self.explain())
+    }
 }
 
 /// HOW an authorised option was taken — the three keystroke shapes, each provable at the moment it

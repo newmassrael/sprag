@@ -756,6 +756,31 @@ pub enum Pumped {
         /// [`Cost::Bytes`](crate::plugin::Cost::Bytes), so the same `max_cost` ceiling that bounds
         /// every other byte-relay run bounds a loop, and a run's published spend is real.
         spent: u64,
+        /// **THE REFUSAL THIS PASS ARRIVED AT** — [`None`] for a pass that reached none, and for
+        /// one that merely went on holding the refusal it began with.
+        ///
+        /// # ⚠⚠⚠ Why a pump answers this when [`Noticed`] is already readable
+        ///
+        /// [`OuterLoop::noticed`] is a LEVEL: *what is this loop holding now*. A journal is a
+        /// record of EDGES, and the two are different questions the moment one refusal outlives
+        /// several steps. Register item 240 is what the difference costs:
+        /// `Screening --ScreenNone--> AwaitingHuman` was written identically for a dialog no rule
+        /// claimed, for an agent that ignored the refusing key, and for a run that ended holding
+        /// that key — three findings with three different remedies, and a walk that named none of
+        /// them.
+        ///
+        /// A note composed from the level instead would be worse than silence: the notice is
+        /// cleared at the next PROMPT, not when a person answers the dialog, so
+        /// `AwaitingHuman --TurnDone--> Judging` — the edge a person's answer causes — would carry
+        /// a refusal that is no longer true of anything.
+        ///
+        /// ⚠⚠ **COMPUTED AT THE ONE FUNNEL, by comparing what the loop held before the state's act
+        /// with what it holds after.** Every act this driver performs runs inside
+        /// [`pump`](OuterLoop::pump), so there is no list of *which states publish a refusal* to
+        /// keep in step with the document — a state that grows one is carried the round it grows
+        /// it. ⚠ Two identical refusals in a row are one finding and are reported once, which is
+        /// what stops a paused run writing its reason into every poll of its own wait.
+        found: Option<crate::consent::Unanswered>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -1576,6 +1601,10 @@ impl OuterLoop {
         if self.machine.is_in_final_state() {
             return Ok(Pumped::Ended(from));
         }
+        // ⚠⚠⚠ TAKEN BEFORE THE ACT, so what this pass reports is what it ARRIVED AT rather than
+        // what it happens to be holding — see [`Pumped::Moved`]'s `found`, which is register item
+        // 240's answer and the reason this snapshot is at the funnel rather than in any one state.
+        let held = self.asking_now().cloned();
         let raised: Raise = match from {
             // Nothing has happened yet. Starting the loop is the caller's act — but the transition
             // it causes DELIVERS THE START PROMPT, so the pane has to be ready first.
@@ -1718,12 +1747,28 @@ impl OuterLoop {
         // data is the driver's way of telling the machine a fact it could not read for itself.
         let event = raised.event;
         let (to, spent) = self.advance(panes, run, raised)?;
+        // ⚠ AFTER `advance` AND NOT BEFORE IT: a transition that delivers a prompt CLEARS the
+        // notice, and a pass that ends holding nothing arrived at nothing.
+        let found = match self.asking_now() {
+            Some(now) if held.as_ref() != Some(now) => Some(now.clone()),
+            _ => None,
+        };
         Ok(Pumped::Moved {
             from,
             raised: event,
             to,
             spent,
+            found,
         })
+    }
+
+    /// **THE REFUSAL THIS LOOP IS HOLDING**, or [`None`] when its notice is anything else — the one
+    /// reader [`pump`](Self::pump) compares across an act.
+    fn asking_now(&self) -> Option<&crate::consent::Unanswered> {
+        match &self.noticed {
+            Some(Noticed::Asking(unanswered)) => Some(unanswered),
+            _ => None,
+        }
     }
 
     /// The pane this loop is driving **NOW** — which is not the pane it was started over, once a
@@ -3723,6 +3768,10 @@ mod tests {
                 raised: AiLoopEvent::Start,
                 to: AiLoopState::Failed,
                 spent: 0,
+                // ⚠ A DATAMODEL THAT STOPPED ANSWERING IS `Noticed::Undrivable`, not a refusal
+                // about somebody's dialog — so this pass arrived at none, and the journal line for
+                // it carries no reason beyond the edge itself.
+                found: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
              own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
@@ -4109,8 +4158,18 @@ mod tests {
                     raised,
                     to,
                     spent,
+                    found,
                 } => {
                     spent_total += spent;
+                    // ⚠ A HAPPY PATH ARRIVES AT NO REFUSAL, and this is where that stops being an
+                    // assumption: a pass of this walk that found one would mean the peer had
+                    // stopped to ask, which is a different run from the one converging below.
+                    assert_eq!(
+                        found, None,
+                        "⚠⚠ {from:?} --{raised:?}--> {to:?} arrived at a refusal, so this is no \
+                         longer the unobstructed run the assertions below are about. Walked \
+                         {walked:?}",
+                    );
                     walked.push((from, raised, to));
                 }
                 Pumped::Unbuilt(state) => panic!(

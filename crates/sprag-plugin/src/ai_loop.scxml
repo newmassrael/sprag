@@ -927,6 +927,13 @@
       left to do about it*; WHICH refusals satisfy that is `Unanswered`'s
       business and `Refusal::ALL` is the only list of them. A count written here
       is a count nothing keeps in step.
+
+      ⚠⚠ AND *THE DRIVER'S OWN REPORT* IS THE JOURNAL LINE, which is where that
+      first sentence only became true. The step that takes this edge answers
+      `continue` — `awaiting_human` is not final — so nothing structural on it
+      carried the reason, and a run cancelled at the refusing key never reached a
+      step that did. `AiLoop::walked` now writes the refusal the pass ARRIVED at
+      onto the line itself.
     -->
     <transition event="screen.none" target="awaiting_human"/>
     <!--

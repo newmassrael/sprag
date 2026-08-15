@@ -658,9 +658,22 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
             .expect("the pane stays readable")
         {
             Pumped::Moved {
-                from, raised, to, ..
+                from,
+                raised,
+                to,
+                found,
+                ..
             } => {
-                step(began, &format!("{from:?} --{raised:?}--> {to:?}"));
+                // ⚠⚠ THE REFUSAL A PASS ARRIVED AT GOES INTO THE LINE, and this is the harness
+                // whose reader is a PERSON watching a live agent. Register item 240 is about the
+                // plugin's journal; this composes its own sentence one layer down, so the same
+                // edge would have read `Working --TurnBlocked--> Screening` and nothing more the
+                // moment a real dialog came up. ⚠ The `..` above is why it had to be looked for:
+                // a new field on `Pumped::Moved` reaches a wildcard pattern silently.
+                let arrived = found
+                    .map(|unanswered| format!(" — {}", unanswered.noted()))
+                    .unwrap_or_default();
+                step(began, &format!("{from:?} --{raised:?}--> {to:?}{arrived}"));
                 walked.push((from, raised, to));
 
                 if to == AiLoopState::Priming {

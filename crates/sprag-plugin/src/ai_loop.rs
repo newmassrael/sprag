@@ -253,11 +253,40 @@ impl AiLoop {
     /// `null` is not one of its events — there is no `<transition event="null">` anywhere in
     /// `ai_loop.scxml` — it is W3C SCXML's eventless sentinel, which the driver uses to say *I
     /// looked and there was nothing to tell you*. So that is what gets written down.
-    fn walked(from: AiLoopState, raised: AiLoopEvent, to: AiLoopState) -> String {
-        if raised == AiLoopEvent::Null {
+    ///
+    /// # ⚠⚠⚠ AND AN EDGE IS NOT ITS OWN REASON — register item 240's journal half
+    ///
+    /// `screen.none` is ONE edge with several causes behind it, and this used to write the same six
+    /// words for every one of them. Three runs whose remedies are three different things — *quote
+    /// this dialog in `screen_rules`*, *your agent did not take the key that refuses a call*, *this
+    /// run ended holding a key nobody watched land* — left walks that were byte-for-byte identical
+    /// on the line that mattered, **and the step's own verdict could not make up for it**: the
+    /// machine lands in `awaiting_human`, which is not final, so that step answers `Continue` and
+    /// publishes nothing structural at all.
+    ///
+    /// So a pass that ARRIVED AT a refusal says which — [`Pumped::Moved`]'s `found`, whose doc
+    /// holds why *arrived at* rather than *is holding* is the question, and why the pump answers it
+    /// rather than a list of states out here.
+    ///
+    /// ⚠ It is appended to BOTH shapes above rather than to the transition alone. Nothing today
+    /// reaches a refusal on a `Null` pass — every producer of one raises `turn.blocked` — and an
+    /// arm asserting that would be an arm no production path can reach (R373 turned round, register
+    /// item 247's argument). If one ever does, a reader sees a look that says it found something,
+    /// which is a visible contradiction rather than a silent loss.
+    fn walked(
+        from: AiLoopState,
+        raised: AiLoopEvent,
+        to: AiLoopState,
+        found: Option<&crate::consent::Unanswered>,
+    ) -> String {
+        let step = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
         } else {
             format!("{from:?} --{raised:?}--> {to:?}")
+        };
+        match found {
+            Some(unanswered) => format!("{step} — {}", unanswered.noted()),
+            None => step,
         }
     }
 
@@ -482,6 +511,7 @@ impl Plugin for AiLoop {
                 raised,
                 to,
                 spent,
+                found,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
                 // is reported once. The barrier answered the peer's question inside this pump, on
@@ -520,7 +550,7 @@ impl Plugin for AiLoop {
                     )
                     .noting(note));
                 }
-                let note = Self::walked(from, raised, to);
+                let note = Self::walked(from, raised, to, found.as_ref());
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
                 } else {
@@ -2952,6 +2982,7 @@ mod tests {
             AiLoopState::Working,
             AiLoopEvent::Null,
             AiLoopState::Working,
+            None,
         );
         assert!(
             !looked.contains("-->"),
@@ -2976,6 +3007,7 @@ mod tests {
             AiLoopState::Judging,
             AiLoopEvent::Judge,
             AiLoopState::Reflecting,
+            None,
         );
         assert_eq!(
             moved, "Judging --Judge--> Reflecting",
@@ -3302,6 +3334,27 @@ mod tests {
              completed\"*. Without it the run either never noticed the keystroke or had already been \
              ended by the driver. The pane was showing:\n{showing}\nThe supervisor said \
              {seen:?}\nSamples over the second after the keystroke: {samples:?}\nWalked {walked:?}",
+        );
+        // ⚠⚠⚠ **AND THAT LINE SAYS NOTHING ABOUT A REFUSAL, WHICH IS A CLAIM AND NOT A SPELLING.**
+        // The equality above happens to hold it; this says out loud what it is holding, because a
+        // gate nobody wrote for a hazard is a gate that gets loosened by whoever next finds it
+        // inconvenient. Since register item 240 a walk names the refusal a pass ARRIVED AT — and
+        // the notice a paused run is holding is NOT cleared when the person answers (only the next
+        // prompt clears it), so a journal composed from what the loop holds rather than from what
+        // the pass found would put *no standing instruction claims this dialog* on the very edge
+        // that person's answer caused. **Measured, by mutating `pump` to read the level:** thirteen
+        // consecutive `AwaitingHuman: looked` lines carried it and then so did this one.
+        assert!(
+            !walked.iter().any(|note| {
+                note.starts_with("AwaitingHuman")
+                    && crate::consent::Refusal::ALL
+                        .iter()
+                        .any(|why| note.contains(&format!("{}: ", why.wire_str())))
+            }),
+            "⚠⚠⚠ A REFUSAL IS REPORTED BY THE PASS THAT FOUND IT, ONCE. No line the loop wrote \
+             while it was WAITING may carry one: the dialog was answered by a person, and a reader \
+             told otherwise is being sent to write a standing rule about a question that is gone. \
+             Walked {walked:?}",
         );
         assert_eq!(
             reached,
@@ -3702,6 +3755,217 @@ mod tests {
             armed.asking(),
         );
         close(&armed_stopping);
+    }
+
+    /// ⚠⚠⚠ **THE WALK NAMES THE REFUSAL THAT PAUSED THE RUN, NOT ONLY THE EDGE IT LEFT BY** —
+    /// register item 240's second half, the JOURNAL one.
+    ///
+    /// # ⚠⚠⚠ The defect, in its own words
+    ///
+    /// `screen.none` is ONE edge with several causes behind it, and the journal wrote the same six
+    /// words for every one of them: `Screening --ScreenNone--> AwaitingHuman`. Three runs whose
+    /// remedies are three DIFFERENT things —
+    ///
+    /// * [`Refusal::NoRule`](crate::consent::Refusal::NoRule): *go and quote this dialog in
+    ///   `screen_rules`*;
+    /// * [`Refusal::NotDismissed`](crate::consent::Refusal::NotDismissed): *your agent did not take
+    ///   the key that refuses a call, and the dialog is still up*;
+    /// * [`Refusal::Unwitnessed`](crate::consent::Refusal::Unwitnessed): *this run ended holding a
+    ///   key nobody watched land; READ THE PANE* —
+    ///
+    /// left walks that were byte-for-byte identical on the line that mattered.
+    ///
+    /// ⚠⚠ The pair that makes it a defect rather than a terseness is the two arms `screen::refuse`
+    /// answers `StillUp` with. `not_dismissed` is a fact about the AGENT and `unwitnessed` is a
+    /// fact about THIS RUN's ending — R394 built the second one precisely because publishing the
+    /// first about a run nobody watched is this crate's favourite defect — and the walk went on
+    /// publishing neither.
+    ///
+    /// ⚠⚠⚠ **AND THE VERDICT IS NOT A SUBSTITUTE FOR THE LINE.** The step that walks this edge
+    /// answers `Verdict::Continue`: `awaiting_human` is not a final state, so nothing structural on
+    /// that step carries the finding. What a later step reports is a LATER reading — the third run
+    /// below never reaches one at all, because the Driver ends it — so the line is the only place
+    /// the fact can live.
+    ///
+    /// # ⚠ Why all three runs share one peer, one dialog and one brief
+    ///
+    /// The peer is `standin_agent_refusing`'s **un-dismissable** one in every arm, so the SCREEN is
+    /// the same in all three and the only thing that varies is what the run was given and how it
+    /// ended. A gate whose arms used different fixtures would be comparing three walks about three
+    /// situations; these three are one situation with three causes, which is the whole subject.
+    #[test]
+    fn the_walk_says_which_refusal_left_the_run_waiting_for_a_person() {
+        /// The stand-in's dialog, quoted by the standing instruction two of the arms are given.
+        const ASKS: &str = "Which way should I build this?";
+        /// What that instruction would say, if the dialog ever went away to let it be said.
+        const INSTEAD: &str = "neither; do the smallest verifiable thing and report";
+        /// The document's edge every arm below leaves `screening` by.
+        const THE_EDGE: &str = "Screening --ScreenNone--> AwaitingHuman";
+
+        /// One run against the un-dismissable peer: what the loop ended up holding, and its walk.
+        ///
+        /// `stops_at_the_key` is the third arm's whole difference — a double that ends the run at
+        /// the first key pressed into a dialog, which for a run holding no consent is
+        /// `screening`'s own [`crate::screen::REFUSES`].
+        fn paused_run(
+            screen_rules: Option<crate::screen::ScreenRules>,
+            stops_at_the_key: bool,
+        ) -> (OutcomeState, crate::consent::Refusal, Vec<String>) {
+            let (workspace, pane) = crate::testing::standin_agent_refusing(false, 2, None);
+            let stopping = crate::testing::StopsAtTheKey::at_a_dialog(
+                crate::testing::supervised_asking(&workspace),
+            );
+            let run = if stops_at_the_key {
+                stopping.run()
+            } else {
+                RunContext::uncancellable()
+            };
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    screen_rules,
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 40,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &stopping, &run);
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            for id in stopping.pane_ids() {
+                stopping.lifecycle().expect("lifecycle").close(id);
+            }
+            (outcome.state, loops.asking().why(), walk)
+        }
+
+        /// The one line this whole gate is about, off `walk` — and a failure that prints the walk
+        /// rather than an index, because *which line* is the first question of any red here.
+        fn the_line<'a>(label: &str, walk: &'a [String]) -> &'a str {
+            let mut lines = walk.iter().filter(|note| note.starts_with(THE_EDGE));
+            let found = lines.next().unwrap_or_else(|| {
+                panic!(
+                    "⚠ the control for {label}: this run must have LEFT `screening` by \
+                     {THE_EDGE:?}, or what follows is about an edge it never took. Walked {walk:?}"
+                )
+            });
+            assert!(
+                lines.next().is_none(),
+                "⚠ the control for {label}: the run took that edge more than once, so the line \
+                 read below is not the one the refusal belongs to. Walked {walk:?}",
+            );
+            found
+        }
+
+        let rules = || {
+            crate::screen::ScreenRules::of(vec![
+                crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                    .expect("both halves are non-empty"),
+            ])
+            .expect("a non-empty list")
+        };
+
+        // ── THREE CAUSES, ONE EDGE ──
+        let (unclaimed_end, unclaimed_why, unclaimed_walk) = paused_run(None, false);
+        let (ignored_end, ignored_why, ignored_walk) = paused_run(Some(rules()), false);
+        let (unwatched_end, unwatched_why, unwatched_walk) = paused_run(Some(rules()), true);
+
+        // ⚠⚠ AND THE THIRD ARM ENDS DIFFERENTLY FROM THE OTHER TWO, which is exactly why its
+        // finding has nowhere else to live: the first two runs wait out their (absent) person and
+        // report `blocked` WITH the question, so a caller reads the refusal off the outcome. The
+        // third is stopped by the double at the refusing key, so its outcome is `cancelled` — an
+        // ending that carries no question at all — and the walk is the ONLY record of what it had
+        // found one step earlier.
+        assert!(
+            matches!(unclaimed_end, OutcomeState::Blocked(Some(_)))
+                && matches!(ignored_end, OutcomeState::Blocked(Some(_)))
+                && unwatched_end == OutcomeState::Cancelled,
+            "⚠⚠ the control on the three endings: {unclaimed_end:?} / {ignored_end:?} / \
+             {unwatched_end:?}",
+        );
+
+        // ⚠⚠ THE CONTROL, AND IT IS THE EXPENSIVE HALF OF THIS GATE: three runs that all reported
+        // the same refusal would make every assertion below true for the wrong reason.
+        let arms = [
+            ("no rule claims the dialog", unclaimed_why, &unclaimed_walk),
+            ("the agent ignored the key", ignored_why, &ignored_walk),
+            ("the run ended at the key", unwatched_why, &unwatched_walk),
+        ];
+        assert_eq!(
+            (unclaimed_why, ignored_why, unwatched_why),
+            (
+                crate::consent::Refusal::NoRule,
+                crate::consent::Refusal::NotDismissed,
+                crate::consent::Refusal::Unwitnessed,
+            ),
+            "⚠⚠⚠ the control: the three arms must really have arrived at three DIFFERENT refusals, \
+             or this gate is comparing one cause with itself. Walked {:?} / {:?} / {:?}",
+            unclaimed_walk,
+            ignored_walk,
+            unwatched_walk,
+        );
+
+        // ── AND THE WALK SAYS WHICH ──
+        for (label, why, walk) in arms {
+            let line = the_line(label, walk);
+            assert!(
+                line.contains(why.wire_str()),
+                "⚠⚠⚠ THE JOURNAL HALF OF REGISTER ITEM 240: this run stopped because {label}, and \
+                 the one line its walk wrote about leaving `screening` does not carry the word for \
+                 it ({:?}). A person reading a paused run's journal has to be able to tell *quote \
+                 the dialog in a rule* from *your agent ignored the key* from *nobody watched the \
+                 key land* — three different remedies behind one edge. The line was {line:?}; \
+                 walked {walk:?}",
+                why.wire_str(),
+            );
+            assert!(
+                line.contains(why.describe()),
+                "⚠⚠ AND THE SENTENCE TRAVELS WITH THE WORD. `Refusal::describe` is where each arm's \
+                 REMEDY is written, and a word alone sends its reader off to look one up: {line:?}",
+            );
+            // ⚠⚠⚠ AND EXACTLY ONE LINE CARRIES IT — a walk is a record of EDGES, and this is the
+            // half that says so. Composed from *what is the loop holding now* instead of *what did
+            // this pass arrive at*, the reason is true on every later step too: measured, the
+            // paused run wrote its own reason into THIRTEEN consecutive `AwaitingHuman: looked,
+            // nothing had happened` lines and then onto `AwaitingHuman --TurnDone--> Judging` —
+            // the edge a PERSON'S ANSWER causes, claiming the dialog was still unclaimed. ⚠ The
+            // colon is what makes this count the refusal's own heading rather than a mention of
+            // the word inside some other arm's detail.
+            let heading = format!("{}: ", why.wire_str());
+            assert_eq!(
+                walk.iter().filter(|note| note.contains(&heading)).count(),
+                1,
+                "⚠⚠⚠ {label}: {heading:?} must head exactly ONE line of this walk — the step that \
+                 arrived at it. More than one is a level being written down as a series of \
+                 findings, which fills a bounded journal with one fact and puts that fact on edges \
+                 it is not true of. Walked {walk:?}",
+            );
+        }
+        let lines = [
+            the_line("no rule claims the dialog", &unclaimed_walk),
+            the_line("the agent ignored the key", &ignored_walk),
+            the_line("the run ended at the key", &unwatched_walk),
+        ];
+        let distinct: std::collections::BTreeSet<&str> = lines.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            lines.len(),
+            "⚠⚠⚠ AND THE THREE LINES MUST DIFFER FROM ONE ANOTHER. Naming the refusal is worth \
+             nothing if two causes still render one string — which is exactly what {THE_EDGE:?} did \
+             for all three of them before this gate existed: {lines:?}",
+        );
     }
 
     /// A machine plus the engine its datamodel lives in, and the session id that
