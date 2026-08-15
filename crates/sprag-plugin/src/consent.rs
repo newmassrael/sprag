@@ -1284,25 +1284,45 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **THE ONE REFUSAL THAT COSTS BYTES CARRIES THEM.** Every other arm reports a step that
-    /// typed nothing; this one typed at the pane and the peer did not move. A run that charged
-    /// zero for it would under-report its own spend against the caller's ceiling.
+    /// ⚠⚠ **THE REFUSALS THAT COST BYTES CARRY THEM, AND ONLY THE CONSTRUCTOR DECIDES WHICH.**
+    ///
+    /// A run that charged zero for keys it really pressed would under-report its spend against the
+    /// caller's ceiling; one that charged for a step that typed nothing is the same error the other
+    /// way. What keeps the two apart is not the ARM — three of them are reached with a key already
+    /// sent — but which constructor built the refusal, and that is what this drives.
+    ///
+    /// ⚠ The headline used to read *"THE ONE refusal that costs bytes"*, and the set outgrew it
+    /// twice without a word here moving: `not_dismissed` at R384 and `unwitnessed` at R394. So the
+    /// zero half is asserted over `ALL` rather than over a list, and the paying half names its
+    /// constructors — a fourth act that types fails the count below until somebody puts it here.
     #[test]
-    fn the_refusal_that_typed_something_is_the_only_one_that_charges_for_it() {
-        assert_eq!(Unanswered::not_taken(permission(), 3).bytes(), 3);
-        assert_eq!(
-            Unanswered::not_taken(permission(), 3).why(),
-            Refusal::NotTaken
-        );
+    fn only_the_constructors_that_typed_something_charge_for_it() {
         for why in Refusal::ALL {
-            if why == Refusal::NotTaken {
-                continue;
-            }
             assert_eq!(
                 Unanswered::refused(permission(), why).bytes(),
                 0,
-                "{why:?} is a step that typed NOTHING, and charging for it would be as wrong as \
-                 the under-charge the other way",
+                "{why:?} built through the constructor for a step that TYPED NOTHING must charge \
+                 nothing, whatever the arm can also be reached by",
+            );
+        }
+        let paying: [(Unanswered, Refusal); 3] = [
+            (Unanswered::not_taken(permission(), 3), Refusal::NotTaken),
+            (
+                Unanswered::refused_after(permission(), Refusal::NotDismissed, 3),
+                Refusal::NotDismissed,
+            ),
+            (
+                Unanswered::unwitnessed(permission(), 3),
+                Refusal::Unwitnessed,
+            ),
+        ];
+        for (built, why) in paying {
+            assert_eq!(built.why(), why, "the arm is the one its constructor names");
+            assert_eq!(
+                built.bytes(),
+                3,
+                "{why:?} is reached with a key already on the pseudoterminal, and a run that \
+                 dropped what it spent because of which contract it was under would under-report",
             );
         }
     }

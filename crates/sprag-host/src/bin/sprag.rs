@@ -7404,8 +7404,8 @@ mod tests {
 
     /// ⚠⚠ **EVERY REASON REACHES THE PERSON, including the one with no question at all.**
     ///
-    /// Driven from the type's own published list, so a seventh reason fails here until this mouth
-    /// says it. `unreadable` is the arm that carries no menu — its remedy is a person, and printing
+    /// Driven from the type's own published list, so a reason ADDED to it fails here until this
+    /// mouth says it. `unreadable` is the arm that carries no menu — its remedy is a person, and printing
     /// nothing for it would be the state R366 built the word to stop being silent about.
     #[test]
     fn every_refusal_reaches_the_person_reading_the_run() {

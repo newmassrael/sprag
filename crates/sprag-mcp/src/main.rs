@@ -7995,8 +7995,8 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **EVERY REASON REACHES THE AGENT**, driven from the type's published list so a seventh
-    /// fails here until this mouth says it.
+    /// ⚠⚠ **EVERY REASON REACHES THE AGENT**, driven from the type's published list so a reason
+    /// ADDED to it fails here until this mouth says it.
     ///
     /// ⚠ `unreadable` carries no menu, so it must NOT offer `may_answer` — no consent can name an
     /// option a screen does not show, and telling an agent to write one would send it to fix
