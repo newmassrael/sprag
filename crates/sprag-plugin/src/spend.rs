@@ -106,7 +106,58 @@ pub struct Spend {
     /// What the session has produced, over all its requests. The only component that is neither
     /// re-read nor re-sent, and so the only one that does not grow with the conversation.
     pub produced: u64,
+    /// **WHAT THIS SESSION HAD TO READ BEFORE IT CHANGED ANYTHING** — or [`None`] where it changed
+    /// nothing at all. See [`Warmup`].
+    pub warmup: Option<Warmup>,
 }
+
+/// **THE WARM-UP: what a session spent getting to the point where it could act.**
+///
+/// # ⚠⚠⚠ Why this number and not another
+///
+/// A loop's only lever over context is what its NEXT session starts with — a running agent's
+/// context cannot be pruned. So the question *"did carrying something across the boundary help?"*
+/// has exactly one honest form: **did the next session reach its first change having read less?**
+/// Everything before that first change is orientation, and orientation is what a distillation is
+/// for.
+///
+/// ⚠⚠ **MEASURED BEFORE ANYTHING WAS BUILT ON IT**, over three real sessions of this repo:
+///
+/// | session | context at the first change | tool calls to get there | calls in the whole session |
+/// |---|---|---|---|
+/// | `fc98f60a` | 128,030 | **18** | 658 |
+/// | `196efb19` | 127,929 | 34 | 312 |
+/// | `e8aa7127` | 158,141 | 40 | 246 |
+///
+/// So a session of this project spends **roughly 130-160k tokens and 18-40 tool calls before it
+/// changes a byte**. The number exists, it varies, and it is on the axis a distillation claims to
+/// move.
+///
+/// ⚠⚠⚠ **AND IT IS AN AXIS, NOT YET A VERDICT.** Those three sessions did different work, so the
+/// spread across them says nothing about any feature. What it can settle is a BEFORE and AFTER on
+/// comparable work — which is why this exists before the thing it is meant to judge, rather than
+/// after it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Warmup {
+    /// The accumulated context on the request that carried the session's FIRST change.
+    pub context: u64,
+    /// How many tool calls the session had made by then, that first change included.
+    ///
+    /// ⚠ The cheaper half of the pair, and the one that survives a change in how usage is
+    /// accounted: it counts acts rather than tokens.
+    pub calls: u64,
+}
+
+/// **WHICH TOOL NAMES COUNT AS CHANGING SOMETHING** — the moment a session stops orienting itself
+/// and starts working.
+///
+/// ⚠⚠ **A LIST WITH NO GLOB DECIDES ALONE**, and this one is a claim about another program's tool
+/// vocabulary. A writing tool this does not name makes the warm-up read `None` (the session never
+/// changed anything) or land on a LATER change — both of which understate nothing and overstate
+/// nothing, but say the wrong thing quietly. The residue is stated rather than guessed around:
+/// `Bash` is deliberately absent, because a shell command is as often a question as an edit, and a
+/// rule that counted it would mark almost every session's third call as the moment work began.
+const CHANGES: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /// The session identity in `argv`, if `flag` names one.
 ///
@@ -137,6 +188,7 @@ pub fn identity_in(argv: &[String], flag: &str) -> Option<String> {
 pub fn spend_in(text: &str) -> Spend {
     let mut seen: Vec<String> = Vec::new();
     let mut spend = Spend::default();
+    let mut calls = 0_u64;
     for line in text.lines() {
         let Ok(row) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -169,6 +221,35 @@ pub fn spend_in(text: &str) -> Spend {
         // Everything the model was charged to READ on this request: what was sent, what was served
         // from cache, and what was written into cache on the way.
         spend.context = field("input_tokens") + cached + field("cache_creation_input_tokens");
+
+        // ⚠⚠⚠ THE WARM-UP IS COUNTED HERE, INSIDE THE SAME DEDUPLICATION, and that is not tidiness:
+        // a streamed reply repeats its whole envelope, so tool calls counted per ROW would multiply
+        // by however long the answer was — exactly what the doc above says of usage. One message,
+        // one count.
+        for block in row
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            calls += 1;
+            // ⚠ THE FIRST ONE WINS AND IS NEVER OVERWRITTEN. The question is *what did it cost to
+            // get STARTED*, so a later change must not move the answer.
+            if spend.warmup.is_none()
+                && block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| CHANGES.contains(&name))
+            {
+                spend.warmup = Some(Warmup {
+                    context: spend.context,
+                    calls,
+                });
+            }
+        }
     }
     spend
 }
@@ -179,6 +260,77 @@ mod tests {
 
     fn owned(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    /// One assistant row: `context` tokens of cache, and whatever tool calls `names` makes.
+    fn turn(id: &str, context: u64, names: &[&str]) -> String {
+        let blocks: Vec<String> = names
+            .iter()
+            .map(|name| format!(r#"{{"type":"tool_use","name":"{name}","input":{{}}}}"#))
+            .collect();
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"{id}","usage":{{"input_tokens":0,"cache_read_input_tokens":{context},"cache_creation_input_tokens":0,"output_tokens":1}},"content":[{}]}}}}"#,
+            blocks.join(",")
+        )
+    }
+
+    /// ⚠⚠⚠ **THE WARM-UP: WHAT A SESSION READ BEFORE IT CHANGED ANYTHING** — the axis any claim
+    /// about carrying context across a session boundary has to be settled on.
+    ///
+    /// # ⚠⚠ What this asserts, and what it deliberately does not
+    ///
+    /// It asserts the READER, over a record whose numbers are known because they were written here.
+    /// It says nothing about whether 130,000 is a lot — that is a question about somebody's work,
+    /// and the answer only exists as a BEFORE and an AFTER on comparable work.
+    ///
+    /// ⚠⚠⚠ **THE STREAMING TRAP IS THE SHARP ONE.** A streamed reply repeats its whole envelope
+    /// row after row, which is why `spend_in` deduplicates by message id — and tool calls counted
+    /// per ROW would be multiplied by however long the answer happened to be. A warm-up of *"forty
+    /// calls"* that was really four would make every comparison meaningless in the direction that
+    /// looks like data.
+    #[test]
+    fn the_warm_up_is_what_was_read_before_the_first_change() {
+        let record = [
+            turn("m1", 1_000, &["Read", "Bash"]),
+            turn("m2", 5_000, &["Read"]),
+            // ⚠ THE SAME MESSAGE, TWICE — a streamed reply's repeat. It must count ONCE.
+            turn("m3", 9_000, &["Grep", "Edit"]),
+            turn("m3", 9_000, &["Grep", "Edit"]),
+            turn("m4", 40_000, &["Edit"]),
+        ]
+        .join("\n");
+
+        let spend = spend_in(&record);
+        assert_eq!(
+            spend.warmup,
+            Some(Warmup {
+                context: 9_000,
+                calls: 5,
+            }),
+            "⚠⚠⚠ the warm-up is the context on the request that carried the FIRST change, and the \
+             calls made up to and including it — three before it (Read, Bash, Read), then Grep, \
+             then the Edit. A reader that took the LAST change would answer 40,000, and a reader \
+             that counted the streamed repeat would answer seven calls: {:?}",
+            spend.warmup,
+        );
+
+        assert_eq!(
+            spend_in(&turn("m1", 8_000, &["Read", "Bash", "Grep"])).warmup,
+            None,
+            "⚠⚠ a session that changed NOTHING has no warm-up, and that must not read as zero — \
+             zero is what a session that started work instantly would look like, and these are \
+             opposite facts",
+        );
+
+        assert_eq!(
+            spend_in(&[turn("m1", 3_000, &["Write"]), turn("m2", 7_000, &["Edit"])].join("\n"))
+                .warmup,
+            Some(Warmup {
+                context: 3_000,
+                calls: 1,
+            }),
+            "⚠ every writing tool starts the work, not `Edit` alone — see `CHANGES`",
+        );
     }
 
     /// Both spellings of one argument, and the absences that are not it.
@@ -237,6 +389,10 @@ mod tests {
                 context: 223,
                 cached: 200,
                 produced: 12,
+                // ⚠ These rows carry no content at all, so nothing was ever changed — see
+                // `the_warm_up_is_what_was_read_before_the_first_change` for why that is `None`
+                // rather than zero.
+                warmup: None,
             },
         );
     }
@@ -257,6 +413,7 @@ mod tests {
                 context: 51,
                 cached: 50,
                 produced: 2,
+                warmup: None,
             },
             "a usage with no cache read is not a billed request, and a half-written last line is \
              the ordinary state of a file another process is appending to",

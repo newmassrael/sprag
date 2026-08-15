@@ -297,7 +297,16 @@ pub struct Brief {
     pub north_star: String,
     /// The step being worked on now. Reflection may rewrite this.
     pub milestone: String,
-    /// Prior art the agent should read before deciding anything.
+    /// **WHAT A SESSION CARRIES BESIDE ITS MILESTONE** — prior art, at the caller's first briefing;
+    /// **what the last session had to work out**, after a reflection has replaced it.
+    ///
+    /// ⚠⚠ The two are not the same kind of thing, and this slot holds them in turn deliberately. A
+    /// caller knows FILES and names them; a session that has done the work knows things no file
+    /// says. The reflection asks for the second, because **a handover that names where to look hands
+    /// over an errand rather than an answer** — measured across one live replacement at 161,507
+    /// tokens to the replaced session's first change against 285,599 to its replacement's, with the
+    /// handover reading `debt-open.md의 208·212·213과 섹션 P 전체`. See `ai_loop.scxml`'s
+    /// `reflect_prompt`, which carries the whole measurement.
     pub reference: String,
     /// How many turns the run may take before the document calls it `exhausted`.
     pub max_turns: i64,
