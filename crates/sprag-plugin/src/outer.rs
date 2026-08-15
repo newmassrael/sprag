@@ -2172,9 +2172,17 @@ impl OuterLoop {
             //
             // ⚠⚠ AND IT CANNOT BURY A `Refusal::Unwitnessed` UNDER *"write a rule"*, which would be
             // the re-heading doing to that arm what that arm exists to stop. Not by a check here —
-            // by the two facts either side: the barrier only builds one when the RUN has ended, and
-            // this state is reached on the pump AFTER the one that noticed, which the Driver's
-            // loop-top pre-emption never lets happen (`driver_ends_cancelled_without_running_a_step`).
+            // by the three facts either side: the barrier only builds one when the RUN has ended;
+            // this state is reached on the pump AFTER the one that noticed; and the Driver asks
+            // `ended_from_outside` after every unconverged step as well as at its loop top, so that
+            // pump never comes. ⚠ The post-step ask is the one that fires here — the noticing step
+            // returns `Continue` — and a comment that named only the loop top was describing the
+            // half of the guarantee this path does not use.
+            //
+            // ⚠⚠⚠ HELD BY A GATE, not by this paragraph:
+            // `ai_loop::tests::a_run_stopped_at_its_peers_dialog_types_nothing_further` drives a
+            // real run into exactly this state and then takes the pump the Driver refused to take,
+            // so what would be buried here is measured rather than argued.
             self.noticed = Some(Noticed::Asking(Unanswered::unscreened(unanswered)));
             return Ok(AiLoopEvent::ScreenNone.into());
         };

@@ -3481,6 +3481,229 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠ **A RUN STOPPED WITH A KEY IN SOMEBODY'S DIALOG PRESSES NOTHING ELSE AND KEEPS WHAT IT
+    /// KNOWS** — register item 241, which was three facts held by a comment.
+    ///
+    /// `Refusal::Unwitnessed` is what the barrier answers when *the key went out, the run ended,
+    /// and nobody looked*. The state that answer lands the machine in is `screening`, and
+    /// `screening`'s act would do BOTH of the things that arm exists to prevent:
+    ///
+    /// * re-head it `no_rule` through [`Unanswered::unscreened`] — burying the one fact a reader of
+    ///   a stopped run has, which is that nothing was established about the peer at all;
+    /// * and, where a rule DOES claim the dialog, press the refusing key into a question this run
+    ///   has stopped being allowed to touch.
+    ///
+    /// # ⚠⚠⚠ Why the three facts had to be held TOGETHER, and by a run
+    ///
+    /// Neither happens, and the reason is a conjunction: the barrier builds that arm **only when
+    /// the run has ended**; `screening` is the **NEXT** pump; and the Driver asks
+    /// `ended_from_outside` at its loop top **and after every unconverged step**, so that pump
+    /// never comes. Each fact lives in a different file, each is true on its own, and the claim is
+    /// the AND of them — which is exactly the shape no unit gate can hold. `screen::tests` measures
+    /// the refusal, `driver::tests` measures a pre-raised cancel, and between them sat the sentence
+    /// nobody was measuring: **a stopped run types nothing further.**
+    ///
+    /// ⚠ The step that notices answers `Continue`, so the ask that fires here is the POST-STEP one
+    /// and not the loop top — which is why neither of those two sites can be mutated alone to make
+    /// this red: each covers for the other. What is being asserted is the guarantee, not one of its
+    /// two implementations.
+    ///
+    /// ⚠⚠ **AND THE COUNTERFACTUAL IS RUN, so the hazard is a measurement rather than an
+    /// argument.** Each arm takes the very step the Driver refused to take — one `Plugin::step`, by
+    /// hand, on the run that is already over — and asserts that it DOES the damage. Without it this
+    /// gate would be four assertions about a run that stopped, passing for a product in which
+    /// `screening` was harmless all along.
+    ///
+    /// ⚠ The peer is `standin_agent_refusing`'s **un-dismissable** one, and the choice is the
+    /// staging: its dialog never leaves the screen whatever arrives, so what `screening` would do
+    /// on the next pump is a fact and not a race with a peer that might already have moved on. A
+    /// consent quotes it because what is being measured is the ANSWERING act's stopped arm, not
+    /// whether that particular question is one a caller should authorise.
+    #[test]
+    fn a_run_stopped_at_its_peers_dialog_types_nothing_further() {
+        /// The stand-in's dialog, quoted by the consent that answers it and by the rule the second
+        /// arm arms.
+        const ASKS: &str = "Which way should I build this?";
+        /// The option the consent takes — the one the peer's own marker is already standing on, so
+        /// the key that goes in is the one whose landing place `Question::selected` proves.
+        const TAKES: &str = "The quick one";
+        /// What the second arm's standing instruction would say, if it ever got to say it.
+        const INSTEAD: &str = "neither; do the smallest verifiable thing and report";
+
+        /// One run against the un-dismissable peer, with a consent that answers its dialog and
+        /// whatever standing instructions the author left — **cancelled by the double at the first
+        /// key this run presses into that dialog**.
+        fn stopped_at_the_dialog(
+            screen_rules: Option<crate::screen::ScreenRules>,
+        ) -> (
+            AiLoop,
+            crate::driver::Outcome,
+            crate::testing::StopsAtTheKey,
+            Vec<String>,
+        ) {
+            let (workspace, pane) = crate::testing::standin_agent_refusing(false, 1, None);
+            let stopping = crate::testing::StopsAtTheKey::at_a_dialog(
+                crate::testing::supervised_asking(&workspace),
+            );
+            let consent = crate::consent::Consents::of(vec![
+                crate::consent::Consent::parse(ASKS.to_owned(), TAKES.to_owned())
+                    .expect("both needles are non-empty"),
+            ])
+            .expect("a non-empty consent list");
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    screen_rules,
+                    ..brief_for(40)
+                },
+                &AiLoopSpec {
+                    may_answer: Some(consent),
+                    ..standin_spec()
+                },
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 40,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &stopping, &stopping.run());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            (loops, outcome, stopping, walk)
+        }
+
+        /// The four facts every arm shares — where the run stopped, what it still knows, and the
+        /// ledger of what it typed afterwards.
+        fn it_stopped_holding_the_finding(
+            loops: &AiLoop,
+            outcome: &crate::driver::Outcome,
+            stopping: &crate::testing::StopsAtTheKey,
+            walk: &[String],
+        ) {
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Cancelled,
+                "⚠⚠⚠ THE DRIVER'S HALF: the run was stopped while a key it had just pressed was on \
+                 the pseudoterminal, and nothing about the dialog underneath makes that a different \
+                 ending. Walked {walk:?}",
+            );
+            assert_eq!(
+                loops.state(),
+                AiLoopState::Screening,
+                "⚠⚠⚠ THE MACHINE'S HALF, and the fact this whole gate turns on: the blocked turn \
+                 moved the document INTO `screening` and the act that state performs never ran — \
+                 it is the NEXT pump, and there was not one. A loop found anywhere else is a loop \
+                 whose screening key has already been pressed. Walked {walk:?}",
+            );
+            let asking = loops.asking();
+            assert_eq!(
+                asking.why(),
+                crate::consent::Refusal::Unwitnessed,
+                "⚠⚠⚠ AND THE FINDING SURVIVED INTACT. `no_rule` here is the burial this arm exists \
+                 to stop — it would send a reader to write a standing instruction about a dialog \
+                 nobody has established anything about, when the remedy is to READ THE PANE. \
+                 Walked {walk:?}: {asking:?}",
+            );
+            assert!(
+                asking.bytes() > 0,
+                "⚠⚠ THE CONTROL: the answering key really did go in, or `unwitnessed` is a word \
+                 about an act that never began and every assertion here is about nothing: {asking:?}",
+            );
+            assert!(
+                stopping.typed_after_the_stop().is_empty(),
+                "⚠⚠⚠ **AND NOTHING FURTHER WAS TYPED.** A question that may still be up reads the \
+                 next keystroke as an answer to itself — a live probe measured exactly that \
+                 approving a file write — so a run that has stopped may press nothing at all. It \
+                 pressed: {:?}. Walked {walk:?}",
+                stopping.typed_after_the_stop(),
+            );
+        }
+
+        /// Take the step the Driver refused to take, on a run that is already over.
+        fn the_pump_that_never_came(
+            loops: &mut AiLoop,
+            stopping: &crate::testing::StopsAtTheKey,
+        ) -> Verdict {
+            loops
+                .step(stopping, &stopping.run())
+                .expect("a stopped run's pump is not an error")
+                .verdict
+        }
+
+        fn close(stopping: &crate::testing::StopsAtTheKey) {
+            for id in stopping.pane_ids() {
+                stopping.lifecycle().expect("lifecycle").close(id);
+            }
+        }
+
+        // ── THE SHIPPED LOOP: NO RULE CLAIMS THE DIALOG ──
+        let (mut unarmed, outcome, stopping, walk) = stopped_at_the_dialog(None);
+        it_stopped_holding_the_finding(&unarmed, &outcome, &stopping, &walk);
+
+        // ⚠⚠⚠ AND WHAT THE PUMP THAT NEVER CAME WOULD HAVE DONE TO IT.
+        let _ = the_pump_that_never_came(&mut unarmed, &stopping);
+        assert_eq!(
+            unarmed.asking().why(),
+            crate::consent::Refusal::NoRule,
+            "⚠⚠⚠ THE HAZARD, MEASURED: one more pump and `Unanswered::unscreened` re-heads the \
+             finding as *nothing claimed this dialog*, which is a sentence about the AUTHOR'S \
+             rules and not about a run that stopped holding a key. If this ever stops being true \
+             the assertion above has been passing for free",
+        );
+        assert!(
+            stopping.typed_after_the_stop().is_empty(),
+            "⚠ and the unarmed arm's damage is the re-heading ALONE — with no rule to fire, \
+             `screening` returns before the refusing key, so this half of the hazard needs the \
+             armed arm below to be measured at all: {:?}",
+            stopping.typed_after_the_stop(),
+        );
+        close(&stopping);
+
+        // ── AND THE SAME RUN WITH ONE STANDING INSTRUCTION QUOTING THAT DIALOG ──
+        let rules = crate::screen::ScreenRules::of(vec![
+            crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                .expect("both halves are non-empty"),
+        ])
+        .expect("a non-empty list");
+        let (mut armed, armed_outcome, armed_stopping, armed_walk) =
+            stopped_at_the_dialog(Some(rules));
+        it_stopped_holding_the_finding(&armed, &armed_outcome, &armed_stopping, &armed_walk);
+
+        // ⚠⚠⚠ AND HERE THE PUMP THAT NEVER CAME WOULD HAVE PRESSED A KEY.
+        let _ = the_pump_that_never_came(&mut armed, &armed_stopping);
+        let pressed = armed_stopping.typed_after_the_stop();
+        assert!(
+            pressed.iter().any(|keys| keys == crate::screen::REFUSES),
+            "⚠⚠⚠ THE OTHER HALF OF THE HAZARD, MEASURED: with a rule that claims the dialog, the \
+             very next pump puts {:?} into a question this run had already stopped being allowed \
+             to touch — and the peer here is the one whose dialog never goes, so the key lands on \
+             a menu that is still up. It typed: {pressed:?}",
+            crate::screen::REFUSES,
+        );
+        // ⚠⚠ AND THE LOOP READS THE SCREENING HALF OF THE SAME WORD — register item 240's first
+        // half. `screen::refuse` answers `Refused::StillUp` carrying its OWN `Unwitnessed` here (a
+        // key pressed by a run that is over, watched by nobody), and until this line the only gate
+        // over that arm was `screen`'s own: how `outer::screen` carried it into the loop's notice
+        // was measured by nothing.
+        assert_eq!(
+            armed.asking().why(),
+            crate::consent::Refusal::Unwitnessed,
+            "⚠⚠ the refusing key's own stopped arm must reach the loop's notice as itself: \
+             {:?}",
+            armed.asking(),
+        );
+        close(&armed_stopping);
+    }
+
     /// A machine plus the engine its datamodel lives in, and the session id that
     /// engine files those variables under.
     ///

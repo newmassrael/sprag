@@ -67,33 +67,93 @@ pub(crate) const REAP_THE_STANDIN: &str = "kill $! 2>/dev/null; wait $! 2>/dev/n
 /// Hanging the flag on the write makes the order a fact of the double rather than of the scheduler.
 /// It is [`crate::deliver`]'s `cancel_on_submit` (R393) said about a pane a real pty is behind.
 ///
-/// ⚠ `at` counts injections, so a gate can stop a run inside the FIRST wait (the evidence for the
-/// key just sent) or inside a LATER one (the wait after an escalation) — the two places an
-/// answering act has to give up, and they report different things about different keys.
+/// ⚠ WHICH keystroke is [`StopsWhen`], because the two gates that need one cannot name it the same
+/// way: an act called directly counts injections, and a RUN driven through the loop cannot — the
+/// prompts its document composes are delivered by the same `inject`, so a number here would be a
+/// count of `deliver`'s internals kept in step by nobody.
+///
+/// ⚠⚠⚠ **AND IT KEEPS THE LEDGER OF WHAT WAS TYPED AFTER THE STOP** — see
+/// [`typed_after_the_stop`](StopsAtTheKey::typed_after_the_stop). Every act in this crate claims to
+/// type nothing once its run is over, and a claim nobody records is a claim nobody holds.
 pub(crate) struct StopsAtTheKey {
     /// The real pane. Everything but [`PaneAccess::inject`] is this, untouched.
     pub(crate) pane: WorkspacePaneAccess,
     /// The run's own cancel flag — hand [`crate::run::RunContext::new`] a clone of it.
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
-    /// WHICH injection ends the run, counting from one.
-    pub(crate) at: usize,
+    /// WHICH keystroke ends the run.
+    when: StopsWhen,
     seen: std::sync::atomic::AtomicUsize,
+    after: Mutex<Vec<String>>,
+}
+
+/// **WHICH KEYSTROKE ENDS THE RUN** — [`StopsAtTheKey`]'s trigger.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StopsWhen {
+    /// The `n`th injection into the pane, counting from one.
+    ///
+    /// ⚠ A gate can stop a run inside the FIRST wait (the evidence for the key just sent) or inside
+    /// a LATER one (the wait after an escalation) — the two places an answering act has to give up,
+    /// and they report different things about different keys.
+    TheNthKey(usize),
+    /// **THE FIRST KEY THIS RUN PRESSES WHILE THE PEER IS SHOWING A DIALOG.**
+    ///
+    /// ⚠⚠⚠ Asked of the SUPERVISION, at the instant of the press, which is what makes it usable
+    /// from outside one act: a whole run reaches its peer's menu through a prompt delivery whose
+    /// own injection count is `deliver`'s business. A gate that hard-coded the index would be
+    /// asserting a number the product does not pin — and would go on passing, staged at the wrong
+    /// keystroke, the first time a delivery grew an attempt.
+    TheFirstKeyAtADialog,
 }
 
 impl StopsAtTheKey {
     /// `pane`, wired to end its run once `at` keystrokes have been written to it.
     pub(crate) fn nth(pane: WorkspacePaneAccess, at: usize) -> Self {
+        Self::stopping(pane, StopsWhen::TheNthKey(at))
+    }
+
+    /// `pane`, wired to end its run at the first key pressed into a dialog it is showing.
+    pub(crate) fn at_a_dialog(pane: WorkspacePaneAccess) -> Self {
+        Self::stopping(pane, StopsWhen::TheFirstKeyAtADialog)
+    }
+
+    fn stopping(pane: WorkspacePaneAccess, when: StopsWhen) -> Self {
         Self {
             pane,
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            at,
+            when,
             seen: std::sync::atomic::AtomicUsize::new(0),
+            after: Mutex::new(Vec::new()),
         }
     }
 
     /// A context whose run this pane can end — the other half of the pair.
     pub(crate) fn run(&self) -> crate::run::RunContext {
         crate::run::RunContext::new(Arc::clone(&self.cancel))
+    }
+
+    /// **EVERY KEYSTROKE THIS PANE WAS GIVEN AFTER THE RUN WAS ALREADY OVER**, in the order it
+    /// arrived — empty for a run that stopped typing when it stopped.
+    ///
+    /// ⚠⚠ The keys THEMSELVES and not a count, for R377's reason: a gate that fails on this reads
+    /// *"a stopped run went on to press `Escape`"*, which names the act, and a number would leave
+    /// whoever hit the red to go and find out which one.
+    pub(crate) fn typed_after_the_stop(&self) -> Vec<String> {
+        self.after.lock().expect("the ledger mutex").clone()
+    }
+
+    /// Whether THIS injection is the one that ends the run — asked BEFORE the write, because
+    /// [`StopsWhen::TheFirstKeyAtADialog`] is about the screen the key is pressed AT.
+    ///
+    /// ⚠ The counter is bumped on every injection whichever trigger is armed, so a gate that reads
+    /// the ledger is reading a double that never stopped watching.
+    fn ends_the_run(&self, id: PaneId) -> bool {
+        let seen = self.seen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+        match self.when {
+            StopsWhen::TheNthKey(at) => seen >= at,
+            StopsWhen::TheFirstKeyAtADialog => crate::readiness::peer_asking(&self.pane, id)
+                .flatten()
+                .is_some(),
+        }
     }
 }
 
@@ -119,13 +179,24 @@ impl PaneAccess for StopsAtTheKey {
     /// ⚠ THE KEY GOES OUT UNCONDITIONALLY. A double that stopped writing once its own flag was up
     /// would be withholding the very keystroke the gates above assert reached the peer, so the
     /// flag is a consequence of the write and never a guard on it.
+    ///
+    /// ⚠⚠⚠ **AND THAT IS WHY THE LEDGER CAN BE TRUSTED.** A key pressed by a run that was already
+    /// over reaches the peer here exactly as it would in production, and is written down — so
+    /// *"nothing further was typed"* is measured rather than arranged.
     fn inject(
         &self,
         id: PaneId,
         keys: &[crate::access::KeyStroke],
     ) -> Result<crate::access::Written, crate::access::PaneError> {
+        let already = self.cancel.load(std::sync::atomic::Ordering::Acquire);
+        let ends = self.ends_the_run(id);
         let written = self.pane.inject(id, keys)?;
-        if self.seen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1 >= self.at {
+        if already {
+            self.after
+                .lock()
+                .expect("the ledger mutex")
+                .push(keys.iter().map(|key| key.key.as_str()).collect());
+        } else if ends {
             self.cancel
                 .store(true, std::sync::atomic::Ordering::Release);
         }

@@ -912,12 +912,21 @@
     <!--
       NO STANDING INSTRUCTION GOT THE RUN PAST THIS ONE. The person decides.
 
-      ⚠⚠ Two different things reach this edge and the driver's own report is
+      ⚠⚠ SEVERAL DIFFERENT THINGS reach this edge and the driver's own report is
       what tells them apart, because a state cannot carry a reason: no rule
-      claimed the dialog (`no_rule`), or one did and the refusing key did not
-      take it off the screen (`not_dismissed`, and NOTHING was typed). The
-      second matters most — a dialog still up reads an Enter as an answer to
-      itself, which is measured, so the run stops rather than saying its piece.
+      claimed the dialog (`no_rule`); one did and the refusing key did not take
+      it off the screen (`not_dismissed`); one did, the key went in, and the RUN
+      ENDED inside the wait, so nobody watched (`unwitnessed`). NOTHING WAS
+      TYPED in any of them, and that is what this edge is for — a dialog still
+      up reads an Enter as an answer to itself, which is measured, so the run
+      stops rather than saying its piece.
+
+      ⚠⚠⚠ AND THE SENTENCE ABOVE USED TO SAY *TWO*, which stopped being true the
+      round `Refused::StillUp` grew its second refusal and did not move with it.
+      What this edge MEANS is *the question is still up and this run has nothing
+      left to do about it*; WHICH refusals satisfy that is `Unanswered`'s
+      business and `Refusal::ALL` is the only list of them. A count written here
+      is a count nothing keeps in step.
     -->
     <transition event="screen.none" target="awaiting_human"/>
     <!--
@@ -1298,10 +1307,12 @@
     criterion.
 
     ⚠ `redirect.none` is the honest exit and not a defensive one. The refusing
-    key may not take the dialog off the screen — measured as `NotDismissed` for
-    `screening`'s own path — and a dialog still up reads an Enter as an answer to
-    itself. So nothing is typed and the person is woken, exactly as they are when
-    no rule claims a question.
+    key may not take the dialog off the screen — `not_dismissed` where it was
+    watched for the whole bound, `unwitnessed` where the run ended inside that
+    bound and nobody looked — and a dialog still up reads an Enter as an answer
+    to itself. So nothing is typed and the person is woken, exactly as they are
+    when no rule claims a question. ⚠ Which refusals arrive is `Unanswered`'s
+    business, as it is on `screen.none`; naming them is not counting them.
   -->
   <state id="redirecting">
     <onentry>
