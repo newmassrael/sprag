@@ -250,13 +250,33 @@ impl AiLoop {
         }
     }
 
+    /// **WHAT THE RUN IS WALKING AWAY FROM**, where its last turn ended on somebody else — or
+    /// [`None`] where it ended cleanly and there is nothing to say.
+    ///
+    /// ⚠ READ OFF THE DRIVER'S OWN [`Noticed`], which is cleared at every prompt and set only by
+    /// the barrier: after a turn that ENDED, it is `None` unless the peer stopped to ask or a person
+    /// took the pane. So this is exactly *"the account's turn did not finish, and here is who has
+    /// the pane"* — the two facts nothing downstream can recover once the run is over.
+    fn left_behind(&self) -> Option<String> {
+        match self.inner.noticed() {
+            Some(Noticed::Asking(unanswered)) => Some(format!(
+                " — no account: the agent stopped to ask ({unanswered:?}) and the question is still \
+                 on the pane, unanswered by this run"
+            )),
+            Some(Noticed::Interrupted(who)) => Some(format!(
+                " — no account: somebody took the pane ({who:?}) before the agent answered"
+            )),
+            _ => None,
+        }
+    }
+
     /// The verdict for a machine that has reached one of its five final states.
     ///
     /// # Errors
     ///
     /// [`PaneError::Undrivable`] for the document's `failed`, carrying the clause the driver
     /// recorded when it raised `fail`.
-    fn ended(&self, state: AiLoopState, spent: u64, note: String) -> Result<Step, PaneError> {
+    fn ended(&self, state: AiLoopState, spent: u64, mut note: String) -> Result<Step, PaneError> {
         let verdict = match state {
             // The agent said the word, `closing` got its report, and the report landed.
             AiLoopState::Converged => Verdict::Converged,
@@ -267,7 +287,22 @@ impl AiLoop {
             // so an exhausted run's [`Plugin::captured`] can be `Some`. The VERDICT is what tells a
             // caller the two accounts apart: this word and `converged` are the same shape of answer
             // about opposite outcomes, and nothing is written into the agent's own text to say so.
-            AiLoopState::Exhausted => Verdict::Exhausted(Ceiling::Turns),
+            //
+            // ⚠⚠⚠ **AND WHERE THERE IS NO ACCOUNT, THE NOTE SAYS WHY AND WHAT WAS LEFT BEHIND.**
+            // The account's turn can end blocked or interrupted, and both still end `exhausted` —
+            // the ending is the budget's, and no last question can change it. But the run then hands
+            // back `exhausted` and `None`, and a person who asked for a report has no way to tell
+            // *the agent wrote nothing* from *this build does not capture it*. Worse, the pane is
+            // not left tidy: a dialog raised in this turn is answered by nobody and OUTLIVES THE
+            // RUN, on a pane the run has just let go of. So the ONE authority that saw it says so.
+            // ⚠ `Verdict::Blocked` is deliberately not used: the run's ending is the budget, and a
+            // reader sent to raise `max_turns` is being sent to the right knob.
+            AiLoopState::Exhausted => {
+                if let Some(unfinished) = self.left_behind() {
+                    note.push_str(&unfinished);
+                }
+                Verdict::Exhausted(Ceiling::Turns)
+            }
             // Reached from `awaiting_human --unattended-->`, which nothing produces yet (registered
             // debt), and kept exhaustive rather than folded into the arm below it.
             AiLoopState::Blocked => Verdict::Blocked(self.asking()),
@@ -922,6 +957,84 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠ **AN ACCOUNT NOBODY COULD GIVE STILL ENDS THE RUN — AND THE RUN SAYS WHAT IT LEFT ON THE
+    /// PANE** — the driver's half of `stopping`'s shape, and the sweep item this round's own build
+    /// produced.
+    ///
+    /// # ⚠⚠⚠ What the document proves and what only a real pane can
+    ///
+    /// `an_account_that_cannot_be_had_does_not_change_the_ending` drives the DOCUMENT: every ending
+    /// of the stopping turn targets `exhausted`. What it cannot say is what a person is told, and
+    /// that is where the loss was: a run out of turns whose last question the agent never answered
+    /// hands back `exhausted` and no account, which is indistinguishable from a build that does not
+    /// capture one — **and it walks away from a dialog that is still on the pane**.
+    ///
+    /// ⚠⚠ THE PEER IS THE SAME PROGRAM AS THE ONE IN THE CONSENT GATE, asking at a different
+    /// moment ([`Asks`](crate::testing::Asks)). That is the point: a dialog in a WORKING turn is a
+    /// run that can still be helped — `screening` looks for a rule, a person is woken — and the
+    /// identical dialog in the ACCOUNT's turn can be helped by nobody, because the ending is already
+    /// decided. Two situations, one peer, and what separates them is which turn it is.
+    ///
+    /// ⚠ THE ENDING IS ASSERTED FIRST AND IT IS THE SAFETY PROPERTY: `blocked` here would mean a
+    /// reader sent to answer a question instead of to raise `max_turns`, and any route back into the
+    /// working cycle would re-take the budget guard and ask for another account for ever.
+    #[test]
+    fn a_run_whose_account_was_blocked_still_ends_and_says_what_it_left_on_the_pane() {
+        let (workspace, pane) =
+            crate::testing::standin_agent_asking(crate::testing::Asks::WhenTheRunStopsShort);
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(2), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 40,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walked: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|entry| entry.note.clone())
+            .collect();
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Turns),
+            "⚠⚠⚠ A RUN OUT OF TURNS ENDS ON ITS BUDGET EVEN WHERE THE LAST QUESTION WENT UNANSWERED. \
+             `blocked` would send a reader to answer a dialog when the knob they need is \
+             `max_turns`; anything that carried on would re-take the budget guard at the next \
+             judgement and ask for another account, for ever. Walked: {walked:?}",
+        );
+        // ⚠ THE CONTROL: the run must actually have got as far as asking. A peer whose dialog never
+        // fired would end `exhausted` too, and every assertion below would be about nothing.
+        assert!(
+            walked.iter().any(|note| note.contains("Stopping")),
+            "⚠ the run must have reached `stopping` and been blocked in it: {walked:?}",
+        );
+        assert_eq!(
+            loops.captured(),
+            None,
+            "⚠⚠ and there is no account, because the agent never gave one — publishing the work \
+             turns' text here would answer *what did it say last* to somebody who asked *what did \
+             it do*, which is the distinction the whole capture rests on",
+        );
+        let last = walked.last().expect("a run writes a journal");
+        assert!(
+            last.contains("no account")
+                && last.contains("still on the pane")
+                && last.contains("Do you want to proceed?"),
+            "⚠⚠⚠ THE RUN MUST SAY WHAT IT WALKED AWAY FROM. `exhausted` with an empty report is \
+             indistinguishable from a build that captures nothing — and the dialog this run \
+             provoked OUTLIVES it, on a pane nobody is now driving. This driver is the only \
+             authority that saw either fact: {last:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **A LOOP THAT SPENDS ITS AUTHOR'S TURNS SAYS SO, AND NAMES THE KNOB THAT WOULD BUY IT
     /// MORE** — the whole reason [`Ceiling::Turns`] exists.
     ///
@@ -1054,7 +1167,8 @@ mod tests {
         /// One run against a peer that raises a permission dialog on its first turn, with whatever
         /// answering contract `may_answer` declares — and what became of it.
         fn run_with(may_answer: Option<crate::consent::Consents>) -> (OutcomeState, Option<i64>) {
-            let (workspace, pane) = crate::testing::standin_agent_asking();
+            let (workspace, pane) =
+                crate::testing::standin_agent_asking(crate::testing::Asks::OnItsFirstPrompt);
             let access = crate::testing::supervised_asking(&workspace);
             let mut loops = AiLoop::new(
                 engine(),

@@ -1068,6 +1068,27 @@ impl Accounts {
     }
 }
 
+/// **WHICH TURN [`standin_agent_asking`] RAISES ITS DIALOG IN.**
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Asks {
+    /// The first prompt it recognises, whatever that prompt is — the shape every gate before
+    /// `stopping` existed drove, and the one a working turn's dialog has.
+    OnItsFirstPrompt,
+    /// Only when asked where the run got to, answering every working prompt plainly — so the run
+    /// spends its budget, reaches `stopping`, and its ACCOUNT is the turn that gets blocked.
+    WhenTheRunStopsShort,
+}
+
+impl Asks {
+    /// The `case` pattern that decides it: everything, or the stopping question alone.
+    const fn pattern(self) -> &'static str {
+        match self {
+            Self::OnItsFirstPrompt => "*",
+            Self::WhenTheRunStopsShort => "*'STOP_QUESTION'*",
+        }
+    }
+}
+
 /// **A VERBATIM SLICE OF `stop_prompt`** — the question `ai_loop.scxml` asks a run that is ending
 /// without having got there, as every peer in this file keys its answer on it.
 ///
@@ -1256,7 +1277,16 @@ pub(crate) fn parsed_dialog(rows: &[&str]) -> Option<sprag_detect::Question> {
 /// turn never ends, and a run that had already reached its milestone burns its whole wall clock in
 /// `closing` — measured here, as `exhausted — duration` on a run that had converged in every sense
 /// but the last one.
-pub(crate) fn standin_agent_asking() -> (Arc<Mutex<Workspace>>, PaneId) {
+///
+/// # ⚠⚠⚠ [`Asks`] — WHICH turn the question lands in, and why that is a parameter
+///
+/// A dialog raised in a WORKING turn is a run that can still be helped: `screening` looks for a
+/// rule, and failing that a person is woken. A dialog raised in the turn that asks for the run's
+/// ACCOUNT is a different situation entirely — the ending is already decided, so there is nothing
+/// to unblock and nobody is woken, and what is left behind is **a question on somebody's pane that
+/// outlives the run**. The peer is the same program; only the moment differs, which is exactly what
+/// makes it a parameter rather than a second fixture.
+pub(crate) fn standin_agent_asking(asks: Asks) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; s=0; k=''; \
@@ -1265,6 +1295,7 @@ bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
 while read line; do \
   printf '%s\\n' \"$line\"; \
   case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
+  case \"$line\" in ASKS_AT) ;; *) n=$((n+1)); printf 'ACK %s\\n' \"$n\"; bump; continue;; esac; \
   if [ $asked -eq 0 ]; then \
     asked=1; \
     printf 'Bash command\\n'; \
@@ -1284,6 +1315,9 @@ while read line; do \
   fi; \
   n=$((n+1)); printf 'MILESTONE REACHED\\n'; bump; \
 done"
+        // ⚠ THE PATTERN FIRST: it CONTAINS the placeholder for one of the two variants, so
+        // substituting the question first would leave the pattern's own copy unreplaced.
+        .replace("ASKS_AT", asks.pattern())
         .replace("STOP_QUESTION", STOP_QUESTION);
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");

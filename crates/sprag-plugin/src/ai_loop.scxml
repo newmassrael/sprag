@@ -998,10 +998,15 @@
                    stopped answering, so there is nothing left to ask WITH: the
                    brief was refused at the door, the prompts cannot be read out
                    of the datamodel, or the replacement session never came up.
-        blocked    the peer is sitting at a dialog nobody answered. Typing a
-                   question into that pane ANSWERS THE DIALOG — which is exactly
-                   what `screen.none` and `redirect.none` refuse to do, and for
-                   the same reason.
+        blocked    reached only through `awaiting_human`, and all three of ITS
+                   doors say the same thing: somebody or something else owns
+                   that pane. `screen.none` and `redirect.none` leave a dialog
+                   nobody answered up, and typing a question into that pane
+                   ANSWERS THE DIALOG — which is exactly what those two refuse
+                   to do, and for the same reason. `turn.interrupted` and `hold`
+                   put a PERSON at the keyboard, and a run must not prompt
+                   underneath one. A question needs a pane this run may type in,
+                   and by the time `blocked` is reached there is not one.
 
       So the run's account is asked for wherever it CAN be, and where it cannot
       the reason is a fact about the pane rather than a decision anybody took.
