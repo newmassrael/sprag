@@ -2134,6 +2134,74 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **CAN A DOCUMENT IN THIS TREE OWN A CHILD MACHINE?** — asked of the engine, before
+    /// anything is designed on the answer.
+    ///
+    /// # ⚠⚠⚠ Why this is a gate and not a paragraph
+    ///
+    /// The analysis a loop needs before it can improve its own context is a PROCESS — open the
+    /// closed sessions' records, count what recurs, ask a narrow question, write one file — and a
+    /// process with steps is a machine rather than a function. W3C's answer for *a machine that
+    /// runs another machine* is `<invoke>`, and the whole design rests on whether this tree has it.
+    ///
+    /// **It was nearly designed on a guess, twice, in opposite directions.** First reading said no,
+    /// from a comment in the pinned engine's W3C manifest (*"the seed has no `<invoke>` tests"*) —
+    /// which is a fact about a TEST SUITE and not about the generator. The owner said it was
+    /// supported; the generator's own filters said so too. **Neither is this crate compiling and
+    /// running one**, which is the only thing that settles it — the same rule `ai_loop.scxml`
+    /// already carries about `===` and `JSON.stringify`: *the engine will answer; the name at the
+    /// top of the document will not.*
+    ///
+    /// # ⚠⚠ The three separate answers, and why each one matters
+    ///
+    /// 1. **IT COMPILES.** The generator emits a typed child (`Option<Box<Engine<ChildPolicy>>>`),
+    ///    a pending-invoke pass that starts it, a read of the child's `<donedata>`, and a cancel on
+    ///    the way out of the invoking state — the parent owning the child's lifecycle, which is the
+    ///    property that makes a sub-machine worth having at all.
+    /// 2. **THE CHILD RUNS**, without anybody driving it: the parent reaches `heard`, which is only
+    ///    reachable on `done.invoke.probe`.
+    /// 3. ⚠⚠⚠ **AND ITS ANSWER CROSSES.** `<donedata>` arriving as `_event.data` is the whole
+    ///    reason to prefer a child machine over a function call, and it is the half most likely to
+    ///    be missing quietly — a child that ran and told the parent nothing would look identical
+    ///    from the outside until somebody tried to use the answer.
+    #[test]
+    fn a_document_here_can_invoke_a_child_machine_and_hear_what_it_answered() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(crate::sm::probe_parent_sm::ProbeParentPolicy::new(lua));
+        engine.initialize();
+        // ⚠ The invoke is DEFERRED (W3C SCXML 6.4: a static invoke starts after the macrostep that
+        // entered its state), so the parent is stepped rather than read straight after `initialize`.
+        for _ in 0..8 {
+            engine.step();
+        }
+
+        assert_eq!(
+            engine.get_current_state(),
+            crate::sm::probe_parent_sm::ProbeParentState::Heard,
+            "⚠⚠⚠ the parent must have HEARD its child finish. `heard` is reachable only on \
+             `done.invoke.probe`, so anything else means the child never ran, never finished, or \
+             finished without telling the parent — and a sub-machine nobody hears from is a \
+             function call with extra steps",
+        );
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let carried = engine
+            .policy()
+            .script_engine
+            .get_variable(&session, "carried");
+        assert!(
+            matches!(&carried, Ok(ScriptValue::String(said)) if said == "the child ran"),
+            "⚠⚠⚠ AND THE CHILD'S OWN ANSWER MUST CROSS. `<donedata>` reaching the parent as \
+             `_event.data` is the whole reason to prefer a child MACHINE over a function: a child \
+             that ran and answered nothing looks identical from outside until somebody needs what \
+             it worked out. Got {carried:?}",
+        );
+    }
+
     /// ⚠⚠⚠ **A LOOK THAT FOUND NOTHING IS NOT A TRANSITION, AND THE JOURNAL MAY NOT SAY IT WAS.**
     ///
     /// # ⚠⚠⚠ The document is the single source of truth, and the journal was contradicting it
