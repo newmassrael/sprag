@@ -34,6 +34,35 @@
 //! any observer of a screen can honestly claim, and the delivery still proceeds. What changed is
 //! that a caller is no longer told it was proved.
 //!
+//! ## ⚠⚠⚠ And a screen can be carrying the needle before a byte goes in
+//!
+//! Both paragraphs above are about WHO painted the text. There is a third question underneath them
+//! that neither asks: **was it painted by THIS delivery?** A read-back is a predicate over the
+//! present, and *"the needle is on the screen"* is satisfied by a screen that was already carrying
+//! it — a supervisor sending the SAME prompt twice, an agent whose transcript still shows the last
+//! one, a marker a program prints on every turn.
+//!
+//! It is not a corner. Measured live, an outer loop's `turn_prompt` is a fixed sentence, so from the
+//! second turn on the confirmation needle is a string the agent's own transcript is still showing —
+//! and the delivery came back `Confirmed` **in one poll, before the program had read a byte**. The
+//! [`Delivery::then_press`] then went in on top of the unread text, which is a pty read of
+//! `…prompt…\r` rather than a prompt followed by a keystroke, and a live `claude` kept the whole
+//! thing in its composer and started no turn. Three live runs, three times.
+//!
+//! So the wait is against a BASELINE: the pane's collapsed screen is read once before the first
+//! injection, and the needle counts as arrived only when the screen carrying it is **not the screen
+//! that was there before**. That is [`ReadyWhen::Prints`](crate::readiness::ReadyWhen::Prints)'
+//! argument — *a condition satisfied by what was already true when you started is not evidence* —
+//! applied at the other end of the same turn.
+//!
+//! ⚠ It is a CHANGE and not `Prints`' occurrence COUNT, deliberately. A count's residue is that
+//! text scrolling off lowers it, and the thing being delivered here is often long enough to scroll
+//! the old copy away as it lands — which would be a false NEGATIVE whose price is a retry that
+//! doubles the text and then a refusal. The residue this takes instead is stated: a screen that
+//! changes for an unrelated reason inside the grace (a peer still printing, a footer with a clock)
+//! is a change this cannot tell from the program taking the text. It narrows the hole rather than
+//! closing it, and what closes it is a peer that paints what it read — which every agent CLI does.
+//!
 //! ## Why this is not a method on `PaneAccess`
 //!
 //! It waits, so it is bounded, so it must be cancellable, so it needs the run-scoped
@@ -144,6 +173,10 @@ pub enum Delivered {
     /// The text is on the pane's screen AND THE PROGRAM IS WHAT PUT IT THERE — the pane's echo is
     /// off, so nothing but the program could have painted it. `attempts` is how many injections it
     /// took, so a caller that wants to know whether this pane swallows input can find out.
+    ///
+    /// ⚠⚠ **AND THE SCREEN IS ONE THIS DELIVERY CHANGED**, which is the other half of *put it
+    /// there*: a needle the pane was already carrying says nothing about the bytes just written,
+    /// whoever painted the old copy. See the module docs' third hazard.
     Confirmed { attempts: u32, written: Written },
     /// The text is on the pane's screen and **nothing here can say the program is what put it
     /// there**, so it is not evidence the program read a byte.
@@ -220,6 +253,12 @@ impl Delivered {
 /// Returns as soon as the text is visible; [`Delivery::then_press`] is sent only after that, so an
 /// Enter can never submit an empty prompt.
 ///
+/// ⚠⚠⚠ **VISIBLE MEANS VISIBLE ON A SCREEN THIS DELIVERY CHANGED.** The pane's collapsed screen is
+/// read once before the first injection, and a read-back that finds the needle on that same screen
+/// is not evidence — see the module docs. Without it, a caller who sends the same text twice gets
+/// the second delivery confirmed off the first one's echo, and the submit lands on text no program
+/// has read.
+///
 /// # Errors
 ///
 /// [`PaneError`] when the pane is unknown, a key cannot be encoded, or a write fails — the same
@@ -236,6 +275,11 @@ pub fn deliver(
     let keys = KeyStroke::text(text);
     let mut written = 0_u64;
     let mut attempts = 0_u32;
+    // ⚠⚠⚠ THE BASELINE, taken before a byte goes in — see the module docs. Read ONCE for the whole
+    // delivery rather than per attempt, so a paint that arrives late (the first injection landing
+    // while the second is being made) still confirms instead of being compared against a screen it
+    // had already moved.
+    let before = panes.pane_collapsed(pane);
 
     for _ in 0..spec.attempts.max(1) {
         if run.stopped() {
@@ -246,7 +290,14 @@ pub fn deliver(
         }
         attempts += 1;
         written += panes.inject(pane, &keys)?.bytes();
-        match await_text(panes, run, pane, needle, spec.echo_timeout) {
+        match await_text(
+            panes,
+            run,
+            pane,
+            needle,
+            spec.echo_timeout,
+            before.as_deref(),
+        ) {
             Seen::Stopped => {
                 return Ok(Delivered::Stopped {
                     attempts,
@@ -320,7 +371,13 @@ enum Seen {
     Stopped,
 }
 
-/// Wait, bounded by `timeout` AND by the run's own deadline, for `needle` to appear on the pane.
+/// Wait, bounded by `timeout` AND by the run's own deadline, for `needle` to appear on a pane whose
+/// screen is **no longer the one `before` recorded**.
+///
+/// ⚠⚠⚠ `before` is the whole claim and not a refinement of it. `Some(screen)` is what the pane was
+/// showing when the delivery began; a read-back equal to it has learned that nothing has happened
+/// yet, however many times the needle occurs in it. `None` means the pane could not be read at the
+/// baseline, which the loop below answers the same way it answers a pane that has gone away.
 ///
 /// ⚠⚠ **THE SECOND BOUNDED WAIT IN THIS CRATE**, and it is here rather than routed through
 /// [`poll_until`](crate::run::poll_until) because it needs a THREE-way predicate: a pane that has
@@ -336,6 +393,7 @@ fn await_text(
     pane: PaneId,
     needle: &str,
     timeout: Duration,
+    before: Option<&str>,
 ) -> Seen {
     let start = std::time::Instant::now();
     loop {
@@ -345,7 +403,9 @@ fn await_text(
         // An unknown pane can never show anything, and saying so at once beats spending the whole
         // grace on it — the caller's next `inject` will report `UnknownPane` properly.
         match panes.pane_collapsed(pane) {
-            Some(text) if text.contains(needle) => return Seen::Yes,
+            Some(text) if text.contains(needle) && Some(text.as_str()) != before => {
+                return Seen::Yes;
+            }
             None => return Seen::No,
             Some(_) => {}
         }
@@ -588,6 +648,83 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠ **A NEEDLE THE SCREEN WAS ALREADY CARRYING IS NOT THIS DELIVERY'S EVIDENCE** — the third
+    /// hazard in the module docs, and the one that reached a live agent.
+    ///
+    /// Both peers are shown the needle BEFORE anything is written to them, which is the ordinary
+    /// case rather than an exotic one: an outer loop's turn prompt is a fixed sentence, so from the
+    /// second turn on the confirmation needle is a string the agent's own transcript is still
+    /// showing.
+    ///
+    /// * **THE SUBJECT** never reads a byte (`sleep`), so nothing about the delivery can be true.
+    ///   The old rule — *is the needle on the screen?* — answered YES on the first poll and
+    ///   returned `Confirmed`, the answer whose own doc says THE PROGRAM PUT IT THERE, about a peer
+    ///   that was going to read nothing. The submit then went in on top of unread text.
+    /// * **THE CONTROL** is the same screen with a peer that DOES read. It must still confirm, or
+    ///   the fix would have made *"deliver the same text twice"* impossible — which is the thing an
+    ///   outer loop does on every turn.
+    ///
+    /// ⚠ The pair is the whole test. Without the control this passes for a build that never
+    /// confirms anything; without the subject it passes for the defect.
+    #[test]
+    fn a_needle_the_screen_already_carried_is_not_evidence_that_this_delivery_landed() {
+        /// What both peers print before a byte is written to them — the previous turn's prompt,
+        /// still on the transcript.
+        const ALREADY: &str = "Continue toward: pay the debt";
+        /// What is delivered. Longer than the needle so a peer that reads it changes the screen.
+        const PROMPT: &str = "Continue toward: pay the debt, next smallest thing";
+
+        let deliver_over = |after_go: &str| {
+            let (access, pane) = ready_peer(&peer(&format!("printf '{ALREADY}'; {after_go}")));
+            // THE STAGING, asserted rather than assumed: the needle really is on the screen before
+            // the delivery begins. A fixture whose `printf` had not landed yet would be measuring
+            // the ordinary case and calling it the hazard.
+            assert!(
+                shows(&access, pane, ALREADY, Duration::from_secs(10)),
+                "the peer must be showing the needle before anything is written: {:?}",
+                access.pane_collapsed(pane),
+            );
+            let outcome = deliver(
+                &access,
+                &RunContext::uncancellable(),
+                pane,
+                PROMPT,
+                &Delivery {
+                    confirm: Some(ALREADY.to_owned()),
+                    echo_timeout: Duration::from_millis(150),
+                    attempts: 2,
+                    ..Delivery::new()
+                },
+            )
+            .expect("a peer that ignores input is not an error");
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (outcome, screen)
+        };
+
+        let (subject, subject_screen) = deliver_over("exec sleep 60");
+        assert!(
+            matches!(subject, Delivered::Unconfirmed { attempts: 2, .. }),
+            "⚠⚠⚠ A PEER BLOCKED IN `sleep` HAS READ NOTHING, so no reading of this delivery is \
+             true — and the needle being on its screen is a fact about the previous turn. Reported \
+             {subject:?} over a screen that never changed: {subject_screen:?}",
+        );
+        assert!(
+            !subject.is_on_screen(),
+            "and not the weaker answer either: `OnScreenOnly` would still send the submit, which \
+             is exactly what put an Enter on top of text no program had read: {subject:?}",
+        );
+
+        let (control, control_screen) = deliver_over("exec cat");
+        assert!(
+            control.is_confirmed(),
+            "⚠⚠⚠ THE CONTROL: a peer that READS the same text on the same screen must still be \
+             confirmed. An outer loop delivers the same turn prompt every turn, so a rule that \
+             refused a repeat would refuse every turn after the first. Got {control:?} over \
+             {control_screen:?}",
+        );
+    }
+
     /// Readiness, in both directions — and the pane that is NOT ready still takes a delivery, which
     /// is why [`deliver`] consults this and does not gate on it.
     #[test]
@@ -652,13 +789,38 @@ mod tests {
     /// read-backs — the swallowed-input window, made exact.
     struct Recorder {
         text: String,
+        /// ⚠⚠⚠ **WHAT THE SCREEN IS CARRYING BEFORE A BYTE IS WRITTEN**, which is the fact
+        /// [`deliver`]'s baseline is about and the one this double used to refuse to model: it
+        /// answered `text` from the first read, so every gate over it confirmed a delivery on a
+        /// screen that had never moved, and the defect the module's third hazard describes was
+        /// invisible here by construction.
+        ///
+        /// Empty for a pane that starts blank; equal to [`text`](Self::text) for the pane that
+        /// stages the hazard — a screen already showing the needle and never changing again.
+        showing_before: String,
         hidden_reads: Mutex<u32>,
         injected: Mutex<Vec<Vec<String>>>,
-        /// Raised on the first read-back, so a cancel lands INSIDE the wait rather than before it.
+        /// Raised on the first read-back AFTER an injection, so a cancel lands INSIDE the wait
+        /// rather than before it.
+        ///
+        /// ⚠ *After an injection* rather than *on the first read* since the baseline exists: the
+        /// baseline read happens before the loop's first stop check, so a flag raised on it would
+        /// end the delivery having written nothing — a different arm from the one this stages.
         cancel_on_read: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl Recorder {
+        /// A blank-screened double showing `text` once something has been injected.
+        fn showing(text: &str) -> Self {
+            Self {
+                text: text.to_owned(),
+                showing_before: String::new(),
+                hidden_reads: Mutex::new(0),
+                injected: Mutex::new(Vec::new()),
+                cancel_on_read: None,
+            }
+        }
+
         /// One delivery against this double, with a short grace and no retries.
         fn deliver_once(self, text: &str, confirm: Option<&str>) -> Delivered {
             let spec = Delivery {
@@ -675,13 +837,19 @@ mod tests {
             vec![PaneId(1)]
         }
         fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            // ⚠ THE BASELINE READ IS NOT A READ-BACK. Nothing has been written yet, so what the
+            // screen holds is whatever was there before this delivery — and neither the cancel nor
+            // the swallowed-input window is about that moment.
+            if self.injected.lock().expect("the log").is_empty() {
+                return Some(self.showing_before.clone());
+            }
             if let Some(cancel) = &self.cancel_on_read {
                 cancel.store(true, std::sync::atomic::Ordering::Release);
             }
             let mut left = self.hidden_reads.lock().expect("the counter");
             if *left > 0 {
                 *left -= 1;
-                return Some(String::new());
+                return Some(self.showing_before.clone());
             }
             Some(self.text.clone())
         }
@@ -735,12 +903,10 @@ mod tests {
     #[test]
     fn the_submit_is_sent_once_and_only_after_the_text_is_confirmed() {
         let panes = Recorder {
-            text: "hello".to_owned(),
             // Two read-backs come up empty, so the first injection's whole grace expires and a
             // second injection is made — the retry path, with the submit still pending.
             hidden_reads: Mutex::new(2),
-            injected: Mutex::new(Vec::new()),
-            cancel_on_read: None,
+            ..Recorder::showing("hello")
         };
         let outcome = deliver(
             &panes,
@@ -771,6 +937,60 @@ mod tests {
         assert!(log.len() >= 2, "the retry really happened: {log:?}");
     }
 
+    /// ⚠⚠⚠ **AND THE SUBMIT IS NOT SENT AT ALL WHEN THE ONLY EVIDENCE IS TEXT THAT WAS ALREADY
+    /// THERE** — the ORDER claim for the module's third hazard, which a screen cannot show.
+    ///
+    /// This is the live symptom staged: `deliver` returned success, `then_press` went in behind an
+    /// injection the program had not read, and the pty handed the peer `…prompt…\r` as ONE read
+    /// rather than a prompt and then a keystroke. A live `claude` kept the whole thing in its
+    /// composer and started no turn — three runs, three times.
+    ///
+    /// ⚠ Its twin above (`the_submit_is_sent_once_and_only_after_the_text_is_confirmed`) is the
+    /// positive half: the same double, with the screen blank until something is injected, sends
+    /// exactly one Enter and sends it last. The two differ ONLY in what the screen was carrying
+    /// beforehand, which is the fact under test.
+    #[test]
+    fn a_submit_is_never_sent_over_a_screen_this_delivery_did_not_change() {
+        /// The needle, on the screen before a byte goes in and for ever after — a peer that takes
+        /// nothing and repaints nothing.
+        const ALREADY: &str = "Continue toward: pay the debt";
+
+        let panes = Recorder {
+            showing_before: ALREADY.to_owned(),
+            ..Recorder::showing(ALREADY)
+        };
+        let outcome = deliver(
+            &panes,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            ALREADY,
+            &Delivery {
+                echo_timeout: Duration::from_millis(20),
+                attempts: 2,
+                ..Delivery::new()
+            },
+        )
+        .expect("no error");
+
+        let log = panes.injected.lock().expect("the log").clone();
+        assert!(
+            matches!(outcome, Delivered::Unconfirmed { attempts: 2, .. }),
+            "a screen that never moved confirms nothing, however many times it carries the \
+             needle: {outcome:?}",
+        );
+        assert!(
+            !log.iter().any(|keys| keys == &vec!["Enter".to_owned()]),
+            "⚠⚠⚠ AND NO SUBMIT. An Enter behind text the program has not read is not a submitted \
+             prompt — it is a byte the pty appends to the same unread run, and the turn never \
+             starts. Injected: {log:?}",
+        );
+        assert_eq!(
+            log.len(),
+            2,
+            "both attempts wrote the text, and only the text: {log:?}"
+        );
+    }
+
     /// A run cancelled while WAITING for the echo stops there, having paid for what it wrote.
     ///
     /// The other cancel arm, and the one a real supervisor hits: the wait is where a delivery spends
@@ -780,10 +1000,9 @@ mod tests {
     fn a_run_cancelled_while_waiting_for_the_echo_stops_there() {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let panes = Recorder {
-            text: String::new(), // never shows the text, so only the cancel can end the wait
-            hidden_reads: Mutex::new(0),
-            injected: Mutex::new(Vec::new()),
+            // never shows the text, so only the cancel can end the wait
             cancel_on_read: Some(Arc::clone(&cancel)),
+            ..Recorder::showing("")
         };
         let outcome = deliver(
             &panes,
@@ -828,12 +1047,8 @@ mod tests {
     fn a_run_out_of_time_ends_a_delivery_that_is_still_waiting_for_its_echo() {
         let grace = Duration::from_millis(400);
         let attempt = |deadline: Option<Duration>| {
-            let panes = Recorder {
-                text: String::new(), // never shows the text, so only a bound can end the wait
-                hidden_reads: Mutex::new(0),
-                injected: Mutex::new(Vec::new()),
-                cancel_on_read: None,
-            };
+            // never shows the text, so only a bound can end the wait
+            let panes = Recorder::showing("");
             let mut spec = Delivery::new();
             spec.echo_timeout = grace;
             spec.attempts = 2;
@@ -887,13 +1102,8 @@ mod tests {
     #[test]
     fn text_a_prompt_box_broke_in_half_is_confirmed_on_a_fragment() {
         let bordered = |confirm: Option<&str>| {
-            Recorder {
-                text: "> the quick brown \u{2502}\u{2502} fox jumps".to_owned(),
-                hidden_reads: Mutex::new(0),
-                injected: Mutex::new(Vec::new()),
-                cancel_on_read: None,
-            }
-            .deliver_once("the quick brown fox jumps", confirm)
+            Recorder::showing("> the quick brown \u{2502}\u{2502} fox jumps")
+                .deliver_once("the quick brown fox jumps", confirm)
         };
 
         assert!(
@@ -910,12 +1120,7 @@ mod tests {
     #[test]
     fn a_cancelled_run_stops_and_claims_nothing() {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let panes = Recorder {
-            text: "hello".to_owned(),
-            hidden_reads: Mutex::new(0),
-            injected: Mutex::new(Vec::new()),
-            cancel_on_read: None,
-        };
+        let panes = Recorder::showing("hello");
         let outcome = deliver(
             &panes,
             &RunContext::new(cancel),

@@ -4096,6 +4096,266 @@ fn what_a_live_agents_report_looks_like_to_a_reader() {
     );
 }
 
+/// ⚠⚠⚠ **WHAT BECOMES OF A PROMPT WHOSE CONFIRMATION WAS ALREADY ON THE SCREEN** — register item
+/// 222, asked of a live agent rather than reasoned about.
+///
+/// # ⚠⚠⚠ The evidence this was written from
+///
+/// Three live runs of the ceiling gates ended with the turn prompt sitting INSIDE `claude`'s
+/// composer box, the agent idle underneath it, and the earlier prompts shown without that box —
+/// i.e. submitted. `deliver` had returned success, so the text had been read back off the screen and
+/// Enter had been injected behind it. **The turn never started**, so nothing could be asked for an
+/// account, and the run spent its whole window on `Working --Null--> Working`.
+///
+/// # What this stages, and why it is the ordinary case
+///
+/// An outer loop's `turn_prompt` is a FIXED sentence — `'Continue toward: ' + milestone + …` — and
+/// the confirmation needle is its leading run of columns. So from the second turn on, **the needle
+/// is a string the agent's own transcript is still showing**, and *"is the needle on the screen?"*
+/// is answered YES by the previous turn before a byte of this one has been read. The submit then
+/// goes in on top of unread text, which the pty hands the program as one read of `…prompt…\r`
+/// rather than as a prompt and then a keystroke.
+///
+/// Two turns, one session, and the two prompts DIFFER ONLY PAST COLUMN 40:
+///
+/// * they share a confirmation needle, so the second delivery meets the first one's echo;
+/// * they have different ANSWERS, so what says the second turn ran is a word that cannot have come
+///   from the first turn or from either prompt's own echo.
+///
+/// # ⚠⚠ The staging is asserted, not assumed
+///
+/// Between the turns this demands that the needle really is still on the screen. A run where the
+/// agent's reply had scrolled the first prompt away would be measuring the ordinary case and
+/// calling it the hazard — R388's rule, met here as *ask the pane before drawing the conclusion*.
+///
+/// ⚠ It asserts the CONSEQUENCE (the turn ran and the agent answered it) rather than a timing. How
+/// long a delivery waits is a fact about how fast a model repaints, and this project has paid for
+/// gates that asserted a model's speed; the durations are printed instead.
+///
+/// # ⚠⚠⚠ THE ANSWER, MEASURED — AND IT NEEDED BOTH SHAPES TO BE READABLE
+///
+/// The single-line shape was written first, on the reading that the stale confirmation was the
+/// whole cause. **Alone it is not, and the first live run said so**: against `claude` 2.1.233 the
+/// second single-line delivery confirmed off the previous turn's echo in **269.95 µs** — no program
+/// had read a byte, the Enter went in behind it — **and the agent submitted it anyway**. A gate
+/// that had stopped there would have cleared the delivery path and left item 222 open.
+///
+/// So the shape was made the variable, because what those three failing runs delivered and that
+/// probe did not is a **multi-line prompt**: the outer loop's `start_prompt` is five clauses joined
+/// with `\n`, and [`KeyStroke::text`] encodes each one as a bare 0x0A into a raw-mode TUI (register
+/// item 8). The same 324-byte five-line prompt, in one session, measured against the OLD rule:
+///
+/// | turn | the delivery | the turn |
+/// |---|---|---|
+/// | 1, a needle nobody had seen | `Confirmed` after **10.6 ms** — a real repaint | `Over::Yes` |
+/// | 2, the needle already on screen | `Confirmed` after **308 µs** — nothing had happened | **`Over::NotYet`** |
+///
+/// and turn 2's pane is register item 222's evidence exactly: the prompt inside the composer's box
+/// rule, the agent idle under it, the run's whole window spent. ⚠ The submitted copy above it reads
+/// `❯ North star:` and the unsent one reads `❯\u{a0}North star:` — **a no-break space where the
+/// submitted one has a plain one**, which is the agent's own rendering saying it took the second
+/// one as a block of pasted text rather than as something typed.
+///
+/// **So the cause is a CONJUNCTION, and only one half of it is ours.** A confirmation satisfied by
+/// the previous turn's echo puts the submit into the same unread run of pty bytes as the text; a
+/// program handed `…five lines…\r` in one read takes the whole thing as a paste and the trailing
+/// carriage return with it. Neither half alone leaves a prompt unsent — turn 1 is multi-line and
+/// runs, and the single-line turn 2 is stale-confirmed and runs. The half this workspace owns is
+/// the first, and [`deliver`]'s baseline removes it: turn 2 now costs one poll interval, which is a
+/// round trip through the program, and both shapes run.
+///
+/// ⚠ Each shape gets a session of its own, because a transcript is an input to what an agent's
+/// composer does next — see the suggestion this gate met on the way.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_prompt_whose_confirmation_was_already_on_the_screen_still_starts_a_turn() {
+    /// How long one of these one-word turns may take.
+    const REPLY_WITHIN: Duration = Duration::from_secs(60);
+
+    /// **THE SHAPES A LOOP ACTUALLY DELIVERS**: a label, the two prompts, and the word only the
+    /// SECOND of them can put on the pane.
+    ///
+    /// ⚠ The two prompts of a pair are identical for their first 40 columns and differ after it,
+    /// which is what makes the second delivery meet the first one's echo. That is not contrived:
+    /// `turn_prompt` is `'Continue toward: ' + milestone`, fixed for the life of a run.
+    ///
+    /// ⚠⚠ The multi-line pair is the document's own `start_prompt` composition — `North star:` /
+    /// `Milestone:` / `What to carry:` / a report clause / a marker clause, joined with `\n` and
+    /// ending with one — with a milestone cheap enough to answer without a tool.
+    const SHAPES: &[(&str, &str, &str, &str)] = &[
+        (
+            "one line",
+            "Reply with one word and no tool: what is 1 plus 1 in English?",
+            "Reply with one word and no tool: what is 2 plus 2 in English?",
+            "four",
+        ),
+        (
+            "many lines",
+            "North star: answer from what you already know and use no tool\n\
+             Milestone: say what 1 plus 1 is, in English, in one word\n\
+             What to carry: nothing; the arithmetic is the whole task\n\
+             Report what you did and what is left.\n\
+             When the milestone is fully reached AND verified, make the last line of your reply \
+             exactly: MILESTONE REACHED\n",
+            "North star: answer from what you already know and use no tool\n\
+             Milestone: say what 2 plus 2 is, in English, in one word\n\
+             What to carry: nothing; the arithmetic is the whole task\n\
+             Report what you did and what is left.\n\
+             When the milestone is fully reached AND verified, make the last line of your reply \
+             exactly: MILESTONE REACHED\n",
+            "four",
+        ),
+    ];
+
+    let mut refused: Vec<String> = Vec::new();
+    for (shape, first, second, only_the_second_answers) in SHAPES {
+        // ⚠ The needle the way the OUTER LOOP builds it — a leading run of 40 COLUMNS. These
+        // prompts are ASCII, where a column is a character, so `chars().take(40)` is
+        // `outer::confirmable`'s answer for them; a wide-glyph prompt would need that function,
+        // which is private for the reason register item 27 records.
+        let needle: String = first.chars().take(40).collect();
+        assert_eq!(
+            needle,
+            second.chars().take(40).collect::<String>(),
+            "⚠⚠⚠ {shape}: THE INSTRUMENT. The two prompts must share their confirmation needle, or \
+             the second delivery never meets the first one's echo and this pair measures nothing",
+        );
+        assert!(
+            !first.contains(only_the_second_answers) && !second.contains(only_the_second_answers),
+            "⚠⚠ {shape}: and neither prompt may carry the second turn's answer, or the pane would \
+             show it whether or not a turn ever ran",
+        );
+
+        // ⚠⚠⚠ A SESSION OF ITS OWN PER SHAPE, and the first run of this gate is why. After two
+        // prompts differing only in a digit, `claude` left `what is 3 plus 3 in English?` sitting
+        // in its composer — **a prompt nobody typed**, offered from the two before it. A second
+        // shape driven onto that transcript would be delivered into a composer already holding
+        // something, and a supervisor reading the screen cannot tell an agent's own suggestion from
+        // text a run put there. Registered rather than handled here.
+        let live = Live::start(&format!("already-showing-{}", shape.replace(' ', "-")));
+        let began = Instant::now();
+        let run = RunContext::uncancellable();
+
+        let reached = Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+        assert_eq!(
+            reached,
+            Reached::Yes,
+            "{shape}: the agent must be up and at rest before it is spoken to: {}",
+            live.tail(3),
+        );
+        step(began, &format!("{shape}: the agent is up"));
+
+        // ⚠ ONE closure for both turns, so the second differs from the first ONLY in its text and
+        // in what the screen was carrying when it began. Two hand-written turns would be two
+        // instruments.
+        let turn = |ask: &str, label: &str| {
+            let mut done = Completion::new(DoneWhen::Settles);
+            done.begin(&live.access, live.pane);
+            let began_delivery = Instant::now();
+            let delivered = deliver(
+                &live.access,
+                &run,
+                live.pane,
+                ask,
+                &Delivery {
+                    confirm: Some(needle.clone()),
+                    then_press: vec![KeyStroke::named("Enter")],
+                    ..Delivery::new()
+                },
+            )
+            .expect("the pane must take the prompt");
+            let delivery_took = began_delivery.elapsed();
+            let over = done.wait(&live.access, live.pane, REPLY_WITHIN, &run);
+            step(
+                began,
+                &format!(
+                    "{shape} / {label}: {} byte(s), {} line(s) -> delivered {delivered:?} in \
+                     {delivery_took:?}, turn ended {over:?}",
+                    ask.len(),
+                    ask.lines().count(),
+                ),
+            );
+            (delivered, delivery_took, over)
+        };
+
+        let (first_delivered, first_took, first_over) = turn(first, "turn 1, a needle nobody saw");
+        assert_eq!(
+            first_over,
+            Over::Yes,
+            "⚠⚠⚠ {shape}: THE CONTROL. The FIRST prompt's needle is on nobody's screen, so every \
+             rule agrees about it — if this turn does not run, the measurement below is compared \
+             against nothing and the fault is not the one being staged. Delivered \
+             {first_delivered:?} in {first_took:?}. Pane: {}",
+            live.tail(8),
+        );
+
+        // ⚠⚠⚠ THE STAGING, MEASURED. Everything below is about a needle the screen is already
+        // carrying; a screen that has scrolled it away is a different experiment.
+        let between = live.screen();
+        assert!(
+            between.contains(&needle),
+            "⚠⚠⚠ {shape}: THE HAZARD IS NOT STAGED — the first turn's prompt has left the screen, \
+             so the second delivery would meet a pane that never showed the needle and this pair \
+             would pass for the defect. Needle {needle:?} is not in: {between:?}",
+        );
+        step(
+            began,
+            &format!("{shape}: the needle is STILL on the screen — the hazard is staged"),
+        );
+
+        let (second_delivered, second_took, second_over) =
+            turn(second, "turn 2, the needle is already there");
+        let answered = live
+            .access
+            .pane_full_text(live.pane)
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains(*only_the_second_answers);
+
+        println!(
+            "\n== item 222 / {shape} ==\n  agent      : {}\n  \
+             turn 1     : {first_delivered:?} in {first_took:?} -> {first_over:?}\n  \
+             turn 2     : {second_delivered:?} in {second_took:?} -> {second_over:?}\n  \
+             answered   : {answered} ({only_the_second_answers:?} on the pane)\n  \
+             the pane   :\n{}\n",
+            live.agent,
+            live.tail(16),
+        );
+
+        // ⚠⚠⚠ THE MEASUREMENT, COLLECTED RATHER THAN ASSERTED PER SHAPE. Which shapes fail is the
+        // finding; a gate that panicked on the first would never report the second, and the
+        // difference BETWEEN them is the whole diagnosis.
+        if second_over != Over::Yes || !answered {
+            refused.push(format!(
+                "{shape}: {} byte(s) over {} line(s) -> {second_over:?}, answered={answered}, \
+                 delivered {second_delivered:?} in {second_took:?}; pane: {}",
+                second.len(),
+                second.lines().count(),
+                live.tail(6),
+            ));
+        }
+        assert!(
+            !matches!(second_delivered, Delivered::Unconfirmed { .. }),
+            "⚠⚠ {shape}: the delivery must still be CONFIRMABLE. A rule that refused a repeat \
+             delivery would refuse every turn an outer loop takes after its first: \
+             {second_delivered:?}",
+        );
+    }
+
+    assert!(
+        refused.is_empty(),
+        "⚠⚠⚠ A PROMPT WAS DELIVERED, REPORTED AS SUCCESS, AND STARTED NO TURN — register item \
+         222's live symptom, reproduced. The shape is the finding: {refused:#?}",
+    );
+}
+
 /// [`one_turn`] against a pane that is not [`Live::pane`] — what a replacement needs.
 fn one_turn_on(live: &Live, pane: PaneId, run: &RunContext, index: usize, began: Instant) -> Turn {
     let token = format!("ORTHOGONAL-{index}7");
