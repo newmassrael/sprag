@@ -566,6 +566,38 @@
       important — so nothing here guesses at one.
     -->
     <data id="standing" expr="''"/>
+
+    <!--
+      ⚠⚠⚠ WHAT THE REVIEW OF THE RUN'S OWN CLOSED SESSIONS HANDED BACK — one
+      line, or empty.
+
+      It is `standing`'s SIBLING and not `standing` itself, because the two are
+      different kinds of instruction and merging them would make one of them a
+      lie. A standing instruction is a thing a person or a judge decided, and
+      `standing_label` says it *overrides the milestone wherever the two
+      conflict*. This is an observation about how the last few sessions SPENT
+      THEMSELVES — «one log was tailed eighty-four times» — which overrides
+      nothing and is nobody's ruling.
+
+      ⚠⚠⚠ IT GOES INTO `start_prompt` ONLY, and that is the point of WHEN the
+      review runs. The review happens between the reflection and the restart, so
+      the party it has something to tell is the session that does not exist yet —
+      one that remembers none of the habit and is about to repeat it. In
+      `turn_prompt` the same line would be re-sent on every turn of a session
+      that has already read it: a cost `standing` pays deliberately and this has
+      no reason to.
+
+      ⚠ It holds its own line terminator and is EMPTY until a review carries
+      something, so a loop whose reviews find nothing composes exactly the text
+      it always did — `standing`'s arrangement, for `standing`'s reason: no
+      conditional in executable content.
+
+      ⚠⚠ IT IS OVERWRITTEN, NEVER APPENDED. Each review speaks about the sessions
+      it has just read, so an older reading is not evidence about the current
+      one — and a list that only grew would carry a broken habit into every
+      prompt of a run that had already stopped doing it.
+    -->
+    <data id="carried" expr="''"/>
     <!--
       ⚠⚠ How many screened calls the loop has already ADOPTED — the value
       `screened` had at the last reflection.
@@ -715,6 +747,7 @@
                     'Milestone: ' + milestone + '\n' +
                     'What to carry: ' + reference + '\n' +
                     standing +
+                    carried +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
       <assign location="turn_prompt"
@@ -1193,7 +1226,7 @@
       going, and a run that may rewrite its own destination cannot be said to
       have reached it.
     -->
-    <transition event="reflect.applied" target="restarting">
+    <transition event="reflect.applied" target="reviewing">
       <assign location="milestone" expr="_event.data.milestone"/>
       <assign location="reference" expr="_event.data.reference"/>
       <assign location="standing" expr="_event.data.standing"/>
@@ -1249,6 +1282,66 @@
     <transition event="turn.blocked" target="awaiting_human"/>
     <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    ⚠⚠⚠ LOOK AT WHAT THIS RUN'S OWN CLOSED SESSIONS DID, before opening another
+    one that could do it again.
+
+    # Why it sits HERE and nowhere else
+
+    The things a review could improve about a session — what it starts knowing —
+    are read when the session STARTS. So the only moment an answer can change
+    anything is the gap between deciding to restart and restarting, and that gap
+    is exactly one transition wide. Placed after `restarting` the finding would
+    arrive at a session already briefed; placed before `reflecting` it would
+    describe sessions the run had not finished with.
+
+    ⚠⚠⚠ IT IS A SEPARATE STATE FROM `restarting` FOR THAT STATE'S OWN REASON,
+    written one door down: *replacing a pane happens ONCE*, and a state that both
+    reviewed and replaced would leave the driver remembering which half it had
+    done. Arriving here means REVIEW; arriving at `restarting` means REPLACE.
+
+    # ⚠⚠⚠ A REVIEW MUST NEVER BE ABLE TO STOP THE RUN
+
+    Every ending leads to `restarting`. The review is ADVICE about work already
+    finished, and the run was going to restart whether or not anybody looked — so
+    a review that finds nothing, cannot read the records, or breaks outright must
+    cost the run exactly one transition and no more. That is why there is no edge
+    from here to `failed`: a `fail` raised by a reviewer is not a failure of the
+    loop, and giving it that power would let a file nobody was waiting on end a
+    run that was working.
+
+    ⚠ `cancel` is the one exception, and it is not the review's doing: a person
+    or a ceiling ending the run is answered here as it is answered everywhere.
+
+    ⚠⚠ THE DRIVER OWNS THE REVIEW'S LIFETIME because this document cannot — see
+    `crate::review::ContextReview`, which holds the measurement of why an
+    `<invoke>` was not usable. Leaving this state must drop it, and that is a
+    property a gate has to hold rather than the engine.
+  -->
+  <state id="reviewing">
+    <onentry>
+      <send event="review.begin"/>
+    </onentry>
+    <!--
+      The review carried a line for the session that does not exist yet. ⚠ It is
+      assigned rather than appended — see `carried`.
+    -->
+    <transition event="review.done" target="restarting">
+      <assign location="carried" expr="_event.data.carried"/>
+    </transition>
+    <!--
+      ⚠⚠⚠ NOTHING TO CARRY IS THE HEALTHY ANSWER, AND IT MUST CLEAR THE SLOT.
+      A run whose last review found a habit and whose next one finds none has
+      stopped doing it; leaving the old line in place would brief every later
+      session about a habit that is over, and the loop would keep correcting
+      something nobody was doing any more.
+    -->
+    <transition event="review.none" target="restarting">
+      <assign location="carried" expr="''"/>
+    </transition>
     <transition event="cancel" target="cancelled"/>
   </state>
 

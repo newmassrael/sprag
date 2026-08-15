@@ -123,6 +123,42 @@
     <data id="write_into" expr="''"/>
 
     <!--
+      ⚠⚠⚠ WHERE THE MEASUREMENT LANDS, and unlike `write_into` its default is a
+      REAL PATH. The two are different kinds of thing and the difference is the
+      whole reason this is a second knob rather than a reuse of the first.
+
+      `write_into` holds ADVICE — a line a model wrote about somebody else's
+      work — and its honest default is nowhere, for the reason written above it.
+      This holds what was COUNTED: how many records were opened, how many calls
+      they issued, how many were re-issued. That is not an opinion about anyone,
+      it is what this run's own sessions did, and there is exactly one thing it
+      is for.
+
+      ⚠⚠⚠ IT IS FOR COMPARING A REVIEW WITH THE ONE BEFORE IT. A review that
+      counts and discards can report *three habits* for ever and nobody can ask
+      whether that is better or worse than last time — which makes «improve the
+      loop's own context» a sentence with no measurement under it. The counts
+      are cheap, the sessions they describe are CLOSED and their panes gone, and
+      nothing can go back and count again. So the default keeps them.
+
+      ⚠⚠ AND IT IS WRITTEN ON EVERY ENDING, not only on `carried`. The exit a
+      healthy run takes is `nothing` — no habit met the limit — and that is
+      precisely the reading a later comparison needs. Keeping the record only
+      when something was wrong would retain the bad reviews and discard the
+      evidence that anything got better.
+
+      ⚠ A bare name is resolved by the driver against the daemon's state
+      directory; an absolute path is used as given. That is the same kind of
+      resolution `spend::record_of` already does for an agent's own record, and
+      it is mechanism rather than policy: this document decides WHETHER to keep
+      the counts and what to call them, not where a machine puts its state.
+
+      ⚠ Empty turns it off, as `write_into` does. A caller who has read what
+      this writes and does not want it says so.
+    -->
+    <data id="ledger_into" expr="'context-review.jsonl'"/>
+
+    <!--
       WHAT A SECOND AGENT IS ASKED ABOUT ONE CANDIDATE — authored, because it is
       said to somebody's agent, and the driver must never be the thing that
       writes words into a prompt.

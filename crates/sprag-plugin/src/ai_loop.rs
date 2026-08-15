@@ -280,6 +280,7 @@ impl AiLoop {
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
+            | AiLoopState::Reviewing
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Closing
@@ -407,6 +408,7 @@ impl AiLoop {
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
+            | AiLoopState::Reviewing
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Closing
@@ -609,6 +611,7 @@ impl Plugin for AiLoop {
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
+            | AiLoopState::Reviewing
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Closing
@@ -768,12 +771,13 @@ impl Plugin for AiLoop {
                  answer that dialog or type under their hand"
                     .to_owned(),
             ),
-            AiLoopState::Reflecting | AiLoopState::Restarting | AiLoopState::Resuming => {
-                Accounting::Cannot(format!(
-                    "the run is between sessions ({state:?}): the agent that did the work is being \
-                     replaced, and its successor has done none of it"
-                ))
-            }
+            AiLoopState::Reflecting
+            | AiLoopState::Reviewing
+            | AiLoopState::Restarting
+            | AiLoopState::Resuming => Accounting::Cannot(format!(
+                "the run is between sessions ({state:?}): the agent that did the work is being \
+                 replaced, and its successor has done none of it"
+            )),
             AiLoopState::Converged
             | AiLoopState::Exhausted
             | AiLoopState::Failed
@@ -2373,16 +2377,26 @@ mod tests {
         };
         access.lifecycle().expect("lifecycle").close(fresh);
 
-        // ── 1. THE WALK, as four states ──
+        // ── 1. THE WALK, as five states ──
+        //
+        // ⚠⚠⚠ `reviewing` JOINED THIS LIST AND DID NOT REPLACE ANYTHING IN IT. The run still
+        // reflects, still replaces, still resumes; the review is one transition inserted where the
+        // only thing it could ever change — what a session starts knowing — is still ahead of it.
+        //
+        // ⚠ `ReviewNone` is exact rather than loose, and it is not an accident of this fixture:
+        // `ended` is written by the REPLACEMENT, so on the way to a run's first restart there are
+        // no closed sessions to read and a review that answered anything else would be reporting on
+        // a transcript that does not exist.
         for edge in [
             "Judging --Judge--> Reflecting",
-            "Reflecting --ReflectApplied--> Restarting",
+            "Reflecting --ReflectApplied--> Reviewing",
+            "Reviewing --ReviewNone--> Restarting",
             "Restarting --SessionReplaced--> Resuming",
             "Resuming --SessionReady--> Priming",
         ] {
             assert!(
                 walked.iter().any(|note| note == edge),
-                "⚠⚠⚠ the replacement must be these FOUR acts and the run's journal must say so — \
+                "⚠⚠⚠ the replacement must be these FIVE acts and the run's journal must say so — \
                  `{edge}` is missing. Walked {walked:?}",
             );
         }
@@ -2612,9 +2626,21 @@ mod tests {
         assert!(
             walked
                 .iter()
-                .any(|note| note == "Reflecting --ReflectApplied--> Restarting"),
+                .any(|note| note == "Reflecting --ReflectApplied--> Reviewing"),
             "⚠⚠⚠ the reflection must have been ADOPTED — every assertion below is about what a \
              replacement session was told, and is worth nothing if the run never reached one. \
+             Walked {walked:?}",
+        );
+        assert!(
+            walked
+                .iter()
+                .any(|note| note.starts_with("Reviewing --Review") && note.ends_with("Restarting")),
+            "⚠⚠⚠ AND THE REVIEW MUST NOT BE ABLE TO STOP THE RUN. `reviewing` sits between the \
+             reflection and the replacement, and EVERY ending it has leads to `restarting`: a \
+             review is advice about work already finished, so a reviewer that found nothing, could \
+             open no record, or broke outright must cost this run one transition and no more. This \
+             holds the property `reviewing` has no edge to `failed` for — and it is deliberately \
+             loose about WHICH review ending, because which one it was is not this gate's claim. \
              Walked {walked:?}",
         );
         assert!(
