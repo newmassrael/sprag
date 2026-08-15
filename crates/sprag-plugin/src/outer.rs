@@ -171,6 +171,13 @@ pub struct Authored {
     pub turn: String,
     /// Sent once before the loop reports converged.
     pub end: String,
+    /// **WHAT A RUN THAT IS ENDING WITHOUT GETTING THERE IS ASKED** — `stopping`'s prompt, and
+    /// [`end`](Self::end)'s twin.
+    ///
+    /// ⚠ PUBLISHED BESIDE `end` RATHER THAN INSTEAD OF IT, because a caller previewing a loop is
+    /// deciding what its agent will be asked at EVERY ending it can reach, and the two questions
+    /// differ: one presumes the work is finished and the other does not.
+    pub stop: String,
     /// **WHAT THE LOOP ASKS ITS AGENT BEFORE REPLACING ITS SESSION** — `reflecting`'s own prompt.
     ///
     /// ⚠ A consumer previewing a loop reads this to see what its agent will be asked to decide,
@@ -181,14 +188,15 @@ pub struct Authored {
 }
 
 impl Authored {
-    /// Read the five authored strings out of `engine`'s datamodel.
+    /// Read the authored strings out of `engine`'s datamodel.
     ///
     /// [`None`] for a datamodel that does not hold them as strings, which is a machine this driver
     /// cannot drive — and saying so here is what stops a run being started against one.
     ///
-    /// ⚠⚠ IT ASKS WHETHER THEY ARE THERE, NOT WHETHER THEY SAY ANYTHING. Three of the four are
-    /// composed by `priming`'s `onentry`, so a machine still sitting in `idle` holds them empty and
-    /// that is correct rather than broken — see [`OuterLoop::authored`].
+    /// ⚠⚠ IT ASKS WHETHER THEY ARE THERE, NOT WHETHER THEY SAY ANYTHING. Three of them are composed
+    /// by `priming`'s `onentry`, so a machine still sitting in `idle` holds them empty and that is
+    /// correct rather than broken — see [`OuterLoop::authored`]. The two ENDING prompts are literals
+    /// the document ships, so those are readable from the moment the engine is built.
     fn read(script: &Arc<dyn IScriptEngine>, session: &str) -> Option<Self> {
         let text = |name: &str| match script.get_variable(session, name) {
             Ok(ScriptValue::String(value)) => Some(value),
@@ -198,6 +206,7 @@ impl Authored {
             start: text(Owed::Start.variable())?,
             turn: text(Owed::Turn.variable())?,
             end: text(Owed::End.variable())?,
+            stop: text(Owed::Stop.variable())?,
             reflect: text(Owed::Reflect.variable())?,
             done_marker: text(DONE_MARKER)?,
         })
@@ -474,8 +483,11 @@ pub enum Briefed {
 /// `<send>` table, recovered from the event because the state cannot carry it.
 ///
 /// See the module doc: four transitions reach `working` and only three of them prompt.
+/// ⚠ `pub(crate)` FOR ONE READER: the gate that holds the document's authored surface honest lives
+/// in `ai_loop.rs`, and naming the two ending prompts through this table rather than by retyping
+/// their variable names is the same *one list decides* discipline [`Self::variable`] documents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Owed {
+pub(crate) enum Owed {
     /// Nothing to say — the peer is already working, or is not the thing being waited on.
     Nothing,
     /// The `start_prompt`, into a session that has never been prompted.
@@ -484,6 +496,10 @@ enum Owed {
     Turn,
     /// The `end_prompt` — the closing report.
     End,
+    /// The `stop_prompt` — **where did you get to?**, asked of a run that is ending WITHOUT having
+    /// got there. [`End`](Self::End)'s twin, and a different question: see the document, which says
+    /// why an agent that ran out of turns cannot be asked to summarise finished work.
+    Stop,
     /// The `reflect_prompt` — **what should this run do next?**, asked of the agent that has been
     /// doing the work, and answered into the session that replaces it.
     Reflect,
@@ -501,11 +517,12 @@ impl Owed {
     /// Never: [`Self::Nothing`] is filtered by the caller's match before this is reached, and the
     /// alternative — an `Option` every call site unwraps — would put the same impossibility one
     /// layer further from where it is decided.
-    const fn variable(self) -> &'static str {
+    pub(crate) const fn variable(self) -> &'static str {
         match self {
             Self::Start => "start_prompt",
             Self::Turn => "turn_prompt",
             Self::End => "end_prompt",
+            Self::Stop => "stop_prompt",
             Self::Reflect => "reflect_prompt",
             Self::Nothing => panic!("`Owed::Nothing` names no prompt; the caller matches it first"),
         }
@@ -515,11 +532,11 @@ impl Owed {
     ///
     /// # ⚠⚠ The two halves of `ai_loop.scxml`'s sends, and why only one needs the event
     ///
-    /// `prompt.start`, `prompt.end` and `prompt.reflect` are **onentry** sends — `priming`'s,
-    /// `closing`'s and `reflecting`'s — so arriving at those states is the whole condition,
-    /// whichever transition brought you. All three are reached more than one way (`priming` from
-    /// `idle` and from `restarting`; `reflecting` from the correctness edge and from the budget
-    /// one), and keying them on the event would have needed that list kept in step by hand.
+    /// `prompt.start`, `prompt.end`, `prompt.stop` and `prompt.reflect` are **onentry** sends —
+    /// `priming`'s, `closing`'s, `stopping`'s and `reflecting`'s — so arriving at those states is
+    /// the whole condition, whichever transition brought you. Three of the four are reached more
+    /// than one way (`priming` from `idle` and from `restarting`; `reflecting` from three `judge`
+    /// edges), and keying them on the event would have needed that list kept in step by hand.
     ///
     /// `prompt.turn` is a **transition** send, on three of the four edges into `working`, and that
     /// is the one place the arrival state is not enough. So the event decides there and only
@@ -532,6 +549,12 @@ impl Owed {
         match landed {
             AiLoopState::Priming => Self::Start,
             AiLoopState::Closing => Self::End,
+            // ⚠⚠⚠ A RUN THAT STOPPED SHORT IS ASKED WHERE IT GOT TO — the account for the ending a
+            // person most wants one from. It owes a DIFFERENT string from `closing`'s, and that is
+            // the whole reason this arm exists rather than folding into the one above it: a driver
+            // that sent `end_prompt` here would ask an agent that ran out of turns mid-edit to
+            // summarise finished work.
+            AiLoopState::Stopping => Self::Stop,
             // ⚠⚠⚠ A REFLECTION IS A TURN, so arriving here OWES the agent a question — see
             // [`OuterLoop::reflect`]. Before it did, this state sat in the silent list below and a
             // reflection could only ever carry what the document's author had written.
@@ -567,6 +590,7 @@ impl Owed {
                 | AiLoopEvent::Hold
                 | AiLoopEvent::NotifyHuman
                 | AiLoopEvent::PromptEnd
+                | AiLoopEvent::PromptStop
                 | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
                 | AiLoopEvent::ReflectApplied
@@ -599,6 +623,43 @@ impl Owed {
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::Blocked => Self::Nothing,
+        }
+    }
+
+    /// **WHICH QUESTION THIS STATE'S TURN WAS ASKING**, for the two states whose turn is a request
+    /// for an account of the run — and [`None`] for every state whose turn is WORK.
+    ///
+    /// # ⚠⚠ Why the reader needs this and cannot use a constant
+    ///
+    /// [`report::account`](crate::report::account) takes this run's own echo off what the pane
+    /// produced, and the echo is whatever was typed to ask the question. Two states now ask one, in
+    /// two different words. A reader holding `end_prompt` as a literal would, on the `stopping`
+    /// turn, fail to discount the question it actually asked — putting the caller's own sentence
+    /// into the agent's account — while discounting a line of the report that happened to appear in
+    /// a prompt nobody sent.
+    ///
+    /// ⚠ EXHAUSTIVE, and deliberately not a `_ => None`. A future state that asks its agent for
+    /// something and forgets to say so here would publish NOTHING and look exactly like a state
+    /// whose turn was work; a variant that no longer compiles is the only thing that catches it.
+    const fn asked_for_an_account(state: AiLoopState) -> Option<Self> {
+        match state {
+            AiLoopState::Closing => Some(Self::End),
+            AiLoopState::Stopping => Some(Self::Stop),
+            AiLoopState::Idle
+            | AiLoopState::Priming
+            | AiLoopState::Working
+            | AiLoopState::Judging
+            | AiLoopState::Screening
+            | AiLoopState::Redirecting
+            | AiLoopState::AwaitingHuman
+            | AiLoopState::Reflecting
+            | AiLoopState::Restarting
+            | AiLoopState::Resuming
+            | AiLoopState::Converged
+            | AiLoopState::Exhausted
+            | AiLoopState::Failed
+            | AiLoopState::Cancelled
+            | AiLoopState::Blocked => None,
         }
     }
 }
@@ -1466,42 +1527,50 @@ impl OuterLoop {
             // one ending does: `turn.blocked` and `turn.interrupted` are answers about a peer that
             // is still mid-turn, so a number attached to them would be a level nobody had reached.
             // The other endings keep going through `into()`, which sends no data at all.
-            AiLoopState::Working | AiLoopState::Closing => match self.watch(panes, run)? {
-                AiLoopEvent::TurnDone => {
-                    // ⚠⚠⚠ THE ONLY MOMENT THE CLOSING REPORT EXISTS TO BE TAKEN. The next event
-                    // lands in `converged`, which is final — the Driver stops stepping, and by the
-                    // time anybody could ask, the run is over. Taken here, on the state rather than
-                    // on the event, because `turn.done` is what four states raise and only this
-                    // one's turn was a request for an account.
-                    if from == AiLoopState::Closing {
-                        self.reported = self.account(panes);
+            AiLoopState::Working | AiLoopState::Closing | AiLoopState::Stopping => {
+                match self.watch(panes, run)? {
+                    AiLoopEvent::TurnDone => {
+                        // ⚠⚠⚠ THE ONLY MOMENT AN ACCOUNT EXISTS TO BE TAKEN. The next event lands
+                        // in a FINAL state — `converged` for one of these, `exhausted` for the
+                        // other — the Driver stops stepping, and by the time anybody could ask, the
+                        // run is over. Taken here, on the state rather than on the event, because
+                        // `turn.done` is what five states raise and only these two asked for one.
+                        //
+                        // ⚠⚠ WHICH PROMPT IS DISCOUNTED IS THE STATE'S ANSWER AND NOT A CONSTANT.
+                        // `report::account` takes off this run's own echo, and the echo is whatever
+                        // was typed to ask for the account — `end_prompt` in one state and
+                        // `stop_prompt` in the other. Passing the wrong one leaves the caller's own
+                        // question in the agent's report and takes a line of the report out.
+                        if let Some(asked) = Owed::asked_for_an_account(from) {
+                            self.reported = self.account(panes, asked);
+                        }
+                        Raise::carrying(
+                            AiLoopEvent::TurnDone,
+                            serde_json::json!({ "context": self.context_now(panes) }),
+                        )
                     }
-                    Raise::carrying(
-                        AiLoopEvent::TurnDone,
-                        serde_json::json!({ "context": self.context_now(panes) }),
-                    )
+                    // ⚠⚠⚠ THE VERDICT IS TAKEN HERE, ONCE, and the document decides on it — see
+                    // `working`'s `cond="_event.data.judged"`. A guard cannot do this: the pinned
+                    // engine has no seam to register a host function on, and SCXML does not promise
+                    // how often it evaluates one, so a judgement inside a `cond` would be a model
+                    // call of unknown multiplicity inside a microstep.
+                    AiLoopEvent::TurnBlocked => {
+                        let rule = self.judged(panes, run);
+                        Raise::carrying(
+                            AiLoopEvent::TurnBlocked,
+                            // ⚠ A BOOLEAN BESIDE THE NAME, because this datamodel is Lua and the
+                            // only false values there are `nil` and `false`. A guard reading the
+                            // name alone would fire on the empty string, i.e. on every blocked turn
+                            // of every run that matched nothing.
+                            serde_json::json!({
+                                "judged": rule.is_some(),
+                                "rule": rule.unwrap_or_default(),
+                            }),
+                        )
+                    }
+                    other => other.into(),
                 }
-                // ⚠⚠⚠ THE VERDICT IS TAKEN HERE, ONCE, and the document decides on it — see
-                // `working`'s `cond="_event.data.judged"`. A guard cannot do this: the pinned
-                // engine has no seam to register a host function on, and SCXML does not promise
-                // how often it evaluates one, so a judgement inside a `cond` would be a model
-                // call of unknown multiplicity inside a microstep.
-                AiLoopEvent::TurnBlocked => {
-                    let rule = self.judged(panes, run);
-                    Raise::carrying(
-                        AiLoopEvent::TurnBlocked,
-                        // ⚠ A BOOLEAN BESIDE THE NAME, because this datamodel is Lua and the only
-                        // false values there are `nil` and `false`. A guard reading the name alone
-                        // would fire on the empty string, i.e. on every blocked turn of every run
-                        // that matched nothing.
-                        serde_json::json!({
-                            "judged": rule.is_some(),
-                            "rule": rule.unwrap_or_default(),
-                        }),
-                    )
-                }
-                other => other.into(),
-            },
+            }
 
             // One turn has landed. The document decides in priority order, and what it needs from
             // out here is whether the agent said it was done — `judge`'s first guard reads
@@ -2481,20 +2550,21 @@ impl OuterLoop {
     /// report has to carry about itself. Kept there because every one of those rules was decided by
     /// a measurement of what a live agent's pane holds, and the measurement, the rules and their
     /// gates read together or not at all.
-    fn account(&self, panes: &dyn PaneAccess) -> Option<String> {
+    fn account(&self, panes: &dyn PaneAccess, asked: Owed) -> Option<String> {
         crate::report::account(
             &self.driving.since.taken(panes, self.driving.pane),
-            &self.text_of(Owed::End.variable()).unwrap_or_default(),
+            &self.text_of(asked.variable()).unwrap_or_default(),
         )
     }
 
-    /// **WHAT THE AGENT WROTE WHEN IT WAS ASKED TO ACCOUNT FOR THE RUN** — `closing`'s turn, read
-    /// off the pane it ran on.
+    /// **WHAT THE AGENT WROTE WHEN IT WAS ASKED TO ACCOUNT FOR THE RUN** — `closing`'s turn or
+    /// `stopping`'s, read off the pane it ran on.
     ///
-    /// [`None`] on a run that never reached `closing`: exhausted, cancelled, failed and blocked ask
-    /// the agent for nothing, so there is no account to hand back and the last WORK turn's output
-    /// is a different claim. It is the run's rather than the session's, because since `restarting`
-    /// a run outlives the sessions any part of it was written in — see
+    /// [`None`] on a run that reached neither: `cancelled`, `failed` and `blocked` cannot be asked
+    /// at all — there is no time, no session, or a dialog in the way that a question would answer —
+    /// so there is no account to hand back, and the last WORK turn's output is a different claim.
+    /// It is the run's rather than the session's, because since `restarting` a run outlives the
+    /// sessions any part of it was written in — see
     /// [`AiLoop::captured`](crate::plugin::Plugin::captured).
     #[must_use]
     pub fn report(&self) -> Option<&str> {

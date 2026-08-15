@@ -2743,11 +2743,29 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
     );
 
     // The claim: the name did not.
+    //
+    // ⚠⚠⚠ READ AT THE PROGRAM'S OWN LINE BREAKS, AND THAT IS THE WHOLE OF REGISTER ITEM 205. This
+    // asked for the default (`screen`) and asserted a ten-character string against ROWS of a
+    // FORTY-COLUMN pane — so whether it passed depended on how long the shell's prompt happened to
+    // be. **Measured, two hosts, one variable**: green on a workstation whose prompt is short, RED
+    // on `pc4`, where the prompt is
+    // `icp@ivis-tpeg:/mnt/ICP-Working/remote-build/sprag/crates/sprag-mcp(main)$ ` — seventy-three
+    // characters — so `echo alive` wrapped after `echo a` and the row-joined read found `a` and
+    // `live` apart. Deterministic on both, which is what made it a defect rather than a flake.
+    //
+    // ⚠⚠ THE REMEDY IS THE PRODUCT'S OWN WORD, not a trick this test invented: `line_breaks` exists
+    // because the two slots answer different questions — *where the TERMINAL broke the lines* and
+    // *where the PROGRAM did* — and the reader that must not depend on a pane's width is the second
+    // one. What this gate is about is a NAME reaching a pane; the terminal's wrap points were never
+    // part of the claim, and asserting through them made somebody's working directory a variable.
     server.call_tool(
         "write_pane",
         json!({ "pane": "build", "text": "echo alive" }),
     );
-    let read = server.call_tool("read_pane", json!({ "pane": "build" }));
+    let read = server.call_tool(
+        "read_pane",
+        json!({ "pane": "build", "line_breaks": "program" }),
+    );
     assert!(
         read.contains("echo alive"),
         "the name reached the pane it was given to, at a number it no longer has: {read}",

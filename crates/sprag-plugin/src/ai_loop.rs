@@ -232,7 +232,8 @@ impl AiLoop {
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
             | AiLoopState::Resuming
-            | AiLoopState::Closing => false,
+            | AiLoopState::Closing
+            | AiLoopState::Stopping => false,
         }
     }
 
@@ -262,6 +263,10 @@ impl AiLoop {
             // ⚠⚠ THE DOCUMENT'S OWN BUDGET, which no guardrail can see: `max_turns` counts the
             // inner agent's turns and one of those is many steps of this loop. See
             // [`Ceiling::Turns`].
+            // ⚠⚠⚠ AND IT NOW ARRIVES THROUGH `stopping`, which asked the agent where it got to —
+            // so an exhausted run's [`Plugin::captured`] can be `Some`. The VERDICT is what tells a
+            // caller the two accounts apart: this word and `converged` are the same shape of answer
+            // about opposite outcomes, and nothing is written into the agent's own text to say so.
             AiLoopState::Exhausted => Verdict::Exhausted(Ceiling::Turns),
             // Reached from `awaiting_human --unattended-->`, which nothing produces yet (registered
             // debt), and kept exhaustive rather than folded into the arm below it.
@@ -313,7 +318,8 @@ impl AiLoop {
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
             | AiLoopState::Resuming
-            | AiLoopState::Closing => Verdict::Continue,
+            | AiLoopState::Closing
+            | AiLoopState::Stopping => Verdict::Continue,
         };
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
     }
@@ -483,9 +489,20 @@ impl Plugin for AiLoop {
     /// that is still occupied.
     fn driving(&self) -> Option<PaneId> {
         match self.inner.state() {
-            // ⚠ THE PEER IS AT REST BY CONSTRUCTION in both: `converged` is entered when the
-            // closing report's turn ended, and `exhausted` when a judged turn did. Signalling a
-            // pane this run has finished with would interrupt whatever a person started in it next.
+            // ⚠ NO MODEL IS MID-TURN BY CONSTRUCTION in either, and signalling a pane this run has
+            // finished with would interrupt whatever a person started in it next.
+            //
+            // `converged` is entered when the closing report's turn ended, so the peer is at rest.
+            //
+            // ⚠⚠⚠ `exhausted` USED TO BE THE SAME ONE-LINE CLAIM — *"entered when a judged turn
+            // did"* — AND SINCE `stopping` IT HAS THREE DOORS, so the claim is re-derived rather
+            // than carried over. The stopping turn can end three ways and none of them leaves a
+            // model spending tokens: `turn.done` is the account written and the peer at rest;
+            // `turn.blocked` is the peer PARKED AT A DIALOG, waiting for input rather than
+            // producing; `turn.interrupted` is a person who has already taken the pane, and
+            // signalling underneath them is the one thing this driver must never do. The other two
+            // doors out of `stopping` are `fail` and `cancel`, which land in states below that DO
+            // answer the pane.
             AiLoopState::Converged | AiLoopState::Exhausted => None,
             // Everything else, and `cancelled` above all — see the paragraph above. `failed` and
             // `blocked` join it because neither says anything about what the peer is doing, and an
@@ -503,12 +520,17 @@ impl Plugin for AiLoop {
             | AiLoopState::Reflecting
             | AiLoopState::Restarting
             | AiLoopState::Resuming
-            | AiLoopState::Closing => Some(self.inner.pane()),
+            | AiLoopState::Closing
+            // ⚠ `stopping` IS A TURN LIKE ANY OTHER while it is running: the agent is writing the
+            // account, and a run cancelled or timed out underneath it must stop that model exactly
+            // as it stops one mid-work. The cost of asking for a last report is a last turn, and
+            // this is what bounds it.
+            | AiLoopState::Stopping => Some(self.inner.pane()),
         }
     }
 
-    /// **THE ACCOUNT THE AGENT WROTE WHEN THE RUN ASKED FOR ONE** — `closing`'s turn, read off the
-    /// pane and handed to whoever started the loop.
+    /// **THE ACCOUNT THE AGENT WROTE WHEN THE RUN ASKED FOR ONE** — `closing`'s turn or
+    /// `stopping`'s, read off the pane and handed to whoever started the loop.
     ///
     /// # ⚠⚠⚠ What this answered `None` for, and what that cost
     ///
@@ -527,11 +549,24 @@ impl Plugin for AiLoop {
     /// earlier ones have been closed. This is now the only place a run's own account can survive
     /// its sessions.
     ///
-    /// # ⚠⚠ The one thing it still will not do
+    /// # ⚠⚠⚠ AND THE ENDING THAT MOST NEEDED ONE IS THE ONE THAT HAD NONE
     ///
-    /// A run that never reached `closing` — exhausted, cancelled, failed, blocked — answers `None`,
-    /// because those endings ask the agent for nothing. Publishing the last WORK turn's output
-    /// instead would be answering *what did it say last* to a caller who asked *what did it do*.
+    /// This used to answer `None` for every unfinished ending, on the argument that publishing the
+    /// last WORK turn's output would answer *what did it say last* to a caller who asked *what did
+    /// it do*. That argument is still right, and it was an argument for **asking a different
+    /// question**, not for staying silent: a run that reached its north star is the one ending a
+    /// person can already read from the word alone, and it was the only one being explained.
+    ///
+    /// So `stopping` asks a run that spent its turn budget where it got to, and this hands that
+    /// back too. The other three unfinished endings still answer `None`, and now by MECHANISM
+    /// rather than by decision — see the document, which spells out for each of `cancelled`,
+    /// `failed` and `blocked` what makes the question unaskable.
+    ///
+    /// ⚠⚠ THE TWO ACCOUNTS ARE TOLD APART BY THE VERDICT, not by anything written into the text.
+    /// A caller reads `converged` beside one and `exhausted` beside the other; the capture puts
+    /// words of its own into an agent's account exactly once — to say an opening was evicted — and
+    /// inventing a second such line here would be this module editing somebody's report to say what
+    /// the run's own outcome already says.
     ///
     /// [`OuterLoop::report`]: crate::outer::OuterLoop::report
     fn captured(&self) -> Option<String> {
@@ -726,7 +761,8 @@ mod tests {
     /// the two readers agree and the first assertion above would pass through either one.
     #[test]
     fn a_converged_run_hands_back_the_report_its_agent_wrote() {
-        let (workspace, pane) = crate::testing::standin_agent_reporting();
+        let (workspace, pane) =
+            crate::testing::standin_agent_reporting(crate::testing::Accounts::ForARunThatGotThere);
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
@@ -793,17 +829,40 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠ **A RUN THAT NEVER CLOSED HANDS BACK NOTHING**, and this is the half that keeps the one
-    /// above honest.
+    /// ⚠⚠⚠ **A RUN THAT RAN OUT OF TURNS IS ASKED WHERE IT GOT TO, AND HANDS THAT BACK** — register
+    /// item 201, and the ending a person most wants an account of.
     ///
-    /// The peer here never says the marker, so the run ends `exhausted` — it was never ASKED for an
-    /// account, and its pane is nonetheless covered in the agent's output. A capture that answered
-    /// with the last WORK turn's text would be answering *what did it say last* to a caller who
-    /// asked *what did it do*, in the one situation where the difference matters most: a run that
-    /// did not finish.
+    /// # ⚠⚠⚠ What this gate used to assert, and why the assertion was right and the design was not
+    ///
+    /// It was `a_run_that_was_never_asked_for_an_account_publishes_none`, and it MEASURED THE
+    /// DEFECT: a peer that never says the marker spends the document's turn budget, its pane ends up
+    /// covered in what the agent said, and [`Plugin::captured`] answered `None`. The argument
+    /// underneath was sound — *publishing the last WORK turn's output answers "what did it say
+    /// last" to a caller who asked "what did it do"* — and it was an argument for **asking a
+    /// different question**, which nothing did. So the one ending that could already be read from
+    /// its own word (`converged`) was the only one explained, and the one nobody can read
+    /// (`exhausted`) was the one that said nothing.
+    ///
+    /// The old assertion survives INSIDE this one, and it is the third below: the account handed
+    /// back must be the STOPPING turn's, not the work turn that came before it. That is what the
+    /// `since` mark on every prompt buys, and a reader that took the mark anywhere else would return
+    /// `ACK 2` as a run's report.
+    ///
+    /// # What each assertion is a different way of publishing something false
+    ///
+    /// * **THE RUN STILL ENDS ON THE DOCUMENT'S BUDGET.** `exhausted — turns` and not
+    ///   `exhausted — duration`: the extra turn is a report, not a reprieve, and a ceiling that
+    ///   moved would send its reader to raise a guardrail that never bound this run.
+    /// * **THE ACCOUNT ARRIVES WHOLE**, opening and ending both — the report is taller than the
+    ///   pane, so a rendering reader loses its first lines. Asserted after the scroll is asserted.
+    /// * **AND IT IS THE ACCOUNT, NOT THE WORK.** No `ACK` from the turns before it.
+    /// * **AND IT IS THE AGENT'S, NOT THE CALLER'S** — neither the stopping question whole nor the
+    ///   wrapped fragment of it a real composer would paint.
     #[test]
-    fn a_run_that_was_never_asked_for_an_account_publishes_none() {
-        let (workspace, pane) = standin_agent(u32::MAX);
+    fn a_run_that_ran_out_of_turns_hands_back_the_account_it_was_asked_for() {
+        let (workspace, pane) = crate::testing::standin_agent_reporting(
+            crate::testing::Accounts::ForARunThatRanOutOfTurns,
+        );
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(2), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
@@ -816,19 +875,49 @@ mod tests {
         assert_eq!(
             outcome.state,
             OutcomeState::Exhausted(Ceiling::Turns),
-            "⚠ the control: this peer never finishes, so the run ends on the DOCUMENT's turn \
-             budget rather than on a guardrail",
+            "⚠⚠ THE CONTROL, AND IT IS ALSO A CLAIM. This peer never finishes, so the run must end \
+             on the DOCUMENT's turn budget — the account it is asked for on the way out is one more \
+             TURN, and a ceiling that moved to `duration` would mean the loop had sat in `stopping` \
+             waiting for an answer that never came",
+        );
+
+        // ⚠⚠ THE PREMISE OF THE NEXT ASSERTION, CHECKED FIRST — the converged gate's rule, and for
+        // its reason: an account that still fits on its pane is one both readers can see, so the
+        // verdict about the reader would be worthless.
+        let rendered = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !rendered.contains(crate::testing::REPORT_OPENS),
+            "⚠⚠⚠ THE ACCOUNT MUST HAVE SCROLLED OFF THE PANE, or this gate cannot tell the line \
+             address from the rendering. The screen still holds {:?}",
+            crate::testing::REPORT_OPENS,
+        );
+
+        let report = loops.captured().expect(
+            "⚠⚠⚠ A RUN THAT SPENT ITS TURN BUDGET MUST HAND BACK THE ACCOUNT IT WAS ASKED FOR. \
+             This is register item 201: `closing` explained the ending a person can already read \
+             from its own word, and the ending nobody can read explained nothing",
         );
         assert!(
-            !access.pane_collapsed(pane).unwrap_or_default().is_empty(),
-            "⚠ and the second control: the pane is covered in what the agent said, so `None` below \
-             is a decision rather than an empty screen",
+            report.contains(crate::testing::REPORT_OPENS)
+                && report.contains(crate::testing::REPORT_CLOSES),
+            "⚠⚠⚠ THE ACCOUNT ARRIVED WITHOUT ONE OF ITS ENDS — which is what reading the RENDERING \
+             gives you once a report is taller than its pane, and a truncated account is worse than \
+             a missing one because nothing in it says it is truncated. Got: {report:?}",
         );
-        assert_eq!(
-            loops.captured(),
-            None,
-            "⚠⚠⚠ A RUN THAT WAS NEVER ASKED TO ACCOUNT FOR ITSELF HAS NO ACCOUNT. Publishing a \
-             work turn's output as the run's report answers a question the caller did not ask",
+        assert!(
+            !report.contains("ACK"),
+            "⚠⚠⚠ THE LAST WORK TURN'S OUTPUT CAME BACK AS THE RUN'S ACCOUNT. This is the assertion \
+             the gate that measured this defect was built on, and it survives the fix: a caller who \
+             asked *what did it do* is being answered *what did it say last*. The mark is taken on \
+             every prompt for exactly this: {report:?}",
+        );
+        assert!(
+            !report.contains(crate::testing::STOP_QUESTION)
+                && !report.contains(crate::testing::STOP_ECHO_SLICE),
+            "⚠⚠⚠ THE CALLER'S OWN STOPPING QUESTION CAME BACK AS THE AGENT'S ACCOUNT — whole, or as \
+             the wrapped FRAGMENT a real composer paints, which is the half an exact match cannot \
+             see. The echo discounted is the question this state ASKED, and a driver holding \
+             `end_prompt` as a constant would discount the wrong one: {report:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
@@ -2701,15 +2790,109 @@ mod tests {
         );
         assert_eq!(
             decisions.last(),
-            Some(&(40, AiLoopState::Exhausted)),
+            Some(&(40, AiLoopState::Stopping)),
             "⚠⚠⚠ `max_turns` is 40 and its transition is written BEFORE the \
              reflect one, so the fortieth turn ends the run instead of restarting \
              a session that has no turns left to spend: {decisions:?}",
+        );
+        // ⚠⚠⚠ AND THE LAST TURN IS AN ACCOUNT, NOT A REPRIEVE. `stopping` asks the agent where it
+        // got to (register item 201), so the budget's ending is one state further than it was —
+        // and the thing that must not have changed is that the budget still ENDS the run. A
+        // `stopping` with any edge back into the working cycle would come round to `judging`, take
+        // this same transition, and ask for another account for ever.
+        assert!(
+            !engine.is_in_final_state(),
+            "a run out of turns is asked for its account before it ends: {decisions:?}",
+        );
+        engine.process_event(AiLoopEvent::TurnDone);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Exhausted,
+            "⚠⚠⚠ and the account's turn ends the run on the DOCUMENT's budget: {decisions:?}",
         );
         assert!(
             engine.is_in_final_state(),
             "and `exhausted` is a final state, not a pause",
         );
+    }
+
+    /// ⚠⚠⚠ **AN ACCOUNT THAT COULD NOT BE HAD DOES NOT CHANGE THE ENDING** — `stopping`'s whole
+    /// shape, asserted against the document that decides it.
+    ///
+    /// # ⚠⚠⚠ Why this is the load-bearing claim and not a tidiness one
+    ///
+    /// The verdict is already decided by the guard that reached `stopping`: the run is out of turns.
+    /// The account is a courtesy on top of it, so **every way that last turn can end has to arrive
+    /// at the same place**. The alternative is not untidy, it is UNBOUNDED — `turns >= max_turns`
+    /// stays true for the rest of the run, so an edge from here back into the working cycle would
+    /// come round to `judging`, take that same transition, and ask for another account for ever.
+    /// `closing`'s two are exactly such edges (`turn.blocked --> screening`,
+    /// `turn.interrupted --> awaiting_human`), so copying `closing` is the mistake that is
+    /// available, and it costs a run that never stops.
+    ///
+    /// ⚠⚠ THE TWO ENDINGS DRIVEN HERE ARE THE ONES A REAL PANE PRODUCES. A peer that stops to ask
+    /// during its closing question and a person who takes the pane are both ordinary — R383
+    /// measured the first against a live agent — and neither says anything about the run's budget.
+    ///
+    /// ⚠ `fail` and `cancel` are deliberately NOT folded in: those are facts about the RUN rather
+    /// than about this turn, and a person cancelling here must not be told their own act was a
+    /// budget running out. The gate asserts that separation too.
+    #[test]
+    fn an_account_that_cannot_be_had_does_not_change_the_ending() {
+        /// A fresh machine sitting in `stopping`, reached the way a run reaches it: one turn
+        /// judged, with the budget spent.
+        fn out_of_turns() -> Engine<AiLoopPolicy> {
+            let (mut engine, _lua, _session) = started();
+            // ⚠ `max_turns` is the document's default here; one turn is enough only because the
+            // gate below asserts the state it landed in rather than assuming it.
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            while engine.get_current_state() != AiLoopState::Stopping {
+                assert_eq!(
+                    engine.get_current_state(),
+                    AiLoopState::Working,
+                    "the walk to a spent budget goes through `working`",
+                );
+                engine.process_event(AiLoopEvent::TurnDone);
+                engine.process_event(AiLoopEvent::Judge);
+                if engine.get_current_state() == AiLoopState::Reflecting {
+                    reflected(&mut engine, AiLoopEvent::ReflectNone, "");
+                }
+            }
+            engine
+        }
+
+        for ending in [
+            AiLoopEvent::TurnDone,
+            AiLoopEvent::TurnBlocked,
+            AiLoopEvent::TurnInterrupted,
+        ] {
+            let mut engine = out_of_turns();
+            engine.process_event(ending);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Exhausted,
+                "⚠⚠⚠ A RUN OUT OF TURNS ENDS `exhausted` HOWEVER ITS LAST QUESTION WENT. {ending:?} \
+                 took it somewhere else — and every somewhere else on this document leads back to \
+                 `judging`, where `turns >= max_turns` is still true and asks for another account, \
+                 for ever",
+            );
+        }
+
+        // ⚠⚠ AND THE RUN'S OWN TWO ENDINGS OUTRANK THE TURN'S. A person who cancels here stopped
+        // the run; reporting `exhausted` would tell them their act was a budget running out.
+        for (ending, landing) in [
+            (AiLoopEvent::Cancel, AiLoopState::Cancelled),
+            (AiLoopEvent::Fail, AiLoopState::Failed),
+        ] {
+            let mut engine = out_of_turns();
+            engine.process_event(ending);
+            assert_eq!(
+                engine.get_current_state(),
+                landing,
+                "⚠⚠ {ending:?} is a fact about the RUN and not about the account's turn",
+            );
+        }
     }
 
     /// ⚠⚠⚠ **A STANDING INSTRUCTION IS REFLECTED ON AT THE NEXT JUDGEMENT, AND ONCE** — the
@@ -2867,6 +3050,54 @@ mod tests {
             "⚠⚠ `done_instruction` must have been composed BEFORE the prompt that ends \
              with it: {start_prompt:?}",
         );
+
+        // ── THE TWO ENDING QUESTIONS: plain literals, unlike everything above, and the pair a
+        //    run's account is read against ──
+        //
+        // ⚠⚠⚠ THEY MUST DIFFER, AND EACH MUST BE RECOGNISABLE WITHOUT THE OTHER. `closing` asks an
+        // agent that GOT THERE to summarise; `stopping` asks one that ran out of turns where it got
+        // to. A document that asked the same thing twice would be `stop_prompt` reduced to a copy —
+        // the design decision item 201 named — and a caller reading a finished run could not tell
+        // which ending it was looking at from the transcript.
+        //
+        // ⚠⚠ AND THIS IS WHAT HOLDS THE FIXTURES IN STEP. Every stand-in peer keys its answer on a
+        // verbatim slice of one of these, and the reporting peer paints a second slice as its
+        // wrapped echo. Reworded apart from here, a peer stops recognising the question, its turn
+        // never ends, and the gate reports a wall clock instead of a budget — measured, four gates
+        // at once, the round `stopping` was built.
+        for (variable, question, echo) in [
+            (
+                crate::outer::Owed::End.variable(),
+                crate::testing::Accounts::ForARunThatGotThere.question(),
+                crate::testing::Accounts::ForARunThatGotThere.echo_slice(),
+            ),
+            (
+                crate::outer::Owed::Stop.variable(),
+                crate::testing::Accounts::ForARunThatRanOutOfTurns.question(),
+                crate::testing::Accounts::ForARunThatRanOutOfTurns.echo_slice(),
+            ),
+        ] {
+            let Ok(ScriptValue::String(prompt)) = lua.get_variable(&session, variable) else {
+                panic!("`{variable}` must be a string the driver can deliver");
+            };
+            assert!(
+                prompt.contains(question) && prompt.contains(echo),
+                "⚠⚠⚠ `{variable}` no longer carries what every stand-in keys on ({question:?}) or \
+                 the fragment its wrapped echo is staged from ({echo:?}). A peer that cannot \
+                 recognise the question never answers it: {prompt:?}",
+            );
+            let other = if variable == crate::outer::Owed::End.variable() {
+                crate::testing::Accounts::ForARunThatRanOutOfTurns.question()
+            } else {
+                crate::testing::Accounts::ForARunThatGotThere.question()
+            };
+            assert!(
+                !prompt.contains(other),
+                "⚠⚠⚠ THE TWO ENDINGS MUST ASK DISTINGUISHABLE QUESTIONS. `{variable}` also carries \
+                 the OTHER ending's needle ({other:?}), so nothing reading a finished run — a \
+                 fixture or a person — can tell which question was asked: {prompt:?}",
+            );
+        }
 
         // ── a LIST OF OBJECTS: the shape `screening` reads its rules out of, and
         //    the one whose SYNTAX the codegen rewrote on the way in ──

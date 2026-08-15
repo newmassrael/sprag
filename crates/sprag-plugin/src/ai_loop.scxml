@@ -277,6 +277,33 @@
     -->
     <data id="end_prompt"
           expr="'Summarise what changed, what was verified, and what is left open.'"/>
+    <!--
+      ⚠⚠⚠ AND THE SAME REQUEST MADE OF A RUN THAT IS ENDING WITHOUT GETTING
+      THERE — `stopping`'s prompt, and the answer to *"an exhausted run has no
+      account at all"*.
+
+      Until this existed, `closing` was the ONLY state that asked its agent for
+      anything, so the account belonged to the one ending that needed it least: a
+      run that reached its north star has plainly succeeded, and the person who
+      started it can see that from the word alone. **The ending a person most
+      wants an account of is the one that stopped short**, and that ending
+      answered with the single word `exhausted`.
+
+      ⚠⚠ IT IS A DIFFERENT QUESTION AND NOT A COPY, which is the whole reason it
+      is a second string rather than `end_prompt` reused. *"Summarise what
+      changed, what was verified, and what is left open"* is asked of an agent
+      that FINISHED; it presumes a body of completed work to summarise, and an
+      agent that has run out of turns mid-edit would answer it by describing a
+      thing that does not exist. What a person picking this run up needs instead
+      is where it got to and what to do first — so this asks for that.
+
+      ⚠ A PLAIN LITERAL for `end_prompt`'s reason, and there is nothing to
+      compose in anyway: the agent being asked has been briefed with the north
+      star and the milestone since `priming`, and naming them back at it buys
+      nothing it does not already hold.
+    -->
+    <data id="stop_prompt"
+          expr="'This run has spent its whole turn budget and is ending here, short of what it was asked for. Say where you got to: what you finished, what you left half-done, and what a run picking this up should do first.'"/>
 
     <!--
       Standing instructions for dialogs the person has already decided about.
@@ -954,7 +981,32 @@
     <transition event="judge" cond="_event.data.done" target="reflecting">
       <assign location="reflect_reason" expr="'milestone'"/>
     </transition>
-    <transition event="judge" cond="turns &gt;= max_turns" target="exhausted"/>
+    <!--
+      ⚠⚠⚠ THE BUDGET IS SPENT, SO ASK FOR AN ACCOUNT BEFORE ENDING. This used to
+      go straight to `exhausted`, and that made the ONE ending a person most
+      wants explained the one ending that explained nothing: a run that reached
+      its north star handed back its agent's own report, and a run that stopped
+      short handed back the single word `exhausted`.
+
+      ⚠⚠ IT IS THE ONLY UNFINISHED ENDING THAT CAN BE ASKED, and the other three
+      are refused by mechanism rather than by scope:
+
+        cancelled  the run's context is gone — there is no time left to spend on
+                   a turn, and the driver is about to interrupt the very pane the
+                   question would go into.
+        failed     every producer of `fail` is a session or a datamodel that has
+                   stopped answering, so there is nothing left to ask WITH: the
+                   brief was refused at the door, the prompts cannot be read out
+                   of the datamodel, or the replacement session never came up.
+        blocked    the peer is sitting at a dialog nobody answered. Typing a
+                   question into that pane ANSWERS THE DIALOG — which is exactly
+                   what `screen.none` and `redirect.none` refuse to do, and for
+                   the same reason.
+
+      So the run's account is asked for wherever it CAN be, and where it cannot
+      the reason is a fact about the pane rather than a decision anybody took.
+    -->
+    <transition event="judge" cond="turns &gt;= max_turns" target="stopping"/>
     <!--
       ⚠⚠⚠ A STANDING INSTRUCTION HAS FIRED THAT THE PROMPTS DO NOT YET CARRY, so
       reflect NOW rather than at the next multiple of `reflect_every`.
@@ -1194,6 +1246,53 @@
     <transition event="turn.blocked" target="screening"/>
     <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
+  </state>
+
+  <!--
+    ⚠⚠⚠ THE TURN BUDGET IS SPENT; ASK WHERE THE RUN GOT TO, THEN END IT.
+
+    `closing`'s twin for the ending that did NOT get there — see `stop_prompt`
+    for why the question is a different one and not that one reused.
+
+    ⚠⚠⚠ EVERY WAY THIS TURN CAN END ARRIVES AT `exhausted`, AND THAT IS THE
+    WHOLE SHAPE OF THE STATE. The ending was decided by the guard that got here:
+    the run is out of turns, and nothing the agent does with this last question
+    can change that. An account is a courtesy on top of a verdict already
+    reached, so **a run that cannot be given one is still that run** — a peer
+    that stops to ask, and a person who takes the pane, both end `exhausted`
+    with no account rather than being routed somewhere that would treat this
+    turn as work.
+
+    ⚠⚠⚠ AND THE ALTERNATIVE IS NOT MERELY UNTIDY, IT IS UNBOUNDED. The guard
+    that reaches here is `turns >= max_turns`, which stays true for the rest of
+    the run — so any edge from here back into the working cycle would come round
+    to `judging`, take this same transition, and ask for another account, for
+    ever. `screening` and `awaiting_human` are both such edges, and they are what
+    `closing` uses. This state must not have them, and the reason is arithmetic
+    rather than taste.
+
+    ⚠⚠ WHAT IT COSTS, STATED. A run out of turns now spends one more turn before
+    it ends, and that turn is bounded by the run's own guardrails rather than by
+    `max_turns` — which is already spent. So a peer that hangs on this last
+    question turns an `exhausted — turns` into an `exhausted — duration`: the
+    same ending, reported against a different ceiling. Accepted, because the
+    alternative is refusing to ask the question at all; the run's journal carries
+    the walk either way.
+
+    ⚠ `cancel` and `fail` keep their ordinary targets, unlike the turn's own
+    endings above. Those two are facts about the RUN and not about this turn: a
+    person cancelling here has stopped the run, and reporting `exhausted` for it
+    would tell them their own act was a budget running out.
+  -->
+  <state id="stopping">
+    <onentry>
+      <send event="prompt.stop"/>
+    </onentry>
+    <transition event="turn.done" target="exhausted"/>
+    <transition event="turn.blocked" target="exhausted"/>
+    <transition event="turn.interrupted" target="exhausted"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
   </state>
 
   <final id="converged"/>

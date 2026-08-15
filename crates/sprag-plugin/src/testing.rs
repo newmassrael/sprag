@@ -773,6 +773,13 @@ fn latched(high: &SeqHighWater, pane: PaneId, rows: &[String]) -> u64 {
 /// (*"Report what you did"*) would count a turn one clause early and answer into the middle of
 /// a delivery.
 ///
+/// ⚠⚠⚠ **AND IT ANSWERS BOTH ENDINGS' QUESTIONS, WHICH THE ROUND `stopping` WAS BUILT MEASURED.**
+/// `closing` and `stopping` each send a question this peer would otherwise not recognise, and a
+/// stand-in that ignores what it is asked never publishes another change — the turn never ends, the
+/// loop reports `Stopping --Null--> Stopping` to its wall clock, and **four gates measuring the turn
+/// budget came back `exhausted — duration` about a run that had spent exactly the turns it was
+/// briefed with**. See [`STOP_QUESTION`].
+///
 /// ⚠⚠⚠ **IT PAINTS WHAT IT READS, AND THE SECOND RUN OF THAT GATE IS WHY.** With echo off and
 /// nothing painted, [`deliver`](crate::deliver::deliver) can never confirm the prompt arrived, so
 /// it RETYPES it — and a peer counting prompts saw two where the driver sent one, converging a
@@ -802,7 +809,7 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
                s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; continue;; \
            esac; \
            case \"$line\" in \
-             *exactly:*|*Summarise*) ;; \
+             *exactly:*|*Summarise*|*'{STOP}'*) ;; \
              *) continue;; \
            esac; \
            n=$((n+1)); \
@@ -812,6 +819,7 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
          done",
         SEQ = SEQ_MARKER,
         REFLECT = REFLECTION_MILESTONE_LABEL,
+        STOP = STOP_QUESTION,
     );
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -886,12 +894,13 @@ while read line; do \
       printf '%s\\n' 'REFERENCE_LABEL NEXT_REFERENCE'; \
       bump; continue;; \
   esac; \
-  case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
   n=$((n+1)); \
   if [ $n -ge TURNS_BEFORE_DONE ]; then printf 'MILESTONE REACHED\\n'; \
   else printf 'ACK %s\\n' \"$n\"; fi; \
   bump; \
 done"
+        .replace("STOP_QUESTION", STOP_QUESTION)
         .replace("ECHO_SLICE", REFLECTION_ECHO_SLICE)
         .replace("PROVISIONAL", REFLECTION_PROVISIONAL)
         .replace("MILESTONE_LABEL", REFLECTION_MILESTONE_LABEL)
@@ -948,10 +957,23 @@ done"
 ///
 /// ⚠ Its first and last report lines are [`REPORT_OPENS`] and [`REPORT_CLOSES`], so a gate can
 /// assert the account's ENDS rather than its length — the two places a reader loses text.
-pub(crate) fn standin_agent_reporting() -> (Arc<Mutex<Workspace>>, PaneId) {
+///
+/// # ⚠⚠⚠ ONE PEER FOR BOTH ENDINGS THAT ASK, and why it is a parameter rather than a second fixture
+///
+/// A run reaches an account two ways — it got there (`closing`), or it ran out of turns
+/// (`stopping`) — and the three hazards above are properties of READING A PANE, identical on both
+/// paths. Two peers would be two copies of the staging, and the day one grew a fourth hazard the
+/// other ending's reader would silently stop being tested for it. So the hazards live here once and
+/// [`Accounts`] says which question triggers them.
+///
+/// ⚠⚠ **THE ECHO FRAGMENT MOVES WITH THE QUESTION** ([`Accounts::echo_slice`]). It is a verbatim
+/// slice of the prompt the peer is answering, and a peer that painted `end_prompt`'s fragment while
+/// answering `stop_prompt` would stage no echo at all — the discount would have nothing to find, and
+/// the gate would pass through a reader that had stopped discounting.
+pub(crate) fn standin_agent_reporting(accounts: Accounts) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
     let mut report = vec![
-        REPORT_ECHO_SLICE.to_owned(),
+        accounts.echo_slice().to_owned(),
         REPORT_RULE.to_owned(),
         REPORT_OPENS.to_owned(),
     ];
@@ -973,12 +995,14 @@ bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
 while read line; do \
   printf '%s\\n' \"$line\"; \
   case \"$line\" in \
-    *Summarise*) REPORT bump; continue;; \
+    *'ACCOUNT_QUESTION'*) REPORT bump; continue;; \
   esac; \
   case \"$line\" in *exactly:*) ;; *) continue;; esac; \
-  n=$((n+1)); printf 'MILESTONE REACHED\\n'; bump; \
+  n=$((n+1)); WORK_ANSWER bump; \
 done"
-        .replace("REPORT ", &prints);
+        .replace("REPORT ", &prints)
+        .replace("ACCOUNT_QUESTION", accounts.question())
+        .replace("WORK_ANSWER ", accounts.work_answer());
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
@@ -997,6 +1021,67 @@ done"
     );
     (workspace, pane)
 }
+
+/// **WHICH ENDING'S QUESTION [`standin_agent_reporting`] WRITES ITS ACCOUNT FOR.**
+///
+/// The two are the same act at opposite outcomes — a run says what it did — and they are separate
+/// variants because the DOCUMENT asks them in different words, on different paths, and each word is
+/// what the reader has to discount as this run's own echo.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Accounts {
+    /// The peer reaches its milestone at once and tells the reflection there is nothing left, so the
+    /// run reaches `closing` and is asked `end_prompt`.
+    ForARunThatGotThere,
+    /// The peer never says the marker, so the run spends every turn it was briefed with and is asked
+    /// `stop_prompt` on its way to `exhausted`.
+    ForARunThatRanOutOfTurns,
+}
+
+impl Accounts {
+    /// **A VERBATIM SLICE OF THE PROMPT THIS PEER ANSWERS**, which is what it keys on.
+    ///
+    /// ⚠ Both are claims about `ai_loop.scxml`'s wording, held in step by the gates that assert the
+    /// authored prompt carries them — the discipline every other fixture constant here follows.
+    pub(crate) const fn question(self) -> &'static str {
+        match self {
+            Self::ForARunThatGotThere => "Summarise",
+            Self::ForARunThatRanOutOfTurns => STOP_QUESTION,
+        }
+    }
+
+    /// **A SECOND VERBATIM SLICE OF THE SAME PROMPT**, painted ahead of the account as the wrapped
+    /// echo — see [`standin_agent_reporting`], and [`REPORT_ECHO_SLICE`] for what it stages.
+    pub(crate) const fn echo_slice(self) -> &'static str {
+        match self {
+            Self::ForARunThatGotThere => REPORT_ECHO_SLICE,
+            Self::ForARunThatRanOutOfTurns => STOP_ECHO_SLICE,
+        }
+    }
+
+    /// What the peer answers a WORKING prompt with, which is what decides the run's ending: saying
+    /// the marker converges it, and counting instead spends the budget.
+    const fn work_answer(self) -> &'static str {
+        match self {
+            Self::ForARunThatGotThere => "printf 'MILESTONE REACHED\\n'; ",
+            Self::ForARunThatRanOutOfTurns => "printf 'ACK %s\\n' \"$n\"; ",
+        }
+    }
+}
+
+/// **A VERBATIM SLICE OF `stop_prompt`** — the question `ai_loop.scxml` asks a run that is ending
+/// without having got there, as every peer in this file keys its answer on it.
+///
+/// ⚠⚠⚠ A STAND-IN MUST ANSWER WHATEVER IT IS ASKED, and this constant is what four red gates bought.
+/// When `stopping` was built, every peer here ignored its question: the turn never ended, the loop
+/// walked `Stopping --Null--> Stopping` to its wall clock, and four gates about the DOCUMENT's turn
+/// budget came back `exhausted — duration`. ⚠ It is a claim about the document's wording, and
+/// `the_whole_authored_surface_crosses_into_the_datamodel` is what holds the two in step.
+pub(crate) const STOP_QUESTION: &str = "where you got to";
+
+/// [`STOP_QUESTION`]'s prompt, sliced a second time — the wrapped echo the reporting peer paints
+/// ahead of an account it wrote for `stopping`. See [`REPORT_ECHO_SLICE`], which is this for
+/// `closing`.
+pub(crate) const STOP_ECHO_SLICE: &str = "what you left half-done";
 
 /// How many filler lines the reporting peer's account carries between its ends.
 ///
@@ -1179,7 +1264,7 @@ readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
 bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
 while read line; do \
   printf '%s\\n' \"$line\"; \
-  case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
   if [ $asked -eq 0 ]; then \
     asked=1; \
     printf 'Bash command\\n'; \
@@ -1199,7 +1284,7 @@ while read line; do \
   fi; \
   n=$((n+1)); printf 'MILESTONE REACHED\\n'; bump; \
 done"
-        .to_string();
+        .replace("STOP_QUESTION", STOP_QUESTION);
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
@@ -1320,7 +1405,7 @@ while read line; do \
   if [ $asked -eq 1 ]; then \
     asked=2; printf 'ACK took the redirect\\n'; bump; continue; \
   fi; \
-  case \"$line\" in *exactly:*|*Summarise*) ;; *) continue;; esac; \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
   if [ $asked -eq 0 ]; then \
     printf 'Choose an approach\\n'; \
     printf 'Which way should I build this?\\n'; \
@@ -1343,6 +1428,7 @@ while read line; do \
   bump; \
 done"
         .replace("BREAKS_ON", breaks_on)
+        .replace("STOP_QUESTION", STOP_QUESTION)
         .replace("TURNS_AFTER", &turns_after_redirect.to_string())
         // ⚠ A REFLECTION IS A TURN AND A PEER MUST ANSWER IT — see [`standin_agent`], whose doc
         // carries the four gates that measured what a silent one costs. This one names nothing

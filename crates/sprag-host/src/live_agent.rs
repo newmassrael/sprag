@@ -946,6 +946,160 @@ fn a_briefed_loop_converges_against_a_live_agent() {
     );
 }
 
+/// ⚠⚠⚠ **A RUN THAT RAN OUT OF TURNS SAYS WHERE IT GOT TO, IN A REAL AGENT'S WORDS** — register
+/// item 201, against the program the whole feature exists for.
+///
+/// # ⚠⚠⚠ Why the ending that stops short is the one that needed this most
+///
+/// The gate above proves a CONVERGED run hands back its agent's account. That is the ending a
+/// person can already read from its own word: `converged` means it got there. **`exhausted` means
+/// it did not, and says nothing about how far it came** — so of the two endings, the one that was
+/// explained was the one needing no explanation. A person who briefed a run and got back
+/// `exhausted — turns` learned only that their budget was too small.
+///
+/// # What makes this a live question rather than a second fixture
+///
+/// The stand-in gate (`a_run_that_ran_out_of_turns_hands_back_the_account_it_was_asked_for`) proves
+/// the READER: the mark, the echo discount, the address. What only a real agent can answer is
+/// whether `stop_prompt` READS AS A QUESTION to the model — it tells the agent the run is over,
+/// which is a thing no other prompt in this document does, and a model that took it as a statement
+/// would answer nothing and the loop would report a wall clock. The wording is a product decision
+/// and this is where it meets its subject.
+///
+/// ⚠⚠ **THE BRIEF IS UNREACHABLE ON PURPOSE AND IT IS NOT SELF-CONTRADICTORY.** The milestone asks
+/// for five replies, one number each, and the budget allows two — every instruction is consistent,
+/// there is simply not enough budget, which is exactly the situation being measured. A brief that
+/// asked for something impossible would be measuring the model's confusion instead. ⚠ If the agent
+/// says the marker anyway the run reports `converged` and this gate fails, which is the honest
+/// reading: it would mean the peer claimed a milestone it had not reached.
+///
+/// ⚠ The assertion is the ARITHMETIC and the SHAPE, never a wording — the convergence gate's rule,
+/// and for its reason.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::outer::INNER_SESSION_ENDS;
+    use sprag_plugin::{AiLoopState, Brief, Turn as TurnContract};
+
+    /// Two, against a milestone that needs five replies — so the budget is what ends this run, and
+    /// the account is asked for on the way out.
+    const LIVE_MAX_TURNS: i64 = 2;
+
+    let live = Live::start("stopshort");
+    let began = Instant::now();
+
+    let brief = Brief {
+        north_star: "prove a run that stops short can still say where it got to".to_string(),
+        milestone: "count upward from 1, exactly ONE number per reply, until you have said 5"
+            .to_string(),
+        reference: "no tools and no files are needed; the numbers are the whole task".to_string(),
+        max_turns: LIVE_MAX_TURNS,
+        // ⚠ EQUAL to the budget, so `judging` takes the turn-budget edge rather than the reflect
+        // one — the document tests them in that order, and this gate is about the budget's ending.
+        reflect_every: LIVE_MAX_TURNS,
+        screen_rules: None,
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec {
+            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                .expect("a non-zero bound"),
+            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
+        },
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
+
+    // ⚠ THE CONTROL FOR THE WHOLE GATE, read off the datamodel the agent will be prompted from: the
+    // question this run's ending asks has to be the document's, not a string retyped here.
+    let asked = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .stop;
+    assert!(
+        asked.contains("where you got to"),
+        "⚠ the stopping question must be the DOCUMENT's, or what follows measures nothing: \
+         {asked:?}",
+    );
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 24,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let walked: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    println!(
+        "\n== a live loop that ran out of turns ==\n  agent: {}\n  walk: {walked:?}\n  \
+         turns: {:?}\n  iterations: {} of 24\n  spent: {:?}\n  through the loop: {:?}\n",
+        live.agent,
+        loops.turns(),
+        outcome.iterations,
+        outcome.cost,
+        began.elapsed(),
+    );
+
+    assert_eq!(
+        outcome.state,
+        sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
+        "⚠⚠⚠ THE CONTROL, AND IT IS THREE CLAIMS AT ONCE. `converged` would mean the agent said the \
+         marker without having counted to five; `exhausted — duration` or `— iterations` would mean \
+         a GUARDRAIL stopped this run, and in particular that the loop sat in `stopping` waiting \
+         for an answer the model never gave — which is the finding this gate exists to catch. \
+         Walked: {walked:?}, screen: {}",
+        live.tail(12),
+    );
+    assert_eq!(
+        loops.state(),
+        AiLoopState::Exhausted,
+        "and the DOCUMENT agrees with the run's word, or the two are counting different things",
+    );
+
+    let report = sprag_plugin::Plugin::captured(&loops).unwrap_or_else(|| {
+        panic!(
+            "⚠⚠⚠ A RUN THAT RAN OUT OF TURNS MUST HAND BACK THE ACCOUNT IT WAS ASKED FOR. This is \
+             register item 201: `stopping` asked a real agent where it got to, and a caller who \
+             briefed the run gets the word `exhausted` and nothing else without this. Screen: {}",
+            live.tail(12),
+        )
+    });
+    step(
+        began,
+        &format!("the account, {} chars", report.chars().count()),
+    );
+    for line in report.lines() {
+        println!("    | {line}");
+    }
+    assert!(
+        report.contains('1'),
+        "⚠⚠ the account must be about the work — this run's whole milestone was counting, so an \
+         account carrying none of what it counted is not an account of this run: {report:?}",
+    );
+    assert!(
+        !report.contains(asked.as_str()) && !report.contains("what you left half-done"),
+        "⚠⚠⚠ THE CALLER'S OWN STOPPING QUESTION CAME BACK AS THE AGENT'S ACCOUNT — whole, or as the \
+         wrapped fragment a live composer paints. The echo discounted has to be the question THIS \
+         state asked: {report:?}",
+    );
+    assert!(
+        report.chars().next().is_some_and(char::is_alphanumeric) || report.starts_with(['●', '⏺']),
+        "⚠⚠ and an account must open on something a person would read rather than on a box rule: \
+         {report:?}",
+    );
+}
+
 /// ⚠⚠⚠ **A LIVE LOOP THAT DOES WORK WHICH CHANGES SOMETHING** — register item 112, and the one
 /// claim every other measurement of this loop has deliberately avoided making.
 ///
@@ -2847,7 +3001,16 @@ fn what_a_live_agent_asks_when_the_decision_is_a_design_one() {
     /// manufacture the dialog this gate exists to find out about — R379's fixture lesson, met at
     /// the prompt rather than at the assertion. Each is a genuine fork with the preference left
     /// out, which is the situation a loop's milestone puts an agent in.
-    const PROBES: &[(&str, &[(&str, &str)], &str, bool)] = &[
+    ///
+    /// ⚠ NAMED, because a four-place tuple of borrowed slices is what `clippy::type_complexity`
+    /// refuses — and the alternative it offers, an `allow`, would hide the next one too.
+    type Probe = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+        bool,
+    );
+    const PROBES: &[Probe] = &[
         (
             "control-permission",
             &[],
@@ -3338,7 +3501,7 @@ fn the_judge_separates_a_design_dialog_from_a_routine_one() {
         .collect();
     let refused_a_permission: Vec<&String> = permissions
         .iter()
-        .filter(|(_, _, holds)| holds.iter().any(|got| *got == Some(true)))
+        .filter(|(_, _, holds)| holds.contains(&Some(true)))
         .map(|(label, _, _)| label)
         .collect();
     assert!(
@@ -3405,7 +3568,15 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
     const CAPTURE_ROWS: usize = 18;
 
     /// A label, the files the task is about, and the task.
-    const TASKS: &[(&str, &[(&str, &str)], &str)] = &[
+    ///
+    /// ⚠ NAMED for `PROBES`' reason, one gate above: `clippy::type_complexity` refuses the tuple
+    /// inline, and an `allow` would silence the next one too.
+    type Task = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+    );
+    const TASKS: &[Task] = &[
         (
             "caching",
             &[(
