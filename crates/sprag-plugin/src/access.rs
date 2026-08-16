@@ -1269,11 +1269,25 @@ impl PaneAccess for WorkspacePaneAccess {
         // that types reaches a pane through this function — the comment below has said so for as
         // long as it has existed — so one reading protects all of them, where a guard per plugin
         // would be four copies of a decision and a fifth plugin arriving unprotected.
-        // ⚠⚠ It costs one `pane_eof` per injection: an atomic load under the workspace lock this
-        // call already takes, which `PanePty::is_eof`'s own doc calls negligible.
-        // ⚠ AFTER `UnknownPane` would be wrong-footed — a pane nobody knows is a different
-        // sentence — so the handle is resolved first and the liveness asked second.
-        if self.handle(id).is_some() && self.pane_eof(id) == Some(true) {
+        // ⚠⚠ It costs one `pane_eof` per injection: one workspace lock and an atomic load, which
+        // `PanePty::is_eof`'s own doc calls negligible.
+        //
+        // ⚠⚠⚠ **BEFORE THE WRITE AND NOT AFTER IT, WHICH IS THE WHOLE REPAIR AND IS EASY TO GET
+        // WRONG.** Asked at the end of this function it returns the IDENTICAL error and every
+        // plugin gate stays green — and the prompt has already gone into the queue that never
+        // drains, so the walk to the wall is exactly as long as it was. Measured as a mutation:
+        // the pane's input trail read `"ping\r"` where it must read `""`. Only
+        // `the_door_a_plugin_types_through_refuses_a_pane_whose_program_has_exited` separates
+        // *refuses* from *refuses before writing*.
+        //
+        // ⚠⚠ **AND A PANE NOBODY KNOWS IS A DIFFERENT SENTENCE, WHICH `pane_eof`'s OWN `Option`
+        // ALREADY KEEPS.** An unknown pane answers `None` here, never `Some(true)`, so it falls
+        // through to `UnknownPane` below. The first draft guarded this with an extra
+        // `self.handle(id).is_some() &&`, whose comment claimed to be what protected that
+        // distinction: it protected nothing `pane_eof` was not already doing, and cost a second
+        // workspace lock and a handle clone on EVERY injection — while the line above it said the
+        // cost was one atomic load. Deleted with the gate's unknown-pane arm holding the claim.
+        if self.pane_eof(id) == Some(true) {
             return Err(PaneError::PeerGone(id));
         }
         let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
@@ -1931,6 +1945,172 @@ mod tests {
             .inject(PaneId(999), &KeyStroke::text("x"))
             .unwrap_err();
         assert_eq!(err, PaneError::UnknownPane(PaneId(999)));
+    }
+
+    /// ⚠⚠⚠⚠ **THE ONE DOOR REFUSES A PANE WHOSE PROGRAM HAS EXITED — AND IT IS THE ONLY DOOR THAT
+    /// DOES.**
+    ///
+    /// # Why this belongs HERE, when two plugins already measure the refusal
+    ///
+    /// [`Orchestrator`](crate::orchestrator::Orchestrator) and the AI loop each hold what THEY do
+    /// about [`PaneError::PeerGone`] — a verdict, a document transition. Neither holds the refusal
+    /// itself, and the argument for putting it at [`PaneAccess::inject`] rather than in each plugin
+    /// is precisely that **one reading protects a fifth plugin nobody has written yet**. A claim
+    /// about every future caller cannot be held by two present ones, so it is held at the door.
+    ///
+    /// # ⚠⚠⚠ What it cost not to have this, measured elsewhere and quoted here
+    ///
+    /// A pseudoterminal whose child is dead takes **16,896 bytes** of newline-terminated input and
+    /// then `write(2)` **blocks for ever**, holding the pane's shared writer mutex — and a blocked
+    /// write cannot be cancelled. One run walked there in 3,380 steps, about 29 minutes, and held a
+    /// build machine for 43 hours (`sprag-terminal/tests/write_to_a_dead_pane_wedges.rs`; register
+    /// items 304, 309, 310, 318, 319, 325).
+    ///
+    /// # ⚠⚠⚠⚠ The arm that is a claim published on the WIRE, and had no gate at all
+    ///
+    /// `sprag_rpc::WIRE_PROTOCOL`'s entry for version 36 tells every client that **a person's
+    /// keystrokes are not affected** — the refusal is scoped to the door plugins type through, and
+    /// a display client's `Ctrl-C` still reaches a full-screen program. That sentence was written
+    /// from reading the code and nothing held it. Here it is a measurement: the SAME dead pane
+    /// takes a write through [`PanePtyHandle::write`], which is the call
+    /// `sprag_host::pane` makes for a person, and the pane's own input trail proves the byte
+    /// landed rather than the call merely returning `Ok`.
+    ///
+    /// ⚠⚠ **AND THAT ARM IS A RESIDUE, NOT A FEATURE.** `write_shared` is untouched, so the human
+    /// route still wedges exactly as it did — items 304 and 305 are OPEN for it. **When they are
+    /// paid this arm goes red; repurpose it rather than deleting it**, because *which doors refuse*
+    /// is the fact both the wire note and this gate are about.
+    ///
+    /// ⚠ The person's byte carries NO newline, deliberately: a dead pane is a hole for partial
+    /// input (a megabyte in 0.09 s, measured) and a wall for whole lines, so this arm cannot become
+    /// the wedge it is describing.
+    ///
+    /// # ⚠⚠ The two controls, and neither is decoration
+    ///
+    /// A LIVE pane takes the identical keys through the identical call, so the refusal is a fact
+    /// about the PEER and not about the keys, the encoding or the door. And an UNKNOWN pane is
+    /// still [`UnknownPane`](PaneError::UnknownPane) — *nobody knows that pane* and *that pane's
+    /// program has exited* are different sentences, and a caller sent looking for a dead agent when
+    /// they passed a stale id has been told something true and useless.
+    #[test]
+    fn the_door_a_plugin_types_through_refuses_a_pane_whose_program_has_exited() {
+        /// What a plugin types: a prompt and the Enter that submits it. ⚠ The newline is the
+        /// point — it is the arm that wedges.
+        fn a_prompt() -> Vec<KeyStroke> {
+            let mut keys = KeyStroke::text("ping");
+            keys.push(KeyStroke::named("Enter"));
+            keys
+        }
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("exit 0");
+        command.env("TERM", "dumb");
+        lock(&workspace)
+            .spawn(command, "sh".to_string(), 20, 4)
+            .expect("spawn pane");
+        let access = WorkspacePaneAccess::new(workspace);
+        let dead = access.pane_ids()[0];
+        assert!(
+            until(Duration::from_secs(5), || access.pane_eof(dead)
+                == Some(true)),
+            "⚠ THE FIXTURE: the child must be gone, or nothing below is about a dead pane",
+        );
+
+        // ── 1. IT REFUSES, AND IT NAMES THE PANE ──
+        let refused = access
+            .inject(dead, &a_prompt())
+            .expect_err("⚠⚠⚠⚠ THE DOOR TOOK A PROMPT AT A PANE WHOSE PROGRAM HAS EXITED");
+        assert_eq!(
+            refused,
+            PaneError::PeerGone(dead),
+            "⚠⚠⚠ and it must refuse for THIS reason, naming THIS pane. A refusal that does not \
+             say which pane is the defect R396-R399 spent four rounds on",
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains(&format!("pane {}", dead.0)) && said.contains("blocks for ever"),
+            "⚠⚠ and the SENTENCE has to carry the pane AND why typing anyway is the worse answer, \
+             or the next reader wraps this in a retry: {said:?}",
+        );
+
+        // ── 2. NOT ONE BYTE REACHED IT, which is the whole of the repair ──
+        //
+        // ⚠⚠⚠ The pane's own trail, not the return value. `Written` says what the CALL claims; the
+        // trail is written inside `write_input`, one line before the `write(2)` that would have
+        // parked — so an empty trail is the pseudoterminal's own evidence that nothing was sent.
+        let trail = access
+            .input_echo()
+            .expect("this host records a trail")
+            .pane_recent_input(dead);
+        assert_eq!(
+            trail.as_deref(),
+            Some(""),
+            "⚠⚠⚠⚠ a refusal that still WROTE would walk to the 16,896-byte wall exactly as before, \
+             only more slowly — and the trail is recorded one line before the write that parks",
+        );
+
+        // ── 3. THE CONTROL: the same keys, the same call, a peer that is alive ──
+        let living = WorkspacePaneAccess::new(cat_workspace(20, 4));
+        let alive = living.pane_ids()[0];
+        let written = living.inject(alive, &a_prompt()).expect(
+            "⚠⚠⚠ THE CONTROL FAILED: this door must still type at a pane whose program is running. \
+             If it does not, the refusal above is a door that has stopped writing at all",
+        );
+        assert!(
+            written.bytes() > 0,
+            "⚠⚠ and it must have put bytes in, or *refused* and *wrote nothing* are the same \
+             observation and arm 2 measures nothing",
+        );
+
+        // ── 4. AND AN UNKNOWN PANE IS A DIFFERENT SENTENCE ──
+        assert_eq!(
+            access.inject(PaneId(4242), &a_prompt()).unwrap_err(),
+            PaneError::UnknownPane(PaneId(4242)),
+            "⚠⚠⚠ a pane nobody knows must NOT be reported as a peer that has gone: one sends a \
+             caller to look at their pane id and the other to look at their agent",
+        );
+
+        // ── 5. THE SCOPE, and it is the wire's own published claim ──
+        //
+        // ⚠⚠⚠ `WIRE_PROTOCOL` 36 tells every client a PERSON's keystrokes are unaffected. This is
+        // that sentence measured: the same dead pane, through the call `sprag_host::pane` makes
+        // for a keyboard. ⚠ No newline — see the doc; this arm must not become the wedge.
+        let by_hand = access
+            .handle(dead)
+            .expect("the pane is still in the workspace");
+        by_hand
+            .write(b"P", sprag_terminal::Hand::APerson)
+            .expect("⚠⚠⚠ a PERSON's keystroke must still reach this pane — see the doc's residue");
+        assert_eq!(
+            access
+                .input_echo()
+                .expect("this host records a trail")
+                .pane_recent_input(dead)
+                .as_deref(),
+            Some("P"),
+            "⚠⚠⚠ and the byte must really have LANDED, not merely have been accepted: the trail is \
+             what tells `the write happened` from `the call returned Ok`. ⚠⚠ If this ever goes \
+             red, items 304/305 have been paid for the human route and BOTH this arm and \
+             `WIRE_PROTOCOL` 36's note need rewriting — repurpose, do not delete",
+        );
+
+        println!(
+            "\n== the door a plugin types through, at a pane whose child is dead ==\n  \
+             inject: refused as PeerGone naming pane {}, trail empty\n  same pane, a PERSON's \
+             write: accepted, trail {:?} — items 304/305 still open for that route\n  live pane, \
+             same keys: {} bytes\n",
+            dead.0,
+            access
+                .input_echo()
+                .expect("recorded")
+                .pane_recent_input(dead),
+            written.bytes(),
+        );
+
+        let _ = access.close(dead);
+        let _ = living.close(alive);
     }
 
     /// ⚠⚠ **A PANE REMEMBERS WHAT WAS WRITTEN INTO IT**, which is the only thing that lets a
