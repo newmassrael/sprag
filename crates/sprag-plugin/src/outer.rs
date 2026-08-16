@@ -726,6 +726,12 @@ impl Owed {
                 // here — but it is spelled rather than left to a catch-all, which is the arm's own
                 // rule: this list is what makes an edge added into `working` fail to compile.
                 | AiLoopEvent::PeerGone
+                // ⚠⚠⚠ AN ORDER NEVER REACHES `working`, AND THAT IS ITS DEFINING PROPERTY. It moves
+                // the ORDERS region and leaves the work region exactly where it was — which is the
+                // whole difference between *stand down* and `cancel`. Spelled rather than left to a
+                // catch-all for this arm's own rule: an edge that ever did carry it into `working`
+                // would be an order interrupting a turn, and it would fail to compile here first.
+                | AiLoopEvent::StandDown
                 | AiLoopEvent::Null => Self::Nothing,
             },
             AiLoopState::Idle
@@ -744,6 +750,16 @@ impl Owed {
             // enforced rather than argued: a prompt owed to a state reached BECAUSE the pane's
             // program exited would be typed straight at the wall this whole round is about.
             | AiLoopState::PeerGone
+            // ⚠⚠⚠ THE REGIONS' OWN STATES OWE NOTHING EITHER, and they owe it for a different
+            // reason than every other arm here: they are not ARRIVALS a run passes through. The
+            // parallel root and the two region roots are structure, and the orders states are what
+            // a person said — none of them is a moment at which an agent is waiting to be asked
+            // something. A prompt owed to one of them would be a prompt sent because a person spoke.
+            | AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown
             | AiLoopState::Blocked => Self::Nothing,
         }
     }
@@ -785,6 +801,12 @@ impl Owed {
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
+            // ⚠ No account is asked for in a region root or in an order — nobody was spoken to.
+            | AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown
             | AiLoopState::Blocked => false,
         }
     }
@@ -1979,25 +2001,42 @@ impl OuterLoop {
         use sce_rust_runtime::StatePolicy as _;
 
         let flattened = self.machine.get_current_state();
-        let deepest = self
+        // ⚠⚠⚠ THE DEEPEST MEMBER **OF THE WORK REGION**, and the region is named rather than
+        // inferred. Taking the deepest of the WHOLE active set was right while the document was
+        // flat and became ambiguous the moment it gained regions: the work leaf and the orders leaf
+        // sit at the same depth, so `max_by_key` would answer whichever the arrangement happens to
+        // yield — the same instability that made `get_current_state` unusable here, one reader on.
+        //
+        // ⚠⚠ The walk is UPWARDS, from each active state to `work`, because that is what the
+        // generated policy publishes: `get_parent` and nothing else. The probe proves this reader
+        // works on a machine that has regions, and that it keeps answering after a sibling region
+        // has finished — which is the moment a stand-down handle is for.
+        let in_work = self
             .machine
             .get_active_states()
             .into_iter()
-            .map(|active| {
+            .filter_map(|active| {
                 let mut depth = 0_usize;
-                let mut at = crate::sm::ai_loop::AiLoopPolicy::get_parent(active);
-                while let Some(parent) = at {
+                let mut at = Some(active);
+                while let Some(here) = at {
+                    if here == crate::sm::ai_loop::AiLoopState::Work {
+                        return Some((depth, active));
+                    }
                     depth += 1;
-                    at = crate::sm::ai_loop::AiLoopPolicy::get_parent(parent);
+                    at = crate::sm::ai_loop::AiLoopPolicy::get_parent(here);
                 }
-                (depth, active)
+                None
             })
+            // ⚠ The SMALLEST distance to `work` is its deepest descendant... no: a leaf is FARTHEST
+            // from the region root, so the largest walk is the deepest state. Kept as a max for the
+            // reason the flat reader was: a compound state is active while its child is, and an
+            // answer that stopped at the region would stop distinguishing the states inside it.
             .max_by_key(|(depth, _)| *depth)
             .map(|(_, active)| active);
         // ⚠ The flattening call is the FALLBACK rather than the answer: an empty active set is a
         // machine that has not been initialised, and inventing a state for it here would hide that
         // from the one caller who could report it.
-        deepest.unwrap_or(flattened)
+        in_work.unwrap_or(flattened)
     }
 
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
@@ -2557,6 +2596,21 @@ impl OuterLoop {
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
             | AiLoopState::Blocked) => return Ok(Pumped::Ended(state)),
+            // ⚠⚠⚠ THE REGIONS' OWN STATES, AND REACHING ONE HERE IS A READER BUG RATHER THAN A RUN
+            // THAT NEEDS DRIVING. [`Self::state`] reads the WORK region by name, so what it hands
+            // this match is always one of the arms above; a parallel root, a region root or an ORDER
+            // arriving means the reader started flattening again.
+            //
+            // ⚠⚠ `Unbuilt` AND NOT `Ended`, which is the whole point of having the word: ending the
+            // run would turn a driver bug into somebody's lost work, and pumping again would spin
+            // forever on a state nothing acts on. `Unbuilt` says *this driver has no act for what it
+            // is looking at* and lets the layer above decide — register item 260's lesson, arriving
+            // through the door it was written for.
+            state @ (AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown) => return Ok(Pumped::Unbuilt(state)),
         };
         // Kept before `advance` takes the payload: what a consumer reports is the EVENT, and the
         // data is the driver's way of telling the machine a fact it could not read for itself.
@@ -2610,6 +2664,12 @@ impl OuterLoop {
                 // (`Working --PeerGone--> PeerGone`), and it is the whole of what distinguishes
                 // them. `Because` exists for doors the arrow cannot tell apart.
                 | AiLoopState::PeerGone
+                // ⚠ A structural state has no door to distinguish, and an order is not an ending.
+                | AiLoopState::Running
+                | AiLoopState::Work
+                | AiLoopState::Orders
+                | AiLoopState::Standing
+                | AiLoopState::StandingDown
                 | AiLoopState::Blocked => None,
             }
         };

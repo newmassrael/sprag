@@ -116,7 +116,7 @@
        version="1.0"
        name="ai_loop"
        datamodel="ecmascript"
-       initial="idle">
+       initial="running">
 
   <!--
     Everything above the line is the template's editable surface. A person edits
@@ -1045,6 +1045,50 @@
     -->
     <data id="done_reason" expr="''"/>
   </datamodel>
+
+  <!--
+    ⚠⚠⚠⚠ TWO THINGS GO ON AT ONCE IN A RUN: THE WORK, AND WHAT A PERSON HAS TOLD
+    IT.
+
+    Until this existed, the only thing anybody could say to a running loop was
+    `cancel` — *stop now, mid-turn, and throw the turn away*. **The sentence a
+    person actually wants is a different one**: *finish what you are doing and
+    then stand down.* It could not be said, and the reason was structural rather
+    than missing vocabulary: a flat machine has nowhere to PUT an instruction
+    that arrives while something else is going on. It would have to be a
+    transition repeated on all fourteen working states, which this workspace has
+    already paid for once as *two copies of one rule, and the failure of letting
+    them drift is silent*.
+
+    So the run's states became one REGION and the person's orders became
+    another, and they run side by side.
+
+    ⚠⚠⚠ AN ORDER IS A STATE, NOT A FLAG — measured, and this is the whole reason
+    `In()` was probed before any of this was written. A boolean set by an order
+    is invisible in the run's walk: nothing records when it arrived or what the
+    run was doing at the time. Held as a state it is in the journal by
+    construction, which is this workspace's rule for machines everywhere else.
+    `probe_parallel.scxml` asked whether one region can be guarded on what
+    another is doing, and the answer at the pinned engine is yes.
+
+    ⚠⚠ THE FINALS STAY OUTSIDE, deliberately. A run that ends is a run whose
+    orders are over too, and a transition targeting a state outside the parallel
+    exits every region — so reaching `converged` takes the orders region with it,
+    which is exactly right. Putting the finals inside would ask a different
+    question (does the PARALLEL complete) that nothing here needs to answer:
+    the driver learns a run ended from the state it is in, by an exhaustive
+    match, not from `is_in_final_state`.
+
+    ⚠⚠⚠ AND THE DRIVER MUST STOP FLATTENING. With two regions there are two
+    active leaves, and `get_current_state` — and any reader that just takes the
+    deepest — answers whichever the arrangement happens to yield.
+    `OuterLoop::state` therefore reads THIS region by name. The probe holds both
+    halves: that a named region answers with its own leaf, and that it keeps
+    answering after its sibling has finished.
+  -->
+  <parallel id="running">
+
+  <state id="work" initial="idle">
 
   <state id="idle">
     <!--
@@ -2093,6 +2137,51 @@
     -->
     <transition event="peer.gone" target="peer_gone"/>
   </state>
+
+  </state>
+
+  <!--
+    ⚠⚠⚠ THE ORDERS REGION — what a person has told this run, standing beside the
+    work rather than interrupting it.
+
+    It has no ending, and that is the point: an order is not a task. SCXML
+    completes a `<parallel>` only when EVERY region is final, so a run's ending
+    is decided by the WORK region reaching a state outside the parallel — see the
+    note above.
+
+    ⚠⚠ ONE ORDER TODAY, AND THE REGION IS FOR THE ONES AFTER IT. *Pause*, *change
+    the milestone*, *reflect at the next boundary* are all the same shape: a
+    sentence that arrives mid-turn and changes what the next decision point does.
+    Each is a state here, not another boolean somewhere.
+  -->
+  <state id="orders" initial="standing">
+
+    <!--
+      Nobody has said anything. The resting state of every run, and the one a run
+      spends all of its life in unless somebody speaks.
+    -->
+    <state id="standing">
+      <!--
+        ⚠⚠⚠ THE SENTENCE THAT COULD NOT BE SAID. It changes NOTHING about the
+        turn in flight — no target outside this region, no interruption of the
+        work — which is the difference between this and `cancel`. What it changes
+        is what `judging` will decide when the turn it is in the middle of is
+        over.
+      -->
+      <transition event="stand.down" target="standing_down"/>
+    </state>
+
+    <!--
+      ⚠ AN ORDER, ONCE GIVEN, STANDS. There is no edge back: a person who changed
+      their mind cancels the run or starts another, and a *stand down, no wait,
+      carry on* that raced a milestone would be a run whose ending depended on
+      which of two messages arrived first. ⚠⚠ It is also why this is a state
+      rather than a flag somebody could flip twice.
+    -->
+    <state id="standing_down"/>
+  </state>
+
+  </parallel>
 
   <final id="converged"/>
   <final id="exhausted"/>

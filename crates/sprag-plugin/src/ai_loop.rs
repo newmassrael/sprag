@@ -350,7 +350,22 @@ impl AiLoop {
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Closing
-            | AiLoopState::Stopping => false,
+            | AiLoopState::Stopping
+            // ⚠⚠⚠ THE FIVE THE REGIONS ADDED, AND NONE OF THEM IS AN ENDING. Four are structural —
+            // the parallel root, the two region roots — and one is an ORDER a person gave. They are
+            // here because the match is exhaustive on purpose, and the compiler is what made them
+            // arrive rather than a reader noticing later.
+            //
+            // ⚠⚠ A DRIVER SHOULD NEVER SEE ANY OF THEM. `OuterLoop::state` reads the WORK region by
+            // name, so what it answers is always one of the thirteen above it. Answering `false`
+            // here is the honest reading of the question asked (*is this an ending*) rather than a
+            // guess: a run that somehow reported `Standing` has a reader bug, and treating it as
+            // finished would end somebody's run over it.
+            | AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown => false,
         }
     }
 
@@ -504,7 +519,16 @@ impl AiLoop {
             | AiLoopState::Restarting
             | AiLoopState::Resuming
             | AiLoopState::Closing
-            | AiLoopState::Stopping => Verdict::Continue,
+            | AiLoopState::Stopping
+            // ⚠⚠ THE REGIONS' STATES REACH HERE ONLY IF SOMETHING IS WRONG, and `Continue` is the
+            // right answer to being wrong: this method is called for a state `is_final` called
+            // final, none of these is, and a driver that ended somebody's run on a structural
+            // state would be turning a reader bug into a lost run.
+            | AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown => Verdict::Continue,
         };
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
     }
@@ -720,7 +744,16 @@ impl Plugin for AiLoop {
             // account, and a run cancelled or timed out underneath it must stop that model exactly
             // as it stops one mid-work. The cost of asking for a last report is a last turn, and
             // this is what bounds it.
-            | AiLoopState::Stopping => Some(self.inner.pane()),
+            | AiLoopState::Stopping
+            // ⚠⚠ A RUN REPORTING ONE OF THESE IS A RUN WHOSE READER IS WRONG, and the safe answer
+            // is still the pane: this asks WHICH PANE a stop would have to reach, and a run in
+            // flight has one whatever state a misreading named. Answering `None` would leave a live
+            // model running after a cancel.
+            | AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown => Some(self.inner.pane()),
         }
     }
 
@@ -883,6 +916,12 @@ impl Plugin for AiLoop {
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
+            // ⚠ Structure and orders, which a ceiling can no more account for than an ending can.
+            | AiLoopState::Running
+            | AiLoopState::Work
+            | AiLoopState::Orders
+            | AiLoopState::Standing
+            | AiLoopState::StandingDown
             | AiLoopState::Blocked => Accounting::Cannot(format!(
                 "the loop had already ended in {state:?} when its {} ceiling fell due",
                 ceiling.wire_str(),
@@ -5319,10 +5358,17 @@ mod tests {
     #[test]
     fn the_outer_loop_runs_the_edges_the_last_two_rounds_built() {
         let (mut engine, _lua, _session) = started();
-        assert_eq!(
-            engine.get_current_state(),
-            AiLoopState::Idle,
-            "the document's `initial`",
+        // ⚠⚠⚠ THE ACTIVE SET, NOT `get_current_state()` — and this line is the probe's warning
+        // arriving on the loop's own document. The flattening call answered `Idle` while the machine
+        // was flat and answers `Running`, the parallel root, now that it has regions. Nothing about
+        // the run changed; what changed is that a single-state reader has no stable meaning once
+        // there is more than one thing going on. `OuterLoop::state` reads the WORK region by name
+        // for exactly this reason, and a gate that kept asking the flattening call would be holding
+        // the reader the driver just stopped using.
+        assert!(
+            engine.get_active_states().contains(&AiLoopState::Idle),
+            "the document's `initial` inside the work region. active = {:?}",
+            engine.get_active_states(),
         );
 
         engine.process_event(AiLoopEvent::Start);
