@@ -2095,16 +2095,14 @@ fn peer_pid(fd: std::os::fd::RawFd) -> io::Result<libc::pid_t> {
 /// it is stated here rather than discovered there.
 #[cfg(unix)]
 fn a_daemon(pid: libc::pid_t) -> io::Result<()> {
-    /// What a daemon's executable is called — the binary this CLI's own sibling lookup names.
-    const DAEMON: &str = "sprag-term";
-
     let refuse = |running: String| {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "the process serving that socket (pid {pid}) is {running}, not a `{DAEMON}` daemon. \
+                "the process serving that socket (pid {pid}) is {running}, not a `{}` daemon. \
                  `kill-server` stops a daemon; it will not terminate a process that merely serves a \
-                 host socket, because that process may be doing something else nobody asked to end"
+                 host socket, because that process may be doing something else nobody asked to end",
+                sprag_rpc::DAEMON_BIN_NAME,
             ),
         ))
     };
@@ -2116,7 +2114,7 @@ fn a_daemon(pid: libc::pid_t) -> io::Result<()> {
                 format!("the process serving that socket (pid {pid}) is gone"),
             )
         })?;
-        if exe.file_name().and_then(|name| name.to_str()) != Some(DAEMON) {
+        if !runs_the_daemon(&exe) {
             return refuse(format!("{}", exe.display()));
         }
     }
@@ -2125,6 +2123,29 @@ fn a_daemon(pid: libc::pid_t) -> io::Result<()> {
         return refuse("this very process".to_owned());
     }
     Ok(())
+}
+
+/// Whether `exe` — a path read from `/proc/<pid>/exe` — is the sprag daemon.
+///
+/// # ⚠⚠⚠⚠ ` (deleted)`, AND WHY IT IS THE CASE THAT MATTERS MOST
+///
+/// Linux appends ` (deleted)` to that symlink's target once the binary has been REPLACED underneath
+/// the running process. That is not an edge case here — **it is the promotion**: the whole reason to
+/// stop a daemon is that a new build exists, and building is what deletes the inode it is running
+/// from. So the first version of this check refused every daemon it was written to stop, and said so
+/// in a sentence naming a path ending in `(deleted)`.
+///
+/// Measured on the owner's own daemon, by running the fixed `kill-server` at the one moment it was
+/// for. ⚠ A guard that is wrong exactly when it is needed is worse than no guard: it reads as a
+/// product that does not work rather than as a rule doing its job.
+fn runs_the_daemon(exe: &std::path::Path) -> bool {
+    /// What the kernel appends once the running binary's directory entry is gone.
+    const UNLINKED: &str = " (deleted)";
+
+    exe.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.strip_suffix(UNLINKED).unwrap_or(name))
+        == Some(sprag_rpc::DAEMON_BIN_NAME)
 }
 
 /// Ask `pid` to shut down and WAIT until the socket stops SERVING — the daemon's own edge, and then
@@ -7633,6 +7654,64 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⚠⚠⚠⚠ **A DAEMON WHOSE BINARY WAS REPLACED UNDER IT IS STILL A DAEMON** — the case that broke
+    /// `kill-server` at the exact moment it was written for.
+    ///
+    /// Linux appends ` (deleted)` to `/proc/<pid>/exe` once the running binary's directory entry is
+    /// gone. **Building a new daemon is what deletes it**, so every promotion produces exactly this
+    /// reading — and the first version of the guard refused it, naming a path ending in `(deleted)`
+    /// at a person who was doing the one thing the verb exists for.
+    ///
+    /// ⚠ Measured on the owner's own daemon rather than imagined, by running the fixed `kill-server`
+    /// at the moment it was needed. **A guard that is wrong exactly when it is needed reads as a
+    /// broken product**, not as a rule doing its job.
+    /// ⚠⚠ THE CASES ARE BUILT FROM [`sprag_rpc::DAEMON_BIN_NAME`] AND FROM DIRECTORIES THAT ARE
+    /// OBVIOUSLY NOT ANYBODY'S — the rule is *the file NAME, with the kernel's suffix allowed*, and a
+    /// fixture pasting one machine's real paths would state a layout instead. It would also go stale
+    /// the day the binary is renamed, silently, by continuing to pass about a name nothing uses.
+    #[test]
+    fn a_daemon_whose_binary_was_replaced_under_it_is_still_a_daemon() {
+        use std::path::Path;
+
+        let daemon = sprag_rpc::DAEMON_BIN_NAME;
+        for running in [
+            format!("/anywhere/{daemon}"),
+            // The promotion's own shape: the binary replaced under the running process.
+            format!("/anywhere/else/{daemon} (deleted)"),
+            // ⚠ And with no directory at all — a daemon found on `PATH` rather than beside a client.
+            daemon.to_owned(),
+        ] {
+            assert!(
+                runs_the_daemon(Path::new(&running)),
+                "⚠⚠⚠ {running:?} IS the daemon, and refusing it means refusing to stop the very \
+                 process a promotion has just replaced",
+            );
+        }
+
+        // ── AND THE GUARD STILL GUARDS, or the strip above has swallowed the rule ──
+        for other in [
+            // The measured failure the guard exists for: a test harness serving its own socket.
+            "/anywhere/deps/cli-0123456789abcdef".to_owned(),
+            "/anywhere/python3".to_owned(),
+            // ⚠ THE NEAREST MISS THERE IS — the CLIENT, whose name is a PREFIX of the daemon's. A
+            // strip that took more than the exact suffix, or a `starts_with`, turns one into the
+            // other and `kill-server` starts signalling whatever ran the command.
+            "/anywhere/sprag".to_owned(),
+            "/anywhere/sprag (deleted)".to_owned(),
+            // ⚠ A name that merely CONTAINS the daemon's, which a `contains` check would admit.
+            format!("/anywhere/not-{daemon}"),
+            // ⚠ And the suffix without the name, so the strip cannot be what decides.
+            "/anywhere/something (deleted)".to_owned(),
+        ] {
+            assert!(
+                !runs_the_daemon(Path::new(&other)),
+                "⚠⚠⚠ {other:?} is NOT a sprag daemon, and signalling it would end a process nobody \
+                 asked to end — which is what the first draft of `kill-server` did to this very \
+                 test suite",
+            );
+        }
+    }
 
     /// The measured permission dialog, as a blocked run carries it.
     fn asked_dialog() -> sprag_detect::Question {

@@ -3097,7 +3097,7 @@ mod tests {
         )
         .expect("the conjunction is expressible");
 
-        let em = painted(&["› write me a test", "gpt-5.6 high · /home/coin/sprag"]);
+        let em = painted(&["› write me a test", "gpt-5.6 high · /work/projects/sprag"]);
         let mine = sprag_detect::detect(em.screen(), Some("sprag"), &declared);
         assert_eq!(mine.agent.as_deref(), Some("mycodex"));
         assert_eq!(mine.state, sprag_detect::AgentState::Idle);

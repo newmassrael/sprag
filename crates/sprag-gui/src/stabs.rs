@@ -730,7 +730,7 @@ fn ports_label(ports: &[u16]) -> String {
         .join(" ")
 }
 
-/// The last non-empty path component of `path`, for display — `/home/coin/sprag` -> `sprag`.
+/// The last non-empty path component of `path`, for display — `/work/projects/sprag` -> `sprag`.
 /// `None` for a path with no named component (e.g. `/`).
 fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').find(|component| !component.is_empty())
@@ -1347,7 +1347,7 @@ mod tests {
             false,
             Some(&SessionActivity {
                 name: "work".to_owned(),
-                cwd: Some("/home/coin/sprag".to_owned()),
+                cwd: Some("/work/projects/sprag".to_owned()),
                 branch: Some("main".to_owned()),
                 ports: vec![3000],
             }),
@@ -1384,16 +1384,19 @@ mod tests {
     fn the_subtitle_joins_the_cwd_basename_branch_and_ports() {
         // All three present: "basename · branch · :ports" (the classic prompt shape + what it serves).
         assert_eq!(
-            subtitle(Some("/home/coin/sprag"), Some("main"), &[3000, 8080], 0),
+            subtitle(Some("/work/projects/sprag"), Some("main"), &[3000, 8080], 0),
             "sprag · main · :3000 :8080"
         );
         // cwd + branch, no ports: the pre-Slice-3 shape (no trailing separator).
         assert_eq!(
-            subtitle(Some("/home/coin/sprag"), Some("main"), &[], 0),
+            subtitle(Some("/work/projects/sprag"), Some("main"), &[], 0),
             "sprag · main"
         );
         // Only one segment present: just that one, no stray separator.
-        assert_eq!(subtitle(Some("/home/coin/sprag"), None, &[], 0), "sprag");
+        assert_eq!(
+            subtitle(Some("/work/projects/sprag"), None, &[], 0),
+            "sprag"
+        );
         assert_eq!(subtitle(None, Some("main"), &[], 0), "main");
         assert_eq!(subtitle(None, None, &[3000], 0), ":3000");
         // None at all: empty, so the caller omits the second line entirely.
@@ -1409,11 +1412,14 @@ mod tests {
         assert_eq!(subtitle(None, None, &[], 1), "1 viewing");
         assert_eq!(subtitle(None, None, &[], 2), "2 viewing");
         assert_eq!(
-            subtitle(Some("/home/coin/sprag"), Some("main"), &[3000], 3),
+            subtitle(Some("/work/projects/sprag"), Some("main"), &[3000], 3),
             "sprag · main · :3000 · 3 viewing"
         );
         // Zero viewers add nothing — a session nobody watches keeps its prior shape.
-        assert_eq!(subtitle(Some("/home/coin/sprag"), None, &[], 0), "sprag");
+        assert_eq!(
+            subtitle(Some("/work/projects/sprag"), None, &[], 0),
+            "sprag"
+        );
     }
 
     #[test]

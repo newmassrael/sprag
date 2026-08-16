@@ -2179,8 +2179,8 @@ Local storage:
   Hits:             11789 /  19594 (60.17%)
 ";
         let configuration = "\
-(/home/coin/.config/ccache/ccache.conf) depend_mode = true
-(/home/coin/.config/ccache/ccache.conf) max_size = 50.0 GB
+(/home/somebody/.config/ccache/ccache.conf) depend_mode = true
+(/home/somebody/.config/ccache/ccache.conf) max_size = 50.0 GB
 (default) compression = true
 ";
         assert_eq!(keyed(configuration, "max_size").as_deref(), Some("50.0 GB"));

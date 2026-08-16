@@ -53,6 +53,23 @@ pub use grammar::{ActionGrammar, ArgGrammar, CallForm, FormKind, WireSurface};
 /// default both sides fall back to.
 pub const HOST_SOCKET_NAME: &str = "sprag-host.sock";
 
+/// The daemon's EXECUTABLE name — the same kind of fact as [`HOST_SOCKET_NAME`] one layer over, and
+/// here for the same reason: the processes that LAUNCH a daemon and the ones that RECOGNISE one must
+/// name it once.
+///
+/// # ⚠⚠⚠ It was spelled seven times before this existed
+///
+/// `sprag-gui`'s connect-or-spawn, the CLI's own spawn, two latency harnesses and a host test each
+/// wrote the string out. That is the shape this workspace records the cost of — *two copies of one
+/// rule, and the failure of letting them drift is silent* — and it had already grown to seven.
+///
+/// ⚠⚠ WHAT MAKES IT MORE THAN TIDINESS: `kill-server` RECOGNISES a daemon by this name before it
+/// signals it (a socket may be served by something that is not a daemon, and the first version of
+/// that check SIGTERMed a test harness). A rename that reached the launchers and missed the
+/// recogniser would leave the product unable to stop its own daemon, and it would say so with a
+/// sentence about a process that is not one.
+pub const DAEMON_BIN_NAME: &str = "sprag-term";
+
 /// The headless host's endpoint POLICY: the well-known [`HOST_SOCKET_NAME`] socket, overridable
 /// by `SPRAG_HOST_RPC_SOCK`, enabled unless `SPRAG_HOST_RPC` is falsey. Defined here so the
 /// daemon that BINDS it (`sprag-term`) and every client that DRIVES it over the same env vars
