@@ -2079,6 +2079,57 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **A PERSON'S STOP OUTRANKS THE CLOCK WHEN BOTH ARE TRUE AT ONCE — AND THE CANCELLED
+    /// RUN IS NOT GRANTED A WINDOW TO ACCOUNT FOR ITSELF.**
+    ///
+    /// Its neighbour above holds cancel against the TALLY. This holds it against the DEADLINE, and
+    /// the two are not the same claim: `ended_from_outside` asks both, in one order, and swapping
+    /// them passed every gate in this crate.
+    ///
+    /// # ⚠⚠⚠ Why the order is worth a gate rather than a comment
+    ///
+    /// An expired run is not merely renamed — it is offered an ACCOUNT WINDOW
+    /// ([`spend_or_account`](Driver::spend_or_account)), which moves the run's deadline and steps
+    /// the plugin again. So with the wrong order a person's stop would (1) be reported as
+    /// `exhausted (duration)`, pointing the reader at a `max_seconds` that would have bought
+    /// nothing about a run somebody deliberately ended, and (2) let that run **go on working after
+    /// they said stop**, for as long as its own account takes.
+    ///
+    /// ⚠⚠ AND THAT SECOND HALF IS A SHUTDOWN'S PROBLEM, which is how this was found: `cancel_all`
+    /// raises the flag on EVERY run, so at a shutdown any run already past its `max_duration` would
+    /// take an account window while `RunRegistry`'s join waited on it.
+    #[test]
+    fn a_run_cancelled_after_its_clock_ran_out_is_not_granted_an_account_window() {
+        let cancel = Arc::new(AtomicBool::new(true));
+        let mut plugin = Accounts::ending_with(Verdict::Converged);
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            // Already past at the first loop top, so BOTH endings are true in the same instant —
+            // which is the only arrangement that can tell the two orders apart.
+            max_duration: Some(Duration::ZERO),
+        })
+        .run(&mut plugin, &NoPanes, &RunContext::new(cancel));
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Cancelled,
+            "a person stopped this run; `exhausted (duration)` names a knob that would have bought \
+             them nothing",
+        );
+        assert!(
+            plugin.asked.is_none(),
+            "⚠⚠⚠⚠ THE CANCELLED RUN WAS ASKED FOR AN ACCOUNT, so it was given a fresh deadline and \
+             kept working after a person said stop — and a shutdown waiting on it waits for that \
+             too. It was asked about: {:?}",
+            plugin.asked,
+        );
+        assert_eq!(
+            outcome.iterations, 0,
+            "and no step ran: the account window is the only thing that could have produced one",
+        );
+    }
+
     #[test]
     fn driver_ends_cancelled_without_running_a_step() {
         // The plugin would fail if stepped, but a pre-raised cancel pre-empts
