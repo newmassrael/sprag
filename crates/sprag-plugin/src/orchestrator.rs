@@ -579,6 +579,71 @@ mod tests {
         assert!(outcome.failure.is_none());
     }
 
+    /// ⚠⚠⚠⚠ **A CANCELLED ORCHESTRATOR TYPES NOTHING MORE** — the claim a SHUTDOWN's deadline rests
+    /// on, for the plugin the daemon's `run` verb actually drives.
+    ///
+    /// `RunRegistry::JOIN_DEADLINE` is five seconds because the one thing a run's worker can be
+    /// inside that cannot see its cancel flag is a pane write, bounded at 500 ms — **once**. The
+    /// *once* is this sentence: no injection may START after the flag is up, or the structural
+    /// worst case is `n` writes and the deadline's margin is `10/n` rather than ten. That was read
+    /// off the loop rather than measured, and this is the measurement.
+    ///
+    /// ⚠⚠ Its four siblings already record it (`readiness` twice, `screen`, `ai_loop`) and this was
+    /// the injecting path with no ledger — the one the host runs, and the one the shutdown's own
+    /// numbers were taken against. The flag rides in ON the first keystroke, so the ordering is a
+    /// fact of the double rather than of the scheduler; see [`crate::testing::StopsAtTheKey`].
+    ///
+    /// # ⚠⚠⚠ WHAT HOLDS IT IS TWO CLAUSES, NOT ONE — measured rather than assumed
+    ///
+    /// [`Driver`] asks `ended_from_outside` BEFORE a step and again inside the step's `Continue`
+    /// arm, and **either one alone keeps this green**: delete the pre-step check and the post-step
+    /// one ends the run before a second injection; delete the post-step one and the loop top does.
+    /// Only removing BOTH reddens this (the run exhausts its fifty iterations instead, typing
+    /// forty-nine more times). That is redundancy rather than a hole — each clause has its own
+    /// gates, `driver_ends_cancelled_without_running_a_step` for the first and four others for the
+    /// second — but a reader who assumed this gate pins one of them would be wrong, so it is
+    /// written down.
+    #[test]
+    fn a_cancelled_orchestrator_types_nothing_more() {
+        let (access, pane) = cat_access(20, 4);
+        // ⚠ A sentinel the pane can never show, so the step is INSIDE its wait when the flag lands
+        // rather than already finished — a run that had converged would type nothing for a reason
+        // that has nothing to do with the cancel.
+        let stopping = crate::testing::StopsAtTheKey::nth(access, 1);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("NEVER-SHOWN".to_string()),
+                ready_when: None,
+                ready_within: None,
+                may_answer: None,
+                attended: Attended::NoOne,
+                turn: None,
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 50,
+            max_cost: None,
+            max_duration: None,
+        })
+        .run(&mut orch, &stopping, &stopping.run());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Cancelled,
+            "the double's flag is what must have ended this run, or the ledger below is about \
+             something else",
+        );
+        assert!(
+            stopping.typed_after_the_stop().is_empty(),
+            "⚠⚠⚠⚠ A CANCELLED RUN WENT ON TYPING, so a shutdown can be inside more than one \
+             uncancellable pane write and `JOIN_DEADLINE`'s margin is smaller than its doc says \
+             it is. It pressed: {:?}",
+            stopping.typed_after_the_stop(),
+        );
+    }
+
     /// ⚠⚠⚠ **A PEER THAT BLOCKS MID-RUN IS TYPED INTO ANYWAY, AND WHAT IT IS SHOWING IS A MENU.**
     ///
     /// The readiness barrier is LATCHED — `reached` returns early on `seen` — and that is right for
