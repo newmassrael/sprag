@@ -827,12 +827,32 @@ mod tests {
         );
     }
 
+    /// **WHAT A SHUTDOWN MAY COST WHEN EVERY RUN BEHAVES** — a requirement, not a reading.
+    ///
+    /// ⚠⚠⚠ **DELIBERATELY NOT A MULTIPLE OF [`RunRegistry::JOIN_POLL`]**, which is the constant it
+    /// is here to defend. A bound written as *n × the constant* moves when the constant moves and
+    /// can therefore never catch it — item 377's lesson, where a repair's headline promise was held
+    /// by an unrelated number and nothing noticed. This is the requirement instead: a person who
+    /// asked a well-behaved daemon to stop must not perceive the wait. Measured at **5.27 - 5.47 ms**
+    /// (four samples, 2026-08-17) — one poll interval and the worker's own 1 ms tick — so fifty
+    /// milliseconds is nine times the measurement, and a poll raised an order of magnitude to
+    /// 400 ms is red here at 400.4 ms.
+    ///
+    /// ⚠ A poll set to exactly this number sits ON the boundary and is caught only by the sleep's
+    /// own overshoot (50.25 ms, measured). That is not a property to lean on: what this defends is
+    /// the ORDER of the poll, not its last millisecond.
+    const A_SHUTDOWN_NOBODY_FEELS: Duration = Duration::from_millis(50);
+
     /// ⚠⚠⚠ **DROPPING A REGISTRY ASKS ITS RUNS TO STOP BEFORE IT WAITS FOR THEM.**
     ///
     /// The deadline made `Drop` bounded; it must not have made it PATIENT. A destructor that joined
     /// without raising the flag would hold every shutdown for the whole deadline and then DETACH a
     /// run that would have come back in milliseconds — which is worse than the unbounded join it
     /// replaced, because it loses the outcome as well as the time.
+    ///
+    /// ⚠⚠ AND THE SAME GATE HOLDS THE POLL'S COST, because they are one question asked of one
+    /// clock: *how long does a shutdown take when nothing is wrong?* See
+    /// [`A_SHUTDOWN_NOBODY_FEELS`] for why the answer is an absolute and not a multiple.
     #[test]
     fn dropping_a_registry_asks_its_runs_to_stop_before_waiting_for_them() {
         let mut registry = RunRegistry::default();
@@ -844,8 +864,9 @@ mod tests {
         let waited = raised.elapsed();
 
         assert!(
-            waited < RunRegistry::JOIN_DEADLINE / 10,
-            "the drop waited {waited:?} — it joined without asking the run to stop",
+            waited < A_SHUTDOWN_NOBODY_FEELS,
+            "the drop waited {waited:?} — it joined without asking the run to stop, or it is \
+             asking too rarely to hear the answer",
         );
     }
 
@@ -921,10 +942,13 @@ mod tests {
             waited >= within,
             "the wait ended at {waited:?}, before the deadline it was given",
         );
+        // ⚠ THE SENTENCE OFFERS BOTH CAUSES rather than naming one. Raising `JOIN_POLL` past the
+        // deadline fails this too, and a message that had blamed the per-worker shape would have
+        // sent a reader looking for a loop that was never there.
         assert!(
             waited < within * 2,
-            "two wedged runs cost {waited:?} against a {within:?} deadline — the wait is being \
-             spent per worker, so a daemon pays it once per run it is holding",
+            "two wedged runs cost {waited:?} against a {within:?} deadline — either the wait is \
+             spent per worker, or it asks less often than the deadline it was given",
         );
     }
 }
