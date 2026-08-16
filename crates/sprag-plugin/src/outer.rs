@@ -4146,14 +4146,17 @@ impl OuterLoop {
     /// rest on two subtly different notions of *the agent said it*. See `said_done` for the three
     /// pieces of evidence and what each closes.
     ///
-    /// ⚠ The `partial` line is deliberately not offered a candidate: the peer has not finished
-    /// writing it, so a marker found there is one the agent may still be adding words to. Waiting
-    /// costs a poll; acting costs a convergence. ⚠⚠ **THE RESIDUE, STATED, AND IT IS THIS CHANGE'S
-    /// OWN**: a peer whose reply does not end in a newline keeps its last line there for ever, and
-    /// the ROW reader this replaced could see one. [`sprag_vt::LinesSince::partial`] says the only
-    /// case where an unfinished line is final is a child that has EXITED, and a caller who drove
-    /// this loop with [`DoneWhen::Exits`] would have exactly that. Nothing here can establish the
-    /// EOF, and inventing it would be this crate guessing that a peer had stopped talking.
+    /// ⚠ The `partial` line is not a candidate AT A LIVE PANE: the peer has not finished writing
+    /// it, so a marker found there is one the agent may still be adding words to. Waiting costs a
+    /// poll; acting costs a convergence.
+    ///
+    /// ⚠⚠⚠⚠ **BUT AT A PANE WHOSE CHILD HAS EXITED IT IS THE ANSWER, AND FOR A ROUND IT WAS LOST**
+    /// (register item 289). [`sprag_vt::LinesSince::partial`] sanctions one reading — *an unfinished
+    /// line at EOF is unfinished for ever* — and this doc used to say **"nothing here can establish
+    /// the EOF"**, which was simply untrue: [`PaneAccess::pane_eof`] is on the very trait this
+    /// function takes, and is what [`DoneWhen::Exits`] is built from. The cost of the mistake was
+    /// the loud kind: a one-shot peer whose whole reply is an unterminated last line — *"a reply
+    /// need not end in a newline"* — could never be heard, so the run could never converge.
     ///
     /// ⚠⚠ **A HOST THAT CANNOT NUMBER ITS LINES GETS THE ROWS BACK, AND WITH THEM THE WIDTH.**
     /// [`PaneAccess::output_lines`] is `None` by default, so `Since` falls back to the trail — named
@@ -4173,11 +4176,24 @@ impl OuterLoop {
             return Heard::NotSaid;
         };
         let produced = self.driving.since.taken(panes, self.driving.pane);
-        let said = produced.lines.iter().enumerate().any(|(at, line)| {
+        // ⚠⚠⚠⚠ **AND THE UNFINISHED LAST LINE COUNTS WHEN — AND ONLY WHEN — THE CHILD HAS EXITED.**
+        // [`sprag_vt::LinesSince::partial`] sanctions exactly one reading of it: *an unfinished line
+        // at EOF is unfinished for ever*, and the caller must establish the EOF itself. This caller
+        // can, through [`PaneAccess::pane_eof`] — the same question [`DoneWhen::Exits`] is built on.
+        // Register item 289: without this a reply that does not end in a newline is NEVER heard, so
+        // a one-shot peer whose whole answer is its last unterminated line leaves a run that can
+        // never converge. ⚠ Still furniture at a LIVE pane: a long-lived agent CLI's unfinished
+        // line is its prompt box, and `Some(false)` keeps it out.
+        let ended = panes.pane_eof(self.driving.pane) == Some(true);
+        let mut lines: Vec<&str> = produced.lines.iter().map(String::as_str).collect();
+        if ended && !produced.partial.trim().is_empty() {
+            lines.push(produced.partial.as_str());
+        }
+        let said = lines.iter().enumerate().any(|(at, line)| {
             stands_alone(line, &marker)
                 && !wraps_onto(
                     &self.driving.asked,
-                    at.checked_sub(1).map_or("", |above| &produced.lines[above]),
+                    at.checked_sub(1).map_or("", |above| lines[above]),
                     &marker,
                 )
         });
@@ -6141,6 +6157,114 @@ mod tests {
 
     /// ⚠⚠⚠ **THE LOOP MUST NOT CONVERGE ON ITS OWN INSTRUCTION, NOR ON AN OLD TURN'S MARKER.**
     ///
+    /// ⚠⚠⚠⚠ **A REPLY THAT DOES NOT END IN A NEWLINE IS STILL AN ANSWER, ONCE THE PEER HAS GONE**
+    /// — register item 289, whose cost was a run that could never converge.
+    ///
+    /// # ⚠⚠⚠ The two panes, and why one of them must stay unheard
+    ///
+    /// `LinesSince::partial` holds the line a pane is still writing, and it sanctions exactly one
+    /// reading: *an unfinished line at EOF is unfinished for ever*. Both halves are here because
+    /// either alone is half a rule —
+    ///
+    /// * **a peer still running** whose last line has no newline is FURNITURE (an agent CLI's
+    ///   prompt box sits there for ever), and reading it would converge a run on a marker the agent
+    ///   may still be adding words to;
+    /// * **a peer that has EXITED** having written its whole answer without a trailing newline —
+    ///   *"a reply need not end in a newline"*, and for a one-shot tool that line is the entire
+    ///   reply. Unheard, the run waits for a newline nobody will ever send.
+    ///
+    /// ⚠⚠ The EOF is established through [`PaneAccess::pane_eof`], which is the same question
+    /// [`DoneWhen::Exits`] is built on — and which `said_marker`'s doc used to claim did not exist
+    /// here.
+    #[test]
+    fn a_reply_with_no_trailing_newline_is_heard_once_its_peer_has_exited() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let one_shot = |script: &str| {
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            let pane = workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane");
+            (WorkspacePaneAccess::new(Arc::clone(&workspace)), pane)
+        };
+
+        // The marker the document authors, learned from a loop over a plain peer — it has to be
+        // known before either pane below can print it.
+        let (plain, first) = one_shot("stty -echo; printf 'PARROT-READY\\n'; exec cat");
+        started(&plain, first, "PARROT-READY");
+        let mut naming = bounded_at(Arc::clone(&lua), first, Duration::from_millis(200))
+            .expect("the document's datamodel must carry its four authored strings");
+        let run = RunContext::uncancellable();
+        naming.pump(&plain, &run).expect("the peer stays readable");
+        let marker = naming
+            .authored()
+            .expect("a primed machine answers with its four strings")
+            .done_marker;
+
+        // ── THE PEER THAT IS STILL THERE ── its unterminated line is furniture, not an answer.
+        //
+        // ⚠⚠⚠ THE PEER PRINTS IT rather than the gate typing it in, and the difference is the
+        // whole control. The first draft injected the marker at a `cat` with no newline and
+        // asserted it went unheard — which it did, for the WRONG reason: a terminal in canonical
+        // mode never delivers an unterminated line to the child, so nothing was printed and there
+        // was no `partial` to read at all. The mutation that reads `partial` UNCONDITIONALLY stayed
+        // green against it, which is how the vacuum was found.
+        let (living, alive) = one_shot(&format!(
+            "stty -echo; printf 'PARROT-READY\\n'; printf '{marker}'; exec cat"
+        ));
+        started(&living, alive, &marker);
+        let mut waiting = bounded_at(Arc::clone(&lua), alive, Duration::from_millis(200))
+            .expect("the document's datamodel must carry its four authored strings");
+        waiting
+            .pump(&living, &run)
+            .expect("the peer stays readable");
+        assert_eq!(
+            living.pane_eof(alive),
+            Some(false),
+            "⚠ the fixture: this peer must still be RUNNING, or both halves measure one thing",
+        );
+        assert!(
+            !waiting.said_done(&living).said(),
+            "⚠⚠⚠ AN UNFINISHED LINE AT A LIVING PANE IS NOT AN ANSWER. The peer may still be \
+             adding words to it — an agent CLI's prompt box sits there for ever — and a run \
+             converged here ends on a marker nobody finished writing. Screen: {:?}",
+            living.pane_collapsed(alive),
+        );
+
+        // ── THE PEER THAT HAS GONE ── the same bytes, and now they are the whole reply.
+        let (ended, gone) = one_shot(&format!(
+            "stty -echo; printf 'PARROT-READY\\n'; sleep 0.2; printf '{marker}'"
+        ));
+        started(&ended, gone, "PARROT-READY");
+        let mut finished = bounded_at(lua, gone, Duration::from_millis(200))
+            .expect("the document's datamodel must carry its four authored strings");
+        finished
+            .pump(&ended, &run)
+            .expect("the peer stays readable");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !ended.pane_eof(gone).unwrap_or(false) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            ended.pane_eof(gone),
+            Some(true),
+            "⚠ the fixture: the peer must have EXITED, or this measures the living case twice",
+        );
+        assert!(
+            finished.said_done(&ended).said(),
+            "⚠⚠⚠⚠ THE WHOLE ANSWER WAS THROWN AWAY FOR WANT OF A NEWLINE. The child has exited, so \
+             its last line is unfinished for ever — `LinesSince::partial`'s one sanctioned reading \
+             — and for a one-shot peer that line IS the reply. Unheard, this run waits for a \
+             newline nobody will ever send. Screen: {:?}",
+            ended.pane_collapsed(gone),
+        );
+    }
+
     /// The two halves of [`OuterLoop::said_done`]'s rule, each driven by the case the OTHER half
     /// cannot answer — which is what stops one of them being quietly deleted later:
     ///
