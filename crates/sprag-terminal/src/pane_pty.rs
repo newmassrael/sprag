@@ -673,16 +673,13 @@ impl PanePty {
         // that device's own thread — and a pane whose slave has stopped can no longer stop this
         // thread FOR EVER, which is what it used to do.
         //
-        // ⚠⚠⚠ **BUT «NEVER BLOCKS» IS NOT TRUE AND THIS COMMENT SAID IT TWICE.** [`DeviceInput`]'s
-        // offer waits on the backlog condvar for up to [`DEVICE_TAKES_INPUT_WITHIN`] — 500 ms —
-        // once the pane already owes [`DEVICE_INPUT_BACKLOG`], and **while this thread is held the
-        // pane's OUTPUT is not being drained**. Register item 376(f) recorded that as an accepted
-        // residue; what it did not notice is that the code here denied the residue existed.
-        // Unreachable in practice (a backlog only fills at a device taking no input, and such a
-        // pane is not producing output either) and strictly better than the unbounded park it
-        // replaced — but the honest words are *bounded*, not *never*. The principled repair is an
-        // offer that does not wait AT ALL for an automated reply nobody is waiting on: dropping a
-        // device response beats stalling the drain, and back-pressure is FOR a person's input.
+        // ⚠⚠⚠ **AND «NEVER BLOCKS» IS TRUE OF THIS THREAD BECAUSE IT GOES THROUGH THE OTHER DOOR.**
+        // It did not used to be: this comment claimed it twice while [`DeviceInput::offer`] waited
+        // on the backlog condvar for up to [`DEVICE_TAKES_INPUT_WITHIN`], so a full backlog stopped
+        // the thread that drains the pane — bounded, one-shot, and denied by the words right here
+        // (register items 376(f) and 401). The reply now goes through
+        // [`DeviceInput::offer_without_waiting`] and is DROPPED when there is no room, which is the
+        // right trade for a byte nobody is blocked on: back-pressure is FOR a person's input.
         let reader_device = device.clone();
         // The reader's "I am finished" edge. Moved IN and never sent on: the disconnect its drop
         // causes is the signal, so it fires however the closure ends — normal return or panic — and
@@ -735,7 +732,12 @@ impl PanePty {
                                 )
                             };
                             if !responses.is_empty() {
-                                let _ = reader_device.offer(&responses);
+                                // ⚠⚠ THE DOOR THAT NEVER WAITS. This is the thread that DRAINS the
+                                // pane, so a wait here stops the output it exists to read — the
+                                // one cost the reply cannot be worth. Dropped instead when there
+                                // is no room, which loses nothing: a device owing sixty-four
+                                // kilobytes is not reading its input either.
+                                let _ = reader_device.offer_without_waiting(&responses);
                             }
                             // ATTENTION, outside the emulator lock and BEFORE the repaint wake: a
                             // pane's child asking for a person is not a repaint, and the two are
@@ -1477,7 +1479,11 @@ fn answer_query(
 ) -> io::Result<bool> {
     let prev = answered.fetch_max(seq, Ordering::AcqRel);
     if seq > prev {
-        device.offer(reply)?;
+        // ⚠⚠ THROUGH THE DOOR THAT NEVER WAITS, because the caller is a DISPLAY CLIENT: `sprag-gui`
+        // answers a pending read inside its update pass, so a wait here is a stalled interface.
+        // A reply nobody is blocked on must not cost a person their frame — see
+        // `DeviceInput::offer_without_waiting`.
+        device.offer_without_waiting(reply)?;
         Ok(true)
     } else {
         Ok(false)
@@ -1800,6 +1806,56 @@ impl DeviceInput {
             Self::has_ended(waiting.owed, bytes.len())
         })
     }
+
+    /// **OFFER `bytes` WITHOUT EVER WAITING FOR ROOM** — for an automated reply nobody is waiting
+    /// on, which is dropped rather than allowed to hold the thread that produced it.
+    ///
+    /// # ⚠⚠⚠ Why a second door instead of a flag on the first
+    ///
+    /// [`offer`](Self::offer) waits because BACK-PRESSURE IS FOR A PERSON'S INPUT: a keystroke that
+    /// arrives while the device is briefly behind should land, not vanish. A device RESPONSE is the
+    /// opposite kind of byte. It is produced by the thread draining the pane's output (a `CSI ? u`
+    /// reply) or by a display client answering an OSC 52 read, nobody is blocked on its delivery,
+    /// and while its producer waits **the pane's output is not being drained** — so the wait costs
+    /// exactly the thing the reply was meant to serve.
+    ///
+    /// ⚠⚠ **AND DROPPING IT LOSES NOTHING WHERE IT HAPPENS.** This returns early only when the pane
+    /// already owes [`DEVICE_INPUT_BACKLOG`] bytes, which means its device has taken nothing for
+    /// long enough to bank sixty-four kilobytes — a child that is not reading its input would never
+    /// have seen this reply either. Register items 376(f) and 401.
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::BrokenPipe`] when the device thread has left, and
+    /// [`io::ErrorKind::WouldBlock`] when there is no room right now — the same two answers
+    /// [`offer`](Self::offer) gives, so a caller that switches doors does not learn a new vocabulary.
+    fn offer_without_waiting(&self, bytes: &[u8]) -> io::Result<()> {
+        let (backlog, _took) = &*self.backlog;
+        let mut waiting = lock(backlog);
+        if waiting.ended {
+            return Err(Self::has_ended(waiting.owed, bytes.len()));
+        }
+        if waiting.owed >= DEVICE_INPUT_BACKLOG {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "this pane's device has {} bytes waiting, so these {} of automated reply are \
+                     dropped rather than held: nothing is waiting on them, and holding them would \
+                     stop this pane's output being drained",
+                    waiting.owed,
+                    bytes.len(),
+                ),
+            ));
+        }
+        waiting.owed += bytes.len();
+        drop(waiting);
+        // The same backstop `offer` keeps, for the same race and the same reason.
+        self.offered.send(bytes.to_vec()).map_err(|_| {
+            let mut waiting = lock(backlog);
+            waiting.owed = waiting.owed.saturating_sub(bytes.len());
+            Self::has_ended(waiting.owed, bytes.len())
+        })
+    }
 }
 
 /// Write CONSUMER input to the child (a key, a paste, an injected key). First tell the emulator
@@ -2098,6 +2154,109 @@ mod tests {
     }
 
     /// Poll `question` until it holds or `within` runs out.
+    /// ⚠⚠⚠⚠ **AN AUTOMATED REPLY IS DROPPED AT ONCE AT A FULL BACKLOG, WHERE A PERSON'S INPUT
+    /// WAITS FOR ROOM** — the two doors, measured against each other on one device.
+    ///
+    /// Register item 376(f) accepted *"the reader thread can wait up to 500 ms to write a device
+    /// response"* as a residue, and 401 found the reader's own comments denying it and a SECOND
+    /// site on a display client's thread. Both are replies nobody is blocked on, produced by
+    /// threads whose job is something else — draining a pane, painting a frame — so a wait there
+    /// costs exactly what the reply was meant to serve.
+    ///
+    /// # ⚠⚠⚠ Why the fixture parks the device on a BIG write
+    ///
+    /// The wait is `DEVICE_TAKES_INPUT_WITHIN - quiet`, so it only exists while the device has
+    /// moved RECENTLY: once it has been silent the whole window the subtraction underflows and
+    /// every caller is turned away in microseconds (measured at 17 µs in
+    /// `writing_to_a_dead_pane_comes_back.rs`, and the reason 401's first draft overstated this).
+    /// So the device here TAKES a small message first — stamping `moved` — and only then parks
+    /// inside one that fills the backlog. That is the narrow window the residue is about, and the
+    /// only arrangement in which the two doors answer differently.
+    #[test]
+    fn an_automated_reply_is_dropped_where_a_persons_input_would_wait() {
+        /// A device that takes small messages and PARKS inside a big one — a pty master that has
+        /// stopped draining with a full queue behind it.
+        struct ParksOnceItIsFull {
+            let_go: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl Write for ParksOnceItIsFull {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if buf.len() < DEVICE_INPUT_BACKLOG {
+                    return Ok(buf.len());
+                }
+                let (held, wake) = &*self.let_go;
+                let mut held = lock(held);
+                while !*held {
+                    held = wake.wait(held).unwrap_or_else(PoisonError::into_inner);
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let let_go = Arc::new((Mutex::new(false), Condvar::new()));
+        let device = DeviceInput::attach(ParksOnceItIsFull {
+            let_go: Arc::clone(&let_go),
+        })
+        .expect("attach a device");
+
+        // Taken, so `moved` is stamped NOW — this is what keeps the window open below.
+        device.offer(b"warm").expect("an idle device takes this");
+        assert!(
+            until(Duration::from_secs(5), || device.owed() == 0),
+            "⚠ THE FIXTURE: the small message must have been taken, or `moved` is the pane's birth \
+             and every offer below is refused for the wrong reason",
+        );
+        device
+            .offer(&vec![b'x'; DEVICE_INPUT_BACKLOG])
+            .expect("still under the ceiling when offered, so this is accepted");
+        assert!(
+            until(Duration::from_secs(5), || device.owed()
+                >= DEVICE_INPUT_BACKLOG),
+            "⚠ THE FIXTURE: the device must be parked inside the big write with the backlog full",
+        );
+
+        // THE CLAIM: the automated door answers at once.
+        let began = Instant::now();
+        let dropped = device
+            .offer_without_waiting(b"\x1b[?0u")
+            .expect_err("there is no room, so an automated reply is dropped");
+        let answered_in = began.elapsed();
+        assert!(
+            answered_in < Duration::from_millis(50),
+            "⚠⚠⚠⚠ THE REPLY WAITED. This is the thread that drains the pane, so every millisecond \
+             here is a millisecond the pane's OUTPUT is not being read — and nothing is blocked on \
+             the reply. It took {answered_in:?}",
+        );
+        assert!(
+            dropped.to_string().contains("dropped rather than held"),
+            "and it says which trade was made, so a reader is not left guessing: {dropped}",
+        );
+
+        // THE CONTRAST, on the same device in the same state: a person's input is worth waiting
+        // for, so that door still pays the window rather than dropping a keystroke.
+        let began = Instant::now();
+        let refused = device
+            .offer(b"typed")
+            .expect_err("the device is full and takes nothing");
+        let waited = began.elapsed();
+        assert!(
+            waited >= Duration::from_millis(100),
+            "⚠⚠⚠ A KEYSTROKE WAS DROPPED LIKE A DEVICE REPLY. Back-pressure exists FOR a person's \
+             input: this door must wait for room and only then refuse. It came back in {waited:?}",
+        );
+        assert!(
+            refused.to_string().contains("not taking input"),
+            "and with its own sentence, which is a different fact: {refused}",
+        );
+
+        let (held, wake) = &*let_go;
+        *lock(held) = true;
+        wake.notify_all();
+    }
+
     fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
         let began = Instant::now();
         while began.elapsed() < within {
