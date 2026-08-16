@@ -834,6 +834,11 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         // ⚠ The document's own placeholder, which claims nothing: this gate is about arithmetic
         // that raises no dialog, so screening must not be armed or it would be a second variable.
         screen_rules: None,
+        // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
+        // the round that moved it, and these gates were written against `Attended::NoOne` — a run
+        // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -1041,6 +1046,11 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         // one — the document tests them in that order, and this gate is about the budget's ending.
         reflect_every: LIVE_MAX_TURNS,
         screen_rules: None,
+        // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
+        // the round that moved it, and these gates were written against `Attended::NoOne` — a run
+        // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -1230,6 +1240,11 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         max_turns: UNSPENDABLE_TURNS,
         reflect_every: UNSPENDABLE_TURNS,
         screen_rules: None,
+        // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
+        // the round that moved it, and these gates were written against `Attended::NoOne` — a run
+        // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -1465,6 +1480,11 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         // ⚠ Unarmed: this gate's claim is about the CONSENT carrying the loop through the dialog,
         // so a standing rule that could also get past it would make the finding ambiguous.
         screen_rules: None,
+        // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
+        // the round that moved it, and these gates were written against `Attended::NoOne` — a run
+        // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -1655,6 +1675,9 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
             ScreenRule::parse("Do you want to".to_string(), INSTEAD.to_string())
                 .expect("both halves are non-empty"),
         ]),
+        // ⚠ Nobody is watching — see the note on the gates above.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -1871,6 +1894,9 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
             ScreenRule::parse("Do you want to".to_string(), INSTEAD.to_string())
                 .expect("both halves are non-empty"),
         ]),
+        // ⚠ Nobody is watching — see the note on the gates above.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
@@ -3173,6 +3199,11 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         max_turns: LIVE_MAX_TURNS,
         reflect_every: LIVE_MAX_TURNS,
         screen_rules: None,
+        // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
+        // the round that moved it, and these gates were written against `Attended::NoOne` — a run
+        // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        await_person_ms: Some(0),
+        handback_still_ms: None,
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(

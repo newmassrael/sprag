@@ -573,6 +573,55 @@
     <data id="max_turns" expr="40"/>
     <data id="reflect_every" expr="8"/>
 
+    <!--
+      ⚠⚠⚠ HOW LONG `awaiting_human` WAITS FOR THE PERSON, in milliseconds — the
+      number that state's only run-ending edge is written against.
+
+      This document has always DESCRIBED it (*"wait up to their patience, then
+      `unattended`"*) while a construction argument OWNED it, and that is the
+      split this round ends. It is the arrangement `screen_rules` already has and
+      for the reason written beside `Brief::screen_rules`: **a field on the spec
+      would be a SECOND place the same decision lives, and the failure of letting
+      two copies drift is silent.**
+
+      ⚠⚠⚠ THE COST OF THE OLD ARRANGEMENT WAS MEASURED, not argued. A live run sat
+      at one permission dialog for an hour and was ended by `max_iterations` — a
+      ceiling this document cannot see either — so this state's own `unattended`
+      never fired, and the run reported *exhausted (iterations)*: a sentence
+      about a hundred thousand steps of work, for thirteen transitions and a
+      question nobody answered. Register items 275, 276, 279, 280.
+
+      ⚠⚠ IT IS AUTHORED AND NOT DERIVED, and says so the way `repeat_limit` does.
+      An hour is a person's coffee break rather than a measurement; what would
+      make it right has never been measured, and a number that pretended
+      otherwise would be the folklore this workspace keeps finding.
+
+      ⚠ ZERO MEANS NOBODY IS WATCHING — the run ends at the first dialog it
+      cannot answer, reporting `blocked` WITH the question. It answers for both
+      keys, and is the way to say it.
+    -->
+    <data id="await_person_ms" expr="3600000"/>
+
+    <!--
+      ⚠⚠⚠ HOW STILL A PERSON'S HAND MUST BE BEFORE THE PANE IS THE RUN'S AGAIN,
+      in milliseconds — `await_person_ms`'s other half, and one decision with it:
+      `Handback` lives INSIDE `Attended::APerson`, so *hand the pane back to a run
+      nobody is watching* cannot be constructed.
+
+      ⚠⚠ Measured before the key existed: a supervisor typed ONE key into a pane a
+      loop was driving, finished, and let go — and left a run holding
+      **thirty-seven of its forty iterations unspent** with its goal one turn
+      away. Somebody had to restart it by hand.
+
+      ⚠⚠⚠ ZERO MEANS NEVER — a person who takes this pane keeps it, and the run
+      ends. That is `Handback::Never`, what every run did before the key existed,
+      and what the wire says the key's ABSENCE means; a document that spells
+      absence as zero says the same thing. It is NOT the mirror of the key above:
+      that one turns the whole wait off, this one only declines to take the pane
+      back.
+    -->
+    <data id="handback_still_ms" expr="15000"/>
+
     <!-- ── below the line: loop bookkeeping, not authored ── -->
     <data id="turns" expr="0"/>
     <data id="turns_since_reflect" expr="0"/>
@@ -845,6 +894,20 @@
         author's rules for every caller that did not happen to care about them.
       -->
       <assign location="screen_rules" expr="_event.data.screen_rules"/>
+      <!--
+        ⚠⚠⚠ WHO IS EXPECTED AT THIS PANE, ON THE SAME UNCONDITIONAL TERMS AS THE
+        RULES ABOVE and for the same reason: the driver always sends both keys,
+        echoing this document's own numbers back when the caller named none, so
+        omitting one cannot assign nil and delete an author's patience.
+
+        ⚠⚠ AND THE BARRIER RE-READS THEM WHEN IT ACTS rather than holding what it
+        was built with — see `OuterLoop::expecting`. A brief is applied while the
+        machine is still `idle`, so a value written here is in place before any
+        wait; a barrier that kept its construction copy would wait out the
+        AUTHOR's hour for a caller who asked for a minute.
+      -->
+      <assign location="await_person_ms" expr="_event.data.await_person_ms"/>
+      <assign location="handback_still_ms" expr="_event.data.handback_still_ms"/>
     </transition>
     <transition event="start" target="priming"/>
     <!--

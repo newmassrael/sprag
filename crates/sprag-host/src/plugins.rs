@@ -622,6 +622,27 @@ impl PluginsExternal {
                     // screening is not overriding it — and the driver echoes the document's own
                     // rules back through the brief rather than deleting them.
                     screen_rules: opt_screen_rules(map)?,
+                    // ⚠⚠⚠ THE SAME TWO KEYS, NOW WRITTEN INTO THE DOCUMENT instead of into the
+                    // spec. `awaiting_human`'s only run-ending exit is *nobody came within the
+                    // patience*, so the patience is the loop DOCUMENT's own data — the argument
+                    // `Brief::screen_rules` already makes, applied to the other half of one state.
+                    //
+                    // ⚠⚠ THE PAIR IS STILL VALIDATED AS A PAIR. `opt_attended` owns *a call that
+                    // sends the stillness alone is malformed*, and reading the two keys separately
+                    // here would have quietly dropped that refusal; the values are taken back OUT
+                    // of what it built rather than parsed a second time.
+                    //
+                    // ⚠⚠⚠ AND OMITTING THEM NOW MEANS *THE DOCUMENT DECIDES*, where it used to mean
+                    // `Attended::NoOne` — a run that ended at the first dialog it could not answer.
+                    // That is the change, stated: a caller who wants that says so by authoring it,
+                    // and the shipped document's own number is what an unspecified run now gets.
+                    await_person_ms: opt_attended(map)?
+                        .patience()
+                        .map(|patience| patience.as_millis() as i64),
+                    handback_still_ms: opt_attended(map)?
+                        .handback()
+                        .stillness()
+                        .map(|still| still.as_millis() as i64),
                 };
                 // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
                 // loop's first prompt goes into a pane whose program may still be starting — see
@@ -652,7 +673,6 @@ impl PluginsExternal {
                 // without it: every kind of real work its agent does raises a permission dialog,
                 // and a loop that met one with nothing declared stopped having judged no turns.
                 spec.may_answer = opt_may_answer(map)?;
-                spec.attended = opt_attended(map)?;
                 // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building
                 // a concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
                 // this crate; the manifest carries the argument. It is per RUN and not shared: a

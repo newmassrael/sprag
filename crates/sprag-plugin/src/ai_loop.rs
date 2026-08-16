@@ -896,7 +896,6 @@ mod tests {
                 .expect("a non-zero bound"),
             shows_the_prompt: false,
             may_answer: None,
-            attended: crate::readiness::Attended::NoOne,
             // ⚠ NO JUDGE, so `working`'s `cond="_event.data.judged"` is always false here and
             // every blocked turn takes the `screening` edge. A stand-in gate that acquired one
             // would spawn a real agent per dialog, which is what these gates exist to avoid.
@@ -918,6 +917,13 @@ mod tests {
             // that does NOT set this measures a loop with screening available and unarmed, which
             // is the shipped shape.
             screen_rules: None,
+            // ⚠⚠⚠ NOBODY IS WATCHING, WRITTEN RATHER THAN INHERITED. This was `AiLoopSpec`'s
+            // default until the patience moved into the document, and the gates below were written
+            // against it: a run that ends at the first dialog it cannot answer. Leaving these
+            // `None` would hand every gate the SHIPPED document's hour instead — measured, it hung
+            // this suite 59 tests in. A gate that wants a person says so, three lines down.
+            await_person_ms: Some(0),
+            handback_still_ms: None,
         }
     }
 
@@ -1777,19 +1783,19 @@ mod tests {
         let mut loops = AiLoop::new(
             engine(),
             pane,
-            &brief_for(1_000_000),
+            // ⚠⚠ SOMEBODY IS EXPECTED, and it is the BRIEF that says so since the patience became
+            // the document's — see `Brief::await_person_ms`.
+            &Brief {
+                await_person_ms: Some(30_000),
+                handback_still_ms: Some(300),
+                ..brief_for(1_000_000)
+            },
             &AiLoopSpec {
                 // ⚠ A SHORT TURN BOUND, about this gate's COST rather than its claim: a pump that
                 // finds nothing blocks for the turn's whole patience, and this one pumps until the
                 // dialog has been met and screened. It stays above `supervised_asking`'s settle.
                 turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
                     .expect("a non-zero bound"),
-                attended: crate::readiness::Attended::of(
-                    Duration::from_secs(30),
-                    crate::readiness::Handback::of(Duration::from_millis(300))
-                        .expect("a non-zero stillness"),
-                )
-                .expect("a non-zero patience"),
                 ..standin_spec()
             },
         )
@@ -1904,7 +1910,12 @@ mod tests {
         let mut loops = AiLoop::new(
             engine(),
             pane,
-            &brief_for(1_000_000),
+            // ⚠ The PERSON's clock is the document's now, so the gate authors it through the brief.
+            &Brief {
+                await_person_ms: Some(PATIENCE.as_millis() as i64),
+                handback_still_ms: Some(50),
+                ..brief_for(1_000_000)
+            },
             &AiLoopSpec {
                 // ⚠⚠⚠ THE TURN'S BOUND IS DELIBERATELY MUCH LONGER THAN THE PERSON'S PATIENCE, and
                 // that is what makes this gate able to tell the two waits apart. `attend` hands the
@@ -1915,12 +1926,6 @@ mod tests {
                 // mutation because of it.
                 turn: Turn::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
                     .expect("a non-zero bound"),
-                attended: crate::readiness::Attended::of(
-                    PATIENCE,
-                    crate::readiness::Handback::of(Duration::from_millis(50))
-                        .expect("a non-zero stillness"),
-                )
-                .expect("a non-zero patience"),
                 ..standin_spec()
             },
         )
@@ -2004,18 +2009,19 @@ mod tests {
         let mut loops = AiLoop::new(
             engine(),
             pane,
-            &brief_for(1_000_000),
+            // ⚠ A person is expected and the pane is never taken back — `handback_still_ms` of zero
+            // is `Handback::Never`, which is what this gate held before the two moved here.
+            &Brief {
+                await_person_ms: Some(60_000),
+                handback_still_ms: Some(0),
+                ..brief_for(1_000_000)
+            },
             &AiLoopSpec {
                 // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW — the plugin sizes the turn it is granted
                 // from the bound its caller declared for a turn, so a short one here is what keeps
                 // this gate cheap AND what it is measuring.
                 turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
                     .expect("a non-zero bound"),
-                attended: crate::readiness::Attended::of(
-                    Duration::from_secs(60),
-                    crate::readiness::Handback::Never,
-                )
-                .expect("a non-zero patience"),
                 ..standin_spec()
             },
         )
@@ -3925,7 +3931,12 @@ mod tests {
             // ⚠⚠ NO SCREEN RULES AT ALL — this is the shipped shape, whose placeholder claims
             // nothing. The dialog therefore reaches `screening`, no rule takes it, and
             // `screen.none` leads here. That is the commonest way a real run meets this state.
-            &brief_for(40),
+            // ⚠ A person IS expected, and says so here — see the `WhenStill` note below.
+            &Brief {
+                await_person_ms: Some(30_000),
+                handback_still_ms: Some(300),
+                ..brief_for(40)
+            },
             // ⚠ A SHORTER TURN BOUND THAN THE OTHER GATES', and it is about this gate's COST rather
             // than its claim: a pump that finds nothing blocks for the turn's whole patience, and
             // this one deliberately pumps many times with nothing happening. ⚠ It stays above
@@ -3942,12 +3953,7 @@ mod tests {
                 // `NoOne` (*nobody is watching, so a hand means somebody took the pane*) and the
                 // wrong contract for a run whose whole point is that a person may answer it.
                 // `WhenStill` is what says the pane is the run's again once they have finished.
-                attended: crate::readiness::Attended::of(
-                    Duration::from_secs(30),
-                    crate::readiness::Handback::of(Duration::from_millis(300))
-                        .expect("a non-zero stillness"),
-                )
-                .expect("a non-zero patience"),
+                // ⚠ Both numbers are on the BRIEF above since the patience became the document's.
                 ..standin_spec()
             },
         )

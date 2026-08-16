@@ -1063,6 +1063,25 @@ impl Readiness {
         self.attended
     }
 
+    /// **TELL THE BARRIER WHO IS EXPECTED NOW** — for a caller whose declaration lives somewhere
+    /// that can change after this barrier was built.
+    ///
+    /// # ⚠⚠⚠ Why this exists, and why it is a WRITE rather than a second field
+    ///
+    /// `ai_loop.scxml` authors `await_person_ms` and `handback_still_ms`, and a caller's brief may
+    /// replace them — while the machine is still `idle`, which is AFTER this barrier exists. A
+    /// barrier that kept its construction copy would wait out the author's hour for a caller who
+    /// asked for a minute; measured the hard way, it hung this crate's own suite 59 tests in.
+    ///
+    /// ⚠⚠ The alternative — passing an `Attended` to [`reached`](Self::reached) — was refused after
+    /// looking: **five plugins share that door and only one of them has a document**, so it would
+    /// make four callers hand back a value they already gave, to serve a fifth. The read stays the
+    /// document-owner's business and the barrier keeps one field, which is what
+    /// [`attended`](Self::attended)'s own note asks for.
+    pub(crate) const fn expecting(&mut self, attended: Attended) {
+        self.attended = attended;
+    }
+
     /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
     ///
     /// Arms on the first look and compares on every one after — the watermark discipline

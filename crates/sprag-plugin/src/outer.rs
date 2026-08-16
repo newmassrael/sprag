@@ -352,6 +352,33 @@ pub struct Brief {
     /// which is why the field is an `Option` and [`ScreenRules`] cannot be empty. A caller who says
     /// nothing about screening gets the author's rules; one who supplies rules replaces them.
     pub screen_rules: Option<ScreenRules>,
+
+    /// **HOW LONG `awaiting_human` WAITS FOR THE PERSON**, in milliseconds, or [`None`] to keep what
+    /// the document says.
+    ///
+    /// # ⚠⚠⚠ Why it moved here from [`AiLoopSpec`], where it was for three rounds
+    ///
+    /// [`screen_rules`](Self::screen_rules)'s argument, applied to the other half of the same
+    /// state. `awaiting_human`'s only run-ending exit is *nobody came within the patience*, so the
+    /// patience is the loop DOCUMENT's own data — and a field on the spec was **a second place the
+    /// same decision lived**, which is the drift that paragraph exists to prevent.
+    ///
+    /// ⚠⚠ It was not a tidiness complaint. A live run sat at one permission dialog for an hour and
+    /// was ended by `max_iterations` — a ceiling the document cannot see either — so this state's
+    /// own `unattended` never fired and the run reported *exhausted (iterations)*: a sentence about
+    /// a hundred thousand steps of work, for thirteen transitions (register 275, 276, 279, 280).
+    ///
+    /// ⚠ Zero says NOBODY IS WATCHING, and answers for both keys — see the document.
+    pub await_person_ms: Option<i64>,
+
+    /// **HOW STILL A PERSON'S HAND MUST BE BEFORE THE PANE IS THE RUN'S AGAIN**, in milliseconds, or
+    /// [`None`] to keep what the document says.
+    ///
+    /// ⚠ Read only beside [`await_person_ms`](Self::await_person_ms), and the type says why:
+    /// [`Handback`](crate::readiness::Handback) lives INSIDE `Attended::APerson`, so *hand the pane
+    /// back to a run nobody is watching* cannot be constructed. **Zero is malformed here** rather
+    /// than a quiet *never*: every person pauses between keystrokes.
+    pub handback_still_ms: Option<i64>,
 }
 
 /// **HOW A LOOP DRIVES THE PANE IT RUNS IN** — the three declared contracts a turn-owning plugin
@@ -415,20 +442,6 @@ pub struct AiLoopSpec {
     /// the right default: a run that types into a menu nobody authorised is the failure class this
     /// whole contract exists inside.
     pub may_answer: Option<crate::consent::Consents>,
-    /// **WHETHER A PERSON IS WATCHING THE PANE, AND FOR HOW LONG** — the other half of
-    /// [`may_answer`](Self::may_answer), and the loop document's own `awaiting_human` supplied by
-    /// the substrate.
-    ///
-    /// ⚠⚠ `ai_loop.scxml` has always asked for exactly this: `awaiting_human` is a WAITING state
-    /// with four exits and only one ends the run. R371 measured a supervisor who answered a dialog
-    /// forty milliseconds after the run had already reported `blocked`; R373 measured a person who
-    /// typed ONE key into a pane a loop was driving and left **thirty-seven of forty iterations
-    /// unspent**. Both are this argument's absence.
-    ///
-    /// ⚠ [`Attended::NoOne`](crate::readiness::Attended::NoOne) is the default and means the run
-    /// ends rather than waiting, which is the only honest answer for a pane on a screen nobody is
-    /// looking at.
-    pub attended: crate::readiness::Attended,
     /// **WHO ANSWERS THE DOCUMENT'S `judged_rules`**, or [`None`] for a run that asked for nobody.
     ///
     /// # ⚠⚠⚠ Two halves, and neither implies the other
@@ -462,11 +475,11 @@ impl AiLoopSpec {
             turn: Turn::lasting(INNER_SESSION_ENDS, None)
                 .expect("a turn with no bound is never the zero one `lasting` refuses"),
             shows_the_prompt: true,
-            // ⚠ NEITHER IS DERIVABLE FROM THE AGENT'S NAME. What a run may answer on somebody's
-            // behalf, and whether anybody is at the pane, are the caller's alone — a default here
-            // would be this constructor deciding something nobody said.
+            // ⚠ NOT DERIVABLE FROM THE AGENT'S NAME. What a run may answer on somebody's behalf is
+            // the caller's alone — a default here would be this constructor deciding something
+            // nobody said. ⚠ Whether anybody is AT the pane used to sit beside it and no longer
+            // does: that is the document's, through [`Brief::await_person_ms`].
             may_answer: None,
-            attended: crate::readiness::Attended::NoOne,
             // ⚠ NOR IS THIS. A judge is a second agent with a bill; naming one here would have
             // every loop built from this constructor quietly acquire one.
             judge: None,
@@ -1538,7 +1551,10 @@ impl OuterLoop {
                     spec.ready_when.clone(),
                     spec.ready_within,
                     spec.may_answer.clone(),
-                    spec.attended,
+                    // ⚠⚠⚠ THE DOCUMENT'S, and only as a SEED: `pump` re-reads it at the top of every
+                    // pass (see [`Self::expecting`]), so what acts is always what the machine holds
+                    // now — a brief lands while it is still `idle`, which is after this line.
+                    Self::seed_expecting(&script, &session),
                 ),
                 judged: crate::access::RowTrail::default(),
                 since: crate::report::Since::default(),
@@ -1669,10 +1685,31 @@ impl OuterLoop {
                 };
             }
         };
+        // ⚠⚠⚠ THE SAME ECHO THE RULES GET, for the same reason: the assignment in the document is
+        // unconditional, so a key omitted here would assign nil and DELETE the author's number.
+        // A caller who named none gets this document's own back, round-tripped and proven.
+        let (Some(patience_ms), Some(still_ms)) = (
+            brief
+                .await_person_ms
+                .or_else(|| self.authored_ms("await_person_ms")),
+            brief
+                .handback_still_ms
+                .or_else(|| self.authored_ms("handback_still_ms")),
+        ) else {
+            // A document that cannot say who it expects is one this driver cannot drive — the
+            // treatment an unreadable rule list already gets, one field along.
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: "await_person_ms",
+                held: None,
+            };
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "milestone": brief.milestone,
             "reference": brief.reference,
+            "await_person_ms": patience_ms,
+            "handback_still_ms": still_ms,
             "max_turns": brief.max_turns,
             "reflect_every": brief.reflect_every,
             ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
@@ -2014,6 +2051,15 @@ impl OuterLoop {
         let from = self.state();
         if self.machine.is_in_final_state() {
             return Ok(Pumped::Ended(from));
+        }
+        // ⚠⚠⚠ WHO IS EXPECTED IS RE-READ AT THE TOP OF EVERY PASS, from the document that owns it —
+        // see [`Self::expecting`]. It is at the funnel rather than in `attend` because THREE acts
+        // consult it (the person's wait, the handback, and `awaiting_human`'s own arm) and a value
+        // refreshed in one of them would leave the other two reading a copy taken earlier, which is
+        // the drift this whole move exists to end. ⚠ A document this cannot read leaves the barrier
+        // with what it had: `brief` already refused that case, loudly.
+        if let Some(expected) = self.expecting() {
+            self.driving.ready.expecting(expected);
         }
         // ⚠⚠⚠ TAKEN BEFORE THE ACT, so what this pass reports is what it ARRIVED AT rather than
         // what it happens to be holding — see [`Pumped::Moved`]'s `found`, which is register item
@@ -3149,6 +3195,83 @@ impl OuterLoop {
         )
     }
 
+    /// A whole number of milliseconds this document authored, or [`None`] where it holds none this
+    /// can read.
+    ///
+    /// ⚠ A `<data>` spelled as a plain integer can still arrive as a double: the datamodel is
+    /// ECMAScript-shaped and its numbers are not typed by how they were written.
+    fn authored_ms(&self, name: &str) -> Option<i64> {
+        match self.script.get_variable(&self.session, name) {
+            Ok(ScriptValue::Int(held)) if held >= 0 => Some(held),
+            Ok(ScriptValue::Double(held)) if held >= 0.0 => Some(held as i64),
+            _ => None,
+        }
+    }
+
+    /// **WHO THIS DOCUMENT EXPECTS AT ITS PANE RIGHT NOW**, handed to the barrier before it can act
+    /// on it — `await_person_ms` and `handback_still_ms`, read at the moment of use.
+    ///
+    /// # ⚠⚠⚠ Why it is re-read rather than held from construction
+    ///
+    /// A brief is applied while the machine is still `idle`, and construction happens before that.
+    /// A barrier built with the AUTHOR's hour would wait out that hour for a caller who asked for a
+    /// minute — measured the hard way: reading these at construction hung this crate's own suite,
+    /// 59 tests in, because every gate's short patience had been replaced by the document's default.
+    ///
+    /// ⚠⚠ It is also what makes a reflection able to change them one day. `screening` reads its
+    /// rules out of the datamodel at the moment it acts, and the reason given there is this one:
+    /// **a copy taken earlier is a second place the decision lives.**
+    ///
+    /// ⚠ A document that names a patience with no stillness answers [`None`] and the barrier keeps
+    /// what it had. The refusal that matters is `brief`'s — this is the last line of defence, not
+    /// the one a caller should ever meet.
+    fn expecting(&self) -> Option<crate::readiness::Attended> {
+        Self::expected_by(&self.script, &self.session)
+    }
+
+    /// [`expecting`](Self::expecting)'s reading, separated from the loop that holds the engine so
+    /// construction can use it before there is a `self` — see [`Self::seed_expecting`].
+    fn expected_by(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Option<crate::readiness::Attended> {
+        let ms = |name: &str| match script.get_variable(session, name) {
+            Ok(ScriptValue::Int(held)) if held >= 0 => Some(held.unsigned_abs()),
+            Ok(ScriptValue::Double(held)) if held >= 0.0 => Some(held as u64),
+            _ => None,
+        };
+        let patience = Duration::from_millis(ms("await_person_ms")?);
+        let still = Duration::from_millis(ms("handback_still_ms")?);
+        if patience.is_zero() {
+            return Some(crate::readiness::Attended::NoOne);
+        }
+        // ⚠⚠⚠ ZERO STILLNESS IS `Never`, NOT A REFUSAL, and the first draft of this had it wrong.
+        // `Handback::Never` is a real variant — *a person who takes this pane keeps it, and the run
+        // ends* — and it is what every run did before the key existed. The wire says the same of the
+        // key's ABSENCE, so a document that spells absence as zero means the same thing. Refusing it
+        // would make one of the two answers `Attended` can hold unsayable from the file that owns
+        // the decision.
+        let handback = if still.is_zero() {
+            crate::readiness::Handback::Never
+        } else {
+            crate::readiness::Handback::of(still)?
+        };
+        crate::readiness::Attended::of(patience, handback)
+    }
+
+    /// What the barrier is BUILT with, before a brief has been able to say otherwise.
+    ///
+    /// ⚠⚠ A document this cannot read seeds `NoOne` rather than refusing here, and the refusal that
+    /// matters is [`brief`](Self::brief)'s: construction happens before anybody has had a chance to
+    /// supply the numbers, so failing here would refuse a caller for a document they were about to
+    /// correct. Nothing acts on this value — `pump` re-reads before every pass.
+    fn seed_expecting(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> crate::readiness::Attended {
+        Self::expected_by(script, session).unwrap_or(crate::readiness::Attended::NoOne)
+    }
+
     /// How long one of the inner agent's turns may take — the caller's [`Turn`], or the run's own
     /// clock where they declined a bound.
     fn patience(&self) -> Duration {
@@ -3918,7 +4041,6 @@ mod tests {
             // these gates want: what they are about is the driver, not the answering contract.
             // `ai_loop`'s own gates drive the other half.
             may_answer: None,
-            attended: crate::readiness::Attended::NoOne,
             // ⚠ AND NO JUDGE, for the same reason: a judge would put a spawned agent in the middle
             // of every blocked turn these gates drive.
             judge: None,
@@ -4691,6 +4813,10 @@ mod tests {
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
+            // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
+            // became the document's — a run that ends at the first dialog it cannot answer.
+            await_person_ms: Some(0),
+            handback_still_ms: None,
         };
         assert_eq!(
             loops.brief(&brief),
@@ -4788,6 +4914,10 @@ mod tests {
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
+            // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
+            // became the document's — a run that ends at the first dialog it cannot answer.
+            await_person_ms: Some(0),
+            handback_still_ms: None,
         };
 
         // ── the value came back DIFFERENT: the shape SCE PR-87 produced ──
@@ -4854,6 +4984,8 @@ mod tests {
                 max_turns: 3,
                 reflect_every: 99,
                 screen_rules: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
             }),
             Briefed::NotHeld {
                 part: "milestone",
@@ -4984,6 +5116,10 @@ mod tests {
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
+            // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
+            // became the document's — a run that ends at the first dialog it cannot answer.
+            await_person_ms: Some(0),
+            handback_still_ms: None,
         };
         assert_eq!(loops.brief(&first), Briefed::Took, "the control");
 
@@ -5640,6 +5776,10 @@ mod tests {
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
+            // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
+            // became the document's — a run that ends at the first dialog it cannot answer.
+            await_person_ms: Some(0),
+            handback_still_ms: None,
         };
         assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
         // ⚠⚠⚠ AND NOTHING IS COMPOSED YET, which is the CONTROL for the whole arrangement. The
