@@ -2983,4 +2983,130 @@ mod tests {
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
+
+    /// ⚠⚠⚠⚠ **THIS PLUGIN TYPES INTO A PANE IT COULD HAVE ASKED ABOUT, EVERY STEP, FOR EVER** —
+    /// register items 310 and 324, turned from a backtrace into a number of steps.
+    ///
+    /// # What the 43 hours were made of
+    ///
+    /// `write_to_a_dead_pane_wedges` (in `sprag-terminal`) measures the wall: a pane whose child is
+    /// dead takes **16,896 bytes of newline-terminated input** and then blocks for ever, holding
+    /// the shared writer mutex. It does not say who supplies those bytes. **This does.** Nothing in
+    /// a step consults the pane's liveness, so the stimulus goes in again on every one, and the
+    /// bytes accumulate at the same pane until the wall is reached. This gate divides the wall by
+    /// the measured per-step cost and prints how many steps that is.
+    ///
+    /// ⚠⚠⚠ **AND `pane_eof` ALREADY ANSWERS, BEFORE THE FIRST BYTE.** That is item 324's corrected
+    /// sentence made concrete: the eye is not missing — `DoneWhen::Exits` and `pipe` both look
+    /// through it — **the hand on the keyboard does not.** A refusal here would need no new
+    /// evidence, only a caller willing to read what the product already knows.
+    ///
+    /// # ⚠⚠ Why it stops far short of the wall
+    ///
+    /// Reaching it would wedge this suite, which is the failure the whole line of work is about.
+    /// The claim is the RATE and the fact that nothing bounds it, so a handful of steps and one
+    /// division carry it; a gate that proved it by hanging would have proved it once.
+    ///
+    /// ⚠ The projection is arithmetic on two measured numbers and not a threshold spelled here —
+    /// `WALL` is quoted from the gate that measures it, on this host, and both are printed.
+    ///
+    /// # ⚠⚠⚠⚠ MUTATED WITH THE FIX, AND THE COMPILER REFUSED TO LET IT BE WRITTEN
+    ///
+    /// The fix is one guard: `if panes.pane_eof(self.pane) == Some(true) { return … }`. Writing it
+    /// stops at the answer — **there is no [`Verdict`] for *the peer is gone*.**
+    /// [`Verdict::Blocked`] carries an [`Unanswered`](crate::consent::Unanswered), which is *a
+    /// consent failed to cover a dialog*, and a dead child asked nothing;
+    /// [`Verdict::Interrupted`] is *a person took this pane*, and nobody did. Substituting
+    /// `Continue` compiles and turns this gate red at `step 1 must have TYPED` — so the gate does
+    /// bite — but it leaves the run stepping for ever over a peer that cannot answer, reporting
+    /// nothing wrong until its iteration budget runs out. **That is the same missing word
+    /// [`Over`](crate::completion::Over) lacks at the turn's end (register item 323).** One
+    /// vocabulary gap, two layers, and the compiler is what says so at this one.
+    #[test]
+    fn a_step_types_into_a_pane_this_run_could_already_know_is_dead() {
+        /// What `write_to_a_dead_pane_wedges` measured on this host. ⚠ A kernel's number, not
+        /// sprag's — it is here to be DIVIDED BY, and the projection it feeds is printed rather
+        /// than asserted, so a different host changes the report and not the verdict.
+        const WALL: u64 = 16_896;
+        /// Enough steps to show the cost is per-step and linear, few enough to stay far short of
+        /// the wall.
+        const STEPS: u64 = 4;
+
+        let (access, pane) = sh_access("exit 0", 20, 4);
+        let began = Instant::now();
+        while access.pane_eof(pane) != Some(true) && began.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(true),
+            "⚠ THE FIXTURE: the child must be gone, or nothing below is about a dead pane",
+        );
+
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                // ⚠ NO BARRIER. A dead pane can never clear one, so a run that declared a barrier
+                // would be refused before it typed — which is a DIFFERENT (and safe) story, and
+                // not the one that wedged a machine. The wedge was reached by a run already past
+                // its barrier when its peer died.
+                ready_when: None,
+                ready_within: None,
+                may_answer: None,
+                attended: Attended::NoOne,
+                turn: None,
+            },
+        );
+
+        let run = crate::run::RunContext::uncancellable();
+        let mut spent = 0;
+        let stepping = Instant::now();
+        for step in 1..=STEPS {
+            let took = orch
+                .step(&access, &run)
+                .expect("⚠ a step at a dead pane must SUCCEED — an error would tell the caller");
+            assert!(
+                took.cost.amount() > 0,
+                "⚠⚠⚠ step {step} must have TYPED. A step that spent nothing would mean something \
+                 already declines to write at a dead pane, and the accumulation below is fiction",
+            );
+            assert_eq!(
+                access.pane_eof(pane),
+                Some(true),
+                "⚠⚠⚠ and the pane was answerably dead at step {step}, BEFORE and AFTER the bytes \
+                 went in — the refusal this needs is not waiting on evidence anybody has to go and \
+                 fetch (register items 311, 324)",
+            );
+            spent += took.cost.amount();
+        }
+        let per_step_wall = stepping.elapsed() / u32::try_from(STEPS).expect("a small count");
+
+        let per_step = spent / STEPS;
+        assert!(
+            per_step > 0 && spent == per_step * STEPS,
+            "⚠⚠ the cost must be the SAME every step, or the projection below is an average \
+             pretending to be a rate: {spent} over {STEPS} steps",
+        );
+        let steps_to_the_wall = WALL.div_ceil(per_step);
+        assert!(
+            steps_to_the_wall > STEPS,
+            "⚠⚠⚠⚠ THIS GATE JUST WEDGED ITSELF: {STEPS} steps at {per_step} bytes reach the \
+             {WALL}-byte wall. Lower `STEPS`, and note that the fixture has become the defect",
+        );
+
+        // ⚠⚠⚠ AND HOW LONG THAT IS, from the step's own measured wall clock rather than from
+        // `OBSERVE_TIMEOUT` — a step at a pane that never reacts waits out its whole observe
+        // window, every time, so the run walks to the wall at a pace nothing about it looks
+        // wrong. **That is the shape of the 43 hours**: not a burst, a patient march.
+        let to_the_wall = per_step_wall * u32::try_from(steps_to_the_wall).unwrap_or(u32::MAX);
+        println!(
+            "\n== an orchestrator at a pane whose child is dead ==\n  pane_eof says dead before \
+             every step, and every step types anyway\n  {per_step} bytes per step, {spent} over \
+             {STEPS} steps\n  steps to the {WALL}-byte wall: {steps_to_the_wall}\n  at the \
+             measured {per_step_wall:?} a step, that is {to_the_wall:?} of ordinary stepping\n"
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
 }
