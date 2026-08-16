@@ -1903,6 +1903,68 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **THE TWO WAITS DISAGREE ABOUT A DEADLINE THAT PASSED WHILE THE EVIDENCE WAS ALREADY
+    /// THERE, AND NOTHING SAID SO** — a measurement, pinned here so the disagreement is visible.
+    ///
+    /// [`RunContext::stopped`](crate::run::RunContext::stopped) says it is *"the predicate every
+    /// bounded wait consults, so neither of the two ways a run ends from outside can be honoured by
+    /// one wait and missed by another"*. That holds for CANCEL. It does not hold for the DEADLINE,
+    /// because the two waits order it against the evidence differently and both wrote down a reason:
+    ///
+    /// * [`poll_until`](crate::run::poll_until) asks cancel, then the predicate, **then** the
+    ///   deadline — *"work that finished is never thrown away by a clock that ran out while it was
+    ///   finishing"*.
+    /// * every loop in THIS file asks `stopped()` — cancel and deadline together — **first**, so a
+    ///   delivery whose evidence is on the screen reports [`Seen::Stopped`] and its caller answers
+    ///   [`Delivered::Unwitnessed`]: *the keystroke went out and nobody watched*, about a keystroke
+    ///   this pane could have witnessed on the very next line.
+    ///
+    /// ⚠⚠⚠ **NEITHER IS OBVIOUSLY WRONG, WHICH IS EXACTLY WHY IT IS PINNED RATHER THAN «FIXED».**
+    /// A run out of time that discards evidence it holds is under-reporting; a run out of time that
+    /// keeps gathering evidence is spending a window it does not have. The decision is the owner's;
+    /// what this gate refuses to allow is that it go on being made twice, differently, by accident.
+    /// It goes RED when either side moves — which is the point, and then the note above is the
+    /// argument to settle rather than a surprise to rediscover.
+    #[test]
+    fn a_passed_deadline_beats_the_evidence_in_this_file_and_loses_to_it_in_poll_until() {
+        let panes = Recorder::showing("PONG");
+        let wrote = panes
+            .inject(PaneId(1), &KeyStroke::text("ping"))
+            .expect("the double takes what it is given");
+        assert!(wrote.bytes() > 0, "the double must have taken the keys");
+        assert_eq!(
+            panes.pane_collapsed(PaneId(1)).as_deref(),
+            Some("PONG"),
+            "the fixture must stage EVIDENCE ALREADY ON THE SCREEN, or neither wait has anything \
+             to weigh the clock against",
+        );
+
+        // Out of time and NOT cancelled — the one arrangement that tells the two rules apart,
+        // since `stopped()` collapses them and only the deadline is ordered differently.
+        let out_of_time = crate::run::RunContext::uncancellable().deadline_in(Some(Duration::ZERO));
+        assert!(out_of_time.expired() && !out_of_time.cancelled());
+
+        assert_eq!(
+            crate::run::poll_until(&out_of_time, Duration::from_secs(30), || true),
+            crate::run::Waited::Ready,
+            "`run.rs`'s rule: a finished predicate survives a clock that ran out while it finished",
+        );
+        assert!(
+            matches!(
+                await_text(
+                    &panes,
+                    &out_of_time,
+                    PaneId(1),
+                    "PONG",
+                    Duration::from_secs(30),
+                    None,
+                ),
+                Seen::Stopped,
+            ),
+            "and this file's rule is the opposite one, on the same context and the same evidence",
+        );
+    }
+
     /// A run cancelled while WAITING for the echo stops there, having paid for what it wrote.
     ///
     /// The other cancel arm, and the one a real supervisor hits: the wait is where a delivery spends
