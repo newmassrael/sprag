@@ -140,12 +140,19 @@ fn marker_arrived(
 /// it, because a run waiting for a HUMAN has no authorised choice: it is not watching for a marker
 /// to land somewhere, only for the dialog it could not answer to stop being the one on the pane.
 ///
+/// ⚠⚠⚠ **TWO ACTS SHARE IT, AND THE SECOND ONE COST A RUN BEFORE IT DID.** `await_the_person` is
+/// the barrier's wait; `ai_loop.scxml`'s `awaiting_human` is the machine's, and its driver asked
+/// *"has the TURN ended"* instead — a question a dialog answers YES to on the first look, so the
+/// wait exited at once and the state was re-derived from the same unchanged pixels **~100,000 times
+/// in one hour** (register items 279, 280). The condition that ends a wait for a person was already
+/// written, right here, and the site that needed it used something else.
+///
 /// ⚠ The `None` question — a peer blocked on something this host cannot read — is the one case that
 /// cannot be answered by comparing sentences, so it asks the weaker question it can answer: is this
 /// pane still blocked at all. That is strictly more conservative. A person who replaces one
 /// unreadable dialog with another keeps the run waiting, which is right, since nothing here can
 /// tell the two apart and resuming would type into whichever it is.
-fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Question>) -> bool {
+pub(crate) fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Question>) -> bool {
     match question {
         Some(asked) => left_the_question(panes, pane, asked),
         // ⚠ A peer blocked on something this host cannot read is the one case that cannot be

@@ -89,7 +89,7 @@ use crate::completion::{Completion, DoneWhen, Over, Turn};
 use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
-use crate::run::RunContext;
+use crate::run::{RunContext, Waited, poll_until};
 use crate::screen::{Malformed, Refused, ScreenRule, ScreenRules, Screened};
 use crate::sm::ai_loop::AiLoopPolicy;
 
@@ -2574,13 +2574,45 @@ impl OuterLoop {
                 // clearing it would restart their patience if the run turned out to have time left.
                 _ => return Ok(AiLoopEvent::Null.into()),
             },
-            // ⚠ The question is still on the screen, or the peer has not finished what the person
-            // unblocked. Neither is a thing that HAPPENED — so unless the caller's patience has run
-            // out, the machine stays exactly where it is.
-            Over::Asking(_) | Over::NotYet if since.elapsed() < patience => {
+            // ⚠⚠⚠ **THE PEER IS ASKING, SO THE THING TO WAIT FOR IS THE PERSON — AND THIS USED TO
+            // ASK WHETHER THE TURN HAD ENDED.** A dialog IS an ending, so `Completion::wait`
+            // answered on its first look and this arm returned `Null`; the driver, which pauses
+            // between steps for nothing, asked again, and the same unchanged pixels were re-read
+            // **~100,000 times in one hour** until an iteration ceiling the document cannot see
+            // ended the run (register 275, 276, 279). The document's own words for this state are
+            // *the person came* or *nobody did*; **how many times to look while waiting was never
+            // in it**, and neither is a cadence — so the fix is not a slower loop, it is one wait.
+            //
+            // [`moved_on`] is the condition that ends a wait for a person, already written and
+            // already used by the barrier's [`await_the_person`]. It takes the `Option<Question>`
+            // this arm is handed: a question this host can read ends when the peer leaves THAT
+            // sentence, and one it cannot read ends when the pane stops being blocked at all.
+            //
+            // ⚠ The bound is the REMAINDER of the caller's patience, not a fresh copy of it: the
+            // anchor is what makes this state's wait one wait however many times it is entered, and
+            // handing over the whole patience again would restart somebody's hour on every pass.
+            Over::Asking(question) => {
+                let left = patience.saturating_sub(since.elapsed());
+                match poll_until(run, left, || {
+                    crate::readiness::moved_on(panes, self.driving.pane, question.as_ref())
+                }) {
+                    // ⚠⚠ THE PERSON ACTED AND THIS DOES NOT GUESS WHAT THEY DID. `turn.done` and
+                    // `resume` are different edges and only the next look at the pane can tell them
+                    // apart — so the machine stays put for exactly one more step and the completion
+                    // contract answers, which is the same discipline `Reached::Answered` keeps.
+                    Waited::Ready => return Ok(AiLoopEvent::Null.into()),
+                    // The run ended underneath. The anchor STAYS — see the clock arm above.
+                    Waited::Stopped => return Ok(AiLoopEvent::Null.into()),
+                    Waited::TimedOut => AiLoopEvent::Unattended.into(),
+                }
+            }
+            // ⚠ The peer has not finished what the person unblocked. `Completion::wait` really did
+            // wait for this one — `NotYet` is its timeout — so there is no spin here, and the only
+            // question left is whether the caller's patience has also run out.
+            Over::NotYet if since.elapsed() < patience => {
                 return Ok(AiLoopEvent::Null.into());
             }
-            Over::Asking(_) | Over::NotYet => AiLoopEvent::Unattended.into(),
+            Over::NotYet => AiLoopEvent::Unattended.into(),
         };
         self.awaiting = None;
         Ok(raised)

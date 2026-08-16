@@ -1838,6 +1838,148 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠ **WAITING FOR A PERSON COSTS ONE STEP, NOT ONE PER LOOK** — register items 279 and 280,
+    /// and the run they ended.
+    ///
+    /// # ⚠⚠⚠ What went wrong, so the number below is read as a claim and not as a tolerance
+    ///
+    /// `awaiting_human` asked [`Completion::wait`] whether the TURN had ended. **A dialog is an
+    /// ending**, so that wait answered `Asking` on its first look and never waited at all; the arm
+    /// turned it into `Null`, and the Driver — which pauses between steps for nothing — asked
+    /// again. Measured on a live run: **~100,000 steps in the hour it sat at one permission
+    /// dialog**, against 64 steps for a nine-hour run that never sat at one. The iteration ceiling,
+    /// which the document cannot see, then ended the run and reported *exhausted (iterations)* —
+    /// a sentence about a hundred thousand steps of work, for thirteen transitions and a question
+    /// nobody answered.
+    ///
+    /// # ⚠⚠ Why STEPS and not elapsed time is the assertion
+    ///
+    /// The defect is not that the wait was short — it is that the wait was **re-derived**. A gate
+    /// on duration passes for a driver that spins for exactly as long; only counting the steps says
+    /// the wait was ONE wait. ⚠ Both are asserted anyway: a step count of one with no elapsed time
+    /// would mean the patience was skipped, which is the opposite defect and just as wrong.
+    ///
+    /// # ⚠⚠⚠ WHAT THIS GATE DOES **NOT** HOLD, AND THE ARM IT CANNOT REACH
+    ///
+    /// **It does not reach `Over::Asking` — the arm the fix is in.** Restoring
+    /// `Over::Asking(_) => return Null` leaves this GREEN, which was measured, not assumed. Two
+    /// arrangements were tried and both land on `Over::NotYet` instead:
+    ///
+    /// * `standin_agent_refusing(true, 2, None)` reaching the state through `screen.none`;
+    /// * `standin_agent_asking(Asks::OnItsFirstPrompt)`, whose peer asks during a turn this loop
+    ///   armed — the shape [`Completion::asked`] documents as its own precondition.
+    ///
+    /// Both left after **~16.4s = twice the turn's bound**, where the arm under test leaves after
+    /// the PERSON's patience. `Completion::asked` answers `None` unless the evaluator is armed AND
+    /// its peer has moved since the prompt, and by the time `awaiting_human` is entered that has
+    /// stopped being true here.
+    ///
+    /// ⚠⚠⚠ **THE ARM IS REACHED IN PRODUCTION AND THE ARITHMETIC IS THE PROOF.** On `NotYet` the
+    /// wait parks for the turn's bound — 30 minutes on the live run — which is about two steps an
+    /// hour. The live run spent **~100,000 steps in one hour** at one dialog. Only the immediate
+    /// return of the `Asking` arm produces that number, so the fixture is what is missing, not the
+    /// path. **Registered rather than papered over** — a fixture that cannot stage the hazard makes
+    /// every gate standing on it weaker than the product.
+    ///
+    /// What this DOES hold: the wait for a person ends in one step and lasts at least the declared
+    /// patience, on the path these fixtures can reach.
+    #[test]
+    fn a_run_waiting_for_a_person_spends_one_step_on_the_whole_wait() {
+        /// Short enough to keep the gate cheap, long enough that a spinning driver needs hundreds
+        /// of steps to cross it. ⚠ It is the PERSON's patience, not the turn's.
+        const PATIENCE: Duration = Duration::from_millis(400);
+        /// ⚠ Far above [`PATIENCE`], so *left on the person's clock* and *left on the turn's* are
+        /// distinguishable by how long it took — see the spec below.
+        const TURN_BOUND: Duration = Duration::from_secs(8);
+
+        // ⚠⚠⚠ THE PEER MUST ASK *DURING A TURN THIS LOOP ARMED*, and the first draft of this gate
+        // did not get that. `Completion::asked` answers only for an ARMED evaluator whose peer has
+        // MOVED since the prompt — so a fixture that arrives at `awaiting_human` some other way
+        // leaves `ended()` answering `None`, the wait falls to `Over::NotYet`, and that arm was
+        // never the broken one. Measured: the earlier arrangement left after **16.4s** — twice the
+        // TURN's bound — where the arm under test leaves after the PERSON's patience.
+        let (workspace, pane) =
+            crate::testing::standin_agent_asking(crate::testing::Asks::OnItsFirstPrompt);
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &brief_for(1_000_000),
+            &AiLoopSpec {
+                // ⚠⚠⚠ THE TURN'S BOUND IS DELIBERATELY MUCH LONGER THAN THE PERSON'S PATIENCE, and
+                // that is what makes this gate able to tell the two waits apart. `attend` hands the
+                // TURN's bound to `Completion::wait` and the PERSON's to its own arms, so a run
+                // that leaves after roughly the patience left on the person's clock and one that
+                // leaves after the turn's bound are different code paths with the same ending.
+                // Equal numbers hid that, and the first draft of this gate passed under its own
+                // mutation because of it.
+                turn: Turn::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
+                    .expect("a non-zero bound"),
+                attended: crate::readiness::Attended::of(
+                    PATIENCE,
+                    crate::readiness::Handback::of(Duration::from_millis(50))
+                        .expect("a non-zero stillness"),
+                )
+                .expect("a non-zero patience"),
+                ..standin_spec()
+            },
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            if loops.state() == AiLoopState::AwaitingHuman {
+                break;
+            }
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a paused run must be readable");
+            if let Some(note) = step.note {
+                walked.push(note);
+            }
+        }
+        assert_eq!(
+            loops.state(),
+            AiLoopState::AwaitingHuman,
+            "⚠ the control: the loop must be WAITING for a person before the wait can be \
+             measured. Walked {walked:?}",
+        );
+
+        // ── the measurement: how much does the wait itself cost the run? ──
+        let began = std::time::Instant::now();
+        let mut spent = 0_u32;
+        while loops.state() == AiLoopState::AwaitingHuman && spent < 2_000 {
+            loops
+                .step(&access, &run)
+                .expect("a waiting run is still readable");
+            spent += 1;
+        }
+        let took = began.elapsed();
+
+        assert!(
+            spent <= 2,
+            "⚠⚠⚠ THE WAIT MUST BE ONE WAIT. Leaving `awaiting_human` took {spent} steps over \
+             {took:?}, so the driver is re-deriving the same unchanged screen instead of parking \
+             on the one condition that ends a wait for a person (`readiness::moved_on`). Every one \
+             of those steps is an iteration charged against a ceiling the document cannot see, and \
+             on a live run that arithmetic ended it: ~100,000 steps in one hour at one dialog.",
+        );
+        assert!(
+            took >= PATIENCE,
+            "⚠⚠⚠ AND IT MUST ACTUALLY HAVE WAITED. Leaving took only {took:?} of a {PATIENCE:?} \
+             patience, which is the opposite defect: a person who was promised that long did not \
+             get it, and the run gave up while they were still on their way.",
+        );
+        assert_ne!(
+            loops.state(),
+            AiLoopState::AwaitingHuman,
+            "⚠⚠ and the wait must END — a run that waits for ever and a run that is dead are the \
+             same thing to every reader",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **A WINDOW THAT RAN OUT BEFORE THE ACCOUNT ARRIVED SAYS SO, IN THE RUN'S JOURNAL** —
     /// the silence item 208 removes, put back one step later and removed again.
     ///
