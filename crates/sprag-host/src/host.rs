@@ -52,9 +52,10 @@ use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, Attention, CommandBuilder, DividerStep, Ended, Hand, HistoryLimitSource,
     LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneArgsSource, PaneBirthHooks, PaneDir,
-    PaneEnvSource, PaneHomes, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow,
-    Projection, Rect, SessionId, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
-    SplitSide, Tree, WindowId, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
+    PaneEnvSource, PaneHomes, PaneId, PaneIdentitySource, PanePtyError, PanePtyHandle, PaneRebirth,
+    PaneStep, PlaceHow, Projection, Rect, SessionId, SessionInfo, SessionRegistry, Snapshot,
+    SnapshotError, SplitDir, SplitSide, Tree, WindowId, WindowInfo, WindowPlace, Workspace,
+    ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1621,6 +1622,10 @@ pub struct Host {
     /// brought back from a snapshot would otherwise be the one agent in the daemon that cannot
     /// report.
     pane_args: Option<PaneArgsSource>,
+    /// Which conversation every agent born here is in — see
+    /// [`with_pane_identity`](Self::with_pane_identity). HELD for [`pane_args`](Self::pane_args)'s
+    /// reason, at its sharpest: a restore is the one moment this is read for its own sake.
+    pane_identity: Option<PaneIdentitySource>,
     /// Where every pane of this host lives in the machine — the daemon's delegated cgroup subtree
     /// (R336), or [`PaneHomes::none`] for a host with nothing to enforce.
     ///
@@ -1770,6 +1775,16 @@ pub fn pane_args_source() -> PaneArgsSource {
     Arc::new(move |argv: &[String]| crate::hooks::launch_args(argv, &sprag))
 }
 
+/// The [`PaneIdentitySource`] this daemon's pools consult — which part of a LAUNCHED argv names a
+/// conversation that outlives the process.
+///
+/// Nothing is resolved once here, unlike [`pane_args_source`]: the answer is read entirely out of the
+/// argv it is shown, so there is no machine fact to cache.
+#[must_use]
+pub fn pane_identity_source() -> PaneIdentitySource {
+    Arc::new(|argv: &[String]| crate::hooks::launched_identity(argv))
+}
+
 /// The `sprag` binary this daemon's agents report THROUGH: the sibling of the running executable,
 /// else `sprag` on `PATH`.
 ///
@@ -1812,6 +1827,7 @@ impl Host {
             pane_hooks: None,
             pane_env: None,
             pane_args: None,
+            pane_identity: None,
             homes: Arc::new(PaneHomes::none()),
         }
     }
@@ -1870,6 +1886,22 @@ impl Host {
     pub fn with_pane_args(mut self, source: PaneArgsSource) -> Self {
         lock(&self.registry).set_pane_args_source(Arc::clone(&source));
         self.pane_args = Some(source);
+        self
+    }
+
+    /// Record which conversation every AGENT this host launches is in, so a restore can re-enter it
+    /// rather than name a fresh one — the daemon passes [`pane_identity_source`], a GUI's in-process
+    /// host and a test pass nothing and record no names.
+    ///
+    /// Installed and held on [`with_pane_args`](Self::with_pane_args)'s terms, and a restore
+    /// re-installs it for a sharper reason than any of its siblings: a restore is the ONE moment this
+    /// source is read for its own sake, so a registry that got the args source and not this one would
+    /// come back instrumented and anonymous — the exact defect, arriving through the door built for
+    /// it.
+    #[must_use]
+    pub fn with_pane_identity(mut self, source: PaneIdentitySource) -> Self {
+        lock(&self.registry).set_pane_identity_source(Arc::clone(&source));
+        self.pane_identity = Some(source);
         self
     }
 
@@ -1995,6 +2027,12 @@ impl Host {
         if let Some(source) = &self.pane_args {
             registry.set_pane_args_source(Arc::clone(source));
         }
+        // And what a restored agent's launch is CALLED, which the loop below is about to depend on:
+        // it hands each restored pane a resume of the recorded name, and this is what reads that name
+        // back off the reborn launch so a SECOND restart can resume it again.
+        if let Some(source) = &self.pane_identity {
+            registry.set_pane_identity_source(Arc::clone(source));
+        }
         // And where its panes live in the machine, for exactly that reason at exactly that moment.
         // A restored pane placed nowhere would be the one unweighted pane in the daemon, and the gap
         // would surface only after a reboot — which is where R337 found it.
@@ -2036,9 +2074,27 @@ impl Host {
             // remote command is dropped so a side-effecting `-- rm -rf` never re-runs on its own.
             // Every other pane takes the exact-command-or-shell path. Env is re-derived from the
             // daemon, not disk.
+            // ⚠⚠⚠ AND A RESTORED AGENT RE-ENTERS THE CONVERSATION IT WAS IN, rather than being named
+            // a fresh one — `restore_command`'s `session`, which is why the recorded name travels in
+            // the plan at all. Without it a pane comes back in the right directory, correctly
+            // instrumented, and remembering nothing.
+            //
+            // ⚠⚠ The name is kept OUT of `pane.argv` on purpose, and the same reason keeps it out of
+            // `Pane::argv`: that argv is what a REPLACEMENT re-runs, and a replacement must be a
+            // FRESH session — `ai_loop.scxml`'s `restarting` replaces its inner session precisely to
+            // throw the accumulated context away. Restoring and replacing want opposite answers, so
+            // they read different fields.
+            //
+            // ⚠ A remote reconnect takes none: its argv is an `ssh` login, not an agent this daemon
+            // named, so there is nothing a resume would answer for — said here rather than found out.
             let (command, label) = match &pane.remote {
                 Some(remote) => crate::reconnect_command(remote),
-                None => crate::restore_command(&pane.argv, pane.cwd.as_deref(), allowlist),
+                None => crate::restore_command(
+                    &pane.argv,
+                    pane.cwd.as_deref(),
+                    allowlist,
+                    pane.agent_session.as_deref(),
+                ),
             };
             // Bind the spawn result so the pool lock RELEASES at the `;` — a `match` scrutinee's
             // temporary lock would live across the arms, and the `Ok` arm re-locks to mark the pane
@@ -3998,6 +4054,7 @@ mod tests {
                         cwd: None,
                         command_label: "echo".to_owned(),
                         argv: vec!["echo".to_owned(), "recorded".to_owned()],
+                        agent_session: None,
                         remote: None,
                         opened_by: None,
                         name: None,
@@ -4847,6 +4904,7 @@ mod tests {
                             cwd: Some("/tmp".into()),
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
+                            agent_session: None,
                             remote: None,
                             opened_by: None,
                             name: None,
@@ -4858,6 +4916,7 @@ mod tests {
                             cwd: None, // no recorded cwd -> falls back to the daemon's
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
+                            agent_session: None,
                             remote: None,
                             opened_by: None,
                             name: None,
@@ -4924,6 +4983,7 @@ mod tests {
                         cwd: None,
                         command_label: "cat".to_owned(),
                         argv: vec!["cat".to_owned()], // allowlisted -> re-run exactly
+                        agent_session: None,
                         remote: None,
                         opened_by: None,
                         name: None,
@@ -4951,6 +5011,157 @@ mod tests {
             "cat",
             "the allowlisted program re-ran exactly, not a shell fallback",
         );
+    }
+
+    /// ⚠⚠⚠ **A RESTORED AGENT COMES BACK INTO THE CONVERSATION IT WAS IN — AND A SHELL FALLBACK
+    /// DOES NOT.** The wiring claim, which no unit test can reach.
+    ///
+    /// # What is being held, and what it cost to not hold it
+    ///
+    /// A daemon cannot adopt new code without restarting, and a restart re-spawns every pane. Before
+    /// this, a restored agent came back in the right directory, correctly instrumented, and
+    /// **remembering nothing**: the naming happens per birth, the recorded argv carries no name, so a
+    /// fresh one was minted and the transcript the agent had been writing was orphaned on disk under
+    /// a name nothing pointed at any more. Measured on the live daemon of 2026-08-16 — the loop's
+    /// inner pane held a 3.5 MB record under `d8be3b14-…` and its snapshot row read `argv:
+    /// ["claude"]`.
+    ///
+    /// # ⚠⚠ Why the second half is not the first with a word changed
+    ///
+    /// `restore_command` re-runs an argv EXACTLY only for an allowlisted program; everything else
+    /// comes back as a plain shell in the cwd. The recorded name travels with the pane either way, so
+    /// the resume decision has to be made against **what actually re-ran** rather than against what
+    /// was recorded — a shell handed `--resume` is a shell handed an argument meant for something
+    /// else, and it would land on the one path nobody watches, after a reboot.
+    ///
+    /// ⚠ Asserted through [`Pane::agent_session`], which `spawn_restored` fills by reading the BUILT
+    /// command — so a green here is also the chained-restore claim: a pane that came back resuming
+    /// `X` still says it is in `X`, and the SECOND restart can resume it again. A reader that knew
+    /// only the minting flag would lose the name on that second restart, which looks fixed and is
+    /// not.
+    ///
+    /// # ⚠⚠⚠ The fixture MANUFACTURED ITS OWN AGREEMENT once, and this is what it took to stop it
+    ///
+    /// The shell-fallback half first used a pane whose program was not an agent at all
+    /// (`definitely-not-an-agent`). It passed, and so did the mutation it exists to catch — deciding
+    /// the resume from the RECORDED argv instead of the built command — because for that pane the two
+    /// readings agree: neither is an agent, so neither takes a resume.
+    ///
+    /// **The only case that separates them is an argv whose program IS an agent and which the
+    /// allowlist does NOT admit**: recorded, it reads `claude`; built, it is a shell. So the same
+    /// snapshot is restored a second time with an EMPTY allowlist, which is a shape a cautious
+    /// operator really configures (`SPRAG_RESTORE_PROGRAMS=`). Without that second restore this gate
+    /// is two assertions that hold nothing between them.
+    #[test]
+    fn a_restored_agent_resumes_its_conversation_and_a_shell_fallback_does_not() {
+        use sprag_terminal::{PaneSnapshot, SessionSnapshot, WindowSnapshot};
+
+        const NAME: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+
+        // A program BASENAMED `claude`, which is what both the allowlist and `hooks::agent_of` read.
+        // `cat` stands in for the agent: this gate is about which arguments reach the launch, and a
+        // real agent would answer that identically while costing a model call.
+        let dir = std::env::temp_dir().join(format!("sprag-resume-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory for the stand-in agent");
+        let agent = dir.join("claude");
+        std::fs::copy("/bin/cat", &agent).expect("a stand-in agent to launch");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755))
+                .expect("the stand-in must be executable");
+        }
+
+        let pane = |id: u64, argv: Vec<String>| PaneSnapshot {
+            id: PaneId(id),
+            cwd: None,
+            command_label: "claude".to_owned(),
+            argv,
+            // BOTH panes carry the name. The difference the gate is about is what re-ran, not what
+            // was recorded — so recording differs here would prove nothing.
+            agent_session: Some(NAME.to_owned()),
+            remote: None,
+            opened_by: None,
+            name: None,
+            cols: 80,
+            rows: 24,
+        };
+        let snap = Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 2,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![
+                        pane(0, vec![agent.to_string_lossy().into_owned()]),
+                        // NOT allowlisted -> `restore_command` falls back to a plain shell.
+                        pane(1, vec!["definitely-not-an-agent".to_owned()]),
+                    ],
+                    manual_size: None,
+                    active: None,
+                    zoomed: None,
+                    opened_by: None,
+                }],
+            }],
+        };
+
+        let restored = |allow: std::collections::HashSet<String>| {
+            let host = Host::new((80, 24)).with_pane_identity(pane_identity_source());
+            assert_eq!(
+                host.restore(
+                    snap.clone(),
+                    &allow,
+                    |_| None,
+                    || None,
+                    || None,
+                    |_| { Vec::new() }
+                )
+                .expect("restores"),
+                2,
+            );
+            let ws = host.workspace();
+            let pool = lock(&ws);
+            [PaneId(0), PaneId(1)].map(|id| {
+                pool.pane(id)
+                    .and_then(Pane::agent_session)
+                    .map(str::to_owned)
+            })
+        };
+
+        // ── THE AGENT IS ADMITTED: it re-runs exactly, so it takes the resume ──
+        let admitted = restored(["claude".to_owned()].into_iter().collect());
+        assert_eq!(
+            admitted[0].as_deref(),
+            Some(NAME),
+            "⚠⚠⚠ THE RESTORED AGENT WAS NAMED AFRESH INSTEAD OF RESUMED. Its transcript is still on \
+             disk under {NAME:?} and nothing points at it any more — the agent comes up knowing \
+             nothing, and every restart of this daemon costs a session's whole context. The resume \
+             is appended in `Host::restore`; without it `identity_args` mints",
+        );
+        assert_eq!(
+            admitted[1], None,
+            "⚠⚠ a pane whose program is not an agent takes nothing, whatever its row records",
+        );
+
+        // ── THE SAME AGENT, NOT ADMITTED: it comes back a SHELL, so it must take nothing ──
+        // ⚠ This is the half that separates *read the built command* from *read the recorded argv*.
+        // Pane 0's row still says `claude`; only what re-ran differs.
+        let refused = restored(std::collections::HashSet::new());
+        assert_eq!(
+            refused,
+            [None, None],
+            "⚠⚠⚠ A SHELL FALLBACK TOOK A RESUME. With an empty allowlist an agent comes back as a \
+             plain shell in its cwd, and `--resume <uuid>` appended to that is an argument meant for \
+             something else. The decision must be read from the BUILT command — the recorded argv \
+             still names an agent here, which is exactly why reading it is wrong",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The Slice-5 security-defining restore path: a SANCTIONED remote workspace (its structured
@@ -4981,6 +5192,7 @@ mod tests {
                             cwd: None,
                             command_label: "ssh".to_owned(),
                             argv: vec!["ssh".to_owned(), "-t".to_owned(), "srv".to_owned()],
+                            agent_session: None,
                             remote: Some(SshRemote {
                                 user: None,
                                 host: "srv".to_owned(),
@@ -4997,6 +5209,7 @@ mod tests {
                             command_label: "ssh".to_owned(),
                             // A shell that merely had `ssh` in its argv — NOT a sanctioned workspace.
                             argv: vec!["ssh".to_owned(), "host".to_owned(), "danger".to_owned()],
+                            agent_session: None,
                             remote: None,
                             opened_by: None,
                             name: None,

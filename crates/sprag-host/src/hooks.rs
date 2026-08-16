@@ -177,15 +177,41 @@ pub struct Target {
     /// # ⚠⚠ It is MINTED PER BIRTH, and that is what makes it safe
     ///
     /// Measured: a second launch carrying an id already in use is refused outright — `Error: Session
-    /// ID … is already in use.` So an identity must never be *stored* and replayed. It is not: this
-    /// module is consulted by [`crate::pane_args_source`] at every pane birth, a pane's recorded
-    /// argv is captured BEFORE instrumentation, and a respawn therefore re-enters here and is named
-    /// afresh. That is the same reason the instrumentation itself is not stored — a stored one
-    /// *"would point a fresh agent at a dead socket"*.
+    /// ID … is already in use.` So an identity must never be *replayed as a NAME*: this module is
+    /// consulted by [`crate::pane_args_source`] at every pane birth, a pane's recorded argv is
+    /// captured BEFORE instrumentation, and a respawn therefore re-enters here and is named afresh.
+    /// That is the same reason the instrumentation itself is not stored — a stored one *"would point
+    /// a fresh agent at a dead socket"*.
+    ///
+    /// ⚠⚠⚠ **THIS PARAGRAPH USED TO END *«so an identity must never be STORED and replayed»*, and
+    /// that was one word too strong.** What the refusal forbids is claiming a name that is in use;
+    /// it says nothing about RE-ENTERING one. A durability restore does exactly that, through
+    /// [`resume_flag`](Self::resume_flag): the process holding the name is gone, its transcript is
+    /// still on disk, and resuming is the only way the work survives a daemon that had to be
+    /// replaced to adopt new code. So the identity IS stored — in
+    /// [`Pane::agent_session`](sprag_terminal::Pane::agent_session), beside the recorded argv and
+    /// deliberately not in it, because the argv is what a REPLACEMENT re-runs and a replacement must
+    /// still be named afresh. **Storing and replaying are two acts, and only one of them was ever
+    /// refused.**
     ///
     /// `None` for an agent with no such door, which is codex today: it is not enough that a flag
     /// exists, the record it names has to be findable, and nobody has established codex's.
     identity_flag: Option<&'static str>,
+    /// The flag this agent RE-ENTERS a session it has already been given by, when it has one.
+    ///
+    /// [`identity_flag`](Self::identity_flag)'s opposite number, and the pair is exclusive by
+    /// construction: one CLAIMS a name for a new conversation, the other JOINS the conversation that
+    /// name already has. `identity_args` refuses to mint when it sees this flag, so a launch carrying
+    /// a resume is instrumented and not renamed.
+    ///
+    /// The one caller is a durability RESTORE. Everything else that starts an agent wants a fresh
+    /// one — a person opening a pane, and above all `ai_loop.scxml`'s `restarting`, which replaces
+    /// its inner session precisely to throw the accumulated context away.
+    ///
+    /// ⚠ `None` wherever [`identity_flag`](Self::identity_flag) is `None`, and not by coincidence:
+    /// with no name minted there is no name recorded, so there would be nothing to resume. An agent
+    /// that gains one gains both, in the same round, against the same measurement.
+    resume_flag: Option<&'static str>,
     /// What the user must still do after the file is written, when writing it is not enough.
     ///
     /// Printed by the installer and by `list-hooks`. It exists because an agent may hold a hook it
@@ -218,6 +244,10 @@ pub const CLAUDE: Target = Target {
     // exists, and it is fixed by the live gate
     // `a_minted_session_identity_names_the_record_a_live_agent_writes`.
     identity_flag: Some("--session-id"),
+    // Verified against `claude --help` on the box that wrote this: "-r, --resume [value] — Resume a
+    // conversation by session ID, or open interactive picker with optional search term". The VALUE
+    // form is what a restore needs; the bare form opens a picker at a pane nobody is watching.
+    resume_flag: Some("--resume"),
     follow_up: None,
     events: &[
         // The turn starts, and every step inside it. `PreToolUse` and `PostToolUse` both mean
@@ -260,6 +290,10 @@ pub const CODEX: Target = Target {
     // it can be named from outside. An unverified `Some` here would put a flag on somebody's
     // session in exchange for a lookup that finds nothing.
     identity_flag: None,
+    // `None` because the line above is: nothing names a codex session, so nothing records one, so
+    // there is nothing here to re-enter. The two move together or a restore would resume a name that
+    // was never written down.
+    resume_flag: None,
     // codex hashes each configured hook and holds it until its user has seen it. Writing the file
     // is therefore only half the install, and the half sprag must not do for them.
     follow_up: Some(
@@ -477,6 +511,81 @@ impl Target {
         }
         Some(vec![flag.to_owned(), mint()])
     }
+
+    /// The conversation `argv` NAMES — read from whichever of this agent's two naming flags it
+    /// carries, so a launch that was named and a launch that RESUMED a name answer alike.
+    ///
+    /// Both are read because a restore produces the second and a chained restore has to find it
+    /// again: a pane that came back resuming `X` is still in conversation `X`, and a reader that
+    /// only knew the minting flag would let the name evaporate on the second restart.
+    #[must_use]
+    pub fn named_session(&self, argv: &[String]) -> Option<String> {
+        [self.identity_flag, self.resume_flag]
+            .into_iter()
+            .flatten()
+            .find_map(|flag| sprag_plugin::identity_in(argv, flag))
+    }
+
+    /// What to add to a launch so it RE-ENTERS `session` instead of being named afresh — `None` when
+    /// this agent has no such door, or when `argv` already settles the question.
+    ///
+    /// The refusals mirror [`identity_args`](Self::identity_args)'s, and for the same reason: a
+    /// caller who already said which conversation this is has said it, and a second answer would be
+    /// sprag's silently winning over theirs.
+    #[must_use]
+    pub fn resume_args(&self, argv: &[String], session: &str) -> Option<Vec<String>> {
+        let flag = self.resume_flag?;
+        if session.is_empty() {
+            return None;
+        }
+        let settled = |name: &str| {
+            let joined = format!("{name}=");
+            argv.iter()
+                .any(|arg| arg == name || arg.starts_with(&joined))
+        };
+        if [self.identity_flag, self.resume_flag]
+            .into_iter()
+            .flatten()
+            .any(settled)
+        {
+            return None;
+        }
+        Some(vec![flag.to_owned(), session.to_owned()])
+    }
+}
+
+/// The conversation a LAUNCHED argv is in, or `None` for everything that is not a named agent —
+/// what [`crate::pane_identity_source`] answers with, and the one part of an instrumented launch a
+/// durability snapshot keeps.
+///
+/// Shown the argv AFTER instrumentation, because the name is something the instrumenting added.
+#[must_use]
+pub fn launched_identity(argv: &[String]) -> Option<String> {
+    agent_of(argv).and_then(|target| target.named_session(argv))
+}
+
+/// What to add to a RESTORED launch so it re-enters `session` — empty for a pane that is not a named
+/// agent, for an agent with no resume door, or for an argv that already names its own conversation.
+///
+/// [`launch_args`]'s counterpart on the restore path: that one says *report your turns through this
+/// daemon*, this one says *and it is THIS conversation you are continuing*. They compose because
+/// `identity_args` stands down when it sees a resume — so a restored agent is instrumented afresh
+/// and named not at all.
+#[must_use]
+pub fn resume_args(argv: &[String], session: &str) -> Vec<String> {
+    agent_of(argv)
+        .and_then(|target| target.resume_args(argv, session))
+        .unwrap_or_default()
+}
+
+/// The agent `argv` launches, by its program's basename — [`launch_args_from`]'s first step, shared
+/// so the three readers of an argv cannot disagree about what it is running.
+fn agent_of(argv: &[String]) -> Option<&'static Target> {
+    argv.first()
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(target)
 }
 
 /// A v4 UUID from the kernel's randomness — the name sprag gives one agent session.
@@ -759,13 +868,7 @@ fn launch_args_from(
     // The PROGRAM decides, by its basename, so `/usr/local/bin/claude` and `claude` are one agent
     // and `sh -c claude` is not: an argv sprag did not write is one whose words it cannot read, and
     // appending a flag to a shell's would hand the shell an argument meant for something else.
-    let Some(target) = argv
-        .first()
-        .map(Path::new)
-        .and_then(Path::file_name)
-        .and_then(std::ffi::OsStr::to_str)
-        .and_then(target)
-    else {
+    let Some(target) = agent_of(argv) else {
         return Vec::new();
     };
     // ⚠⚠ TWO DECISIONS, ASKED SEPARATELY. Instrumentation says *report your turns through this
@@ -2505,6 +2608,206 @@ mod tests {
             Some(sprag_plugin::CLAUDE_IDENTITY_FLAG),
             "the writer and the reader must name the same argument",
         );
+    }
+
+    /// ⚠⚠⚠ **A RESTORED LAUNCH IS INSTRUMENTED AFRESH AND NAMED NOT AT ALL** — the composition the
+    /// whole restore-resumes design rests on, and the one nothing else holds.
+    ///
+    /// A durability restore hands the launch a resume of the name the pane was recorded under. Two
+    /// independent decisions then have to go opposite ways in the same call:
+    ///
+    /// * **`session_args` must still fire.** The hooks name THIS daemon's binary, and the daemon that
+    ///   wrote the snapshot is gone — a restored agent that kept the old instrumentation would report
+    ///   to a socket that no longer exists, which is `spawn_restored`'s own stated reason for asking
+    ///   the source instead of trusting the stored argv.
+    /// * **`identity_args` must NOT.** A second name on a launch that already names its conversation
+    ///   is sprag's answer silently winning over the restore's — and the agent refuses an id already
+    ///   in use outright, so this is not a preference, it is whether the pane comes up at all.
+    ///
+    /// They are asked separately and refuse for unrelated reasons, so nothing about the code makes
+    /// them agree; only this does. ⚠ A mutation that drops `--resume` from `identity_args`' refusal
+    /// list turns every restored agent into a fresh one AND, at the same time, into one the agent
+    /// itself rejects — a failure that reaches a person's screen as a pane that will not open.
+    #[test]
+    fn a_restored_launch_is_instrumented_afresh_and_named_not_at_all() {
+        const RESUMED: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+        let argv = vec![
+            "claude".to_owned(),
+            "--resume".to_owned(),
+            RESUMED.to_owned(),
+        ];
+        let carried = launch_args_from(&argv, Path::new(EXE), |_| false, || MINTED.to_owned());
+
+        assert!(
+            carried.iter().any(|arg| arg == "--settings"),
+            "⚠⚠⚠ a restored agent must be instrumented by the daemon doing the restoring — the \
+             recorded instrumentation names a socket that is gone. Got {carried:?}",
+        );
+        assert!(
+            !carried.iter().any(|arg| arg == "--session-id"),
+            "⚠⚠⚠ and it must NOT be named again: it already says which conversation it is \
+             continuing, and the agent refuses an id already in use. Got {carried:?}",
+        );
+        assert!(
+            !carried.iter().any(|arg| arg == MINTED),
+            "⚠⚠ nor may a mint reach it by any other spelling: {carried:?}",
+        );
+    }
+
+    /// **A RESUME IS REFUSED FOR AN ARGV THAT ALREADY NAMES ITS CONVERSATION**, by either spelling —
+    /// [`Target::identity_args`]'s refusals, mirrored, because the two would otherwise contradict
+    /// each other on the same launch.
+    ///
+    /// ⚠ And an EMPTY name is refused, which is not the same case: a snapshot from a build that
+    /// recorded no name loads as `None`, but one that recorded an empty string would sail through and
+    /// hand the agent a bare `--resume` — whose own help says it *"open[s] interactive picker"*, at a
+    /// pane nobody is watching, on a daemon that has just restarted every pane at once.
+    #[test]
+    fn a_resume_is_refused_for_an_argv_that_already_names_its_conversation() {
+        const WANTED: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+        const HELD: &str = "de305d54-75b4-431b-adb2-eb6b9e546014";
+
+        assert_eq!(
+            CLAUDE.resume_args(&["claude".to_owned()], WANTED),
+            Some(vec!["--resume".to_owned(), WANTED.to_owned()]),
+            "the control: a bare launch takes the resume, or every assertion below is vacuous",
+        );
+        for held in [
+            vec![
+                "claude".to_owned(),
+                "--session-id".to_owned(),
+                HELD.to_owned(),
+            ],
+            vec![format!("--session-id={HELD}")].into_iter().fold(
+                vec!["claude".to_owned()],
+                |mut argv, arg| {
+                    argv.push(arg);
+                    argv
+                },
+            ),
+            vec!["claude".to_owned(), "--resume".to_owned(), HELD.to_owned()],
+        ] {
+            assert_eq!(
+                CLAUDE.resume_args(&held, WANTED),
+                None,
+                "⚠⚠ a launch that already names its conversation keeps the name it was given — \
+                 sprag's answer must not silently win over the caller's: {held:?}",
+            );
+        }
+        assert_eq!(
+            CLAUDE.resume_args(&["claude".to_owned()], ""),
+            None,
+            "⚠⚠⚠ AND AN EMPTY NAME IS NOT A NAME. A bare `--resume` opens an interactive PICKER, \
+             which on a restore means every restored agent sitting at a menu nobody is watching",
+        );
+    }
+
+    /// ⚠⚠⚠ **EVERY AGENT THAT CAN BE NAMED CAN BE RESUMED, AND ONLY THOSE** — held over
+    /// [`TARGETS`] rather than over the two spellings that exist today.
+    ///
+    /// The pair is an invariant rather than a coincidence, and it fails in both directions:
+    ///
+    /// * a `resume_flag` with no `identity_flag` resumes a name **nothing ever wrote down** — the
+    ///   snapshot field is filled from the identity, so it would always be `None` and the flag would
+    ///   be prose;
+    /// * an `identity_flag` with no `resume_flag` is the defect this round exists to fix, one agent
+    ///   over: its sessions are named, recorded, and then abandoned at every daemon restart.
+    ///
+    /// **A list with no glob decides alone** (R376/R381) — the day a third agent is added, this is
+    /// what asks whether both halves were answered.
+    #[test]
+    fn every_agent_that_can_be_named_can_be_resumed() {
+        let split: Vec<&str> = TARGETS
+            .iter()
+            .filter(|target| target.identity_flag.is_some() != target.resume_flag.is_some())
+            .map(|target| target.name)
+            .collect();
+        assert!(
+            split.is_empty(),
+            "⚠⚠⚠ {split:?} can be named but not resumed, or resumed but not named. Naming is what \
+             WRITES the record a resume re-enters, so the two are one decision — an agent gains \
+             both in the same round, against the same measurement, or neither",
+        );
+        assert!(
+            TARGETS.iter().any(|target| target.resume_flag.is_some()),
+            "⚠ the control: at least one agent must be resumable, or the invariant above is \
+             satisfied by a product in which nothing works",
+        );
+    }
+
+    /// **THE NAME OF A LAUNCH IS FOUND WHETHER IT WAS MINTED OR RESUMED** — what keeps a name alive
+    /// across the SECOND restart.
+    ///
+    /// A restored pane's argv says `--resume X`, not `--session-id X`. A reader that knew only the
+    /// minting flag would answer `None` for it, the snapshot would record no name, and the next
+    /// restart would mint a fresh one — so the work would survive exactly one daemon replacement and
+    /// then be lost, which is a worse failure than losing it every time because it looks fixed.
+    #[test]
+    fn the_name_of_a_launch_is_found_whether_it_was_minted_or_resumed() {
+        const NAME: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+        for spelling in [
+            vec![
+                "claude".to_owned(),
+                "--session-id".to_owned(),
+                NAME.to_owned(),
+            ],
+            vec!["claude".to_owned(), "--resume".to_owned(), NAME.to_owned()],
+            vec![
+                "/usr/local/bin/claude".to_owned(),
+                format!("--resume={NAME}"),
+            ],
+        ] {
+            assert_eq!(
+                launched_identity(&spelling),
+                Some(NAME.to_owned()),
+                "a launch in conversation {NAME} must say so however it got there: {spelling:?}",
+            );
+        }
+        assert_eq!(
+            launched_identity(&["claude".to_owned()]),
+            None,
+            "and an unnamed launch names nothing — the case every pane that is not an agent is in",
+        );
+        assert_eq!(
+            launched_identity(&[
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!("claude --resume {NAME}"),
+            ]),
+            None,
+            "⚠⚠ AND A SHELL IS NOT AN AGENT, however its script reads. sprag did not write that \
+             argv, so it cannot read its words — the same rule `launch_args_from` refuses on, and \
+             the reason a restore's shell fallback is never handed a resume",
+        );
+    }
+
+    /// The free [`resume_args`] refuses for everything that is not a named agent — the decisive case
+    /// on the restore path, where a NON-allowlisted argv falls back to a plain shell.
+    ///
+    /// The host reads the BUILT command rather than the recorded argv for exactly this: a pane whose
+    /// agent is no longer allowlisted comes back as `sh`, and a shell handed `--resume` is a shell
+    /// handed an argument meant for something else.
+    #[test]
+    fn a_launch_that_is_not_an_agent_takes_no_resume() {
+        const NAME: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+        assert_eq!(
+            resume_args(&["claude".to_owned()], NAME),
+            vec!["--resume".to_owned(), NAME.to_owned()],
+            "the control: an agent takes one, or the refusals below are vacuous",
+        );
+        for not_an_agent in [
+            vec!["sh".to_owned()],
+            vec!["/bin/bash".to_owned(), "-c".to_owned(), "cat".to_owned()],
+            vec!["codex".to_owned()],
+            Vec::new(),
+        ] {
+            assert!(
+                resume_args(&not_an_agent, NAME).is_empty(),
+                "⚠⚠ {not_an_agent:?} names no conversation this daemon can re-enter, so nothing \
+                 may be appended to it — `codex` included, and that is `resume_flag`'s `None` \
+                 doing its job rather than an oversight",
+            );
+        }
     }
 
     /// A minted identity is a valid UUID, which is the only property the agent states.

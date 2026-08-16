@@ -53,7 +53,9 @@ use crate::snapshot::{
     SnapshotError,
 };
 use crate::window_name::{WindowName, WindowNameError};
-use crate::workspace::{HistoryLimitSource, Pane, PaneArgsSource, PaneEnvSource, Workspace};
+use crate::workspace::{
+    HistoryLimitSource, Pane, PaneArgsSource, PaneEnvSource, PaneIdentitySource, Workspace,
+};
 
 /// A session's IDENTITY — what stays put when its NAME moves.
 ///
@@ -2798,6 +2800,7 @@ impl SessionRegistry {
                         id: p.id,
                         cwd: p.cwd.clone(),
                         argv: p.argv.clone(),
+                        agent_session: p.agent_session.clone(),
                         remote: p.remote.clone(),
                         opened_by: p.opened_by,
                         name: p.name.clone(),
@@ -2908,6 +2911,26 @@ impl SessionRegistry {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .set_pane_args_source(Arc::clone(&source));
+            }
+        }
+    }
+
+    /// Install `source` as the [`PaneIdentitySource`] every pane born from here on consults, across
+    /// every window this registry currently holds — the registry-wide counterpart of
+    /// [`Workspace::set_pane_identity_source`].
+    ///
+    /// Whole-registry and `&self` on [`set_pane_args_source`](Self::set_pane_args_source)'s terms,
+    /// and a REPLACED registry needs its own call for a sharper version of that reason: a restore is
+    /// exactly when this matters, so a registry that got the args source and not this one would name
+    /// every restored agent afresh — the defect, arriving through the door built to fix it.
+    pub fn set_pane_identity_source(&self, source: PaneIdentitySource) {
+        for session in self.sessions() {
+            for window in session.windows() {
+                window
+                    .workspace()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .set_pane_identity_source(Arc::clone(&source));
             }
         }
     }

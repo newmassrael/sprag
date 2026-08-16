@@ -294,13 +294,38 @@ fn basename(program: &str) -> Option<&str> {
 /// so a restored agent gets its API keys from the daemon, not from a plaintext state file.
 ///
 /// Returns the [`CommandBuilder`] (with `cwd` set) and the pane's display label.
+///
+/// # ⚠⚠⚠ `session`: the conversation the pane's agent was in, and why the decision is HERE
+///
+/// A restored agent that is not told which conversation it is continuing is named a fresh one at its
+/// birth, and the transcript it was writing is orphaned on disk under a name nothing points at any
+/// more. So a recorded name becomes a RESUME argument on the rebuilt command.
+///
+/// It is decided here, against the command this function just built, because **this is the only
+/// place that knows whether the agent actually re-ran.** A non-allowlisted argv falls back to a plain
+/// shell — its recorded argv still names an agent, and a caller deciding from that would append
+/// `--resume <uuid>` to a shell, handing it an argument meant for something else. ⚠ MEASURED: a gate
+/// asserting this one layer out could not tell the two apart, because the only thing observable
+/// there (`Pane::agent_session`) filters by program and answers `None` for the shell either way.
 #[must_use]
 pub fn restore_command(
     argv: &[String],
     cwd: Option<&Path>,
     allowlist: &HashSet<String>,
+    session: Option<&str>,
 ) -> (CommandBuilder, String) {
     let (mut command, label) = exact_or_shell(argv, allowlist);
+    if let Some(session) = session {
+        // Read off what was BUILT, never off `argv` — see this function's own note.
+        let built: Vec<String> = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        for arg in crate::hooks::resume_args(&built, session) {
+            command.arg(arg);
+        }
+    }
     if let Some(cwd) = cwd {
         command.cwd(cwd);
     }
@@ -463,7 +488,7 @@ mod tests {
     fn restore_command_reruns_an_allowlisted_program_exactly() {
         let allow = parse_allowlist(None); // the default includes vim; no env read (hermetic)
         let argv = vec!["/usr/bin/vim".to_owned(), "notes.txt".to_owned()];
-        let (command, label) = restore_command(&argv, Some(Path::new("/tmp")), &allow);
+        let (command, label) = restore_command(&argv, Some(Path::new("/tmp")), &allow, None);
         assert_eq!(label, "/usr/bin/vim");
         assert_eq!(argv_of(&command), argv, "the exact argv is re-run");
         assert_eq!(
@@ -483,7 +508,7 @@ mod tests {
             "-c".to_owned(),
             "rm -rf /tmp/precious".to_owned(),
         ];
-        let (command, _label) = restore_command(&argv, None, &allow);
+        let (command, _label) = restore_command(&argv, None, &allow, None);
         let got = argv_of(&command);
         assert!(
             !got.contains(&"-c".to_owned()),
@@ -495,13 +520,67 @@ mod tests {
         );
     }
 
-    /// A non-allowlisted program (a build, a one-shot) falls back to a plain shell — never re-run.
+    /// ⚠⚠⚠ **A RESTORED AGENT IS TOLD WHICH CONVERSATION IT IS CONTINUING — AND A SHELL FALLBACK IS
+    /// NOT.** The decision this function exists to make besides the exact-vs-shell one.
+    ///
+    /// # What the first draft of this gate could not see
+    ///
+    /// The append used to live one layer out, in `Host::restore`, decided from the pane's RECORDED
+    /// argv. A gate there passed, and so did the mutation it existed to catch — because the only
+    /// thing observable at that layer is `Pane::agent_session`, which filters by program and answers
+    /// `None` for a shell whether or not `--resume` was wrongly appended to it. **The wrong argument
+    /// really did reach the shell and nothing could tell.**
+    ///
+    /// So the decision moved to where the built command is in hand and the argv is readable, and this
+    /// asserts it there. ⚠ The two halves use the SAME recorded argv and differ only in the
+    /// allowlist, because that is the only thing that separates *the recorded argv names an agent*
+    /// from *an agent actually re-ran* — the distinction the whole rule turns on. An empty allowlist
+    /// is a shape a cautious operator really configures (`SPRAG_RESTORE_PROGRAMS=`).
+    #[test]
+    fn restore_command_resumes_an_agent_that_re_ran_and_never_a_shell_that_replaced_it() {
+        const NAME: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+        let recorded = vec!["/usr/local/bin/claude".to_owned()];
+
+        let allow: HashSet<String> = ["claude".to_owned()].into_iter().collect();
+        let (command, _) = restore_command(&recorded, None, &allow, Some(NAME));
+        assert_eq!(
+            argv_of(&command),
+            vec![
+                "/usr/local/bin/claude".to_owned(),
+                "--resume".to_owned(),
+                NAME.to_owned(),
+            ],
+            "⚠⚠⚠ the agent re-ran, so it must be told which conversation it is in. Without this it \
+             is named afresh at its birth and the transcript it was writing is orphaned on disk \
+             under a name nothing points at any more",
+        );
+
+        // The SAME recorded argv, refused by the allowlist -> a plain shell.
+        let (fallen_back, _) = restore_command(&recorded, None, &HashSet::new(), Some(NAME));
+        let got = argv_of(&fallen_back);
+        assert!(
+            !got.iter().any(|arg| arg == "--resume" || arg == NAME),
+            "⚠⚠⚠ A SHELL TOOK THE AGENT'S RESUME. The recorded argv still names an agent here — only \
+             what re-ran differs — so a decision read from the recording appends `--resume {NAME}` to \
+             a shell, which is an argument meant for something else. Got {got:?}",
+        );
+
+        // And a pane with no recorded conversation is untouched, which is nearly every pane.
+        let (unnamed, _) = restore_command(&recorded, None, &allow, None);
+        assert_eq!(
+            argv_of(&unnamed),
+            recorded,
+            "⚠ a pane that recorded no conversation takes nothing — the case before this field \
+             existed, and the one every older snapshot loads as",
+        );
+    }
+
     /// A non-allowlisted program (a build, a one-shot) falls back to a plain shell — never re-run.
     #[test]
     fn restore_command_falls_back_to_a_shell_for_a_non_allowlisted_program() {
         let allow = parse_allowlist(None); // default: cargo is NOT in it
         let argv = vec!["cargo".to_owned(), "build".to_owned()];
-        let (command, _) = restore_command(&argv, None, &allow);
+        let (command, _) = restore_command(&argv, None, &allow, None);
         assert!(
             !argv_of(&command).iter().any(|a| a == "build"),
             "cargo build is not re-run",
@@ -513,7 +592,7 @@ mod tests {
     #[test]
     fn restore_command_restores_a_shell_for_empty_argv() {
         let allow = parse_allowlist(None);
-        let (command, _) = restore_command(&[], Some(Path::new("/tmp")), &allow);
+        let (command, _) = restore_command(&[], Some(Path::new("/tmp")), &allow, None);
         let argv = argv_of(&command);
         let base = argv
             .first()
@@ -596,7 +675,7 @@ mod tests {
         crate::config::with_config(Some("[options]\ndefault-command = \"exec htop\"\n"), || {
             let allow = HashSet::new();
             let argv = vec!["rm".to_owned(), "-rf".to_owned(), "/".to_owned()];
-            let (_command, label) = restore_command(&argv, None, &allow);
+            let (_command, label) = restore_command(&argv, None, &allow, None);
             let (_shell, shell_label) = sprag_terminal::default_shell_command();
             assert_eq!(
                 label, shell_label,

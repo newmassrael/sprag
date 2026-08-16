@@ -152,9 +152,15 @@ fn main() -> io::Result<()> {
     // where to report, and this says how. Installed at the same site for the same reason — the
     // instrumentation names the `sprag` beside this binary, and a host that serves no socket has
     // nowhere for a report to go, so the GUI's in-process host installs neither half.
+    // And what each of those launches is CALLED, so a daemon that has to restart to adopt new code
+    // brings its agents back into the conversations they were in rather than into fresh ones. It
+    // rides beside the instrumentation because it reads what the instrumentation added — a host
+    // installing one without the other would record names nothing wrote, or write names nothing
+    // records.
     let host = Host::new((args.cols, args.rows))
         .with_pane_env(sprag_host::pane_env_source(&sock))
-        .with_pane_args(sprag_host::pane_args_source());
+        .with_pane_args(sprag_host::pane_args_source())
+        .with_pane_identity(sprag_host::pane_identity_source());
     // Every pane this daemon births lands in the subtree taken above, so a person's session cannot
     // be starved by whichever neighbour spawned the most threads. A host with no tree spawns
     // exactly as it always did.

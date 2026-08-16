@@ -96,6 +96,26 @@ pub struct Pane {
     /// snapshot records argv and cwd, so a restored pane's replacement is the program without its
     /// launcher's variables. Its own limitation, said out loud.
     env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// **THE NAME OF THE CONVERSATION THIS PANE'S LAUNCH JOINED**, read out of the argv it actually
+    /// exec'd by the pool's [`PaneIdentitySource`] — `None` for every pane that is not a named agent,
+    /// which is nearly all of them.
+    ///
+    /// # ⚠⚠⚠ Why it is beside [`argv`](Self::argv) rather than in it
+    ///
+    /// The two answer opposite questions and are read by opposite doors:
+    ///
+    /// * [`argv`](Self::argv) is what a REPLACEMENT re-runs, and a replacement must be a FRESH
+    ///   session — `ai_loop.scxml` replaces its inner session precisely to throw the accumulated
+    ///   context away, so a name replayed there would defeat the state that exists to discard it.
+    ///   `live_agent`'s respawn gate holds exactly that, and names this temptation in its own
+    ///   message: *"the identity reached the pane's RECORDED argv and was replayed"*.
+    /// * this is what a RESTORE resumes. A daemon restart is not a replacement — nobody asked for the
+    ///   work to be thrown away, and the transcript is still on disk under this name.
+    ///
+    /// ⚠ It is therefore the ONE thing the daemon adds that a restore carries rather than re-derives.
+    /// Everything else in [`PaneArgsSource`]'s output names THIS daemon (its endpoint, its hook
+    /// binary) and would point a restored agent at a socket that is gone.
+    agent_session: Option<String>,
     /// The structured remote endpoint, set ONLY for a pane born via `sprag ssh` (its explicit
     /// intent marker). `Some` marks a sanctioned remote workspace — the host reconnects it on
     /// restore (bypassing the argv allowlist) and can `scp` a dropped file to it; `None` is an
@@ -237,6 +257,14 @@ impl Pane {
     #[must_use]
     pub fn opened_by(&self) -> Option<PaneId> {
         self.opened_by
+    }
+
+    /// The name of the conversation this pane's launch joined, `None` for a pane that is not a named
+    /// agent. See the [field](Self::agent_session) for why a RESTORE reads this and a REPLACEMENT
+    /// must not.
+    #[must_use]
+    pub fn agent_session(&self) -> Option<&str> {
+        self.agent_session.as_deref()
     }
 
     /// Which cgroup this pane's processes ARE in, or why there is none. See the
@@ -539,6 +567,13 @@ pub struct Workspace {
     /// window opened later must instrument its agents exactly as the first one does, or which
     /// window a person happened to open an agent in would decide whether it can report.
     pane_args: PaneArgsSource,
+    /// Which part of a launch NAMES it durably — see [`PaneIdentitySource`].
+    ///
+    /// Inherited by a [`sibling`](Self::sibling) on [`pane_args`](Self::pane_args)'s argument, and it
+    /// has to be the same argument: a pane whose agent is named in one window and anonymous in
+    /// another would come back from a snapshot resumed or fresh depending on where somebody happened
+    /// to open it.
+    pane_identity: PaneIdentitySource,
     /// Which window this pool IS, and whose session — the two thirds of a
     /// [`PaneLineage`] that are the same for every pane here.
     ///
@@ -660,6 +695,39 @@ fn default_pane_args_source() -> PaneArgsSource {
     Arc::new(|_| Vec::new())
 }
 
+/// What of a LAUNCHED argv names a conversation that outlives the process — shown the argv a pane
+/// actually exec'd (the caller's, plus whatever [`PaneArgsSource`] added), answering the durable
+/// name or [`None`].
+///
+/// # ⚠⚠⚠ Why this is a SECOND source rather than part of the first
+///
+/// [`PaneArgsSource`] answers *what does this daemon add*, and [`Pane::argv`] deliberately excludes
+/// all of it: a REPLACEMENT re-derives the daemon's additions instead of inheriting a dead daemon's.
+/// That rule is right for every flag but one. An agent's session name is not a fact about the daemon
+/// that spawned it — it names a transcript on disk that is still there after the daemon is gone —
+/// so it is the one addition a RESTORE must carry rather than re-mint.
+///
+/// ⚠⚠⚠ **AND IT MUST NOT REACH [`Pane::argv`], WHICH IS WHY THE TWO ARE SEPARATE.** `respawn` re-runs
+/// that argv to replace a pane's agent, and a replacement must be a FRESH session — an `ai_loop`
+/// replaces its inner session precisely to throw the old context away. `live_agent`'s
+/// `respawn` gate already holds that, naming this exact temptation: *"the identity reached the
+/// pane's RECORDED argv and was replayed"*. Restoring and replacing want opposite answers, so they
+/// read different fields.
+///
+/// **It is shown the argv and nothing else**, on [`PaneArgsSource`]'s argument: what a launch is
+/// called is decided by what was launched, and a source that also knew the pane would invite a name
+/// that differed between two panes running the same program.
+pub type PaneIdentitySource = Arc<dyn Fn(&[String]) -> Option<String> + Send + Sync>;
+
+/// The [`PaneIdentitySource`] a workspace uses when nobody installs one: no launch is ever named.
+///
+/// A pool outside a daemon adds no identity flag either ([`default_pane_args_source`]), so there is
+/// nothing for this to find — the two defaults answer the same emptiness from both ends.
+#[must_use]
+fn default_pane_identity_source() -> PaneIdentitySource {
+    Arc::new(|_| None)
+}
+
 impl Workspace {
     /// A new, empty workspace with its OWN private id counter, whose dimension-less
     /// spawns adopt `default_size`. For a standalone pane pool (and unit tests); a
@@ -684,6 +752,7 @@ impl Workspace {
             history_limit: default_history_limit_source(),
             pane_env: default_pane_env_source(),
             pane_args: default_pane_args_source(),
+            pane_identity: default_pane_identity_source(),
             home: None,
             homes: Arc::new(PaneHomes::none()),
         }
@@ -826,6 +895,15 @@ impl Workspace {
         self.pane_args = source;
     }
 
+    /// Install the [`PaneIdentitySource`] this pool's births consult — the seam `sprag-host` uses to
+    /// say which flag of a launch NAMES a conversation, without this crate learning what an agent is.
+    ///
+    /// Affects FUTURE births only, on [`set_pane_args_source`](Self::set_pane_args_source)'s terms:
+    /// it reads the argv, and an argv is fixed at `exec`.
+    pub fn set_pane_identity_source(&mut self, source: PaneIdentitySource) {
+        self.pane_identity = source;
+    }
+
     /// The default `(cols, rows)` a dimension-less spawn adopts.
     #[must_use]
     pub fn default_size(&self) -> (u16, u16) {
@@ -887,6 +965,9 @@ impl Workspace {
             // fact about the window it was cloned from, and an agent must be instrumented the same
             // way in every window or which one it was opened in decides whether it can report.
             pane_args: Arc::clone(&self.pane_args),
+            // Inherited on exactly `pane_args`' argument, and it must travel WITH it: a window whose
+            // launches were instrumented but not named would snapshot agents nothing could resume.
+            pane_identity: Arc::clone(&self.pane_identity),
             // NOT inherited: a sibling is a DIFFERENT window, and this pair names one window.
             //
             // Belt-and-braces rather than load-bearing, and MEASURED as such: mutating this to
@@ -965,6 +1046,10 @@ impl Workspace {
         // daemon's endpoint. A restore re-derives it from the daemon doing the restoring — the
         // reason `PaneEnvSource` is re-read there rather than stored, one layer out.
         instrument(&mut command, &(self.pane_args)(&argv));
+        // ⚠ Read from the argv AFTER instrumentation, because the name is something the instrumenting
+        // added — and kept BESIDE `argv` rather than in it, because a replacement re-runs that and
+        // must be a fresh session. See [`Pane::agent_session`].
+        let agent_session = (self.pane_identity)(&argv_of(&command));
         // Asked HERE rather than cached on the pool, so a user who edits `history-limit` gets it on
         // their next pane rather than on their next daemon.
         let history_limit = (self.history_limit)();
@@ -1000,6 +1085,7 @@ impl Workspace {
             command_label: label,
             argv,
             env,
+            agent_session,
             remote: None,
             opened_by: None,
             name: None,
@@ -1107,6 +1193,12 @@ impl Workspace {
         // flag this adds names an endpoint that did not survive the reboot. A restore that replayed
         // a stored instrumentation would point a fresh agent at a dead socket.
         instrument(&mut command, &(self.pane_args)(&argv));
+        // ⚠⚠ AND WHAT THAT LAUNCH IS CALLED, on the fresh-spawn path's terms. The caller's `command`
+        // may already carry a RESUME of the recorded name (`Host::restore` puts one there), in which
+        // case the instrumenting above mints nothing and this reads back the name being resumed — so
+        // a pane that comes back to its own conversation says so, and a chained restore carries it
+        // again. A restore that fell back to a shell names nothing, which is the honest answer.
+        let agent_session = (self.pane_identity)(&argv_of(&command));
         // A RESTORED pane reads the setting live too, rather than inheriting whatever it had before
         // the reboot: the snapshot records what a pane WAS, and its retention is a current setting,
         // not a property of the pane the user is getting back. Replaying more history than the
@@ -1146,6 +1238,7 @@ impl Workspace {
             // stated on [`Pane::env`] — a restored pane's REPLACEMENT is the program without its
             // original launcher's variables.
             env: Vec::new(),
+            agent_session,
             remote: None,
             opened_by: None,
             name: None,

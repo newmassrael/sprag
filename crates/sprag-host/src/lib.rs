@@ -124,7 +124,7 @@ pub use hooks::{HookError, Outcome, Plan, Target, plan_install, plan_uninstall, 
 pub use host::{
     Host, HostClient, NESTED_AGENT_MARKERS, PANE_ENV_VAR, PaneAgent, PaneClipboardQuery,
     PaneClipboardWrite, PaneFind, PaneFrame, PaneMatch, PaneNotification, PaneScrollFacts,
-    pane_args_source, pane_env_source,
+    pane_args_source, pane_env_source, pane_identity_source,
 };
 pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};

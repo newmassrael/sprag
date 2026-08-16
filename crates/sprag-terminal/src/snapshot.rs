@@ -215,6 +215,29 @@ pub struct PaneSnapshot {
     /// command-line secrets.
     #[serde(default)]
     pub argv: Vec<String>,
+    /// **THE NAME OF THE CONVERSATION THE PANE'S AGENT WAS IN**, or `None` for every pane that is
+    /// not a named agent — see [`Pane::agent_session`](crate::Pane::agent_session).
+    ///
+    /// # Why a name, when the argv is already here
+    ///
+    /// Because it is NOT in the argv. [`argv`](Self::argv) is what the caller asked to run; the name
+    /// is something the daemon added at the launch, and it is the ONE addition a restore must carry
+    /// rather than re-derive — every other one names THIS daemon (its endpoint, its hook binary) and
+    /// would point a restored agent at a socket that is gone.
+    ///
+    /// ⚠⚠ **AND WITHOUT IT A RESTORE IS A NEW CONVERSATION.** The naming happens per birth, so a
+    /// restored pane whose recorded argv carries no name is minted a fresh one — the agent comes up
+    /// in the right directory, correctly instrumented, and remembering nothing, while the transcript
+    /// it was writing is orphaned on disk under a name nothing points at any more.
+    ///
+    /// ⚠ A UUID and nothing else, deliberately. The instrumentation it arrives beside is a JSON
+    /// document naming a binary path, and persisting THAT would put a dead daemon's address on disk
+    /// for a restore to replay — the failure `spawn_restored` re-derives to avoid.
+    ///
+    /// `#[serde(default)]` on the usual additive terms: an older snapshot loads with `None`, which
+    /// is exactly what the daemons that wrote it could express, and restores as they always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<String>,
     /// The structured remote endpoint of a `sprag ssh` workspace pane, or `None` for a local pane.
     /// Present marks a SANCTIONED remote workspace: on restore the host RECONNECTS it (`ssh -t
     /// user@host`) instead of falling back to a shell, and the argv allowlist is bypassed because
@@ -519,6 +542,11 @@ pub struct PaneRestore {
     /// label is DERIVED from what actually re-ran (`restore_command`), so the recorded
     /// `command_label` is not carried into the plan.
     pub argv: Vec<String>,
+    /// The conversation the pane's agent was in, or `None`. Carried through the plan because the
+    /// host is the only layer that knows how to RE-ENTER one — it turns this into the resume argument
+    /// the agent understands, and without it the restored launch is named afresh and remembers
+    /// nothing. See [`PaneSnapshot::agent_session`].
+    pub agent_session: Option<String>,
     /// The structured remote endpoint (a `sprag ssh` workspace pane), or `None` for a local pane.
     /// `Some` tells the host to RECONNECT (`ssh -t user@host`, allowlist bypassed) rather than run
     /// the recorded argv through the exact-command gate, and to re-mark the restored pane remote.
@@ -545,6 +573,7 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
         cwd: pane.pty().cwd(),
         command_label: pane.command_label().to_owned(),
         argv: pane.argv().to_vec(),
+        agent_session: pane.agent_session().map(str::to_owned),
         remote: pane.remote().cloned(),
         opened_by: pane.opened_by(),
         name: pane.name().cloned(),
@@ -1008,6 +1037,8 @@ mod tests {
             cwd: None,
             command_label: "sh".to_owned(),
             argv: vec!["sh".to_owned()],
+            // A shell is not a named agent, which is the case nearly every pane is in.
+            agent_session: None,
             remote: None,
             opened_by: None,
             name: None,
