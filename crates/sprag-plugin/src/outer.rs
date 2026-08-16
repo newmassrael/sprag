@@ -342,16 +342,41 @@ pub struct Brief {
     ///
     /// # ⚠⚠ Why this travels with the brief and not on [`AiLoopSpec`]
     ///
-    /// [`AiLoopSpec::may_answer`] is the caller's consent and it is a construction argument,
-    /// because the barrier holds it and the barrier is built once. These are the loop DOCUMENT's
-    /// own data: the author writes them in the file, `screening` reads them out of the datamodel at
-    /// the moment it acts, and a reflection may one day rewrite them. A field on the spec would be
-    /// a SECOND place the same rules live, and the failure of letting two copies drift is silent.
+    /// These are the loop DOCUMENT's own data: the author writes them in the file, `screening`
+    /// reads them out of the datamodel at the moment it acts, and a reflection may one day rewrite
+    /// them. A field on the spec would be a SECOND place the same rules live, and the failure of
+    /// letting two copies drift is silent.
+    ///
+    /// ⚠⚠⚠ **THIS PARAGRAPH USED TO CARVE OUT AN EXCEPTION AND NO LONGER DOES.** It read:
+    /// *«`AiLoopSpec::may_answer` is the caller's consent and it is a construction argument,
+    /// because the barrier holds it and the barrier is built once»* — a true reason for as long as
+    /// the barrier kept what it was built with. Once it re-read what it needed at the top of every
+    /// pass, the exception had nothing left holding it up, and what remained was one asymmetry
+    /// twice over: **refusal authored in the file, approval authored where the file cannot see.**
+    /// [`may_answer`](Self::may_answer) is beside these now, and the owner's rule is the reason:
+    /// every decision belongs in the `.scxml`; run arguments are bindings, not judgements.
     ///
     /// ⚠ [`None`] means *keep what the document says*, and it is not the same as an empty list —
     /// which is why the field is an `Option` and [`ScreenRules`] cannot be empty. A caller who says
     /// nothing about screening gets the author's rules; one who supplies rules replaces them.
     pub screen_rules: Option<ScreenRules>,
+
+    /// **WHICH DIALOGS THIS RUN MAY ANSWER *YES* TO**, or [`None`] to keep what the document says.
+    ///
+    /// # ⚠⚠⚠ Why it is here and no longer on [`AiLoopSpec`]
+    ///
+    /// [`screen_rules`](Self::screen_rules)' argument, and the old note against it has stopped
+    /// being true. It read *«a construction argument, because the barrier holds it and the barrier
+    /// is built once»* — until the round that made the barrier re-read what it needs at the top of
+    /// every pass. What was left was one asymmetry twice over: **refusal authored in the document,
+    /// approval authored somewhere the document cannot see.**
+    ///
+    /// ⚠⚠ Whose decision a tool permission is has not changed — it is the person's, and an author
+    /// writing a clause and a caller passing one are both *decided in advance, in writing*.
+    /// ⚠⚠⚠ What HAS changed is the reach: a clause committed to the document authorises **every run
+    /// of it, for everybody**, where an argument authorised one run. That is why the shipped
+    /// document's list is empty and a rule's placeholder is not.
+    pub may_answer: Option<crate::consent::Consents>,
 
     /// **HOW LONG `awaiting_human` WAITS FOR THE PERSON**, in milliseconds, or [`None`] to keep what
     /// the document says.
@@ -418,30 +443,6 @@ pub struct AiLoopSpec {
     /// Whether the inner agent paints the prompt box it is typed into — see
     /// [`OuterLoop::shows_the_prompt`](OuterLoop#structfield.shows_the_prompt).
     pub shows_the_prompt: bool,
-    /// **WHAT THIS RUN MAY ANSWER IF ITS AGENT STOPS TO ASK**, quoting the agent's own words.
-    ///
-    /// # ⚠⚠⚠ Why the loop takes this, when the document has a state for the same job
-    ///
-    /// It did not, and the omission was argued rather than measured: *"answering a dialog is
-    /// `screening`'s job, and a consent given to the barrier would answer dialogs one level below
-    /// the machine that exists to decide about them."* That is a true sentence about a state
-    /// **nothing drives**, and what it cost was measured the round this field was added — a loop
-    /// whose agent asked one permission question stopped with **zero turns judged**, and no
-    /// argument on the whole form could have covered it, where `orchestrator`, `agent` and `pipe`
-    /// all take one.
-    ///
-    /// ⚠⚠ **THE TWO AUTHORITIES ARE DIFFERENT AND BOTH ARE REAL.** `screen_rules` are AUTHORED
-    /// into the document and decide by dialog KIND, standing across every run of that loop; a
-    /// consent is the CALLER's, decides by quoted text, and belongs to THIS run. The second is
-    /// built, measured and shared with three other plugins; the first is blocked on two owner
-    /// decisions. A question no consent covers still reaches the machine's own `turn.blocked`, so
-    /// this does not close the door `screening` will come in by — it stops the run dying on the
-    /// step in front of it.
-    ///
-    /// ⚠ [`None`] is *answer nothing*, which is what every loop did before this field and is still
-    /// the right default: a run that types into a menu nobody authorised is the failure class this
-    /// whole contract exists inside.
-    pub may_answer: Option<crate::consent::Consents>,
     /// **WHO ANSWERS THE DOCUMENT'S `judged_rules`**, or [`None`] for a run that asked for nobody.
     ///
     /// # ⚠⚠⚠ Two halves, and neither implies the other
@@ -476,11 +477,11 @@ impl AiLoopSpec {
                 .expect("a turn with no bound is never the zero one `lasting` refuses"),
             shows_the_prompt: true,
             // ⚠ NOT DERIVABLE FROM THE AGENT'S NAME. What a run may answer on somebody's behalf is
-            // the caller's alone — a default here would be this constructor deciding something
-            // nobody said. ⚠ Whether anybody is AT the pane used to sit beside it and no longer
-            // does: that is the document's, through [`Brief::await_person_ms`].
-            may_answer: None,
-            // ⚠ NOR IS THIS. A judge is a second agent with a bill; naming one here would have
+            // ⚠ WHAT A RUN MAY ANSWER AND WHO IS AT ITS PANE BOTH USED TO SIT HERE, and neither
+            // does now: they are the document's, through [`Brief::may_answer`] and
+            // [`Brief::await_person_ms`]. What is left on this spec is what BINDS a run to its
+            // pane rather than what a person decided in advance.
+            // ⚠ NO JUDGE. A judge is a second agent with a bill; naming one here would have
             // every loop built from this constructor quietly acquire one.
             judge: None,
         }
@@ -1202,7 +1203,7 @@ pub enum Noticed {
     /// its caller gets, and *"a prompt could not be read"* does not say which of four.
     Undrivable(&'static str),
     /// **THE PEER ASKED AND THIS RUN ANSWERED IT**, on a consent the caller declared before the
-    /// run started — see [`AiLoopSpec::may_answer`].
+    /// run started — see [`Brief::may_answer`].
     ///
     /// ⚠⚠ NOT TERMINAL, and one a consumer must report exactly ONCE. The three above it are read
     /// at the end of a run; this is a decision taken on somebody's behalf DURING one, and a run
@@ -1536,7 +1537,7 @@ impl OuterLoop {
             // and a consent given to the barrier would answer dialogs one level below the machine
             // that exists to decide about them."* True of a state NOTHING DRIVES, and the cost was
             // measured — a loop whose agent asked one permission question stopped with zero turns
-            // judged. See [`AiLoopSpec::may_answer`], which holds the whole argument: two different
+            // judged. See [`Brief::may_answer`], which holds the whole argument: two different
             // authorities, one of them built, and a question no consent covers still reaches the
             // machine's own `turn.blocked`.
             //
@@ -1550,7 +1551,8 @@ impl OuterLoop {
                 ready: Readiness::new(
                     spec.ready_when.clone(),
                     spec.ready_within,
-                    spec.may_answer.clone(),
+                    // ⚠ THE DOCUMENT'S, and only as a SEED — `pump` re-reads before every pass.
+                    Self::consenting_at(&script, &session),
                     // ⚠⚠⚠ THE DOCUMENT'S, and only as a SEED: `pump` re-reads it at the top of every
                     // pass (see [`Self::expecting`]), so what acts is always what the machine holds
                     // now — a brief lands while it is still `idle`, which is after this line.
@@ -1704,8 +1706,33 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // ⚠ The consents get the rules' treatment exactly — echoed when the caller named none, so
+        // the unconditional assignment cannot delete an author's clauses. An unreadable list is the
+        // document's own problem and stops the run, for `screen_rules`' reason.
+        let clauses = match (&brief.may_answer, self.consenting()) {
+            (Some(supplied), _) => Some(supplied.clone()),
+            (None, Ok(authored)) => authored,
+            (None, Err(why)) => {
+                self.machine.process_event(AiLoopEvent::Fail);
+                return Briefed::NotHeld {
+                    part: crate::consent::Consents::WIRE_KEY,
+                    held: Some(format!("{why:?}")),
+                };
+            }
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
+            crate::consent::Consents::WIRE_KEY: clauses.as_ref().map_or_else(Vec::new, |held| {
+                held.clauses()
+                    .iter()
+                    .map(|clause| {
+                        serde_json::json!({
+                            crate::consent::Consent::ASKED_KEY: clause.asked(),
+                            crate::consent::Consent::ANSWER_KEY: clause.answer(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }),
             "milestone": brief.milestone,
             "reference": brief.reference,
             "await_person_ms": patience_ms,
@@ -1881,6 +1908,72 @@ impl OuterLoop {
     /// # Errors
     ///
     /// [`NotScreenable`], naming the rule or the shape.
+    /// **WHAT THIS DOCUMENT SAYS ITS LOOP MAY ANSWER** — `may_answer`, read off the datamodel.
+    ///
+    /// [`screening`](Self::screening)'s twin, clause for rule, and it exists for the same reason:
+    /// the two halves of *what a person decided in advance* are now both the document's, so both
+    /// are read from it rather than one being handed in at construction.
+    ///
+    /// # Errors
+    ///
+    /// [`NotScreenable::Unreadable`] on anything that is not a list of `{asked, answer}` objects.
+    /// ⚠ An EMPTY list and an absent variable are both `Ok(None)` — *answer nothing*, which is a
+    /// legitimate thing for a document to say and the shipped placeholder's own value. Only a shape
+    /// nobody can read is an error, because guessing at it is how a run types into a dialog its
+    /// author never authorised.
+    pub fn consenting(&self) -> Result<Option<crate::consent::Consents>, NotScreenable> {
+        Self::consents_in(&self.script, &self.session)
+    }
+
+    /// What the barrier is BUILT with, before a brief has been able to say otherwise.
+    ///
+    /// ⚠ An unreadable list seeds *answer nothing* rather than refusing here: construction happens
+    /// before anybody has supplied clauses, and [`brief`](Self::brief) is where that document is
+    /// refused. Nothing acts on this value — `pump` re-reads before every pass. ⚠⚠ The direction of
+    /// the fallback is the conservative one: a run that answers nothing stops at a dialog, where a
+    /// run that guessed would type into one.
+    fn consenting_at(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Option<crate::consent::Consents> {
+        Self::consents_in(script, session).ok().flatten()
+    }
+
+    /// [`consenting`](Self::consenting)'s reading, separated from the loop that holds the engine.
+    fn consents_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Result<Option<crate::consent::Consents>, NotScreenable> {
+        let Ok(held) = script.get_variable(session, crate::consent::Consents::WIRE_KEY) else {
+            return Err(NotScreenable::Unreadable);
+        };
+        let items = match held {
+            ScriptValue::Array(items) => items,
+            ScriptValue::Null | ScriptValue::Undefined => return Ok(None),
+            _ => return Err(NotScreenable::Unreadable),
+        };
+        let mut clauses = Vec::with_capacity(items.len());
+        for item in &items {
+            let ScriptValue::Object(fields) = item else {
+                return Err(NotScreenable::Unreadable);
+            };
+            let text_of = |key: &str| match fields.get(key) {
+                Some(ScriptValue::String(held)) => Some(held.clone()),
+                _ => None,
+            };
+            let (Some(asked), Some(answer)) = (
+                text_of(crate::consent::Consent::ASKED_KEY),
+                text_of(crate::consent::Consent::ANSWER_KEY),
+            ) else {
+                return Err(NotScreenable::Unreadable);
+            };
+            clauses.push(
+                crate::consent::Consent::parse(asked, answer).ok_or(NotScreenable::Unreadable)?,
+            );
+        }
+        Ok(crate::consent::Consents::of(clauses))
+    }
+
     pub fn screening(&self) -> Result<Option<ScreenRules>, NotScreenable> {
         let Ok(held) = self
             .script
@@ -2060,6 +2153,12 @@ impl OuterLoop {
         // with what it had: `brief` already refused that case, loudly.
         if let Some(expected) = self.expecting() {
             self.driving.ready.expecting(expected);
+        }
+        // ⚠ AND WHAT IT MAY ANSWER, for the same reason and from the same file. An unreadable list
+        // leaves the barrier with what it had: `brief` already refused that document, loudly, and a
+        // pump is not the place to discover it.
+        if let Ok(clauses) = self.consenting() {
+            self.driving.ready.answering(clauses);
         }
         // ⚠⚠⚠ TAKEN BEFORE THE ACT, so what this pass reports is what it ARRIVED AT rather than
         // what it happens to be holding — see [`Pumped::Moved`]'s `found`, which is register item
@@ -4039,8 +4138,7 @@ mod tests {
             shows_the_prompt: false,
             // ⚠ ANSWERS NOTHING AND NOBODY IS WATCHING — the default every run has, and the one
             // these gates want: what they are about is the driver, not the answering contract.
-            // `ai_loop`'s own gates drive the other half.
-            may_answer: None,
+            // `ai_loop`'s own gates drive the other half. ⚠ It is the BRIEF that says so now.
             // ⚠ AND NO JUDGE, for the same reason: a judge would put a spawned agent in the middle
             // of every blocked turn these gates drive.
             judge: None,
@@ -4815,6 +4913,7 @@ mod tests {
             screen_rules: None,
             // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
             // became the document's — a run that ends at the first dialog it cannot answer.
+            may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
         };
@@ -4916,6 +5015,7 @@ mod tests {
             screen_rules: None,
             // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
             // became the document's — a run that ends at the first dialog it cannot answer.
+            may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
         };
@@ -4984,6 +5084,7 @@ mod tests {
                 max_turns: 3,
                 reflect_every: 99,
                 screen_rules: None,
+                may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
             }),
@@ -5118,6 +5219,7 @@ mod tests {
             screen_rules: None,
             // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
             // became the document's — a run that ends at the first dialog it cannot answer.
+            may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
         };
@@ -5778,6 +5880,7 @@ mod tests {
             screen_rules: None,
             // ⚠ NOBODY IS WATCHING, which is what these driver gates held before the patience
             // became the document's — a run that ends at the first dialog it cannot answer.
+            may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
         };

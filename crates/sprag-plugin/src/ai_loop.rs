@@ -895,7 +895,6 @@ mod tests {
             turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(5)))
                 .expect("a non-zero bound"),
             shows_the_prompt: false,
-            may_answer: None,
             // ⚠ NO JUDGE, so `working`'s `cond="_event.data.judged"` is always false here and
             // every blocked turn takes the `screening` edge. A stand-in gate that acquired one
             // would spawn a real agent per dialog, which is what these gates exist to avoid.
@@ -917,6 +916,9 @@ mod tests {
             // that does NOT set this measures a loop with screening available and unarmed, which
             // is the shipped shape.
             screen_rules: None,
+            // ⚠ ANSWER NOTHING — the shipped document's own value, and what these gates held when
+            // it was a spec field. A gate that arms a consent says so in its own brief.
+            may_answer: None,
             // ⚠⚠⚠ NOBODY IS WATCHING, WRITTEN RATHER THAN INHERITED. This was `AiLoopSpec`'s
             // default until the patience moved into the document, and the gates below were written
             // against it: a run that ends at the first dialog it cannot answer. Leaving these
@@ -2158,11 +2160,12 @@ mod tests {
             let mut loops = AiLoop::new(
                 engine(),
                 pane,
-                &brief_for(40),
-                &AiLoopSpec {
+                // ⚠ The consent is the DOCUMENT's now, so the gate authors it through the brief.
+                &Brief {
                     may_answer,
-                    ..standin_spec()
+                    ..brief_for(40)
                 },
+                &standin_spec(),
             )
             .expect("a well-briefed loop over a live pane starts");
             let outcome = Driver::new(Guardrails {
@@ -4325,14 +4328,14 @@ mod tests {
             let mut loops = AiLoop::new(
                 engine(),
                 pane,
+                // ⚠ BOTH AUTHORITIES ON ONE BRIEF NOW — the rule that refuses and the clause that
+                // approves are the same kind of thing, and this gate is about them meeting.
                 &Brief {
                     screen_rules,
+                    may_answer: Some(consent),
                     ..brief_for(40)
                 },
-                &AiLoopSpec {
-                    may_answer: Some(consent),
-                    ..standin_spec()
-                },
+                &standin_spec(),
             )
             .expect("a well-briefed loop over a live pane starts");
             let progress = ProgressCell::default();

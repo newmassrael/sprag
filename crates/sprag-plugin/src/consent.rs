@@ -282,6 +282,17 @@ impl Consents {
             .collect()
     }
 
+    /// Every clause, in the order the caller or the author wrote them.
+    ///
+    /// ⚠ [`clauses_about`](Self::clauses_about) is the one a DECISION goes through; this is for
+    /// carrying the list somewhere else unchanged — `ai_loop.scxml` authors its consents and the
+    /// driver echoes the document's own back on every brief, which is the round trip that proves
+    /// the crossing rather than assuming it.
+    #[must_use]
+    pub fn clauses(&self) -> &[Consent] {
+        &self.clauses
+    }
+
     /// The ONE option of `question` these consents authorise, or why they authorise none.
     ///
     /// # ⚠⚠⚠ The precedence, and why each step of it is the conservative one

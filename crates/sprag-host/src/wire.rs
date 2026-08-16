@@ -1394,7 +1394,7 @@ impl PluginGrammar {
     /// Every kind of work a real loop does raises such a question: an agent that edits a file, runs
     /// a command or fetches a URL asks first. So a loop takes the same answering contract every
     /// other injecting form takes, and a question no clause covers still reaches the machine's own
-    /// `turn.blocked`. See [`sprag_plugin::AiLoopSpec::may_answer`], which holds the argument for
+    /// `turn.blocked`. See [`sprag_plugin::Brief::may_answer`], which holds the argument for
     /// why two authorities over one dialog is the right number rather than a duplication.
     ///
     /// ⚠ **`agent` IS THE PROGRAM NAME, and it is what the barrier waits for**, under

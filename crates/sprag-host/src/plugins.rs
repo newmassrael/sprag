@@ -622,6 +622,7 @@ impl PluginsExternal {
                     // screening is not overriding it — and the driver echoes the document's own
                     // rules back through the brief rather than deleting them.
                     screen_rules: opt_screen_rules(map)?,
+                    may_answer: opt_may_answer(map)?,
                     // ⚠⚠⚠ THE SAME TWO KEYS, NOW WRITTEN INTO THE DOCUMENT instead of into the
                     // spec. `awaiting_human`'s only run-ending exit is *nobody came within the
                     // patience*, so the patience is the loop DOCUMENT's own data — the argument
@@ -672,7 +673,9 @@ impl PluginsExternal {
                 // injecting form uses. A loop is the form that needs it most and was the only one
                 // without it: every kind of real work its agent does raises a permission dialog,
                 // and a loop that met one with nothing declared stopped having judged no turns.
-                spec.may_answer = opt_may_answer(map)?;
+                // ⚠⚠⚠ IT IS ON THE BRIEF NOW, not the spec: a consent is a decision somebody made
+                // in advance and in writing, which is what this document holds — the same move
+                // `screen_rules` made, and the end of refusal and approval living in two worlds.
                 // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building
                 // a concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
                 // this crate; the manifest carries the argument. It is per RUN and not shared: a

@@ -1082,6 +1082,17 @@ impl Readiness {
         self.attended = attended;
     }
 
+    /// **TELL THE BARRIER WHAT IT MAY ANSWER NOW** — [`expecting`](Self::expecting)'s twin, for the
+    /// other half of *what a person decided in advance*.
+    ///
+    /// ⚠ Same reason, same shape: `ai_loop.scxml` authors its `may_answer` clauses and a caller's
+    /// brief may replace them, while the machine is still `idle` and therefore after this barrier
+    /// exists. A barrier holding its construction copy would answer with the author's clauses for a
+    /// caller who sent their own.
+    pub(crate) fn answering(&mut self, may_answer: Option<Consents>) {
+        self.consent = may_answer;
+    }
+
     /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
     ///
     /// Arms on the first look and compares on every one after — the watermark discipline

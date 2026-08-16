@@ -441,6 +441,46 @@
           ]"/>
 
     <!--
+      ⚠⚠⚠ WHICH DIALOGS THIS LOOP MAY ANSWER *YES* TO, and with which option —
+      `screen_rules`'s opposite number, and the only thing in this file that can
+      put a byte into a permission dialog.
+
+      Each clause is `{ asked, answer }`: text the QUESTION must carry for the
+      clause to be about it, and text the OPTION must carry for the clause to
+      authorise it. Empty means ANSWER NOTHING, which is what every loop did
+      before consents existed and is still the honest default — a run that types
+      into a menu nobody authorised is the failure class the whole contract sits
+      inside.
+
+      ⚠⚠⚠ IT MOVED HERE FROM A CONSTRUCTION ARGUMENT, and the reason the old note
+      gave for keeping it out no longer holds. It read: *«a construction argument,
+      because the barrier holds it and the barrier is built once»* — true until
+      the round that made the barrier re-read what it needs at the top of every
+      pass. What was left was the same asymmetry twice over: refusal authored in
+      this file, approval authored somewhere this file cannot see.
+
+      ⚠⚠ WHOSE DECISION IT IS HAS NOT CHANGED, and this is the paragraph one door
+      up saying it: a tool permission is the PERSON's. An author writing a clause
+      here and a caller passing one are both *the person having decided in
+      advance, in writing* — never the machine deciding. What the loop still
+      never does is decide something nobody wrote down, and a dialog neither a
+      clause nor a rule reaches still stops the run and waits for somebody.
+
+      ⚠⚠⚠ THE COST OF WRITING ONE HERE IS THAT IT IS COMMITTED, and that is the
+      real difference from an argument. A clause in this file authorises EVERY
+      run of it, for everybody, until somebody edits the file — where an argument
+      authorised one run. **A standing yes is a different kind of promise from a
+      standing think-about-it-again**, which is why the placeholder below is
+      empty and a rule's placeholder is not.
+
+      ⚠ A clause may never name the key that APPROVES a dialog `screen_rules`
+      would refuse: rules author WHICH dialog and WHAT TO SAY, never the key, and
+      `screen.rs` holds the measurement that settled it. Approval has its own
+      door and this is it.
+    -->
+    <data id="may_answer" expr="[]"/>
+
+    <!--
       ⚠⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP TURNS DOWN, and what it says instead.
 
       A `screen_rule` above QUOTES a dialog. This JUDGES one — and the difference
@@ -908,6 +948,13 @@
       -->
       <assign location="await_person_ms" expr="_event.data.await_person_ms"/>
       <assign location="handback_still_ms" expr="_event.data.handback_still_ms"/>
+      <!--
+        ⚠ THE CONSENTS TOO, on the same unconditional terms and for the same
+        reason: the driver always sends the key, echoing this document's own
+        clauses back when the caller named none, so omitting it cannot assign nil
+        and delete an author's approvals.
+      -->
+      <assign location="may_answer" expr="_event.data.may_answer"/>
     </transition>
     <transition event="start" target="priming"/>
     <!--

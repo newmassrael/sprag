@@ -837,6 +837,7 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
     };
@@ -1049,6 +1050,7 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
     };
@@ -1243,6 +1245,7 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
     };
@@ -1480,6 +1483,13 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         // ⚠ Unarmed: this gate's claim is about the CONSENT carrying the loop through the dialog,
         // so a standing rule that could also get past it would make the finding ambiguous.
         screen_rules: None,
+        // ⚠⚠⚠ THE WHOLE POINT. Without this the run stops at the agent's first permission dialog
+        // with nothing judged — measured against a stand-in, and the reason every live milestone
+        // before this one was arithmetic.
+        may_answer: Consents::of(vec![
+            Consent::parse("Do you want to".to_string(), "Yes".to_string())
+                .expect("both needles are non-empty"),
+        ]),
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
@@ -1494,13 +1504,7 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         &sprag_plugin::AiLoopSpec {
             turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
                 .expect("a non-zero bound"),
-            // ⚠⚠⚠ THE WHOLE POINT. Without this the run stops at the agent's first permission
-            // dialog with nothing judged — measured against a stand-in, and the reason every live
-            // milestone before this one was arithmetic.
-            may_answer: Consents::of(vec![
-                Consent::parse("Do you want to".to_string(), "Yes".to_string())
-                    .expect("both needles are non-empty"),
-            ]),
+            // ⚠ THE CONSENT IS ON THE BRIEF NOW — it is the document's data, not a binding.
             ..sprag_plugin::AiLoopSpec::driving(&live.agent)
         },
     )
@@ -1676,6 +1680,7 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
                 .expect("both halves are non-empty"),
         ]),
         // ⚠ Nobody is watching — see the note on the gates above.
+        may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
     };
@@ -1687,10 +1692,9 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         &sprag_plugin::AiLoopSpec {
             turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
                 .expect("a non-zero bound"),
-            // ⚠⚠⚠ NO CONSENT, and that is the control for the whole gate. If a clause were armed
-            // it could take the dialog's own `Yes`, the file would be written, and nothing below
-            // would be about `screening` at all.
-            may_answer: None,
+            // ⚠⚠⚠ NO CONSENT, and that is the control for the whole gate — said on the BRIEF,
+            // which is where the clauses live now. If one were armed it could take the dialog's
+            // own `Yes`, the file would be written, and nothing below would be about `screening`.
             ..sprag_plugin::AiLoopSpec::driving(&live.agent)
         },
     )
@@ -1895,6 +1899,7 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
                 .expect("both halves are non-empty"),
         ]),
         // ⚠ Nobody is watching — see the note on the gates above.
+        may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
     };
@@ -1906,9 +1911,9 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         &sprag_plugin::AiLoopSpec {
             turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
                 .expect("a non-zero bound"),
-            // ⚠ NO CONSENT: a clause could take the dialog's own `Yes`, the file would be written, and
-            // nothing below would be about screening — or about the reflection screening triggers.
-            may_answer: None,
+            // ⚠ NO CONSENT, on the brief: a clause could take the dialog's own `Yes`, the file
+            // would be written, and nothing below would be about screening — or about the
+            // reflection screening triggers.
             ..sprag_plugin::AiLoopSpec::driving(&live.agent)
         },
     )
@@ -3202,6 +3207,7 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
+        may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
     };
