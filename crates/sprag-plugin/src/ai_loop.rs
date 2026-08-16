@@ -5893,4 +5893,182 @@ mod tests {
             lua.get_variable(&session, "north_star"),
         );
     }
+
+    /// ⚠⚠⚠ **A LOOP WHOSE PEER IS DEAD GOES QUIET; AN `Orchestrator` MARCHES TO THE WEDGE** —
+    /// register item 327, which was written as UNMEASURED and is measured here.
+    ///
+    /// # Why the scope of a fix depends on this number
+    ///
+    /// `a_step_types_into_a_pane_this_run_could_already_know_is_dead` measured the other plugin: **5
+    /// bytes every step, for ever, 3,380 steps to the 16,896-byte wall** that
+    /// `write_to_a_dead_pane_wedges` measured — about 29 minutes. Item 309's headline says the same
+    /// wedge is reachable from a live `ai_loop`, and item 310 corrected the culprit to
+    /// `Orchestrator` without measuring the loop. **This measures the loop.**
+    ///
+    /// ⚠⚠ The two plugins differ in one structural way and it is the whole answer: an orchestrator
+    /// types its stimulus at the START OF EVERY STEP, and a loop types once per TURN — so when the
+    /// turn stops ending, the typing stops with it. A dead peer never satisfies
+    /// [`INNER_SESSION_ENDS`] (measured in `completion.rs`), `watch` answers `Over::NotYet`, that
+    /// raises `Null`, and `advance` returns before anything is owed a prompt.
+    ///
+    /// ⚠⚠⚠ **THIS IS NOT AN ALL-CLEAR AND MUST NOT BE READ AS ONE.** What it bounds is the bytes a
+    /// loop puts into ONE dead pane while its turn hangs. It says nothing about the wait itself,
+    /// which is the defect item 323 is about: the run sits there reporting that nothing is wrong
+    /// until its own clock ends it. **Going quiet at a dead peer is not the same as noticing.**
+    ///
+    /// # ⚠⚠ Why the barrier is declined rather than declared
+    ///
+    /// A loop that declares `settles(claude)` at a pane whose child is gone is refused BEFORE it
+    /// types — a real answer, and a safe one, but a different story. The wedge belongs to a run
+    /// already past its barrier when its peer died, so this one starts with the barrier down and
+    /// its first prompt goes in exactly as a live run's does.
+    ///
+    /// # ⚠⚠⚠⚠ WHAT THE BOUND RESTS ON, found by mutating the fixture
+    ///
+    /// **The supervisor going silent about a process that is gone.** Swap this pane's absent
+    /// supervisor for one that keeps answering `Idle` with a rising `seq` — a plausible cache, or a
+    /// reading taken from something other than the process table — and the same loop over the same
+    /// dead pane types on passes 1, 4, 6 and 8: **the live peer's pattern exactly**, and from there
+    /// it accumulates toward the wall like an orchestrator. The mutation was run and it turns this
+    /// gate red naming those passes.
+    ///
+    /// ⚠⚠⚠ So item 327's bound is CONDITIONAL, and nothing in this workspace holds the condition:
+    /// there is no gate saying *a supervisor must not report an agent whose process has gone*.
+    /// Registered rather than assumed (item 330).
+    #[test]
+    fn a_loop_whose_peer_is_dead_stops_typing_instead_of_marching_to_the_wall() {
+        /// What `write_to_a_dead_pane_wedges` measured on this host — the thing a plugin has to
+        /// reach to wedge a machine. ⚠ A kernel's number; here to be COMPARED against.
+        const WALL: u64 = 16_896;
+        /// Passes after the first prompt has gone in. Enough that "it stopped" is not "it had not
+        /// got round to it yet".
+        const QUIET_PASSES: usize = 6;
+
+        let workspace = std::sync::Arc::new(std::sync::Mutex::new(sprag_terminal::Workspace::new(
+            (80, 16),
+        )));
+        let pane = {
+            let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exit 0");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 16)
+                .expect("spawn pane")
+        };
+        // ⚠ NO SUPERVISOR, which is what a pane with no process actually has: nothing to ask about
+        // an agent that is not there. That is the reading `completion.rs` measured — `Settles` on
+        // an unarmed evaluator is never satisfied — reached here through the plugin's own door.
+        let access = crate::access::WorkspacePaneAccess::new(std::sync::Arc::clone(&workspace));
+        let began = Instant::now();
+        while access.pane_eof(pane) != Some(true) && began.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(true),
+            "⚠ THE FIXTURE: the child must be gone, or nothing below is about a dead peer",
+        );
+
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                // ⚠ SHORT, because every pass at a dead peer waits out the whole bound — which is
+                // the cost this gate is otherwise made of.
+                turn_within_ms: Some(200),
+                ..brief_for(1_000_000)
+            },
+            &AiLoopSpec {
+                ready_when: None,
+                ..standin_spec()
+            },
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        /// Which passes TYPED, and how much — the whole measurement, taken the same way from both
+        /// peers below so the two answers are comparable.
+        fn typing(
+            loops: &mut AiLoop,
+            access: &dyn PaneAccess,
+            run: &RunContext,
+            passes: usize,
+        ) -> (Vec<(usize, u64)>, u64) {
+            let mut typed_on = Vec::new();
+            let mut spent = 0;
+            for pass in 1..=passes {
+                let step = loops
+                    .step(access, run)
+                    .expect("every pass must stay readable");
+                if step.cost.amount() > 0 {
+                    typed_on.push((pass, step.cost.amount()));
+                }
+                spent += step.cost.amount();
+            }
+            (typed_on, spent)
+        }
+        let (typed_on, spent) = typing(&mut loops, &access, &run, QUIET_PASSES + 2);
+
+        assert!(
+            !typed_on.is_empty(),
+            "⚠⚠⚠ THE CONTROL FAILED: this loop never typed at all, so *it stopped typing* is about \
+             nothing. A barrier that refused, or a prompt that was never composed, would look \
+             exactly like this",
+        );
+        let last_typed = typed_on.last().expect("non-empty").0;
+        assert!(
+            last_typed <= 2,
+            "⚠⚠⚠ THE LOOP KEPT TYPING at a dead peer — passes {typed_on:?}. Then it accumulates \
+             the way an orchestrator does, register item 327 is refuted, and the wedge is \
+             reachable from `ai_loop` after all",
+        );
+        assert!(
+            spent * 4 < WALL,
+            "⚠⚠ and what it put in must be far short of the {WALL}-byte wall, or *bounded* is a \
+             word doing no work: {spent} bytes",
+        );
+
+        // ── THE CONTROL, and without it *"it went quiet"* is indistinguishable from a gate that
+        //    cannot see a loop type at all ──
+        //
+        // ⚠⚠⚠ THE SAME MEASUREMENT, THE SAME NUMBER OF PASSES, over a peer whose turns END. A loop
+        // types once per turn, so a peer that answers is a loop that types again and again — and
+        // that is what makes *typed only on pass 1* a fact about the DEAD peer rather than about
+        // this harness.
+        let (live_workspace, live_pane) = standin_agent(1_000_000);
+        let live = supervised(&live_workspace);
+        crate::testing::started(&live, live_pane, "AGENT-READY");
+        let mut alive = AiLoop::new(
+            engine(),
+            live_pane,
+            &Brief {
+                turn_within_ms: Some(2_000),
+                ..brief_for(1_000_000)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let (live_typed, live_spent) = typing(&mut alive, &live, &run, QUIET_PASSES + 2);
+        let live_last = live_typed.last().map_or(0, |(pass, _)| *pass);
+        assert!(
+            live_last > last_typed,
+            "⚠⚠⚠ THE CONTROL FAILED: over a peer that ANSWERS, this loop must still be typing after \
+             the pass the dead one fell silent on. If it is not, then the quiet above is this \
+             harness running out of passes and not a loop noticing anything — dead {typed_on:?} vs \
+             live {live_typed:?}",
+        );
+
+        println!(
+            "\n== an ai_loop at a pane whose peer is dead ==\n  dead peer: typed on {typed_on:?}, \
+             {spent} bytes, then silent for {} passes\n  live peer, same passes: typed on \
+             {live_typed:?}, {live_spent} bytes\n  the wall is {WALL} bytes — a loop cannot reach \
+             it at one pane; an orchestrator reaches it in 3,380 steps\n",
+            QUIET_PASSES + 2 - last_typed,
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+        live.lifecycle().expect("lifecycle").close(live_pane);
+    }
 }
