@@ -1673,6 +1673,39 @@
     <transition event="judge" cond="turns_since_reflect &gt;= reflect_every" target="reflecting">
       <assign location="reflect_reason" expr="'budget'"/>
     </transition>
+    <!--
+      ⚠⚠⚠ THE TURN WAS UNREADABLE, WHICH IS NOT THE SAME AS UNFINISHED — and until
+      this edge existed, this document could not tell them apart because the
+      driver could not either.
+
+      `done` is a yes-or-no and cannot carry *"I could not see"*. The pane's
+      retained history is bounded; a turn whose output outran it has lines
+      nothing can recover, and if the line carrying the marker is one of them the
+      agent's `MILESTONE REACHED` is simply not in what this run was handed.
+      `_event.data.unheard` is the count of complete lines that were thrown away
+      — `false` when nothing was, so an absence is trustworthy.
+
+      ⚠⚠ MEASURED, ON THE OWNER'S OWN LOOP: across two runs and about four hours,
+      every judgement took the edge below and `reflecting` was reached NOT ONCE,
+      while the pane held the marker the whole time. A loop that never reflects
+      never replaces its session, which is the one thing this file says it is for.
+
+      ⚠⚠⚠ AND THE DECISION IS THE SAME ONE, NOW MADE OUT LOUD: an unreadable turn
+      buys ONE MORE TURN, never a convergence. That is `said_marker`'s own
+      fail-safe direction and it has not changed — what changed is that the run
+      SAYS SO. A reader of a walk full of `unreadable` knows to give the pane a
+      bigger scrollback or the turn a shorter leash, where a walk full of the
+      plain edge below told them their agent had simply not finished.
+
+      ⚠ IT IS NOT `awaiting_human`. A person cannot answer *"how many lines were
+      evicted"*, and waking one for a condition they cannot act on is the cost
+      this document refuses everywhere else. The remedy is the scrollback, and
+      the walk is where somebody learns to change it.
+    -->
+    <transition event="judge" cond="_event.data.unheard" target="working">
+      <assign location="reflect_reason" expr="'unreadable'"/>
+      <send event="prompt.turn"/>
+    </transition>
     <transition event="judge" target="working">
       <send event="prompt.turn"/>
     </transition>

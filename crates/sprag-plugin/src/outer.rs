@@ -2432,7 +2432,21 @@ impl OuterLoop {
             AiLoopState::Judging => Raise::carrying(
                 AiLoopEvent::Judge,
                 serde_json::json!({
-                    "done": self.said_done(panes),
+                    "done": self.said_done(panes).said(),
+                    // ⚠⚠⚠ AND WHETHER A `false` ABOVE IS TRUSTWORTHY. `done` is a yes-or-no and
+                    // cannot say *"I could not see"*; this is that third answer, published so the
+                    // DOCUMENT decides what an unreadable turn is worth. `false` when the absence
+                    // is trustworthy, the LOST LINE COUNT when it is not — a number rather than a
+                    // flag, because what a reader does about it depends on whether one line went
+                    // or a thousand. See [`Heard`].
+                    //
+                    // ⚠⚠ A NUMBER OR `false`, NEVER `0`, for the reason two keys down: this
+                    // datamodel is Lua, where `0` is TRUE, so a zero would make every judgement of
+                    // every run look unreadable.
+                    "unheard": match self.said_done(panes).unheard() {
+                        Some(lost) => serde_json::Value::from(lost),
+                        None => serde_json::Value::Bool(false),
+                    },
                     "stop_short": match self.stopping_short {
                         Some(ceiling) => serde_json::Value::from(ceiling.wire_str()),
                         None => serde_json::Value::Bool(false),
@@ -3236,7 +3250,11 @@ impl OuterLoop {
         // same `Verdict::Converged` and wrote the same arrow, and they are not the same finding —
         // this one is a CLAIM ABOUT THE DESTINATION and that one is a run that ran out of things to
         // propose. The word travels with the event so the walk can say which. See [`DoneReason`].
-        if self.said_marker(panes, NORTH_STAR_MARKER) {
+        // ⚠ `said()` and not a match: an UNHEARD north star must never end a run. That is
+        // `said_marker`'s own fail-safe direction — one more turn, never a convergence nobody
+        // earned — and here it is the difference between ending a journey and mis-reading a
+        // scrollback. See [`Heard`].
+        if self.said_marker(panes, NORTH_STAR_MARKER).said() {
             return Ok(DoneReason::Declared.raised());
         }
         let (Some(standing), Some(next)) =
@@ -3939,7 +3957,7 @@ impl OuterLoop {
     /// judging that the agent did NOT say it, which is the direction this predicate already fails
     /// in: one more turn, never a convergence nobody earned.
     #[must_use]
-    pub fn said_done(&self, panes: &dyn PaneAccess) -> bool {
+    pub fn said_done(&self, panes: &dyn PaneAccess) -> Heard {
         self.said_marker(panes, DONE_MARKER)
     }
 
@@ -3972,19 +3990,27 @@ impl OuterLoop {
     /// above it and the discount has nothing to work with. It is not read here, and the alternative
     /// — refusing to converge any turn that outran the scrollback — would end a long run on its
     /// most productive turn. **Registered rather than guessed at.**
-    fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> bool {
+    fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> Heard {
         let Some(marker) = self.text_of(variable) else {
-            return false;
+            return Heard::NotSaid;
         };
         let produced = self.driving.since.taken(panes, self.driving.pane);
-        produced.lines.iter().enumerate().any(|(at, line)| {
+        let said = produced.lines.iter().enumerate().any(|(at, line)| {
             stands_alone(line, &marker)
                 && !wraps_onto(
                     &self.driving.asked,
                     at.checked_sub(1).map_or("", |above| &produced.lines[above]),
                     &marker,
                 )
-        })
+        });
+        match (said, produced.lost) {
+            (true, _) => Heard::Said,
+            // ⚠⚠⚠ THE ORDER IS THE CLAIM: a marker FOUND is `Said` whatever was evicted, because a
+            // line that is there was not lost. Only an absence has to be qualified, and this is the
+            // qualification the answer could not carry before.
+            (false, 0) => Heard::NotSaid,
+            (false, lost) => Heard::Unheard { lost },
+        }
     }
 
     /// **THE ACCOUNT THE AGENT JUST WROTE**, off the pane the closing turn ran on — or [`None`]
@@ -4134,6 +4160,73 @@ fn wraps_onto(asked: &str, above: &str, marker: &str) -> bool {
         && asked
             .match_indices(above)
             .any(|(at, _)| asked[at + above.len()..].trim_start().starts_with(marker))
+}
+
+/// **WHETHER THE AGENT SAID A MARKER — AND THE THIRD ANSWER A `bool` COULD NOT CARRY.**
+///
+/// # ⚠⚠⚠ Why two answers were not enough, measured
+///
+/// `Produced::lost` — this crate's own count, one module over — counts the complete lines a pane's
+/// retained history threw away before a read. ⚠ Named rather than linked: it is crate-private, and
+/// a public type may not point at one. It IS read where the agent's own words are reported —
+/// `Agent`'s reply
+/// says how much is missing, and so does the account — and it was NOT read by the predicate that
+/// decides whether a run ends. So *"the agent did not say it"* and *"the line that said it was
+/// thrown away"* reached `judging` as the same bit, and the second was reported as the first,
+/// silently.
+///
+/// ⚠⚠ **MEASURED ON THE OWNER'S OWN LOOP, 2026-08-16**: across two runs and about four hours,
+/// `Judging --Judge--> Working` fired on every judgement and **`reflecting` was never reached
+/// once**, while the pane held `MILESTONE REACHED`. A loop that cannot reach `reflecting` never
+/// replaces its session, which is the one thing the document says it exists to do.
+///
+/// ⚠⚠⚠ **AND A STALLED TURN MANUFACTURES THE CONDITION.** A turn that cannot end leaves an agent's
+/// TUI repainting for minutes after its reply is finished, and every repaint is output pushing the
+/// oldest lines — the marker among them — over the eviction edge. Register items 344 and 345.
+///
+/// # ⚠ What the driver does with the third answer is NOT decided here
+///
+/// It is published to the machine as `_event.data.unheard` and written into the walk, and the
+/// DOCUMENT routes on it. That is the whole rule this crate lives under: a driver reports the fact
+/// and the document decides. The shipped document keeps `said_marker`'s own doctrine — an unheard
+/// marker costs ONE MORE TURN, never a convergence nobody earned — and now it keeps it in writing
+/// instead of by accident.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// The marker is on a line this turn produced, and no echo discount claimed it.
+    Said,
+    /// It is not there, and nothing this turn produced was thrown away — so it was not said.
+    NotSaid,
+    /// ⚠⚠⚠ **IT IS NOT THERE AND LINES WERE LOST**, so this run cannot tell the two apart. Carries
+    /// how many complete lines the history evicted, because *"some"* is not something a reader can
+    /// act on and the count is what says whether a bigger scrollback would have held it.
+    Unheard {
+        /// Complete lines the retained history discarded before this read.
+        lost: u64,
+    },
+}
+
+impl Heard {
+    /// Whether this is a yes — the only question the machine's `cond` asks.
+    ///
+    /// ⚠ A method rather than a comparison at each call site, so a fourth arm cannot silently
+    /// become a yes at one of them. `A LIST WITH NO GLOB DECIDES ALONE`, and this is the glob.
+    #[must_use]
+    pub const fn said(self) -> bool {
+        matches!(self, Self::Said)
+    }
+
+    /// How many lines were lost when the answer is [`Unheard`](Self::Unheard), else `None`.
+    ///
+    /// ⚠ `Option` rather than `0`, because zero lost lines is precisely the case that makes an
+    /// absence trustworthy — the distinction this type exists to keep.
+    #[must_use]
+    pub const fn unheard(self) -> Option<u64> {
+        match self {
+            Self::Unheard { lost } => Some(lost),
+            Self::Said | Self::NotSaid => None,
+        }
+    }
 }
 
 /// Whether `row` is `marker` and nothing else a reader would call words.
@@ -5899,7 +5992,7 @@ mod tests {
         let marker = authored.done_marker.clone();
         started(&access, pane, &marker);
         assert!(
-            !loops.said_done(&access),
+            !loops.said_done(&access).said(),
             "⚠⚠⚠ the marker on that screen is the LOOP'S OWN INSTRUCTION read back — the peer has \
              said nothing. A judge satisfied here converges a run in which no agent ever did \
              anything, which is what this driver did the moment the document started asking for \
@@ -5923,11 +6016,11 @@ mod tests {
             "a marker that reached no pane cannot be read back off one",
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !loops.said_done(&access) && std::time::Instant::now() < deadline {
+        while !loops.said_done(&access).said() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
-            loops.said_done(&access),
+            loops.said_done(&access).said(),
             "⚠⚠ and a row that IS the marker must be read as one, or the rule above is satisfied \
              by a judge that never says yes to anything. Screen: {:?}",
             access.pane_collapsed(pane),
@@ -5940,11 +6033,125 @@ mod tests {
             .say(&access, &run, &authored.turn.clone())
             .expect("the parrot takes the next prompt");
         assert!(
-            !loops.said_done(&access),
+            !loops.said_done(&access).said(),
             "⚠⚠⚠ that marker was on the screen BEFORE this turn's prompt went in, so it is the \
              previous turn's answer being counted twice — the arming discipline `Completion::begin` \
              exists for, applied to text. Screen: {:?}",
             access.pane_collapsed(pane),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠ **A TURN WHOSE MARKER LINE WAS EVICTED IS `unheard`, NOT `not said`** — the third
+    /// answer, and the reason a `bool` could not carry it.
+    ///
+    /// # ⚠⚠⚠ What the two answers cost while they were one
+    ///
+    /// [`Produced::lost`](crate::report::Produced) counts complete lines the retained history threw
+    /// away before a read. It is READ where the agent's own words are reported — `Agent`'s reply
+    /// says how much is missing, and so does the account — and it was NOT read by the predicate
+    /// that decides whether a run ends. So *"the agent did not say it"* and *"the line that said it
+    /// was thrown away"* arrived at `judging` as the same `false`.
+    ///
+    /// ⚠⚠ **MEASURED ON THE OWNER'S OWN LOOP**: two runs, about four hours, every judgement taking
+    /// the fall-through edge to `working` and `reflecting` reached NOT ONCE — while the pane held
+    /// `MILESTONE REACHED`. A loop that never reflects never replaces its session, which the
+    /// document names as the whole reason it has a restart state.
+    ///
+    /// ⚠ **THE FIX IS NOT A NEW BEHAVIOUR AND THIS GATE SAYS SO.** An unheard marker still buys one
+    /// more turn — `said_marker`'s own fail-safe direction, unchanged. What changed is that the run
+    /// can SAY the difference, and the document routes on it (`_event.data.unheard`). A reader of a
+    /// walk full of `unreadable` knows to grow the scrollback; the same walk before this said only
+    /// that the agent had not finished.
+    #[test]
+    fn a_marker_whose_line_was_evicted_is_unheard_rather_than_unsaid() {
+        /// A pane that produced lines and lost some of them first — the hazard, staged. Modelled on
+        /// `agent`'s own `Lossy`, because a bounded history cannot be overrun on demand without
+        /// making the gate a scrolling fixture rather than a claim about the answer.
+        struct Lossy {
+            lost: u64,
+        }
+        impl PaneAccess for Lossy {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            // ⚠ ALIVE, deliberately: this gate is about a marker nobody could READ, and a peer this
+            // double called gone would take the run down a different door entirely — which would
+            // make the two answers below differ for a reason that has nothing to do with eviction.
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Lossy {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                Some(sprag_vt::LinesSince {
+                    // ⚠ NOT the marker: the whole point is a turn whose marker is not in what this
+                    // run was handed. What IS here is ordinary work, so nothing but the loss
+                    // separates the two answers.
+                    lines: vec!["the tail of a turn".to_string()],
+                    next: 10,
+                    lost: self.lost,
+                    partial: String::new(),
+                })
+            }
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "printf 'PARROT-READY\\n'; exec cat"]);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        let run = RunContext::uncancellable();
+        // ⚠ Driven to a prompt so `since` is an ADDRESS rather than a row trail: the trail fallback
+        // reports `lost: 0` unconditionally — it cannot see an eviction — so a gate built on it
+        // would be asserting about the degradation instead of about the answer.
+        loops.pump(&access, &run).expect("idle to priming");
+
+        assert_eq!(
+            loops.said_done(&Lossy { lost: 0 }),
+            Heard::NotSaid,
+            "⚠⚠ THE CONTROL: with nothing evicted, a marker that is not there was NOT SAID, and the \
+             run may act on that absence. If this arm is ever `Unheard` the type says every turn is \
+             unreadable and the distinction is worth nothing",
+        );
+        assert_eq!(
+            loops.said_done(&Lossy { lost: 7 }),
+            Heard::Unheard { lost: 7 },
+            "⚠⚠⚠⚠ AND WITH LINES THROWN AWAY, THE SAME SCREEN IS A DIFFERENT ANSWER. Before this \
+             type existed both were `false`, so a run whose agent HAD said the marker was told its \
+             agent had not — silently, on the one judgement that decides whether the loop reflects \
+             or takes another turn. The count travels because what a reader does about it depends \
+             on whether one line went or a thousand",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
@@ -6019,7 +6226,7 @@ mod tests {
             access.pane_collapsed(pane),
         );
         assert!(
-            !loops.said_done(&access),
+            !loops.said_done(&access).said(),
             "⚠⚠⚠ THAT ROW IS THE LOOP'S OWN INSTRUCTION, BROKEN BY THE TERMINAL. The parrot has \
              said nothing of its own — every byte on that screen came out of this run's prompt — \
              and a judge satisfied here converges a run in which no agent ever did anything, \
@@ -6077,11 +6284,11 @@ mod tests {
             .expect("the mute peer stays readable");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !loops.said_done(&access) && std::time::Instant::now() < deadline {
+        while !loops.said_done(&access).said() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
-            loops.said_done(&access),
+            loops.said_done(&access).said(),
             "⚠⚠⚠ THIS PEER ANSWERED AND PAINTED NOTHING ELSE, so the marker is the first line the \
              turn produced and there is nothing above it. A discount that read that absence as an \
              echo would make every peer that does not paint its prompt impossible to drive — a run \
@@ -6192,7 +6399,7 @@ mod tests {
             access.pane_rows(pane),
         );
         assert!(
-            !loops.said_done(&access),
+            !loops.said_done(&access).said(),
             "⚠⚠⚠ REGISTER ITEM 270, THE HALF A DISCOUNT CANNOT REACH: the row above this marker is \
              off the grid, so *what does the line above say?* has no answer in the RENDERING — and \
              the loop's own instruction converges the run. The pane still knows: a logical line is \
@@ -6289,7 +6496,7 @@ mod tests {
             access.pane_full_lines(pane),
         );
         assert!(
-            !loops.said_done(&access),
+            !loops.said_done(&access).said(),
             "⚠⚠⚠ THAT LINE IS THE LOOP'S OWN INSTRUCTION, BROKEN BY THE PEER'S COMPOSER — and no \
              reader can rejoin it, because the break is the program's own. What tells it from an \
              answer is the line ABOVE it: the rest of the same sentence, which is a shape no agent \
@@ -6312,11 +6519,11 @@ mod tests {
             "an answer that reached no pane cannot be read back off one",
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !loops.said_done(&access) && std::time::Instant::now() < deadline {
+        while !loops.said_done(&access).said() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
-            loops.said_done(&access),
+            loops.said_done(&access).said(),
             "⚠⚠⚠ AND THE SAME MARKER, WRITTEN UNDER THE PEER'S OWN WORD, MUST BE READ AS AN \
              ANSWER — or the discount above is a predicate that says no to everything and the run \
              can never converge at all. Lines: {:?}",
@@ -6409,7 +6616,7 @@ mod tests {
             "the document's own marker, whole — an empty one is a suffix of every row: {before:?}",
         );
         assert!(
-            !loops.said_done(&access),
+            !loops.said_done(&access).said(),
             "⚠⚠ and the agent has not said it yet, which is what makes the convergence below a \
              claim about the agent rather than about the predicate",
         );

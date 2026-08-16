@@ -724,7 +724,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                         live.tail(6),
                     );
                     assert!(
-                        !loops.said_done(&live.access),
+                        !loops.said_done(&live.access).said(),
                         "⚠⚠⚠ the loop read ITS OWN INSTRUCTION as the agent saying it was done. \
                          The agent has answered nothing yet; a judge satisfied here converges a \
                          run in which no work happened, and it is what this driver did before the \
