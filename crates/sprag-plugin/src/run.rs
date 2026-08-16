@@ -212,3 +212,84 @@ pub fn poll_until(
         sleep(POLL_INTERVAL);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠⚠⚠⚠ **THE ORDER THIS FILE CALLS LOAD-BEARING, HELD** — both halves, on the one wait every
+    /// plugin in this crate shares.
+    ///
+    /// [`poll_until`]'s doc says the order is load-bearing twice and nothing asked it. The gates
+    /// that exercise this function do it through real panes, and none of them can stage the two
+    /// cases the order is ABOUT, because both need the predicate and the ending to be true AT ONCE:
+    /// a read-back that raises a cancel leaves the predicate false, so it proves the flag is
+    /// consulted and not that it is consulted FIRST.
+    ///
+    /// ⚠⚠ It is also the sentence a shutdown's deadline rests on one level up — *a run hears cancel
+    /// inside every bounded wait it takes* — so a swap here would lengthen how long a worker takes
+    /// to come back without a single gate moving.
+    #[test]
+    fn a_wait_answers_the_endings_in_the_order_its_doc_promises() {
+        // ⚠ CANCEL BEATS A PREDICATE THAT IS ALREADY TRUE. A person's stop landing in the same
+        // instant as the thing they were waiting for must not be read as *carry on*: the work is
+        // over, and whatever the screen says about it is the next caller's business.
+        let cancel = Arc::new(AtomicBool::new(true));
+        assert_eq!(
+            poll_until(&RunContext::new(cancel), Duration::from_secs(30), || true),
+            Waited::Stopped,
+            "a cancelled run whose predicate is true must report the ENDING, not the predicate",
+        );
+
+        // ⚠ AND READY BEATS A DEADLINE THAT HAS ALREADY PASSED, which is the same rule pointed the
+        // other way: work that finished must never be thrown away by a clock that ran out while it
+        // was finishing. The run still ends — at the Driver's next loop top, one step later at
+        // most — but it ends having KEPT what it just did.
+        let expired = RunContext::uncancellable().deadline_in(Some(Duration::ZERO));
+        assert!(
+            expired.expired(),
+            "the fixture must stage a passed deadline"
+        );
+        assert_eq!(
+            poll_until(&expired, Duration::from_secs(30), || true),
+            Waited::Ready,
+            "a finished predicate must survive a deadline that passed while it was finishing",
+        );
+
+        // ⚠ And the third arm still answers for itself: nothing true, no ending, no time.
+        assert_eq!(
+            poll_until(&RunContext::uncancellable(), Duration::ZERO, || false),
+            Waited::TimedOut,
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **A STOOD-DOWN RUN IS STILL RUNNING, AND EVERY WAIT MUST GO ON WAITING** — the one
+    /// invariant that makes *finish what you are doing and then stop* different from *stop*.
+    ///
+    /// [`RunContext::stood_down`] is deliberately not part of [`RunContext::stopped`], and its doc
+    /// says why: a wait that treated the order as an ending would abandon the very turn the order
+    /// exists to let a run finish, and the two outcomes — the run that banked its milestone and the
+    /// run that lost it — are exactly what a person is choosing between when they reach for one
+    /// word rather than the other. Folding them together compiles, keeps every other gate green,
+    /// and silently turns `stand_down` into a slower `cancel`.
+    ///
+    /// ⚠⚠⚠⚠ **AND NOTHING ELSE HELD IT, MEASURED**: with `stood_down` folded into `stopped`, the
+    /// whole crate's other 320 gates stay green and only this one goes red. The word shipped with
+    /// its wire, its CLI verb and its document state, and the one invariant separating it from
+    /// `cancel` was defended by nobody.
+    #[test]
+    fn an_order_to_stand_down_does_not_end_a_wait() {
+        let order = Arc::new(AtomicBool::new(true));
+        let run = RunContext::uncancellable().ordered_by(Arc::clone(&order));
+        assert!(run.stood_down(), "the fixture must stage the order");
+        assert!(
+            !run.stopped(),
+            "a stood-down run is still running, so nothing may read it as over",
+        );
+        assert_eq!(
+            poll_until(&run, Duration::from_millis(30), || false),
+            Waited::TimedOut,
+            "the wait must run to its own bound, not report the order as an ending",
+        );
+    }
+}
