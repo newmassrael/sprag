@@ -670,8 +670,19 @@ impl PanePty {
         let reader_exit = Arc::clone(&exit);
         // The reader writes device RESPONSES (e.g. the Kitty `CSI ? u` flags reply) back to the
         // child; it offers to the SAME device the input path does, so the two are serialized by
-        // that device's own thread — and, since the offer never blocks, a pane whose input queue
-        // has filled can no longer stop the thread that reads its output.
+        // that device's own thread — and a pane whose slave has stopped can no longer stop this
+        // thread FOR EVER, which is what it used to do.
+        //
+        // ⚠⚠⚠ **BUT «NEVER BLOCKS» IS NOT TRUE AND THIS COMMENT SAID IT TWICE.** [`DeviceInput`]'s
+        // offer waits on the backlog condvar for up to [`DEVICE_TAKES_INPUT_WITHIN`] — 500 ms —
+        // once the pane already owes [`DEVICE_INPUT_BACKLOG`], and **while this thread is held the
+        // pane's OUTPUT is not being drained**. Register item 376(f) recorded that as an accepted
+        // residue; what it did not notice is that the code here denied the residue existed.
+        // Unreachable in practice (a backlog only fills at a device taking no input, and such a
+        // pane is not producing output either) and strictly better than the unbounded park it
+        // replaced — but the honest words are *bounded*, not *never*. The principled repair is an
+        // offer that does not wait AT ALL for an automated reply nobody is waiting on: dropping a
+        // device response beats stalling the drain, and back-pressure is FOR a person's input.
         let reader_device = device.clone();
         // The reader's "I am finished" edge. Moved IN and never sent on: the disconnect its drop
         // causes is the signal, so it fires however the closure ends — normal return or panic — and
@@ -699,8 +710,10 @@ impl PanePty {
                             lock(&reader_raw).push(&buf[..n]);
                             // Apply the batch, then drain any device response it produced UNDER the
                             // same lock (so a response is consistent with the state that made it),
-                            // and offer it to the device OUTSIDE the emulator lock (the device has
-                            // a thread of its own and the offer never blocks).
+                            // and offer it to the device OUTSIDE the emulator lock — which matters
+                            // because that offer is BOUNDED, not free: see the reader's own comment
+                            // above on the 500 ms it can cost. Held outside, the wait costs this
+                            // pane's drain; held inside, it would cost every reader of the screen.
                             let (responses, present, attention) = {
                                 let mut emu = lock(&reader_emulator);
                                 emu.advance(&buf[..n]);
