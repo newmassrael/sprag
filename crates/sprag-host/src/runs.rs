@@ -887,4 +887,44 @@ mod tests {
             "the wait ran past its own deadline: {waited:?}",
         );
     }
+
+    /// ⚠⚠⚠⚠ **TWO WORKERS THAT WILL NOT COME BACK COST ONE DEADLINE, NOT TWO** — the other
+    /// direction of the sentence its neighbour above only half-checks.
+    ///
+    /// That gate proves a wedged worker does not eat the wait a HEALTHY one needed. This one proves
+    /// the bound is over the SET: the natural wrong shape — walk the records, give each its own
+    /// budget in turn — passes up there and fails down here, and on a daemon holding a handful of
+    /// wedged runs it is the difference between a shutdown and a hang with extra steps. A `Drop`
+    /// that can be made arbitrarily long by adding runs is not bounded in the sense item 305 asked
+    /// for; it is only bounded per run, which is a promise nobody can act on.
+    #[test]
+    fn two_wedged_workers_cost_one_deadline_between_them() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let first = registry.reserve();
+        registry.submit(a_worker_that_will_not_come_back(first, &released));
+        let second = registry.reserve();
+        registry.submit(a_worker_that_will_not_come_back(second, &released));
+
+        let within = Duration::from_millis(150);
+        let raised = Instant::now();
+        let outstanding = registry.join_all_within(within);
+        let waited = raised.elapsed();
+        released.store(true, Ordering::Release);
+
+        assert_eq!(
+            outstanding,
+            vec![first, second],
+            "both workers are still going, so both are named",
+        );
+        assert!(
+            waited >= within,
+            "the wait ended at {waited:?}, before the deadline it was given",
+        );
+        assert!(
+            waited < within * 2,
+            "two wedged runs cost {waited:?} against a {within:?} deadline — the wait is being \
+             spent per worker, so a daemon pays it once per run it is holding",
+        );
+    }
 }
