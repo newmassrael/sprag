@@ -18,10 +18,23 @@
        through this crate's build script;
     2. does the child actually run;
     3. does the child's `<donedata>` arrive at the parent as `_event.data` on
-       `done.invoke.<id>`.
+       `done.invoke.<id>`;
+    4. ⚠⚠⚠ CAN THE PARENT FILL THE CHILD'S DATAMODEL — `<param>` on the invoke
+       reaching a `<data>` the child declared.
 
   Answering NO to any of them is as useful as YES: it is the difference between
   designing a sub-machine and filing an upstream ask.
+
+  ⚠⚠⚠ WHY 4 WAS ADDED, AND WHAT RESTS ON IT. The owner's design has the template
+  serving OTHER repositories and holding several loop KINDS — a debt loop, a
+  feature loop — possibly running at once. Measured, what separates those kinds
+  is entirely `<data>`: the consents, the standing instructions, the prompts, the
+  marker, where the work list lives. **The topology is identical.** So the honest
+  shape is one topology and N documents that own decisions — and the only way to
+  build that WITHOUT copying a 2,000-line machine into every kind is for a parent
+  to fill a child's datamodel. If it cannot, copying is back on the table, and
+  this file's own workspace has already recorded what two copies of one rule cost
+  when they drift.
 -->
 <scxml xmlns="http://www.w3.org/2005/07/scxml"
        version="1.0"
@@ -31,12 +44,41 @@
 
   <datamodel>
     <data id="carried" expr="''"/>
+    <!--
+      ⚠⚠⚠ WHAT THE CHILD HEARD, echoed back. This is question 4 (below), and it
+      is the one a composed design rests on: a parent that owns the DECISIONS and
+      a child that owns the TOPOLOGY only works if the parent can fill the
+      child's datamodel. `told_it` is what was sent; the child returns it as
+      `heard`, and the two being equal is the proof.
+    -->
+    <data id="told_it" expr="'the parent filled this in'"/>
+    <data id="echoed" expr="''"/>
+    <!--
+      ⚠⚠⚠ THE SHAPE THE SPLIT NEEDS. Two clauses rather than one, because a list
+      that lost an element and a list that arrived whole are the same length at
+      one. Two FIELDS each, because an object flattened to a string still has a
+      length.
+    -->
+    <data id="told_rules"
+          expr="[
+            { when: 'the first clause', text: 'what to say about it' },
+            { when: 'the second clause', text: 'and about this one' }
+          ]"/>
+    <data id="echoed_rules" expr="[]"/>
   </datamodel>
 
   <state id="asking">
-    <invoke type="scxml" src="probe_child.scxml" id="probe"/>
+    <invoke type="scxml" src="probe_child.scxml" id="probe">
+      <!-- ⚠ `<param>` and not `namelist`: a namelist copies variables that must
+           already share a NAME across two documents, which is the coupling a
+           template exists to avoid. A param names the child's slot explicitly. -->
+      <param name="told" expr="told_it"/>
+      <param name="rules" expr="told_rules"/>
+    </invoke>
     <transition event="done.invoke.probe" target="heard">
       <assign location="carried" expr="_event.data.carried"/>
+      <assign location="echoed" expr="_event.data.heard"/>
+      <assign location="echoed_rules" expr="_event.data.heard_rules"/>
     </transition>
   </state>
 

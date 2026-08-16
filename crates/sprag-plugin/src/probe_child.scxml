@@ -21,6 +21,34 @@
 
   <datamodel>
     <data id="answer" expr="'the child ran'"/>
+    <!--
+      ⚠⚠⚠ WHAT THE PARENT TOLD IT, and the second question this pair asks. The
+      literal below is what a child gets when NOBODY told it anything — so a run
+      that comes back carrying this string is a run where the parent's `<param>`
+      did not cross, which is a different failure from the child not running.
+
+      A composed design rests entirely on this: if decisions live in a parent
+      document and topology in a child, the parent must be able to FILL the
+      child's datamodel. If it cannot, the parent has nothing to say and the
+      split has to be made some other way.
+    -->
+    <data id="told" expr="'nobody told this child anything'"/>
+    <!--
+      ⚠⚠⚠ AND THE SHAPE THE WHOLE SPLIT ACTUALLY NEEDS: A LIST OF OBJECTS. Every
+      decision that would move from a template to a per-kind parent —
+      `may_answer`, `screen_rules`, `judged_rules` — is exactly this shape, and a
+      string crossing proves nothing about it.
+
+      ⚠⚠ THE WORKSPACE HAS BEEN BITTEN HERE BEFORE: `sce-rust-lua` used to
+      rewrite a JSON payload with `bytes[i] as char`, and valid JSON carrying an
+      array or an escape was DEMOTED TO A STRING with no error raised. That was
+      filed as PR-87 and fixed upstream — this data is what would notice it
+      coming back.
+
+      ⚠ The default is an EMPTY list, so a param that did not cross is told apart
+      from one that crossed carrying nothing.
+    -->
+    <data id="rules" expr="[]"/>
   </datamodel>
 
   <state id="running">
@@ -33,6 +61,13 @@
   <final id="over">
     <donedata>
       <param name="carried" expr="answer"/>
+      <!-- ⚠ ECHOED, not asserted here: a child cannot report its own datamodel
+           to anybody but its parent, so the proof has to travel back out. -->
+      <param name="heard" expr="told"/>
+      <!-- ⚠ Echoed WHOLE rather than indexed. Indexing here would be a second
+           question — the datamodel is evaluated as Lua whatever the attribute
+           says — and this document is asking one. The Rust side walks it. -->
+      <param name="heard_rules" expr="rules"/>
     </donedata>
   </final>
 </scxml>

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TWO REGIONS THAT RUN AT ONCE — the smallest thing that can answer whether
+  `<parallel>` is usable in this tree.
+
+  ⚠⚠⚠ WHY THIS IS ASKED BEFORE ANYTHING IS BUILT ON IT. `probe_parent.scxml`'s
+  argument, one construct over: the generator has parallel handling and the
+  conformance suite has parallel tests, and both of those are facts about
+  SOMEWHERE ELSE until a document in THIS crate compiles and runs one. Nothing
+  shipped here has ever used `<parallel>` — measured, zero occurrences across
+  all six statecharts — so every claim about running several loops at once is a
+  claim about a construct this crate has never executed.
+
+  ⚠⚠⚠ AND THE FAILURE MODE IS ONE FIXTURES DO NOT CATCH, WHICH IS THE WHOLE
+  REASON THIS EXISTS. SCE's own suite records a parallel defect that shipped in
+  `1419a050ed` — a self-transition whose exit set swallowed the parallel root —
+  and says it was invisible to every W3C fixture BECAUSE THEY ARE ALL ONE REGION
+  DEEP. A probe that only starts two regions and stops would be one region deep
+  in the way that matters, and would pass while the defect was live.
+
+  What is being asked, precisely, and each is a separate `NO` worth having:
+
+    1. does a document carrying `<parallel>` compile at all through this crate's
+       build script;
+    2. do BOTH regions actually enter — an engine that ran only the first would
+       look identical from outside until the second one's work was needed;
+    3. does an event reach BOTH regions, so two loops could be driven by one
+       pump rather than each needing its own;
+    4. ⚠⚠⚠ DOES A SELF-TRANSITION INSIDE ONE REGION LEAVE THE OTHER REGION
+       ALONE — the exact shape of the defect above. The AI loop's own
+       `working` state takes a self-arrow on `Null`, on every look that found
+       nothing, so a supervisor running N loops in parallel takes that arrow
+       constantly. If its exit set swallows the parallel root, the sibling loop
+       is silently exited.
+
+  ⚠ AND THE FIRST THING THIS PROBE MEASURED WAS ITSELF: the draft wrote that
+  self-arrow the way a journal does, with a double hyphen, which XML forbids
+  inside a comment. `sce-build` reported `The document has no document element` —
+  the parser's answer to a comment that never closed, naming line 0 for a fault
+  ten lines in. **A build-time XML error points at the file, not at the mistake**,
+  which is worth knowing before a document six times this size fails the same way.
+
+  Answering NO to any of them is as useful as YES: it is the difference between
+  designing a supervisor that runs loops concurrently and filing an upstream
+  ask.
+
+  ⚠ The two regions are deliberately NOT symmetric. `ticking` takes the
+  self-transition; `watching` only counts what reaches it. A probe whose regions
+  did the same thing could not tell "both regions got the event" from "one
+  region got it twice".
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_parallel"
+       datamodel="ecmascript"
+       initial="both">
+
+  <datamodel>
+    <!-- How many times the self-transition fired in its own region. -->
+    <data id="ticks" expr="0"/>
+    <!-- How many of the same events the SIBLING region saw. If broadcast works
+         these track each other; if the sibling was exited, this stops moving. -->
+    <data id="seen" expr="0"/>
+  </datamodel>
+
+  <parallel id="both">
+
+    <!--
+      REGION A — takes the arrow that the defect is about. `tick` targets its own
+      state, so the exit set of that transition is where a parallel root can be
+      swallowed.
+    -->
+    <state id="ticking">
+      <transition event="tick" target="ticking">
+        <assign location="ticks" expr="ticks + 1"/>
+      </transition>
+    </state>
+
+    <!--
+      REGION B — never self-transitions, so if this stops counting while region A
+      keeps ticking, the sibling was exited rather than merely quiet. It is the
+      control for region A, and the reason the two regions differ.
+    -->
+    <state id="watching">
+      <transition event="tick">
+        <assign location="seen" expr="seen + 1"/>
+      </transition>
+    </state>
+
+  </parallel>
+</scxml>

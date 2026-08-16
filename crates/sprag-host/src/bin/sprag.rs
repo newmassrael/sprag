@@ -3137,6 +3137,36 @@ fn hook(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// **LEAVE WORD THAT THIS PANE'S REPORTER IS MUTE, OR TAKE THE WORD BACK** — see
+/// [`hooks::hook_trouble_path`] for what an hour of silence cost and why the file's EXISTENCE is
+/// the message.
+///
+/// ⚠⚠⚠ ONLY REACHED ONCE [`sprag_host::PANE_ENV_VAR`] HAS RESOLVED, which is the line the swallow
+/// rule already drew and did not use: a session with nothing to do with sprag never gets this far,
+/// so nothing here can make a stranger's agent noisy. That is the whole argument for writing
+/// anything at all.
+///
+/// ⚠ Its own failures are swallowed exactly as the report's are. A hook that could not report AND
+/// could not say so is where this started, but a hook that PANICS because a state directory is
+/// read-only would be worse than the silence — it runs in the agent's critical path.
+fn note_hook_trouble(pane: u64, trouble: Option<&str>) {
+    let path = sprag_host::hooks::hook_trouble_path(pane);
+    match trouble {
+        // ⚠ REMOVED ON SUCCESS, so the file never outlives the condition. A breadcrumb that stayed
+        // would make every pane look mute for ever after one refused report, which is the same
+        // defect as the stale `working` this exists to expose — one layer out.
+        None => {
+            let _ = std::fs::remove_file(&path);
+        }
+        Some(said) => {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, said);
+        }
+    }
+}
+
 /// How long [`deliver_hook`] waits for the daemon's answer before abandoning the report.
 ///
 /// THIS RUNS IN THE AGENT'S CRITICAL PATH — an agent waits for its hooks — so a daemon that accepts
@@ -3160,9 +3190,20 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
         .ok()?
         .parse::<u64>()
         .ok()?;
+    // ⚠⚠⚠ FROM HERE ON A FAILURE IS SPRAG'S OWN, AND IS RECORDED. `PANE_ENV_VAR` has resolved, so
+    // this is a pane this daemon made — the swallow rule's *"a session with nothing to do with
+    // sprag"* case is already behind us, and it is the only case that rule argues about. See
+    // `note_hook_trouble`.
+    //
     // The bound is stated to `connect`, not set after it: the handshake it performs is itself a
     // wait, and this one runs while an agent holds still for it.
-    let mut conn = connect_within(HOOK_DEADLINE).ok()?;
+    let mut conn = match connect_within(HOOK_DEADLINE) {
+        Ok(conn) => conn,
+        Err(why) => {
+            note_hook_trouble(pane, Some(&format!("could not reach the daemon: {why}")));
+            return None;
+        }
+    };
     let (action, params) = match outcome {
         hooks::Outcome::Report(state) => (
             REPORT_AGENT_ACTION,
@@ -3183,11 +3224,20 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
         ),
         hooks::Outcome::Release => (RELEASE_AGENT_ACTION, json!({ "id": pane })),
     };
-    let _: Value = invoke_action(
+    // ⚠⚠⚠ THIS IS THE CALL THE WIRE SKEW REFUSES, and the refusal is the sentence worth keeping:
+    // `client/hello` names both the problem and its fix, and until now it was written where nobody
+    // could read it. A report that lands takes the breadcrumb back.
+    match invoke_action(
         &mut conn,
         scoped_invoke(None, mux_action_path(action), params),
-    )
-    .ok()?;
+    ) {
+        Ok(Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_))
+        | Ok(Value::Array(_) | Value::Object(_)) => note_hook_trouble(pane, None),
+        Err(why) => {
+            note_hook_trouble(pane, Some(&format!("the daemon refused the report: {why}")));
+            return None;
+        }
+    }
     Some(())
 }
 
@@ -4843,10 +4893,33 @@ fn agent(args: Vec<String>) -> io::Result<()> {
             // for a verdict a HOOK reported names a rule that never fired, and the edit would do
             // nothing at all.
             match source {
-                Some(source) => println!(
-                    "    `{source}` reported this, and a report outranks the screen. \
-                     `sprag release-agent --pane {id}` hands the pane back to screen inference."
-                ),
+                Some(source) => {
+                    println!(
+                        "    `{source}` reported this, and a report outranks the screen. \
+                         `sprag release-agent --pane {id}` hands the pane back to screen inference."
+                    );
+                    // ⚠⚠⚠ AND WHETHER THAT REPORTER CAN STILL SPEAK. A hook that has stopped being
+                    // able to report leaves the LAST thing it managed to say standing for ever —
+                    // and a state that outranks the screen and never expires is a run that cannot
+                    // end its turn. Measured 2026-08-16: an hour of `working` against a pane whose
+                    // screen had said `MILESTONE REACHED` the whole time, and the only sentence
+                    // that explained it was written where nothing reads. See
+                    // `sprag_host::hooks::hook_trouble_path`.
+                    //
+                    // ⚠ Read off the filesystem rather than asked of the daemon ON PURPOSE: the
+                    // condition being reported is precisely that the hook could not reach the
+                    // daemon, so the daemon is the one party that cannot know.
+                    if let Ok(said) =
+                        std::fs::read_to_string(sprag_host::hooks::hook_trouble_path(id))
+                    {
+                        println!(
+                            "    ⚠ THAT REPORTER IS MUTE: its last attempt failed — {}. So the \
+                             state above is the last thing it MANAGED to say, not what is true \
+                             now; the screen is the better witness until this clears.",
+                            said.trim(),
+                        );
+                    }
+                }
                 None => println!(
                     "    `{}` is the rule that fired. If this verdict is wrong, redefine or \
                      disable that id in an [[agent]] block in config.toml — the daemon picks the \

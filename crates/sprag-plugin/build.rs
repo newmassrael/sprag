@@ -43,6 +43,12 @@ const STATECHARTS: &[&str] = &[
     // would answer about that harness. See `probe_parent.scxml`.
     "probe_child",
     "probe_parent",
+    // ⚠⚠ THE SECOND PROBE, for the same reason and about `<parallel>`: nothing shipped here has
+    // ever used one, so *"several loops at once"* rests on a construct this crate has never
+    // executed. ⚠⚠⚠ It aims at the failure fixtures miss — a self-transition swallowing the
+    // parallel root — which SCE's own suite records shipping once, invisible to every W3C fixture
+    // because they are one region deep. See `probe_parallel.scxml`.
+    "probe_parallel",
     // ⚠⚠ WHAT A RUN LEARNED ABOUT ITS OWN SESSIONS — a child machine, and inert until it is here.
     "context_review",
 ];

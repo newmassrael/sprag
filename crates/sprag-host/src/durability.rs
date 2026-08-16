@@ -82,6 +82,17 @@ pub fn load_runs(path: &Path) -> Option<crate::runs::RunLog> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
+/// sprag's persistent state directory, for a reader OUTSIDE this crate's lib.
+///
+/// ⚠ The `sprag` binary is its own crate, so it cannot see the `pub(crate)` derivation below — and
+/// a second copy of six lines is how two artifacts end up in two directories. This is the one
+/// derivation, published rather than duplicated. See [`crate::hooks::hook_trouble_path`], the first
+/// caller that needed it from out there.
+#[must_use]
+pub fn state_dir() -> PathBuf {
+    sprag_state_dir()
+}
+
 /// sprag's persistent state directory: `$XDG_STATE_HOME/sprag`, falling back to
 /// `~/.local/state/sprag` then `/tmp/sprag`. The one derivation, shared by every durable artifact
 /// (the snapshot and the per-pane history files) so they cannot land in two different places.

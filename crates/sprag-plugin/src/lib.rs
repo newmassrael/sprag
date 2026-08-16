@@ -55,12 +55,24 @@ pub(crate) mod sm {
         include!(concat!(env!("OUT_DIR"), "/probe_parent_sm.rs"));
     }
 
+    // ⚠⚠ THE `<parallel>` PROBE. It invokes nothing, so the naming rule above does not bind it —
+    // it is `<stem>_sm` anyway, because a supervisor that runs loops concurrently would reach it
+    // as a child the day one exists, and renaming a module later is the kind of edit that is
+    // remembered as a preference rather than a contract.
+    pub(crate) mod probe_parallel_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/probe_parallel_sm.rs"));
+    }
+
     // ⚠ `<stem>_sm` because `ai_loop.scxml` will reach it as a child — see the note above.
     pub(crate) mod context_review_sm {
         #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
         include!(concat!(env!("OUT_DIR"), "/context_review_sm.rs"));
     }
 }
+
+/// What this crate has PROVEN about the engine it runs on — see [`probe`].
+mod probe;
 
 pub mod access;
 pub mod agent;

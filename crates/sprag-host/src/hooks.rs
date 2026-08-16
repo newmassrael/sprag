@@ -527,6 +527,41 @@ pub fn mint_session_id() -> String {
 /// agent can enforce it.
 pub const AGENT_TIMEOUT_SECS: u64 = 5;
 
+/// **WHERE A HOOK LEAVES WORD THAT IT COULD NOT REPORT** — one file per pane, whose EXISTENCE is
+/// the whole message.
+///
+/// # ⚠⚠⚠ Why silence needed a breadcrumb at all, measured
+///
+/// A hook swallows every failure and always exits 0, and that rule is right for the world it was
+/// written for: this runs inside EVERY session of the agent, including ones in a terminal that has
+/// nothing to do with sprag, and a multiplexer that makes somebody's agent print errors because its
+/// own daemon is down is not shippable.
+///
+/// ⚠⚠ **BUT THE CODE ALREADY DRAWS THAT LINE AND THE RULE IGNORED IT.** A stranger's session never
+/// resolves [`crate::PANE_ENV_VAR`] — it is not in a pane. So a failure AFTER that variable has
+/// been read is not a stranger's, it is sprag's own, and swallowing it is what cost an hour on
+/// 2026-08-16: the loop bumped `WIRE_PROTOCOL` 35 → 36 and the rebuild replaced the hook binary
+/// (it is HARDLINKED to `target/debug/sprag`), while the daemon stayed at 35. Every report was
+/// refused at `client/hello` with nobody able to see it, the last state it managed to say —
+/// `working` — outranks the screen and never expires, and the turn could not end. The pane held
+/// `MILESTONE REACHED` for over an hour while the journal repeated *looked, nothing had happened*.
+///
+/// ⚠⚠⚠ **THE SAME SKEW ON A CLI TAKES FIVE MINUTES TO DIAGNOSE**, because the daemon's refusal
+/// names the problem AND the fix on stderr. A hook's stderr goes nowhere. This is register item 281
+/// — *the product's best diagnostic sentence is the one it hides* — one client over.
+///
+/// # ⚠⚠ Why a file, and why its existence rather than its contents
+///
+/// The daemon is by definition unreachable when this is written, so the breadcrumb cannot be a
+/// report. It is read by whoever asks about the pane later, over a client that DOES match. Written
+/// on failure and REMOVED on success, so a file that is there means *this pane's reporter is
+/// currently mute* — a health fact about the reporter, never a state of the agent. Nothing here may
+/// ever be read as an agent's state: that is what the refused report was for.
+#[must_use]
+pub fn hook_trouble_path(pane: u64) -> PathBuf {
+    crate::durability::state_dir().join(format!("hook-mute.{pane}"))
+}
+
 /// A reporter's own clock, in nanoseconds since boot.
 ///
 /// [`crate::agent::AgentRegistry::report`] judges freshness per SOURCE, so what a hook needs is a
