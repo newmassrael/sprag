@@ -10,6 +10,44 @@
 //!
 //! ⚠ The `<invoke>` probe's own gate still lives beside the loop it was built for. This module
 //! exists so the next probe does not have to.
+//!
+//! # ⚠⚠⚠⚠ A DRIVER CANNOT REACH AN `<invoke>`d CHILD — measured, and it refutes a planned design
+//!
+//! The composed shape this crate's probes were built to justify is *one topology as a CHILD, one
+//! document per loop KIND as a PARENT that fills it in*. The probe below proved the two halves that
+//! were asked for — a parent's `<param>` reaches the child's `<data>`, and the child's `<donedata>`
+//! comes back — and **the question nobody asked was whether the DRIVER can still drive the child.**
+//!
+//! It cannot. At the pinned SCE the generated parent owns its child as a PRIVATE field with no
+//! accessor, and the runtime's `Engine` publishes nothing about children at all:
+//!
+//! ```text
+//! child_probe: Option<Box<sce_rust_runtime::Engine<super::probe_child_sm::ProbeChildPolicy>>>,
+//! ```
+//! ```text
+//! error[E0616]: field `child_probe` of struct `ProbeParentPolicy` is private
+//!   --> crates/sprag-plugin/src/probe.rs:48:38
+//!    |
+//! 48 |         let _child = engine.policy().child_probe.as_ref();
+//!    |                                      ^^^^^^^^^^^ private field
+//! ```
+//!
+//! **The line was written and compiled rather than reasoned about**, because a compiler's refusal is
+//! stronger than a gate. What it costs is exact: an invoked `ai_loop` could not be read
+//! (`OuterLoop::state()` would answer the PARENT's state), could not be pumped, and could not be
+//! sent the events the driver raises — so the loop would be undriveable the moment it became a
+//! child. ⚠ There IS a child→parent route (`parent_external_queue`, drained before each tick), which
+//! is what `<donedata>` rides; there is no route the other way that a driver can use.
+//!
+//! ⚠⚠ **THIS IS NOT AN ARGUMENT AGAINST THE SPLIT, only against one arrangement of it.** The
+//! template must stay the machine the driver holds. A kind's decisions can still arrive by
+//! `<invoke>` — with the template as the PARENT and the kind document as a short-lived CHILD that
+//! finishes at once, handing its decisions back through `<donedata>`. Both halves of that are
+//! exactly what the probe below already proved, in that direction.
+//!
+//! ⚠ And one consequence to weigh before building it: the generated child is a CONCRETE TYPE chosen
+//! at codegen, so `srcexpr` cannot select a kind at runtime. A template that invokes its decisions
+//! names ONE filename, and every repository adopting it supplies a document of that name.
 
 #[cfg(test)]
 mod tests {
