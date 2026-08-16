@@ -4438,6 +4438,10 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 cancel.store(true, Ordering::Release);
+                // ⚠ WHEN the flag went up, so the gate below can measure the run's reaction rather
+                // than the fixture's sleep. Returned rather than shared, because the only reader
+                // wants it after the join anyway.
+                Instant::now()
             })
         };
         let outcome = Driver::new(Guardrails {
@@ -4448,13 +4452,46 @@ mod tests {
             max_duration: Some(Duration::from_secs(60)),
         })
         .run(&mut loops, &access, &run);
-        raiser.join().expect("the canceller");
+        let returned = Instant::now();
+        let raised = raiser.join().expect("the canceller");
+        let honoured = returned.saturating_duration_since(raised);
 
         assert_eq!(
             outcome.state,
             OutcomeState::Cancelled,
             "a person's stop is the run's ending, above every ceiling: {:?}",
             outcome.state,
+        );
+        // ⚠⚠⚠⚠ **HOW LONG THIS LOOP TAKES TO HONOUR A CANCEL** — the number
+        // `sprag_host::runs::RunRegistry::JOIN_DEADLINE` is chosen against, for the run kind the
+        // daemon actually drives. Register item 305 measured the ORCHESTRATOR (2.7 - 10.5 ms over a
+        // real pane) and reasoned that a loop is the same shape because its waits are the same
+        // `poll_until`. Reasoned is not measured, and a loop's step is the heavier one: it composes
+        // a prompt, delivers it, waits on a turn contract, and on the way out signals the agent's
+        // job (`Stopped::Job`, asserted below). Measured here at **0.8 - 11.6 ms** (four samples,
+        // 2026-08-17).
+        //
+        // ⚠⚠⚠⚠ **AND WHICH PATH THAT NUMBER DESCRIBES WAS ESTABLISHED BY MUTATION, NOT BY GUESSING
+        // — the first draft of this comment guessed WRONG.** It said the number is dominated by one
+        // 10 ms poll of the cancel flag, as the orchestrator's is. Raising `POLL_INTERVAL` ninety-
+        // fold, to 900 ms, leaves this gate GREEN and unmoved: the loop here is cycling between
+        // steps against a stand-in that answers in milliseconds, so what honours the flag is the
+        // DRIVER'S LOOP TOP, which consults it before every step and never sleeps. The same
+        // mutation puts the orchestrator's measurement at **892 ms** (`rpc`'s
+        // `a_running_run_honours_cancel_well_inside_the_join_deadline`), because THAT run is parked
+        // in a wait for a sentinel that never comes. **The two gates measure the two paths**, and a
+        // shutdown's deadline has to clear both.
+        //
+        // ⚠⚠ The bound is a REQUIREMENT and not a reading, and deliberately not a fraction of
+        // `JOIN_DEADLINE` — that constant lives in another crate this one must not depend on, and a
+        // bound written as a fraction of the thing it defends could never catch it moving (item
+        // 391). Half a second is forty times the measured worst and an order of magnitude inside
+        // the five-second deadline, so this reddens long before a shutdown would begin detaching
+        // live loops.
+        assert!(
+            honoured < Duration::from_millis(500),
+            "the loop took {honoured:?} to come back after the flag went up — a shutdown's join \
+             deadline is chosen against this number, so it has to be measured when it moves",
         );
         assert!(
             matches!(outcome.stopped, Some(Stopped::Job(_))),
