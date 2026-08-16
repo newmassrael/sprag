@@ -74,12 +74,29 @@
       <transition event="tick" target="ticking">
         <assign location="ticks" expr="ticks + 1"/>
       </transition>
+      <!--
+        ⚠⚠⚠ QUESTION 5's DOOR: region A can finish while region B never will.
+        See the note under region B for what rests on the answer.
+      -->
+      <transition event="finish" target="done"/>
     </state>
+
+    <final id="done"/>
 
     <!--
       REGION B — never self-transitions, so if this stops counting while region A
       keeps ticking, the sibling was exited rather than merely quiet. It is the
       control for region A, and the reason the two regions differ.
+
+      ⚠⚠⚠ AND IT NEVER FINISHES, WHICH IS QUESTION 5. A design that puts STANDING
+      ORDERS in their own region beside the work has exactly this shape: the work
+      region ends, and the orders region has no ending because an order is not a
+      task. SCXML completes a `<parallel>` only when EVERY region is final — so
+      the question a driver's whole ending detection rests on is whether a run
+      whose work is over can be SEEN to be over.
+
+      This region is deliberately the one with no final, so the probe measures
+      that arrangement rather than the tidy one.
     -->
     <state id="watching">
       <transition event="tick">
@@ -88,4 +105,19 @@
     </state>
 
   </parallel>
+
+  <!--
+    ⚠⚠⚠ QUESTION 5, IN REGION A: what does an engine say when ONE region is done
+    and the other never will be?
+
+    `done` is region A's own final. Reaching it must leave the sibling running —
+    that is questions 2 to 4 again, one arrangement further on — and the answer a
+    driver reads (`is_in_final_state`, `get_current_state`, the active set) is
+    what decides whether the ORDERS-REGION design is buildable at all.
+
+    ⚠ Answering NO is as useful as YES: it is the difference between putting
+    standing orders in their own region and repeating one transition on every
+    state of a flat machine, which this workspace has already paid for once as
+    *two copies of one rule, and the failure of letting them drift is silent*.
+  -->
 </scxml>

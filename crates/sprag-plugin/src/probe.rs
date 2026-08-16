@@ -132,6 +132,91 @@ mod tests {
         }
     }
 
+    /// ⚠⚠⚠⚠ **WHAT AN ENGINE SAYS WHEN ONE REGION IS DONE AND THE OTHER NEVER WILL BE** — the
+    /// question the STANDING-ORDERS design rests on, and the one the first parallel probe did not
+    /// ask because it had no finals at all.
+    ///
+    /// # ⚠⚠⚠ Why a whole probe for this
+    ///
+    /// The owner asked for a handle: a running loop that finishes the debt in front of it and then
+    /// STOPS, instead of reflecting into the next one. Today the only thing anybody can say to a
+    /// running loop is `cancel`, which throws away the turn in flight — measured this afternoon,
+    /// when a pin bump cost exactly that.
+    ///
+    /// The long-term shape puts standing orders in **their own region**, orthogonal to the work,
+    /// because an order is not a step of the work and repeating one transition on every state of a
+    /// flat machine is *two copies of one rule* — the failure this workspace has already paid for.
+    ///
+    /// ⚠⚠ **BUT SCXML COMPLETES A `<parallel>` ONLY WHEN EVERY REGION IS FINAL, AND AN ORDERS
+    /// REGION HAS NO ENDING.** So the driver's whole ending detection — `Driver` loops
+    /// `while !engine.is_in_final_state()` — could sit there for ever on a run whose work was over.
+    /// **That would not be a bug in the design, it would be the design being impossible**, and the
+    /// answer decides between the orders region and the flat repetition.
+    #[test]
+    fn a_region_that_finishes_beside_one_that_never_does_is_still_readable() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeParallelPolicy::new(lua));
+        engine.initialize();
+
+        engine.raise(sce_rust_runtime::EventWithMetadata::new(
+            ProbeParallelEvent::Finish,
+        ));
+        engine.step();
+
+        let active = engine.get_active_states();
+        assert!(
+            active.contains(&ProbeParallelState::Done),
+            "⚠⚠ the control: region A must actually have reached its own final, or nothing below is \
+             about the arrangement this asks about. active = {active:?}",
+        );
+        assert!(
+            active.contains(&ProbeParallelState::Watching),
+            "⚠⚠⚠ AND THE ENDLESS REGION MUST STILL BE RUNNING. A region that was exited when its \
+             sibling finished would take the standing orders with it exactly when a person is most \
+             likely to be giving one. active = {active:?}",
+        );
+
+        // ⚠⚠⚠ THE ANSWER THE DESIGN TURNS ON, RECORDED WHICHEVER WAY IT FALLS. This asserts what the
+        // ENGINE says rather than what a reader would prefer: a `<parallel>` is complete only when
+        // every region is final, and one region here never can be. If this is `false`, the
+        // orders-region design cannot use `is_in_final_state` as its ending signal and the driver
+        // must read the WORK REGION's own final instead — which is a fact about how to build it,
+        // not a reason not to.
+        let whole = engine.is_in_final_state();
+        assert!(
+            !whole,
+            "⚠⚠⚠ MEASURED: an engine that called this whole machine FINAL while a region is still \
+             running would be completing a parallel on one region, which is the defect the gate \
+             above exists for wearing different clothes. If this ever flips, the orders-region \
+             design gets simpler and this gate is the place that says so",
+        );
+        // ⚠⚠⚠⚠ AND THE ANSWER THAT DECIDED THE DESIGN, WHICH IS NOT THE ONE THIS GATE WAS DRAFTED
+        // EXPECTING. `get_current_state` answers with the PARALLEL ROOT — `Both` — not with the
+        // region that finished and not with the one still running. That is correct of the engine
+        // (a parallel's "current state" is the parallel) and it is fatal to one design:
+        //
+        //   `OuterLoop::pump` switches on `get_current_state()` to decide what to DO. A machine
+        //   whose top level is `<parallel>` answers that call with one root for ever, so every
+        //   arm of that match becomes unreachable in one edit.
+        //
+        // ⚠⚠⚠ SO STANDING ORDERS MAY NOT BE A TOP-LEVEL REGION BESIDE THE WORK. They can live in a
+        // region only if the WORK region is itself a compound state the driver reads through the
+        // ACTIVE SET rather than through this call — which is a driver change, not a document one,
+        // and is the thing to measure before writing either.
+        //
+        // ⚠ Asserted as the measurement rather than as a preference: if an engine ever answers with
+        // the finished region instead, this gate fails and the design opens back up. That is what a
+        // gate on somebody else's engine is for.
+        assert_eq!(
+            engine.get_current_state(),
+            ProbeParallelState::Both,
+            "⚠⚠⚠ MEASURED: the single-state reader answers with the PARALLEL ROOT. A driver that \
+             switches on it — which `OuterLoop::pump` does — sees one state for ever the moment its \
+             top level becomes parallel. This is the fact that decides where standing orders may \
+             live",
+        );
+    }
+
     /// Read one of the probe's counters out of the live datamodel.
     fn counter(engine: &Engine<ProbeParallelPolicy>, name: &str) -> i64 {
         let session = engine
