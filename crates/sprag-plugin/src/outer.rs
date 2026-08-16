@@ -1963,6 +1963,36 @@ impl OuterLoop {
                 _ => return Briefed::NotHeld { part, held: None },
             }
         }
+        // ⚠⚠⚠⚠ **AND THE FOUR NUMERIC DECISIONS, WHICH CROSSED UNVERIFIED** — register item 316.
+        // `max_turns` and `reflect_every` above were checked and these four were not, though they
+        // are no more fragile: every one of them is a caller's number written into the document's
+        // `<data>`, and a brief that reported success on a number the datamodel does not hold is a
+        // run bounded by something nobody asked for. Two of them (`ready_timeout_ms`,
+        // `turn_within_ms`) had gained cover through `turn_within()` at their own gates; the other
+        // two had nothing at all.
+        //
+        // ⚠⚠ **AN OMITTED NUMBER IS NOT A CLAIM.** `None` means the caller said nothing and the
+        // document keeps its own default — so it is SKIPPED rather than compared. Demanding a value
+        // here would turn a caller's silence into an assertion about a number they never sent, and
+        // the defaults are the document's to choose (item 300's whole rule).
+        for (part, sent) in [
+            ("await_person_ms", brief.await_person_ms),
+            ("handback_still_ms", brief.handback_still_ms),
+            ("ready_timeout_ms", brief.ready_timeout_ms),
+            ("turn_within_ms", brief.turn_within_ms),
+        ] {
+            let Some(sent) = sent else { continue };
+            match self.script.get_variable(&self.session, part) {
+                Ok(ScriptValue::Int(held)) if held == sent => {}
+                Ok(ScriptValue::Int(held)) => {
+                    return Briefed::NotHeld {
+                        part,
+                        held: Some(held.to_string()),
+                    };
+                }
+                _ => return Briefed::NotHeld { part, held: None },
+            }
+        }
         // ⚠⚠⚠ AND THE STANDING INSTRUCTIONS, READ BACK THROUGH THE PRODUCT'S OWN READER — the one
         // `screening` will use when a dialog arrives, not a second walk of the same table. A brief
         // that reported success on rules `screening` cannot read is a run that stops on the first
@@ -5615,6 +5645,88 @@ mod tests {
     /// what a double holds exactly; that is a fact about the engine, not a defect. What is
     /// asserted is that **the driver notices** — names the part, carries what the machine holds,
     /// and sends the run to `failed` rather than leaving it startable on a budget it did not get.
+    /// ⚠⚠⚠⚠ **THE FOUR NUMERIC DECISIONS CROSS VERIFIED TOO, AND A NUMBER NOBODY SENT IS NOT ONE**
+    /// — register item 316, which noted that `max_turns` and `reflect_every` were read back while
+    /// four values *"no more fragile"* were not.
+    ///
+    /// Both halves, because either alone is half a rule:
+    ///
+    /// * a number the caller DID send must survive the crossing, or the run is bounded by something
+    ///   nobody asked for — and the refusal must name WHICH, since a caller with four has no other
+    ///   way to know which one to rewrite;
+    /// * a number the caller did NOT send must be left alone. `None` means *the document's own
+    ///   default stands*, so comparing it would turn a caller's silence into an assertion about a
+    ///   value they never chose — and the defaults are the document's, which is item 300's rule.
+    ///
+    /// ⚠ The second half is the one a careless widening breaks: reading every field unconditionally
+    /// still passes the first half, and fails every caller who omitted one.
+    #[test]
+    fn a_number_that_did_not_survive_is_named_and_one_never_sent_is_left_alone() {
+        let sent_but_mangled = Disagreeing::about("await_person_ms", ScriptValue::Int(999));
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(
+            Arc::clone(&sent_but_mangled) as Arc<dyn IScriptEngine>,
+            pane,
+            Duration::from_secs(1),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        sent_but_mangled.start_lying();
+        let briefed = |await_person_ms| Brief {
+            north_star: "n".to_string(),
+            milestone: "m".to_string(),
+            reference: "r".to_string(),
+            max_turns: 3,
+            reflect_every: 99,
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms,
+            // ⚠ OMITTED, and the second half of this gate is about exactly that.
+            handback_still_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+
+        let answer = loops.brief(&briefed(Some(4200)));
+        let Briefed::NotHeld { part, held } = answer else {
+            panic!(
+                "⚠⚠⚠⚠ A NUMBER THE CALLER SENT WAS MANGLED IN THE CROSSING AND THE BRIEF REPORTED \
+                 SUCCESS. The run then waits for a person on a clock nobody chose — the same silent \
+                 shape SCE PR-87 produced for a string, on the values `max_turns` was already \
+                 checked for. Got {answer:?}",
+            );
+        };
+        assert_eq!(
+            part, "await_person_ms",
+            "and it must name WHICH of the four, or a caller has nothing to rewrite",
+        );
+        assert_eq!(
+            held.as_deref(),
+            Some("999"),
+            "carrying what the datamodel holds"
+        );
+
+        // ── AND THE OTHER HALF: the engine disagrees about a number this caller never sent ──
+        let never_sent = Disagreeing::about("handback_still_ms", ScriptValue::Int(1));
+        let (workspace, pane) = quiet_pane();
+        let quiet = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut silent = bounded_at(
+            Arc::clone(&never_sent) as Arc<dyn IScriptEngine>,
+            pane,
+            Duration::from_secs(1),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        never_sent.start_lying();
+        assert_eq!(
+            silent.brief(&briefed(None)),
+            Briefed::Took,
+            "⚠⚠⚠ A CALLER'S SILENCE WAS READ AS A CLAIM. `handback_still_ms` was not sent, so the \
+             document's own default stands and there is nothing to compare — refusing here would \
+             make every caller who omitted a number unable to brief at all",
+        );
+        drop((access, quiet));
+    }
+
     #[test]
     fn a_brief_the_datamodel_does_not_hold_exactly_is_refused_rather_than_delivered() {
         let engine = Disagreeing::about(
