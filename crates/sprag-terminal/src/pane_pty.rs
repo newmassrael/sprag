@@ -16,9 +16,9 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::pty::Pty;
 use sprag_vt::{
@@ -30,11 +30,94 @@ use sprag_vt::{
 // directly (it is an implementation detail of the PTY seam).
 pub use crate::command::CommandBuilder;
 
-/// The PTY master writer, shared (and interior-mutable) so both the owning
-/// [`PanePty`] and any [`PanePtyHandle`] can inject input without a
-/// `&mut` borrow — the pty is already concurrent (the reader thread
-/// holds the emulator lock), so the writer is shared the same way.
-type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+/// How many bytes a pane's device may still owe before a writer has to WAIT for room — see
+/// [`DeviceInput`].
+///
+/// This is the memory ceiling: bytes offered to a pane and not yet taken by its pseudoterminal.
+/// Fixed per pane rather than a share of anything, so a hundred stopped panes cost six megabytes
+/// instead of the daemon.
+///
+/// ⚠⚠⚠ **IT IS BACK-PRESSURE AND NOT A REFUSAL, WHICH THE FIRST DRAFT GOT WRONG AND THE GATE SAID
+/// SO AT ONCE.** Refusing outright at this mark measures how much FASTER a writer is than the
+/// device, not whether the device is stopped: a tight loop outruns one syscall per offer at any
+/// ceiling, so a perfectly healthy pane was refused within a millisecond. What decides a refusal is
+/// [`DEVICE_TAKES_INPUT_WITHIN`] — time in which nothing at all went in — and this only decides
+/// when a writer starts having to wait for it.
+const DEVICE_INPUT_BACKLOG: usize = 64 * 1024;
+
+/// The longest a caller may be held at a pane's device, and the quiet after which the device is
+/// declared to have stopped taking input.
+///
+/// ⚠⚠⚠⚠ **THIS IS THE WHOLE BOUND OF THE "BOUNDED WRITE", so it is the number a reader should
+/// argue with.** A caller waits here only when the pane already owes
+/// [`DEVICE_INPUT_BACKLOG`] bytes, and it is released by the device taking a single message —
+/// microseconds at a live pty. Five hundred milliseconds is therefore some five orders of magnitude
+/// past what a healthy pane needs, so a legitimate bulk writer cannot be refused by it under any
+/// load this product has been run at; and it is short enough that a person's keystroke at a pane
+/// whose device has stopped is refused within half a second, once, instead of never coming back.
+const DEVICE_TAKES_INPUT_WITHIN: Duration = Duration::from_millis(500);
+
+/// **A PANE'S ONE WAY IN — and the reason no caller can ever be stuck inside it.**
+///
+/// Bytes are OFFERED here and written to the pseudoterminal by the pane's own device thread. The
+/// blocking `write(2)` happens on that thread and nowhere else, so the property a caller gets is
+/// exact and worth stating in one line: **a writer is held for at most
+/// [`DEVICE_TAKES_INPUT_WITHIN`], whatever the pane's child is doing.**
+///
+/// # ⚠⚠⚠⚠ The 43 hours this shape exists to make unspellable
+///
+/// This used to be `Arc<Mutex<Box<dyn Write + Send>>>` and the write happened under that mutex.
+/// Bytes written to a pty master land in the SLAVE's input queue; with nobody draining it (the
+/// child is dead) the queue fills and the next `write` blocks for ever — a master *read* gets
+/// `EIO`, a *write* does not, so nothing errors and nothing is logged. One such pane held a build
+/// machine for **43 h 30 m** with ten run workers queued behind the holder, and a blocked `write(2)`
+/// cannot be cancelled (register items 304, 305, 309, 310, 318-321, 325).
+///
+/// ⚠⚠⚠ **AND RELEASING THE MUTEX WOULD NOT HAVE BEEN A FIX** (item 320, measured): a second writer
+/// to a queue with no room blocks in the KERNEL, so *held by the lock* and *held by the same full
+/// queue* are the same silence from outside. What had to change is the write itself. The discipline
+/// was already written down one function up — [`write_input`]'s doc says the emulator lock is never
+/// held across a PTY write — and **the writer lock was left as the exception the rule did not
+/// name.** There is now no writer lock to hold.
+///
+/// # ⚠⚠ What a caller gives up, said plainly
+///
+/// The result of the `write(2)` itself. An offer that is accepted reports `Ok` before the device
+/// has taken the bytes, so a device error reaches the log ([`tracing::warn`]) rather than the
+/// caller. That is the trade: a pty master write that fails at all is rare — a dead slave does not
+/// even produce one — and the failure this shape removes is the one that stopped a whole daemon.
+/// What a caller DOES still learn is the answer that matters: *this pane is not taking input*.
+///
+/// # ⚠⚠⚠ Why the device thread is never joined
+///
+/// Because it can be inside a `write(2)` that will not return, and a teardown that waits for it is
+/// the unrecoverable join of item 305 — the very thing this repair is for. The pane's close is a
+/// [`Sender`] drop, which ends the thread if it is waiting for work and is simply unheard if it is
+/// not. The residue: a pane whose device stopped taking input leaks one thread and one master
+/// descriptor until the process exits.
+#[derive(Clone)]
+struct DeviceInput {
+    /// Offers waiting for the device thread. UNBOUNDED on purpose: the bound is [`Backlog::owed`],
+    /// which counts BYTES, and a bound on messages would refuse a paste for being one message
+    /// while letting a thousand keystrokes through.
+    offered: Sender<Vec<u8>>,
+    /// What the device still owes, and the [`Condvar`] the device thread notifies each time it
+    /// takes a message — so a writer waiting for room is woken by progress rather than by a clock.
+    backlog: Arc<(Mutex<Backlog>, Condvar)>,
+}
+
+/// What a pane's device has not taken yet, and when it last took anything — one lock, because a
+/// refusal is about both facts together: *this much is waiting* AND *nothing has moved for this
+/// long*. Either alone would be wrong. A full backlog at a draining device is back-pressure; a
+/// quiet device with nothing waiting is an idle pane.
+struct Backlog {
+    /// Bytes offered and not yet taken. A message stays counted until its `write(2)` RETURNS, so
+    /// the one parked inside the device is exactly the one still owed.
+    owed: usize,
+    /// When the device last finished taking a message — set at the pane's birth so an idle pane is
+    /// never mistaken for a stopped one before it has been written to at all.
+    moved: Instant,
+}
 
 /// The bytes most recently WRITTEN INTO a pane, shared so every writer records into one trail.
 ///
@@ -432,7 +515,9 @@ pub struct PanePty {
     /// The pane's terminal DEVICE (`/dev/pts/7`), captured at spawn — see [`tty`](PanePty::tty).
     tty: Option<PathBuf>,
     exit: SharedExit,
-    writer: SharedWriter,
+    /// The pane's one way IN, shared with every [`PanePtyHandle`] — see [`DeviceInput`], whose
+    /// whole subject is why this is a thread and not a mutex.
+    device: DeviceInput,
     /// A handle that only ASKS this pane's device questions — see
     /// [`TerminalQuery`](crate::pty::TerminalQuery).
     ///
@@ -541,10 +626,11 @@ impl PanePty {
         // this daemon does not have to DISCOVER what a caller could only guess at from the child's
         // fd 0 (which the child is free to redirect).
         let tty = pty.tty_name();
-        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(
+        let device = DeviceInput::attach(
             pty.writer()
                 .map_err(|e| PanePtyError::new("take writer", &e))?,
-        )));
+        )
+        .map_err(|e| PanePtyError::new("start device writer", &e))?;
 
         let emulator = Arc::new(Mutex::new(Emulator::with_history_limit(
             cols,
@@ -574,8 +660,10 @@ impl PanePty {
         let reader_eof = Arc::clone(&eof);
         let reader_exit = Arc::clone(&exit);
         // The reader writes device RESPONSES (e.g. the Kitty `CSI ? u` flags reply) back to the
-        // child; it shares the SAME writer the input path uses, so the two serialize on its mutex.
-        let reader_writer = Arc::clone(&writer);
+        // child; it offers to the SAME device the input path does, so the two are serialized by
+        // that device's own thread — and, since the offer never blocks, a pane whose input queue
+        // has filled can no longer stop the thread that reads its output.
+        let reader_device = device.clone();
         // The reader's "I am finished" edge. Moved IN and never sent on: the disconnect its drop
         // causes is the signal, so it fires however the closure ends — normal return or panic — and
         // cannot be forgotten on a future early-exit path.
@@ -602,7 +690,8 @@ impl PanePty {
                             lock(&reader_raw).push(&buf[..n]);
                             // Apply the batch, then drain any device response it produced UNDER the
                             // same lock (so a response is consistent with the state that made it),
-                            // and write it back OUTSIDE the emulator lock (the writer has its own).
+                            // and offer it to the device OUTSIDE the emulator lock (the device has
+                            // a thread of its own and the offer never blocks).
                             let (responses, present, attention) = {
                                 let mut emu = lock(&reader_emulator);
                                 emu.advance(&buf[..n]);
@@ -624,7 +713,7 @@ impl PanePty {
                                 )
                             };
                             if !responses.is_empty() {
-                                let _ = write_shared(&reader_writer, &responses);
+                                let _ = reader_device.offer(&responses);
                             }
                             // ATTENTION, outside the emulator lock and BEFORE the repaint wake: a
                             // pane's child asking for a person is not a repaint, and the two are
@@ -747,7 +836,7 @@ impl PanePty {
             pid: Some(pid),
             tty,
             exit,
-            writer,
+            device,
             query,
             echo_trail: Arc::new(Mutex::new(Vec::new())),
             hands: Arc::new(Mutex::new(Hands::default())),
@@ -879,9 +968,12 @@ impl PanePty {
     ///
     /// # Errors
     ///
-    /// Returns an IO error if the write to the master fails.
+    /// Returns an IO error if this pane's device will not take the bytes — `DeviceInput::offer`
+    /// (private to this module) is where the two reasons are spelled out. ⚠ It is NOT the
+    /// result of the `write(2)`: that happens on the pane's own thread, so a caller learns *this
+    /// pane is not taking input* and never *the master returned `EIO`*.
     pub fn answer_clipboard_query(&self, seq: u64, reply: &[u8]) -> io::Result<bool> {
-        answer_query(&self.clipboard_answered, &self.writer, seq, reply)
+        answer_query(&self.clipboard_answered, &self.device, seq, reply)
     }
 
     /// An owned snapshot of the current screen.
@@ -1048,11 +1140,14 @@ impl PanePty {
     ///
     /// # Errors
     ///
-    /// Returns an IO error if the write to the master fails.
+    /// Returns an IO error if this pane's device will not take the bytes — `DeviceInput::offer`
+    /// (private to this module) is where the two reasons are spelled out. ⚠ It is NOT the
+    /// result of the `write(2)`: that happens on the pane's own thread, so a caller learns *this
+    /// pane is not taking input* and never *the master returned `EIO`*.
     pub fn write(&self, bytes: &[u8], by: Hand) -> io::Result<()> {
         write_input(
             &self.emulator,
-            &self.writer,
+            &self.device,
             &self.echo_trail,
             &self.hands,
             bytes,
@@ -1069,6 +1164,26 @@ impl PanePty {
         String::from_utf8_lossy(&lock(&self.echo_trail)).into_owned()
     }
 
+    /// **HOW MANY BYTES THIS PANE HAS BEEN GIVEN THAT ITS DEVICE HAS NOT TAKEN.** Zero for a pane
+    /// keeping up, which is every healthy pane at rest.
+    ///
+    /// # ⚠⚠⚠ Why a pane publishes this at all
+    ///
+    /// Because the alternative is camouflage. A pseudoterminal whose child has died still ACCEPTS
+    /// some seventeen kilobytes of newline-terminated input before it stops — no error, nothing
+    /// logged — so from outside, a pane three-quarters of the way to a wall that will not move again
+    /// is indistinguishable from an idle one. This is the number that tells them apart, and the
+    /// register asked for it in those words: *count the bytes written at a dead pane, so approach to
+    /// the threshold is visible before the park* (item 304).
+    ///
+    /// ⚠⚠ It counts the message inside the `write(2)` as well as the ones behind it — see this
+    /// module's `DeviceInput` — so a pane whose device has stopped for good reports what it will
+    /// never deliver, instead of reporting nothing.
+    #[must_use]
+    pub fn input_backlog(&self) -> usize {
+        self.device.owed()
+    }
+
     /// WHO has written into this pane, and how many times each — see [`Hands`].
     #[must_use]
     pub fn hands(&self) -> Hands {
@@ -1083,7 +1198,7 @@ impl PanePty {
     pub fn handle(&self) -> PanePtyHandle {
         PanePtyHandle {
             emulator: Arc::clone(&self.emulator),
-            writer: Arc::clone(&self.writer),
+            device: self.device.clone(),
             query: Arc::clone(&self.query),
             echo_trail: Arc::clone(&self.echo_trail),
             hands: Arc::clone(&self.hands),
@@ -1180,7 +1295,8 @@ impl PanePty {
 #[derive(Clone)]
 pub struct PanePtyHandle {
     emulator: Arc<Mutex<Emulator>>,
-    writer: SharedWriter,
+    /// Shared with the owning [`PanePty`] — see [`DeviceInput`].
+    device: DeviceInput,
     /// Shared with the owning [`PanePty`] — see [`SharedQuery`].
     query: SharedQuery,
     /// Shared with the owning [`PanePty`] — see [`ECHO_TRAIL_CAP`].
@@ -1276,11 +1392,14 @@ impl PanePtyHandle {
     ///
     /// # Errors
     ///
-    /// Returns an IO error if the write to the master fails.
+    /// Returns an IO error if this pane's device will not take the bytes — `DeviceInput::offer`
+    /// (private to this module) is where the two reasons are spelled out. ⚠ It is NOT the
+    /// result of the `write(2)`: that happens on the pane's own thread, so a caller learns *this
+    /// pane is not taking input* and never *the master returned `EIO`*.
     pub fn write(&self, bytes: &[u8], by: Hand) -> io::Result<()> {
         write_input(
             &self.emulator,
-            &self.writer,
+            &self.device,
             &self.echo_trail,
             &self.hands,
             bytes,
@@ -1292,6 +1411,14 @@ impl PanePtyHandle {
     #[must_use]
     pub fn echo_trail(&self) -> String {
         String::from_utf8_lossy(&lock(&self.echo_trail)).into_owned()
+    }
+
+    /// How many bytes this pane's device has not taken — see [`PanePty::input_backlog`], whose doc
+    /// is where the reason lives. Mirrored here because the seam a consumer WRITES through is the
+    /// one that needs to ask whether writing is still getting anywhere.
+    #[must_use]
+    pub fn input_backlog(&self) -> usize {
+        self.device.owed()
     }
 
     /// WHO has written into this pane, and how many times each — see [`Hands`].
@@ -1306,9 +1433,12 @@ impl PanePtyHandle {
     ///
     /// # Errors
     ///
-    /// Returns an IO error if the write to the master fails.
+    /// Returns an IO error if this pane's device will not take the bytes — `DeviceInput::offer`
+    /// (private to this module) is where the two reasons are spelled out. ⚠ It is NOT the
+    /// result of the `write(2)`: that happens on the pane's own thread, so a caller learns *this
+    /// pane is not taking input* and never *the master returned `EIO`*.
     pub fn answer_clipboard_query(&self, seq: u64, reply: &[u8]) -> io::Result<bool> {
-        answer_query(&self.clipboard_answered, &self.writer, seq, reply)
+        answer_query(&self.clipboard_answered, &self.device, seq, reply)
     }
 }
 
@@ -1319,13 +1449,13 @@ impl PanePtyHandle {
 /// observes `seq` already in place (drops) — no lost or duplicated reply.
 fn answer_query(
     answered: &AtomicU64,
-    writer: &SharedWriter,
+    device: &DeviceInput,
     seq: u64,
     reply: &[u8],
 ) -> io::Result<bool> {
     let prev = answered.fetch_max(seq, Ordering::AcqRel);
     if seq > prev {
-        write_shared(writer, reply)?;
+        device.offer(reply)?;
         Ok(true)
     } else {
         Ok(false)
@@ -1483,12 +1613,136 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Write all bytes to the shared PTY writer and flush, recovering the lock
-/// if a holder panicked.
-fn write_shared(writer: &SharedWriter, bytes: &[u8]) -> io::Result<()> {
-    let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
-    writer.write_all(bytes)?;
-    writer.flush()
+impl DeviceInput {
+    /// Put `device` behind a thread of its own and answer the seam every writer offers bytes to.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the device thread cannot be started. A pane with no way in is not a
+    /// pane, so this is a spawn failure and not a degraded mode.
+    fn attach(mut device: impl Write + Send + 'static) -> io::Result<Self> {
+        let (offered, incoming) = mpsc::channel::<Vec<u8>>();
+        let backlog = Arc::new((
+            Mutex::new(Backlog {
+                owed: 0,
+                moved: Instant::now(),
+            }),
+            Condvar::new(),
+        ));
+        let taken = Arc::clone(&backlog);
+        std::thread::Builder::new()
+            .name("sprag-pty-writer".to_string())
+            .spawn(move || {
+                while let Ok(bytes) = incoming.recv() {
+                    let handed = device.write_all(&bytes).and_then(|()| device.flush());
+                    // ⚠⚠⚠ CREDITED AFTER THE WRITE RETURNS, never when the message is taken off the
+                    // channel. That ordering is what makes [`input_backlog`](PanePty::input_backlog)
+                    // mean *bytes this pane's DEVICE has not taken* rather than *bytes not yet
+                    // dequeued* — the message parked for ever inside `write(2)` is precisely the
+                    // one a reader needs counted, and crediting it early reports a wedged pane as
+                    // owing nothing. Credited on the error path too: bytes are not owed by a device
+                    // that has just refused them.
+                    let (waiting, took) = &*taken;
+                    {
+                        let mut waiting = lock(waiting);
+                        waiting.owed = waiting.owed.saturating_sub(bytes.len());
+                        waiting.moved = Instant::now();
+                    }
+                    took.notify_all();
+                    if let Err(error) = handed {
+                        // The one reporting channel this crate has. A device that stops taking
+                        // input is otherwise invisible: this thread simply ends, and the writers
+                        // learn it only when the backlog they fill is never drained.
+                        tracing::warn!(
+                            target: "sprag_terminal::pane_pty",
+                            %error,
+                            "a pane's device refused input; it will take no more",
+                        );
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self { offered, backlog })
+    }
+
+    /// How many bytes this device has been given and has not taken — see
+    /// [`PanePty::input_backlog`], which is what publishes it.
+    fn owed(&self) -> usize {
+        lock(&self.backlog.0).owed
+    }
+
+    /// Offer `bytes` to the device, waiting for room if the pane already owes
+    /// [`DEVICE_INPUT_BACKLOG`], and refusing once the device has taken nothing for
+    /// [`DEVICE_TAKES_INPUT_WITHIN`].
+    ///
+    /// ⚠⚠ The backlog is read BEFORE the size of this offer is added, so a single large write — a
+    /// paste — is never held back for its own size. What waits is a write arriving at a device that
+    /// is already holding that much it has not taken.
+    ///
+    /// ⚠⚠⚠ **THE QUIET IS MEASURED, NOT THE WAIT.** A writer that is simply faster than one syscall
+    /// per message keeps the backlog full for as long as it keeps writing, so *"I have been waiting
+    /// half a second"* would refuse a healthy pane under a bulk paste. *"Nothing has gone into this
+    /// device for half a second"* is the fact that distinguishes a stopped device from a busy one,
+    /// and it is the one the sentence below reports.
+    ///
+    /// # ⚠⚠⚠ Why this refusal did NOT move `sprag_rpc::WIRE_PROTOCOL`, which is a judgement
+    ///
+    /// A caller reaches it only at a pane already owing [`DEVICE_INPUT_BACKLOG`] bytes with nothing
+    /// going in — and in the shape this replaced, that state was *unreachable without somebody
+    /// already parked in `write(2)` for ever*, because every write was synchronous and serialized
+    /// on one lock. **So no client of any version ever received an answer here to have taken away:
+    /// it received nothing, for the life of the process.** No key, argument, form or answer word
+    /// moves; a person's `send-keys` gains one more reason to come back `false`, which is a value
+    /// space widening and is on this wire's own list of things that do not earn a number.
+    /// ⚠⚠ The residue, written rather than left implied: version 36's note tells clients *a
+    /// person's keystrokes are not affected*. That remains true of the PEER-GONE refusal it was
+    /// about — the door still declines only for plugins — and it is now qualified there, because a
+    /// person's keystroke CAN be refused by this layer at a pane whose device has stopped.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::WouldBlock`](io::ErrorKind::WouldBlock) when the device is not taking input,
+    /// with the sentence that says so; [`ErrorKind::BrokenPipe`](io::ErrorKind::BrokenPipe) when
+    /// the device thread has ended (its `write(2)` failed, or the pane is closing).
+    fn offer(&self, bytes: &[u8]) -> io::Result<()> {
+        let (backlog, took) = &*self.backlog;
+        let mut waiting = lock(backlog);
+        while waiting.owed >= DEVICE_INPUT_BACKLOG {
+            let quiet = waiting.moved.elapsed();
+            let Some(patience) = DEVICE_TAKES_INPUT_WITHIN.checked_sub(quiet) else {
+                // ⚠⚠⚠ IT HAS TO SAY WHY. A write that quietly stops working is the defect
+                // R396-R399 spent four rounds on; a caller told only *no* wraps this in a retry
+                // loop, and a caller told WHICH FACT stopped it can end its run with a sentence.
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!(
+                        "this pane's device is not taking input: {} bytes are still waiting and \
+                         nothing has gone in for {quiet:?}, so these {} are refused rather than \
+                         parked inside the device for ever",
+                        waiting.owed,
+                        bytes.len(),
+                    ),
+                ));
+            };
+            // Woken by the device taking a message, not by this timeout — the timeout exists so
+            // that a device which has stopped for good is noticed by the writer already inside
+            // this wait, and not only by the next one to arrive.
+            waiting = took
+                .wait_timeout(waiting, patience)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        waiting.owed += bytes.len();
+        drop(waiting);
+        self.offered.send(bytes.to_vec()).map_err(|_| {
+            let mut waiting = lock(backlog);
+            waiting.owed = waiting.owed.saturating_sub(bytes.len());
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "this pane's device has ended and can take no more input",
+            )
+        })
+    }
 }
 
 /// Write CONSUMER input to the child (a key, a paste, an injected key). First tell the emulator
@@ -1497,19 +1751,23 @@ fn write_shared(writer: &SharedWriter, bytes: &[u8]) -> io::Result<()> {
 /// then emulated with the epoch already closed (no reader-vs-writer race). The emulator lock is
 /// taken only for that flag flip and dropped before the PTY write, never held across it (the same
 /// discipline the reader uses for its response write-back). Automated child replies (device /
-/// clipboard answers) call [`write_shared`] directly and so do NOT end the epoch.
+/// clipboard answers) offer to [`DeviceInput`] directly and so do NOT end the epoch.
 fn write_input(
     emulator: &Arc<Mutex<Emulator>>,
-    writer: &SharedWriter,
+    device: &DeviceInput,
     trail: &SharedEchoTrail,
     hands: &SharedHands,
     bytes: &[u8],
     by: Hand,
 ) -> io::Result<()> {
     lock(emulator).note_input();
-    // ⚠ RECORDED BEFORE THE WRITE, so the trail can never be behind an echo that has already come
+    // ⚠ RECORDED BEFORE THE OFFER, so the trail can never be behind an echo that has already come
     // back. This is the ONE place a pane's input is written, which is what makes the trail complete
     // — a second write path would be a second answer that can drift.
+    // ⚠⚠ *Before the OFFER* is a weaker sentence than the *before the `write(2)`* it used to be,
+    // and the difference is named rather than glossed: the trail says the bytes reached this pane's
+    // door, never that its device took them. `PanePty::input_backlog` is the fact that answers the
+    // second question, and a reader that needs *did it land* wants that one.
     {
         let mut trail = lock(trail);
         trail.extend_from_slice(bytes);
@@ -1523,7 +1781,7 @@ fn write_input(
     // write below FAILS, deliberately — the bytes were offered to this pane by that hand, and a
     // person whose keystroke was refused by a dying device is still a person who reached in.
     lock(hands).counting(by);
-    write_shared(writer, bytes)
+    device.offer(bytes)
 }
 
 /// The quiet window the resize coalescer waits for before applying a size. A

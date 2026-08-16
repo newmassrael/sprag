@@ -3012,7 +3012,7 @@ mod tests {
     ///
     /// It measured the defect, because nothing in this workspace had: **5 bytes and 509 ms a step,
     /// so 3,380 steps — about 29 minutes — from a dead peer to the 16,896-byte wall**
-    /// `write_to_a_dead_pane_wedges` measures in `sprag-terminal`. Not a burst; a patient march,
+    /// `writing_to_a_dead_pane_comes_back` measures in `sprag-terminal`. Not a burst; a patient march,
     /// which is why the 43 hours went unnoticed while they were being spent. **A gate that measures
     /// a defect goes red when you fix it — repurpose it, do not delete it**, so the same fixture
     /// now holds the opposite claim and the numbers stay in the sentence it prints.
@@ -3048,7 +3048,7 @@ mod tests {
     /// is the Driver's own business and is held there.
     #[test]
     fn a_step_refuses_a_pane_this_run_can_already_know_is_dead() {
-        /// What `write_to_a_dead_pane_wedges` measured on this host. ⚠ A kernel's number, not
+        /// What `writing_to_a_dead_pane_comes_back` measured on this host. ⚠ A kernel's number, not
         /// sprag's — it is here to be DIVIDED BY, and the projection it feeds is printed rather
         /// than asserted, so a different host changes the report and not the verdict.
         const WALL: u64 = 16_896;

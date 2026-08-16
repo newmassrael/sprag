@@ -6107,7 +6107,7 @@ mod tests {
     /// that is what pays item 329 rather than a coverage loss.
     #[test]
     fn a_loop_whose_peer_is_dead_stops_typing_instead_of_marching_to_the_wall() {
-        /// What `write_to_a_dead_pane_wedges` measured on this host — the thing a plugin has to
+        /// What `writing_to_a_dead_pane_comes_back` measured on this host — the thing a plugin has to
         /// reach to wedge a machine. ⚠ A kernel's number; here to be COMPARED against.
         const WALL: u64 = 16_896;
         /// Passes after the first prompt has gone in. Enough that "it stopped" is not "it had not

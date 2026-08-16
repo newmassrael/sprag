@@ -189,11 +189,14 @@ pub enum PaneError {
     ///
     /// A pty master whose slave nobody reads is not a hole, it is a wall with a queue in front of
     /// it. Measured on this workstation
-    /// (`sprag-terminal/tests/write_to_a_dead_pane_wedges.rs`): a dead pane takes **16,896 bytes**
-    /// of newline-terminated input and then `write(2)` **blocks for ever**, holding the pane's
-    /// shared writer mutex — so every other writer to that pane is stranded behind it, and a
-    /// blocked write cannot be cancelled. That is the defect that held a build machine for 43
-    /// hours (register items 304, 309, 318, 319).
+    /// (`sprag-terminal/tests/writing_to_a_dead_pane_comes_back.rs`): a dead pane takes **16,896
+    /// bytes** of newline-terminated input and then `write(2)` **blocks for ever** — and a blocked
+    /// write cannot be cancelled. That is the defect that held a build machine for 43 hours
+    /// (register items 304, 309, 318, 319).
+    /// ⚠ The `write(2)` no longer keeps its caller: `sprag_terminal`'s `DeviceInput` moved it onto
+    /// the pane's own thread, so a stuck pane costs a bounded backlog rather than every writer.
+    /// **That does not make this refusal redundant** — bounded typing at a peer that is gone is
+    /// still typing at nobody, and the run that does it is spending turns on an empty room.
     ///
     /// ⚠⚠ **AND NOTHING ABOUT THE WALK TO IT LOOKS WRONG.** An `Orchestrator` types its stimulus at
     /// the start of EVERY step: measured at **5 bytes and 509 ms a step, so 3,380 steps — about 29
@@ -1961,10 +1964,10 @@ mod tests {
     /// # ⚠⚠⚠ What it cost not to have this, measured elsewhere and quoted here
     ///
     /// A pseudoterminal whose child is dead takes **16,896 bytes** of newline-terminated input and
-    /// then `write(2)` **blocks for ever**, holding the pane's shared writer mutex — and a blocked
-    /// write cannot be cancelled. One run walked there in 3,380 steps, about 29 minutes, and held a
-    /// build machine for 43 hours (`sprag-terminal/tests/write_to_a_dead_pane_wedges.rs`; register
-    /// items 304, 309, 310, 318, 319, 325).
+    /// then `write(2)` **blocks for ever**, and a blocked write cannot be cancelled. One run walked
+    /// there in 3,380 steps, about 29 minutes, and held a build machine for 43 hours
+    /// (`sprag-terminal/tests/writing_to_a_dead_pane_comes_back.rs`; register items 304, 309, 310,
+    /// 318, 319, 325).
     ///
     /// # ⚠⚠⚠⚠ The arm that is a claim published on the WIRE, and had no gate at all
     ///
@@ -1974,12 +1977,21 @@ mod tests {
     /// from reading the code and nothing held it. Here it is a measurement: the SAME dead pane
     /// takes a write through [`PanePtyHandle::write`], which is the call
     /// `sprag_host::pane` makes for a person, and the pane's own input trail proves the byte
-    /// landed rather than the call merely returning `Ok`.
+    /// reached the pane's door rather than the call merely returning `Ok`.
     ///
-    /// ⚠⚠ **AND THAT ARM IS A RESIDUE, NOT A FEATURE.** `write_shared` is untouched, so the human
-    /// route still wedges exactly as it did — items 304 and 305 are OPEN for it. **When they are
-    /// paid this arm goes red; repurpose it rather than deleting it**, because *which doors refuse*
-    /// is the fact both the wire note and this gate are about.
+    /// ⚠⚠⚠⚠ **THIS ARM PREDICTED IT WOULD GO RED WHEN THE HUMAN ROUTE WAS PAID, AND IT DID NOT —
+    /// WHICH IS THE MORE USEFUL OUTCOME.** Items 304/305 have since been paid for that route, and
+    /// **not by a second refusal**: the blocking `write(2)` moved onto the pane's own device thread
+    /// (`sprag_terminal::pane_pty`'s `DeviceInput`), so a person's keystroke at a dead pane is
+    /// still TAKEN — it simply can no longer keep the caller. The two doors therefore still answer
+    /// differently, and that difference is still exactly what this arm is for: **a plugin is
+    /// refused because its peer is gone; a person is not, because a person may have a reason to
+    /// type at a pane whose program has exited.**
+    /// ⚠⚠ What DID change underneath it, stated so the next reader is not misled by a green: the
+    /// trail now proves the bytes reached the pane's door, not that the device took them —
+    /// `PanePty::input_backlog` is the fact that answers the second question — and a person's write
+    /// CAN now be refused, by that layer and never by this one, at a pane whose device has stopped
+    /// taking input altogether.
     ///
     /// ⚠ The person's byte carries NO newline, deliberately: a dead pane is a hole for partial
     /// input (a megabyte in 0.09 s, measured) and a wall for whole lines, so this arm cannot become
@@ -2090,16 +2102,18 @@ mod tests {
                 .pane_recent_input(dead)
                 .as_deref(),
             Some("P"),
-            "⚠⚠⚠ and the byte must really have LANDED, not merely have been accepted: the trail is \
-             what tells `the write happened` from `the call returned Ok`. ⚠⚠ If this ever goes \
-             red, items 304/305 have been paid for the human route and BOTH this arm and \
-             `WIRE_PROTOCOL` 36's note need rewriting — repurpose, do not delete",
+            "⚠⚠⚠ and the byte must really have reached the pane's door, not merely have been \
+             accepted by this trait: the trail is written inside `write_input` and nowhere else, \
+             so it tells `the pane took this` from `the call returned Ok`. ⚠⚠ A red here means a \
+             person's keystroke is now being refused for the same reason a plugin's is, and the \
+             two doors have stopped differing — which is a decision, not a repair, and it makes \
+             `WIRE_PROTOCOL` 36's note false rather than qualified",
         );
 
         println!(
             "\n== the door a plugin types through, at a pane whose child is dead ==\n  \
              inject: refused as PeerGone naming pane {}, trail empty\n  same pane, a PERSON's \
-             write: accepted, trail {:?} — items 304/305 still open for that route\n  live pane, \
+             write: accepted, trail {:?} — that route is BOUNDED now, not refused\n  live pane, \
              same keys: {} bytes\n",
             dead.0,
             access

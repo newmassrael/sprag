@@ -963,9 +963,20 @@ impl ScopeAsk {
 ///   headroom under the threshold, which was camouflage rather than service: every injection below
 ///   it LOOKED like it succeeded, and then one parked.
 ///
-///   ⚠ **A PERSON'S KEYSTROKES ARE NOT AFFECTED**, deliberately, exactly as version 24 left the
-///   `Ctrl-C` write alone: `send-keys` from a keyboard is a different door, and refusing it to
-///   protect an automation caller would break the display client.
+///   ⚠ **A PERSON'S KEYSTROKES ARE NOT AFFECTED BY *THIS* REFUSAL**, deliberately, exactly as
+///   version 24 left the `Ctrl-C` write alone: `send-keys` from a keyboard is a different door, and
+///   refusing it to protect an automation caller would break the display client.
+///
+///   ⚠⚠ **AND THAT SENTENCE HAS SINCE BEEN QUALIFIED WITHOUT A NUMBER, WHICH IS ITSELF A
+///   JUDGEMENT.** The door was only half of the 43 hours: the keyboard's own route still held the
+///   pane's writer lock across the blocking `write(2)`, so one dead pane still stopped every write
+///   to it. That is now bounded rather than refused — a pane's device has a thread of its own and
+///   a caller waits at most half a second — so a person's `send-keys` at a pane whose device has
+///   stopped taking input can come back `false` where it used to come back never.
+///   **No number, and the reason is reachability**: that state cannot be entered in the old shape
+///   without a writer already parked for ever, so no client of any version had an answer here to
+///   lose. No key, argument, form or answer word moved; one boolean gained a reason. See
+///   `sprag_terminal::pane_pty`'s `DeviceInput`, where the trade is written out.
 pub const WIRE_PROTOCOL: u32 = 36;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
