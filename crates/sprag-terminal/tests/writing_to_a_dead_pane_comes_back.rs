@@ -72,13 +72,55 @@ const CHUNK: usize = 256;
 /// and a live pane — it is the expected outcome and the number is the point.
 const GIVE_UP_AFTER: usize = 4096 * CHUNK;
 
-/// No progress for this long means the writer is inside the kernel rather than merely slow. Two
-/// orders of magnitude past a local pty write, which is microseconds.
-const STALLED_AFTER: Duration = Duration::from_millis(750);
+/// **THE REQUIREMENT: NOBODY IS HELD AT A PANE'S DEVICE FOR LONGER THAN THIS.** The one property
+/// the whole repair exists to give, measured on the writers below rather than left in prose.
+///
+/// # ⚠⚠⚠⚠ Why this is the TEST's number and deliberately not the product's
+///
+/// `pane_pty.rs` picks 500 ms (`DEVICE_TAKES_INPUT_WITHIN`) and this is twice that, so it is not a
+/// copy of the implementation — **it is the requirement the implementation has to stay inside**, and
+/// raising that constant past what a person will sit through turns this red. A gate that mirrored
+/// the constant would move with it and hold nothing.
+///
+/// ⚠⚠⚠ **IT WAS UNGATED UNTIL THIS ARM EXISTED, AND THE PROBE SAID SO.** With the product's window
+/// mutated to 1,400 ms this file went red — but through
+/// [`HowTheWriterEnded::StillInsideTheDevice`], whose sentence is *"is not coming back"*: false,
+/// because it came back 1.4 s later. At 700 ms it passed outright. What was holding the bound was
+/// [`STALLED_AFTER`], a constant that exists to answer a different question, and the diagnosis a
+/// reader got was the wrong one.
+///
+/// Twice the product's window is headroom for a loaded machine — every arm here runs 32-way
+/// alongside the rest of the suite — and still inside *a keystroke must not feel like a hang*.
+const WRITER_HELD_AT_MOST: Duration = Duration::from_secs(1);
 
-/// How long the SECOND writer is given to come back. It only has to be long enough that *"it never
-/// returned"* is not *"it had not been scheduled yet"*.
-const SECOND_WRITER_WAITS: Duration = Duration::from_secs(2);
+/// **AND EVERY WRITER AFTER THE FIRST IS REFUSED WITHIN THIS**, rather than paying the window
+/// again.
+///
+/// # ⚠⚠⚠ The design property this holds, which nothing else does
+///
+/// A pane's device is declared stopped by SILENCE, so once it has been quiet past
+/// `DEVICE_TAKES_INPUT_WITHIN` the next writer's arithmetic underflows and it is turned away
+/// immediately — **one caller pays the window once, and the pane is cheap from then on.** Measured
+/// here at **17 µs**, so this bound carries three orders of magnitude of headroom for a loaded
+/// machine while still being decisive: a build that made every writer wait the window afresh would
+/// turn one wedge into a permanent stutter for everybody typing at that pane, and would pass
+/// [`WRITER_HELD_AT_MOST`] doing it.
+///
+/// ⚠ It is not a race. By the time the second writer runs, the first has already waited the whole
+/// window at a device that took nothing, so the quiet is at least that old by construction.
+const LATER_WRITERS_REFUSED_WITHIN: Duration = Duration::from_millis(50);
+
+/// No progress for this long means the writer is inside the kernel rather than merely slow.
+///
+/// ⚠⚠⚠ **IT MUST BE WELL PAST [`WRITER_HELD_AT_MOST`], or a writer that was merely HELD TOO LONG
+/// is reported as one that never came back** — which was this file's own defect, measured. It costs
+/// nothing on the green path: a bounded writer ends by being refused and this timeout never fires.
+const STALLED_AFTER: Duration = Duration::from_secs(3);
+
+/// How long the eye arm keeps asking a stopped pane what it owes. Its own constant because it is
+/// its own question — long enough that *"it stayed owed"* is not *"nobody looked twice"*, short
+/// enough not to pay [`STALLED_AFTER`]'s patience for a thing that is not about stalling.
+const WATCH_THE_BACKLOG_FOR: Duration = Duration::from_millis(250);
 
 /// How long to wait for the child to exit and the reader thread to publish it.
 const CHILD_EXITS_WITHIN: Duration = Duration::from_secs(5);
@@ -88,13 +130,21 @@ const CHILD_EXITS_WITHIN: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 enum HowTheWriterEnded {
     /// The pane pushed back, in words. `after` is what it took first — the kernel's threshold plus
-    /// whatever the backlog held — and `said` is the sentence a caller is given.
-    Refused { after: usize, said: String },
+    /// whatever the backlog held — `said` is the sentence a caller is given, and `held` is **how
+    /// long that one call kept its caller**, which is the repair's whole promise.
+    Refused {
+        after: usize,
+        said: String,
+        held: Duration,
+    },
     /// It reached [`GIVE_UP_AFTER`] and was never refused. Right for a live pane and for
     /// unterminated input; **wrong for whole lines at a dead one**, which would mean the bytes are
     /// piling up somewhere with no ceiling.
     TookEverything,
-    /// It is still inside the device and is not coming back. This is the defect: the 43 hours.
+    /// It is still inside the device [`STALLED_AFTER`] later and is not coming back. This is the
+    /// defect: the 43 hours. ⚠ Distinguishable from *held too long* only because that timeout is
+    /// well past [`WRITER_HELD_AT_MOST`] — otherwise this word gets said about a writer that
+    /// returned, and the reader is sent after the wrong bug.
     StillInsideTheDevice { after: usize },
 }
 
@@ -102,7 +152,8 @@ enum HowTheWriterEnded {
 /// owns it — see the module doc; in the wedging arm that thread never returns.
 struct Attempt {
     written: AtomicUsize,
-    refused: Mutex<Option<String>>,
+    /// The sentence the pane pushed back with, and **how long that one call kept its caller**.
+    refused: Mutex<Option<(String, Duration)>>,
     ended: AtomicBool,
 }
 
@@ -172,11 +223,16 @@ fn offer_until_it_stops(pane: &PanePtyHandle, chunk: [u8; CHUNK]) -> HowTheWrite
     let writer = pane.clone();
     std::thread::spawn(move || {
         while attempt.written.load(Ordering::Relaxed) < GIVE_UP_AFTER {
+            // ⚠⚠⚠ TIMED PER CALL, and it is the ONE call that matters: every other write here
+            // returns in microseconds, so an average would hide the only number the repair
+            // promises. What is wanted is *how long did the call that pushed back keep me*.
+            let began = Instant::now();
             if let Err(pushed_back) = writer.write(&chunk, Hand::APerson) {
                 *attempt
                     .refused
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(pushed_back.to_string());
+                    .unwrap_or_else(PoisonError::into_inner) =
+                    Some((pushed_back.to_string(), began.elapsed()));
                 break;
             }
             attempt.written.fetch_add(CHUNK, Ordering::Relaxed);
@@ -196,7 +252,7 @@ fn offer_until_it_stops(pane: &PanePtyHandle, chunk: [u8; CHUNK]) -> HowTheWrite
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone();
             return match said {
-                Some(said) => HowTheWriterEnded::Refused { after, said },
+                Some((said, held)) => HowTheWriterEnded::Refused { after, said, held },
                 None => HowTheWriterEnded::TookEverything,
             };
         }
@@ -239,8 +295,8 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
     let wall = a_pane_nobody_is_reading();
     let mut whole = [b'x'; CHUNK];
     whole[CHUNK - 1] = b'\n';
-    let (threshold, said) = match offer_until_it_stops(&wall, whole) {
-        HowTheWriterEnded::Refused { after, said } => (after, said),
+    let (threshold, said, held) = match offer_until_it_stops(&wall, whole) {
+        HowTheWriterEnded::Refused { after, said, held } => (after, said, held),
         HowTheWriterEnded::StillInsideTheDevice { after } => panic!(
             "⚠⚠⚠⚠ THE WEDGE IS BACK. A writer offering complete lines at a pane whose child is \
              dead is still inside the device after {after} bytes and is not coming back — a \
@@ -269,27 +325,58 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
          {said:?}",
     );
 
+    // ⚠⚠⚠⚠ **AND IT HAS TO HAVE BEEN QUICK ABOUT IT — the one property the whole repair is FOR,
+    // and until this line existed nothing in this workspace asserted it.** Probed: with the
+    // product's window mutated to 1,400 ms the file went red through the WEDGE arm, whose sentence
+    // (*"is not coming back"*) is false about a writer that returned 1.4 s later; at 700 ms it
+    // passed outright. What was holding the bound was `STALLED_AFTER`, which exists to answer a
+    // different question. A refusal that takes long enough is a hang with an apology at the end.
+    assert!(
+        held <= WRITER_HELD_AT_MOST,
+        "⚠⚠⚠⚠ THE PANE PUSHED BACK, BUT IT KEPT ITS CALLER {held:?} DOING IT — past the \
+         {WRITER_HELD_AT_MOST:?} a writer at this door may ever be held. This is the repair's \
+         whole promise, and it is the human keyboard that pays: `sprag_host::pane` types a \
+         person's keystrokes through this exact call, so a bound that drifts past what somebody \
+         will sit through has turned one wedge into a stutter and called it fixed.",
+    );
+
     // ── AND THE PART THAT COST THE 43 HOURS: every OTHER writer to that pane ──
     //
     // ⚠⚠⚠ One holder inside `write(fd=37, 1800 bytes)` and ten run workers queued behind
     // `pane_pty.rs:1489` is the shape the preserved core showed. One stuck write is a lost
     // keystroke; every writer stuck behind it is a daemon.
-    let second_returned = &*Box::leak(Box::new(AtomicBool::new(false)));
+    // ⚠⚠ **AND IT IS TIMED, NOT MERELY WATCHED FOR.** *"It came back eventually"* was the previous
+    // shape of this arm and it let anything under two seconds through — at a pane where the thing
+    // being measured is somebody pressing a key.
+    let second_took = &*Box::leak(Box::new(Mutex::new(None::<Duration>)));
     let second = wall.clone();
     std::thread::spawn(move || {
+        let began = Instant::now();
         let _ = second.write(b"y\n", Hand::APerson);
-        second_returned.store(true, Ordering::SeqCst);
+        *second_took.lock().unwrap_or_else(PoisonError::into_inner) = Some(began.elapsed());
     });
     let began = Instant::now();
-    while began.elapsed() < SECOND_WRITER_WAITS && !second_returned.load(Ordering::SeqCst) {
+    let mut second_held = None;
+    while began.elapsed() < STALLED_AFTER && second_held.is_none() {
         std::thread::sleep(Duration::from_millis(25));
+        second_held = *second_took.lock().unwrap_or_else(PoisonError::into_inner);
     }
+    let Some(second_held) = second_held else {
+        panic!(
+            "⚠⚠⚠⚠ THE SECOND WRITER NEVER CAME BACK. It is not the one that filled the queue — it \
+             offered two bytes at a pane somebody else had already been refused at — so it is \
+             being held by the first one, which is precisely the wedge: one closed pane stopping \
+             every write to it, for ever."
+        )
+    };
     assert!(
-        second_returned.load(Ordering::SeqCst),
-        "⚠⚠⚠⚠ THE SECOND WRITER NEVER CAME BACK. It is not the one that filled the queue — it \
-         offered two bytes at a pane somebody else had already been refused at — so it is being \
-         held by the first one, which is precisely the wedge: one closed pane stopping every write \
-         to it, for ever.",
+        second_held <= LATER_WRITERS_REFUSED_WITHIN,
+        "⚠⚠⚠⚠ THE SECOND WRITER CAME BACK, BUT ONLY AFTER {second_held:?} — past the \
+         {LATER_WRITERS_REFUSED_WITHIN:?} a writer arriving at an ALREADY-STOPPED device may take. \
+         **This is the keystroke the whole milestone is about**: two bytes, from a person, at a \
+         pane somebody else already filled. One writer paying the window is a bounded write; every \
+         writer behind it paying it again is the 43 hours with a timer on — and it would pass a \
+         bound of {WRITER_HELD_AT_MOST:?} all the way to a pane nobody can type in.",
     );
 
     // ── THE EYE, which is the other half of what item 304 asked for ──
@@ -323,7 +410,7 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
          never held back for its own size",
     );
     let began = Instant::now();
-    while began.elapsed() < STALLED_AFTER {
+    while began.elapsed() < WATCH_THE_BACKLOG_FOR {
         assert_eq!(
             parked.input_backlog(),
             one_message.len(),
@@ -357,9 +444,10 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
 
     println!(
         "\n== a pane whose child is dead ==\n  unterminated input: {GIVE_UP_AFTER} bytes taken, \
-         never refused\n  complete lines: refused after {threshold} bytes\n  it said: {said}\n  a \
-         second writer: back within {SECOND_WRITER_WAITS:?}\n  the pane says its device has not \
-         taken {still_owed} bytes, and still has not {STALLED_AFTER:?} later\n  a LIVE pane, same \
-         lines: {GIVE_UP_AFTER} bytes taken\n"
+         never refused\n  complete lines: refused after {threshold} bytes, having held its caller \
+         {held:?} (bound: {WRITER_HELD_AT_MOST:?})\n  it said: {said}\n  a second writer, two \
+         bytes from a person: back in {second_held:?}\n  the pane says its device has not taken \
+         {still_owed} bytes, and still has not {WATCH_THE_BACKLOG_FOR:?} later\n  a LIVE pane, \
+         same lines: {GIVE_UP_AFTER} bytes taken\n"
     );
 }
