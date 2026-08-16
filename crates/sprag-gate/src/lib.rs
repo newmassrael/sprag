@@ -257,11 +257,13 @@ pub fn edited_since_built(bin: &Path) -> Result<Vec<PathBuf>, Unbuilt> {
     // this one's inputs as far as this check goes, and refusing it would be stricter than the
     // question being asked.
     let mut edited = Vec::new();
+    let mut inputs_seen = Vec::new();
     for line in record.lines() {
         let Some((_, inputs)) = line.split_once(": ") else {
             continue;
         };
         for input in inputs.split_whitespace().map(Path::new) {
+            inputs_seen.push(input.to_path_buf());
             // A source that no longer EXISTS counts as edited: its removal is a change, and a
             // binary built from a file that is gone is exactly as untrustworthy as one built from a
             // file that moved on.
@@ -273,7 +275,78 @@ pub fn edited_since_built(bin: &Path) -> Result<Vec<PathBuf>, Unbuilt> {
             }
         }
     }
+    // ⚠⚠⚠⚠ **AND NOW THE SAME EVIDENCE CARGO USES, BECAUSE mtime ALONE MADE THIS GATE PRINT A
+    // REMEDY NOBODY COULD PERFORM** — register item 221, measured end to end.
+    //
+    // Cargo relinks on a FINGERPRINT and this decided on a TIMESTAMP, so an edit that regenerates
+    // codegen with byte-identical output moved every mtime while cargo — correctly — refused to
+    // rebuild. This gate then refused 65 of 67 targets with *"run `cargo build -p sprag-host
+    // --bins` first"*, which reported `Fresh` in a second and changed nothing; the only escape was
+    // deleting the binary. Every scxml edit produces that, which is to say the loop met it whenever
+    // it improved its own document, and what it saw was a red that was not its own.
+    //
+    // So a newer mtime is now a QUESTION rather than a verdict: the contents of the recorded inputs
+    // are fingerprinted and compared with what they were when this binary was last seen fresh. A
+    // content-identical regeneration is green **by construction**, and a real edit is still red
+    // because its bytes differ.
+    //
+    // ⚠⚠ **A MISSING RECORD STAYS RED**, which is this crate's standing doctrine: with nothing to
+    // compare against, *"is this the code I edited?"* has no answer, and a probe that cannot tell
+    // must never read as clean. The first green check after a build lays the record down.
+    let ledger = fingerprint_path(bin);
+    if edited.is_empty() {
+        // Fresh by the cheap question — record what fresh looked like, best-effort. A record that
+        // cannot be written costs the NEXT content-identical regeneration a red, which is the safe
+        // direction and never a wrong pass.
+        let _ = std::fs::write(&ledger, fingerprint_of(&inputs_seen));
+        return Ok(Vec::new());
+    }
+    if let Ok(was) = std::fs::read_to_string(&ledger)
+        && was == fingerprint_of(&inputs_seen)
+    {
+        return Ok(Vec::new());
+    }
     Ok(edited)
+}
+
+/// Where the record of *what fresh looked like* sits — beside the binary, in `target/`, so it is
+/// removed by the same `cargo clean` that removes what it describes.
+fn fingerprint_path(bin: &Path) -> PathBuf {
+    let mut name = bin.file_name().unwrap_or_default().to_os_string();
+    name.push(".sprag-inputs");
+    bin.with_file_name(name)
+}
+
+/// A content fingerprint of the recorded inputs — **FNV-1a, hand-rolled, and both halves of that
+/// are deliberate.**
+///
+/// This crate has no dependencies on purpose (*"a gate that stands outside the suite must not be
+/// able to fail because the product failed to compile"*), so the hash is written here. FNV rather
+/// than [`std::collections::hash_map::DefaultHasher`] because this value is PERSISTED between
+/// runs and `DefaultHasher`'s output is explicitly not guaranteed stable across Rust releases — a
+/// toolchain bump would silently invalidate every record, which is only a spurious red, but a
+/// spurious red is the exact thing item 221 is about.
+///
+/// ⚠ The PATH is hashed beside the bytes, so a depfile whose input list changed is a different
+/// fingerprint even if the files it now names happen to hold the same text.
+fn fingerprint_of(inputs: &[PathBuf]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for input in inputs {
+        eat(input.as_os_str().as_encoded_bytes());
+        // ⚠ A source that cannot be READ hashes as its own absence rather than as empty, so a file
+        // that vanished and one that was truncated are different fingerprints.
+        match std::fs::read(input) {
+            Ok(bytes) => eat(&bytes),
+            Err(why) => eat(why.kind().to_string().as_bytes()),
+        }
+    }
+    format!("{hash:016x}")
 }
 
 /// A binary belonging to ANOTHER package, beside the one cargo built for the test calling this —
@@ -313,6 +386,79 @@ pub fn sibling_bin(own_exe: &str, name: &str) -> PathBuf {
 mod freshness_tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+
+    /// ⚠⚠⚠⚠ **A REGENERATION THAT CHANGED NO BYTE IS FRESH, AND A CHANGED BYTE IS NOT** — register
+    /// item 221, which measured this gate refusing **65 of 67 targets** and printing a remedy that
+    /// reported `Fresh` in a second and changed nothing.
+    ///
+    /// # ⚠⚠⚠ Why both halves, in one gate
+    ///
+    /// A fix that always answers *fresh* passes the first half on its own — and that fix is exactly
+    /// what "just stop checking" looks like. The second half is what makes the first mean anything:
+    /// one byte of a real source, no rebuild, still red.
+    ///
+    /// ⚠⚠ The first half is TODAY'S DEFECT reproduced in one call, with no load and no timing: an
+    /// edit to `ai_loop.scxml` makes cargo regenerate `out/*.rs` byte-identically, so every mtime
+    /// moves while cargo's fingerprint does not — and this gate decided on the mtime.
+    #[test]
+    fn a_touched_source_is_fresh_when_its_bytes_did_not_change_and_red_when_they_did() {
+        let tree = BuiltTree::new("content", &[("a.rs", -60), ("b.rs", -60)]);
+        assert_eq!(
+            edited_since_built(&tree.bin),
+            Ok(Vec::new()),
+            "⚠ the control: sources older than the binary are fresh, and this is the pass that \
+             lays down the record the two halves below are read against",
+        );
+
+        // ── THE REGENERATION ── every input's mtime moves, not one byte changes.
+        let touched = SystemTime::now();
+        for name in ["a.rs", "b.rs"] {
+            set_mtime(&tree.dir.join(name), touched);
+        }
+        assert_eq!(
+            edited_since_built(&tree.bin),
+            Ok(Vec::new()),
+            "⚠⚠⚠⚠ A BYTE-IDENTICAL REGENERATION READ AS STALE. This is item 221: cargo relinks on a \
+             FINGERPRINT and correctly refuses here, so the remedy this gate prints — `cargo build \
+             -p sprag-host --bins` — reports `Fresh` and changes nothing, and the only escape is \
+             deleting the binary. Every scxml edit produces exactly this.",
+        );
+
+        // ── THE REAL EDIT ── one byte, no rebuild.
+        std::fs::write(tree.dir.join("a.rs"), b"fn main() {/**/}").expect("edit a source");
+        set_mtime(&tree.dir.join("a.rs"), touched);
+        let answer = edited_since_built(&tree.bin).expect("the binary and its depfile are there");
+        assert!(
+            answer.contains(&tree.dir.join("a.rs")),
+            "⚠⚠⚠⚠ A CHANGED SOURCE READ AS FRESH, which is the failure the whole check exists to \
+             prevent: the run would then be about code that is not in this tree. Got {answer:?}",
+        );
+        // ⚠⚠ **THE VERDICT IS CONTENT, THE LIST IS STILL mtime — a SUPERSET, and said so rather
+        // than left to be discovered.** `b.rs` was touched and not edited, and it is named here
+        // beside `a.rs` because the record kept is ONE fingerprint over all the inputs, not one per
+        // file. That is honest for the field's own doc (*"the inputs newer than it"*) and it is the
+        // residue of the cheap record: a reader is pointed at a set that certainly contains the
+        // change rather than at the change itself. Per-file hashes would narrow it, at a record
+        // that grows with the depfile.
+        assert!(
+            answer.contains(&tree.dir.join("b.rs")),
+            "the list is the mtime-newer set, so this is the shape to notice if it ever narrows",
+        );
+    }
+
+    /// ⚠⚠ **AND WITH NO RECORD TO COMPARE AGAINST, A NEWER SOURCE IS STILL RED** — this crate's
+    /// standing doctrine, which the content check must not soften: *"a probe which cannot tell must
+    /// never read as clean"*. The record is laid down by a green check, so a binary whose inputs
+    /// already look edited before anything has ever passed has nothing to be compared with.
+    #[test]
+    fn a_newer_source_with_no_record_yet_is_refused_rather_than_guessed_at() {
+        let tree = BuiltTree::new("norecord", &[("a.rs", 60)]);
+        assert_eq!(
+            edited_since_built(&tree.bin),
+            Ok(vec![tree.dir.join("a.rs")]),
+            "a gate with nothing to compare against must refuse, not assume",
+        );
+    }
 
     /// A fake `target/debug` holding one binary, its depfile, and the sources it names — the shape
     /// cargo leaves behind, built by hand so the MTIMES can be stated rather than raced.
