@@ -353,7 +353,9 @@ mod tests {
         );
         assert_eq!(
             state_of(&engine, ProbeParallelState::Watching),
-            Some(ProbeParallelState::Watching),
+            // ⚠ Its own LEAF, as region A answers with its own — the orders region became compound
+            // when `In()` was measured, because an order that is a STATE needs somewhere to move to.
+            Some(ProbeParallelState::Unalerted),
             "⚠⚠ and the SIBLING must answer independently, or the two regions are one answer wearing \
              two names and a standing order could not be read while work was going on",
         );
@@ -376,9 +378,109 @@ mod tests {
         );
         assert_eq!(
             state_of(&engine, ProbeParallelState::Watching),
-            Some(ProbeParallelState::Watching),
-            "⚠⚠⚠ AND THE ORDERS REGION MUST STILL ANSWER. If a finished sibling silenced it, a \
-             person could not stand a run down at the one moment the handle is for",
+            Some(ProbeParallelState::Unalerted),
+            "⚠⚠⚠ AND THE ORDERS REGION MUST STILL ANSWER — with its own LEAF, so a person can still \
+             see whether the order was given. If a finished sibling silenced it, a person could not \
+             stand a run down at the one moment the handle is for",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **CAN ONE REGION BE GUARDED ON WHAT ANOTHER IS DOING** — `In()`, and it decides whether
+    /// a standing order is a STATE or a boolean.
+    ///
+    /// # What rests on the answer
+    ///
+    /// The stand-down handle puts a person's order in its own region while work carries on, and the
+    /// work region then has to ask, at its own decision point, *has that order been given*. W3C
+    /// SCXML's predicate for exactly that is `In('<state>')`.
+    ///
+    /// ⚠⚠ **The alternative is a boolean, and it is worse for a stated reason.** An order the orders
+    /// region sets as `<data>` is invisible in the run's walk: nothing records when it arrived or
+    /// what the run was doing at the time. An order held as a STATE is in the journal by
+    /// construction — which is this workspace's rule for machines everywhere else, argued at length
+    /// by `context_review.scxml` for a sub-analysis, and an order is not less of a thing than that.
+    ///
+    /// ⚠⚠⚠ So this is asked BEFORE the loop is given regions, on the same terms as every probe here:
+    /// the generator has `In` handling and the conformance suite has `In` tests, and **both are
+    /// facts about somewhere else** until a document in this crate compiles and runs one. A NO is as
+    /// useful as a YES — it is the difference between an order that appears in the walk and one that
+    /// does not.
+    ///
+    /// # ⚠⚠ Why the guarded arrow is written ABOVE the plain one
+    ///
+    /// Document order decides which of two matching transitions wins. A guarded arrow placed second
+    /// that never fired would be indistinguishable from a guard that evaluated false — so the
+    /// fixture puts it first, and the plain arrow is what proves the event was delivered at all.
+    #[test]
+    fn a_transition_in_one_region_can_be_guarded_on_what_the_other_region_is_doing() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeParallelPolicy::new(lua));
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<ProbeParallelPolicy>, name: &str| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, name)
+        {
+            Ok(ScriptValue::Int(held)) => held,
+            other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+        };
+        let tick = |engine: &mut Engine<ProbeParallelPolicy>| {
+            engine.raise(sce_rust_runtime::EventWithMetadata::new(
+                ProbeParallelEvent::Tick,
+            ));
+            engine.step();
+        };
+
+        // ── BEFORE THE ORDER: the guard must be FALSE, or it says nothing ──
+        tick(&mut engine);
+        assert_eq!(
+            count(&engine, "ticks"),
+            1,
+            "the control: the plain arrow fires, so the event really did reach region A",
+        );
+        assert_eq!(
+            count(&engine, "noticed"),
+            0,
+            "⚠⚠⚠ A GUARD THAT IS TRUE BEFORE THE ORDER IS GIVEN IS NOT A GUARD. `In('alerted')` \
+             must be false while the other region is resting — otherwise a run would stand itself \
+             down before anybody asked it to, which is the failure that reads as a loop quietly \
+             refusing to work",
+        );
+
+        // ── THE ORDER ARRIVES IN THE OTHER REGION ──
+        engine.raise(sce_rust_runtime::EventWithMetadata::new(
+            ProbeParallelEvent::Alert,
+        ));
+        engine.step();
+        let active = engine.get_active_states();
+        assert!(
+            active.contains(&ProbeParallelState::Alerted),
+            "the control: the order must have moved the orders region. active = {active:?}",
+        );
+
+        // ── AND NOW THE WORK REGION CAN SEE IT ──
+        tick(&mut engine);
+        assert_eq!(
+            count(&engine, "noticed"),
+            1,
+            "⚠⚠⚠⚠ `In()` CANNOT READ ACROSS REGIONS HERE. The work region took its tick and did not \
+             see an order standing beside it — so a standing order cannot be a STATE at this engine, \
+             and the handle has to be built on a `<data>` boolean instead, losing the order from \
+             every run's walk. That is a fact about how to build it, not a reason not to: record it \
+             and take the flag",
+        );
+        assert_eq!(
+            count(&engine, "ticks"),
+            1,
+            "⚠⚠ and the GUARDED arrow won, rather than both firing. Two matching transitions in one \
+             region would mean the order changed what work does IN ADDITION to what it did before, \
+             where the whole point is that it changes it INSTEAD",
         );
     }
 
@@ -440,11 +542,14 @@ mod tests {
         assert!(
             deepest(&engine).is_some_and(|state| matches!(
                 state,
-                ProbeParallelState::Counting | ProbeParallelState::Watching
+                ProbeParallelState::Counting | ProbeParallelState::Unalerted
             )),
             "⚠⚠ and it must be a LEAF of one of the regions rather than a region root — a compound \
              state is active while its child is, so an answer that stopped at the region would stop \
-             distinguishing the states inside it. Got {:?}",
+             distinguishing the states inside it. ⚠ BOTH regions are compound now (the orders region \
+             gained the resting/ordered pair that `In()` reads), so either leaf is a legitimate \
+             answer here — which is exactly the ambiguity `OuterLoop::state` must stop relying on \
+             depth to resolve. Got {:?}",
             deepest(&engine),
         );
     }

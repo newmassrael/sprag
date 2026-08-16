@@ -61,6 +61,11 @@
     <!-- How many of the same events the SIBLING region saw. If broadcast works
          these track each other; if the sibling was exited, this stops moving. -->
     <data id="seen" expr="0"/>
+    <!-- ⚠⚠⚠ How many ticks region A took while it could SEE the order standing in
+         region B — question 6's answer. Zero after an order was given means
+         `In()` cannot read across regions here, and standing orders have to be a
+         boolean instead of a state. -->
+    <data id="noticed" expr="0"/>
   </datamodel>
 
   <parallel id="both">
@@ -84,6 +89,35 @@
     <state id="ticking" initial="counting">
 
       <state id="counting">
+        <!--
+          ⚠⚠⚠⚠ QUESTION 6, AND IT MUST COME FIRST: can a transition in ONE region
+          be guarded on what the OTHER region is doing?
+
+          This is the shape the stand-down handle needs. A person's order arrives
+          in the orders region while work is going on; the work region then has
+          to ask, at its own decision point, *has that order been given* — and
+          W3C SCXML's predicate for exactly that is `In('<state>')`.
+
+          ⚠⚠ WHY NOT A `<data>` FLAG. An order the orders region sets as a
+          BOOLEAN is invisible in the run's walk: nothing records when it arrived
+          or what the run was doing at the time. An order held as a STATE is in
+          the journal by construction, which is this workspace's rule for
+          machines everywhere else — `context_review` argues it at length for a
+          sub-analysis, and an order is not less of a thing than that.
+
+          ⚠⚠⚠ SO THE FLAG IS THE FALLBACK, AND THIS IS WHAT DECIDES WHICH. The
+          generator has `In` handling and the conformance suite has `In` tests,
+          and both are facts about SOMEWHERE ELSE — the same sentence this file
+          opens with, one predicate over. If it does not work here, standing
+          orders are a boolean and the walk loses them.
+
+          Ordered ABOVE the plain `tick` arrow deliberately: a guarded transition
+          that lost its race with an unguarded sibling would look exactly like a
+          guard that evaluated false.
+        -->
+        <transition event="tick" cond="In('alerted')" target="counting">
+          <assign location="noticed" expr="noticed + 1"/>
+        </transition>
         <transition event="tick" target="counting">
           <assign location="ticks" expr="ticks + 1"/>
         </transition>
@@ -112,10 +146,26 @@
       This region is deliberately the one with no final, so the probe measures
       that arrangement rather than the tidy one.
     -->
-    <state id="watching">
+    <!--
+      ⚠⚠⚠ AND IT IS COMPOUND NOW, WHICH IS QUESTION 6's OTHER HALF. An order that
+      is a STATE needs somewhere to move TO, so this region has two: the resting
+      one it starts in, and the one an order puts it in. It still never reaches a
+      final — an order is not a task and has no ending — so question 5 is
+      unchanged by the added depth.
+    -->
+    <state id="watching" initial="unalerted">
       <transition event="tick">
         <assign location="seen" expr="seen + 1"/>
       </transition>
+
+      <state id="unalerted">
+        <!-- The order arriving. ⚠ It moves this region and touches nothing of
+             region A's, which is the whole point: work carries on, and what
+             changed is only what work can now ASK. -->
+        <transition event="alert" target="alerted"/>
+      </state>
+
+      <state id="alerted"/>
     </state>
 
   </parallel>
