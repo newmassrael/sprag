@@ -1124,6 +1124,7 @@
       walked straight past by pumping.
     -->
     <transition event="fail" target="failed"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1267,6 +1268,7 @@
     </onentry>
     <transition event="prompt.sent" target="working"/>
     <transition event="fail" target="failed"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!-- The inner agent is running. The driver watches its pane. -->
@@ -1364,6 +1366,15 @@
     <transition event="hold" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <!--
+      ⚠⚠⚠⚠ THE AGENT'S PROCESS IS GONE. THIS IS THE STATE THE 43 HOURS WERE SPENT
+      IN, and until this line the document had no word for it: the turn contract
+      this loop runs on (`settles`) asks a supervisor whether the agent came back
+      to rest, and a process that has left is reported by NOBODY — so a dead
+      agent and a thinking one were the same picture and the loop waited out its
+      whole half-hour bound, every pass, saying nothing was wrong.
+    -->
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1441,6 +1452,7 @@
     <transition event="screen.moot" target="working"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1480,6 +1492,13 @@
     <transition event="unattended" target="blocked"/>
     <transition event="cancel" target="cancelled"/>
     <transition event="fail" target="failed"/>
+    <!--
+      ⚠⚠ WAITING FOR A PERSON IS STILL WAITING ON A PANE, and the run has one
+      fewer reason to go on holding it once the agent underneath has left: there
+      is nothing for a person to come back TO. The ending is the peer's, not the
+      person's, so it is not `unattended`.
+    -->
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1577,7 +1596,7 @@
       its north star handed back its agent's own report, and a run that stopped
       short handed back the single word `exhausted`.
 
-      ⚠⚠ IT IS THE ONLY UNFINISHED ENDING THAT CAN BE ASKED, and the other three
+      ⚠⚠ IT IS THE ONLY UNFINISHED ENDING THAT CAN BE ASKED, and the other four
       are refused by mechanism rather than by scope:
 
         cancelled  the run's context is gone — there is no time left to spend on
@@ -1596,6 +1615,11 @@
                    put a PERSON at the keyboard, and a run must not prompt
                    underneath one. A question needs a pane this run may type in,
                    and by the time `blocked` is reached there is not one.
+        peer_gone  the sharpest of the four: the program that would answer has
+                   EXITED, and its pseudoterminal is not a hole but a wall with
+                   a queue in front of it — a last question typed there is bytes
+                   towards a write that blocks for ever. There is nobody to ask
+                   and asking is the harm.
 
       So the run's account is asked for wherever it CAN be, and where it cannot
       the reason is a fact about the pane rather than a decision anybody took.
@@ -1654,6 +1678,7 @@
     </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1790,6 +1815,7 @@
     <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1880,6 +1906,7 @@
     <!-- A session that will not come back is a failed run, not a stuck one. -->
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1893,6 +1920,7 @@
     <transition event="session.ready" target="priming"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -1924,6 +1952,7 @@
     <transition event="redirect.none" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!-- The goal was met; ask for the closing report before ending. -->
@@ -1935,6 +1964,12 @@
     <transition event="turn.blocked" target="screening"/>
     <transition event="turn.interrupted" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
+    <!--
+      ⚠⚠ AND THE CLOSING REPORT IS NOT WORTH A WEDGE. An agent that has left
+      cannot write an account, and the run ends saying which pane went rather
+      than `converged` about a report nobody wrote.
+    -->
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <!--
@@ -2013,6 +2048,14 @@
     <transition event="turn.interrupted" target="exhausted"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <!--
+      ⚠⚠⚠ AND UNLIKE THE THREE ENDINGS ABOVE IT, THIS ONE DOES NOT COLLAPSE INTO
+      `exhausted`. Those three are a courtesy turn ending one way or another over
+      a run whose verdict was already reached; this one says the PEER IS GONE,
+      which is a fact about the world the reader has to act on and would be lost
+      under a word that tells them to raise a budget.
+    -->
+    <transition event="peer.gone" target="peer_gone"/>
   </state>
 
   <final id="converged"/>
@@ -2020,4 +2063,41 @@
   <final id="failed"/>
   <final id="cancelled"/>
   <final id="blocked"/>
+  <!--
+    ⚠⚠⚠⚠ THE PROGRAM THIS RUN WAS DRIVING HAS EXITED.
+
+    A SIXTH ENDING, and the argument for it is the one this document already
+    made twice — for `blocked` (a run that wants an ANSWER is not a run that
+    wants a FIX) and for `awaiting_human` (a run that wants NOTHING done is
+    neither). This one wants something none of the five can ask for: **the agent
+    back**. Nothing in the run is broken, nobody asked it a question, no budget
+    ran out and no person is at the pane.
+
+    ⚠⚠⚠ WHAT IT COST TO NOT HAVE THIS WORD, MEASURED RATHER THAN ARGUED. A
+    pseudoterminal whose child is dead takes 16,896 bytes of newline-terminated
+    input and then blocks FOR EVER, holding the pane's writer lock, and the
+    blocked write cannot be cancelled. A driver that types its stimulus every
+    step walks there in 3,380 steps — about 29 minutes — at a pace nothing about
+    it looks wrong. One run held a build machine for 43 hours that way.
+    (`sprag-terminal/tests/write_to_a_dead_pane_wedges.rs` measures the wall;
+    register items 304, 309, 310, 318, 319, 325.)
+
+    ⚠⚠⚠ AND WHY IT IS THE DOCUMENT'S DECISION AND NOT THE DRIVER'S. The driver
+    can MEASURE that a pane's program has gone — `pane_eof` has answered that
+    since long before any of this — but *what a run does about it* is a
+    judgement, and every major defect of this file's history was a judgement
+    living outside it. So the driver reports `peer.gone` and this file says where
+    that lands. A guard in the driver that quietly stopped stepping would be the
+    same fix with the decision hidden.
+
+    ⚠⚠ IT IS REACHED FROM EVERY STATE THAT TOUCHES THE PEER'S PANE, which is all
+    of them but `reviewing` — a child machine reading sessions that are already
+    closed, which types at nobody.
+
+    ⚠ AND THE TWO ROUTES ARE ONE FACT. A state that was about to TYPE meets the
+    refusal at the door (`PaneAccess::inject`); a state that was WAITING meets
+    the turn that nobody is left to end (`Over::PeerGone`). Both raise this
+    event, and a reader of the walk sees which state it came from.
+  -->
+  <final id="peer_gone"/>
 </scxml>

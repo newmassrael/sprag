@@ -7504,7 +7504,13 @@ mod tests {
             // produces them, and this word is produced by the ANSWERING act, which every injecting
             // form has carried since version 27. An old client's run that meets its own
             // `max_duration_ms` inside an answer's wait receives it today.
-            35,
+            // ⚠⚠⚠⚠ THE EIGHTH RE-STAMP THIS PIN EARNED ITSELF, AND THE WORD COSTS THE NUMBER FOR
+            // R394's REASON RATHER THAN R384's: an EIGHTH verdict, `peer_gone`. R384's escape is
+            // *"only `ai_loop` produces it, and no old client can select that plugin"* — and this
+            // word is produced by `orchestrator` too, which every version of this wire can send.
+            // That plugin is the one the 43-hour wedge's preserved stack showed, so the word is not
+            // merely reachable by an old client, it is the one an old client is likeliest to meet.
+            36,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7574,6 +7580,16 @@ mod tests {
                 // peer offered, and a reader asking *what did my run let its agent DO* must not be
                 // handed a count that also includes what it stopped.
                 "verdict:screened",
+                // ⚠⚠⚠⚠ THE EIGHTH VERDICT — a step that would have typed into a pane whose program
+                // has EXITED, and did not. It is not `failed` at this altitude because nothing
+                // about the run is broken, not `blocked` because nobody asked anything, and not
+                // `exhausted` because no budget ran out; what its reader has to do is find out why
+                // the agent left. ⚠⚠⚠ It costs the number where the two words above it did not,
+                // and the difference is WHICH PLUGIN: `orchestrator` produces this one, and every
+                // version of this wire can select that form. It is also the plugin the 43-hour
+                // wedge's preserved stack showed, so an old client is not merely able to receive
+                // the word — it is the likeliest client to.
+                "verdict:peer_gone",
                 // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
                 // needle, write a consent, or fetch a person — so they are words and not prose.
                 "refusal:unreadable",
@@ -7819,7 +7835,10 @@ mod tests {
             // an ANSWER's value space (an eleventh `why` word, `unwitnessed`), and this pin walks
             // the words a CALLER may send — a refusal is not one of them. The pin that owns that
             // half went red by name first, which is the division of labour these four exist for.
-            35,
+            // ⚠ R401: re-stamped with every published REQUEST vocabulary unchanged, for R394's
+            // reason exactly. An eighth `verdict` word (`peer_gone`) moved an ANSWER's value
+            // space, and a verdict is not a word a caller may send.
+            36,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -8061,7 +8080,10 @@ mod tests {
             // ⚠ R394: re-stamped with every argument SHAPE unchanged. No form gained, lost or
             // re-typed an argument — the round added a WORD to what a blocked run answers with, and
             // a caller sends nothing to receive it.
-            35,
+            // ⚠ R401: re-stamped with every argument SHAPE unchanged, for R394's reason. The round
+            // added a WORD to what a stopped run answers with and a REFUSAL TO WRITE behind it;
+            // neither is an argument, and a caller sends nothing to receive either.
+            36,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -8593,7 +8615,13 @@ mod tests {
         // action — a blocked run reports it through the `asking.why` key it has had since 27, on
         // the forms it already served. This pin walking addresses is why it is silent, and the
         // answer-vocabulary pin going red is why the number moved.
-        35,
+        // ⚠ R401: re-stamped with the SURFACE unchanged. `peer_gone` added no address and no
+        // action — a run reports it through the `verdict` key its journal has always carried, on
+        // the forms it already served. ⚠⚠ The BEHAVIOUR behind it is invisible to all four pins:
+        // a plugin now REFUSES to write at a pane whose child has exited, which changes what an
+        // unchanged request does. That is why `WIRE_PROTOCOL`'s own entry for 36 is the place a
+        // reader is sent, and not this list.
+        36,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

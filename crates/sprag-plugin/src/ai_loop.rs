@@ -306,16 +306,18 @@ impl AiLoop {
         note
     }
 
-    /// Whether `state` is one of the document's five finals.
+    /// Whether `state` is one of the document's six finals.
     ///
-    /// ⚠ EXHAUSTIVE, so a sixth final added to the document lands here as a variant that no longer
-    /// compiles rather than as a run that pumps a finished machine forever.
+    /// ⚠ EXHAUSTIVE, so a seventh final added to the document lands here as a variant that no
+    /// longer compiles rather than as a run that pumps a finished machine forever. ⚠⚠ The sixth
+    /// arrived that way: `peer_gone` broke this match on the compile that added it to the file.
     const fn is_final(state: AiLoopState) -> bool {
         match state {
             AiLoopState::Converged
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
+            | AiLoopState::PeerGone
             | AiLoopState::Blocked => true,
             AiLoopState::Idle
             | AiLoopState::Priming
@@ -457,6 +459,20 @@ impl AiLoop {
                         .to_owned(),
                 }));
             }
+            // ⚠⚠⚠⚠ THE DOCUMENT'S SIXTH ENDING, AND THE ONE THAT IS NOT AN ERROR. Every other way
+            // this loop can stop without finishing reaches its caller either as a word
+            // (`exhausted`, `blocked`, `cancelled`) or, for `failed`, as a `PaneError` — and the
+            // whole point of the round that built this is that *the peer's program has exited* is
+            // NEITHER a fault of the run nor a question anybody asked. It is a fact about the world
+            // outside the run, so it is reported as a verdict with the pane in it.
+            //
+            // ⚠⚠ THE PANE IS READ OFF THE LOOP AND NOT OFF THE NOTICE, even though the typing route
+            // records one. A run REPLACES its inner session as it goes, so the pane a reader must
+            // go and look at is whichever one this loop is driving NOW — the same reason
+            // [`Self::driving`] asks the loop every time instead of holding a copy. The notice is
+            // still set on the typing route, because it is the only evidence that the prompt this
+            // transition owed was never sent.
+            AiLoopState::PeerGone => Verdict::PeerGone(self.inner.pane()),
             AiLoopState::Idle
             | AiLoopState::Priming
             | AiLoopState::Working
@@ -652,10 +668,17 @@ impl Plugin for AiLoop {
             // model spending tokens: `turn.done` is the account written and the peer at rest;
             // `turn.blocked` is the peer PARKED AT A DIALOG, waiting for input rather than
             // producing; `turn.interrupted` is a person who has already taken the pane, and
-            // signalling underneath them is the one thing this driver must never do. The other two
-            // doors out of `stopping` are `fail` and `cancel`, which land in states below that DO
-            // answer the pane.
-            AiLoopState::Converged | AiLoopState::Exhausted => None,
+            // signalling underneath them is the one thing this driver must never do. The other
+            // three doors out of `stopping` are `fail`, `cancel` and `peer.gone`; the first two
+            // land in states below that DO answer the pane, and the third is beside this arm for a
+            // reason of its own.
+            //
+            // ⚠⚠⚠ `peer_gone` ANSWERS `None` ON EVIDENCE RATHER THAN ON THE FAIL-SAFE. Every other
+            // `None` here is an argument that no model can be mid-turn; this one is the one case
+            // where the product has LOOKED — the state is only reached because `pane_eof` said the
+            // pane's child has exited, which is the same reading the refusal at the door stands on.
+            // There is no job left to signal, and `Stopped::Nothing` is the true sentence.
+            AiLoopState::Converged | AiLoopState::Exhausted | AiLoopState::PeerGone => None,
             // Everything else, and `cancelled` above all — see the paragraph above. `failed` and
             // `blocked` join it because neither says anything about what the peer is doing, and an
             // unknown answer must fail towards stopping.
@@ -840,6 +863,7 @@ impl Plugin for AiLoop {
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
+            | AiLoopState::PeerGone
             | AiLoopState::Blocked => Accounting::Cannot(format!(
                 "the loop had already ended in {state:?} when its {} ceiling fell due",
                 ceiling.wire_str(),
@@ -5894,47 +5918,64 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠ **A LOOP WHOSE PEER IS DEAD GOES QUIET; AN `Orchestrator` MARCHES TO THE WEDGE** —
-    /// register item 327, which was written as UNMEASURED and is measured here.
+    /// ⚠⚠⚠⚠ **A LOOP WHOSE PEER IS DEAD SAYS SO ON ITS FIRST PASS, IN THE DOCUMENT'S OWN WORD** —
+    /// register items 323, 326, 327 and 329, and **this gate is a REPURPOSING rather than a new
+    /// one**.
     ///
-    /// # Why the scope of a fix depends on this number
+    /// # What it used to hold, and why it is kept
     ///
-    /// `a_step_types_into_a_pane_this_run_could_already_know_is_dead` measured the other plugin: **5
-    /// bytes every step, for ever, 3,380 steps to the 16,896-byte wall** that
-    /// `write_to_a_dead_pane_wedges` measured — about 29 minutes. Item 309's headline says the same
-    /// wedge is reachable from a live `ai_loop`, and item 310 corrected the culprit to
-    /// `Orchestrator` without measuring the loop. **This measures the loop.**
+    /// It measured how far a loop could walk toward the wedge, because item 309's headline claimed
+    /// the 43-hour wedge was reachable from a live `ai_loop` and nobody had checked. The answer was
+    /// **259 bytes on pass 1 and then silence** — 1.5% of the 16,896-byte wall — because an
+    /// orchestrator types its stimulus at the START OF EVERY STEP and a loop types once per TURN,
+    /// so when the turn stops ending the typing stops with it. That measurement stands and is why
+    /// item 309's headline is narrowed: the march is `Orchestrator`'s.
     ///
-    /// ⚠⚠ The two plugins differ in one structural way and it is the whole answer: an orchestrator
-    /// types its stimulus at the START OF EVERY STEP, and a loop types once per TURN — so when the
-    /// turn stops ending, the typing stops with it. A dead peer never satisfies
-    /// [`INNER_SESSION_ENDS`] (measured in `completion.rs`), `watch` answers `Over::NotYet`, that
-    /// raises `Null`, and `advance` returns before anything is owed a prompt.
+    /// ⚠⚠⚠ **AND IT WAS NEVER AN ALL-CLEAR, WHICH IS WHAT THIS ROUND PAID.** What the old number
+    /// bounded was the BYTES. The run still sat at that dead peer reporting nothing wrong until its
+    /// own clock ended it — half an hour of shipped bound, per pass — because
+    /// [`INNER_SESSION_ENDS`] could not tell a dead agent from a thinking one (item 323). *Going
+    /// quiet at a dead peer is not the same as noticing.*
     ///
-    /// ⚠⚠⚠ **THIS IS NOT AN ALL-CLEAR AND MUST NOT BE READ AS ONE.** What it bounds is the bytes a
-    /// loop puts into ONE dead pane while its turn hangs. It says nothing about the wait itself,
-    /// which is the defect item 323 is about: the run sits there reporting that nothing is wrong
-    /// until its own clock ends it. **Going quiet at a dead peer is not the same as noticing.**
+    /// # What it asserts now
+    ///
+    /// **Zero bytes, on every pass, and `PeerGone` naming this pane on the FIRST one** — arrived at
+    /// by the edge `Idle --PeerGone--> PeerGone`, which is the whole shape of the repair: the start
+    /// prompt is delivered by the transition out of `idle`, so the refusal at the door is met
+    /// before a byte moves and the DOCUMENT is told. Then it stays: `peer_gone` is final.
+    ///
+    /// ⚠⚠⚠ **THE ARROW IS ASSERTED AND NOT JUST THE WORD.** Before the document had this
+    /// transition, the same loop over the same pane reported `Priming --PromptSent--> Working`
+    /// charging `Bytes(0)` — the machine had already moved past a prompt the door refused, and then
+    /// waited in `working` for an answer to a question nobody was asked. **A run can reach the
+    /// right ending by the wrong walk**, and only the arrow tells them apart.
     ///
     /// # ⚠⚠ Why the barrier is declined rather than declared
     ///
     /// A loop that declares `settles(claude)` at a pane whose child is gone is refused BEFORE it
     /// types — a real answer, and a safe one, but a different story. The wedge belongs to a run
     /// already past its barrier when its peer died, so this one starts with the barrier down and
-    /// its first prompt goes in exactly as a live run's does.
+    /// its first prompt goes in exactly as a live run's would.
     ///
-    /// # ⚠⚠⚠⚠ WHAT THE BOUND RESTS ON, found by mutating the fixture
+    /// # ⚠⚠⚠⚠ WHAT THE OLD BOUND RESTED ON, found by mutating the fixture — AND WHAT HOLDS IT NOW
     ///
-    /// **The supervisor going silent about a process that is gone.** Swap this pane's absent
-    /// supervisor for one that keeps answering `Idle` with a rising `seq` — a plausible cache, or a
-    /// reading taken from something other than the process table — and the same loop over the same
-    /// dead pane types on passes 1, 4, 6 and 8: **the live peer's pattern exactly**, and from there
-    /// it accumulates toward the wall like an orchestrator. The mutation was run and it turns this
-    /// gate red naming those passes.
+    /// **The supervisor going silent about a process that is gone.** Swapping this pane's absent
+    /// supervisor for one that kept answering `Idle` with a rising `seq` — a plausible cache, or a
+    /// reading taken from anything other than the process table — made the same loop over the same
+    /// dead pane type on passes 1, 4, 6 and 8, *the live peer's pattern exactly*, and from there it
+    /// accumulated like an orchestrator. Register item 329 recorded that nothing held the
+    /// condition.
     ///
-    /// ⚠⚠⚠ So item 327's bound is CONDITIONAL, and nothing in this workspace holds the condition:
-    /// there is no gate saying *a supervisor must not report an agent whose process has gone*.
-    /// Registered rather than assumed (item 330).
+    /// ⚠⚠⚠⚠ **IT IS HELD BY THE DOOR, AND DELIBERATELY NOT BY THE TURN CONTRACT.**
+    /// [`Completion::ended`](crate::completion::Completion) still asks the caller's contract BEFORE
+    /// `pane_eof`, and the first draft of this round had it the other way round: `Agent`'s own gate
+    /// then went from `converged` with the peer's reply to `failed` with the pane, because *the
+    /// peer answered and then left* is one instant where both readings are true. So a supervisor
+    /// that lied could still end ONE turn here. What it can no longer do is get a byte out — the
+    /// next prompt meets the refusal at [`PaneAccess`](crate::access::PaneAccess)`::inject` and
+    /// this gate's own assertion is that nothing reaches the pseudoterminal on any pass. **The
+    /// bound moved from a property nobody had written down to a refusal that is asserted**, and
+    /// that is what pays item 329 rather than a coverage loss.
     #[test]
     fn a_loop_whose_peer_is_dead_stops_typing_instead_of_marching_to_the_wall() {
         /// What `write_to_a_dead_pane_wedges` measured on this host — the thing a plugin has to
@@ -6010,34 +6051,42 @@ mod tests {
             }
             (typed_on, spent)
         }
-        let (typed_on, spent) = typing(&mut loops, &access, &run, QUIET_PASSES + 2);
+        // ⚠⚠⚠⚠ THE VERY FIRST PASS, AND THE DOCUMENT IS WHAT SAYS SO. This gate measured 259 bytes
+        // on pass 1 before any of this existed — the loop's start prompt, going into a pane nobody
+        // was reading — and then seven silent passes over a run that reported nothing wrong.
+        let first = loops
+            .step(&access, &run)
+            .expect("⚠⚠⚠ a pass at a dead peer must answer with a VERDICT rather than an error");
+        assert_eq!(
+            (first.verdict.clone(), first.note.as_deref()),
+            (Verdict::PeerGone(pane), Some("Idle --PeerGone--> PeerGone"),),
+            "⚠⚠⚠⚠ THE DOCUMENT'S OWN EDGE, ON THE FIRST PASS. The start prompt is delivered by the \
+             transition out of `idle`, so this is the loop meeting the refusal at the door and \
+             telling `ai_loop.scxml` rather than walking on. ⚠⚠⚠ MEASURED BEFORE the document had \
+             the word: the same loop reported `Priming --PromptSent--> Working` charging \
+             `Bytes(0)` — the machine had already moved PAST a prompt that never went in, and then \
+             waited in `working` for an answer to a question nobody had been asked",
+        );
+        // ⚠⚠ AND IT STAYS THERE. `peer_gone` is FINAL, so every later pass is `Pumped::Ended` and
+        // answers the same word — which is what makes *the run stops* a property of the document
+        // rather than of a caller who happened to stop asking.
+        let (typed_on, spent) = typing(&mut loops, &access, &run, QUIET_PASSES + 1);
+        assert!(
+            typed_on.is_empty() && spent == 0 && first.cost.amount() == 0,
+            "⚠⚠⚠⚠ NOT A BYTE may reach a pane whose program has exited, on any pass. That is the \
+             wedge itself: newline-terminated input into a dead pseudoterminal blocks FOR EVER at \
+             {WALL} bytes, holding the pane's writer lock, and a blocked write cannot be \
+             cancelled. Pass 1 spent {}, and the rest typed on {typed_on:?} for {spent} bytes",
+            first.cost.amount(),
+        );
 
-        assert!(
-            !typed_on.is_empty(),
-            "⚠⚠⚠ THE CONTROL FAILED: this loop never typed at all, so *it stopped typing* is about \
-             nothing. A barrier that refused, or a prompt that was never composed, would look \
-             exactly like this",
-        );
-        let last_typed = typed_on.last().expect("non-empty").0;
-        assert!(
-            last_typed <= 2,
-            "⚠⚠⚠ THE LOOP KEPT TYPING at a dead peer — passes {typed_on:?}. Then it accumulates \
-             the way an orchestrator does, register item 327 is refuted, and the wedge is \
-             reachable from `ai_loop` after all",
-        );
-        assert!(
-            spent * 4 < WALL,
-            "⚠⚠ and what it put in must be far short of the {WALL}-byte wall, or *bounded* is a \
-             word doing no work: {spent} bytes",
-        );
-
-        // ── THE CONTROL, and without it *"it went quiet"* is indistinguishable from a gate that
+        // ── THE CONTROL, and without it *"it typed nothing"* is indistinguishable from a gate that
         //    cannot see a loop type at all ──
         //
         // ⚠⚠⚠ THE SAME MEASUREMENT, THE SAME NUMBER OF PASSES, over a peer whose turns END. A loop
         // types once per turn, so a peer that answers is a loop that types again and again — and
-        // that is what makes *typed only on pass 1* a fact about the DEAD peer rather than about
-        // this harness.
+        // that is what makes the silence above a fact about the DEAD peer rather than about this
+        // harness or about a prompt that was never composed.
         let (live_workspace, live_pane) = standin_agent(1_000_000);
         let live = supervised(&live_workspace);
         crate::testing::started(&live, live_pane, "AGENT-READY");
@@ -6052,21 +6101,25 @@ mod tests {
         )
         .expect("a well-briefed loop over a live pane starts");
         let (live_typed, live_spent) = typing(&mut alive, &live, &run, QUIET_PASSES + 2);
-        let live_last = live_typed.last().map_or(0, |(pass, _)| *pass);
         assert!(
-            live_last > last_typed,
-            "⚠⚠⚠ THE CONTROL FAILED: over a peer that ANSWERS, this loop must still be typing after \
-             the pass the dead one fell silent on. If it is not, then the quiet above is this \
-             harness running out of passes and not a loop noticing anything — dead {typed_on:?} vs \
-             live {live_typed:?}",
+            !live_typed.is_empty() && live_spent > 0,
+            "⚠⚠⚠ THE CONTROL FAILED: over a peer that ANSWERS, this loop must type. If it does not, \
+             then the refusals above are this harness never getting a prompt composed rather than \
+             a run declining to write into a pane nobody is reading — live {live_typed:?}",
+        );
+        assert!(
+            live_typed.len() > 1,
+            "⚠⚠ and it must type MORE THAN ONCE, or *a loop types once per turn* is not what is \
+             being compared against: {live_typed:?}",
         );
 
         println!(
-            "\n== an ai_loop at a pane whose peer is dead ==\n  dead peer: typed on {typed_on:?}, \
-             {spent} bytes, then silent for {} passes\n  live peer, same passes: typed on \
-             {live_typed:?}, {live_spent} bytes\n  the wall is {WALL} bytes — a loop cannot reach \
-             it at one pane; an orchestrator reaches it in 3,380 steps\n",
-            QUIET_PASSES + 2 - last_typed,
+            "\n== an ai_loop at a pane whose peer is dead ==\n  dead peer: 3 passes, 0 bytes, \
+             every one refused as PeerGone naming pane {}\n  live peer, {} passes: typed on \
+             {live_typed:?}, {live_spent} bytes\n  it used to put 259 bytes in before going \
+             quiet; the wall is {WALL} bytes\n",
+            pane.0,
+            QUIET_PASSES + 2,
         );
         access.lifecycle().expect("lifecycle").close(pane);
         live.lifecycle().expect("lifecycle").close(live_pane);

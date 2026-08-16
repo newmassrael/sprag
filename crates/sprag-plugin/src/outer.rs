@@ -722,6 +722,10 @@ impl Owed {
                 | AiLoopEvent::TurnDone
                 | AiLoopEvent::TurnInterrupted
                 | AiLoopEvent::Unattended
+                // ⚠ `peer.gone` reaches a FINAL state and never `working`, so it cannot arrive
+                // here — but it is spelled rather than left to a catch-all, which is the arm's own
+                // rule: this list is what makes an edge added into `working` fail to compile.
+                | AiLoopEvent::PeerGone
                 | AiLoopEvent::Null => Self::Nothing,
             },
             AiLoopState::Idle
@@ -736,6 +740,10 @@ impl Owed {
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
+            // ⚠⚠ A RUN WHOSE PEER HAS GONE OWES IT NOTHING, and this is the arm where that is
+            // enforced rather than argued: a prompt owed to a state reached BECAUSE the pane's
+            // program exited would be typed straight at the wall this whole round is about.
+            | AiLoopState::PeerGone
             | AiLoopState::Blocked => Self::Nothing,
         }
     }
@@ -776,6 +784,7 @@ impl Owed {
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
+            | AiLoopState::PeerGone
             | AiLoopState::Blocked => false,
         }
     }
@@ -1275,6 +1284,12 @@ pub enum Noticed {
     /// they are OPPOSITE decisions. One takes an option the peer offered; this one turns the peer's
     /// call down. [`OuterLoop::took_screening`] consumes it.
     Screened(Screened),
+    // ⚠⚠⚠ AND THERE IS DELIBERATELY NO `PeerGone` ARM, though the first draft of that round wrote
+    // one. Every notice here exists because the state it leads to CANNOT say the thing itself —
+    // `failed` is reached from six transitions and cannot name the variable, `blocked` cannot
+    // republish the question. `peer_gone` names its pane in the VERDICT
+    // ([`Verdict::PeerGone`](crate::plugin::Verdict::PeerGone)) and in the walk, so a notice would
+    // be a second spelling of one fact, which is how the two come to differ.
 }
 
 /// **WHY THE AUTHOR'S STANDING INSTRUCTIONS COULD NOT BE READ** — a loop that cannot be screened,
@@ -2239,7 +2254,56 @@ impl OuterLoop {
     ///
     /// The whole driver is this function and the two tables it consults — `Owed` for what a
     /// transition says, and the match below for what a state asks.
+    ///
+    /// # ⚠⚠⚠⚠ One `PaneError` is not an error out here: *the peer's program has exited*
+    ///
+    /// [`PaneAccess::inject`] refuses at a pane whose child is gone, because a pseudoterminal
+    /// nobody is reading takes about 16 KB of newline-terminated input and then blocks FOR EVER,
+    /// holding the pane's writer lock — the failure that held a build machine for 43 hours. Six of
+    /// this driver's acts type: the prompt a transition owes, the answering key, the screening key
+    /// and its redirect, the handback and the resume. **Each of them can meet that refusal, and
+    /// none of them is a fault of the run.**
+    ///
+    /// So it is caught HERE, once, and told to the document as `peer.gone` — the driver reports the
+    /// fact and `ai_loop.scxml` decides where it lands, which is this whole file's rule. A catch
+    /// per act would be six copies of one decision and a seventh act arriving unprotected; a `?`
+    /// straight through would end the run `failed`, which asks its reader to fix something that is
+    /// not broken.
+    ///
+    /// ⚠⚠ **AND IT IS AT THE FUNNEL RATHER THAN IN `advance` FOR A REASON THE
+    /// FIRST DRAFT FOUND THE HARD WAY.** Catching only the prompt route left `screening`'s refusing
+    /// key propagating, and the gate that noticed was not one about dead panes at all — it was
+    /// `a_run_stopped_at_its_peers_dialog_types_nothing_further`, whose peer is SIGNALLED by the
+    /// Driver when its run is cancelled and is therefore dying while the next pump types into it.
+    ///
+    /// ⚠ **THE RESIDUE, STATED**: whatever the act typed BEFORE the refusal is not charged to this
+    /// pass. It is bounded by construction — the door refuses every write at a dead pane, so the
+    /// only bytes that can be lost are ones that went into a pane still alive at the time — and the
+    /// alternative is threading a partial cost out of six acts that do not return one.
     pub fn pump(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Pumped, PaneError> {
+        let from = self.state();
+        match self.pumping(panes, run) {
+            // ⚠ NO NOTICE IS RECORDED, and that is deliberate — see [`Noticed`]'s own comment where
+            // the arm would have been. The pane travels in the verdict and the walk names the
+            // state; a third copy would be the one that goes stale.
+            Err(PaneError::PeerGone(_)) => {
+                self.machine.process_event(AiLoopEvent::PeerGone);
+                Ok(Pumped::Moved {
+                    from,
+                    raised: AiLoopEvent::PeerGone,
+                    to: self.state(),
+                    spent: 0,
+                    found: None,
+                    because: None,
+                })
+            }
+            otherwise => otherwise,
+        }
+    }
+
+    /// [`pump`](Self::pump)'s body — everything but the one refusal that is the DOCUMENT's to
+    /// decide about. Split so that catch has one site; see `pump`'s doc.
+    fn pumping(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Pumped, PaneError> {
         let from = self.state();
         if self.machine.is_in_final_state() {
             return Ok(Pumped::Ended(from));
@@ -2415,12 +2479,14 @@ impl OuterLoop {
             // and a route that silently does nothing is worse than one that is missing.
             AiLoopState::Redirecting => self.redirect(panes, run)?,
 
-            // `is_in_final_state` answered above; these are the same five, and naming them keeps
-            // the match exhaustive without a wildcard that would swallow a sixth.
+            // `is_in_final_state` answered above; these are the same six, and naming them keeps
+            // the match exhaustive without a wildcard that would swallow a seventh. ⚠ The sixth
+            // arrived exactly that way: `peer_gone` broke this match on the compile that added it.
             state @ (AiLoopState::Converged
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
+            | AiLoopState::PeerGone
             | AiLoopState::Blocked) => return Ok(Pumped::Ended(state)),
         };
         // Kept before `advance` takes the payload: what a consumer reports is the EVENT, and the
@@ -2469,6 +2535,12 @@ impl OuterLoop {
                 | AiLoopState::Exhausted
                 | AiLoopState::Failed
                 | AiLoopState::Cancelled
+                // ⚠⚠ MANY-DOORED AND STILL `None`, which is the arm worth a line. Every state that
+                // touches the peer's pane can reach `peer_gone`, so this ending has more doors than
+                // `stopping` has — but the FROM state is already in the walk's own arrow
+                // (`Working --PeerGone--> PeerGone`), and it is the whole of what distinguishes
+                // them. `Because` exists for doors the arrow cannot tell apart.
+                | AiLoopState::PeerGone
                 | AiLoopState::Blocked => None,
             }
         };
@@ -2688,6 +2760,15 @@ impl OuterLoop {
                 // the driver that belongs in the document. The run's own clock bounds it, and the next
                 // pump asks again.
                 Over::NotYet => AiLoopEvent::Null,
+                // ⚠⚠⚠⚠ AND THE ENDING THIS DOCUMENT HAD NO WORD FOR UNTIL NOW. It is an EVENT
+                // where the arm above it is `Null`, and the difference is the whole point:
+                // *the turn overran* is a fact the next pump can ask about again, and *the agent's
+                // process has gone* cannot change back. Left as `NotYet` — which is what a peer
+                // that died used to answer — the loop burnt its whole per-turn bound on every pass
+                // waiting for evidence nobody could publish, and reported nothing wrong until the
+                // run's own clock ended it. Register item 323, and the shipped bound is half an
+                // hour.
+                Over::PeerGone(_) => AiLoopEvent::PeerGone,
                 Over::RunEnded => Self::ended_underneath(run),
             },
         )
@@ -2864,6 +2945,12 @@ impl OuterLoop {
                 return Ok(AiLoopEvent::Null.into());
             }
             Over::NotYet => AiLoopEvent::Unattended.into(),
+            // ⚠⚠⚠ AND NOT `unattended`, WHICH IS THE DECISION WORTH SPELLING. Both endings stop the
+            // run, and they send its reader to opposite places: `blocked` says *a person was
+            // expected here and did not come*, and this says *there is nothing left for them to
+            // come back to*. Waiting out the rest of somebody's patience over a pane whose program
+            // has exited spends an hour to reach the wrong sentence.
+            Over::PeerGone(_) => AiLoopEvent::PeerGone.into(),
         };
         self.awaiting = None;
         Ok(raised)
@@ -3591,6 +3678,18 @@ impl OuterLoop {
             self.machine.process_event(AiLoopEvent::Fail);
             return Ok((self.state(), 0));
         };
+        // ⚠⚠⚠⚠ THE DOOR CAN REFUSE HERE, AND THE MACHINE HAS ALREADY MOVED BY THE TIME IT DOES.
+        // `process_event` ran above — that is what composed the prompt this line sends — so a write
+        // refused here would leave the document standing in the state the prompt was supposed to
+        // have reached. **Measured, on the very first run of the guard that refuses at a dead
+        // pane**: the loop reported `Priming --PromptSent--> Working` charging `Bytes(0)`, walked
+        // into `working`, and then waited for an answer to a question nobody had been asked.
+        //
+        // ⚠⚠⚠ It is [`Self::pump`] that catches it, at the funnel, and NOT this arm — see that
+        // function's doc for why one site rather than six. What matters here is the ordering fact
+        // above: `peer.gone` is raised at the state the transition LANDED in, so every state a
+        // prompt can be owed from needs that edge, and the walk reads `Idle --PeerGone--> PeerGone`
+        // — the pass's own starting state, as every other line of the journal does.
         let spent = self.say(panes, run, &text)?;
         Ok((landed, spent))
     }

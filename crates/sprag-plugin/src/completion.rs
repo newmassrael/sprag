@@ -102,6 +102,23 @@ use crate::run::{RunContext, Waited, poll_until};
 /// silently reading *the peer stopped to ask* as *the peer never answered* — which for
 /// [`Agent`](crate::agent::Agent) means publishing a permission dialog as the model's reply. A type
 /// of its own makes each of the three call sites decide.
+///
+/// # ⚠⚠⚠ AND [`PeerGone`](Self::PeerGone) IS AN ADDED ARM, WHICH THE PARAGRAPH ABOVE ARGUES AGAINST
+///
+/// So the sites that compare this type with `==` rather than matching it were COUNTED before it was
+/// written, and each one's new answer decided rather than inherited:
+///
+/// * [`Agent`](crate::agent::Agent) tested `== NotYet` to head its note *the peer never finished*.
+///   A gone peer now takes an arm of its own there and the run STOPS, which is the change: it used
+///   to publish whatever was on the screen of a pane whose program had exited.
+/// * [`judge`](crate::judge) tests `!= Yes` and treats everything else as *no verdict came back*.
+///   Correct unchanged — a judge whose peer died gave no verdict.
+/// * [`Dialogue`](crate::dialogue::Dialogue) tests `== RunEnded` and is deliberately unarmed, so
+///   this arm cannot reach it.
+///
+/// ⚠ A RENAME was not available: this is not an ending the old vocabulary covered under another
+/// name, it is the one that was reported as *the peer did not finish* about a peer that will never
+/// finish anything again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Over {
     /// **YES** — on the evidence the caller's [`DoneWhen`] named.
@@ -124,6 +141,35 @@ pub enum Over {
     /// outer absence: one says the turn ended in a question nobody can parse, the other says the
     /// turn did not end in a question at all.
     Asking(Option<Question>),
+    /// ⚠⚠⚠⚠ **THE PEER'S PROGRAM HAS EXITED, SO THIS TURN HAS NOBODY LEFT TO END IT.**
+    ///
+    /// # ⚠⚠⚠ Why a turn's end needed this word, measured
+    ///
+    /// At one pane, at one instant, the two contracts answered opposite things.
+    /// [`DoneWhen::Exits`] asks [`PaneAccess::pane_eof`] and
+    /// calls a dead child's pane **over**. [`DoneWhen::Settles`] — the contract an agent loop makes
+    /// load-bearing — asks a SUPERVISOR whether the agent came back to rest, and **a process that
+    /// is gone is reported by nobody**, so the answer was never *yes*: it was never given. **A dead
+    /// agent and a thinking one were the same picture to that rule** (register item 323), which
+    /// meant every pass burnt the whole per-turn bound waiting for evidence that cannot arrive and
+    /// the run said nothing was wrong until its own clock ended it. Shipped, that bound is half an
+    /// hour.
+    ///
+    /// ⚠⚠⚠ **AND THE ONE-LINE FIX WAS WRONG, WHICH IS WHAT MADE THIS A WORD RATHER THAN A GUARD.**
+    /// Teaching the `Settles` arm to read `pane_eof` makes the product answer [`Yes`](Self::Yes) —
+    /// *the peer answered on the evidence you named* — about a peer that died, and a loop told
+    /// `Yes` walks on to judge a turn that never happened. There was no arm for the truth, so the
+    /// mutation could only choose between two lies.
+    ///
+    /// # ⚠⚠ Why it is asked BEFORE [`Asking`](Self::Asking) and AFTER the caller's contract
+    ///
+    /// After the contract, because [`DoneWhen::Exits`] names an exit as the very evidence its turn
+    /// ends on — a one-shot tool that answered and left is [`Yes`](Self::Yes), not this.
+    ///
+    /// Before the ask, because a process that is gone did not stop to ask, and a supervisor that
+    /// says otherwise is reporting a cached reading of something that no longer exists. That is
+    /// register item 329's hazard met at the one place this crate can see it.
+    PeerGone(PaneId),
     /// The bound ran out and neither happened — the peer is still working, or was never listening.
     ///
     /// ⚠ [`Waited::TimedOut`] under its old name, and it now means what it says. Every ending it
@@ -386,8 +432,41 @@ impl Completion {
         // pane then reached end-of-file — the evidence the CALLER named is the stronger answer:
         // the turn is over on the terms they chose and the capture is whole. The ask is what ends
         // a turn the contract CANNOT end, and asking it second is what keeps it to that job.
+        //
         if self.satisfied(panes, pane) {
             return Some(Over::Yes);
+        }
+        // ⚠⚠⚠⚠ AND THEN: THE PEER MAY BE GONE, which no contract left can end a turn on. See
+        // [`Over::PeerGone`], which carries what it cost not to have this word.
+        //
+        // ⚠⚠⚠ **SECOND, AND THE ORDER IS THE DECISION.** A peer that ANSWERED AND THEN LEFT is one
+        // instant where both readings are true, and putting this first loses the answer: measured
+        // on the first run of exactly that ordering, `Agent`'s own gate over a peer which prints
+        // its reply and exits went from `converged` with the reply to `failed` with the pane. Under
+        // [`DoneWhen::Exits`] the caller NAMED the exit as their evidence, so it is `Yes` and a
+        // whole capture; under [`Settles`](DoneWhen::Settles) the agent came back to rest and
+        // published a change, which is a completed turn whatever happened to the process next.
+        //
+        // ⚠⚠⚠ **WHAT THAT ORDER GIVES UP, AND WHY IT IS AFFORDABLE NOW.** `Settles` asks a
+        // SUPERVISOR, and this host's own detector derives rest from the SCREEN — which a dead pane
+        // still shows, frozen. A supervisor that kept publishing rising `seq` values about a gone
+        // process could therefore end a turn nothing ran (register item 329, found by mutating a
+        // fixture into exactly that). Today's detector cannot: a frozen screen publishes no change,
+        // so `seq` does not rise and `satisfied` is false. And the residue is BOUNDED rather than
+        // argued away — a loop fooled that way judges one turn and then tries to type, and
+        // [`PaneAccess::inject`] refuses at a pane whose child has exited. **It is the door that
+        // holds item 329, not this ordering.**
+        //
+        // ⚠⚠ BEFORE THE ASK, because a process that has left did not stop to ask: a supervisor
+        // still reporting a dialog at a dead pane is describing a screen rather than a peer, and
+        // `Asking` sends a reader to answer a question nobody is waiting on.
+        //
+        // ⚠⚠ `Some(true)` STRICTLY, where `satisfied`'s `Exits` arm reads an unknown pane as over.
+        // The two absences are different sentences: *this pane is not mine to ask about* is not
+        // *this pane's program has exited*, and only the second is a fact about a peer. It is the
+        // same reading [`PaneAccess::inject`] refuses on, at the other end of the same turn.
+        if panes.pane_eof(pane) == Some(true) {
+            return Some(Over::PeerGone(pane));
         }
         self.asked(panes, pane).map(Over::Asking)
     }
@@ -978,28 +1057,49 @@ mod tests {
     }
 
     /// ⚠⚠⚠⚠ **WHAT A DEAD CHILD'S PANE PRESENTS TO THE CONTRACT THE AI LOOP RUNS ON** — register
-    /// item 309's open link, which had been read and never measured.
+    /// item 309's open link, and **this gate is a REPURPOSING rather than a new one**.
     ///
-    /// # ⚠⚠⚠ The two variants answer OPPOSITE things, and the loop runs on the one that never does
+    /// # What it used to hold, and why it is kept rather than deleted
     ///
-    /// [`DoneWhen::Exits`] asks `pane_eof` and a dead child says *over* at once — the gate directly
-    /// above measures it. [`DoneWhen::Settles`] is
+    /// It measured the defect, because nothing in this workspace had. At one pane, at one instant,
+    /// the two contracts answered OPPOSITE things: [`DoneWhen::Exits`] asks `pane_eof` and a dead
+    /// child says *over* at once, while [`DoneWhen::Settles`] —
     /// [`INNER_SESSION_ENDS`](crate::outer::INNER_SESSION_ENDS), *the contract this loop makes
-    /// load-bearing*, and it asks a SUPERVISOR whether the agent came back to rest. **A process
-    /// that is gone is reported by nobody**, so the answer is never *yes* — not *no*, never
-    /// answered at all.
+    /// load-bearing* — asks a SUPERVISOR whether the agent came back to rest, and **a process that
+    /// is gone is reported by nobody**. So the answer was never *yes*; it was never given.
+    /// **A dead agent and a thinking one were the same picture** (register item 323), every pass
+    /// burnt the whole per-turn bound, and the run said nothing was wrong until its own clock
+    /// ended it. Shipped, that bound is half an hour.
     ///
-    /// ⚠⚠ What that costs, and it is why the question was owed before a refusal could be designed:
-    /// every pass of a loop whose agent's process died spends the whole per-turn bound waiting for
-    /// evidence that cannot arrive, and only the RUN's own clock ends it. **The document has no
-    /// transition for a turn that overran** (`watch`'s `Over::NotYet` arm raises nothing), so
-    /// nothing about the run says *your peer is dead* — it says nothing at all, for as long as the
-    /// budget lasts.
+    /// A gate that measures a defect goes red when you fix it — repurpose it, do not delete it —
+    /// so the same fixture now holds the opposite claim.
     ///
-    /// ⚠⚠⚠ And it is the same pane an [`Orchestrator`](crate::orchestrator::Orchestrator) would go
-    /// on typing its stimulus into every step, which is the route the 43-hour wedge was reached by
-    /// (items 304, 310). **This is the fact a refusal has to be built on**: `Exits` needs no help,
-    /// and `Settles` cannot tell *dead* from *thinking* without asking the eye that already knows.
+    /// # ⚠⚠⚠ What it asserts now, and the two halves are separate claims
+    ///
+    /// [`Over::PeerGone`] naming this pane, **and answered without spending the bound**. The word
+    /// alone would not be the repair: an evaluator that took the whole half hour to say it would
+    /// leave the run sitting exactly as long as before, and *how fast* is what the cost was made
+    /// of. So the elapsed time is asserted against a fraction of the bound rather than printed.
+    ///
+    /// # ⚠⚠⚠⚠ Why `Yes` WOULD HAVE BEEN A LIE, which is what made this a WORD and not a guard
+    ///
+    /// The obvious fix was `if panes.pane_eof(pane) == Some(true) { return true }` in the `Settles`
+    /// arm. Mutated in, it turns this gate red — the repurpose contract working — but read what it
+    /// makes the product SAY: [`Over::Yes`] means *the peer answered on the evidence you named*,
+    /// and this peer did not answer, it died. A loop told `Yes` walks on to `judging` and judges a
+    /// turn that never happened. There was no arm for the truth, so the one-line fix could only
+    /// choose between two lies, and the round that followed spent itself adding the word — to this
+    /// type, to [`Verdict`](crate::plugin::Verdict), and to `ai_loop.scxml`.
+    ///
+    /// # ⚠⚠⚠ The control is UNCHANGED, and that is itself a claim about the fix
+    ///
+    /// The same dead pane with the agent reported back at rest still answers `Yes`. It is what
+    /// keeps the measurement from being *"this evaluator says `PeerGone` to everything at a dead
+    /// pane"* — and it is the ORDERING decision made visible: the caller's contract is asked before
+    /// `pane_eof`, because *the peer answered and then left* is one instant where both readings are
+    /// true and the other order throws the answer away. Register item 329's hypothetical
+    /// supervisor is what that gives up, and the refusal at [`PaneAccess::inject`] is what bounds
+    /// it.
     ///
     /// # ⚠⚠ Why the agent is reported ALIVE first
     ///
@@ -1007,19 +1107,6 @@ mod tests {
     /// dies during it. Arming against a supervisor that already answers nothing would leave
     /// `addressed` unset, and `Settles` is unsatisfied for that reason too — a gate that skipped
     /// the arming would be measuring the wrong `None`.
-    ///
-    /// # ⚠⚠⚠⚠ MUTATED WITH THE OBVIOUS FIX, AND THE OBVIOUS FIX IS WRONG
-    ///
-    /// Adding `if panes.pane_eof(pane) == Some(true) { return true }` to the arm below turns this
-    /// gate red at once — which is the *"repurpose it, do not delete it"* contract working. But
-    /// read what it makes the product SAY: [`Over::Yes`] means *the peer answered on the evidence
-    /// you named*, and this peer did not answer, it died. A loop told `Yes` goes on to `judging`
-    /// and judges a turn that never happened.
-    ///
-    /// ⚠⚠⚠ **THERE IS NO [`Over`] VARIANT FOR *THE PEER IS GONE***, and that — not the missing
-    /// `pane_eof` call — is what the fix is actually blocked on. It is a word this crate does not
-    /// have and a transition `ai_loop.scxml` does not have either, which makes it the DOCUMENT's
-    /// decision rather than a line in this file (register item 323).
     #[test]
     fn the_contract_a_loop_runs_on_is_never_satisfied_once_its_agent_is_gone() {
         /// Long enough that "never" is not "not yet scheduled", short enough to pay twice.
@@ -1079,25 +1166,36 @@ mod tests {
         let waited = Instant::now();
         assert_eq!(
             done.wait(&access, pane, BOUND, &RunContext::uncancellable()),
-            Over::NotYet,
-            "⚠⚠⚠⚠ THE MEASUREMENT: at the pane `Exits` just called finished, the loop's own turn \
-             contract answers NOT YET — it does not report the peer as done and it does not report \
-             it as failed, so every pass burns the whole per-turn bound and the run says nothing \
-             is wrong until its own clock runs out. ⚠⚠⚠ A DEAD AGENT AND A THINKING ONE ARE THE \
-             SAME PICTURE to this rule, which is exactly why `pane_eof` has to be consulted here \
-             for a refusal to be possible at all (register items 309, 311, 320)",
+            Over::PeerGone(pane),
+            "⚠⚠⚠⚠ THE REPAIR: at the pane `Exits` just called finished, the loop's own turn \
+             contract must now say THE PEER IS GONE and name it. It used to answer `NotYet` — *the \
+             peer did not finish* about a peer that will never finish anything again — so a dead \
+             agent and a thinking one were the same picture, every pass burnt the whole per-turn \
+             bound, and the run reported nothing wrong until its own clock ran out (register items \
+             309, 311, 320, 323)",
         );
+        let took = waited.elapsed();
         assert!(
-            waited.elapsed() >= BOUND,
-            "⚠ and it spent the whole bound doing it, which is the cost per pass: {:?}",
-            waited.elapsed(),
+            took * 4 < BOUND,
+            "⚠⚠⚠ AND IT MUST SAY SO AT ONCE, which is the half of the repair the word alone does \
+             not carry. The cost this gate was written to measure was the WAIT: an evaluator that \
+             spent {BOUND:?} arriving at the right answer would leave the run sitting exactly as \
+             long as it did before. It took {took:?}",
         );
 
-        // ── THE CONTROL, and without it the line above is just *"this evaluator says no"* ──
+        // ── THE CONTROL, and without it the line above is just *"this evaluator says PeerGone"* ──
         //
         // ⚠⚠⚠ The SAME contract, the SAME dead pane, the SAME armed evaluator: report the agent at
-        // rest with a published change and it answers YES. So what strands the turn is the agent's
-        // disappearance and not the pane being dead, not the arming, and not the contract.
+        // rest with a published change and it answers YES. So what ends the turn above is the
+        // agent's disappearance and not the pane being dead, not the arming, and not the contract.
+        //
+        // ⚠⚠⚠⚠ **AND THIS ARM IS ALSO THE ORDERING DECISION, ASSERTED RATHER THAN COMMENTED.** The
+        // contract is asked BEFORE `pane_eof`, so a report of rest still wins at a dead pane — and
+        // it has to, because *the peer answered and then left* is one instant where both readings
+        // are true, and the other order loses the answer (`Agent`'s own gate measured it going from
+        // `converged` with the reply to `failed` with the pane). What that gives up is register
+        // item 329's hypothetical supervisor, and the DOOR is what bounds that now: a loop fooled
+        // here judges one turn and its next prompt is refused at `PaneAccess::inject`.
         *seen.lock().expect("the reported mutex") = Some(AgentObservation {
             state: AgentState::Idle,
             agent: Some("claude".to_string()),
@@ -1110,10 +1208,17 @@ mod tests {
         assert_eq!(
             done.wait(&access, pane, BOUND, &RunContext::uncancellable()),
             Over::Yes,
-            "⚠⚠⚠ THE CONTROL FAILED, so the measurement above is about a contract that answers no \
-             to everything rather than about a missing agent",
+            "⚠⚠⚠ THE CONTROL FAILED, so the measurement above is about a contract that answers \
+             `PeerGone` to everything at a dead pane rather than about a missing agent",
         );
 
+        println!(
+            "\n== a turn's end at a pane whose child is dead ==\n  Settles: PeerGone(pane {}) in \
+             {took:?}, where the bound is {BOUND:?}\n  it used to answer NotYet after the whole \
+             bound, every pass, for as long as the run's own clock lasted\n  control, same dead \
+             pane with the agent reported back at rest: Yes\n",
+            pane.0,
+        );
         access.lifecycle().expect("lifecycle").close(pane);
     }
 }

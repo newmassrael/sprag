@@ -350,7 +350,10 @@ pub(crate) mod grammar {
         // ⚠⚠ R394 is the THIRD, one edit again, and the first whose cause is an ANSWER rather than
         // an argument: an eleventh `asking.why` word (`unwitnessed`), which no window publishes,
         // serves or reads. Three for three — the rate this pin's own argument was built from.
-        35,
+        // ⚠⚠ R401 is the FOURTH, one edit again, and an ANSWER again: an eighth `verdict` word
+        // (`peer_gone`), for a run whose peer's program has exited. Four for four, and no window
+        // publishes, serves or reads a verdict either.
+        36,
         &[
             (
                 "the command palette",

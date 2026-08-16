@@ -893,6 +893,27 @@ impl Plugin for Agent {
             self.asked = Some(asked);
             return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue).noting(note));
         }
+        // ⚠⚠⚠⚠ THE PEER'S PROGRAM HAS GONE, AND WHAT IS ON THE SCREEN IS NOT AN ANSWER. This arm
+        // exists because [`Over::PeerGone`] is an ADDED variant and this adapter tested `== NotYet`
+        // — so without it a peer that died mid-reply would fall through to the else branch below
+        // and be published as *"captured a 412-character reply"*, which is the same class of defect
+        // `Over::Asking` was built to end (a permission dialog published as the model's words), one
+        // door along.
+        //
+        // ⚠⚠ TERMINAL, where the ask above SUSPENDS. A dialog can be answered and the turn resumed;
+        // a process that has exited cannot come back, and every further step would be this adapter
+        // typing its next prompt at a pseudoterminal nobody is reading.
+        //
+        // ⚠ Only reachable under [`DoneWhen::Settles`](crate::completion::DoneWhen::Settles): a
+        // caller who named `exits` asked for the child's exit as their evidence, and gets
+        // [`Over::Yes`] and a whole capture.
+        if let Over::PeerGone(pane) = &waited {
+            let note = format!(
+                "the peer's program exited before it replied, so nothing was captured: {}",
+                PaneError::PeerGone(*pane),
+            );
+            return Ok(Step::new(Cost::Bytes(cost), Verdict::PeerGone(*pane)).noting(note));
+        }
         let baseline = &asked.baseline;
         let prompt_echoed = asked.echoed;
         let prompt_caveat = asked.caveat;

@@ -1766,7 +1766,20 @@ pub(crate) fn standin_agent_refusing(
     let once = asks_on_its_second_life
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+    // ⚠⚠⚠⚠ IT SURVIVES AN INTERRUPT, WHICH IS WHAT AN INTERACTIVE AGENT CLI DOES — `Ctrl-C`
+    // cancels the turn in flight and the program stays up. It is also load-bearing here, and a
+    // FLAKY GATE is what said so: the Driver signals a cancelled run's pane
+    // (`Plugin::driving` -> `Stopped::Job`), so `a_run_stopped_at_its_peers_dialog_types_nothing_
+    // further` — whose whole subject is what ONE MORE PUMP would type into this peer's dialog —
+    // was racing the shell's death. Measured before the trap: **one red in six runs**, at *"it
+    // typed: []"*, because `PaneAccess::inject` now refuses at a pane whose child has exited and
+    // the child had won the race.
+    // ⚠⚠⚠ **THE FIXTURE WAS THE UNREALISTIC HALF, not the assertion.** A `/bin/sh` that dies on
+    // `SIGINT` is not standing in for `claude`, and before the door refused, the write at a dead
+    // pane silently succeeded so nothing could tell. `SIGHUP` is untouched, so a pane CLOSE still
+    // ends this peer the way every gate here relies on.
     let script = "\
+trap '' INT; \
 LIVES='ONCE_MARKER'; \
 if [ -n \"$LIVES\" ] && [ -e \"$LIVES\" ]; then \
   stty -echo; \

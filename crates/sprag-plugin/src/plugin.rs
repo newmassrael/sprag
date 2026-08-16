@@ -122,6 +122,38 @@ pub enum Verdict {
     /// record of it is prose. **This one has more consequence than an approval, not less** — the
     /// caller's agent was stopped from doing something it had decided to do.
     Screened(crate::screen::Screened),
+    /// ⚠⚠⚠⚠ **THE PANE'S PROGRAM HAS EXITED, SO THIS RUN HAS NO PEER LEFT TO DRIVE** — and which
+    /// pane, because a run stopped without naming one is the defect R396-R399 spent four rounds on.
+    ///
+    /// # ⚠⚠⚠ Why the word had to exist before the guard could be written
+    ///
+    /// The fix for the 43-hour wedge (register items 304, 309, 310) is one reading: do not type at
+    /// a pane the product can already report as dead. Writing it stopped at the RETURN VALUE.
+    /// [`Blocked`](Self::Blocked) carries an [`Unanswered`](crate::consent::Unanswered) — *a consent
+    /// failed to cover a dialog* — and a dead child asked nothing. [`TakenOver`](Self::TakenOver) is
+    /// *a person took this pane*, and nobody did. [`Exhausted`](Self::Exhausted) sends a reader to
+    /// raise a budget that would buy them nothing. Substituting `Continue` compiles and leaves the
+    /// run stepping for ever over a peer that cannot answer. **The compiler refused the mutation,
+    /// which is how this crate learns that what is missing is a word** (register item 326).
+    ///
+    /// # ⚠⚠ What a reader is being told, which is why it is not a flavour of the four above
+    ///
+    /// Not *fix your run* — nothing here is broken. Not *answer a question* — none was asked. Not
+    /// *do nothing* — the work has stopped. It is **the program you asked this run to drive is no
+    /// longer running**, and the remedy is outside the run entirely: find out why the agent left,
+    /// and start it again.
+    ///
+    /// ⚠⚠⚠ TERMINAL, and that is the whole of the repair. A run that goes on stepping puts its
+    /// stimulus in at the start of every step — measured at 5 bytes and 509 ms a step, so **3,380
+    /// steps, about 29 minutes, from a dead peer to a pseudoterminal that blocks for ever** (item
+    /// 325). Not a burst; a patient march, which is why nobody saw the 43 hours being spent.
+    ///
+    /// ⚠ It arrives two ways and both are one fact: [`PaneAccess::inject`]
+    /// refuses a write at such a pane ([`PaneError::PeerGone`]),
+    /// and [`Over::PeerGone`](crate::completion::Over::PeerGone) ends a turn nobody is left to
+    /// finish. The first is about a run that was about to type; the second about one already
+    /// waiting.
+    PeerGone(PaneId),
 }
 
 impl Verdict {
@@ -139,6 +171,11 @@ impl Verdict {
             Self::TakenOver(_) => "taken_over",
             Self::Exhausted(_) => "exhausted",
             Self::Screened(_) => "screened",
+            // ⚠⚠ AN EIGHTH WORD, and it earned a `WIRE_PROTOCOL` bump for version 27's stated
+            // reason: a journal reader decodes this closed set WHOLE. It is reachable by a client
+            // older than this build, because `orchestrator` — a form every version has been able to
+            // select — is the plugin the 43 hours were actually spent inside.
+            Self::PeerGone(_) => "peer_gone",
         }
     }
 
@@ -156,6 +193,7 @@ impl Verdict {
         "taken_over",
         "exhausted",
         "screened",
+        "peer_gone",
     ];
 }
 
@@ -471,9 +509,13 @@ mod tests {
     /// which is exactly the weakness `OutcomeState` states one level up, and the reason it is
     /// checked rather than trusted.
     ///
-    /// Built by constructing every variant and asking it for its word, so a fifth verdict added to
-    /// the type fails here until it is published — the failure mode being that a journal reaches a
-    /// peer carrying a word no pin has ever seen.
+    /// Built by constructing every variant and asking it for its word, so a further verdict added
+    /// to the type fails here until it is published — the failure mode being that a journal reaches
+    /// a peer carrying a word no pin has ever seen.
+    ///
+    /// ⚠⚠ IT HAS NOW CAUGHT ONE, which is worth recording because a gate that has never bitten is
+    /// a gate nobody knows the strength of: [`Verdict::PeerGone`] was added to the type and this
+    /// went red naming the missing word before the wire's own pin was touched.
     #[test]
     fn every_verdict_the_type_can_spell_is_a_word_the_wire_publishes() {
         let question = sprag_detect::Question {
@@ -502,6 +544,7 @@ mod tests {
                 said: "think again".to_owned(),
                 bytes: 1,
             }),
+            Verdict::PeerGone(PaneId(3)),
         ]
         .iter()
         .map(Verdict::wire_str)

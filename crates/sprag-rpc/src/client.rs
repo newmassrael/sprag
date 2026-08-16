@@ -932,7 +932,41 @@ impl ScopeAsk {
 ///   submit keystroke and spent no number on, because a delivery is a Rust API this wire does not
 ///   publish. **The rule the two share: a run that stopped may report what it did, never what the
 ///   other side did about it.**
-pub const WIRE_PROTOCOL: u32 = 35;
+/// * **36 — A RUN WHOSE PEER'S PROGRAM HAS EXITED SAYS SO, INSTEAD OF TYPING INTO A TERMINAL
+///   NOBODY IS READING.** An EIGHTH `verdict` word, `peer_gone`, and no new key, argument or form.
+///
+///   ⚠⚠⚠ **WHAT EARNED IT, MEASURED BEFORE ANY OF IT WAS BUILT — AND IT COST 43 HOURS OF A BUILD
+///   MACHINE FIRST.** Bytes written to a pseudoterminal master land in the slave's input queue;
+///   with nobody reading it the queue fills and the next `write(2)` **blocks for ever**, holding
+///   the pane's shared writer lock, and a blocked write cannot be cancelled. Measured on this
+///   workstation through the product's own door: a dead pane takes **16,896 bytes** of
+///   newline-terminated input and then parks. (Without the newline it takes a megabyte in 0.09 s
+///   and never blocks — a cooked tty will not hold a line it has no end for. **The arm that wedges
+///   is the arm an agent loop is made of**: a prompt, then Enter.)
+///
+///   ⚠⚠⚠ **AND NOTHING ABOUT THE WALK TO IT LOOKED WRONG.** An `orchestrator` types its stimulus at
+///   the start of every step: **5 bytes and 509 ms a step, so 3,380 steps — about 29 minutes —
+///   from a dead peer to a wedged machine.** Not a burst; a patient march, which is why nobody saw
+///   the hours being spent. The run reported nothing wrong the entire time.
+///
+///   ⚠⚠ **AN ADDED ANSWER WORD, ONE OF THIS WIRE'S FOUR NAMED BUMP CAUSES**, and version 34's
+///   escape does not reach it. `no_rule`, `not_dismissed` and `ceiling: "turns"` are free because
+///   only `ai_loop` — a plugin no older client can select — produces them. This word is produced by
+///   `orchestrator` as well, a form every version of this wire has been able to send, and that
+///   plugin is the one the preserved stack showed inside the wedge. An old client receives it
+///   today.
+///
+///   ⚠⚠ **THE BEHAVIOUR THAT GOES WITH IT IS THE POINT, NOT THE WORD**, and it is the first time
+///   this wire has bought a refusal to WRITE. `PaneAccess::inject` — the one door every plugin
+///   types through — now declines at a pane whose child has exited, so a run that used to walk to
+///   the wall stops on its first step and says which pane went. What a caller loses is the silent
+///   headroom under the threshold, which was camouflage rather than service: every injection below
+///   it LOOKED like it succeeded, and then one parked.
+///
+///   ⚠ **A PERSON'S KEYSTROKES ARE NOT AFFECTED**, deliberately, exactly as version 24 left the
+///   `Ctrl-C` write alone: `send-keys` from a keyboard is a different door, and refusing it to
+///   protect an automation caller would break the display client.
+pub const WIRE_PROTOCOL: u32 = 36;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

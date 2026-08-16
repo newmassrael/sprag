@@ -183,6 +183,31 @@ pub enum PaneError {
     Encode(String) = (String::new()),
     /// Writing the encoded bytes to the pane failed (the IO error message).
     Write(String) = (String::new()),
+    /// ⚠⚠⚠⚠ **THE PANE'S PROGRAM HAS EXITED, SO NOTHING WAS TYPED INTO IT.**
+    ///
+    /// # ⚠⚠⚠ Why this is a refusal and not a write that happens to go nowhere
+    ///
+    /// A pty master whose slave nobody reads is not a hole, it is a wall with a queue in front of
+    /// it. Measured on this workstation
+    /// (`sprag-terminal/tests/write_to_a_dead_pane_wedges.rs`): a dead pane takes **16,896 bytes**
+    /// of newline-terminated input and then `write(2)` **blocks for ever**, holding the pane's
+    /// shared writer mutex — so every other writer to that pane is stranded behind it, and a
+    /// blocked write cannot be cancelled. That is the defect that held a build machine for 43
+    /// hours (register items 304, 309, 318, 319).
+    ///
+    /// ⚠⚠ **AND NOTHING ABOUT THE WALK TO IT LOOKS WRONG.** An `Orchestrator` types its stimulus at
+    /// the start of EVERY step: measured at **5 bytes and 509 ms a step, so 3,380 steps — about 29
+    /// minutes — from a dead peer to a wedged machine** (item 325). Not a burst; a patient march.
+    ///
+    /// ⚠⚠⚠ **THE EVIDENCE WAS ALREADY HERE.** [`PaneAccess::pane_eof`] answers `Some(true)` before
+    /// the first of those bytes and after every one of them, and two other readers already consult
+    /// it ([`DoneWhen::Exits`](crate::completion::DoneWhen::Exits), [`Pipe`](crate::pipe::Pipe)).
+    /// **The hand on the keyboard did not** (item 324). This variant is that reading, at the one
+    /// door a plugin types through.
+    ///
+    /// ⚠ It NAMES THE PANE, because a refusal that does not say which one is the other defect this
+    /// workspace has paid for four rounds running (R396-R399, and item 311's own warning).
+    PeerGone(PaneId) = (PaneId(0)),
     /// Spawning a pane failed: no [`PaneLifecycle`] support, an empty argv, or
     /// the pseudoterminal/child could not start (the cause message).
     Spawn(String) = (String::new()),
@@ -463,6 +488,16 @@ impl std::fmt::Display for PaneError {
             Self::UnknownPane(id) => write!(f, "there is no pane {}", id.0),
             Self::Encode(key) => write!(f, "the key {key:?} has no bytes to send to a terminal"),
             Self::Write(why) => write!(f, "writing to the pane failed: {why}"),
+            // ⚠⚠ IT SAYS WHY REFUSING IS THE SERVICE. A caller told only *"the program has
+            // exited"* reads a run that gave up on a technicality; the wall is the part that makes
+            // typing anyway the worse answer, and it is what stops them adding a retry.
+            Self::PeerGone(id) => write!(
+                f,
+                "pane {}'s program has exited, so nothing was typed into it: a terminal nobody is \
+                 reading takes about 16 KB and then blocks for ever, and the write cannot be \
+                 cancelled — one more line here would strand every other writer to that pane",
+                id.0,
+            ),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),
             Self::NeverReady {
                 wanted,
@@ -1230,6 +1265,17 @@ impl PaneAccess for WorkspacePaneAccess {
     }
 
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+        // ⚠⚠⚠⚠ THE ONE DOOR, WHICH IS WHY THE REFUSAL IS HERE AND NOT IN A PLUGIN. Every plugin
+        // that types reaches a pane through this function — the comment below has said so for as
+        // long as it has existed — so one reading protects all of them, where a guard per plugin
+        // would be four copies of a decision and a fifth plugin arriving unprotected.
+        // ⚠⚠ It costs one `pane_eof` per injection: an atomic load under the workspace lock this
+        // call already takes, which `PanePty::is_eof`'s own doc calls negligible.
+        // ⚠ AFTER `UnknownPane` would be wrong-footed — a pane nobody knows is a different
+        // sentence — so the handle is resolved first and the liveness asked second.
+        if self.handle(id).is_some() && self.pane_eof(id) == Some(true) {
+            return Err(PaneError::PeerGone(id));
+        }
         let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
         let modes = handle.input_modes();
         let mut bytes = Vec::new();

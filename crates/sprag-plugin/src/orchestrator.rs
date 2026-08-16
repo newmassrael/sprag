@@ -361,7 +361,28 @@ impl Plugin for Orchestrator {
         // Act: inject the stimulus + Enter.
         let mut keys = KeyStroke::text(&self.spec.stimulus);
         keys.push(KeyStroke::named("Enter"));
-        let cost = panes.inject(self.pane, &keys)?.bytes();
+        // ⚠⚠⚠⚠ AND THE DOOR CAN REFUSE, WHICH IS THE 43 HOURS. This plugin is the one the preserved
+        // stack showed inside the wedge (register item 310): it re-types its stimulus at the START
+        // OF EVERY STEP, at the same pane, for ever — measured at 5 bytes and 509 ms a step, so
+        // **3,380 steps, about 29 minutes, to a pseudoterminal that blocks and never returns**
+        // (item 325). Nothing about the walk looks wrong on the way, which is why nobody saw it.
+        //
+        // ⚠⚠⚠ IT IS A VERDICT AND NOT A `?`. Propagating would end the run `failed` with the same
+        // sentence, and the difference is what a JOURNAL can be asked: a step that says `peer_gone`
+        // names the ending in the same vocabulary as `converged` and `blocked`, so *which of my
+        // runs stopped because its agent's process left?* is a question rather than a grep over
+        // free text. `Verdict::PeerGone`'s own doc holds why none of the other seven words fits.
+        //
+        // ⚠⚠ EVERY OTHER `PaneError` STILL PROPAGATES: an unknown pane and an unencodable key are
+        // faults of the run, and the Driver's `failed` is where a reader is sent to fix one.
+        let cost = match panes.inject(self.pane, &keys) {
+            Ok(written) => written.bytes(),
+            Err(PaneError::PeerGone(pane)) => {
+                let note = PaneError::PeerGone(pane).to_string();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::PeerGone(pane)).noting(note));
+            }
+            Err(other) => return Err(other),
+        };
 
         // Perceive, then judge against the collapsed (wrap-safe) screen text.
         // If the RUN ended mid-observe — cancelled, or out of time — don't judge:
@@ -2984,46 +3005,49 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠⚠ **THIS PLUGIN TYPES INTO A PANE IT COULD HAVE ASKED ABOUT, EVERY STEP, FOR EVER** —
-    /// register items 310 and 324, turned from a backtrace into a number of steps.
+    /// ⚠⚠⚠⚠ **THIS PLUGIN NO LONGER TYPES INTO A PANE IT CAN ASK ABOUT** — register items 310,
+    /// 320, 324 and 325, and **this gate is a REPURPOSING rather than a new one**.
     ///
-    /// # What the 43 hours were made of
+    /// # What it used to assert, and why it is kept
     ///
-    /// `write_to_a_dead_pane_wedges` (in `sprag-terminal`) measures the wall: a pane whose child is
-    /// dead takes **16,896 bytes of newline-terminated input** and then blocks for ever, holding
-    /// the shared writer mutex. It does not say who supplies those bytes. **This does.** Nothing in
-    /// a step consults the pane's liveness, so the stimulus goes in again on every one, and the
-    /// bytes accumulate at the same pane until the wall is reached. This gate divides the wall by
-    /// the measured per-step cost and prints how many steps that is.
+    /// It measured the defect, because nothing in this workspace had: **5 bytes and 509 ms a step,
+    /// so 3,380 steps — about 29 minutes — from a dead peer to the 16,896-byte wall**
+    /// `write_to_a_dead_pane_wedges` measures in `sprag-terminal`. Not a burst; a patient march,
+    /// which is why the 43 hours went unnoticed while they were being spent. **A gate that measures
+    /// a defect goes red when you fix it — repurpose it, do not delete it**, so the same fixture
+    /// now holds the opposite claim and the numbers stay in the sentence it prints.
     ///
-    /// ⚠⚠⚠ **AND `pane_eof` ALREADY ANSWERS, BEFORE THE FIRST BYTE.** That is item 324's corrected
-    /// sentence made concrete: the eye is not missing — `DoneWhen::Exits` and `pipe` both look
-    /// through it — **the hand on the keyboard does not.** A refusal here would need no new
-    /// evidence, only a caller willing to read what the product already knows.
+    /// # What it asserts now
     ///
-    /// # ⚠⚠ Why it stops far short of the wall
+    /// Every step answers [`Verdict::PeerGone`] naming this pane, and **zero bytes reach the
+    /// pseudoterminal**. All four halves matter: a refusal that still wrote would reach the wall
+    /// anyway, only slower; a refusal that did not name the pane is the failure R396-R399 spent
+    /// four rounds on; the note a caller reads has to carry the reason, or the next reader wraps it
+    /// in a retry; and it must be a VERDICT rather than an `Err`, which is the whole of register
+    /// item 326 — a run stopped this way is a word in the same closed set as `converged`, so
+    /// *which of my runs stopped because its agent's process left?* is a question a journal
+    /// answers instead of a grep over free text.
     ///
-    /// Reaching it would wedge this suite, which is the failure the whole line of work is about.
-    /// The claim is the RATE and the fact that nothing bounds it, so a handful of steps and one
-    /// division carry it; a gate that proved it by hanging would have proved it once.
+    /// ⚠⚠⚠ **THE REFUSAL IS AT `PaneAccess::inject` AND NOT IN THIS PLUGIN**, which is why one
+    /// change covers `Agent`, `Pipe`, `Dialogue` and the AI loop as well: that function is *"the
+    /// door a PLUGIN types through"* by its own doc, and a guard per plugin would be four copies
+    /// of one decision plus a fifth plugin arriving unprotected. **What each plugin still owns is
+    /// the WORD it turns that refusal into**, which is why there is a `match` here and in `AiLoop`
+    /// and not a shared helper: this one stops the run, and the loop's tells its DOCUMENT.
     ///
-    /// ⚠ The projection is arithmetic on two measured numbers and not a threshold spelled here —
-    /// `WALL` is quoted from the gate that measures it, on this host, and both are printed.
+    /// ⚠⚠ **AND THE EVIDENCE NEEDED NO NEW MACHINERY** — item 324's corrected sentence:
+    /// `pane_eof` already answered, and two readers already consulted it
+    /// ([`DoneWhen::Exits`](crate::completion::DoneWhen::Exits), [`Pipe`](crate::pipe::Pipe)); the
+    /// hand on the keyboard did not.
     ///
-    /// # ⚠⚠⚠⚠ MUTATED WITH THE FIX, AND THE COMPILER REFUSED TO LET IT BE WRITTEN
+    /// # ⚠⚠ What this gate does NOT hold, stated rather than left to be assumed
     ///
-    /// The fix is one guard: `if panes.pane_eof(self.pane) == Some(true) { return … }`. Writing it
-    /// stops at the answer — **there is no [`Verdict`] for *the peer is gone*.**
-    /// [`Verdict::Blocked`] carries an [`Unanswered`](crate::consent::Unanswered), which is *a
-    /// consent failed to cover a dialog*, and a dead child asked nothing;
-    /// [`Verdict::Interrupted`] is *a person took this pane*, and nobody did. Substituting
-    /// `Continue` compiles and turns this gate red at `step 1 must have TYPED` — so the gate does
-    /// bite — but it leaves the run stepping for ever over a peer that cannot answer, reporting
-    /// nothing wrong until its iteration budget runs out. **That is the same missing word
-    /// [`Over`](crate::completion::Over) lacks at the turn's end (register item 323).** One
-    /// vocabulary gap, two layers, and the compiler is what says so at this one.
+    /// That the run ENDS. `Verdict::PeerGone` is terminal at the Driver, and this gate steps the
+    /// plugin by hand precisely so that the claim is about the PLUGIN's answer — four steps in a
+    /// row, all identical, which is what shows the refusal does not wear off. The run-level ending
+    /// is the Driver's own business and is held there.
     #[test]
-    fn a_step_types_into_a_pane_this_run_could_already_know_is_dead() {
+    fn a_step_refuses_a_pane_this_run_can_already_know_is_dead() {
         /// What `write_to_a_dead_pane_wedges` measured on this host. ⚠ A kernel's number, not
         /// sprag's — it is here to be DIVIDED BY, and the projection it feeds is printed rather
         /// than asserted, so a different host changes the report and not the verdict.
@@ -3062,50 +3086,51 @@ mod tests {
 
         let run = crate::run::RunContext::uncancellable();
         let mut spent = 0;
-        let stepping = Instant::now();
         for step in 1..=STEPS {
-            let took = orch
-                .step(&access, &run)
-                .expect("⚠ a step at a dead pane must SUCCEED — an error would tell the caller");
-            assert!(
-                took.cost.amount() > 0,
-                "⚠⚠⚠ step {step} must have TYPED. A step that spent nothing would mean something \
-                 already declines to write at a dead pane, and the accumulation below is fiction",
-            );
+            let taken = orch.step(&access, &run).unwrap_or_else(|error| {
+                panic!(
+                    "⚠⚠⚠ step {step} must answer with a VERDICT and not an error. `peer_gone` is a \
+                     word in the same vocabulary as `converged` — a run stopped this way is a fact \
+                     a journal can be asked about, where an error is free text a reader greps: \
+                     {error}"
+                )
+            });
             assert_eq!(
-                access.pane_eof(pane),
-                Some(true),
-                "⚠⚠⚠ and the pane was answerably dead at step {step}, BEFORE and AFTER the bytes \
-                 went in — the refusal this needs is not waiting on evidence anybody has to go and \
-                 fetch (register items 311, 324)",
+                taken.verdict,
+                Verdict::PeerGone(pane),
+                "⚠⚠⚠⚠ step {step} TYPED at a pane whose program has exited, or stopped for some \
+                 other reason. That is the defect this gate was written to measure and now guards \
+                 against: at 5 bytes a step it is 3,380 steps — about 29 minutes — to a wedged \
+                 machine. And the verdict must name THIS pane, because a run stopped without \
+                 saying which one is the defect R396-R399 was four rounds of",
             );
-            spent += took.cost.amount();
+            let said = taken.note.clone().unwrap_or_default();
+            assert!(
+                said.contains(&format!("pane {}", pane.0)) && said.contains("blocks for ever"),
+                "⚠⚠ and the SENTENCE a caller reads must carry the pane and the reason, or a \
+                 reader adds a retry: {said:?}",
+            );
+            spent += taken.cost.amount();
         }
-        let per_step_wall = stepping.elapsed() / u32::try_from(STEPS).expect("a small count");
 
-        let per_step = spent / STEPS;
-        assert!(
-            per_step > 0 && spent == per_step * STEPS,
-            "⚠⚠ the cost must be the SAME every step, or the projection below is an average \
-             pretending to be a rate: {spent} over {STEPS} steps",
+        assert_eq!(
+            spent, 0,
+            "⚠⚠⚠⚠ nothing may reach that pseudoterminal at all. A refusal that still wrote would \
+             walk to the {WALL}-byte wall exactly as before, only more slowly",
         );
-        let steps_to_the_wall = WALL.div_ceil(per_step);
-        assert!(
-            steps_to_the_wall > STEPS,
-            "⚠⚠⚠⚠ THIS GATE JUST WEDGED ITSELF: {STEPS} steps at {per_step} bytes reach the \
-             {WALL}-byte wall. Lower `STEPS`, and note that the fixture has become the defect",
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(true),
+            "⚠ and the evidence the refusal stands on was answerable throughout — it is not a \
+             reading anybody had to go and fetch (register items 311, 324)",
         );
 
-        // ⚠⚠⚠ AND HOW LONG THAT IS, from the step's own measured wall clock rather than from
-        // `OBSERVE_TIMEOUT` — a step at a pane that never reacts waits out its whole observe
-        // window, every time, so the run walks to the wall at a pace nothing about it looks
-        // wrong. **That is the shape of the 43 hours**: not a burst, a patient march.
-        let to_the_wall = per_step_wall * u32::try_from(steps_to_the_wall).unwrap_or(u32::MAX);
         println!(
-            "\n== an orchestrator at a pane whose child is dead ==\n  pane_eof says dead before \
-             every step, and every step types anyway\n  {per_step} bytes per step, {spent} over \
-             {STEPS} steps\n  steps to the {WALL}-byte wall: {steps_to_the_wall}\n  at the \
-             measured {per_step_wall:?} a step, that is {to_the_wall:?} of ordinary stepping\n"
+            "\n== an orchestrator at a pane whose child is dead ==\n  {STEPS} steps, 0 bytes \
+             typed, every one refused as PeerGone naming pane {}\n  it used to type 5 bytes a \
+             step: {} steps to the {WALL}-byte wall, about 29 minutes\n",
+            pane.0,
+            WALL.div_ceil(5),
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

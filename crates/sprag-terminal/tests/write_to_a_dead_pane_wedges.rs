@@ -195,6 +195,15 @@ fn a_dead_pane_swallows_partial_lines_and_wedges_on_whole_ones() {
     // shipped only that would move the queue from one place to another and measure green here.
     // What a fix has to change is the WRITE: bounded, or refused at a pane the product already
     // knows is dead (`PaneAccess::pane_eof`, register item 311). Registered rather than assumed.
+    //
+    // ⚠⚠⚠ **HALF OF THAT IS NOW PAID, AND THIS GATE IS STILL GREEN, WHICH IS THE POINT.**
+    // `PaneAccess::inject` — the one door every PLUGIN types through — refuses at a pane whose
+    // child has exited and answers `PaneError::PeerGone`, so no run can walk here any more.
+    // **`write_shared` is untouched**: this gate drives `PanePtyHandle::write` directly, which is
+    // also the route a PERSON's keystrokes take (`sprag_host::pane`), and that route still wedges
+    // exactly as measured below. So items 304 and 305 are OPEN for the human door, and the green
+    // here is the honest report of it rather than an oversight — a gate that had been written one
+    // layer up would have gone red and been read as *the wedge is gone*.
     let second_returned = &*Box::leak(Box::new(AtomicBool::new(false)));
     let second = wall.clone();
     std::thread::spawn(move || {

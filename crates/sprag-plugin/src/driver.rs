@@ -819,6 +819,28 @@ impl Driver {
                             self.taken_over = Some(*interruption);
                             OrchestrationEvent::Taken
                         }
+                        // ⚠⚠⚠⚠ AND A PEER THAT IS GONE OUTRANKS THE TALLY FOR THE TWO ARMS ABOVE'S
+                        // REASON: it is a fact about the world outside this run, and a budget
+                        // arriving in the same instant does not bring the program back. A run told
+                        // `exhausted` here sends its reader to raise a number; the thing to do is
+                        // find out why the agent left.
+                        //
+                        // ⚠⚠⚠ **RECORDED AS THE RUN'S FAILURE, AND THAT IS A DECISION RATHER THAN
+                        // A SHORTCUT.** A seventh [`OutcomeState`] word was the alternative, and
+                        // what it would buy over `failed` + this cause is nothing a caller can act
+                        // on differently: [`Outcome::failure`] carries the typed
+                        // [`PaneError::PeerGone`] with the PANE in it, and its sentence is the one
+                        // that says why typing anyway is the worse answer. What separated `blocked`
+                        // and `taken_over` from `failed` was that their readers must do something
+                        // ELSE — answer, or nothing at all; this reader does what a failed run's
+                        // reader does, which is go and look at what broke. ⚠ The residue is
+                        // written down rather than hidden: a run RESTORED from a previous daemon's
+                        // log has only the word `failed`, so the pane and the sentence do not
+                        // survive a restart — the same residue `Blocked`'s own `Option` states.
+                        Verdict::PeerGone(pane) => {
+                            self.failure = Some(PaneError::PeerGone(*pane));
+                            OrchestrationEvent::Fail
+                        }
                         // ⚠⚠ THE RUN'S OWN END OUTRANKS THE TALLY, and asking in the other order
                         // was two defects: a person's stop mid-turn reported as `exhausted —
                         // iterations`, and a deadline that curtailed the last permitted turn
