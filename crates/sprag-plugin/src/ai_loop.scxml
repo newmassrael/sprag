@@ -193,10 +193,10 @@
       finished one step straight to `closing`, so a loop could only ever be as
       long as its first checkpoint.
 
-      MEASURED, on the owner's own run: an agent asked to repay debt paid ONE
-      item, said `MILESTONE REACHED`, and the run converged after a single
-      working turn — judged straight into `closing`, and converged. The
-      request had been *"keep going until every debt is repaid"*, and no path
+      MEASURED, on a live run: an agent asked to work through a LIST of items
+      finished ONE, said `MILESTONE REACHED`, and the run converged after a
+      single working turn — judged straight into `closing`, and converged. The
+      request had been *"keep going until the list is done"*, and no path
       through this document could express it. There was nothing wrong with the
       loop; the document simply had no edge from *this step is done* to *what is
       the next one*.
@@ -459,25 +459,30 @@
       but may not run is a loop that cannot verify a milestone it claims to have
       reached.** Running is a consent's job, one door up, and it has one now.
 
-      ⚠ WHAT IS LEFT FOR THIS RULE IS THE FILE THAT DID NOT EXIST YET, and it is
-      exactly the pair this comment has already used twice: `Do you want to
-      create PROBE.txt?` writes the word *ready*, and `Do you want to create
-      DESIGN.txt?` commits 256 lines that chose JSON over SQLite. **No quote
-      separates those two** — which is `judged_rules`' argument, not this one —
-      so until somebody writes a criterion, both are turned down and the agent
-      is told to think again about the shape before writing it. That is the
-      cheapest correct answer to a question a rule cannot tell apart.
+      ⚠ WHAT IS LEFT FOR SUCH A RULE IS THE PAIR THIS COMMENT HAS ALREADY USED
+      TWICE: `Do you want to create PROBE.txt?` writes the word *ready*, and `Do
+      you want to create DESIGN.txt?` commits 256 lines that chose JSON over
+      SQLite. **No quote separates those two** — which is `judged_rules`'
+      argument, not this one.
 
-      ⚠ THE RESIDUE: this is a standing instruction and withdrawing it means
-      editing this file. It can never GRANT anything — the act's first key is a
-      REFUSAL (`screen::REFUSES`) — so the failure it can cause is a loop told to
-      reconsider too often, never a loop that did something nobody allowed.
+      ⚠⚠⚠ AND IT SHIPS EMPTY, FOR `may_answer`'s REASON ONE DOOR DOWN. A rule is
+      weaker than a consent — the act's first key is a REFUSAL
+      (`screen::REFUSES`), so it can never GRANT anything, and the worst it can
+      cause is an agent told to reconsider too often. But it is still somebody
+      being answered on somebody else's behalf, in words this file's author
+      chose, in a language this file's author speaks. A template does not know
+      whose agent it will be talking to.
+
+      So a rule belongs in the ADOPTING REPOSITORY'S KIND DOCUMENT, beside its
+      consents and read the same way — see `may_answer` for the whole
+      arrangement and for why a kind is a sibling rather than a parent.
+
+      ⚠⚠ AN EMPTY LIST IS NOT A SAFE DEFAULT, IT IS A NEUTRAL ONE. A loop meeting
+      an unclaimed dialog reports `no_rule` naming it and waits for a person —
+      correct, and useless when nobody is watching. A repository that means to
+      run this unattended writes its rules down first.
     -->
-    <data id="screen_rules"
-          expr="[
-            { when: 'Do you want to create',
-              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' }
-          ]"/>
+    <data id="screen_rules" expr="[]"/>
 
     <!--
       ⚠⚠⚠ WHICH DIALOGS THIS LOOP MAY ANSWER *YES* TO, and with which option —
@@ -511,50 +516,49 @@
       authorised one run. **A standing yes is a different kind of promise from a
       standing think-about-it-again.**
 
-      ⚠⚠⚠ THAT COST BOUGHT AN EMPTY LIST FOR ONE ROUND, AND THE EMPTY LIST KILLED
-      A RUN. The paragraph above used to end *«which is why the placeholder below
-      is empty and a rule's placeholder is not»*, and it is quoted rather than
-      deleted because the reasoning was sound and the conclusion was still wrong.
-      MEASURED: the live run of 2026-08-16 met `Do you want to make this edit?`
-      on its first milestone, nobody answered, and it stood in `awaiting_human`
-      until an iteration ceiling ended it. Every milestone this loop exists to
-      reach touches a file, so a document that authors no consent is a document
-      that cannot run its own loop — and *"pass it as an argument instead"* is
-      the split this file spent the round removing.
+      ⚠⚠⚠ AND IT SHIPS EMPTY, WHICH IS NOT THE SAME AS SAFE. Measured, in this
+      document's own history: an empty list met `Do you want to make this edit?`
+      on a run's first milestone, nobody answered, and it stood in
+      `awaiting_human` until an iteration ceiling ended it. Every milestone a
+      loop like this exists to reach touches a file, so a run whose consents are
+      empty is a run that stops at the first dialog.
 
-      ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: the clauses below are standing
-      yesses, and editing this file is the only way to withdraw them. They claim
-      the TWO dialogs a debt-repaying loop meets on every milestone and nothing
-      else — change a file, run a command. Creating new files, reaching the
-      network and every design question are left to `screen_rules` or to a
-      person.
+      ⚠⚠⚠ SO WHERE DO THE CLAUSES GO? INTO THE ADOPTING REPOSITORY'S OWN
+      DOCUMENT. A clause here would authorise EVERY run of this file, in every
+      repository that copied it, until somebody edited it — and the people it
+      would be deciding for are people this file's author has never met. A
+      standing yes is the one thing a template must not carry.
 
-      ⚠⚠⚠ BOTH ARE HERE BECAUSE EITHER ALONE IS A LOOP THAT CANNOT WORK. A run
-      allowed to edit but not to run commands cannot test what it edited, and a
-      milestone this loop calls reached is one it has verified. **One consent is
-      not half a working loop, it is a loop that stops at the other dialog** —
-      278's shape, one tool over.
+      So a KIND document holds them: a small `.scxml` beside this one, owned by
+      the repository whose runs it authorises, whose datamodel declares exactly
+      the ids this one declares. The driver reads that document and assigns its
+      values here at `start` — which is what the unconditional `<assign>` in
+      `idle` is for. This file stays the machine; the kind stays the decisions.
 
-      ⚠⚠ NEITHER `answer` NEEDLE IS `Yes`, measured, and the reason is the same
-      both times: the edit dialog offers `1. Yes` / `2. Yes, allow all edits
-      during this session` and the command dialog offers `1. Yes` / `2. Yes, and
-      do not ask again` / `3. No, and tell me what to do`. **`Yes` is carried by
-      two options in each, so it names neither** — `Consents` answers nothing at
-      all when a needle reaches two (`a_needle_two_options_carry_authorises_
-      neither`). Each needle below is text only ONE option carries.
+      ⚠ A KIND IS A SIBLING, NOT A PARENT, and that was measured rather than
+      preferred: a driver cannot read, step or send to an `<invoke>`d child at
+      the pinned engine, so a template invoked by its kind would be a template
+      nothing could drive.
+
+      ⚠⚠⚠ AN AUTHOR WRITING TWO CLAUSES SHOULD WRITE BOTH HALVES. A run allowed
+      to edit but not to run commands cannot test what it edited, and a milestone
+      a loop calls reached is one it has verified. **One consent is not half a
+      working loop, it is a loop that stops at the other dialog.**
+
+      ⚠⚠ AND NO `answer` NEEDLE SHOULD BE `Yes`, measured: the edit dialog offers
+      `1. Yes` / `2. Yes, allow all edits during this session` and the command
+      dialog offers `1. Yes` / `2. Yes, and do not ask again` / `3. No, and tell
+      me what to do`. **`Yes` is carried by two options in each, so it names
+      neither** — `Consents` answers nothing at all when a needle reaches two
+      (`a_needle_two_options_carry_authorises_neither`). A needle must be text
+      only ONE option carries.
 
       ⚠ A clause may never name the key that APPROVES a dialog `screen_rules`
       would refuse: rules author WHICH dialog and WHAT TO SAY, never the key, and
       `screen.rs` holds the measurement that settled it. Approval has its own
       door and this is it.
     -->
-    <data id="may_answer"
-          expr="[
-            { asked: 'Do you want to make this edit',
-              answer: 'allow all edits during this session' },
-            { asked: 'Bash command',
-              answer: 'do not ask again' }
-          ]"/>
+    <data id="may_answer" expr="[]"/>
 
     <!--
       ⚠⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP TURNS DOWN, and what it says instead.
@@ -657,10 +661,10 @@
       * `reflect_every` IS ALSO A COST KNOB, WHICH IS NOT WHY IT IS HERE.
         `reflecting` exits through `restarting`, which throws the accumulated
         context away and pays a cold start to rebuild the fixed prefix. Whether
-        that trade wins depends on how much there was to throw away:
-        `claudedocs/INSIGHT-RESTART-COST-CURVE.md` measured a restart paying for
+        that trade wins depends on how much there was to throw away: a
+        restart-cost curve measured against this loop found a restart paying for
         itself only above roughly 15,000-21,000 tokens of discardable context,
-        and measured this default losing by 11.4% on its workload.
+        and found this default losing by 11.4% on its workload.
 
         ⚠ THAT RESULT DOES NOT SETTLE THE DEFAULT, and the reason is worth
         writing down rather than rounding off. The experiment's task accumulated
@@ -826,10 +830,9 @@
 
       ⚠ NOTHING GUARDS ON IT YET, and that is deliberate rather than unfinished.
       What it would be for is deciding whether `restarting` is worth its cold
-      start, and the threshold that decides is measured in
-      `claudedocs/INSIGHT-RESTART-COST-CURVE.md` at 15,000-21,000 tokens of
-      discardable context — a figure whose own sign for real workloads is still
-      unmeasured. A guard written before that settles would be a policy nobody
+      start, and the threshold that decides was measured by the restart-cost
+      curve above at 15,000-21,000 tokens of discardable context — a figure whose
+      own sign for real workloads is still unmeasured. A guard written before that settles would be a policy nobody
       can defend; the number arriving is what makes settling it possible.
     -->
     <data id="context" expr="0"/>
@@ -1233,9 +1236,9 @@
 
         ⚠⚠⚠ THE SECOND QUESTION ASKS FOR KNOWLEDGE, NOT FOR AN ADDRESS, AND A
         MEASUREMENT IS WHY. It used to ask *"what the next session should read
-        first"*, and what came back was an address — one live reflection answered
-        `debt-open.md의 208·212·213과 섹션 P 전체`. A pointer costs its reader the
-        whole read. Measured across that replacement:
+        first"*, and what came back was an ADDRESS — one live reflection named a
+        file, three item numbers in it and a whole section. A pointer costs its
+        reader the whole read. Measured across that replacement:
 
           the session that was replaced   reached its first change at 161,507
           the fresh one it briefed        reached its first change at 285,599
@@ -1567,10 +1570,10 @@
     <!--
       ⚠⚠⚠ THE MILESTONE IS REACHED, SO ASK WHAT THE NEXT ONE IS. This used to go
       straight to `closing`, and that made a run exactly as long as its first
-      checkpoint: the owner's own debt-repayment loop paid ONE item, said the
+      checkpoint: a live loop working through a list finished ONE item, said the
       marker, and converged after a single working turn — judged straight into
-      `closing` and out — against a request to keep going until every debt was
-      repaid.
+      `closing` and out — against a request to keep going until the whole list
+      was done.
 
       A reflection is already the state that decides where the work goes next, so
       *this step is done* and *the budget came round* now arrive at the same
@@ -2112,8 +2115,9 @@
     blocked write cannot be cancelled. A driver that types its stimulus every
     step walks there in 3,380 steps — about 29 minutes — at a pace nothing about
     it looks wrong. One run held a build machine for 43 hours that way.
-    (`sprag-terminal/tests/write_to_a_dead_pane_wedges.rs` measures the wall;
-    register items 304, 309, 310, 318, 319, 325.)
+    (A dedicated gate in the terminal layer measures that wall directly, and it
+    is worth keeping: the number is a property of the pseudoterminal, not of any
+    one loop.)
 
     ⚠⚠⚠ AND WHY IT IS THE DOCUMENT'S DECISION AND NOT THE DRIVER'S. The driver
     can MEASURE that a pane's program has gone — `pane_eof` has answered that

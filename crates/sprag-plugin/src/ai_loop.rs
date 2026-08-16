@@ -5731,53 +5731,26 @@ mod tests {
                  rules. The engine answered {other:?}",
             ),
         };
-        // ⚠⚠ ONE, and it USED TO BE the document's `(edit me)` placeholder — before that, three
-        // matched by dialog KIND. R383 measured that quoting the agent covers what a taxonomy
-        // would, and R384 that a shipped needle would have to be INVENTED for the one dialog family
-        // nobody has captured. The placeholder went when a live run stood at an unclaimed dialog
-        // for an hour and died at a ceiling: **a document whose shipped state cannot run its own
-        // loop is a broken default, not a safe one.**
-        assert_eq!(rules.len(), 1, "the document declares one rule: {rules:?}");
-        let first = match &rules[0] {
-            ScriptValue::Object(fields) => fields,
-            other => panic!("a rule is an object of `when`/`text`: {other:?}"),
-        };
-        let Some(ScriptValue::String(when)) = first.get("when") else {
-            panic!(
-                "⚠ its FIELDS must survive the `key:` → `key =` rewrite, not just its shape: \
-                 {first:?}",
-            );
-        };
-        // ⚠⚠⚠ AND WHAT THE NEEDLE MAY AND MAY NOT SWALLOW, asserted against the three dialogs this
-        // workspace has actually captured — because the document ARGUES about exactly this and an
-        // argument in a comment is not a gate. The widening that reads best (`Do you want to`, the
-        // whole family) was written, run, and MEASURED WRONG: it claims the COMMAND dialog, so a
-        // loop carrying it is refused every `cargo test` it asks for. Running is a consent's job.
+        // ⚠⚠⚠ EMPTY, AND THAT IS THE TEMPLATE'S WHOLE POINT — read from the DATAMODEL rather than
+        // from the file's text, which is the half the purity gate cannot reach.
         //
-        // ⚠ The two it must not claim are named as SCREEN LINES, spelled the way the peers that
-        // raise them spell them, so a reworded product breaks this rather than passing quietly.
-        for spoken_for in ["Do you want to proceed?", "Do you want to make this edit?"] {
-            assert!(
-                !spoken_for.contains(when.as_str()),
-                "⚠⚠⚠ THE STANDING INSTRUCTION MUST NOT CLAIM A DIALOG A CONSENT ANSWERS. {when:?} \
-                 is carried by {spoken_for:?} — the command and edit dialogs are `may_answer`'s, \
-                 and a rule reaching one turns a loop that works into a loop that is told to think \
-                 again about every tool call it makes",
-            );
-        }
+        // It used to declare ONE rule, and before that a `(edit me)` placeholder. The rule was
+        // right for THIS repository and wrong for a file other repositories copy: a standing
+        // instruction here is answered on behalf of an author this file has never met, in a
+        // language they may not read. So the rule moved to a KIND document
+        // ([`crate::kind::LoopKind`]) and what it claimed moved with it — the needle assertions
+        // that used to live here are now asked of the kind that ships one.
+        //
+        // ⚠⚠ AN EMPTY LIST IS NEUTRAL, NOT SAFE. A loop meeting an unclaimed dialog reports
+        // `no_rule` and waits for somebody, and a live run once stood at exactly that for an hour
+        // and died at a ceiling. **That is an argument for writing a kind, not for shipping one
+        // inside the template.**
         assert!(
-            "Do you want to create PROBE.txt?".contains(when.as_str()),
-            "⚠⚠ and it must still claim the one left to it — the file that does not exist yet, \
-             which no quote can tell from a design decision (`judged_rules`' argument): {when:?}",
-        );
-        // ⚠ AND `keys` MUST BE GONE. It is asserted as an ABSENCE because its presence would be a
-        // rule able to name the key that APPROVES — a live probe pressed `Tab` at a real permission
-        // dialog, typed into what was left, and the agent's file was written. See
-        // [`crate::screen::REFUSES`].
-        assert!(
-            first.get("keys").is_none(),
-            "⚠⚠⚠ a screen rule must NOT author its own key. The key that refuses is the product's, \
-             measured, and that is what stops a standing rule granting a permission: {first:?}",
+            rules.is_empty(),
+            "⚠⚠⚠ THE TEMPLATE SHIPS NO STANDING INSTRUCTION. Whatever is here authorises — or here, \
+             refuses — on behalf of every repository that copies this file, and the author of a \
+             clause cannot know whose agent will read it. A rule belongs in the adopting \
+             repository's own kind document. Got {rules:?}",
         );
 
         // ── a scalar: what the outer `judging` budget compares against ──
@@ -5821,24 +5794,34 @@ mod tests {
     fn a_non_ascii_string_reaches_the_datamodel_by_either_route() {
         let (_engine, lua, session) = started();
 
-        // ── seam one: a literal in the DOCUMENT, initialised by `<data expr>` ──
+        // ── seam one: a literal in a DOCUMENT, initialised by `<data expr>` ──
         //
-        // The template's own third rule, which is Korean prose a person wrote into this file.
-        let rules = lua.get_variable(&session, "screen_rules");
-        let Ok(ScriptValue::Array(rules)) = &rules else {
-            panic!("the control: the rules must cross as a list at all: {rules:?}");
-        };
-        let ScriptValue::Object(first) = &rules[0] else {
-            panic!("the control: a rule is an object: {:?}", rules[0]);
-        };
-        let Some(ScriptValue::String(text)) = first.get("text") else {
-            panic!("the control: a rule carries a reply text: {first:?}");
-        };
+        // ⚠⚠ IT READS THE KIND DOCUMENT NOW, and the move is the point rather than an accident of
+        // refactoring. The Korean prose used to be authored in the TEMPLATE, and it left when the
+        // template stopped deciding for the repositories that copy it — a reply in one author's
+        // language is exactly the thing a template must not carry. The SEAM did not move: this is
+        // still a literal a person wrote into a `.scxml`, initialised by `<data expr>`, read back
+        // through `IScriptEngine`.
+        //
+        // ⚠ SAME ENGINE, deliberately — `lua` is handed to the kind rather than a fresh one built
+        // beside it. The two seams exist to tell an arrival route apart from a reader, and a second
+        // engine would put a third difference between them and blunt the whole comparison.
+        let kind =
+            crate::kind::LoopKind::debt(Arc::clone(&lua)).expect("the kind's document opens");
+        let rules = kind
+            .screen_rules()
+            .expect("the kind's rules must be readable")
+            .expect("the kind ships a rule, or seam one has no subject");
+        let text = rules
+            .rules()
+            .first()
+            .map(crate::screen::ScreenRule::text)
+            .expect("the control: the kind ships at least one rule");
         assert!(
             text.starts_with("비용 무시하고"),
-            "⚠⚠⚠ SEAM ONE: a non-ASCII literal AUTHORED IN THE DOCUMENT does not survive the \
-             datamodel. Every `screening` rule this template ships is Korean, so the day that \
-             state is built it would send an agent bytes nobody wrote. Got {text:?}",
+            "⚠⚠⚠ SEAM ONE: a non-ASCII literal AUTHORED IN A DOCUMENT does not survive the \
+             datamodel. The reply a kind screens with is Korean, so the day `screening` is built it \
+             would send an agent bytes nobody wrote. Got {text:?}",
         );
 
         // ── seam two: a string arriving as EVENT DATA, assigned by a transition ──

@@ -2101,7 +2101,7 @@ impl OuterLoop {
     }
 
     /// [`consenting`](Self::consenting)'s reading, separated from the loop that holds the engine.
-    fn consents_in(
+    pub(crate) fn consents_in(
         script: &Arc<dyn IScriptEngine>,
         session: &str,
     ) -> Result<Option<crate::consent::Consents>, NotScreenable> {
@@ -2136,10 +2136,18 @@ impl OuterLoop {
     }
 
     pub fn screening(&self) -> Result<Option<ScreenRules>, NotScreenable> {
-        let Ok(held) = self
-            .script
-            .get_variable(&self.session, ScreenRules::WIRE_KEY)
-        else {
+        Self::rules_in(&self.script, &self.session)
+    }
+
+    /// [`screening`](Self::screening)'s reading, separated from the loop that holds the engine —
+    /// [`consents_in`](Self::consents_in)'s shape, for a reason that arrived later: a loop KIND
+    /// authors these in its own document ([`crate::kind`]), and the reader of an author's list must
+    /// be ONE reader or the two documents can disagree about what a rule is.
+    pub(crate) fn rules_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Result<Option<ScreenRules>, NotScreenable> {
+        let Ok(held) = script.get_variable(session, ScreenRules::WIRE_KEY) else {
             return Err(NotScreenable::Unreadable);
         };
         let items = match held {
@@ -6812,10 +6820,20 @@ mod tests {
     /// ⚠ The non-ASCII half is asserted too, and not for symmetry: the replies in that list are
     /// Korean, and PR-87 was a round in which non-ASCII crossed one route into this datamodel and
     /// not the other. This is the AUTHORED route, on a value shape nothing had read before.
+    ///
+    /// # ⚠⚠⚠ Its subject moved, and the claim did not
+    ///
+    /// This read the TEMPLATE's own rules until the template stopped shipping any — a standing
+    /// instruction there is answered on behalf of every repository that copies the file, in a
+    /// language its author may not read. The rules now live in a KIND document, and **the question
+    /// this gate asks is about the CROSSING rather than about which file authored it**: a list of
+    /// objects, initialised by `<data expr>`, read back through a script session. Pointing it at the
+    /// document that ships one keeps the measurement; deleting it would have retired PR-86's and
+    /// PR-87's evidence along with the file that happened to hold it.
     #[test]
     fn the_authored_screen_rules_cross_the_datamodel_as_a_readable_list() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let mut machine = Engine::new(AiLoopPolicy::new(Arc::clone(&lua)));
+        let mut machine = Engine::new(crate::sm::debt_loop::DebtLoopPolicy::new(Arc::clone(&lua)));
         machine.initialize();
         let session = machine
             .policy()
@@ -6925,6 +6943,10 @@ mod tests {
     /// that the decisions come out of the template and into a document only this repository runs.
     const SPRAGS_OWN: &[&str] = &[
         "context_review",
+        // ⚠⚠⚠ THE DECISIONS THE TEMPLATE GAVE UP. It is this repository's own by construction —
+        // holding this repository's standing yesses and an instruction in this repository's owner's
+        // language — which is exactly why it is here and not there.
+        "debt_loop",
         "orchestration",
         "probe_child",
         "probe_parallel",
@@ -7011,19 +7033,25 @@ mod tests {
     /// Both are collected before either is asserted, so ONE run prints the whole contamination
     /// rather than the first line of it. The red is the measurement.
     ///
-    /// # ⚠⚠⚠ THIS GATE IS RED THE MOMENT IT IS WRITTEN, AND THAT IS THE POINT
+    /// # ⚠⚠⚠ IT WAS RED THE MOMENT IT WAS WRITTEN, AND THAT WAS THE POINT
     ///
-    /// It is not a ratchet over a clean file; it is the instrument that says how much of this
-    /// repository is in the template. ⚠ **The way to green it is to move what it finds into
-    /// `debt_loop.scxml` and let that document fill the template through `<param>`** — never to
-    /// delete a declaration, and never to narrow a needle so the hit disappears. Both halves are
-    /// already proven to work here: a parent fills a child's `<data>` with strings AND lists of
-    /// objects, measured by the `<invoke>` probe.
+    /// It was not a ratchet over a clean file; it was the instrument that said how much of this
+    /// repository was in the template — **eleven findings**, nine of them names in comments and two
+    /// of them decision lists. It is green now because `debt_loop.scxml` exists and holds them, and
+    /// what greened it is worth stating so nobody greens it the other way: **never delete a
+    /// declaration, and never narrow a needle so a hit disappears.**
     ///
-    /// ⚠⚠ AND THE STRUCTURAL HALF IS NOT A CLAIM THAT AN EMPTY LIST IS SAFE TO SHIP TODAY — the
-    /// document's own comment records that an empty `may_answer` killed a live run, which is exactly
-    /// why emptying the template only becomes correct once a parent supplies it. **The order is the
-    /// argument**: the gate is red until the parent exists, and green because it does.
+    /// ⚠⚠ AND THE STRUCTURAL HALF IS NOT A CLAIM THAT AN EMPTY LIST IS SAFE — the template's own
+    /// comment records that an empty `may_answer` met the first dialog of a live run and stood there
+    /// until a ceiling ended it. Emptying the template is correct only BECAUSE a kind document
+    /// supplies them, which is why that document arrived in the same round rather than later.
+    ///
+    /// ⚠⚠⚠ THE KIND IS A SIBLING, NOT A PARENT, and that is a correction rather than a preference.
+    /// This gate's own note used to say the way to green it was *"let that document fill the
+    /// template through `<param>`"*. **Measured and refuted**: a driver cannot read, step or send to
+    /// an `<invoke>`d child at the pinned engine, so a template invoked by its kind is a template
+    /// nothing can drive ([`crate::probe`] holds the compiler error). The two documents stand side
+    /// by side and the driver carries values between them.
     ///
     /// # ⚠⚠⚠ WHAT THIS GATE LEANS ON, AND THE ONE HOLE IT DOES NOT CLOSE
     ///

@@ -39,6 +39,14 @@ pub(crate) mod sm {
         include!(concat!(env!("OUT_DIR"), "/ai_loop_sm.rs"));
     }
 
+    // ⚠⚠ THE DECISIONS ONE LOOP KIND RUNS UNDER. It invokes nothing and nothing invokes it — the
+    // driver holds it beside the template and reads its datamodel — so the `<stem>_sm` naming
+    // contract below does not bind it, and it is named for its document like the three above.
+    pub(crate) mod debt_loop {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/debt_loop_sm.rs"));
+    }
+
     // ⚠⚠⚠ THE `<invoke>` PROBE, and its MODULE NAMES ARE A CONTRACT rather than a preference: the
     // generated parent reaches its child as `super::probe_child_sm::ProbeChildPolicy`, so a
     // statechart that invokes another must be included under `<stem>_sm`. The three above are named
@@ -84,6 +92,7 @@ pub mod deliver;
 pub mod dialogue;
 pub mod driver;
 pub mod judge;
+pub mod kind;
 pub mod orchestrator;
 pub mod outer;
 pub mod pipe;

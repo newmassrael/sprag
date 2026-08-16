@@ -38,6 +38,11 @@ const STATECHARTS: &[&str] = &[
     "orchestration",
     "session",
     "ai_loop",
+    // ⚠⚠ THE DECISIONS A DEBT RUN RUNS UNDER — sprag's own, held apart from the template so that a
+    // repository copying `ai_loop.scxml` does not inherit this repository's standing yesses. A
+    // SIBLING rather than a parent, because a driver cannot reach an `<invoke>`d child (measured;
+    // see `probe.rs`). See `debt_loop.scxml`.
+    "debt_loop",
     // ⚠⚠ A PROBE, and it is in the shipped list on purpose: the question it asks is *does
     // `<invoke>` compile and run in THIS crate*, and a document compiled by some other harness
     // would answer about that harness. See `probe_parent.scxml`.

@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  THE DECISIONS A DEBT-REPAYMENT LOOP RUNS UNDER — sprag's own, and nobody
+  else's.
+
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠⚠⚠ WHAT THIS FILE IS FOR. `ai_loop.scxml` is a TEMPLATE: other repositories
+  copy it, and the whole of what makes a run a DEBT run rather than a feature
+  run is the data below. Until this file existed those clauses lived in the
+  template, which meant sprag's standing yesses authorised every run of it, for
+  everybody, until somebody edited the file. That is the hazard
+  `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`
+  was written to measure, and this file is what turns that gate green.
+
+  ⚠⚠⚠ WHY IT IS A DOCUMENT AND NOT A RUST CONSTANT. The owner's rule: EVERY
+  DECISION IS IN AN `.scxml`. A consent is a person having decided in advance,
+  in writing; moving it into Rust would move it out of the reach of the person
+  whose decision it is. The template still declares each id and still assigns
+  it unconditionally at `start` — this file is where the VALUE comes from, and
+  the driver only carries it across.
+
+  ⚠⚠⚠ WHY IT IS A SIBLING AND NOT A PARENT. The first design had this file
+  `<invoke>`ing the template and filling it with `<param>`. MEASURED and
+  refuted: at the pinned SCE a generated parent owns its child as a PRIVATE
+  field with no accessor, so a driver cannot read, pump or send to an invoked
+  child (`error[E0616]: field 'child_probe' ... is private`, recorded in
+  `probe.rs`). An invoked `ai_loop` would be undriveable. So the two documents
+  stand side by side: the driver holds the template, reads this, and hands the
+  values over at `start`.
+
+  ⚠⚠ AND THAT IS THE SHAPE THIS REPOSITORY ALREADY CHOSE ONCE. `context_review`
+  argues at length that an analysis with steps must be a machine rather than a
+  function, and says in its own header that the loop will `<invoke>` it. What
+  was actually built is `ContextReview` in `review.rs` — a second engine the
+  driver drives directly, side by side. Nesting was the intent; siblings are
+  what works.
+
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠⚠ WHAT THIS FILE IS NOT. It is not a second topology. It has one state and
+  no transitions, because a KIND is a datamodel: what separates a debt loop
+  from a feature loop is consents, standing instructions and prompt wording,
+  never the order of the states. The day a kind needs STEPS of its own — an
+  analysis before the first prompt, a judge to consult, a person to wait for —
+  it becomes a machine the driver drives to completion first, which is what
+  `ContextReview` already does. Nothing about that day requires this file to
+  have been a parent.
+
+  ⚠ SO THE STATE IS FINAL ON ENTRY. Nobody steps this machine; the driver
+  initialises it and reads the datamodel, exactly as it reads the template's
+  own authored strings before a run starts.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="debt_loop"
+       datamodel="ecmascript"
+       initial="decided">
+
+  <datamodel>
+    <!--
+      ⚠⚠⚠ WHICH DIALOGS THIS LOOP MAY ANSWER *YES* TO, and with which option.
+      The only thing in this repository that can put a byte into a permission
+      dialog.
+
+      Each clause is `{ asked, answer }`: text the QUESTION must carry for the
+      clause to be about it, and text the OPTION must carry for the clause to
+      authorise it.
+
+      ⚠⚠⚠ THE COST OF WRITING ONE HERE IS THAT IT IS COMMITTED. A clause
+      authorises every debt run until somebody edits this file — where a run
+      argument authorised one run. A standing yes is a different kind of
+      promise from a standing think-about-it-again. What it now does NOT do is
+      authorise runs in repositories that merely copied the template, which is
+      the whole reason these two clauses moved here.
+
+      ⚠⚠⚠ BOTH, BECAUSE EITHER ALONE IS A LOOP THAT CANNOT WORK. A run allowed
+      to edit but not to run commands cannot test what it edited, and a
+      milestone this loop calls reached is one it has verified. One consent is
+      not half a working loop, it is a loop that stops at the other dialog.
+
+      ⚠⚠ NEITHER `answer` NEEDLE IS `Yes`, measured, and the reason is the same
+      both times: the edit dialog offers `1. Yes` / `2. Yes, allow all edits
+      during this session` and the command dialog offers `1. Yes` / `2. Yes,
+      and do not ask again` / `3. No, and tell me what to do`. `Yes` is carried
+      by two options in each, so it names neither — `Consents` answers nothing
+      at all when a needle reaches two. Each needle below is text only ONE
+      option carries.
+    -->
+    <data id="may_answer"
+          expr="[
+            { asked: 'Do you want to make this edit',
+              answer: 'allow all edits during this session' },
+            { asked: 'Bash command',
+              answer: 'do not ask again' }
+          ]"/>
+
+    <!--
+      ⚠⚠⚠ WHAT THIS LOOP TURNS DOWN, AND WHAT IT SAYS INSTEAD. `may_answer`'s
+      opposite number, and the weaker of the two by construction: the act's
+      first key is a REFUSAL, so a rule can never GRANT anything. The failure it
+      can cause is an agent told to reconsider too often, never one that did
+      something nobody allowed.
+
+      ⚠⚠ THE REPLY IS IN THE OWNER'S OWN LANGUAGE, and that is a reason this
+      clause belongs here rather than in a template: it is said to somebody's
+      agent, and which somebody is exactly what a template does not know.
+
+      ⚠ IT QUOTES `create`, NOT THE WHOLE `Do you want to` FAMILY — a widening
+      that was tried and MEASURED WRONG. The bare family needle swallows the
+      COMMAND dialog (`Bash command ... Do you want to proceed?`), so a loop
+      carrying it would be refused every `cargo test` it asked for and told to
+      think again: a loop that may edit but may not run cannot verify a
+      milestone it claims to have reached.
+    -->
+    <data id="screen_rules"
+          expr="[
+            { when: 'Do you want to create',
+              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' }
+          ]"/>
+
+    <!--
+      ⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP JUDGES rather than quotes — EMPTY,
+      and that is a decision rather than an omission.
+
+      A judged rule costs a model call per blocked turn, and no criterion has
+      been written that a debt run needs. The empty list declines it entirely:
+      no judge is asked, nothing is paid for, and every blocked turn goes to
+      `screening` exactly as it did before judged rules existed.
+
+      ⚠ It is DECLARED rather than absent so that turning it on is editing a
+      value here, in the file that owns this loop's decisions, rather than
+      discovering which of two documents the id belongs to.
+    -->
+    <data id="judged_rules" expr="[]"/>
+  </datamodel>
+
+  <!--
+    Nothing happens here. The datamodel above IS this document, and the driver
+    reads it without ever stepping the machine — see the header for why a kind
+    with real steps would not change this file's shape but replace it with one
+    the driver drives.
+  -->
+  <final id="decided"/>
+</scxml>
