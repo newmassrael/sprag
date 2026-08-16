@@ -47,8 +47,8 @@ use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Attended, Brief, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec,
     DoneWhen, Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState,
-    Pipe, PipeSpec, Plugin, ReadyWhen, ReplyFormat, RunContext, ScreenRule, ScreenRules, Turn,
-    WorkspacePaneAccess,
+    Pipe, PipeSpec, Plugin, Readiness, ReadyWhen, ReplyFormat, RunContext, ScreenRule, ScreenRules,
+    Turn, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -469,7 +469,7 @@ impl PluginsExternal {
                 let stimulus = require_str(map, "stimulus")?.to_string();
                 let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
                 let ready_when = opt_ready_when(map)?;
-                let ready_within = opt_millis(map, "ready_timeout_ms")?;
+                let ready_within = opt_millis(map, Readiness::WIRE_KEY)?;
                 let label = format!("orchestrator pane={}", pane.0);
                 let spec = OrchestrationSpec {
                     stimulus,
@@ -494,7 +494,7 @@ impl PluginsExternal {
                     src,
                     dst,
                     ready_when: opt_ready_when(map)?,
-                    ready_within: opt_millis(map, "ready_timeout_ms")?,
+                    ready_within: opt_millis(map, Readiness::WIRE_KEY)?,
                     may_answer: opt_may_answer(map)?,
                     attended: opt_attended(map)?,
                 };
@@ -525,7 +525,7 @@ impl PluginsExternal {
                     spec.done_when = done_when;
                 }
                 spec.ready_when = opt_ready_when(map)?;
-                spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
+                spec.ready_within = opt_millis(map, Readiness::WIRE_KEY)?;
                 spec.may_answer = opt_may_answer(map)?;
                 spec.attended = opt_attended(map)?;
                 let label = format!("agent pane={}", pane.0);
@@ -644,6 +644,22 @@ impl PluginsExternal {
                         .handback()
                         .stillness()
                         .map(|still| still.as_millis() as i64),
+                    // ⚠⚠⚠ AND THE LAST TWO JUDGEMENTS, ON THE SAME ROUTE. Each of them arrived
+                    // paired with a PREDICATE — `ready_timeout_ms` with `ready_when`,
+                    // `turn_within_ms` with `done_when` — and register item 300 measured that the
+                    // pair is one fact plus one decision: what makes a pane ready and how a program
+                    // signals a turn is over are read off WHICH PROGRAM is in the pane; three
+                    // minutes and half an hour are read off nobody. **A wire pairing is not evidence
+                    // of a shared owner.** The predicates stay on the spec below; these two write
+                    // `<data>`.
+                    //
+                    // ⚠⚠ THE WIRE FORM IS UNCHANGED — both keys are still accepted, still optional,
+                    // still milliseconds. What changed is where the number lands, and what OMITTING
+                    // one means: it used to be the substrate's default, and it is now *the document
+                    // decides*, which is `await_person_ms`'s change one round earlier.
+                    ready_timeout_ms: opt_millis(map, Readiness::WIRE_KEY)?
+                        .map(|within| within.as_millis() as i64),
+                    turn_within_ms: opt_ai_loop_turn_ms(map)?,
                 };
                 // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
                 // loop's first prompt goes into a pane whose program may still be starting — see
@@ -652,18 +668,16 @@ impl PluginsExternal {
                 if let Some(ready_when) = opt_ready_when(map)? {
                     spec.ready_when = Some(ready_when);
                 }
-                spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
                 // ⚠⚠ READ AS TWO INDEPENDENT KEYS, where the `agent` form's `opt_turn` refuses a
                 // bound with no `done_when` beside it. That rule is right there and wrong here:
                 // an `agent` run's default contract is `exits`, so a bare bound would be bounding
                 // something the caller did not choose — a loop's default is
                 // `INNER_SESSION_ENDS`, the contract this document makes load-bearing, so a bare
                 // bound bounds exactly the turn the caller is thinking about.
-                spec.turn = Turn::lasting(
-                    opt_done_when(map)?.unwrap_or(sprag_plugin::INNER_SESSION_ENDS),
-                    opt_millis(map, Turn::WIRE_KEY)?,
-                )
-                .ok_or(InvokeError::TypeMismatch)?;
+                // ⚠⚠⚠ AND THE INDEPENDENCE IS NOW STRUCTURAL RATHER THAN A CHOICE MADE HERE: the
+                // bound cannot be spelled on this spec at all, so the two keys could not be read
+                // together even by a caller who wanted them to be.
+                spec.done_when = opt_done_when(map)?.unwrap_or(sprag_plugin::INNER_SESSION_ENDS);
                 if !declined(map, "shows_prompt") {
                     spec.shows_the_prompt = map["shows_prompt"]
                         .as_bool()
@@ -1163,6 +1177,36 @@ fn opt_turn(map: &Map<String, Value>) -> Result<Option<Turn>, InvokeError> {
     Turn::lasting(when, within)
         .map(Some)
         .ok_or(InvokeError::TypeMismatch)
+}
+
+/// Read the `ai_loop` form's optional `turn_within_ms` — HOW LONG ONE OF THE INNER AGENT'S TURNS
+/// MAY TAKE, as a number for the document to hold. Absent is [`None`]: **the document decides**.
+///
+/// # ⚠⚠⚠ Why this exists beside [`opt_turn`] instead of calling it
+///
+/// A loop no longer builds a [`Turn`] at all — the bound is `ai_loop.scxml`'s since register item
+/// 300, and only `done_when` is left on its spec — so the pairing [`opt_turn`] enforces cannot
+/// apply here. It never did: an `agent` run's default contract is `exits`, so a bare bound would
+/// bound something the caller did not choose, where a loop's default is [`INNER_SESSION_ENDS`] and
+/// a bare bound bounds exactly the turn the caller is thinking about.
+///
+/// # ⚠⚠⚠ What it keeps, and what would have gone silently wrong without it
+///
+/// **ZERO IS STILL MALFORMED, and [`Turn::lasting`] is still who says so.** This form used to build
+/// a `Turn` and hand the refusal straight back; with the bound moved to the document, a zero would
+/// have flowed into `<data>` and been read there as *the author declines a bound* — turning a
+/// request the wire REFUSED into a run, which is the direction R385 registered as earning a
+/// protocol bump. The type is asked rather than the rule re-typed, so there is still one owner of
+/// *"wait no time at all for my peer to finish is not a thing a caller can mean"*.
+///
+/// [`INNER_SESSION_ENDS`]: sprag_plugin::INNER_SESSION_ENDS
+fn opt_ai_loop_turn_ms(map: &Map<String, Value>) -> Result<Option<i64>, InvokeError> {
+    let Some(within) = opt_millis(map, Turn::WIRE_KEY)? else {
+        return Ok(None);
+    };
+    Turn::lasting(sprag_plugin::INNER_SESSION_ENDS, Some(within))
+        .ok_or(InvokeError::TypeMismatch)?;
+    Ok(Some(within.as_millis() as i64))
 }
 
 /// Parse the `agent` form's optional `done_when` — WHAT MAKES THE TURN OVER. Absent (or `null`)
@@ -2041,6 +2085,62 @@ mod tests {
             "⚠⚠⚠ AND THE DEFAULT IS SILENCE MEANING TODAY'S BEHAVIOUR: a caller who names neither \
              gets the step timeout their request has always got, or an added argument would have \
              changed what every existing call does",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE LOOP'S BOUND MOVED INTO ITS DOCUMENT AND THE WIRE'S ANSWERS DID NOT MOVE WITH
+    /// IT** — the residue register item 300's move could have left, asked directly.
+    ///
+    /// Nothing on the `ai_loop` form builds a [`Turn`] any more: `done_when` binds a run to its
+    /// peer and stays on the spec, `turn_within_ms` is a judgement and writes `<data>`. Three
+    /// answers had to survive that, and only the first is obvious:
+    ///
+    /// * **A BOUND ALONE IS A RUN HERE**, where [`opt_turn`] refuses it. That asymmetry is older
+    ///   than this round and its reason is the loop's default contract: an `agent` run defaults to
+    ///   `exits`, so a bare bound bounds something nobody chose, and a loop defaults to
+    ///   [`INNER_SESSION_ENDS`](sprag_plugin::INNER_SESSION_ENDS) — the contract its document makes
+    ///   load-bearing — so a bare bound bounds exactly the turn the caller means.
+    /// * **ZERO IS STILL REFUSED.** This is the one the move could have broken silently: the old
+    ///   code handed the number to `Turn::lasting`, which refuses zero, and a `<data>` reads zero
+    ///   as *the author declines a bound*. Had the number simply flowed through, a request the
+    ///   wire REFUSED would have become a RUN — the direction R385 registered as earning a
+    ///   protocol bump, arrived at by deleting a constructor rather than by deciding anything.
+    /// * **AND SILENCE IS STILL SILENCE**, which is what lets the document decide.
+    ///
+    /// ⚠ It is the `ai_loop` form's own reader that is asked, because that is the only place the
+    /// three answers are decided; [`opt_turn`] still serves the forms that build a `Turn`.
+    #[test]
+    fn a_loops_turn_bound_travels_to_its_document_without_changing_the_wires_answers() {
+        let ms = |value: Value| {
+            opt_ai_loop_turn_ms(
+                json!({ sprag_plugin::Turn::WIRE_KEY: value })
+                    .as_object()
+                    .expect("an object"),
+            )
+        };
+        assert!(
+            matches!(ms(json!(12_000)), Ok(Some(12_000))),
+            "⚠ THE CONTROL: a bound ALONE is a run on this form and reaches the document as the \
+             number sent — no `done_when` beside it, which is `opt_turn`'s rule and not this one",
+        );
+        assert!(
+            matches!(ms(json!(0)), Err(InvokeError::TypeMismatch)),
+            "⚠⚠⚠ AND ZERO IS STILL REFUSED. In the document a zero means *no bound of my own*, so \
+             a parser that let it through would turn a refusal into a run — silently, by having \
+             stopped calling the constructor that owned the rule",
+        );
+        assert!(
+            matches!(
+                opt_ai_loop_turn_ms(json!({}).as_object().expect("an object")),
+                Ok(None),
+            ),
+            "⚠⚠ and silence is silence: a caller who names no bound is not overriding the \
+             document, which is the whole point of the move",
+        );
+        assert!(
+            matches!(ms(json!(null)), Ok(None)),
+            "⚠ and an explicitly declined key is the same as an absent one, which is what every \
+             other optional argument on this surface does",
         );
     }
 

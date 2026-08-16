@@ -2012,13 +2012,20 @@ fn argument_help(name: &str) -> &'static str {
              so the driver reports that it looked and found nothing, the machine stays exactly \
              where it was, and the next look asks again. What bounds a loop whose agent has stopped \
              answering is the run's own `max_seconds`, and until it falls due a stalled peer and a \
-             working one are the same picture."
+             working one are the same picture. ⚠⚠⚠ ON `ai_loop` IT IS ALSO NOT PAIRED WITH \
+             `done_when` AND LEAVING IT OUT IS NOT A DECLINE: the number is that document's own \
+             `<data>`, which ships HALF AN HOUR, and a call that omits the key gets what the file \
+             says rather than the run's clock alone. Send it to override the file for one run; \
+             edit the file to change it for everybody."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
              Set it to what you know about the program you are starting — a REPL is up in \
              milliseconds, a cold agent takes seconds. Running out is a FAILURE naming the marker, \
-             which is a different answer from the run running out of time."
+             which is a different answer from the run running out of time. ⚠⚠⚠ ON `ai_loop` THE \
+             DEFAULT IS NOT TWO MINUTES AND IS NOT THIS SURFACE'S: that document authors the \
+             number itself and ships THREE, for a cold agent CLI. Omitting the key means the file \
+             decides; sending it overrides the file for one run."
         }
         "prompt" => "What to say to the agent in the pane (agent).",
         "eof" => "Send end-of-input after the prompt (agent), for a command that reads until EOF.",

@@ -738,6 +738,73 @@
     -->
     <data id="handback_still_ms" expr="15000"/>
 
+    <!--
+      ⚠⚠⚠ HOW LONG THE BARRIER WAITS FOR THE PANE TO BE READY FOR THIS LOOP'S
+      FIRST PROMPT, in milliseconds — three minutes, and the number is a person's
+      allowance rather than a fact about any program.
+
+      ⚠⚠⚠ ITS COMPANION `ready_when` IS NOT HERE, AND THE SPLIT IS THE WHOLE
+      POINT. What makes a pane ready is DERIVED from which program is in it —
+      `AiLoopSpec::driving` builds `settles(agent)` out of the agent's own name,
+      and it is the same for every run against that peer. How long anybody is
+      willing to wait for it is not read off the peer at all: nothing about
+      `claude` says 180,000 and nothing about it says 60,000. **The wire
+      validates the two keys as a pair; a wire pairing is not evidence of a
+      shared owner** (register item 300).
+
+      ⚠⚠ THE NUMBER IS THE ONE THE LIVE LOOP HAS BEEN PASSING AS A RUN ARGUMENT
+      since it started — `ready_timeout_ms 180000` on the command line in the
+      skill that drives it, where a person had already had to decide it.
+      It is authored here rather than invented: a cold `claude` on this machine
+      takes tens of seconds, and two minutes (the substrate's own default, chosen
+      for a shell) had already been judged too short by whoever wrote that line.
+
+      ⚠⚠ ZERO IS A BOUND OF ZERO — one look, then `NeverReady` — and NOT *"use
+      the substrate's default"*, unlike `handback_still_ms` two entries up. The
+      asymmetry is not taste: `Handback` has two VARIANTS and needed a spelling
+      for the second, and this is a plain duration a caller has always been able
+      to send verbatim. Reading a zero here as *decline* would change what
+      `ready_timeout_ms: 0` does to a caller who has been sending it.
+
+      ⚠ THIS DOCUMENT NEEDS NO SPELLING FOR *"decline"*. A `<data>` always holds
+      a number; the ABSENCE that used to mean *the substrate's default* lives on
+      the wire, where omitting the key now means THIS FILE DECIDES.
+    -->
+    <data id="ready_timeout_ms" expr="180000"/>
+
+    <!--
+      ⚠⚠⚠ HOW LONG ONE OF THE INNER AGENT'S TURNS MAY TAKE, in milliseconds —
+      half an hour, and `ready_timeout_ms`'s argument applied to the other end of
+      a turn.
+
+      ⚠⚠⚠ ITS COMPANION `done_when` IS NOT HERE FOR THE SAME REASON. Which
+      evidence ends a turn is how the PROGRAM signals it has stopped —
+      `INNER_SESSION_ENDS` is a fact about an agent CLI that settles rather than
+      exits, true of every run against one. How long a person will let one turn
+      run before the loop stops waiting is a judgement, and this document is
+      where the judgements live.
+
+      ⚠⚠ WHAT IT BOUNDS IS THE WAIT, NOT THE AGENT. Nothing here interrupts a
+      peer: the bound decides when `working` stops watching and the machine is
+      told `turn.blocked` instead of `turn.done`. So a number that is too small
+      does not kill a turn, it makes the loop judge one that had not finished —
+      which is why the honest direction to be wrong in is LONG.
+
+      ⚠ ZERO MEANS THIS DOCUMENT DECLARES NO BOUND OF ITS OWN, and the run's own
+      clock and cancel — the bounds every run already has — are the only ones.
+      That is what the key's ABSENCE meant on the wire, and it is a real answer
+      rather than a degenerate one: `Turn::lasting` REFUSES a zero bound — on the
+      wire too, still, through `opt_ai_loop_turn_ms` — so zero cannot mean *wait
+      no time at all*, which leaves exactly one reading.
+
+      ⚠⚠ IT IS THE OPPOSITE READING TO `ready_timeout_ms` ABOVE, and that is on
+      purpose rather than an inconsistency: a zero barrier is a thing a caller
+      can mean and has always been able to send, and a zero turn bound is not and
+      never could be. **What a zero means is decided by whether the wire ever
+      accepted one.**
+    -->
+    <data id="turn_within_ms" expr="1800000"/>
+
     <!-- ── below the line: loop bookkeeping, not authored ── -->
     <data id="turns" expr="0"/>
     <data id="turns_since_reflect" expr="0"/>
@@ -1024,6 +1091,21 @@
       -->
       <assign location="await_person_ms" expr="_event.data.await_person_ms"/>
       <assign location="handback_still_ms" expr="_event.data.handback_still_ms"/>
+      <!--
+        ⚠⚠⚠ AND THE RUN'S TWO OTHER DURATIONS, ON THE SAME UNCONDITIONAL TERMS.
+        They are the last two judgements that lived on `AiLoopSpec`: how long to
+        wait for the pane to be ready, and how long to let one turn run. Their
+        PREDICATE halves — `ready_when` and `done_when` — stay run arguments,
+        because those are read off which program is in the pane; these two are
+        read off nobody and are therefore this document's (register item 300).
+
+        ⚠⚠ THE DRIVER RE-READS BOTH WHEN IT ACTS — `OuterLoop::patience` and the
+        barrier's `waiting`, at the top of every pass — so a number written here
+        is in force before any wait, and no copy taken at construction can drift
+        from it.
+      -->
+      <assign location="ready_timeout_ms" expr="_event.data.ready_timeout_ms"/>
+      <assign location="turn_within_ms" expr="_event.data.turn_within_ms"/>
       <!--
         ⚠ THE CONSENTS TOO, on the same unconditional terms and for the same
         reason: the driver always sends the key, echoing this document's own

@@ -858,7 +858,6 @@ mod tests {
 
     use super::{AiLoop, NotStarted};
     use crate::access::PaneAccess;
-    use crate::completion::Turn;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState, ProgressCell, Stopped};
     // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
     // them drove the layer UNDER the door in order to reach a state the door refused. The door no
@@ -877,13 +876,36 @@ mod tests {
     /// happens when a run's clock expires INSIDE a turn. See `standin_agent_reporting`.
     const NO_THINKING: Duration = Duration::ZERO;
 
+    /// **THE PER-TURN BOUND EVERY GATE HERE DECLARES**, in milliseconds — what `standin_spec`
+    /// carried before register item 300 moved the number into the document.
+    ///
+    /// ⚠⚠⚠ It is DECLARED and not inherited, and the shipped value is why: the document authors
+    /// half an hour, for a live `claude` that thinks in minutes. A gate that let it default would
+    /// wait that out against a stand-in answering in microseconds — 307's lesson, one field over.
+    const GATE_TURN_MS: i64 = 5_000;
+
+    /// **THE BARRIER'S BOUND EVERY GATE HERE DECLARES** — the substrate's own published default,
+    /// which is exactly what `AiLoopSpec::ready_within: None` gave these gates before the move.
+    ///
+    /// ⚠ Not a short number: these gates want the barrier to CLEAR, and `testing::started` is what
+    /// clears it. Naming a small bound would be racing the fixture rather than declaring anything.
+    /// ⚠⚠ And not ZERO, which here means a bound of zero — one look — rather than *decline*: the
+    /// key is a plain duration and a caller has always been able to send it verbatim.
+    /// ⚠⚠⚠ ASKED OF THE PRODUCT rather than typed, so a substrate that changes its own default
+    /// moves these gates with it instead of leaving a number here that used to be true.
+    const GATE_READY_MS: i64 = crate::readiness::DEFAULT_READY_TIMEOUT.as_millis() as i64;
+
     /// A real script engine, as the daemon's construction site builds one.
     fn engine() -> Arc<dyn IScriptEngine> {
         Arc::new(sce_rust_lua::LuaEngine::new())
     }
 
-    /// The spec these gates drive with — the stand-in's two facts, and a per-turn bound small
-    /// enough that a stalled gate fails rather than hangs.
+    /// The spec these gates drive with — the stand-in's two facts, and nothing else, because
+    /// nothing else is a fact about a peer.
+    ///
+    /// ⚠⚠ THE PER-TURN BOUND IS NOT HERE ANY MORE and cannot be: it is the document's since
+    /// register item 300, and each gate declares it on its BRIEF ([`GATE_TURN_MS`]) — small enough
+    /// that a stalled gate fails rather than waiting out the shipped half hour.
     ///
     /// ⚠ `shows_the_prompt` is FALSE because a `/bin/sh` peer paints only once it has a whole
     /// LINE, so a delivery cannot be confirmed on screen before the newline that would submit it.
@@ -891,9 +913,7 @@ mod tests {
     fn standin_spec() -> AiLoopSpec {
         AiLoopSpec {
             ready_when: Some(ReadyWhen::Settles("claude".to_string())),
-            ready_within: None,
-            turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(5)))
-                .expect("a non-zero bound"),
+            done_when: INNER_SESSION_ENDS,
             shows_the_prompt: false,
             // ⚠ NO JUDGE, so `working`'s `cond="_event.data.judged"` is always false here and
             // every blocked turn takes the `screening` edge. A stand-in gate that acquired one
@@ -965,6 +985,13 @@ mod tests {
             // this suite 59 tests in. A gate that wants a person says so, three lines down.
             await_person_ms: Some(0),
             handback_still_ms: None,
+            // ⚠⚠⚠ AND THE TWO DURATIONS, WRITTEN RATHER THAN INHERITED, for the reason directly
+            // above and one more: the shipped document authors THREE MINUTES and HALF AN HOUR,
+            // which are a person's allowances for a live `claude` and are a hang in a suite whose
+            // whole run is 74 seconds. `standin_spec` used to carry the turn bound; it cannot now,
+            // so the brief is where a gate says it.
+            ready_timeout_ms: Some(GATE_READY_MS),
+            turn_within_ms: Some(GATE_TURN_MS),
         }
     }
 
@@ -1829,16 +1856,14 @@ mod tests {
             &Brief {
                 await_person_ms: Some(30_000),
                 handback_still_ms: Some(300),
-                ..brief_for(1_000_000)
-            },
-            &AiLoopSpec {
                 // ⚠ A SHORT TURN BOUND, about this gate's COST rather than its claim: a pump that
                 // finds nothing blocks for the turn's whole patience, and this one pumps until the
                 // dialog has been met and screened. It stays above `supervised_asking`'s settle.
-                turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                    .expect("a non-zero bound"),
-                ..standin_spec()
+                // ⚠⚠ IT IS ON THE BRIEF because the bound is the document's — item 300.
+                turn_within_ms: Some(1_000),
+                ..brief_for(1_000_000)
             },
+            &standin_spec(),
         )
         .expect("a well-briefed loop over a live pane starts");
         // ⚠ NO CONSENT AND NO RULE, so the first dialog is one nothing here can answer, and
@@ -1955,9 +1980,6 @@ mod tests {
             &Brief {
                 await_person_ms: Some(PATIENCE.as_millis() as i64),
                 handback_still_ms: Some(50),
-                ..brief_for(1_000_000)
-            },
-            &AiLoopSpec {
                 // ⚠⚠⚠ THE TURN'S BOUND IS DELIBERATELY MUCH LONGER THAN THE PERSON'S PATIENCE, and
                 // that is what makes this gate able to tell the two waits apart. `attend` hands the
                 // TURN's bound to `Completion::wait` and the PERSON's to its own arms, so a run
@@ -1965,10 +1987,12 @@ mod tests {
                 // leaves after the turn's bound are different code paths with the same ending.
                 // Equal numbers hid that, and the first draft of this gate passed under its own
                 // mutation because of it.
-                turn: Turn::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                    .expect("a non-zero bound"),
-                ..standin_spec()
+                // ⚠⚠ BOTH NUMBERS ARE NOW ON ONE SURFACE, which is the shape item 300 argued for:
+                // they are the same KIND of value and were in different worlds.
+                turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
+                ..brief_for(1_000_000)
             },
+            &standin_spec(),
         )
         .expect("a well-briefed loop over a live pane starts");
 
@@ -2055,16 +2079,14 @@ mod tests {
             &Brief {
                 await_person_ms: Some(60_000),
                 handback_still_ms: Some(0),
+                // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW — the plugin sizes the turn it is granted
+                // from the bound declared for a turn, so a short one here is what keeps this gate
+                // cheap AND what it is measuring. ⚠ The declaration is the DOCUMENT's now, which
+                // is why the plugin reads it back through `OuterLoop::turn_within` at act time.
+                turn_within_ms: Some(1_000),
                 ..brief_for(1_000_000)
             },
-            &AiLoopSpec {
-                // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW — the plugin sizes the turn it is granted
-                // from the bound its caller declared for a turn, so a short one here is what keeps
-                // this gate cheap AND what it is measuring.
-                turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                    .expect("a non-zero bound"),
-                ..standin_spec()
-            },
+            &standin_spec(),
         )
         .expect("a well-briefed loop over a live pane starts");
         let progress = ProgressCell::default();
@@ -3995,29 +4017,26 @@ mod tests {
             // `screen.none` leads here. That is the commonest way a real run meets this state.
             // ⚠ A person IS expected, and says so here — see the `WhenStill` note below.
             &Brief {
-                await_person_ms: Some(30_000),
-                handback_still_ms: Some(300),
-                ..brief_for(40)
-            },
-            // ⚠ A SHORTER TURN BOUND THAN THE OTHER GATES', and it is about this gate's COST rather
-            // than its claim: a pump that finds nothing blocks for the turn's whole patience, and
-            // this one deliberately pumps many times with nothing happening. ⚠ It stays above
-            // `supervised_asking`'s 300 ms settle, or no turn could ever be seen to end.
-            &AiLoopSpec {
-                turn: Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                    .expect("a non-zero bound"),
                 // ⚠⚠⚠ A PERSON IS DECLARED, AND THIS GATE IS WHERE THAT STOPPED BEING OPTIONAL.
-                // With `Attended::NoOne` — every other gate's value, and the default — a person's
-                // hand at the pane is a TAKEOVER for ever after: measured here as
+                // With `Attended::NoOne` — every other gate's value, and the old default — a
+                // person's hand at the pane is a TAKEOVER for ever after: measured here as
                 // `AwaitingHuman --TurnDone--> Judging --Judge--> Working
                 // --TurnInterrupted--> AwaitingHuman`, round and round, because the barrier went on
                 // reporting the keystroke that unblocked the dialog. That is the honest reading of
                 // `NoOne` (*nobody is watching, so a hand means somebody took the pane*) and the
                 // wrong contract for a run whose whole point is that a person may answer it.
                 // `WhenStill` is what says the pane is the run's again once they have finished.
-                // ⚠ Both numbers are on the BRIEF above since the patience became the document's.
-                ..standin_spec()
+                await_person_ms: Some(30_000),
+                handback_still_ms: Some(300),
+                // ⚠ A SHORTER TURN BOUND THAN THE OTHER GATES', and it is about this gate's COST
+                // rather than its claim: a pump that finds nothing blocks for the turn's whole
+                // patience, and this one deliberately pumps many times with nothing happening.
+                // ⚠ It stays above `supervised_asking`'s 300 ms settle, or no turn could ever be
+                // seen to end.
+                turn_within_ms: Some(1_000),
+                ..brief_for(40)
             },
+            &standin_spec(),
         )
         .expect("a well-briefed loop over a live pane starts");
 

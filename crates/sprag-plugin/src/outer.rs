@@ -404,10 +404,63 @@ pub struct Brief {
     /// back to a run nobody is watching* cannot be constructed. **Zero is malformed here** rather
     /// than a quiet *never*: every person pauses between keystrokes.
     pub handback_still_ms: Option<i64>,
+
+    /// **HOW LONG THE BARRIER WAITS FOR THE PANE TO BE READY**, in milliseconds, or [`None`] to keep
+    /// what the document says.
+    ///
+    /// # ⚠⚠⚠ Why this is here and its companion `ready_when` is not
+    ///
+    /// They travel together on the wire and they have different owners, which is register item
+    /// 300's whole finding: **a wire pairing is not evidence of a shared owner.** What makes a pane
+    /// ready is DERIVED from which program is in it — [`AiLoopSpec::driving`] builds
+    /// [`ReadyWhen::Settles`] out of the agent's own name — and is the same for every run against
+    /// that peer. How long anybody is willing to wait for it is read off nobody: nothing about
+    /// `claude` says three minutes.
+    ///
+    /// ⚠⚠ ZERO IS A BOUND OF ZERO — one look, then [`PaneError::NeverReady`] — because that is
+    /// what a caller sending `ready_timeout_ms: 0` has always got and this move must not change it.
+    /// *The substrate's default* is what the key's ABSENCE means, and absence is spelled [`None`]
+    /// here; a `<data>` always holds a number, so the document needs no spelling for it.
+    ///
+    /// [`PaneError::NeverReady`]: crate::access::PaneError::NeverReady
+    pub ready_timeout_ms: Option<i64>,
+
+    /// **HOW LONG ONE OF THE INNER AGENT'S TURNS MAY TAKE**, in milliseconds, or [`None`] to keep
+    /// what the document says.
+    ///
+    /// [`ready_timeout_ms`](Self::ready_timeout_ms)'s argument at the other end of a turn, and its
+    /// own companion `done_when` stays on [`AiLoopSpec`] for the same reason: which evidence ends a
+    /// turn is how the PROGRAM signals it has stopped, and how long a person will wait for that is
+    /// a judgement nobody can read off the peer.
+    ///
+    /// ⚠ ZERO MEANS NO BOUND OF THE DOCUMENT'S OWN — the run's clock and its cancel, which every
+    /// run already has. [`Turn::lasting`](crate::completion::Turn::lasting) REFUSES a zero bound, so
+    /// zero cannot mean *wait no time at all*, which leaves exactly one reading.
+    pub turn_within_ms: Option<i64>,
 }
 
-/// **HOW A LOOP DRIVES THE PANE IT RUNS IN** — the three declared contracts a turn-owning plugin
-/// takes, plus the one fact about the peer that decides how a prompt is delivered.
+/// **WHICH PANE, RUNNING WHICH PROGRAM** — what binds a run to its peer, with the judgements moved
+/// out to the document.
+///
+/// # ⚠⚠⚠ The line this struct is now on the other side of
+///
+/// Register item 300 measured the six arguments that were left against one question — *does this
+/// value follow from WHICH PROGRAM is in the pane, or from what a person wants?* — and it cut
+/// through both pairs the wire validates together. What survived here is the predicates:
+/// `ready_when` is derived from the agent's name, `done_when` is how that program signals a turn
+/// is over, `shows_the_prompt` is whether it paints its prompt box. The durations beside them went
+/// to [`Brief`], where the rest of the judgements already were.
+///
+/// ⚠⚠ Three of the four fields cannot hold a decision at all, and that is a SHAPE rather than a
+/// rule to remember: a run argument that cannot spell a duration cannot become a second place one
+/// lives.
+///
+/// ⚠⚠⚠ **AND THE FOURTH STILL CAN, WHICH IS SAID HERE RATHER THAN LEFT TO BE FOUND.**
+/// [`JudgeSpec`](crate::judge::JudgeSpec) carries `within` — how long one judgement may take —
+/// and nothing about a model says thirty seconds, so by item 300's own line it is a judgement,
+/// reachable from this struct one field down. `judge`'s ARGV is a binding (which second peer
+/// answers); its bound is not. It is the next duration owed to `ai_loop.scxml` and it is
+/// registered, not forgotten.
 ///
 /// # ⚠⚠ Why a struct, where this was five positional arguments
 ///
@@ -434,12 +487,19 @@ pub struct AiLoopSpec {
     /// ten milliseconds, with the pseudoterminal's own echo confirming the delivery. The honest
     /// value for an agent is [`ReadyWhen::Settles`] naming it.
     pub ready_when: Option<ReadyWhen>,
-    /// How long the barrier waits for that, or [`None`] for the substrate's default.
-    pub ready_within: Option<Duration>,
-    /// What makes ONE of the inner agent's turns over, and how long one may take.
+    /// **WHICH EVIDENCE ENDS ONE OF THE INNER AGENT'S TURNS** — how the program in this pane
+    /// signals it has stopped, and the same for every run against it.
     ///
     /// [`INNER_SESSION_ENDS`] is the contract this loop makes load-bearing.
-    pub turn: Turn,
+    ///
+    /// # ⚠⚠⚠ Why this is a bare [`DoneWhen`] where it was a whole [`Turn`]
+    ///
+    /// [`Turn`] carries the BOUND beside it, and the bound is a judgement: nothing about `claude`
+    /// says half an hour. It is the document's now ([`Brief::turn_within_ms`]), and this field is
+    /// the half that binds a run to its pane. **The type is the gate** — a spec that cannot hold
+    /// the number cannot be a second place the decision lives, which is the shape register item 300
+    /// asked for rather than a comment saying not to.
+    pub done_when: crate::completion::DoneWhen,
     /// Whether the inner agent paints the prompt box it is typed into — see
     /// [`OuterLoop::shows_the_prompt`](OuterLoop#structfield.shows_the_prompt).
     pub shows_the_prompt: bool,
@@ -469,18 +529,15 @@ impl AiLoopSpec {
     pub fn driving(agent: &str) -> Self {
         Self {
             ready_when: Some(ReadyWhen::Settles(agent.to_owned())),
-            ready_within: None,
-            // ⚠ NO PER-TURN BOUND, the honest default for an agent: how long one of its turns may
-            // take is the caller's to say, and the run's own clock and cancel bound it meanwhile.
-            // `lasting` refuses only a ZERO bound, so this is never `None`.
-            turn: Turn::lasting(INNER_SESSION_ENDS, None)
-                .expect("a turn with no bound is never the zero one `lasting` refuses"),
+            done_when: INNER_SESSION_ENDS,
             shows_the_prompt: true,
             // ⚠ NOT DERIVABLE FROM THE AGENT'S NAME. What a run may answer on somebody's behalf is
-            // ⚠ WHAT A RUN MAY ANSWER AND WHO IS AT ITS PANE BOTH USED TO SIT HERE, and neither
-            // does now: they are the document's, through [`Brief::may_answer`] and
-            // [`Brief::await_person_ms`]. What is left on this spec is what BINDS a run to its
-            // pane rather than what a person decided in advance.
+            // ⚠ WHAT A RUN MAY ANSWER, WHO IS AT ITS PANE AND THE TWO DURATIONS ALL USED TO SIT
+            // HERE, and none of them does now: they are the document's, through
+            // [`Brief::may_answer`], [`Brief::await_person_ms`], [`Brief::ready_timeout_ms`] and
+            // [`Brief::turn_within_ms`]. What is left on this spec is what BINDS a run to its
+            // pane rather than what a person decided in advance — and every field of it is now a
+            // predicate about the peer, which is register item 300's line.
             // ⚠ NO JUDGE. A judge is a second agent with a bill; naming one here would have
             // every loop built from this constructor quietly acquire one.
             judge: None,
@@ -1390,8 +1447,12 @@ pub struct OuterLoop {
     /// **THE INNER SESSION THIS LOOP IS DRIVING** — its pane, its barrier and its baseline, which are
     /// one value because `restarting` replaces all three at once. See [`Session`].
     driving: Session,
-    /// What makes the inner agent's turn over, and how long one may take.
-    turn: Turn,
+    /// What makes the inner agent's turn over.
+    ///
+    /// ⚠⚠⚠ HOW LONG ONE MAY TAKE IS NOT BESIDE IT AND MUST NOT BE. That number is the document's
+    /// `turn_within_ms`, read when the wait is about to happen — see [`Self::patience`]. A copy
+    /// here would be the second place a decision lives, which is what this whole move ended.
+    done_when: crate::completion::DoneWhen,
     /// **WHETHER THE INNER AGENT PAINTS THE PROMPT BOX IT IS TYPED INTO.**
     ///
     /// [`AgentSpec::shows_the_prompt`](crate::agent::AgentSpec::shows_the_prompt)'s knob, and this
@@ -1530,7 +1591,7 @@ impl OuterLoop {
         // started against it; keeping the values would be the staleness this round removed.
         Authored::read(&script, &session)?;
         Some(Self {
-            done: Completion::new(spec.turn.when()),
+            done: Completion::new(spec.done_when),
             noticed: None,
             // ⚠⚠⚠ THE CALLER'S CONSENTS AND THEIR ATTENDANT REACH THE BARRIER, and that reverses a
             // decision this constructor used to argue: *"answering a dialog is `screening`'s job,
@@ -1541,16 +1602,17 @@ impl OuterLoop {
             // authorities, one of them built, and a question no consent covers still reaches the
             // machine's own `turn.blocked`.
             //
-            // ⚠ THE BARRIER'S OWN PATIENCE IS THE CALLER'S, because a loop's first prompt waits for
-            // an agent CLI to come up and that is tens of seconds on a cold start — where the
-            // default was chosen for a shell. Absent still means the default; what changed is that
-            // a caller who knows their peer is slow can say so, instead of the run reporting
-            // `NeverReady` about a program that was still loading.
+            // ⚠⚠⚠ THE BARRIER'S OWN PATIENCE IS THE DOCUMENT'S, and this line used to read
+            // `spec.ready_within`. A loop's first prompt waits for an agent CLI to come up, which
+            // is tens of seconds on a cold start where the substrate's default was chosen for a
+            // shell — but *how long anybody will wait* is not read off the peer, so it is authored
+            // beside the rest of the judgements (register item 300). Seeded here and re-read at the
+            // top of every pass, for `expecting`'s reason exactly.
             driving: Session {
                 pane,
                 ready: Readiness::new(
                     spec.ready_when.clone(),
-                    spec.ready_within,
+                    Self::ready_within_at(&script, &session),
                     // ⚠ THE DOCUMENT'S, and only as a SEED — `pump` re-reads before every pass.
                     Self::consenting_at(&script, &session),
                     // ⚠⚠⚠ THE DOCUMENT'S, and only as a SEED: `pump` re-reads it at the top of every
@@ -1570,7 +1632,7 @@ impl OuterLoop {
             machine,
             script,
             session,
-            turn: spec.turn.clone(),
+            done_when: spec.done_when,
             shows_the_prompt: spec.shows_the_prompt,
             judge: spec.judge.clone(),
             claimed: None,
@@ -1626,15 +1688,21 @@ impl OuterLoop {
         self.stopping_short
     }
 
-    /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its caller declared it — [`None`] where
-    /// they declared nothing.
+    /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its DOCUMENT authors it — [`None`] for a
+    /// document declaring no bound of its own, and for one this cannot read.
     ///
     /// ⚠ Read by the plugin to size the window an account turn is given
     /// ([`Accounting::Within`](crate::plugin::Accounting::Within)), which is the one place a number
     /// out here has to be somebody else's rather than this crate's.
+    ///
+    /// ⚠⚠ THE TWO [`None`]s ARE DELIBERATELY THE SAME VALUE, and the caller's treatment of it is
+    /// why: *no bound declared* and *no bound I can read* both mean **this run has nothing of its
+    /// own to bound the window with**, and the substrate's published default stands in for both.
+    /// The refusal that matters is [`brief`](Self::brief)'s, which stops a run against a document
+    /// holding neither.
     #[must_use]
-    pub const fn turn_within(&self) -> Option<Duration> {
-        self.turn.within()
+    pub fn turn_within(&self) -> Option<Duration> {
+        self.turn_bound().flatten()
     }
 
     /// **TELL THE MACHINE WHAT THIS RUN IS FOR** — the template filled in by a caller that did not
@@ -1702,7 +1770,36 @@ impl OuterLoop {
             // treatment an unreadable rule list already gets, one field along.
             self.machine.process_event(AiLoopEvent::Fail);
             return Briefed::NotHeld {
-                part: "await_person_ms",
+                part: crate::readiness::Attended::WIRE_KEY,
+                held: None,
+            };
+        };
+        // ⚠⚠⚠ THE RUN'S TWO OTHER DURATIONS, ON THE SAME TERMS — echoed when the caller named none,
+        // because the document's `<assign>` is unconditional and an omitted key would delete an
+        // author's number.
+        //
+        // ⚠⚠ READ AND REFUSED SEPARATELY, where the pair above is one refusal. `await_person_ms`
+        // and `handback_still_ms` are two halves of one decision — `Handback` lives inside
+        // `Attended::APerson` — and these two are not: a document may perfectly well author a
+        // barrier's patience and decline a per-turn bound. Naming the wrong part in the refusal is
+        // what item 264 measured the cost of, one layer up.
+        let Some(ready_ms) = brief
+            .ready_timeout_ms
+            .or_else(|| self.authored_ms(crate::readiness::Readiness::WIRE_KEY))
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: crate::readiness::Readiness::WIRE_KEY,
+                held: None,
+            };
+        };
+        let Some(turn_ms) = brief
+            .turn_within_ms
+            .or_else(|| self.authored_ms(Turn::WIRE_KEY))
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: Turn::WIRE_KEY,
                 held: None,
             };
         };
@@ -1735,8 +1832,10 @@ impl OuterLoop {
             }),
             "milestone": brief.milestone,
             "reference": brief.reference,
-            "await_person_ms": patience_ms,
-            "handback_still_ms": still_ms,
+            crate::readiness::Attended::WIRE_KEY: patience_ms,
+            crate::readiness::Handback::WIRE_KEY: still_ms,
+            crate::readiness::Readiness::WIRE_KEY: ready_ms,
+            Turn::WIRE_KEY: turn_ms,
             "max_turns": brief.max_turns,
             "reflect_every": brief.reflect_every,
             ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
@@ -2159,6 +2258,13 @@ impl OuterLoop {
         // pump is not the place to discover it.
         if let Ok(clauses) = self.consenting() {
             self.driving.ready.answering(clauses);
+        }
+        // ⚠⚠ AND HOW LONG IT MAY WAIT, the third of the barrier's contracts to come from the file
+        // rather than from a construction argument. It is re-read here for the other two's reason
+        // and for one of its own: `restarting` builds a fresh barrier from this one, so a bound
+        // taken at construction would outlive every session the run replaces.
+        if let Some(within) = self.ready_within() {
+            self.driving.ready.waiting(within);
         }
         // ⚠⚠⚠ TAKEN BEFORE THE ACT, so what this pass reports is what it ARRIVED AT rather than
         // what it happens to be holding — see [`Pumped::Moved`]'s `found`, which is register item
@@ -3307,6 +3413,59 @@ impl OuterLoop {
         }
     }
 
+    /// **HOW LONG THIS DOCUMENT SAYS THE BARRIER MAY WAIT**, read at the moment of the look —
+    /// [`None`] for a document holding nothing this can read.
+    ///
+    /// ⚠⚠⚠ ZERO IS A BOUND OF ZERO HERE, and deliberately not *the substrate's default*. The wire
+    /// key has always meant exactly this number, `Readiness` has always taken it verbatim, and a
+    /// caller sending `ready_timeout_ms: 0` has always got one look. Reading it as *decline* would
+    /// silently change what that request does — a value's meaning changing under a caller, which
+    /// is the direction R370 registered as earning a wire bump. **The document never needs a
+    /// spelling for `decline`**, because a `<data>` always holds a number and the ABSENCE this key
+    /// once had lives on the wire, where it now means *the document decides*.
+    fn ready_within(&self) -> Option<Duration> {
+        Self::ready_within_at(&self.script, &self.session)
+    }
+
+    /// [`ready_within`](Self::ready_within)'s reading, separated from the loop that holds the
+    /// engine so construction can seed the barrier before there is a `self` —
+    /// [`Self::seed_expecting`]'s shape.
+    fn ready_within_at(script: &Arc<dyn IScriptEngine>, session: &str) -> Option<Duration> {
+        Self::ms_at(script, session, Readiness::WIRE_KEY).map(Duration::from_millis)
+    }
+
+    /// **HOW LONG THIS DOCUMENT SAYS ONE TURN MAY TAKE**, read at the moment of the wait — the
+    /// outer [`None`] for a document holding nothing this can read, the inner one for a document
+    /// declaring NO bound of its own.
+    ///
+    /// ⚠⚠ The two `None`s are one nesting rather than one flat answer, because a reader that
+    /// flattened them could not tell *the author declined* from *this document is unreadable* —
+    /// the shape R381 measured, a value published as optional and read as required. What consumes
+    /// it flattens on purpose and says so ([`turn_within`](Self::turn_within)).
+    ///
+    /// ⚠ ZERO IS THE DECLINING here and nowhere else, and it is the one spelling available:
+    /// `<data>` holds a number, and [`Turn::lasting`] already refuses zero as a bound — on the wire
+    /// too, still — so no reading of it as *wait no time at all* is in play.
+    ///
+    /// [`Turn::lasting`]: crate::completion::Turn::lasting
+    fn turn_bound(&self) -> Option<Option<Duration>> {
+        let ms = Self::ms_at(&self.script, &self.session, Turn::WIRE_KEY)?;
+        Some((ms > 0).then(|| Duration::from_millis(ms)))
+    }
+
+    /// A whole number of milliseconds under `name`, or [`None`] where this document holds none
+    /// that can be read that way.
+    ///
+    /// ⚠ A `<data>` spelled as a plain integer can still arrive as a double: the datamodel is
+    /// ECMAScript-shaped and its numbers are not typed by how they were written.
+    fn ms_at(script: &Arc<dyn IScriptEngine>, session: &str, name: &str) -> Option<u64> {
+        match script.get_variable(session, name) {
+            Ok(ScriptValue::Int(held)) if held >= 0 => Some(held.unsigned_abs()),
+            Ok(ScriptValue::Double(held)) if held >= 0.0 => Some(held as u64),
+            _ => None,
+        }
+    }
+
     /// **WHO THIS DOCUMENT EXPECTS AT ITS PANE RIGHT NOW**, handed to the barrier before it can act
     /// on it — `await_person_ms` and `handback_still_ms`, read at the moment of use.
     ///
@@ -3371,10 +3530,15 @@ impl OuterLoop {
         Self::expected_by(script, session).unwrap_or(crate::readiness::Attended::NoOne)
     }
 
-    /// How long one of the inner agent's turns may take — the caller's [`Turn`], or the run's own
-    /// clock where they declined a bound.
+    /// How long one of the inner agent's turns may take — the DOCUMENT's `turn_within_ms`, read
+    /// here rather than kept, or the run's own clock where it declares no bound.
+    ///
+    /// ⚠⚠⚠ READ AT THE MOMENT OF THE WAIT, which is [`expecting`](Self::expecting)'s discipline and
+    /// was learned the hard way one field over: a copy taken at construction is taken BEFORE the
+    /// brief that may replace it, and reading the document at construction hung this crate's suite
+    /// 59 tests in.
     fn patience(&self) -> Duration {
-        self.turn.within().unwrap_or(Duration::MAX)
+        self.turn_within().unwrap_or(Duration::MAX)
     }
 
     /// Tell the machine `raised` happened, then pay whatever the transition it took owes the peer.
@@ -3443,7 +3607,7 @@ impl OuterLoop {
         run: &RunContext,
         text: &str,
     ) -> Result<u64, PaneError> {
-        self.done = Completion::new(self.turn.when());
+        self.done = Completion::new(self.done_when);
         self.done.begin(panes, self.driving.pane);
         // ⚠ A NEW TURN IS A NEW QUESTION — see [`Noticed`]. Cleared beside the two other things
         // armed per turn rather than anywhere else, so the three cannot come apart.
@@ -3570,7 +3734,7 @@ impl OuterLoop {
     /// run was already broken — nothing could ever end one of its turns — and a named refusal on
     /// the first prompt is the better half of the same fact.
     const fn submit_lands_when(&self) -> SubmittedWhen {
-        submit_lands_when(self.turn.when())
+        submit_lands_when(self.done_when)
     }
 
     /// **WHAT THE INNER SESSION HAS BEEN CHARGED TO READ**, as of its most recent billed request —
@@ -4130,11 +4294,10 @@ mod tests {
     /// confirmed on screen before the newline that would submit it — confirming first is a
     /// deadlock. A real agent CLI renders each character into its prompt box as it arrives and
     /// takes the other path, which is what [`AiLoopSpec::driving`] is for.
-    fn spec(ready_when: Option<ReadyWhen>, turn: Turn) -> AiLoopSpec {
+    fn spec(ready_when: Option<ReadyWhen>) -> AiLoopSpec {
         AiLoopSpec {
             ready_when,
-            ready_within: None,
-            turn,
+            done_when: INNER_SESSION_ENDS,
             shows_the_prompt: false,
             // ⚠ ANSWERS NOTHING AND NOBODY IS WATCHING — the default every run has, and the one
             // these gates want: what they are about is the driver, not the answering contract.
@@ -4145,9 +4308,52 @@ mod tests {
         }
     }
 
-    /// The turn contract these gates use, bounded at `within`.
-    fn turn_of(within: Duration) -> Turn {
-        Turn::lasting(INNER_SESSION_ENDS, Some(within)).expect("a non-zero bound")
+    /// **A LOOP OVER `pane` WHOSE DOCUMENT AUTHORS `within` AS ITS PER-TURN BOUND** — the door
+    /// every gate below builds through.
+    ///
+    /// # ⚠⚠⚠ Why a gate has to WRITE the number and can no longer pass it
+    ///
+    /// `turn_within_ms` is the document's since register item 300, and the shipped document authors
+    /// **half an hour**. These gates drive an uncancellable run against a peer that never finishes
+    /// a turn, so inheriting that number is not a slower gate, it is a gate that never returns.
+    ///
+    /// ⚠⚠ **AND INHERITING IS THE WRONG SHAPE EVEN WHERE IT WOULD TERMINATE** — item 307's lesson,
+    /// two fields over: a gate that wants a value SAYS it, because what it would inherit from is a
+    /// file that is allowed to change. Writing the `<data>` is exactly what a person editing that
+    /// file does, which is why this is authoring rather than a back door: there is still only one
+    /// place the decision lives.
+    fn bounded_at(
+        script: Arc<dyn IScriptEngine>,
+        pane: PaneId,
+        within: Duration,
+    ) -> Option<OuterLoop> {
+        with_bound(OuterLoop::new(script, pane, &spec(None))?, within)
+    }
+
+    /// [`bounded_at`]'s other half, for the gates that also declare a readiness condition.
+    fn ready_bounded_at(
+        script: Arc<dyn IScriptEngine>,
+        pane: PaneId,
+        ready_when: ReadyWhen,
+        within: Duration,
+    ) -> Option<OuterLoop> {
+        with_bound(
+            OuterLoop::new(script, pane, &spec(Some(ready_when)))?,
+            within,
+        )
+    }
+
+    /// Author `within` into the loop's own datamodel — see [`bounded_at`], which holds the argument.
+    fn with_bound(loops: OuterLoop, within: Duration) -> Option<OuterLoop> {
+        loops
+            .script
+            .set_variable(
+                &loops.session,
+                Turn::WIRE_KEY,
+                ScriptValue::Int(within.as_millis() as i64),
+            )
+            .expect("the document's own bound is writable");
+        Some(loops)
     }
 
     /// A pane running `cat` — a peer that takes whatever is typed and says nothing of its own.
@@ -4275,15 +4481,19 @@ mod tests {
             });
             let access = WorkspacePaneAccess::new(Arc::clone(&workspace))
                 .with_agent_state(supervised.then_some(source));
-            let mut loops = OuterLoop::new(
-                lua,
-                pane,
-                &AiLoopSpec {
-                    // ⚠ THE PATH UNDER TEST. Every other fixture here is `false`, which is why the
-                    // delivery path had no offline driver at all — see the register's item 228.
-                    shows_the_prompt: true,
-                    ..spec(None, turn_of(Duration::from_secs(1)))
-                },
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        // ⚠ THE PATH UNDER TEST. Every other fixture here is `false`, which is why
+                        // the delivery path had no offline driver at all — see item 228.
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                Duration::from_secs(1),
             )
             .expect("the document's datamodel must carry its four authored strings");
             // The peer has to be past its `stty` before anything is typed, or the line discipline
@@ -4792,7 +5002,7 @@ mod tests {
                 .expect("spawn pane")
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_secs(1))))
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
             .expect("the document's datamodel must carry its four authored strings");
         // ⚠⚠ THE PROMPTS ARE COMPOSED IN `priming`, so a loop still in `idle` holds them empty and
         // this question cannot be asked of it. One pump is what makes them exist — and it is the
@@ -4886,12 +5096,8 @@ mod tests {
                 .expect("spawn pane")
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut loops = OuterLoop::new(
-            Arc::clone(&lua),
-            pane,
-            &spec(None, turn_of(Duration::from_secs(1))),
-        )
-        .expect("the document's datamodel must carry its four authored strings");
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
 
         // ⚠ PROSE, not identifiers. A north star is what a person types: quotes that would splice
         // a hand-built payload apart, an apostrophe, a newline that would end the line early, a
@@ -4916,6 +5122,11 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
+            // document before the brief, and a `None` here is what makes the brief echo it back
+            // rather than replace it. Saying the number twice would be two places again.
+            ready_timeout_ms: None,
+            turn_within_ms: None,
         };
         assert_eq!(
             loops.brief(&brief),
@@ -4993,10 +5204,10 @@ mod tests {
         );
         let (workspace, pane) = quiet_pane();
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut loops = OuterLoop::new(
+        let mut loops = bounded_at(
             Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
-            &spec(None, turn_of(Duration::from_secs(1))),
+            Duration::from_secs(1),
         )
         .expect("the document's datamodel must carry its four authored strings");
         // ⚠ TRUTHFUL UNTIL NOW, and that is the control: the loop was built against an engine
@@ -5018,6 +5229,11 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
+            // document before the brief, and a `None` here is what makes the brief echo it back
+            // rather than replace it. Saying the number twice would be two places again.
+            ready_timeout_ms: None,
+            turn_within_ms: None,
         };
 
         // ── the value came back DIFFERENT: the shape SCE PR-87 produced ──
@@ -5068,10 +5284,10 @@ mod tests {
         let engine = Disagreeing::about("milestone", ScriptValue::Undefined);
         let (workspace, pane) = quiet_pane();
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut loops = OuterLoop::new(
+        let mut loops = bounded_at(
             Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
-            &spec(None, turn_of(Duration::from_secs(1))),
+            Duration::from_secs(1),
         )
         .expect("the document's datamodel must carry its four authored strings");
         engine.start_lying();
@@ -5087,6 +5303,8 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
             }),
             Briefed::NotHeld {
                 part: "milestone",
@@ -5121,15 +5339,11 @@ mod tests {
         let (workspace, pane) = quiet_pane();
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         engine.start_lying();
-        let turn = || {
-            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
-                .expect("a non-zero bound")
-        };
         assert!(
             OuterLoop::new(
                 Arc::clone(&engine) as Arc<dyn IScriptEngine>,
                 pane,
-                &spec(None, turn()),
+                &spec(None),
             )
             .is_none(),
             "⚠⚠ a machine that does not answer with its four authored strings must be refused \
@@ -5138,10 +5352,10 @@ mod tests {
 
         // ── and mid-run, which is a different claim: the prompt is read WHEN IT IS DELIVERED ──
         let engine = Disagreeing::about("start_prompt", ScriptValue::Undefined);
-        let mut loops = OuterLoop::new(
+        let mut loops = bounded_at(
             Arc::clone(&engine) as Arc<dyn IScriptEngine>,
             pane,
-            &spec(None, turn()),
+            Duration::from_secs(1),
         )
         .expect("the control: a truthful engine must build a loop");
         engine.start_lying();
@@ -5202,12 +5416,8 @@ mod tests {
                 .expect("spawn pane")
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut loops = OuterLoop::new(
-            Arc::clone(&lua),
-            pane,
-            &spec(None, turn_of(Duration::from_secs(1))),
-        )
-        .expect("the document's datamodel must carry its four authored strings");
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
         let first = Brief {
             north_star: "the one the run is actually for".to_string(),
             milestone: "step one".to_string(),
@@ -5222,6 +5432,11 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
+            // document before the brief, and a `None` here is what makes the brief echo it back
+            // rather than replace it. Saying the number twice would be two places again.
+            ready_timeout_ms: None,
+            turn_within_ms: None,
         };
         assert_eq!(loops.brief(&first), Briefed::Took, "the control");
 
@@ -5296,13 +5511,11 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         // ⚠ NO `started` HERE. That is the whole point — see the doc above.
 
-        let mut loops = OuterLoop::new(
+        let mut loops = ready_bounded_at(
             lua,
             pane,
-            &spec(
-                Some(ReadyWhen::Prints("PEER-READY".to_string())),
-                turn_of(Duration::from_millis(200)),
-            ),
+            ReadyWhen::Prints("PEER-READY".to_string()),
+            Duration::from_millis(200),
         )
         .expect("the document's datamodel must carry its four authored strings");
 
@@ -5335,6 +5548,190 @@ mod tests {
                 .is_some_and(|seen| seen.contains("PEER-READY")),
             "⚠ THE CONTROL: the peer really did announce itself, so the wait above was the barrier \
              doing its job rather than the fixture being slow for some other reason",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **HOW LONG A TURN MAY TAKE IS THE DOCUMENT'S, AND IT IS READ AT THE MOMENT OF THE
+    /// WAIT** — register item 300's move, held by the discipline item 295 paid for.
+    ///
+    /// # The two claims, and why neither can be dropped
+    ///
+    /// * **A RUN'S DECLARED BOUND REACHES THE DATAMODEL.** The brief names 300 ms and the wait
+    ///   lasts about that. Before this round the number was an `AiLoopSpec` field the driver kept,
+    ///   and a caller could put a decision somewhere `ai_loop.scxml` cannot see — which is the
+    ///   whole shape of the defects that ended the live run of 2026-08-16.
+    /// * **AND THE NUMBER IN FORCE IS THE ONE THE DOCUMENT HOLDS NOW.** The second half rewrites
+    ///   `<data>` mid-run, exactly as an author editing the file would, and the very next wait is
+    ///   four times longer. A driver holding a copy from construction — or from the brief — passes
+    ///   the first half and fails this one.
+    ///
+    /// # ⚠⚠⚠ Why the run carries a deadline it is never meant to reach
+    ///
+    /// So that the mutation *"ignore the document"* is a RED and not a HANG. With no bound the wait
+    /// is `Duration::MAX`, and a gate whose only bound was the document's would simply never
+    /// return. The run's own clock is the one bound that is nobody's decision — every run has it —
+    /// so a driver that stopped reading `turn_within_ms` waits it out and both assertions below
+    /// fail with the elapsed time in them.
+    ///
+    /// ⚠ The peer is `cat` and the access is UNSUPERVISED, which is what makes the turn unendable:
+    /// `Settles` on an unarmed evaluator is never satisfied, so the only way out of the wait is a
+    /// clock. That is the same fixture the echo gates use, asked the opposite question.
+    #[test]
+    fn a_turn_waits_the_bound_its_document_holds_and_re_reads_it_between_turns() {
+        /// What the BRIEF declares — the wire's route into `<data>`.
+        const BRIEFED: Duration = Duration::from_millis(300);
+        /// What an author writes into the file mid-run, four times longer so the two cannot be
+        /// confused by scheduler noise.
+        const REAUTHORED: Duration = Duration::from_millis(1_200);
+        /// The run's own clock — far past both, and the thing that turns a hang into a failure.
+        const RUN_CLOCK: Duration = Duration::from_secs(8);
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        // ⚠ NOT `bounded_at`: this gate is about the route, so it must leave the document holding
+        // its own shipped number until a brief replaces it.
+        let mut loops = OuterLoop::new(Arc::clone(&lua), pane, &spec(None))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        assert_eq!(
+            loops.turn_within(),
+            Some(Duration::from_millis(1_800_000)),
+            "⚠ THE CONTROL: an unbriefed loop runs on the SHIPPED document's own bound. A gate that \
+             found nothing here would prove nothing below, because every later reading would be \
+             indistinguishable from a driver that reads no document at all",
+        );
+
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "prove the bound is the document's".to_string(),
+                milestone: "wait exactly as long as the file says".to_string(),
+                reference: "register item 300".to_string(),
+                max_turns: 3,
+                reflect_every: 99,
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: Some(BRIEFED.as_millis() as i64),
+            }),
+            Briefed::Took,
+            "the control: the parts must be held before anything is asked of them",
+        );
+        assert_eq!(
+            loops.turn_within(),
+            Some(BRIEFED),
+            "⚠⚠⚠ THE FIRST CLAIM: a bound a run declared must be IN THE DOCUMENT, readable through \
+             the same door the wait uses. A driver that kept it in a field of its own would answer \
+             this correctly and leave `ai_loop.scxml` unable to see its own turn contract",
+        );
+
+        let run = RunContext::uncancellable().deadline_in(Some(RUN_CLOCK));
+        // Idle -> Priming (the start prompt goes in), then Priming -> Working.
+        for expected in [AiLoopState::Priming, AiLoopState::Working] {
+            loops.pump(&access, &run).expect("the pane stays readable");
+            assert_eq!(loops.state(), expected, "the walk into the turn");
+        }
+
+        let began = std::time::Instant::now();
+        loops.pump(&access, &run).expect("the pane stays readable");
+        let briefed_wait = began.elapsed();
+        assert!(
+            briefed_wait >= BRIEFED && briefed_wait < REAUTHORED,
+            "⚠⚠⚠ the turn was watched for {briefed_wait:?}, where the run declared {BRIEFED:?}. \
+             Too short is a wait that never consulted the number; too long is a driver reading \
+             something else — the shipped half hour, the substrate's default, or no bound at all, \
+             all of which land on the run's own {RUN_CLOCK:?} clock",
+        );
+
+        // ── AND NOW AN AUTHOR EDITS THE FILE, which is the second claim ──
+        lua.set_variable(
+            &loops.session,
+            Turn::WIRE_KEY,
+            ScriptValue::Int(REAUTHORED.as_millis() as i64),
+        )
+        .expect("the document's own bound is writable");
+
+        let began = std::time::Instant::now();
+        loops.pump(&access, &run).expect("the pane stays readable");
+        let reauthored_wait = began.elapsed();
+        assert!(
+            reauthored_wait >= REAUTHORED,
+            "⚠⚠⚠ THE SECOND CLAIM, and the one a copy taken earlier fails: the very next wait \
+             lasted {reauthored_wait:?} where the document now says {REAUTHORED:?}. A driver \
+             holding what it was built with, or what the brief said, waits {BRIEFED:?} for ever \
+             — and item 295 measured what a construction-time read costs when the file is the \
+             authority",
+        );
+        assert!(
+            reauthored_wait < RUN_CLOCK,
+            "⚠ and the control for the control: the run's own clock must not be what ended either \
+             wait, or both numbers above are the same number wearing two names ({reauthored_wait:?})",
+        );
+        assert_eq!(
+            loops.state(),
+            AiLoopState::Working,
+            "⚠ a turn that overran is NOT an event — the document has no word for it — so the \
+             machine must be exactly where it was. See `watch`'s `Over::NotYet` arm",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND THE BARRIER'S OWN BOUND IS THE DOCUMENT'S TOO, RE-READ THE SAME WAY** —
+    /// `ready_timeout_ms`, the other half of register item 300.
+    ///
+    /// # ⚠⚠ What makes this a claim about the ACT-TIME read rather than about construction
+    ///
+    /// The number is authored AFTER the loop is built. At construction the barrier is seeded with
+    /// the shipped three minutes, so a driver that kept its seed waits that out — and the run's own
+    /// clock, eight seconds here, is what turns that into a failed assertion instead of a stalled
+    /// suite. ⚠ It is not a hypothetical seam: the barrier is rebuilt by `restarting` for every
+    /// session a run replaces, and a bound taken once would outlive all of them.
+    ///
+    /// ⚠ The peer never prints the marker, which is the only way to measure a bound at all: a
+    /// barrier that clears tells you nothing about how long it was willing to wait.
+    #[test]
+    fn a_barrier_waits_the_bound_its_document_holds_when_the_look_happens() {
+        /// What an author writes in, after the loop exists.
+        const AUTHORED: Duration = Duration::from_millis(400);
+        /// The run's own clock — far past it, and what makes the wrong answer a RED.
+        const RUN_CLOCK: Duration = Duration::from_secs(8);
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = OuterLoop::new(
+            Arc::clone(&lua),
+            pane,
+            &spec(Some(ReadyWhen::Prints("NEVER-PRINTED".to_string()))),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        lua.set_variable(
+            &loops.session,
+            Readiness::WIRE_KEY,
+            ScriptValue::Int(AUTHORED.as_millis() as i64),
+        )
+        .expect("the document's own barrier bound is writable");
+
+        let run = RunContext::uncancellable().deadline_in(Some(RUN_CLOCK));
+        let began = std::time::Instant::now();
+        let outcome = loops.pump(&access, &run);
+        let waited = began.elapsed();
+
+        assert!(
+            matches!(outcome, Err(PaneError::NeverReady { .. })),
+            "the control: a peer that never prints the marker must run the barrier's bound out, \
+             which is the barrier's own refusal and not a pass that found nothing: {outcome:?}",
+        );
+        assert!(
+            waited >= AUTHORED && waited < RUN_CLOCK / 2,
+            "⚠⚠⚠ the barrier waited {waited:?} where the document says {AUTHORED:?}. Longer means \
+             the driver is still on the number it was BUILT with — the shipped three minutes, or \
+             the substrate's default — and this run's own {RUN_CLOCK:?} clock is all that stopped \
+             it; shorter means nothing read the document at all",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
@@ -5374,7 +5771,7 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         started(&access, pane, "PARROT-READY");
 
-        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+        let mut loops = bounded_at(lua, pane, Duration::from_millis(200))
             .expect("the document's datamodel must carry its four authored strings");
         let run = RunContext::uncancellable();
 
@@ -5490,7 +5887,7 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         started(&access, pane, "PARROT-READY");
 
-        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+        let mut loops = bounded_at(lua, pane, Duration::from_millis(200))
             .expect("the document's datamodel must carry its four authored strings");
         let run = RunContext::uncancellable();
         loops
@@ -5573,7 +5970,7 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         started(&access, pane, "MUTE-READY");
 
-        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+        let mut loops = bounded_at(lua, pane, Duration::from_millis(200))
             .expect("the document's datamodel must carry its four authored strings");
         let run = RunContext::uncancellable();
         loops
@@ -5648,7 +6045,7 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         started(&access, pane, "PARROT-READY");
 
-        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+        let mut loops = bounded_at(lua, pane, Duration::from_millis(200))
             .expect("the document's datamodel must carry its four authored strings");
         let run = RunContext::uncancellable();
         loops
@@ -5759,7 +6156,7 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         started(&access, pane, "COMPOSER-READY");
 
-        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+        let mut loops = bounded_at(lua, pane, Duration::from_millis(200))
             .expect("the document's datamodel must carry its four authored strings");
         let run = RunContext::uncancellable();
         loops
@@ -5856,13 +6253,11 @@ mod tests {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let (workspace, pane) = standin_agent(2);
         let access = supervised(&workspace);
-        let mut loops = OuterLoop::new(
+        let mut loops = ready_bounded_at(
             Arc::clone(&lua),
             pane,
-            &spec(
-                Some(ReadyWhen::Settles("claude".to_string())),
-                turn_of(Duration::from_secs(5)),
-            ),
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
         )
         .expect("the document's datamodel must carry its four authored strings");
 
@@ -5883,6 +6278,11 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
+            // document before the brief, and a `None` here is what makes the brief echo it back
+            // rather than replace it. Saying the number twice would be two places again.
+            ready_timeout_ms: None,
+            turn_within_ms: None,
         };
         assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
         // ⚠⚠⚠ AND NOTHING IS COMPOSED YET, which is the CONTROL for the whole arrangement. The

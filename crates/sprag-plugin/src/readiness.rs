@@ -992,6 +992,16 @@ pub struct Readiness {
 }
 
 impl Readiness {
+    /// The argument this barrier's BOUND is declared with, in ONE place — [`Attended::WIRE_KEY`]'s
+    /// rule, so the daemon's parser, the published grammar and both mouths cannot drift apart.
+    ///
+    /// ⚠ Its companion is `ready_when`, which is [`ReadyWhen`]'s own vocabulary. **They travel
+    /// together on the wire and they do not have the same owner**: what makes a pane ready is read
+    /// off which program is in it, and how long anybody waits for that is a person's allowance.
+    /// Register item 300 is the measurement; `ai_loop` is the one form where the split is acted on,
+    /// because it is the one form with a document to author the allowance in.
+    pub const WIRE_KEY: &'static str = "ready_timeout_ms";
+
     /// A barrier for `when`, waiting `within` (defaulting to [`DEFAULT_READY_TIMEOUT`]), answering
     /// its peer's questions under `consent`, and waiting for whoever `attended` says is watching.
     ///
@@ -1091,6 +1101,21 @@ impl Readiness {
     /// caller who sent their own.
     pub(crate) fn answering(&mut self, may_answer: Option<Consents>) {
         self.consent = may_answer;
+    }
+
+    /// **TELL THE BARRIER HOW LONG IT MAY WAIT NOW** — [`expecting`](Self::expecting)'s twin for the
+    /// last of the four decisions that used to be construction arguments.
+    ///
+    /// ⚠ Same reason, same shape: `ai_loop.scxml` authors `ready_timeout_ms` and a caller's brief
+    /// may replace it, while the machine is still `idle` and therefore after this barrier exists.
+    ///
+    /// ⚠⚠ IT TAKES A BOUND AND NOT AN [`Option`], where [`new`](Self::new) takes the option. A
+    /// document that says nothing readable does not reach here at all — its reader answers [`None`]
+    /// and the barrier keeps what it had — so *the substrate's default* is a construction-time
+    /// answer only, and a zero written here is a bound of zero, exactly as a caller sending
+    /// `ready_timeout_ms: 0` has always got.
+    pub(crate) const fn waiting(&mut self, within: Duration) {
+        self.within = within;
     }
 
     /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**

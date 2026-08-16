@@ -619,11 +619,19 @@ fn a_live_agents_turn_is_ended_by_the_contract_rather_than_by_the_clock() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, OuterLoop, Pumped, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, OuterLoop, Pumped};
 
     let live = Live::start("loop");
-    let run = RunContext::uncancellable();
+    // ⚠⚠⚠ THE RUN'S OWN CLOCK IS THIS GATE'S ONLY BOUND, and that is a consequence of register item
+    // 300 rather than a preference. The per-turn bound used to be an `AiLoopSpec` field this gate
+    // set to twenty seconds; it is the DOCUMENT's now, this gate deliberately drives the SHIPPED
+    // document (see the doc above), and the shipped number is half an hour — a person's allowance
+    // for a live session doing real work. A gate cannot sit on that, and it must not answer by
+    // re-authoring the file, because then it would no longer be driving what a person gets.
+    // ⚠ So the bound moves to the thing every run already has. A stalled agent ends the run and the
+    // assertions below say what was missing, where before it would have been half an hour of
+    // silence.
+    let run = RunContext::uncancellable().deadline_in(Some(TURN_BOUND * 6));
     let began = Instant::now();
 
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -632,12 +640,9 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
         live.pane,
         // ⚠ `driving` fixes the two knobs that are true of every agent CLI — the barrier is
         // `settles` on its own name, and it paints the prompt box it is typed into, which is the
-        // premise `deliver`'s read-back rests on. Only the per-turn bound is this gate's own.
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        // premise `deliver`'s read-back rests on. Nothing here is this gate's own any more: every
+        // field of the spec is a predicate about the peer.
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("the document's datamodel must carry its authored strings");
 
@@ -812,8 +817,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_briefed_loop_converges_against_a_live_agent() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief};
 
     /// Small enough that a run which merely ran out of budget is cheap, and large enough that one
     /// answered turn plus the closing report fits with room to spare.
@@ -840,17 +844,21 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
+        // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
+        // own here would be measuring something no real run gets.
+        ready_timeout_ms: None,
+        // ⚠⚠ THE TURN'S BOUND IS SAID, because the shipped one is half an hour — a person's
+        // allowance for a session doing real work, and far past what a gate may sit on. It used to
+        // be an `AiLoopSpec` field; register item 300 moved it here.
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a well-briefed loop over a live agent's pane starts");
     let marker = loops
@@ -1027,8 +1035,7 @@ const STOP_SAID_DURATION: &str = "wall-clock time";
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief};
 
     /// Two, against a milestone that needs five replies — so the budget is what ends this run, and
     /// the account is asked for on the way out.
@@ -1053,17 +1060,21 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
+        // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
+        // own here would be measuring something no real run gets.
+        ready_timeout_ms: None,
+        // ⚠⚠ THE TURN'S BOUND IS SAID, because the shipped one is half an hour — a person's
+        // allowance for a session doing real work, and far past what a gate may sit on. It used to
+        // be an `AiLoopSpec` field; register item 300 moved it here.
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a well-briefed loop over a live agent's pane starts");
 
@@ -1212,8 +1223,7 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief};
 
     /// Out of reach on purpose: this run must end on the CLOCK, and a budget the agent could spend
     /// would make the ending ambiguous between two ceilings.
@@ -1248,20 +1258,21 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        ready_timeout_ms: None,
+        // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW. The plugin sizes the turn it is granted from the
+        // bound declared for a turn — see `Accounting::Within` — so a gate that declared none
+        // would be measuring the substrate's default instead of this contract.
+        // ⚠⚠⚠ AND IT IS DECLARED HERE, ON THE BRIEF, since register item 300 made the bound the
+        // document's: `Accounting::Within` reads it back out of the datamodel through
+        // `OuterLoop::turn_within`, so this line is what that read has to find.
+        turn_within_ms: Some(ACCOUNT_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW. The plugin sizes the turn it is granted from
-            // the bound its caller declared for a turn — see `Accounting::Within` — so a gate that
-            // declared none would be measuring the substrate's default instead of this contract.
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(ACCOUNT_BOUND))
-                .expect("a non-zero bound"),
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a well-briefed loop over a live agent's pane starts");
 
@@ -1452,8 +1463,7 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, Consent, Consents, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief, Consent, Consents};
 
     /// Room for the tool turn, the dialog and the closing report, and no more.
     const LIVE_MAX_TURNS: i64 = 4;
@@ -1495,18 +1505,23 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
+        // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
+        // own here would be measuring something no real run gets.
+        ready_timeout_ms: None,
+        // ⚠⚠ THE TURN'S BOUND IS SAID, because the shipped one is half an hour — a person's
+        // allowance for a session doing real work, and far past what a gate may sit on. It used to
+        // be an `AiLoopSpec` field; register item 300 moved it here.
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            // ⚠ THE CONSENT IS ON THE BRIEF NOW — it is the document's data, not a binding.
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        // ⚠ THE CONSENT AND BOTH DURATIONS ARE ON THE BRIEF NOW — they are the document's data,
+        // not bindings. What is left here is which agent, in which pane.
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a well-briefed loop over a live agent's pane starts");
 
@@ -1611,8 +1626,7 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, ScreenRule, ScreenRules, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief, ScreenRule, ScreenRules};
 
     /// Room for the tool turn, the screening, the redirected turn and the closing report.
     const LIVE_MAX_TURNS: i64 = 4;
@@ -1683,20 +1697,24 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
+        // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
+        // own here would be measuring something no real run gets.
+        ready_timeout_ms: None,
+        // ⚠⚠ THE TURN'S BOUND IS SAID, because the shipped one is half an hour — a person's
+        // allowance for a session doing real work, and far past what a gate may sit on. It used to
+        // be an `AiLoopSpec` field; register item 300 moved it here.
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            // ⚠⚠⚠ NO CONSENT, and that is the control for the whole gate — said on the BRIEF,
-            // which is where the clauses live now. If one were armed it could take the dialog's
-            // own `Yes`, the file would be written, and nothing below would be about `screening`.
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        // ⚠⚠⚠ NO CONSENT, and that is the control for the whole gate — said on the BRIEF, which is
+        // where the clauses live now. If one were armed it could take the dialog's own `Yes`, the
+        // file would be written, and nothing below would be about `screening`.
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a well-briefed loop over a live agent's pane starts");
 
@@ -1844,8 +1862,7 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{AiLoopState, Brief, ScreenRule, ScreenRules, Turn as TurnContract};
+    use sprag_plugin::{AiLoopState, Brief, ScreenRule, ScreenRules};
 
     /// The tool turn, the redirected turn on the fresh session, and room for two more. ⚠ A reflection
     /// turn is not among them: this build's reflection speaks to nobody.
@@ -1902,20 +1919,24 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
+        // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
+        // own here would be measuring something no real run gets.
+        ready_timeout_ms: None,
+        // ⚠⚠ THE TURN'S BOUND IS SAID, because the shipped one is half an hour — a person's
+        // allowance for a session doing real work, and far past what a gate may sit on. It used to
+        // be an `AiLoopSpec` field; register item 300 moved it here.
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            // ⚠ NO CONSENT, on the brief: a clause could take the dialog's own `Yes`, the file
-            // would be written, and nothing below would be about screening — or about the
-            // reflection screening triggers.
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        // ⚠ NO CONSENT, on the brief: a clause could take the dialog's own `Yes`, the file would be
+        // written, and nothing below would be about screening — or about the reflection screening
+        // triggers.
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a well-briefed loop over a live agent's pane starts");
 
@@ -3189,8 +3210,7 @@ fn a_replacement_is_named_afresh_and_both_records_can_be_found() {
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
     use sce_rust_runtime::IScriptEngine;
-    use sprag_plugin::outer::INNER_SESSION_ENDS;
-    use sprag_plugin::{Brief, Turn as TurnContract};
+    use sprag_plugin::Brief;
 
     const LIVE_MAX_TURNS: i64 = 3;
 
@@ -3210,17 +3230,21 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
+        // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
+        // own here would be measuring something no real run gets.
+        ready_timeout_ms: None,
+        // ⚠⚠ THE TURN'S BOUND IS SAID, because the shipped one is half an hour — a person's
+        // allowance for a session doing real work, and far past what a gate may sit on. It used to
+        // be an `AiLoopSpec` field; register item 300 moved it here.
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
     let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
     let mut loops = sprag_plugin::AiLoop::new(
         lua,
         live.pane,
         &brief,
-        &sprag_plugin::AiLoopSpec {
-            turn: TurnContract::lasting(INNER_SESSION_ENDS, Some(TURN_BOUND))
-                .expect("a non-zero bound"),
-            ..sprag_plugin::AiLoopSpec::driving(&live.agent)
-        },
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
     )
     .expect("a briefed loop over a named pane starts");
 
