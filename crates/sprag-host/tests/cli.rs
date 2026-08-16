@@ -2122,6 +2122,131 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
     drop(guard);
 }
 
+/// ⚠⚠⚠ **STOPPING THE SERVER LEAVES THE SAVED WORKSPACE STANDING** — `kill-server`'s own promise,
+/// which nothing asked of it until it had already been broken.
+///
+/// # The defect, in the shape it was measured
+///
+/// `kill-server` used to be *"kill every session; the last kill drains the daemon"*. Sessions die
+/// ONE AT A TIME while the durability saver runs on its five-second tick, so **the snapshot
+/// converges toward empty as the kill proceeds** — the file the next launch reads is written DURING
+/// the demolition. Measured on the owner's own daemon (2026-08-16): six sessions in, five out.
+/// Session `1` — the first killed, holding the loop's outer and inner panes — was simply gone.
+///
+/// Its doc had said the opposite the whole time: *"By DEFAULT the durability snapshot is PRESERVED
+/// … the next launch restores it."* **The promise and the implementation had never been asked to
+/// agree**, because every existing gate asked only whether the daemon ENDED.
+///
+/// # ⚠⚠ Why the assertion is the RESTORE and not the file
+///
+/// Reading the snapshot would assert the mechanism this round happens to use. What the owner was
+/// promised is that the workspace comes back, so the gate stops the server and starts a successor
+/// on the same socket and state — the same reboot shape as
+/// [`a_killed_daemon_gives_its_panes_back_with_their_scrollback`], with the ONE difference under
+/// test: a graceful `kill-server` where that one uses SIGKILL.
+///
+/// ⚠ TWO sessions, not one, and that is the defect's own shape: the loss was in the sessions killed
+/// FIRST, and a fixture with a single session cannot express *"first"*.
+///
+/// # ⚠⚠⚠ WHAT THIS GATE DOES NOT CATCH, MEASURED RATHER THAN ASSUMED
+///
+/// Reverting `kill_server` to the old kill-every-session shape leaves this **GREEN**, and that was
+/// checked rather than hoped. The loss needed a saver TICK to land between the first kill and the
+/// daemon's exit; two sessions die in milliseconds and the five-second timer never fires, so the
+/// snapshot survives a demolition it only happens to outrun. **The defect is timing-dependent, and
+/// this is a forward ratchet on the promise rather than a reproducer of it.**
+///
+/// What DOES catch the mechanism, deterministically, is
+/// [`every_slot_reader_explains_a_daemon_that_does_not_serve_it`]: the old shape reads
+/// `/sprag_mux/external/sessions` first, and that sweep now asserts `kill-server` fails for no such
+/// address. Under the revert it goes red, printing the absurdity whole — a failing `sprag
+/// kill-server` whose own message advises *"Restart it: `sprag kill-server`"*.
+///
+/// **The two are kept apart on purpose**: one holds the mechanism (cheap, deterministic, and about
+/// the wire), the other holds the PROMISE end to end (a real daemon, a real restart, a real
+/// restore), which is the thing an operator was actually told and the thing no gate asked about.
+#[test]
+fn kill_server_leaves_every_session_in_the_saved_workspace() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-killserver-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+
+    // Two named sessions, each holding a pane that stays put.
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    for name in ["first", "second"] {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(NEW_SESSION_ACTION),
+                "args": { "name": name, "cmd": ["cat"] },
+            }),
+        )
+        .expect("new_session answers");
+    }
+    drop(conn);
+
+    // ⚠ Wait on the CONDITION the assertion depends on — that the saver has actually written a file
+    // naming both. The loop is on a timer, so anything else here is a race dressed as a wait.
+    let saved = |state: &Path| -> String {
+        std::fs::read_dir(state.join("sprag"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|file| file.path().extension().is_some_and(|kind| kind == "json"))
+            .filter_map(|file| std::fs::read_to_string(file.path()).ok())
+            .collect()
+    };
+    assert!(
+        wait_for(Duration::from_secs(30), || {
+            let text = saved(&state);
+            text.contains("\"first\"") && text.contains("\"second\"")
+        }),
+        "the control: the saver must have written BOTH sessions before the server is stopped, or \
+         this gate would pass on a daemon that never saved anything",
+    );
+
+    // The graceful stop — the verb whose promise is under test.
+    let stopped = sprag(&sock, &["kill-server"]);
+    assert!(stopped.ok, "kill-server succeeded: {}", stopped.stderr);
+    assert!(
+        !sprag(&sock, &["ls"]).ok,
+        "and the server really is gone, or nothing below is about a restart",
+    );
+
+    // The successor, on the same socket and the same state.
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the second daemon never started serving",
+    );
+    let listed = sprag(&sock, &["ls"]);
+    for name in ["first", "second"] {
+        assert!(
+            listed.stdout.contains(name),
+            "⚠⚠⚠ THE SAVED WORKSPACE LOST {name:?} WHEN THE SERVER WAS STOPPED. `kill-server` \
+             promises the opposite in its own doc, and the way it broke that was killing sessions \
+             one at a time while the durability saver kept writing the shrinking shape. Got: {:?}",
+            listed.stdout,
+        );
+    }
+    drop(guard);
+}
+
 /// **A pane that came back from a REBOOT can still ask for a person** (R319, closing R318's item
 /// 44) — the `on_attention` hook the RESTORE path wires, driven for the first time.
 ///
@@ -6873,7 +6998,10 @@ fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
         (&["agent"], "/sprag_mux/external/agent_manifests"),
         (&["events"], "/sprag_mux/external/events.0"),
         (&["capture-pane", "1"], "/sprag_mux/external/panes"),
-        (&["kill-server"], "/sprag_mux/external/sessions"),
+        // ⚠⚠⚠ `kill-server` USED TO BE ON THIS LIST, reading `/sprag_mux/external/sessions`, and it
+        // is gone because the verb stopped reading anything — see the assertion below this loop,
+        // which is what it turned into. Leaving it here would have been asserting that the REMEDY
+        // every sentence in this sweep carries is itself unreachable.
         (&["processes"], "/sprag_mux/external/pane_processes.0"),
         (&["find", "x"], "/sprag_mux/external/panes"),
         (&["select-pane", "1"], "/sprag_mux/external/panes"),
@@ -6899,6 +7027,37 @@ fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
             run.stderr,
         );
     }
+
+    // ⚠⚠⚠ THE REMEDY EVERY SENTENCE ABOVE CARRIES MUST NOT BE BEHIND THE SKEW IT REMEDIES.
+    //
+    // Each message ends `— sprag kill-server`, and for as long as that verb read a slot it was in
+    // the list above: **the advice was one of the things that could not get through.** Measured on
+    // the owner's live daemon (2026-08-16) at the harder version of this skew, a PROTOCOL mismatch,
+    // where every request including `kill-server` was refused at `client/hello` and the way out was
+    // a hand-written script speaking the daemon's older wire.
+    //
+    // So the claim here is negative and precise: whatever `kill-server` fails for against a peer
+    // serving nothing, it is NOT a missing address. It reaches the process instead — and this peer
+    // is served by the TEST process, so what it says is the daemon guard, which is the proof that it
+    // got past the wire entirely.
+    //
+    // ⚠ It cannot be asserted positively here: succeeding would mean this test SIGTERM-ing its own
+    // harness, which is exactly what the guard exists to refuse and exactly what the first draft of
+    // that code did.
+    let remedy = sprag(&sock, &["kill-server"]);
+    assert!(
+        !remedy.stderr.contains("does not serve"),
+        "⚠⚠⚠ `kill-server` is the remedy every other sentence in this sweep names. If it fails for a \
+         missing ADDRESS then the advice is behind the skew it advises about, which is the defect \
+         this assertion exists for: {}",
+        remedy.stderr,
+    );
+    assert!(
+        remedy.stderr.contains("not a `sprag-term` daemon"),
+        "and what stops it here is the DAEMON guard, not the wire — this peer is served by the test \
+         process itself, and a `kill-server` that signalled it would end this harness: {}",
+        remedy.stderr,
+    );
 
     // THE ANSWER THAT WAS WRONG RATHER THAN UGLY. Every scoped verb pre-flights through
     // `session_exists`, which read the JSON-RPC code alone — and an unknown ADDRESS arrives under

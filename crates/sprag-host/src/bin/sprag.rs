@@ -174,7 +174,7 @@ use std::io;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::events::EventKind;
@@ -1926,16 +1926,50 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
     }
 }
 
-/// `kill-server [--purge]`: kill every session, which ends the daemon (the last kill drains its
-/// session and exits). Reuses [`KILL_SESSION_ACTION`] over one connection rather than a bespoke
-/// action — the last kill is what stops the server, so an EOF partway through is the daemon exiting
-/// under us, i.e. done.
+/// `kill-server [--purge]`: STOP the daemon, through the daemon's own shutdown edge.
 ///
 /// By DEFAULT the durability snapshot is PRESERVED: stopping the daemon does not destroy the saved
 /// workspace, so the next launch restores it (the cmux-durable model — your workspace persists).
 /// `--purge` additionally DELETES the snapshot and every pane's saved scrollback: the explicit
-/// "start fresh", the one way to destroy
-/// the saved workspace.
+/// "start fresh", the one way to destroy the saved workspace.
+///
+/// # ⚠⚠⚠ IT USED TO KILL EVERY SESSION, AND THAT BROKE THE PROMISE ABOVE
+///
+/// The old shape *"reuses `kill_session` over one connection — the last kill is what stops the
+/// server"* was measured wrong on the owner's own daemon (2026-08-16). Sessions die ONE AT A TIME
+/// while the durability saver keeps running on its five-second tick, so **the snapshot converges
+/// toward empty as the kill proceeds**. What came back after that run was sessions `2`–`6`; session
+/// `1`, the first one killed, was gone from the file — its panes, its layout, its agent. The doc
+/// said the workspace persists and the implementation was deleting it a session at a time.
+///
+/// The cause is that `kill_session` MEANS destroy, and the daemon cannot tell *"stop the server"*
+/// from *"destroy this session"* when the only word it is sent is the second one.
+///
+/// # ⚠⚠⚠ AND IT COULD NOT BE REACHED AT ALL WHEN IT WAS MOST NEEDED
+///
+/// A wire skew refuses every request at `client/hello`, and `kill-server` was a request — so the
+/// daemon's own refusal advised a command that the same refusal blocked. **The remedy for a skew was
+/// behind the skew.** Measured the same evening: the CLI could not stop a daemon one protocol
+/// version behind it, and the way through was a hand-written script speaking the daemon's older wire.
+///
+/// # What it does instead, and why this is the product's door rather than a way around it
+///
+/// The daemon already HAS exactly one shutdown routine, and SIGTERM is its door: `install_shutdown`
+/// cancels and joins in-flight plugin runs, and the last-pane edge reaches it by raising SIGTERM
+/// into itself (`spawn_reaper`'s `on_empty`). So this asks for the same thing the daemon asks of
+/// itself.
+///
+/// The pid comes from the SOCKET's peer credentials, which is what makes both fixes one fix:
+///
+/// * it is the pid of whoever is actually serving that socket — never a stale pidfile, never a name
+///   match on a process table that may hold a second daemon;
+/// * and **reading it involves no protocol at all**, so a skewed daemon is stopped exactly as
+///   easily as a matched one. The version handshake exists to stop a skewed pair MISREADING each
+///   other's shapes; a signal has no shape to misread.
+///
+/// ⚠ The residue, stated: this is unix-only, and a daemon that ignores SIGTERM is reported rather
+/// than escalated to `SIGKILL`. Escalating is a decision about somebody's running work, so it stays
+/// theirs.
 fn kill_server(args: Vec<String>) -> io::Result<()> {
     let purge = args.iter().any(|a| a == "--purge");
     if let Some(other) = args.iter().find(|a| *a != "--purge") {
@@ -1944,25 +1978,10 @@ fn kill_server(args: Vec<String>) -> io::Result<()> {
             format!("kill-server: unexpected argument {other:?} (only --purge is accepted)"),
         ));
     }
-    let mut conn = connect()?;
-    let sessions = query_slot(&mut conn, json!({ "path": mux_action_path(SESSIONS_SLOT) }))?;
-    let names: Vec<String> = sessions
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|session| session["name"].as_str().map(str::to_owned))
-        .collect();
-    for name in &names {
-        match kill_one(&mut conn, name) {
-            // The cascade word is discarded here on purpose: this verb is ending every session, so
-            // "the server went too" is the thing it was asked to do rather than news.
-            Ok(_ended) => {}
-            // The last kill ended the daemon; the connection is gone (an EOF, or a broken pipe /
-            // reset if the exit raced our next write), and so is the server — done, not an error.
-            Err(error) if server_gone(&error) => break,
-            Err(error) => return Err(error),
-        }
-    }
+    let endpoint = HostEndpoint::for_opts(HOST_SOCKET);
+    let pid = serving_pid(endpoint.path())?;
+    a_daemon(pid)?;
+    stop_and_wait(pid)?;
     if purge {
         clear_snapshot();
         println!("server stopped (workspace purged)");
@@ -1970,6 +1989,192 @@ fn kill_server(args: Vec<String>) -> io::Result<()> {
         println!("server stopped");
     }
     Ok(())
+}
+
+/// How long to wait for a signalled daemon to go, and how often to look.
+///
+/// It has in-flight plugin runs to cancel and join before it exits, so this is a bound on a
+/// shutdown that is DOING something rather than a guess at scheduling latency.
+const STOP_DEADLINE: Duration = Duration::from_secs(20);
+const STOP_POLL: Duration = Duration::from_millis(50);
+
+/// The pid of the process SERVING `path`, read from a fresh connection's peer credentials.
+///
+/// A connection and nothing else: no handshake, no request, no protocol — which is the whole reason
+/// [`kill_server`] can reach a daemon whose wire this build does not speak.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::NotFound`] when nothing is listening (the daemon is already gone, which
+/// `kill-server`'s caller wants said plainly), else the `getsockopt` failure.
+#[cfg(unix)]
+fn serving_pid(path: &std::path::Path) -> io::Result<libc::pid_t> {
+    use std::os::fd::AsRawFd;
+
+    let sock = std::os::unix::net::UnixStream::connect(path).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no server running at {}",
+                HostEndpoint::for_opts(HOST_SOCKET)
+            ),
+        )
+    })?;
+    peer_pid(sock.as_raw_fd())
+}
+
+/// The peer's pid on a connected unix socket. Linux spells it `SO_PEERCRED` over a `ucred`; macOS
+/// spells it `LOCAL_PEERPID` over a bare `pid_t`. Both are the KERNEL's answer about the process on
+/// the other end, which is what makes it unforgeable by anything but that process.
+#[cfg(target_os = "linux")]
+fn peer_pid(fd: std::os::fd::RawFd) -> io::Result<libc::pid_t> {
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = u32::try_from(size_of::<libc::ucred>()).expect("a ucred fits in a socklen");
+    // SAFETY: `cred` is a live, correctly-sized `ucred` and `len` names its size; `getsockopt`
+    // writes at most that many bytes into it and updates `len`. The fd is owned by the caller's
+    // live `UnixStream`.
+    let got = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut cred).cast(),
+            &raw mut len,
+        )
+    };
+    if got != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(cred.pid)
+}
+
+/// See [`peer_pid`] on Linux — the same question, the other spelling.
+#[cfg(target_os = "macos")]
+fn peer_pid(fd: std::os::fd::RawFd) -> io::Result<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    let mut len = u32::try_from(size_of::<libc::pid_t>()).expect("a pid fits in a socklen");
+    // SAFETY: as the Linux arm — a live, correctly-sized out-parameter and its length, over an fd
+    // the caller's `UnixStream` owns.
+    let got = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::from_mut(&mut pid).cast(),
+            &raw mut len,
+        )
+    };
+    if got != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(pid)
+}
+
+/// Refuse to signal anything that is not a sprag DAEMON — the guard between *"stop the server"* and
+/// *"terminate whatever process happens to be serving this socket"*.
+///
+/// # ⚠⚠⚠ It exists because the suite caught the version without it, in one run
+///
+/// A host does not have to be a daemon. `sprag-peer`'s stand-in serves a socket from the TEST
+/// process, and the first build of [`kill_server`] read that peer's pid and SIGTERMed it — killing
+/// the harness (`process didn't exit successfully … signal: 15`). Every embedded host is that shape:
+/// the socket names a SERVER, and the server may be a small part of something much larger that
+/// nobody asked to end.
+///
+/// So the pid is checked against what it is RUNNING before it is signalled. On Linux that is the
+/// kernel's own answer (`/proc/<pid>/exe`), which nothing but the process itself can change.
+///
+/// ⚠ THE RESIDUE, NAMED: on other unixes there is no `/proc`, so the check narrows to *"not this
+/// process"* — enough for the measured failure, not enough for an embedded host in a THIRD process.
+/// That is the same shape as register item 151 (`procfs::signal_ends` answers `None` on macOS), and
+/// it is stated here rather than discovered there.
+#[cfg(unix)]
+fn a_daemon(pid: libc::pid_t) -> io::Result<()> {
+    /// What a daemon's executable is called — the binary this CLI's own sibling lookup names.
+    const DAEMON: &str = "sprag-term";
+
+    let refuse = |running: String| {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "the process serving that socket (pid {pid}) is {running}, not a `{DAEMON}` daemon. \
+                 `kill-server` stops a daemon; it will not terminate a process that merely serves a \
+                 host socket, because that process may be doing something else nobody asked to end"
+            ),
+        ))
+    };
+    #[cfg(target_os = "linux")]
+    {
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("the process serving that socket (pid {pid}) is gone"),
+            )
+        })?;
+        if exe.file_name().and_then(|name| name.to_str()) != Some(DAEMON) {
+            return refuse(format!("{}", exe.display()));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if pid == libc::pid_t::try_from(std::process::id()).unwrap_or(0) {
+        return refuse("this very process".to_owned());
+    }
+    Ok(())
+}
+
+/// Ask `pid` to shut down and WAIT until the socket stops SERVING — the daemon's own edge, and then
+/// the proof.
+///
+/// Waiting is the substance rather than politeness: returning while the daemon is still cancelling
+/// runs would let the very next command (a promotion's relaunch, a script's next line) race a socket
+/// that is about to be unlinked, which reads as *"no server running"* on a daemon only halfway out.
+///
+/// # ⚠⚠⚠ The proof is the SOCKET, and `kill(pid, 0)` was measured wrong for it
+///
+/// The first version polled the process instead, and the suite hung on it for the full deadline
+/// twice. **`kill(pid, 0)` succeeds for a ZOMBIE**: the daemon had exited, but it was a child of the
+/// test harness, which does not reap until its own `Drop` — so *"the process still answers"* stayed
+/// true long after the server was gone. In production the CLI is not the daemon's parent and the pid
+/// disappears promptly, which is exactly the kind of difference a harness exposes and a live run
+/// hides.
+///
+/// The socket is also the better QUESTION. This verb is about a SERVER, and what its caller needs to
+/// know is whether the next command will find one — not whether an entry still exists in a process
+/// table. A refused connect answers that directly, and it is the same reading the daemon's own
+/// *"no server running at …"* is built on.
+#[cfg(unix)]
+fn stop_and_wait(pid: libc::pid_t) -> io::Result<()> {
+    // SAFETY: a plain signal send; no memory is shared with the kernel here.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+        let failed = io::Error::last_os_error();
+        // ESRCH is the daemon having gone between the connect and the signal — the outcome asked
+        // for, reached by somebody else, which is not a failure of this command.
+        if failed.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(failed);
+    }
+    let path = HostEndpoint::for_opts(HOST_SOCKET).path().to_owned();
+    let began = Instant::now();
+    while began.elapsed() < STOP_DEADLINE {
+        if std::os::unix::net::UnixStream::connect(&path).is_err() {
+            return Ok(());
+        }
+        std::thread::sleep(STOP_POLL);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "the server (pid {pid}) was asked to stop and was still serving {}s later. It may be \
+             joining a plugin run that will not end. Nothing here escalates to SIGKILL — that is a \
+             decision about the work inside it, so it stays yours",
+            STOP_DEADLINE.as_secs(),
+        ),
+    ))
 }
 
 /// Whether an error means the DAEMON is gone (not a request-level refusal) — the same

@@ -1203,6 +1203,24 @@ fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<St
 ///
 /// A request with no `protocol` at all is a client from before the handshake, reported as such
 /// rather than as a malformed request, because that is what it is.
+///
+/// # ⚠⚠⚠ THE REMEDY THIS REFUSAL NAMES MUST NOT BE BEHIND IT
+///
+/// The sentence below used to end *"— `sprag kill-server` (sessions are restored from the
+/// durability snapshot)"*, and BOTH halves were false at once:
+///
+/// * `kill-server` was itself a request, so it was refused right here. **The advice was behind the
+///   refusal it was advising about**, measured on the owner's daemon the evening this was written:
+///   the CLI could not stop a daemon one version behind it, and the way through was a hand-written
+///   script speaking the older wire.
+/// * and the sessions were NOT restored — that verb killed them one at a time while the durability
+///   saver ran, so the snapshot emptied as it went.
+///
+/// Both are fixed where they were, in `kill_server`: it now signals the daemon's own shutdown edge
+/// using the pid it reads from the socket's peer credentials, which needs no protocol at all. So the
+/// advice below reaches through this refusal by construction rather than by an exemption carved into
+/// it — **nothing about this gate had to be loosened**, which is the outcome to prefer when the
+/// alternative is a hole in the one check a skewed pair has.
 fn protocol_refused(request: &Request) -> Option<String> {
     let spoken = request
         .params
