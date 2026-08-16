@@ -4124,8 +4124,25 @@ mod tests {
     fn echo_pane_var() -> CommandBuilder {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
-        command.arg(format!("printf %s \"${{{PANE_ENV_VAR}-unset}}\""));
+        // ⚠ `:-` and not `-`: the blanking below leaves the variable SET AND EMPTY, and empty is
+        // what this tree means by *not published* — see the env source and `Live::start`, which
+        // both spell "absent" that way because a `CommandBuilder` has no unset.
+        command.arg(format!("printf %s \"${{{PANE_ENV_VAR}:-unset}}\""));
         command.env("TERM", "dumb");
+        // ⚠⚠⚠⚠ **THE VARIABLE THIS GATE IS ABOUT IS BLANKED, BECAUSE A CHILD INHERITS IT** —
+        // register item 226. Run from a shell that is itself inside a sprag pane, the spawned `sh`
+        // inherited the RUNNER's `SPRAG_PANE` and printed it, so
+        // `a_host_without_a_pane_environment_publishes_nothing` failed with the harness's own pane
+        // id (measured here: `left: "49"`). **That is a red the debt-repayment loop meets every
+        // time, because its own agent runs in a pane** — 221's shape exactly, and the reason every
+        // command in this tree had grown an `env -u SPRAG_PANE` prefix.
+        //
+        // ⚠⚠ The remedy is the harness's, not the assertion's: a gate about what the HOST publishes
+        // must start from a child that was told nothing, whoever ran it. Blanked the way the
+        // product blanks [`NESTED_AGENT_MARKERS`], and the host's own source still overwrites it —
+        // which is what `a_host_with_a_pane_environment_tells_each_pane_its_own_id` next door
+        // proves, on this same builder.
+        command.env(PANE_ENV_VAR, "");
         command
     }
 

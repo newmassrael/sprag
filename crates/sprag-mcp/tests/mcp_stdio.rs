@@ -444,6 +444,22 @@ impl McpServer {
     /// it out itself (see [`Self::spawn_orphaned`]), so `Drop` never reports having killed a process
     /// that had already exited.
     fn from_command(mut cmd: Command) -> Self {
+        // ⚠⚠⚠⚠ **THE PANE THIS SUITE'S RUNNER IS ITSELF IN MUST NOT LEAK INTO THE SERVER IT
+        // SPAWNS** — register item 226, which named ONE gate and had three. Run from a shell inside
+        // a sprag pane, `sprag-mcp` inherited the RUNNER's `SPRAG_PANE` and answered *"no pane 49
+        // on this host"* where `open_pane_refuses_when_the_server_is_not_inside_a_pane` demanded the
+        // refusal of a server that is in NO pane. **The debt-repayment loop's own agent runs in a
+        // pane**, so this is a red it meets every time and never causes.
+        //
+        // ⚠⚠ ONLY WHEN THE CALLER DID NOT ASK FOR ONE. `Command::get_envs` reports the explicit
+        // overrides, so `in_pane` still gets exactly the pane it named — the harness stops leaking
+        // and every pane below stays a stated intention rather than an inheritance.
+        let asked_for_a_pane = cmd
+            .get_envs()
+            .any(|(key, value)| key == std::ffi::OsStr::new(PANE_ENV_VAR) && value.is_some());
+        if !asked_for_a_pane {
+            cmd.env_remove(PANE_ENV_VAR);
+        }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

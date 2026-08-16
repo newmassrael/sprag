@@ -135,6 +135,18 @@ fn sprag(sock: &Path, args: &[&str]) -> CliRun {
 fn sprag_env(sock: &Path, args: &[&str], envs: &[(&str, &str)]) -> CliRun {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag"));
     cmd.args(args).env("SPRAG_HOST_RPC_SOCK", sock);
+    // ⚠⚠⚠⚠ **THE PANE THIS SUITE'S RUNNER IS ITSELF IN MUST NOT LEAK INTO THE CLI IT DRIVES** —
+    // register item 226, which named ONE gate and had two. Run from a shell inside a sprag pane,
+    // `sprag report-agent` picked up the RUNNER's `SPRAG_PANE` and asked a test daemon about a pane
+    // it has never heard of: *"sprag: no pane 49 on this host"*, where the gate demanded the
+    // refusal that names the variable. **The debt-repayment loop's own agent runs in a pane**, so
+    // this is a red it meets every time and never causes — which is why every command in this tree
+    // had grown an `env -u SPRAG_PANE` prefix.
+    //
+    // ⚠⚠ REMOVED BEFORE `envs` IS APPLIED, so a gate that WANTS a pane still sets one and wins.
+    // That is the whole shape: the harness stops leaking, and every use of the variable below is a
+    // stated intention rather than an inheritance.
+    cmd.env_remove(sprag_host::PANE_ENV_VAR);
     for (key, value) in envs {
         cmd.env(key, value);
     }
