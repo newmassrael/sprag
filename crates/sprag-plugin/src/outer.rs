@@ -6898,4 +6898,251 @@ mod tests {
              assigned back after a reflection would otherwise grow one empty entry per pass",
         );
     }
+
+    /// The `.scxml` documents this crate ships, partitioned by WHO EACH ONE IS WRITTEN FOR — the
+    /// decision `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`
+    /// holds, split across two lists so that neither answer is a default.
+    ///
+    /// ⚠⚠⚠ **TOTAL ON PURPOSE, AND THAT IS THE OPPOSITE POLARITY FROM `build.rs`.** That list has
+    /// deliberately no glob, because a statechart left off it is INERT — a document, harmless. This
+    /// one is walked against `src/` and a document in neither list is a RED, because a template left
+    /// off it is UNCHECKED, and what an unchecked template ships is a standing yes into somebody
+    /// else's repository. The two lists want opposite failure modes and get them.
+    ///
+    /// ⚠⚠ **A RUST-SIDE LIST DOES NOT BREACH *every decision belongs in the `.scxml`*.** That rule
+    /// is about what a RUN may decide — a consent, a cadence, a ceiling — and those are exactly what
+    /// the gate below forbids a template to hold. This says who a FILE is written for, which is
+    /// authorship rather than anything a run does, and `build.rs`'s `STATECHARTS` is the same kind of
+    /// decision in the same kind of place.
+    const TEMPLATES: &[&str] = &["ai_loop"];
+
+    /// This repository's OWN documents: the substrate (`orchestration` is the Driver's run
+    /// lifecycle, `session` an endpoint's), what a run learned about its sessions
+    /// (`context_review`), and the three probes. Nobody copies these into another repository, so
+    /// naming sprag's work in them is not contamination — it is the subject.
+    ///
+    /// ⚠ `debt_loop` and its siblings belong HERE when they exist. The whole point of the split is
+    /// that the decisions come out of the template and into a document only this repository runs.
+    const SPRAGS_OWN: &[&str] = &[
+        "context_review",
+        "orchestration",
+        "probe_child",
+        "probe_parallel",
+        "probe_parent",
+        "session",
+    ];
+
+    /// THIS REPOSITORY'S OWN NAMES, searched here and spelled here so the gate cannot be what it
+    /// counts (`wake.rs`'s ratchet takes the same care).
+    ///
+    /// ⚠⚠⚠ **THE BARE WORD `sprag` IS DELIBERATELY NOT ON THIS LIST, AND IT WAS MEASURED BEFORE
+    /// BEING LEFT OFF.** It appears nine times in the template; EIGHT of them name the RUNTIME — *a
+    /// pane sprag opened*, *`sprag_plugin::screen::REFUSES`*, *which sprag surfaces in
+    /// `list_panes`* — and a template that may not name the program running it cannot describe its
+    /// own mechanism to the author it is written for. The ninth is a PATH into this repository's
+    /// test tree, which is what `sprag-terminal/` catches. **The hazard is a path or a work item,
+    /// not the product's name**, so the needles are paths and work items.
+    ///
+    /// ⚠⚠ `MEMORY.md`, `부채`, `sprag-plugin/` and `crates/` match nothing today. They are a ratchet
+    /// rather than a finding: each is a way the template was one edit away from acquiring, and a
+    /// needle with no hit costs a string compare.
+    const OURS: &[&str] = &[
+        "debt",
+        "부채",
+        "MEMORY.md",
+        "claudedocs/",
+        "sprag-terminal/",
+        "sprag-plugin/",
+        "crates/",
+    ];
+
+    /// The `<data>` a template may DECLARE and may not FILL, each with the reason it is on the list.
+    ///
+    /// ⚠⚠⚠ **DECLARED-AND-EMPTY, NOT ABSENT.** Deleting the declaration is the cheap way to turn
+    /// this gate green and it breaks the thing the gate exists for: a parent document fills these
+    /// through `<param>`, and `<param>` fills a child's `<data>` — an id the template does not
+    /// declare is one no parent can fill.
+    const DECIDES_FOR_THE_AUTHOR: &[(&str, &str)] = &[
+        (
+            "may_answer",
+            "a standing YES: the only thing in the document that can put a byte into a permission \
+             dialog. A clause here authorises EVERY run of the file, for everybody, until somebody \
+             edits it — and in a file other repositories copy, `everybody` is people this author \
+             has never met",
+        ),
+        (
+            "judged_rules",
+            "a standing criterion AND a paid model call per blocked turn. A run that did not ask \
+             for a second agent must not acquire one by inheriting a file",
+        ),
+        (
+            "screen_rules",
+            "a standing instruction, written in this author's own language and typed into the next \
+             author's agent. ⚠ It is the WEAKEST of the three — the act's first key is a refusal, \
+             so it can never grant anything — and it is here because refusing on somebody's behalf \
+             is still deciding on their behalf",
+        ),
+    ];
+
+    /// ⚠⚠⚠ **THE TEMPLATE IS FOR SOMEBODY ELSE'S REPOSITORY: IT MAY NAME NOTHING OF THIS ONE AND
+    /// DECIDE NOTHING FOR THE NEXT ONE.**
+    ///
+    /// The owner's design splits one file into two jobs it is doing at once: `ai_loop.scxml` is the
+    /// TOPOLOGY other repositories copy, and the decisions that make it a debt-repayment loop belong
+    /// in a document only this repository runs. What separates the two kinds of loop is entirely
+    /// `<data>` — consents, standing instructions, prompt wording, where the work list lives — so
+    /// **the KIND is a datamodel, not a machine**, and the template is the machine with the
+    /// datamodel's decisions taken out of it.
+    ///
+    /// # ⚠⚠⚠ Why a word list alone is not the gate
+    ///
+    /// *A list with no glob decides alone* (R376/R381), and here the list is worse than incomplete
+    /// — the worst thing in the file today is `"Do you want to make this edit"`, which is not this
+    /// repository's vocabulary and never will be. **A blacklist cannot see a standing yes.** So the
+    /// gate holds TWO claims that fail independently:
+    ///
+    /// 1. **VOCABULARY** — no line of a template names this repository's work or reaches into its
+    ///    tree. What this catches is a template that cites a measurement its reader cannot look up,
+    ///    or briefs an agent about a file that repository does not have.
+    /// 2. **STRUCTURE** — every `<data>` in [`DECIDES_FOR_THE_AUTHOR`] is declared and EMPTY. What
+    ///    this catches is the hazard no wording can express: the template deciding, in advance and
+    ///    on behalf of an author it has never met, what their agent may be told to do.
+    ///
+    /// Both are collected before either is asserted, so ONE run prints the whole contamination
+    /// rather than the first line of it. The red is the measurement.
+    ///
+    /// # ⚠⚠⚠ THIS GATE IS RED THE MOMENT IT IS WRITTEN, AND THAT IS THE POINT
+    ///
+    /// It is not a ratchet over a clean file; it is the instrument that says how much of this
+    /// repository is in the template. ⚠ **The way to green it is to move what it finds into
+    /// `debt_loop.scxml` and let that document fill the template through `<param>`** — never to
+    /// delete a declaration, and never to narrow a needle so the hit disappears. Both halves are
+    /// already proven to work here: a parent fills a child's `<data>` with strings AND lists of
+    /// objects, measured by the `<invoke>` probe.
+    ///
+    /// ⚠⚠ AND THE STRUCTURAL HALF IS NOT A CLAIM THAT AN EMPTY LIST IS SAFE TO SHIP TODAY — the
+    /// document's own comment records that an empty `may_answer` killed a live run, which is exactly
+    /// why emptying the template only becomes correct once a parent supplies it. **The order is the
+    /// argument**: the gate is red until the parent exists, and green because it does.
+    ///
+    /// # ⚠⚠⚠ WHAT THIS GATE LEANS ON, AND THE ONE HOLE IT DOES NOT CLOSE
+    ///
+    /// Measured by mutating it rather than reasoned about:
+    ///
+    /// * moving `ai_loop` into [`SPRAGS_OWN`] and pointing [`TEMPLATES`] at a clean document turns
+    ///   all eleven findings into three of a different kind — so the scan really is scoped by the
+    ///   classification, and the *declares no id at all* arm really is reachable;
+    /// * `judged_rules` is `[]` today and produces no finding, which is the structural half's green
+    ///   path demonstrated rather than assumed;
+    /// * dropping one name from [`SPRAGS_OWN`] fails the totality check naming the document.
+    ///
+    /// ⚠⚠⚠ **THE HOLE: reclassifying `ai_loop` as this repository's own silently disables every
+    /// check on it, and the totality assertion still passes.** Nothing here can catch that, because
+    /// today the two lists are the only thing that knows what a template is. **The rule that would
+    /// close it is derivable rather than declared — a document another document `<invoke>`s is a
+    /// template** — and it cannot be written yet: nothing in this crate invokes anything outside the
+    /// probes, so the rule would be a claim about an empty set. ⚠ It becomes writable in the same
+    /// round `debt_loop.scxml` gains its `<invoke>`, and that is where it belongs.
+    #[test]
+    fn a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one() {
+        /// The expression a document declares for one `<data id="…">`, whitespace-normalised —
+        /// [`None`] when the document does not declare that id at all.
+        ///
+        /// ⚠ Read as TEXT rather than off a running engine, for the same reason the four gates
+        /// above this one are: the claim is about what an AUTHOR shipped, and a datamodel read back
+        /// from a run answers about whatever that run passed in.
+        fn declared(document: &str, id: &str) -> Option<String> {
+            let (_, rest) = document.split_once(&format!("<data id=\"{id}\""))?;
+            // The declaration's own body, ending at its close — tolerant of the expression being
+            // wrapped over as many lines, and indented as deeply, as its author likes.
+            let (block, _) = rest.split_once("/>")?;
+            let (_, expr) = block.split_once("expr=\"")?;
+            let (expr, _) = expr.rsplit_once('"')?;
+            Some(expr.split_whitespace().collect::<Vec<_>>().join(" "))
+        }
+
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // Every statechart in the crate, as (stem, text). ⚠ WALKED, not `include_str!`-ed: a
+        // template that escaped this by being a file nobody listed is the failure being prevented.
+        let mut documents: Vec<(String, String)> = std::fs::read_dir(&src)
+            .expect("this crate's source directory")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.extension().is_some_and(|kind| kind == "scxml"))
+            .map(|path| {
+                let stem = path
+                    .file_stem()
+                    .expect("a named file")
+                    .to_string_lossy()
+                    .into_owned();
+                (stem, std::fs::read_to_string(&path).expect("a statechart"))
+            })
+            .collect();
+        documents.sort();
+
+        // ── THE CONTROL: the walk found the crate's documents, and the two lists cover them ──
+        let found: std::collections::BTreeSet<&str> =
+            documents.iter().map(|(stem, _)| stem.as_str()).collect();
+        let classified: std::collections::BTreeSet<&str> =
+            TEMPLATES.iter().chain(SPRAGS_OWN).copied().collect();
+        assert_eq!(
+            found, classified,
+            "⚠⚠⚠ EVERY `.scxml` UNDER {src:?} MUST BE IN `TEMPLATES` OR IN `SPRAGS_OWN`, AND THE \
+             LISTS MUST NAME NOTHING ELSE. A document in neither is one this gate never opened — \
+             and an unopened template is how a standing yes reaches a repository nobody here has \
+             seen. A name in neither direction is a list gone stale against the tree it decides \
+             about. Say which kind the new document is; that is the whole decision",
+        );
+        assert!(
+            !TEMPLATES.is_empty() && !OURS.is_empty() && !DECIDES_FOR_THE_AUTHOR.is_empty(),
+            "⚠ the control: an empty list of templates, needles or ids makes every finding below \
+             unreachable and this gate a green that asserts nothing",
+        );
+
+        let needles: Vec<(&str, String)> = OURS
+            .iter()
+            .map(|ours| (*ours, ours.to_lowercase()))
+            .collect();
+        let mut findings: Vec<String> = Vec::new();
+        for (stem, text) in documents
+            .iter()
+            .filter(|(stem, _)| TEMPLATES.contains(&stem.as_str()))
+        {
+            // ── 1. IT NAMES NOTHING OF THIS REPOSITORY ──
+            for (at, line) in text.lines().enumerate() {
+                let lowered = line.to_lowercase();
+                for (ours, lowered_needle) in &needles {
+                    if lowered.contains(lowered_needle) {
+                        findings.push(format!(
+                            "  {stem}.scxml:{}  names {ours:?}\n      {}",
+                            at + 1,
+                            line.trim(),
+                        ));
+                    }
+                }
+            }
+            // ── 2. AND IT DECIDES NOTHING FOR THE AUTHOR WHO COPIES IT ──
+            for (id, why) in DECIDES_FOR_THE_AUTHOR {
+                match declared(text, id) {
+                    None => findings.push(format!(
+                        "  {stem}.scxml  declares no `{id}` AT ALL — and an id the template does \
+                         not declare is one no parent can fill through `<param>`, so this is not \
+                         the fix, it is the split made impossible. Declare it empty. It is: {why}",
+                    )),
+                    Some(expr) if expr != "[]" => findings.push(format!(
+                        "  {stem}.scxml  fills `{id}` with {expr}\n      It is: {why}",
+                    )),
+                    Some(_) => {}
+                }
+            }
+        }
+
+        assert!(
+            findings.is_empty(),
+            "⚠⚠⚠ THE TEMPLATE IS STILL THIS REPOSITORY'S. {} finding(s) — each is a decision or a \
+             name that belongs in `debt_loop.scxml`, filling the template through `<param>`, \
+             rather than in a file other repositories copy:\n{}",
+            findings.len(),
+            findings.join("\n"),
+        );
+    }
 }
