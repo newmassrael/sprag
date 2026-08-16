@@ -8385,6 +8385,88 @@ fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
     );
 }
 
+/// **A DAEMON HOLDING A LIVE RUN IS GONE SOON AFTER SIGTERM** — `install_shutdown`, which is the
+/// path `RunRegistry::JOIN_DEADLINE` exists for, driven for the first time.
+///
+/// Register item 305's repair is gated eight ways at the registry, and every one of those gates
+/// builds its own `RunRegistry` and drops it. **None of them asks the question a person asks**: I
+/// signalled a daemon that was in the middle of something — is it gone? The handler is three lines
+/// in a binary, and the two of them that matter are an ORDER (`cancel_all`, then the bounded join)
+/// that nothing outside this file can observe.
+///
+/// ⚠⚠⚠ THE BOUND SEPARATES THE TWO SHAPES rather than reporting a reading. A run that HEARS the
+/// cancel is over in milliseconds and the process follows; a run merely waited out costs the whole
+/// `JOIN_DEADLINE` before the handler reaches its `exit`. Two seconds is far past the first and far
+/// short of the second, so a handler that forgot to ask fails here — dropping its `cancel_all` was
+/// measured at **5.03 s**, the deadline exactly.
+///
+/// # ⚠⚠ What this gate does NOT catch, written rather than assumed
+///
+/// **The join going unbounded again.** The run here is healthy and hears its cancel, so an
+/// unbounded join returns just as fast as a bounded one and this stays green. Staging a worker that
+/// will not come back needs a pane whose device has stopped and some eighty kilobytes pushed at it,
+/// which is a different fixture altogether — the boundedness itself is held at the registry, where
+/// a parked worker is three lines. What lives HERE is the pairing no unit test can see: the
+/// handler asks first, and it asks the registry a person's daemon actually holds.
+#[test]
+// Linux AND macOS, for `daemon_pid`'s reason: the question is which process was started beside this
+// socket, and the process table it reads is portable.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_signalled_daemon_holding_a_live_run_is_gone_promptly() {
+    let (_guard, sock, pane) = daemon_with_one_pane("sigterm");
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane.to_string(),
+            "--stimulus",
+            "echo still going",
+            // Effectively unbounded: this run must still be GOING when the signal lands, and a step
+            // that ends on the turn constant makes a million of them longer than any test.
+            "--max-iterations",
+            "1000000",
+            "--max-bytes",
+            "1073741824",
+        ],
+    );
+    assert!(started.ok, "the run was refused: {}", started.stderr);
+
+    // ⚠⚠ THE FIXTURE STATES ITS HAZARD. A run that had already finished would make the timing below
+    // a measurement of an empty registry — which is the trap the `rpc` gate beside this repair fell
+    // into (register item 384).
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(
+            &sock,
+            &["runs", "-t", "work"]
+        )
+        .stdout
+        .contains("running")),
+        "the run never came up, so nothing was holding the shutdown: {}",
+        sprag(&sock, &["runs", "-t", "work"]).stdout,
+    );
+
+    let pid = daemon_pid(&sock).expect("the daemon this test spawned");
+    let signalled = Instant::now();
+    // SAFETY: `pid` was just read from the process table for a daemon this test spawned, matched by
+    // its own socket in the environment — `daemon_pid`'s doc says why that matters.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    let gone = wait_for(Duration::from_secs(10), || daemon_pid(&sock).is_none());
+    let took = signalled.elapsed();
+    assert!(gone, "the signalled daemon was still there after {took:?}");
+    // Measured at 58.6 ms (2026-08-17), which is one `wait_for` poll plus the exit itself; the
+    // handler that forgot to ask costs `JOIN_DEADLINE`, five seconds. Two lies between them and is
+    // a requirement rather than a reading — a person who signalled a daemon must not wait on it.
+    assert!(
+        took < Duration::from_secs(2),
+        "the signalled daemon took {took:?} to go: it is waiting its runs out rather than asking \
+         them to stop",
+    );
+}
+
 /// ⚠⚠ **A FLAG NOBODY WROTE IN THIS BINARY** — the publication surface paying out for an argument
 /// that did not exist when the door was built.
 ///
