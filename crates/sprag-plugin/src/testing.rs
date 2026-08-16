@@ -439,7 +439,7 @@ pub(crate) const ENTER_BYTE: &str = "10";
 /// `asking` field (`agent_state_source`), reproduced here rather than mocked, so a gate cannot pass
 /// against a question the product would not have parsed — and *"this pane is not asking"* is that
 /// same parser's verdict rather than a `None` a double chose to hand back.
-fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
+pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");

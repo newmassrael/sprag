@@ -301,7 +301,22 @@ impl Plugin for Pipe {
             keys.extend(KeyStroke::text(line));
             keys.push(KeyStroke::named("Enter"));
         }
-        let cost = panes.inject(self.dst, &keys)?.bytes();
+        // ⚠⚠⚠ A DESTINATION WHOSE PROGRAM HAS LEFT IS A VERDICT, NOT A FAILURE — register item
+        // 336(c). Propagating ends the run `failed` with the same sentence, and the difference is
+        // what a journal can be ASKED: `peer_gone` names the ending in the same vocabulary as
+        // `converged`, so *which of my relays stopped because the far end died?* is a question
+        // rather than a grep over free text. The orchestrator was given this word first because
+        // that is where the 43 hours were spent; a relay is the other plugin that types at a pane
+        // it does not own. ⚠ Every other `PaneError` still propagates — an unknown pane is a fault
+        // of the run, and `failed` is where a reader is sent to fix one.
+        let cost = match panes.inject(self.dst, &keys) {
+            Ok(written) => written.bytes(),
+            Err(PaneError::PeerGone(pane)) => {
+                let note = PaneError::PeerGone(pane).to_string();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::PeerGone(pane)).noting(note));
+            }
+            Err(other) => return Err(other),
+        };
         let reacted = poll_until(run, REACTION_TIMEOUT, || {
             Self::shown(panes, self.dst, &before, &relayed) == Shown::Output
         });
@@ -555,6 +570,62 @@ mod tests {
     /// **It is a delivery defect, not a cosmetic one**: the destination is a peer that ACTS on what
     /// it receives, so the duplicate is re-executed, re-prompted or re-answered.
     ///
+    /// ⚠⚠⚠⚠ **A DESTINATION WHOSE PROGRAM HAS LEFT IS `peer_gone`, NOT A FAILED RUN** — register
+    /// item 336(c), which gave the word to `Orchestrator` and `AiLoop` and left this one
+    /// propagating.
+    ///
+    /// A relay is the other plugin that types at a pane it does not own, so it meets the same fact
+    /// the orchestrator's 43 hours were spent on: the far end's program can exit while the run is
+    /// still going. Propagating ends the run `failed` with the identical sentence — the difference
+    /// is that `peer_gone` is a WORD, in the same vocabulary as `converged`, so *which of my relays
+    /// stopped because the far end died?* is a question a journal answers rather than a grep.
+    #[test]
+    fn a_relay_whose_destination_has_gone_says_so_rather_than_failing() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let spawn = |ws: &Arc<Mutex<Workspace>>, script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            ws.lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 20, 4)
+                .expect("spawn")
+        };
+        let src = spawn(&workspace, "cat");
+        // ⚠ The destination's child EXITS, and the source's does not: the claim is about the pane
+        // this relay TYPES at, not about the one it reads.
+        let dst = spawn(&workspace, "exit 0");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let began = std::time::Instant::now();
+        while access.pane_eof(dst) != Some(true) && began.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            access.pane_eof(dst),
+            Some(true),
+            "⚠ THE FIXTURE: the destination's child must be gone, or this relays at a live pane",
+        );
+
+        // Something to relay, so the step reaches its injection rather than finding nothing to do.
+        let mut seed = KeyStroke::text("relayme");
+        seed.push(KeyStroke::named("Enter"));
+        let _seeded = access.inject(src, &seed).expect("seed src");
+        assert!(wait_until(&access, src, "relayme"), "source never echoed");
+
+        let mut pipe = Pipe::new(PipeSpec::new(src, dst));
+        let step = pipe
+            .step(&access, &RunContext::uncancellable())
+            .expect("⚠⚠⚠ a destination that has gone must be a VERDICT, not an error");
+        assert_eq!(
+            step.verdict,
+            Verdict::PeerGone(dst),
+            "⚠⚠⚠⚠ THE REFUSAL PROPAGATED, so this run ends `failed` and its reader goes looking for \
+             a bug in the relaying. The fact is that the far end's program had left — and the \
+             verdict must name THAT pane, not the source it was reading. Got {step:?}",
+        );
+    }
+
     /// Both halves: the step relays NOTHING (its own note says so) and the destination's screen
     /// gained no second copy.
     #[test]

@@ -114,7 +114,21 @@ impl Plugin for Answer {
         // against a single variant, so a barrier that learned a new answer was IGNORED by all of
         // them and the run fell through to a keystroke. Exhaustive means a fifth answer cannot
         // reach a pane unread.
-        match self.door.reached(panes, self.pane, run)? {
+        // ⚠⚠⚠ A PEER THAT HAS LEFT IS A VERDICT, NOT A FAILURE — register item 336(c), and the
+        // reason is sharpest at THIS plugin: answering is an act taken on somebody's consent, and
+        // *the program you authorised me to answer had already gone* is a different thing to be
+        // told than *the run failed*. The refusal's own sentence rides along either way; what
+        // changes is that `peer_gone` is a WORD the run's outcome carries, in the same vocabulary
+        // as `converged`. ⚠ Every other `PaneError` still propagates.
+        let reached = match self.door.reached(panes, self.pane, run) {
+            Ok(reached) => reached,
+            Err(PaneError::PeerGone(pane)) => {
+                let note = PaneError::PeerGone(pane).to_string();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::PeerGone(pane)).noting(note));
+            }
+            Err(other) => return Err(other),
+        };
+        match reached {
             // The peer is not asking. Nothing was typed and nothing is charged — see the module
             // doc for why the run still converges and what says it answered nothing.
             Reached::Yes => Ok(
@@ -223,6 +237,66 @@ mod tests {
     /// ⚠ REVERT-PROOF: drop the `given` latch and the second step reads the pane again, which
     /// against this fixture (whose `took` screen is not a menu) converges with the WRONG note —
     /// `is not asking anything` — for a run that plainly answered something.
+    /// ⚠⚠⚠⚠ **A QUESTION WHOSE PROGRAM HAS ALREADY LEFT IS `peer_gone`, NOT A FAILED RUN** —
+    /// register item 336(c), which gave the word to `Orchestrator` and `AiLoop` and left this
+    /// plugin propagating.
+    ///
+    /// The reason is sharpest here of all five: answering is an act taken on somebody's CONSENT,
+    /// and *the program you authorised me to answer had already gone* is a different thing to be
+    /// told than *the run failed*. Both carry the same sentence; only one puts the ending in the
+    /// vocabulary `converged` and `blocked` are in, where a journal can be asked which runs stopped
+    /// that way.
+    ///
+    /// ⚠⚠ The fixture is a peer that DRAWS its menu and then exits — so the screen still shows a
+    /// question the barrier reads and tries to answer, while the pane is provably at EOF. That is
+    /// the arrangement in which the door types at nobody, and it is what `PaneAccess::inject`
+    /// refuses.
+    #[test]
+    fn a_question_whose_peer_has_gone_is_answered_with_the_word_for_it() {
+        let (access, pane) = crate::testing::peer_running(
+            "printf 'Bash command\\r\\nDo you want to proceed?\\r\\n'; \
+             printf '\\342\\235\\257 1. Yes\\r\\n  2. Yes, and do not ask again\\r\\n'; \
+             printf '  3. No, and tell me what to do\\r\\n'"
+                .to_string(),
+        );
+        let began = std::time::Instant::now();
+        while access.pane_eof(pane) != Some(true)
+            && began.elapsed() < std::time::Duration::from_secs(5)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(true),
+            "⚠ THE FIXTURE: the peer must have EXITED, or this is about a living pane",
+        );
+        assert!(
+            crate::readiness::peer_asking(&access, pane).is_none()
+                || access
+                    .pane_collapsed(pane)
+                    .unwrap_or_default()
+                    .contains("1."),
+            "⚠ and its question must still be ON the screen for the door to read",
+        );
+
+        let mut plugin = Answer::new(pane, consent_to("Yes"));
+        let step = plugin
+            .step(&access, &RunContext::uncancellable())
+            .expect("⚠⚠⚠ a peer that has gone must be a VERDICT, not an error a reader greps");
+        assert_eq!(
+            step.verdict,
+            Verdict::PeerGone(pane),
+            "⚠⚠⚠⚠ THE REFUSAL PROPAGATED. A run told `failed` sends its caller looking for a bug in \
+             the answering; the fact is that the program they consented to answer was already gone, \
+             and `peer_gone` is the word for it — naming THIS pane, so a caller with several knows \
+             which. Got {step:?}",
+        );
+        assert!(
+            step.note.clone().unwrap_or_default().contains("pane"),
+            "and the sentence names the pane it is about: {step:?}",
+        );
+    }
+
     #[test]
     fn an_answer_is_given_once_and_the_run_then_converges() {
         let (access, pane) = asking_peer("either");
