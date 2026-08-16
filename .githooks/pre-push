@@ -123,15 +123,25 @@ fi
 # scan coverage and not the citations (see the pre-commit note). Re-run here for
 # the reason clippy is: an amend or a `--no-verify` bypass can put a dead `§`
 # reference into the history that pre-commit never saw.
+#
+# ⚠⚠ THE TOOL'S OWN REPORT IS KEPT AND SHOWN — register item 213. Discarded, this told a person
+# *"fix the dead citation"* without saying WHICH, so the one thing they need was in `/dev/null`.
 echo "pre-push: mnemosyne-cli validate-code-refs ..." >&2
-if ! mnemosyne-cli validate-code-refs >/dev/null; then
-    echo "pre-push: validate-code-refs failed — fix the dead citation before push" >&2
+if ! refs_report="$(mnemosyne-cli validate-code-refs 2>&1)"; then
+    printf 'pre-push: validate-code-refs failed — fix the dead citation before push:\n%s\n' \
+        "$refs_report" >&2
     exit 1
 fi
+printf '%s\n' "$refs_report" | grep -E '^violations:' >&2 || true
 
 if [ -f Cargo.toml ]; then
-    echo "pre-push: cargo clippy --workspace --all-targets ..." >&2
-    if ! cargo clippy --workspace --all-targets; then
+    # ⚠⚠⚠⚠ `-D warnings`, WHICH THIS HOOK WAS MISSING WHILE ITS SIBLING WAS FIXED — register item
+    # 213, found by the audit that item asks for. `pre-commit` gained the flag in `949dd73` after
+    # three lints rode through several commits; **this line never did**, so the push gate went on
+    # printing findings and exiting 0 for everything an amend or a `--no-verify` slipped past
+    # pre-commit — which is precisely the hole this second run exists to close.
+    echo "pre-push: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
+    if ! cargo clippy --workspace --all-targets -- -D warnings; then
         echo "pre-push: clippy failed — fix violations before push" >&2
         exit 1
     fi
