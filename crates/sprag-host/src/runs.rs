@@ -827,6 +827,79 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **AND THE RUN LEFT BEHIND COMES BACK `Interrupted` TO THE NEXT DAEMON** — the last
+    /// sentence of [`RunRegistry::join_all_within`]'s doc, held as one chain rather than as three
+    /// facts that happen to sit near each other.
+    ///
+    /// Its neighbour above proves the shutdown leaves the record `Running`. What that is FOR is the
+    /// durable log: `Running` means unfinished on disk, and a successor reading an unfinished record
+    /// answers [`RunState::Interrupted`] — *this run's daemon went away and nothing resumed it*,
+    /// which is exactly what a detached worker's run is. Written as one gate because the value of
+    /// the first fact is entirely in the second: a shutdown that stamped an ending would have
+    /// persisted a FINISHED run, and the person who came back to a restarted daemon would be told
+    /// their loop converged.
+    ///
+    /// ⚠⚠ AND IT BELONGS TO NOBODY, which [`restore`](RunRegistry::restore) decides on purpose: the
+    /// pane the run drove came back as a plain shell, so carrying its opener would hand a new agent
+    /// booting into that pane somebody else's run as its own.
+    ///
+    /// # ⚠⚠ What this adds over the daemon-death gate, checked rather than assumed
+    ///
+    /// `cli`'s `a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody` drives the
+    /// same chain end to end and catches most of what is below — it was RUN against the mutation to
+    /// find that out, not guessed at. Two things are this gate's alone:
+    ///
+    /// * **the starting point is a DETACH** — a run the deadline left behind — which is the state
+    ///   item 305 introduced and which no daemon fixture can stage, since wedging a real worker
+    ///   needs a stopped pane device and some eighty kilobytes pushed at it;
+    /// * **the id counter**. That gate asserts the restored run KEEPS its id; it never starts a
+    ///   second run, so it cannot see the successor REISSUE it. `restore`'s second authority
+    ///   decision — *a successor that started from zero would mint ids that already name a run in
+    ///   its own list* — is held here and nowhere else: deleting the seeding line reddens this and
+    ///   leaves the other 855 lib gates green.
+    #[test]
+    fn the_run_a_shutdown_left_behind_comes_back_interrupted_and_belongs_to_nobody() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let mut run = a_worker_that_will_not_come_back(id, &released);
+        run.opened_by = Some(3);
+        registry.submit(run);
+
+        assert_eq!(
+            registry.join_all_within(Duration::from_millis(100)),
+            vec![id],
+            "the worker was supposed to still be going, or this chain starts from the wrong place",
+        );
+
+        // What the daemon leaves on disk for its successor, and what the successor makes of it.
+        let log = registry.persistable();
+        released.store(true, Ordering::Release);
+        assert_eq!(log.runs.len(), 1);
+        assert!(
+            !log.runs[0].finished,
+            "a run whose worker was detached is UNFINISHED on disk — it never published an outcome",
+        );
+
+        let mut successor = RunRegistry::default();
+        successor.restore(&log);
+        let restored = successor.snapshot();
+        assert!(
+            matches!(restored[0].state, RunState::Interrupted),
+            "the successor must say the daemon went away, not invent an ending: {:?}",
+            restored[0].state,
+        );
+        assert_eq!(
+            restored[0].opened_by, None,
+            "and it belongs to nobody: the pane it drove came back a plain shell",
+        );
+        assert_eq!(
+            successor.reserve(),
+            RunId(id.0 + 1),
+            "and its id is never reissued",
+        );
+    }
+
     /// **WHAT A SHUTDOWN MAY COST WHEN EVERY RUN BEHAVES** — a requirement, not a reading.
     ///
     /// ⚠⚠⚠ **DELIBERATELY NOT A MULTIPLE OF [`RunRegistry::JOIN_POLL`]**, which is the constant it
