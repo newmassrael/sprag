@@ -475,10 +475,16 @@ impl RunRegistry {
     /// into [`RunState::Panicked`], exactly as [`sweep`](Self::sweep) does (it IS `sweep`, on a
     /// timer). A worker that does not is left where it is: **its id is returned and its thread is
     /// DETACHED**, since dropping the registry drops the handle. Such a worker keeps its pane and
-    /// its child alive until the process exits — which both real callers do immediately — and its
-    /// run never publishes an outcome, so its record stays `Running` and comes back
-    /// [`RunState::Interrupted`] to the next daemon. That is the residue of choosing a deadline, and
-    /// it is smaller than the alternative, which is a daemon that never dies.
+    /// its child alive until the process exits — which both real callers do immediately. That is
+    /// the residue of choosing a deadline, and it is smaller than the alternative, which is a
+    /// daemon that never dies.
+    ///
+    /// ⚠⚠⚠ **AND ITS ENDING IS STILL ITS OWN — NOTHING HERE STAMPS ONE ON IT.** A terminal state
+    /// written for a thread that is still stepping would be a lie about a live worker, and it would
+    /// race the only author there is: a worker publishes its outcome as its last act, so a stamped
+    /// ending is either overwritten a moment later or overwrites the real answer. The record stays
+    /// `Running`, which is what makes the durable log's story true — unfinished on disk, and
+    /// [`RunState::Interrupted`] when a successor daemon reads it back.
     ///
     /// ⚠⚠ THE DEADLINE IS OVER THE WHOLE SET AND NOT PER WORKER — `n` wedged runs must not cost `n`
     /// deadlines — and every outstanding worker is asked on every pass, so one that will not come
@@ -648,16 +654,40 @@ mod tests {
     /// from the registry's side: the flag is raised, nothing reads it, the thread does not return.
     ///
     /// ⚠ It comes back when `released` is raised AND unconditionally after a minute, so a gate that
-    /// fails cannot leave a thread behind for the rest of the test binary.
+    /// fails cannot leave a thread behind for the rest of the test binary — and when it does come
+    /// back it PUBLISHES ITS OWN OUTCOME, as a real worker's last act. That is what makes it usable
+    /// for the claim that a detached run's ending is still its own.
     fn a_worker_that_will_not_come_back(id: RunId, released: &Arc<AtomicBool>) -> NewRun {
+        let state = Arc::new(Mutex::new(RunState::Running));
+        let worker_state = Arc::clone(&state);
         let flag = Arc::clone(released);
         let handle = std::thread::spawn(move || {
             let start = Instant::now();
             while !flag.load(Ordering::Acquire) && start.elapsed() < Duration::from_secs(60) {
                 std::thread::sleep(Duration::from_millis(5));
             }
+            *lock(&worker_state) = RunState::Done {
+                outcome: Box::new(a_cancelled_outcome()),
+                output: None,
+            };
         });
-        parked_run(id, "wedged".to_string(), handle)
+        NewRun {
+            state,
+            ..parked_run(id, "wedged".to_string(), handle)
+        }
+    }
+
+    /// What a worker that was asked to stop publishes when it finally does.
+    fn a_cancelled_outcome() -> Outcome {
+        Outcome {
+            state: sprag_plugin::OutcomeState::Cancelled,
+            iterations: 0,
+            cost: None,
+            failure: None,
+            stopped: None,
+            answered: 0,
+            screened: 0,
+        }
     }
 
     /// A run whose worker does what every real one does: reads its cancel flag and comes back.
@@ -751,6 +781,49 @@ mod tests {
             "a panicking worker must be JOINED and recorded, not merely observed to have stopped: \
              {:?}",
             snap[0].state,
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **A RUN LEFT BEHIND AT THE DEADLINE KEEPS ITS OWN ENDING** — the half of the detach
+    /// that is a claim about HONESTY rather than about time.
+    ///
+    /// The timed wait may not stamp a terminal state on a run whose thread is still going. It would
+    /// be a lie told about a live worker — the thread is still stepping, still holding a pane — and
+    /// it would RACE the only author there is: the worker publishes its outcome as its last act, so
+    /// a stamped `Interrupted` is either overwritten a moment later or overwrites the real answer.
+    /// Leaving it `Running` is also what makes the run log's story true: unfinished on disk, and
+    /// [`RunState::Interrupted`] when a successor daemon reads it back, which is what a run whose
+    /// daemon went away actually is.
+    #[test]
+    fn a_run_left_behind_at_the_deadline_keeps_its_own_ending() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let run = a_worker_that_will_not_come_back(id, &released);
+        let state = Arc::clone(&run.state);
+        registry.submit(run);
+
+        assert_eq!(
+            registry.join_all_within(Duration::from_millis(100)),
+            vec![id],
+            "the worker was supposed to still be going",
+        );
+        let left_behind = lock(&state).clone();
+        assert!(
+            matches!(left_behind, RunState::Running),
+            "the shutdown gave an ending to a thread that had not ended: {left_behind:?}",
+        );
+
+        // And the worker is still the only author of its outcome, so it still gets to publish one.
+        released.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && matches!(*lock(&state), RunState::Running) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let published = lock(&state).clone();
+        assert!(
+            matches!(published, RunState::Done { .. }),
+            "a detached worker must still be able to publish its own outcome: {published:?}",
         );
     }
 
