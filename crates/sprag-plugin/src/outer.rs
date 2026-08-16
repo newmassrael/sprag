@@ -669,25 +669,27 @@ impl Owed {
         }
     }
 
-    /// **WHICH QUESTION THIS STATE'S TURN WAS ASKING**, for the two states whose turn is a request
-    /// for an account of the run — and [`None`] for every state whose turn is WORK.
+    /// **WHETHER THIS STATE'S TURN WAS ASKING FOR AN ACCOUNT OF THE RUN**, rather than for work.
     ///
-    /// # ⚠⚠ Why the reader needs this and cannot use a constant
+    /// # ⚠⚠ Why a BOOLEAN, when it used to name the prompt
     ///
-    /// [`report::account`](crate::report::account) takes this run's own echo off what the pane
-    /// produced, and the echo is whatever was typed to ask the question. Two states now ask one, in
-    /// two different words. A reader holding `end_prompt` as a literal would, on the `stopping`
-    /// turn, fail to discount the question it actually asked — putting the caller's own sentence
-    /// into the agent's account — while discounting a line of the report that happened to appear in
-    /// a prompt nobody sent.
+    /// It answered `Some(End)` / `Some(Stop)`, and the caller passed that on so
+    /// [`report::account`](crate::report::account) could read the right slot back and discount it.
+    /// Nothing reads the name any more: the echo taken off an account is [`Session::asked`], the
+    /// text that actually went in, which is a better answer for the same question and the only
+    /// answer for a turn a screen rule spoke into.
     ///
-    /// ⚠ EXHAUSTIVE, and deliberately not a `_ => None`. A future state that asks its agent for
+    /// ⚠⚠ **AND WHAT IS LEFT IS NOT A SMALLER VERSION OF THE OLD ANSWER — IT IS THE ONLY PART THAT
+    /// WAS EVER THIS FUNCTION'S OWN.** Which prompt `closing` and `stopping` owe is
+    /// [`Owed::on`](Self::on)'s two arms, spelled here a second time; a value nobody reads is how
+    /// two spellings of one fact come to differ (register item 49's shape).
+    ///
+    /// ⚠ EXHAUSTIVE, and deliberately not a `_ => false`. A future state that asks its agent for
     /// something and forgets to say so here would publish NOTHING and look exactly like a state
     /// whose turn was work; a variant that no longer compiles is the only thing that catches it.
-    const fn asked_for_an_account(state: AiLoopState) -> Option<Self> {
+    const fn asked_for_an_account(state: AiLoopState) -> bool {
         match state {
-            AiLoopState::Closing => Some(Self::End),
-            AiLoopState::Stopping => Some(Self::Stop),
+            AiLoopState::Closing | AiLoopState::Stopping => true,
             AiLoopState::Idle
             | AiLoopState::Priming
             | AiLoopState::Working
@@ -703,7 +705,7 @@ impl Owed {
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
-            | AiLoopState::Blocked => None,
+            | AiLoopState::Blocked => false,
         }
     }
 }
@@ -2068,7 +2070,7 @@ impl OuterLoop {
                         // ([`Session::asked`]). Naming a SLOT here was right for the two endings and
                         // wrong for a turn a screen rule had spoken into, and it was a second answer
                         // to a question something else already answers.
-                        if Owed::asked_for_an_account(from).is_some() {
+                        if Owed::asked_for_an_account(from) {
                             self.reported = self.account(panes);
                         }
                         Raise::carrying(
@@ -3439,6 +3441,13 @@ impl OuterLoop {
     /// case where an unfinished line is final is a child that has EXITED, and a caller who drove
     /// this loop with [`DoneWhen::Exits`] would have exactly that. Nothing here can establish the
     /// EOF, and inventing it would be this crate guessing that a peer had stopped talking.
+    ///
+    /// ⚠⚠ **A HOST THAT CANNOT NUMBER ITS LINES GETS THE ROWS BACK, AND WITH THEM THE WIDTH.**
+    /// [`PaneAccess::output_lines`] is `None` by default, so `Since` falls back to the trail — named
+    /// there as a degradation rather than an equivalent, and it is a worse one here than it is for a
+    /// report. ⚠ The alternative was refusing to read a marker at all on such a host, and that is a
+    /// loop no run could ever converge: a degradation that costs a wrong answer sometimes beats one
+    /// that costs every answer. **The remedy is the capability, not a rule out here.**
     ///
     /// ⚠⚠ **AND AN EVICTION CAN STILL RE-OPEN THE ECHO.** [`crate::report::Produced::lost`] counts
     /// the complete lines the retained history threw away before this read, and if the one thrown
