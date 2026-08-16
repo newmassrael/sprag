@@ -13,6 +13,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use sprag_plugin::{Outcome, Progress, ProgressCell};
 
@@ -190,6 +191,34 @@ pub struct RunRegistry {
 }
 
 impl RunRegistry {
+    /// **HOW LONG A SHUTDOWN WAITS FOR A WORKER IT HAS ASKED TO STOP**, and the number a reader
+    /// should argue with — [`join_all_within`](Self::join_all_within)'s bound at every shutdown this
+    /// product has.
+    ///
+    /// # ⚠⚠⚠ Measured, because a guessed one detaches live runs on every shutdown
+    ///
+    /// A run hears [`cancel`](Self::cancel) at its driver's loop top and inside every bounded wait
+    /// it takes (`sprag_plugin::poll_until` asks the flag FIRST, every 10 ms), so the latency is a
+    /// poll interval plus whatever it is inside that cannot see the flag. Over a real pane and the
+    /// real orchestrator, a run that had been round its loop honoured a cancel in **2.7 – 10.5 ms**
+    /// (six samples, 2026-08-17 — `rpc`'s
+    /// `a_running_run_honours_cancel_well_inside_the_join_deadline`).
+    ///
+    /// The one thing a worker can be inside that does NOT consult the flag is a pane write, and that
+    /// is bounded at `sprag_terminal`'s `DEVICE_TAKES_INPUT_WITHIN` — 500 ms, once, since the driver
+    /// stops at its next loop top rather than starting another step. So **500 ms is the structural
+    /// worst case** and five seconds is ten times it, some five hundred times the measured latency,
+    /// and still short enough that a person who signalled the daemon gets their prompt back.
+    pub const JOIN_DEADLINE: Duration = Duration::from_secs(5);
+
+    /// How often [`join_all_within`](Self::join_all_within) asks whether a worker has come back.
+    ///
+    /// ⚠ There is no timed `join` in the standard library, so the wait is a poll — the primitive
+    /// [`sweep`](Self::sweep) already uses. It costs a shutdown at most this much over a blocking
+    /// join, which against a measured 2.7 – 10.5 ms is noise, and it is what makes the deadline
+    /// keepable at all.
+    const JOIN_POLL: Duration = Duration::from_millis(5);
+
     /// Take the next id WITHOUT registering anything — what a caller needs when the run's worker
     /// must know its own id before the record exists.
     ///
@@ -258,8 +287,8 @@ impl RunRegistry {
         }
     }
 
-    /// Raise every run's cancel flag — used on host shutdown so in-flight runs
-    /// abort promptly instead of `join_all` blocking on them.
+    /// Raise every run's cancel flag — used on host shutdown so in-flight runs abort promptly
+    /// instead of being waited out and detached by [`join_all_within`](Self::join_all_within).
     pub fn cancel_all(&self) {
         for record in &self.runs {
             record.cancel.store(true, Ordering::Release);
@@ -424,27 +453,79 @@ impl RunRegistry {
             .collect()
     }
 
-    /// Join every outstanding worker (blocks until each finishes — bounded by
-    /// its guardrails). Called on host shutdown so threads + child processes
-    /// reap promptly.
-    pub fn join_all(&mut self) {
-        for record in &mut self.runs {
-            if let Some(handle) = record.handle.take() {
-                let _ = handle.join();
+    /// Join every outstanding worker, waiting at most `within` FOR THE LOT, and answer the runs that
+    /// did not come back in time.
+    ///
+    /// Called on host shutdown so threads and their child processes reap promptly. Raise
+    /// [`cancel_all`](Self::cancel_all) first: this waits for workers, it does not ask them to stop.
+    ///
+    /// # ⚠⚠⚠⚠ Why a deadline, when a run always honours its cancel flag
+    ///
+    /// Because *always* is a property of the run's own loop and not of the thread. A worker parked
+    /// in a syscall never reaches a loop top, never reads the flag, and never returns — and this is
+    /// called from [`Drop`], which can neither fail nor panic, so an unbounded join there is a
+    /// process that cannot be shut down. That is exactly what happened: one pane's blocked `write(2)`
+    /// held a build machine for 43 hours with ten workers queued behind it (register items 304, 305).
+    /// The write is bounded now; the shape of *a thread that will not come back* is not, and this is
+    /// the answer to it rather than to that one cause.
+    ///
+    /// # ⚠⚠⚠ What a caller is promised, and what it is not
+    ///
+    /// Every worker that comes back within `within` is JOINED — reaped, with a panicking one turned
+    /// into [`RunState::Panicked`], exactly as [`sweep`](Self::sweep) does (it IS `sweep`, on a
+    /// timer). A worker that does not is left where it is: **its id is returned and its thread is
+    /// DETACHED**, since dropping the registry drops the handle. Such a worker keeps its pane and
+    /// its child alive until the process exits — which both real callers do immediately — and its
+    /// run never publishes an outcome, so its record stays `Running` and comes back
+    /// [`RunState::Interrupted`] to the next daemon. That is the residue of choosing a deadline, and
+    /// it is smaller than the alternative, which is a daemon that never dies.
+    ///
+    /// ⚠⚠ THE DEADLINE IS OVER THE WHOLE SET AND NOT PER WORKER — `n` wedged runs must not cost `n`
+    /// deadlines — and every outstanding worker is asked on every pass, so one that will not come
+    /// back cannot starve one that would have.
+    pub fn join_all_within(&mut self, within: Duration) -> Vec<RunId> {
+        let deadline = Instant::now() + within;
+        loop {
+            self.sweep();
+            // ⚠ ASKED, not collected: the answer is built once, on the way out, rather than
+            // allocated on each of the thousand passes a full deadline takes.
+            if !self.runs.iter().any(|record| record.handle.is_some()) {
+                return Vec::new();
             }
+            if Instant::now() >= deadline {
+                let outstanding: Vec<RunId> = self
+                    .runs
+                    .iter()
+                    .filter(|record| record.handle.is_some())
+                    .map(|record| record.id)
+                    .collect();
+                for id in &outstanding {
+                    tracing::warn!(
+                        target: "sprag_host::runs",
+                        "run {} did not come back within {within:?}; its worker is left running",
+                        id.0,
+                    );
+                }
+                return outstanding;
+            }
+            std::thread::sleep(Self::JOIN_POLL);
         }
     }
 }
 
 impl Drop for RunRegistry {
     fn drop(&mut self) {
-        // Catch-all: no run thread outlives the registry (so no detached worker
-        // keeps a pane/child alive). Cancel first so an in-flight run aborts
-        // promptly rather than `join_all` blocking on it (e.g. a slow AI turn).
-        // `serve` also does this for deterministic shutdown; the take() / flag
-        // make both idempotent.
+        // Catch-all: no run thread outlives the registry BY MORE THAN ITS DEADLINE (so no detached
+        // worker keeps a pane/child alive for longer than that). Cancel first so an in-flight run
+        // aborts promptly rather than the join waiting on it (e.g. a slow AI turn). `serve` also
+        // does this for deterministic shutdown; the take() / flag make both idempotent.
+        //
+        // ⚠⚠⚠ THE BOUND IS THE WHOLE POINT AND NOT A TIDY-UP. `Drop` can neither return an error
+        // nor panic, so a worker that will not come back used to mean a process that could not be
+        // shut down; the runs that outlast the deadline are named in the warning
+        // `join_all_within` logs and detached. See its doc for what that costs.
         self.cancel_all();
-        self.join_all();
+        let _ = self.join_all_within(Self::JOIN_DEADLINE);
     }
 }
 
@@ -545,8 +626,13 @@ mod tests {
             "a reserved id is the id the record carries",
         );
 
-        // Join (bounded — the worker is trivial) then observe Done.
-        registry.join_all();
+        // Join (the worker is trivial, so this returns on its first pass) then observe Done.
+        assert!(
+            registry
+                .join_all_within(RunRegistry::JOIN_DEADLINE)
+                .is_empty(),
+            "a worker that has already finished comes back",
+        );
         registry.sweep();
         let snap = registry.snapshot();
         assert_eq!(snap.len(), 1);
@@ -555,6 +641,177 @@ mod tests {
             snap[0].opened_by,
             Some(7),
             "the pane that asked for a run is what the agent-facing mouth keeps an agent to",
+        );
+    }
+
+    /// A run whose worker IGNORES ITS CANCEL FLAG — which is what a thread parked in a syscall is,
+    /// from the registry's side: the flag is raised, nothing reads it, the thread does not return.
+    ///
+    /// ⚠ It comes back when `released` is raised AND unconditionally after a minute, so a gate that
+    /// fails cannot leave a thread behind for the rest of the test binary.
+    fn a_worker_that_will_not_come_back(id: RunId, released: &Arc<AtomicBool>) -> NewRun {
+        let flag = Arc::clone(released);
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            while !flag.load(Ordering::Acquire) && start.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        parked_run(id, "wedged".to_string(), handle)
+    }
+
+    /// A run whose worker does what every real one does: reads its cancel flag and comes back.
+    fn a_worker_that_honours_its_cancel_flag(id: RunId) -> NewRun {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            while !flag.load(Ordering::Acquire) && start.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        NewRun {
+            cancel,
+            ..parked_run(id, "obedient".to_string(), handle)
+        }
+    }
+
+    /// A run whose worker returns after `delay` — a healthy one, slow enough that the FIRST sweep
+    /// cannot have reaped it.
+    fn a_worker_that_comes_back_after(id: RunId, delay: Duration) -> NewRun {
+        let handle = std::thread::spawn(move || std::thread::sleep(delay));
+        parked_run(id, "healthy".to_string(), handle)
+    }
+
+    fn parked_run(id: RunId, label: String, handle: JoinHandle<()>) -> NewRun {
+        NewRun {
+            id,
+            label,
+            opened_by: None,
+            state: Arc::new(Mutex::new(RunState::Running)),
+            handle,
+            progress: ProgressCell::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            order: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// ⚠⚠⚠⚠ **A REGISTRY HOLDING A WORKER THAT WILL NOT COME BACK IS STILL DROPPED** — register
+    /// item 305, and the one thing `Drop` could not promise before it had a deadline.
+    ///
+    /// `Drop` can neither return an error nor panic, so an unbounded join in it is a process that
+    /// cannot be shut down: the flag is raised at a thread that never reads it again and the
+    /// destructor never returns. Both halves are asserted — that it WAITED (a deadline nobody
+    /// consults is not a deadline) and that it CAME BACK.
+    #[test]
+    fn dropping_a_registry_holding_a_worker_that_will_not_come_back_still_returns() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(a_worker_that_will_not_come_back(id, &released));
+
+        let raised = Instant::now();
+        drop(registry);
+        let waited = raised.elapsed();
+        released.store(true, Ordering::Release);
+
+        assert!(
+            waited >= RunRegistry::JOIN_DEADLINE,
+            "a drop that gave up in {waited:?} never waited for the worker it asked to stop",
+        );
+        assert!(
+            waited < RunRegistry::JOIN_DEADLINE * 2,
+            "the drop did not come back: {waited:?}",
+        );
+    }
+
+    /// ⚠⚠ **A WORKER THAT PANICKED IS REAPED AND SAID SO** — what the timed wait promises beyond
+    /// *the thread is over*, and the one observable that tells JOINED from merely FINISHED.
+    ///
+    /// Its neighbours argue from an id's ABSENCE in the answer, which is only worth anything because
+    /// the handle is taken by a join and by nothing else. This is that link, asserted.
+    #[test]
+    fn a_worker_that_panicked_is_joined_and_recorded_as_panicked() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let handle = std::thread::spawn(|| {
+            panic!("a worker panicking ON PURPOSE — the gate around it reads what the registry did")
+        });
+        registry.submit(parked_run(id, "panicking".to_string(), handle));
+
+        assert!(
+            registry
+                .join_all_within(RunRegistry::JOIN_DEADLINE)
+                .is_empty(),
+            "a worker that panicked has come back",
+        );
+        let snap = registry.snapshot();
+        assert!(
+            matches!(snap[0].state, RunState::Panicked(_)),
+            "a panicking worker must be JOINED and recorded, not merely observed to have stopped: \
+             {:?}",
+            snap[0].state,
+        );
+    }
+
+    /// ⚠⚠⚠ **DROPPING A REGISTRY ASKS ITS RUNS TO STOP BEFORE IT WAITS FOR THEM.**
+    ///
+    /// The deadline made `Drop` bounded; it must not have made it PATIENT. A destructor that joined
+    /// without raising the flag would hold every shutdown for the whole deadline and then DETACH a
+    /// run that would have come back in milliseconds — which is worse than the unbounded join it
+    /// replaced, because it loses the outcome as well as the time.
+    #[test]
+    fn dropping_a_registry_asks_its_runs_to_stop_before_waiting_for_them() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(a_worker_that_honours_its_cancel_flag(id));
+
+        let raised = Instant::now();
+        drop(registry);
+        let waited = raised.elapsed();
+
+        assert!(
+            waited < RunRegistry::JOIN_DEADLINE / 10,
+            "the drop waited {waited:?} — it joined without asking the run to stop",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE WORKER THAT WILL NOT COME BACK IS NAMED, AND THE ONE BESIDE IT IS STILL JOINED.**
+    ///
+    /// The deadline is over the whole SET, so the two claims are one gate: `n` wedged runs must not
+    /// cost `n` deadlines, and a wedged one must not eat the wait a healthy one needed. An id absent
+    /// from the answer is an id whose handle was taken, and [`RunRegistry::sweep`] is the only place
+    /// that takes one — so absence here means JOINED and not merely finished.
+    #[test]
+    fn a_wedged_worker_is_named_at_the_deadline_and_does_not_starve_its_neighbour() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let wedged = registry.reserve();
+        registry.submit(a_worker_that_will_not_come_back(wedged, &released));
+        let healthy = registry.reserve();
+        registry.submit(a_worker_that_comes_back_after(
+            healthy,
+            Duration::from_millis(30),
+        ));
+
+        let within = Duration::from_millis(300);
+        let raised = Instant::now();
+        let outstanding = registry.join_all_within(within);
+        let waited = raised.elapsed();
+        released.store(true, Ordering::Release);
+
+        assert_eq!(
+            outstanding,
+            vec![wedged],
+            "only the worker that would not come back is left over",
+        );
+        assert!(
+            waited >= within,
+            "the wait ended at {waited:?}, before the deadline it was given",
+        );
+        assert!(
+            waited < within * 4,
+            "the wait ran past its own deadline: {waited:?}",
         );
     }
 }

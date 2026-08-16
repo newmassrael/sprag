@@ -3385,9 +3385,10 @@ mod tests {
 
     #[test]
     fn shutdown_cancels_in_flight_runs_promptly() {
-        // The serve-shutdown path: cancel_all() then join_all(). With a sleep
-        // pane and no cancel, join would block on the looping orchestrator;
-        // cancelling first makes shutdown return promptly with the run reaped.
+        // The serve-shutdown path: cancel_all() then the bounded join. With a
+        // sleep pane and no cancel, the join would wait out its whole deadline
+        // on the looping orchestrator and DETACH it; cancelling first makes
+        // shutdown return promptly with the run reaped and its outcome published.
         let state = host_with("sleep 30", 20, 4);
         serve_one(
             &state,
@@ -3398,10 +3399,17 @@ mod tests {
         {
             let mut runs = lock(state.runs());
             runs.cancel_all();
-            runs.join_all();
+            let outstanding = runs.join_all_within(RunRegistry::JOIN_DEADLINE);
+            assert!(
+                outstanding.is_empty(),
+                "a cancelled run must be JOINED, not detached at the deadline: {outstanding:?}",
+            );
         }
+        // ⚠ A FIFTH of the deadline, not the deadline: shutdown returning "inside the bound" is now
+        // true by construction, so the only claim left worth making is that the run CAME BACK rather
+        // than being waited out — and its measured latency is two orders of magnitude under this.
         assert!(
-            start.elapsed() < Duration::from_secs(5),
+            start.elapsed() < RunRegistry::JOIN_DEADLINE / 5,
             "shutdown blocked on the in-flight run: {:?}",
             start.elapsed()
         );
@@ -3411,6 +3419,69 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/sprag_plugins/external/runs"}}"#,
         );
         assert_eq!(runs["result"][0]["state"]["outcome"]["state"], "cancelled");
+    }
+
+    /// ⚠⚠⚠ **HOW LONG A RUN THAT IS GENUINELY UNDER WAY TAKES TO HONOUR `cancel`** — the number
+    /// [`RunRegistry::JOIN_DEADLINE`] is chosen against, over a real pane and the real orchestrator.
+    ///
+    /// Its sibling above cancels a run that may not have taken a step yet, so it measures the
+    /// registry's bookkeeping and not the run's reaction. This one waits until the driver has
+    /// completed steps — the run is then inside a step, inside a bounded wait — before raising the
+    /// flag, which is the shape a shutdown actually meets.
+    #[test]
+    fn a_running_run_honours_cancel_well_inside_the_join_deadline() {
+        let state = host_with("sleep 30", 20, 4);
+        serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_bytes":1073741824}}}}"#,
+        );
+
+        // Under way, not merely submitted: the driver has been round its loop and is in a wait.
+        let mut under_way = false;
+        let waited = Instant::now();
+        while waited.elapsed() < Duration::from_secs(5) {
+            let runs = serve_one(
+                &state,
+                r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/sprag_plugins/external/runs"}}"#,
+            );
+            if runs["result"][0]["state"]["iterations"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 3
+            {
+                under_way = true;
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        // ⚠⚠ THE FIXTURE HAS TO STAGE THE SHAPE OR THE NUMBER BELOW IS ABOUT SOMETHING ELSE. A run
+        // that never took a step honours a cancel at its loop top, which is the one case that was
+        // never in doubt — and it is what the sibling gate above already measures.
+        assert!(
+            under_way,
+            "the run took no step in 5 s, so nothing under way was measured",
+        );
+
+        let raised = Instant::now();
+        let outstanding = {
+            let mut runs = lock(state.runs());
+            runs.cancel_all();
+            runs.join_all_within(RunRegistry::JOIN_DEADLINE)
+        };
+        let honoured = raised.elapsed();
+        assert!(
+            outstanding.is_empty(),
+            "the run was still going at the deadline, so this measured nothing: {outstanding:?}",
+        );
+        // ⚠⚠ A TENTH of the deadline, which is the margin the constant was chosen for. Six samples
+        // on 2026-08-17 ran 2.7 – 10.5 ms, so this fails long before a shutdown would start
+        // detaching live runs — which is the thing worth being told about.
+        assert!(
+            honoured < RunRegistry::JOIN_DEADLINE / 10,
+            "a running orchestrator took {honoured:?} to honour cancel, against a \
+             {:?} join deadline — the deadline's margin has gone",
+            RunRegistry::JOIN_DEADLINE,
+        );
     }
 
     // ─── R115a: async change-notification (scene/revision + scene/waitFor) ───

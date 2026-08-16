@@ -657,6 +657,11 @@ fn adopt_manifests(
 /// threads reap; the pane shells receive SIGHUP when our PTY masters close on
 /// exit) then exit. Non-fatal if the handler cannot be installed -- the process
 /// then just terminates on the signal, as default.
+///
+/// ⚠⚠ THE JOIN IS BOUNDED, and this is the path that number is FOR: a person who signalled the
+/// daemon has to get their prompt back even when a worker will not come back, and this handler is
+/// the last code that runs before the process ends. What the deadline costs is
+/// [`RunRegistry::join_all_within`]'s to state.
 fn install_shutdown(runs: Arc<Mutex<RunRegistry>>) {
     let mut signals = match signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) {
         Ok(signals) => signals,
@@ -666,7 +671,7 @@ fn install_shutdown(runs: Arc<Mutex<RunRegistry>>) {
         if signals.forever().next().is_some() {
             let mut runs = runs.lock().unwrap_or_else(PoisonError::into_inner);
             runs.cancel_all();
-            runs.join_all();
+            let _ = runs.join_all_within(RunRegistry::JOIN_DEADLINE);
             std::process::exit(0);
         }
     });
