@@ -117,6 +117,15 @@ struct Backlog {
     /// When the device last finished taking a message — set at the pane's birth so an idle pane is
     /// never mistaken for a stopped one before it has been written to at all.
     moved: Instant,
+    /// Whether the device thread has LEFT, so nothing will ever take what is owed.
+    ///
+    /// ⚠⚠⚠ **A DIFFERENT FACT FROM A FULL BACKLOG, AND THE DIFFERENCE IS WHETHER A CALLER SHOULD
+    /// EVER TRY AGAIN.** A device parked inside `write(2)` is not taking input *now* and its bytes
+    /// really are still on a queue; a device whose thread has ended will not take input ever, and
+    /// the bytes behind it are lost. Without this the second is indistinguishable from the first —
+    /// worse, it is PERMANENTLY the first, because a stranded backlog is never credited back, so
+    /// every later caller is told *busy* about a pane that is gone.
+    ended: bool,
 }
 
 /// The bytes most recently WRITTEN INTO a pane, shared so every writer records into one trail.
@@ -1626,6 +1635,7 @@ impl DeviceInput {
             Mutex::new(Backlog {
                 owed: 0,
                 moved: Instant::now(),
+                ended: false,
             }),
             Condvar::new(),
         ));
@@ -1661,8 +1671,29 @@ impl DeviceInput {
                         break;
                     }
                 }
+                // ⚠⚠⚠ PUBLISHED HOWEVER THE LOOP ENDED — a device error above, or every sender
+                // gone. Whatever is still on the channel behind this thread will never be written
+                // and will never be credited back, so without this the pane would answer *busy,
+                // 65,536 bytes still waiting* for the rest of the process. The wake is for writers
+                // already inside the wait: their window is pointless now and they should be told.
+                let (waiting, took) = &*taken;
+                lock(waiting).ended = true;
+                took.notify_all();
             })?;
         Ok(Self { offered, backlog })
+    }
+
+    /// The one sentence a caller gets when this pane's device has ended — written once, because
+    /// two spellings of one answer is this workspace's most-repeated defect and both the flag and
+    /// the channel can be the thing that notices.
+    fn has_ended(owed: usize, offered: usize) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            format!(
+                "this pane's device has ended and can take no more input: these {offered} bytes \
+                 are refused and the {owed} it never wrote are lost with it",
+            ),
+        )
     }
 
     /// How many bytes this device has been given and has not taken — see
@@ -1704,10 +1735,24 @@ impl DeviceInput {
     /// [`ErrorKind::WouldBlock`](io::ErrorKind::WouldBlock) when the device is not taking input,
     /// with the sentence that says so; [`ErrorKind::BrokenPipe`](io::ErrorKind::BrokenPipe) when
     /// the device thread has ended (its `write(2)` failed, or the pane is closing).
+    ///
+    /// ⚠⚠⚠⚠ **ENDED IS ASKED BEFORE FULL, AND THAT ORDER IS LOAD-BEARING.** A device thread that
+    /// dies holding a full backlog strands it — nothing will ever credit those bytes back — so
+    /// asking *is it full?* first answers *busy, 65,536 bytes still waiting* about a pane that is
+    /// gone, permanently, and charges the caller the whole window to say it. The one answer that
+    /// tells a caller to STOP retrying was unreachable exactly where it was most true. Asked again
+    /// on every wake, so a writer already inside the wait when the device dies is released rather
+    /// than left to serve out a window that cannot end any other way.
     fn offer(&self, bytes: &[u8]) -> io::Result<()> {
         let (backlog, took) = &*self.backlog;
         let mut waiting = lock(backlog);
-        while waiting.owed >= DEVICE_INPUT_BACKLOG {
+        loop {
+            if waiting.ended {
+                return Err(Self::has_ended(waiting.owed, bytes.len()));
+            }
+            if waiting.owed < DEVICE_INPUT_BACKLOG {
+                break;
+            }
             let quiet = waiting.moved.elapsed();
             let Some(patience) = DEVICE_TAKES_INPUT_WITHIN.checked_sub(quiet) else {
                 // ⚠⚠⚠ IT HAS TO SAY WHY. A write that quietly stops working is the defect
@@ -1734,13 +1779,12 @@ impl DeviceInput {
         }
         waiting.owed += bytes.len();
         drop(waiting);
+        // ⚠ The backstop for the one race the check above cannot cover: the device thread leaving
+        // between that read and this send. Same sentence, because it is the same fact.
         self.offered.send(bytes.to_vec()).map_err(|_| {
             let mut waiting = lock(backlog);
             waiting.owed = waiting.owed.saturating_sub(bytes.len());
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "this pane's device has ended and can take no more input",
-            )
+            Self::has_ended(waiting.owed, bytes.len())
         })
     }
 }
@@ -1926,6 +1970,106 @@ impl PanePty {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    /// ⚠⚠⚠⚠ **A PANE WHOSE DEVICE HAS ENDED MUST SAY *ENDED*, NOT *BUSY* — AND THE DIFFERENCE IS
+    /// WHETHER A CALLER SHOULD EVER TRY AGAIN.**
+    ///
+    /// # The two answers [`DeviceInput::offer`] documents, and which of them was reachable
+    ///
+    /// `WouldBlock` means *this device is not taking input right now, and here is how much it still
+    /// owes* — a condition a caller may reasonably retry past. `BrokenPipe` means *this device is
+    /// gone*, which is terminal. Both are written in that function's `# Errors`, and only the first
+    /// had ever been measured.
+    ///
+    /// ⚠⚠⚠ **THE SECOND WAS UNREACHABLE EXACTLY WHEN IT WAS MOST TRUE.** The backlog is checked
+    /// BEFORE the send, so a device thread that has died holding [`DEVICE_INPUT_BACKLOG`] bytes of
+    /// undelivered offers turns every later caller away with the *busy* sentence — for ever, since
+    /// nothing will ever credit those bytes back. The one answer that tells a caller to stop
+    /// retrying is the one it cannot get.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE OTHER GATE**, `writing_to_a_dead_pane_comes_back.rs`: a pane whose
+    /// device is PARKED inside `write(2)` for ever must still answer *not taking input*, because
+    /// that thread is alive and its bytes really are still waiting on a queue. *Parked* and *gone*
+    /// are different facts and this pair is what keeps them different.
+    #[test]
+    fn a_pane_whose_device_has_ended_says_so_rather_than_saying_it_is_busy() {
+        /// A device that parks on its first write until it is let go, and then FAILS — the shape a
+        /// pty master takes when it stops accepting input for good rather than merely filling up.
+        struct EndsAfterOneWrite {
+            let_go: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl Write for EndsAfterOneWrite {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                let (held, wake) = &*self.let_go;
+                let mut held = lock(held);
+                while !*held {
+                    held = wake.wait(held).unwrap_or_else(PoisonError::into_inner);
+                }
+                let _ = buf;
+                Err(io::Error::other("this device will take no more"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let let_go = Arc::new((Mutex::new(false), Condvar::new()));
+        let device = DeviceInput::attach(EndsAfterOneWrite {
+            let_go: Arc::clone(&let_go),
+        })
+        .expect("attach a device");
+
+        // One message the device picks up and parks inside, then a backlog behind it that nothing
+        // will ever credit back once that thread leaves.
+        device.offer(b"first").expect("an idle device takes this");
+        assert!(
+            until(Duration::from_secs(5), || device.owed() == b"first".len()),
+            "⚠ THE FIXTURE: the device must be parked inside that first write, still owing it",
+        );
+        device
+            .offer(&vec![b'x'; DEVICE_INPUT_BACKLOG])
+            .expect("the backlog is still under its ceiling, so this is accepted");
+
+        // Let the write fail. The thread credits the message it was holding and leaves; the backlog
+        // behind it is stranded.
+        {
+            let (held, wake) = &*let_go;
+            *lock(held) = true;
+            wake.notify_all();
+        }
+        assert!(
+            until(Duration::from_secs(5), || device.owed()
+                == DEVICE_INPUT_BACKLOG),
+            "⚠ THE FIXTURE: the failing message must have been credited and the queue behind it \
+             stranded, which is the state this gate is about — owed: {}",
+            device.owed(),
+        );
+
+        let said = device
+            .offer(b"anybody there?")
+            .expect_err("a device that has ended cannot take input")
+            .to_string();
+        assert!(
+            said.contains("has ended"),
+            "⚠⚠⚠⚠ THE PANE SAID IT WAS BUSY ABOUT A DEVICE THAT IS GONE. `WouldBlock` invites a \
+             caller to try again and names bytes that are *still waiting*; nothing is waiting, the \
+             thread that would have written them has left, and no retry will ever be answered. The \
+             one sentence that says stop is the one that cannot be reached, because the backlog is \
+             consulted before the send. It said: {said:?}",
+        );
+    }
+
+    /// Poll `question` until it holds or `within` runs out.
+    fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
+        let began = Instant::now();
+        while began.elapsed() < within {
+            if question() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        question()
+    }
 
     /// ⚠⚠ **EVERY HAND THE TYPE HAS IS A WORD THE WIRE PUBLISHES, AND BACK.**
     ///
