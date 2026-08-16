@@ -63,9 +63,23 @@ pub struct JudgeSpec {
 }
 
 impl JudgeSpec {
-    /// The wire and datamodel key of the judge's argv.
+    /// # ⚠⚠⚠⚠ NEITHER OF THESE IS A WIRE KEY TODAY, AND BOTH SAID THEY WERE
+    ///
+    /// They are the names a judge WOULD take if a caller could declare one — and no caller can.
+    /// The daemon's `ai_loop` form publishes seventeen arguments and neither of these is among
+    /// them (`crate::wire`'s own pinned shape lists every one), nothing outside this file reads
+    /// either constant, and the only [`AiLoopSpec::judge`](crate::ai_loop) a run ever carries is
+    /// `None`. **The judging capability exists and is reachable only from in-process gates.**
+    ///
+    /// Register item 314 read the bound below as item 300's next duration — *a duration is a
+    /// judgement the document should make, not a caller argument* — but that rule bites on
+    /// arguments a caller can PASS, and there is no such argument here. What is true is smaller and
+    /// different: two constants that named a surface they are not on. Corrected rather than
+    /// deleted, because the names are the ones a door would use and the door is a decision.
+    ///
+    /// The datamodel key of the judge's argv, and the name a wire argument would take.
     pub const ARGV_KEY: &'static str = "judge";
-    /// The wire key of the bound.
+    /// The name a wire argument for the bound would take — see [`ARGV_KEY`](Self::ARGV_KEY).
     pub const WITHIN_KEY: &'static str = "judge_timeout_ms";
 
     /// The size of the pane a judgement runs in.
