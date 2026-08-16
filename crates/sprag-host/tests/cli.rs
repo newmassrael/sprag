@@ -7699,7 +7699,10 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // `cancel-run` against a live daemon, which is what this sweep is for.
         // ⚠ R369: `answer-pane` is the 58th, and it was DRIVEN here before the count moved —
         // against a live daemon, addressing a pane one window over by NAME, in the sweep above.
-        (58, 5, 3),
+        // ⚠ `stand-down` is the 59th, and it is DRIVEN here before the count moves — the sweep
+        // above runs it against a live daemon, which is what makes this a claim about the binary
+        // rather than about the table.
+        (59, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7871,7 +7874,9 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // ⚠ R369: `answer-pane` joins the THIRD column — refused with a rule. Its whole content
         // is the two needles a caller quotes off a dialog they just read, so a binding would fix
         // one question and one option forever, which is the one shape a consent must never take.
-        (15, 10, 38, 3),
+        // ⚠ `stand-down` is the FOURTH in the last column, beside `cancel-run` and for its reason:
+        // "stand down every run I started" is an act a key could mean and nobody has built it.
+        (15, 10, 38, 4),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

@@ -52,6 +52,17 @@ pub const DEFAULT_REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Clone)]
 pub struct RunContext {
     cancel: Arc<AtomicBool>,
+    /// **WHETHER A PERSON HAS ASKED THIS RUN TO STAND DOWN** — beside the cancel flag because it
+    /// arrives by the same route, and SEPARATE from it because it means the opposite thing.
+    ///
+    /// ⚠⚠⚠ A cancel says *stop now and throw the turn away*; this says *finish what you are doing
+    /// and then stop*. Folding them into one flag would make the run that banked its milestone and
+    /// the run that lost it indistinguishable to everything downstream — and those are the two
+    /// outcomes a person is choosing between when they reach for either.
+    ///
+    /// ⚠ The flag only CARRIES the order. What it means is the loop document's, which holds it as a
+    /// state in its own orders region and decides at the next milestone; nothing here judges.
+    order: Arc<AtomicBool>,
     /// WHEN THIS RUN MUST BE OVER, or [`None`] for a run nothing times.
     ///
     /// An `Instant` and not a `Duration`, because the question every wait asks is
@@ -69,8 +80,21 @@ impl RunContext {
     pub fn new(cancel: Arc<AtomicBool>) -> Self {
         Self {
             cancel,
+            order: Arc::new(AtomicBool::new(false)),
             deadline: None,
         }
+    }
+
+    /// This context sharing `order` — the flag a host raises when somebody tells the run to stand
+    /// down. A context built without one can never be ordered, which is what every driver that has
+    /// no host to be spoken through should be.
+    ///
+    /// ⚠ Separate from [`new`](Self::new) rather than a second parameter, so the many callers that
+    /// only ever cancel keep the signature they had — and so a caller that DOES wire orders has
+    /// written that down.
+    #[must_use]
+    pub fn ordered_by(self, order: Arc<AtomicBool>) -> Self {
+        Self { order, ..self }
     }
 
     /// A context that can never be cancelled — for fire-and-forget runs and
@@ -90,6 +114,10 @@ impl RunContext {
     pub fn deadline_in(&self, within: Option<Duration>) -> Self {
         Self {
             cancel: Arc::clone(&self.cancel),
+            // ⚠ CARRIED, like the cancel flag beside it. A derived context that dropped the order
+            // would leave a run unable to hear the one thing a person said to it, and the drop
+            // would be invisible — the run would simply carry on working.
+            order: Arc::clone(&self.order),
             deadline: within.map(|d| Instant::now() + d),
         }
     }
@@ -98,6 +126,16 @@ impl RunContext {
     #[must_use]
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
+    }
+
+    /// **WHETHER SOMEBODY HAS ASKED THIS RUN TO FINISH UP AND STAND DOWN.**
+    ///
+    /// ⚠ Deliberately NOT part of [`stopped`](Self::stopped): a stood-down run is still running, and
+    /// every wait that treated it as finished would abandon the turn this order exists to let it
+    /// finish.
+    #[must_use]
+    pub fn stood_down(&self) -> bool {
+        self.order.load(Ordering::Acquire)
     }
 
     /// Whether the run's deadline has passed. Always false for a run with none.

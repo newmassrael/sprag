@@ -299,6 +299,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Orchestrate => orchestrate(args.collect()),
         Verb::Runs => runs(args.collect()),
         Verb::CancelRun => cancel_run(args.collect()),
+        Verb::StandDown => stand_down(args.collect()),
         Verb::Agent => agent(args.collect()),
         Verb::AnswerPane => answer_pane(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
@@ -4899,6 +4900,54 @@ fn cancel_run(args: Vec<String>) -> io::Result<()> {
         ),
     )?;
     println!("run {id} asked to stop; `sprag runs` says when it has");
+    Ok(())
+}
+
+/// `stand-down ID`: ask a run to finish what it is doing and then stop.
+///
+/// # ⚠⚠⚠ Why this is not `cancel-run` with a flag
+///
+/// A cancel stops a loop MID-TURN: whatever the agent had written since its last checkpoint is
+/// thrown away, and the run reports `cancelled`. This one waits — the milestone the agent is working
+/// toward is finished, `closing` takes its account, and the run converges reporting `stood_down`.
+/// **The work is banked.**
+///
+/// Those are opposite outcomes from one keystroke's distance apart, which is exactly why they are
+/// two verbs: a mode flag would let somebody lose a milestone by mistyping a boolean at the end of a
+/// long day, which is when this verb is most likely to be typed at all.
+///
+/// ⚠ It returns as soon as the order is recorded. The run reads it at its next pass and acts on it
+/// at its next MILESTONE, which may be many minutes of a real agent away — `sprag runs` is what says
+/// it has landed.
+fn stand_down(args: Vec<String>) -> io::Result<()> {
+    let (session, args) = scope_and_rest(args, "stand-down")?;
+    let mut rest = args.into_iter();
+    let id = rest
+        .next()
+        .ok_or_else(|| bad_input("stand-down: which run? (see `sprag runs`)"))?;
+    if let Some(extra) = rest.next() {
+        return Err(bad_input(&format!(
+            "stand-down: unexpected argument {extra:?} (one run at a time)"
+        )));
+    }
+    let id: u64 = id.parse().map_err(|_| {
+        bad_input(&format!(
+            "stand-down: {id:?} is not a run id (see `sprag runs`)"
+        ))
+    })?;
+    let mut conn = connect()?;
+    invoke_action(
+        &mut conn,
+        scoped_call(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::STAND_DOWN_ACTION),
+            json!({ "id": id }),
+        ),
+    )?;
+    println!(
+        "run {id} asked to finish up; it stops at its next milestone, and its work is kept — \
+         `sprag runs` says when it has"
+    );
     Ok(())
 }
 

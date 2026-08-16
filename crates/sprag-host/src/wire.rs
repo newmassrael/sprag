@@ -1448,6 +1448,14 @@ impl PluginGrammar {
 
     /// [`CANCEL_ACTION`](crate::plugins::CANCEL_ACTION) — the run to stop.
     pub const CANCEL: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::open("id", "int")])];
+
+    /// [`STAND_DOWN_ACTION`](crate::plugins::STAND_DOWN_ACTION) — the run to finish up and stop.
+    ///
+    /// ⚠ The SAME SHAPE as [`CANCEL`](Self::CANCEL) and deliberately not folded into it: the two
+    /// verbs take one id each and mean opposite things about the turn in flight, and a client
+    /// choosing between them is choosing whether that turn's work survives.
+    pub const STAND_DOWN: &'static [CallForm] =
+        &[CallForm::object(&[ArgGrammar::open("id", "int")])];
 }
 
 /// The request grammar of the PANE-INPUT verbs — the six ways a client drives what is inside a pane.
@@ -1887,6 +1895,11 @@ pub const PLUGINS_GRAMMAR: &[ActionGrammar] = &[
     ActionGrammar {
         action: crate::plugins::CANCEL_ACTION,
         forms: PluginGrammar::CANCEL,
+        from_ask: false,
+    },
+    ActionGrammar {
+        action: crate::plugins::STAND_DOWN_ACTION,
+        forms: PluginGrammar::STAND_DOWN,
         from_ask: false,
     },
 ];
@@ -7910,6 +7923,11 @@ mod tests {
                 "sprag_workspace/sprag_plugins/run:done_when=exits,settles \
                  format_a=text,claude_json format_b=text,claude_json plugin=agent plugin=ai_loop \
                  plugin=answer plugin=dialogue plugin=orchestrator plugin=pipe",
+                // ⚠ A NEW ADDRESS WITH NO CLOSED VOCABULARY OF ITS OWN — it takes a run id and
+                // nothing an agent has to choose a word for. It appears here because the pin is over
+                // every verb the surface serves, not only the ones with enumerations: a verb
+                // missing from this list is a verb whose value space nothing is watching.
+                "sprag_workspace/sprag_plugins/stand_down:",
             ],
         );
 
@@ -8169,6 +8187,12 @@ mod tests {
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? done_when:string? turn_within_ms:int? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                // ⚠⚠ ADDED, not moved: a NEW address with a shape of its own, so no existing call
+                // changed and `WIRE_PROTOCOL` stands. Identical in shape to `cancel` above it and
+                // opposite in meaning — a stand-down banks the turn in flight where a cancel loses
+                // it — which is exactly why the two are separate addresses rather than one with a
+                // mode.
+                "sprag_workspace/sprag_plugins/stand_down[object]:id:int",
             ],
         );
 
@@ -8715,6 +8739,13 @@ mod tests {
             "set_layout",
             "spawn",
             "split",
+            // ⚠⚠ ADDED, so an older client's requests all still work and `WIRE_PROTOCOL` stands. A
+            // client that does not know this address simply never sends it; one NEWER than its
+            // daemon gets `UnknownPath`, which is the daemon truthfully saying it does not serve
+            // that verb. The residue is stated rather than hidden: a person on a new CLI cannot
+            // stand down a run on an old daemon, and what they see is an unknown address rather
+            // than a silent no-op.
+            "stand_down",
             "stop_job",
             "swap_pane",
             "text",
@@ -9110,9 +9141,11 @@ mod tests {
                 SURFACES,
             )
             .count_or_panic(),
-            37,
+            38,
             "the whole write half of this crate's wire: twenty-nine multiplexer verbs, a pane's six, \
-             and the plugin host's two",
+             and the plugin host's THREE — run, cancel, and stand_down. ⚠ The third is the second \
+             thing anybody can say to a run in flight, and the first that lets it keep the turn it \
+             is in the middle of",
         );
     }
 

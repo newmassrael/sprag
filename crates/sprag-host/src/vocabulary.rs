@@ -195,6 +195,14 @@ pub enum Verb {
     Runs,
     /// `cancel-run` — ask a run to stop at its next step.
     CancelRun,
+    /// `stand-down` — ask a run to finish what it is doing and then stop.
+    ///
+    /// ⚠⚠⚠ THE SECOND THING ANYBODY CAN SAY TO A RUN, and the first that does not throw the turn in
+    /// flight away. `cancel-run` stops a loop mid-turn and loses whatever the agent had done; this
+    /// waits for the milestone it was working toward, takes its closing account, and converges. **A
+    /// person leaving for the day wants this one**, and until it existed the only sentence available
+    /// was the one that discards work.
+    StandDown,
     /// `display-message` — put a sentence on somebody's screen.
     DisplayMessage,
     /// `install-hooks` — wire an agent's hooks into its own config.
@@ -554,7 +562,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 66] = [
+    pub const ALL: [Self; 67] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -607,6 +615,7 @@ impl Verb {
         Self::Orchestrate,
         Self::Runs,
         Self::CancelRun,
+        Self::StandDown,
         Self::ListKeys,
         Self::BindKey,
         Self::UnbindKey,
@@ -1115,6 +1124,22 @@ impl Verb {
                 Keystroke::NotBuilt,
                 Agent::Tools(&["cancel_run"]),
             ),
+            Self::StandDown => (
+                "stand-down",
+                Group::Orchestration,
+                Shell::Runs(" ID [-t SESSION]"),
+                // ⚠ `NotBuilt` for `cancel-run`'s reason exactly: "stand every run I started down"
+                // is an act a key could perform, and nobody has built the verb for it. ⚠⚠ It is the
+                // BETTER candidate of the two for a key — a person leaving their desk wants the one
+                // that keeps the work, and that is the moment a keystroke is reached for.
+                Keystroke::NotBuilt,
+                // ⚠ NOT BUILT rather than refused: a supervising agent standing ANOTHER run down is
+                // a legitimate ask and the mouth simply has no tool for it yet. ⚠⚠ What would be a
+                // refusal is a run standing ITSELF down — that is the loop deciding it is finished,
+                // which is `north_star`'s job and not an order's — but that is a different verb from
+                // this one and does not belong in this row.
+                Agent::NotBuilt,
+            ),
             // ── keys ────────────────────────────────────────────────────────────────────────────
             // THE ONE ANSWERING VERB THAT IS BOUND, and the reason is the whole content of
             // [`NotAKeystroke::Answers`]: this client has a VIEW for the answer
@@ -1616,7 +1641,9 @@ mod tests {
             // wanted a bounded loop against a sibling had to hand-roll one in its own turns,
             // without the iteration ceiling, the typed cost ceiling, the wall-clock deadline or
             // the cancel flag that exist.
-            (38, 7, 21),
+            // ⚠ `stand-down` is the EIGHTH not-built: a supervising agent standing another run
+            // down is a legitimate ask with no tool behind it yet.
+            (38, 8, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1636,6 +1663,9 @@ mod tests {
                 "run",
                 "move-window",
                 "list-hooks",
+                // ⚠ A SUPERVISING agent standing another run down is the ask with no tool behind it.
+                // A run standing ITSELF down would be a different verb and a refusal, not this gap.
+                "stand-down",
                 "list-keys",
                 "show-options",
                 "version",
@@ -1769,7 +1799,9 @@ mod tests {
             // R353: `show-grammar` is the 53rd shell verb — the door onto the wire's own grammar.
             // R355: three more, and they are the door onto the LOOP the README leads with —
             // `orchestrate`, `runs` and `cancel-run`.
-            (58, 3, 5),
+            // ⚠ `stand-down` is the 59th — the second thing a person can say to a run, and the
+            // first that lets it keep the turn it is in the middle of.
+            (59, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1858,7 +1890,10 @@ mod tests {
             // a caller quotes off the dialog, and a binding would fix one question and one option
             // forever. That is `send-keys`'s rule with a sharper reason: a consent is about a
             // question somebody READ, never about whatever is on the screen when a key is pressed.
-            (25, 3, 38),
+            // ⚠⚠ `stand-down` is the FOURTH `NotBuilt`, and the best candidate of them: a person
+            // leaving their desk wants the verb that keeps the work, and leaving a desk is exactly
+            // when a keystroke is reached for. Nobody has built "stand down every run I started".
+            (25, 4, 38),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1871,7 +1906,10 @@ mod tests {
             .collect();
         assert_eq!(
             pending,
-            ["run", "stop-job", "cancel-run"],
+            // ⚠ `stand-down` sits beside `cancel-run` because they are the same shape of gap — "do
+            // this to every run I started" — and it is the one a person is likeliest to want under
+            // a key, since it is the one they reach for on the way out of the door.
+            ["run", "stop-job", "cancel-run", "stand-down"],
             "the keyboard's remaining gap, by name",
         );
     }

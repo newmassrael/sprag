@@ -62,6 +62,14 @@ use crate::runs::{RunId, RunRegistry, RunState, RunSummary};
 pub const RUN_ACTION: &str = "run";
 /// The plugin-host external's action that raises a run's cancel flag.
 pub const CANCEL_ACTION: &str = "cancel";
+/// The plugin-host external's action that asks a run to finish its milestone and then stop.
+///
+/// ⚠⚠⚠ A SECOND VERB RATHER THAN A MODE ON [`CANCEL_ACTION`], because the outcomes are opposite: a
+/// cancel loses the turn in flight and this one banks it. ⚠ ADDING AN ACTION IS ADDITIVE — an older
+/// client simply cannot reach it — so this does not earn a `WIRE_PROTOCOL` bump. The residue,
+/// stated: a client newer than its daemon gets `UnknownPath` for it, which is the daemon saying it
+/// does not serve that address, and is the answer that case should get.
+pub const STAND_DOWN_ACTION: &str = "stand_down";
 /// The slot reporting every run this daemon holds.
 pub const RUNS_SLOT: &str = "runs";
 /// The slot listing the plugins a `run` may name.
@@ -450,6 +458,29 @@ impl PluginsExternal {
         }
     }
 
+    /// **ASK A RUN TO FINISH WHAT IT IS DOING AND THEN STOP** — [`STAND_DOWN_ACTION`].
+    ///
+    /// The one thing a person could say to a run used to be `cancel`, which stops it mid-turn and
+    /// throws that turn away. This is the other sentence: the milestone the agent is working toward
+    /// is finished, its account is taken, and the run converges. **The work is banked rather than
+    /// lost**, which is the whole reason it is a different verb.
+    ///
+    /// ⚠ It only raises a flag. The worker carries it into the loop document at its next pass, and
+    /// the DOCUMENT decides — at its own next milestone — what standing down means. Nothing here
+    /// interrupts anything.
+    fn stand_down(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = map
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or(InvokeError::TypeMismatch)?;
+        if lock(&self.runs).stand_down(RunId(id)) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(refused(format!("no run {id} is in flight")))
+        }
+    }
+
     /// Parse the plugin discriminator + its args, validating target panes
     /// exist (fail fast → synchronous `Rejected`).
     fn build_plugin(&self, map: &Map<String, Value>) -> Result<(PluginKind, String), InvokeError> {
@@ -759,7 +790,11 @@ impl PluginsExternal {
         // The cancel flag is shared two ways: the run's RunContext reads it, and
         // the registry holds a clone so a `cancel`/shutdown can set it.
         let cancel = Arc::new(AtomicBool::new(false));
-        let run_ctx = RunContext::new(Arc::clone(&cancel));
+        // ⚠⚠ THE SECOND THING A PERSON CAN SAY TO A RUN, and it needs its own flag: *finish what you
+        // are doing and then stop* is not a softer cancel, it is the opposite outcome — the turn in
+        // flight is banked rather than lost. See `RunRecord::order`.
+        let order = Arc::new(AtomicBool::new(false));
+        let run_ctx = RunContext::new(Arc::clone(&cancel)).ordered_by(Arc::clone(&order));
         let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace))
             .with_pane_exit(self.on_pane_exit.clone())
             // The detector, as an opaque per-pane read. A run that never supervises never calls
@@ -816,6 +851,7 @@ impl PluginsExternal {
             handle,
             progress,
             cancel,
+            order,
         })
     }
 }
@@ -939,6 +975,7 @@ impl ExternalIntrospect for PluginsExternal {
                 &[
                     SchemaField::action(RUN_ACTION, "action"),
                     SchemaField::action(CANCEL_ACTION, "action"),
+                    SchemaField::action(STAND_DOWN_ACTION, "action"),
                     SchemaField::new(RUNS_SLOT, "list"),
                     SchemaField::new(PLUGINS_SLOT, "list"),
                     SchemaField::new(GUARDRAIL_DEFAULTS_SLOT, "object"),
@@ -979,6 +1016,7 @@ impl ExternalIntrospect for PluginsExternal {
         match path {
             RUN_ACTION => self.run(&args),
             CANCEL_ACTION => self.cancel(&args),
+            STAND_DOWN_ACTION => self.stand_down(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -3310,8 +3348,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            113,
+            114,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
+             orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
+             TEN to answer a pane, TWENTY-EIGHT to run an AI loop, one to cancel, and ONE TO STAND \
+             A RUN DOWN. ⚠⚠⚠ THE NEWEST IS THAT LAST ONE — the second thing anybody can say to a \
+             run, and the first that does not throw the turn in flight away. It takes a run id and \
+             nothing else, exactly as `cancel` does, and it is a SEPARATE verb for that reason \
+             rather than in spite of it: the two shapes are identical and the outcomes are \
+             opposite, so a mode flag on one of them would let a caller lose a milestone by \
+             mistyping a boolean. THE OLD SENTENCE FOLLOWS. one probe per declared argument of \
+             every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
              TEN to answer a pane, TWENTY-EIGHT to run an AI loop, and one to cancel. ⚠⚠⚠ THE \
              NEWEST THREE ARE `screen_rules` AND ITS TWO NESTED FIELDS — the loop author's standing \

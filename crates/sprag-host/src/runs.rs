@@ -79,6 +79,13 @@ struct RunRecord {
     /// The run's cancel flag, shared with its `WorkspacePaneAccess`; setting it
     /// makes the worker's Driver/plugin stop at its next check.
     cancel: Arc<AtomicBool>,
+    /// **THE RUN'S STAND-DOWN FLAG**, shared with the `RunContext` its worker drives through.
+    ///
+    /// ⚠⚠⚠ A SECOND FLAG AND NOT A SECOND MEANING FOR THE FIRST. Cancel says *stop now and lose the
+    /// turn*; this says *finish what you are doing and then stop*. One flag for both would make the
+    /// run that banked its milestone and the run that lost it look identical from here, and those
+    /// are exactly the two outcomes the person raising one is choosing between.
+    order: Arc<AtomicBool>,
 }
 
 /// ONE RUN as the `runs` slot reports it.
@@ -122,6 +129,9 @@ pub struct NewRun {
     pub progress: ProgressCell,
     /// The flag that asks the run to stop at its next check.
     pub cancel: Arc<AtomicBool>,
+    /// The flag that asks the run to finish its milestone and then stop — see `RunRecord::order`
+    /// for why it is not the one above.
+    pub order: Arc<AtomicBool>,
 }
 
 /// ONE RUN AS IT SURVIVES ITS DAEMON — the durable mirror of a live run record.
@@ -209,6 +219,7 @@ impl RunRegistry {
             handle: Some(run.handle),
             progress: run.progress,
             cancel: run.cancel,
+            order: run.order,
         });
         id
     }
@@ -220,6 +231,27 @@ impl RunRegistry {
         match self.runs.iter().find(|record| record.id == id) {
             Some(record) => {
                 record.cancel.store(true, Ordering::Release);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// **ASK RUN `id` TO FINISH WHAT IT IS DOING AND THEN STOP**, returning whether such a run
+    /// exists. Its worker carries the order into the loop document at its next pass, and the
+    /// document decides — at its own next milestone — what to do about it.
+    ///
+    /// ⚠⚠ NOTHING IS INTERRUPTED. That is the whole difference from [`cancel`](Self::cancel), and it
+    /// is why a caller reaches for one or the other rather than for a flag with a mode: the turn in
+    /// flight runs to its end and its work is banked.
+    ///
+    /// ⚠ IDEMPOTENT AND ONE-WAY. A second call changes nothing, and there is no un-ordering: a
+    /// *stand down, no wait, carry on* racing a milestone would make a run's ending depend on which
+    /// message arrived first.
+    pub fn stand_down(&self, id: RunId) -> bool {
+        match self.runs.iter().find(|record| record.id == id) {
+            Some(record) => {
+                record.order.store(true, Ordering::Release);
                 true
             }
             None => false,
@@ -367,6 +399,12 @@ impl RunRegistry {
                     screened: 0,
                 })),
                 cancel: Arc::new(AtomicBool::new(false)),
+                // ⚠ A RESTORED RUN CANNOT BE STOOD DOWN, and the flag is fresh rather than
+                // persisted because there is nothing on the other end of it: the worker that would
+                // have read it died with its daemon, and the run is `Interrupted` by construction.
+                // Persisting an order would let a restart resurrect an instruction nobody could act
+                // on.
+                order: Arc::new(AtomicBool::new(false)),
             });
         }
     }
@@ -501,6 +539,7 @@ mod tests {
                 handle,
                 progress: ProgressCell::default(),
                 cancel,
+                order: Arc::new(AtomicBool::new(false)),
             }),
             RunId(0),
             "a reserved id is the id the record carries",

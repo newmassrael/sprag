@@ -2426,6 +2426,18 @@ impl OuterLoop {
     /// only bytes that can be lost are ones that went into a pane still alive at the time — and the
     /// alternative is threading a partial cost out of six acts that do not return one.
     pub fn pump(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Pumped, PaneError> {
+        // ⚠⚠⚠ A PERSON'S ORDER IS CARRIED IN FIRST, BEFORE ANYTHING IS DECIDED THIS PASS. The flag
+        // is raised by a host thread at a moment nothing here controls, so the only place it can be
+        // read without racing a decision is at the top of a pass — the same reason the barrier
+        // re-reads the document here rather than caching it.
+        //
+        // ⚠⚠ THE DRIVER JUDGES NOTHING BY DOING THIS. It carries a fact — *somebody said stand
+        // down* — into the document, which holds it as a state and decides at its own next
+        // milestone. Idempotent by construction: the orders region has no edge back, so a repeated
+        // raise on every pass changes nothing after the first.
+        if run.stood_down() {
+            self.stand_down();
+        }
         let from = self.state();
         match self.pumping(panes, run) {
             // ⚠ NO NOTICE IS RECORDED, and that is deliberate — see [`Noticed`]'s own comment where
