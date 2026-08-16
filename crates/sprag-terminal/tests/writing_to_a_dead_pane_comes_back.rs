@@ -451,3 +451,104 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
          same lines: {GIVE_UP_AFTER} bytes taken\n"
     );
 }
+
+/// ⚠⚠⚠⚠ **A KEYSTROKE THAT WAS REFUSED IS NOT SOMETHING THE PANE HAS BEEN TOLD, AND ITS ECHO TRAIL
+/// MUST NOT REMEMBER IT.**
+///
+/// # What the trail is FOR, which is what makes this a defect rather than an untidiness
+///
+/// [`ECHO_TRAIL_CAP`](sprag_terminal::ECHO_TRAIL_CAP)'s own doc: a pseudoterminal echoes what is
+/// written to it and that echo is *indistinguishable from program output once it reaches the grid*,
+/// so the pane keeps a trail of recent input and everything downstream answers *did the program say
+/// this, or is this my own input coming back?* by comparing against it. **Bytes the device refused
+/// can never be echoed by anybody** — they went nowhere — so a trail that remembers them is
+/// answering that question with noise.
+///
+/// ⚠⚠⚠ **AND THE TRAIL IS A BOUNDED FIFO, SO THE NOISE EVICTS THE SIGNAL.** Eight kilobytes, against
+/// a backlog that accepts sixty-four before it starts refusing: a run that keeps typing at a
+/// stopped pane pushes every byte that really was written out of the trail within 8 KiB of
+/// refusals, and what a reader compares the screen against is then entirely writes that never
+/// happened.
+///
+/// # ⚠⚠ Why this is the human path's problem specifically
+///
+/// `PaneAccess::inject` refuses at the door, BEFORE it calls `write` — its own gate asserts the
+/// trail stays empty — so a plugin cannot pollute the trail. A person's keystrokes go through
+/// `sprag_host::pane` straight into `write_input`, which records the trail and then offers. That is
+/// this milestone's path, and refusal is a NEW outcome on it: before the bounded write, a write at
+/// a stopped pane either succeeded or never returned, so there was no third case to record wrongly.
+/// **A refusal added to a shared door re-prices every record kept beside it** (register item 335).
+#[test]
+fn a_keystroke_the_device_refused_leaves_no_trace_in_the_trail() {
+    /// Distinctive enough that finding it in the trail cannot be a coincidence.
+    const REFUSED: &[u8] = b"NEVER-REACHED-THIS-PANE";
+
+    let stopped = a_pane_nobody_is_reading();
+    let mut whole = [b'x'; CHUNK];
+    whole[CHUNK - 1] = b'\n';
+    let HowTheWriterEnded::Refused { .. } = offer_until_it_stops(&stopped, whole) else {
+        panic!(
+            "⚠ THE FIXTURE: this pane must have reached the state where it refuses, or there is no \
+             refused keystroke below to look for"
+        )
+    };
+
+    stopped
+        .write(REFUSED, Hand::APerson)
+        .expect_err("⚠ THE FIXTURE: the pane is refusing, so this keystroke must be turned away");
+    let trail = stopped.echo_trail();
+    assert!(
+        !trail.contains(std::str::from_utf8(REFUSED).expect("ascii")),
+        "⚠⚠⚠⚠ THE PANE REMEMBERS BEING TYPED AT WITH BYTES IT NEVER RECEIVED. Nothing will ever \
+         echo them — the device turned them away — so every reader that subtracts this trail from \
+         the screen to find out what the PROGRAM said is now subtracting a keystroke that does not \
+         exist. And the trail is a bounded FIFO, so these push out the writes that really did \
+         happen: {} bytes of it, and this is what it holds.",
+        trail.len(),
+    );
+
+    // ── A REFUSED WRITE BIGGER THAN THE TRAIL ITSELF, which the first branch cannot take back ──
+    //
+    // ⚠⚠⚠ The trail is a bounded FIFO, so a message longer than
+    // [`ECHO_TRAIL_CAP`](sprag_terminal::ECHO_TRAIL_CAP) leaves only its own TAIL behind — the
+    // buffer no longer ends with what was written, it ends with a suffix of it, and a rollback that
+    // only knows *does the trail end with exactly these bytes* leaves the whole capful in place.
+    // ⚠⚠ Nothing legitimate is lost by clearing it: whatever the trail held before was evicted by
+    // this message's own bytes the moment they were appended, one line before the refusal.
+    let bigger_than_the_trail = vec![b'B'; sprag_terminal::ECHO_TRAIL_CAP + CHUNK];
+    stopped
+        .write(&bigger_than_the_trail, Hand::APerson)
+        .expect_err("⚠ THE FIXTURE: the pane is still refusing");
+    assert!(
+        !stopped.echo_trail().contains('B'),
+        "⚠⚠⚠⚠ A REFUSED WRITE LONGER THAN THE TRAIL LEFT ITS TAIL BEHIND. The pane now remembers \
+         being typed at with {} bytes of a message the device turned away, and they are the ONLY \
+         thing it remembers, because appending them evicted everything that really was written. A \
+         rollback that only handles *the trail ends with exactly what I wrote* does not cover the \
+         one case where the trail is nothing but what I wrote.",
+        stopped.echo_trail().len(),
+    );
+
+    // ── THE CONTROL, and it is the whole difference between a fix and a deletion ──
+    //
+    // ⚠⚠ A pane that TAKES the identical bytes must remember them. Without this arm, "record
+    // nothing, ever" passes the assertion above and quietly removes the fact the trail exists for.
+    let living = a_pane_that_takes_everything();
+    living
+        .write(REFUSED, Hand::APerson)
+        .expect("a draining pane takes this");
+    assert!(
+        living
+            .echo_trail()
+            .contains(std::str::from_utf8(REFUSED).expect("ascii")),
+        "⚠⚠⚠ THE CONTROL FAILED: a pane that ACCEPTED a keystroke must remember it, or the trail \
+         has stopped answering *is this my own input coming back?* for everybody rather than just \
+         for the refused case",
+    );
+
+    println!(
+        "\n== the trail at a pane that is refusing ==\n  a refused keystroke: absent from the \
+         trail\n  the same bytes at a draining pane: present\n  trail now holds {} bytes\n",
+        stopped.echo_trail().len(),
+    );
+}

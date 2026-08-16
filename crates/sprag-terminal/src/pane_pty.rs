@@ -1824,8 +1824,33 @@ fn write_input(
     // that sees the echo on the grid must already be able to see whose it was. Counted even if the
     // write below FAILS, deliberately — the bytes were offered to this pane by that hand, and a
     // person whose keystroke was refused by a dying device is still a person who reached in.
+    // ⚠⚠⚠ **AND THAT IS THE OPPOSITE OF WHAT THE TRAIL DOES BELOW, ON PURPOSE**: the two records
+    // answer different questions. `hands` is asked *has a person reached into this pane*, and a
+    // refused keystroke is still somebody reaching in. The trail is asked *is this text on the grid
+    // my own input coming back*, and bytes the device turned away can never come back at all.
     lock(hands).counting(by);
-    device.offer(bytes)
+    let offered = device.offer(bytes);
+    if offered.is_err() {
+        // ⚠⚠⚠ TAKEN BACK OUT, because a refused keystroke is not something this pane has been
+        // told. It cannot be echoed by anybody, so leaving it in makes every reader that subtracts
+        // the trail from the screen subtract a write that never happened — and since the trail is
+        // a bounded FIFO, a run that keeps typing at a stopped pane evicts every byte that really
+        // WAS written within one capful of refusals. Measured at exactly that: 8,192 bytes of
+        // phantom input and nothing else left.
+        //
+        // ⚠⚠ Only what is demonstrably still ours comes out. Another writer may have appended
+        // between the record and the refusal, and a message larger than the cap left only its own
+        // tail behind; each is checked rather than assumed, and anything else is left alone,
+        // because removing another writer's bytes would be the same defect pointed the other way.
+        let mut trail = lock(trail);
+        if trail.ends_with(bytes) {
+            let ours = trail.len() - bytes.len();
+            trail.truncate(ours);
+        } else if bytes.ends_with(&trail) {
+            trail.clear();
+        }
+    }
+    offered
 }
 
 /// The quiet window the resize coalescer waits for before applying a size. A
