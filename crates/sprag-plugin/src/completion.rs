@@ -976,4 +976,144 @@ mod tests {
         );
         running.lifecycle().expect("lifecycle").close(pane);
     }
+
+    /// ⚠⚠⚠⚠ **WHAT A DEAD CHILD'S PANE PRESENTS TO THE CONTRACT THE AI LOOP RUNS ON** — register
+    /// item 309's open link, which had been read and never measured.
+    ///
+    /// # ⚠⚠⚠ The two variants answer OPPOSITE things, and the loop runs on the one that never does
+    ///
+    /// [`DoneWhen::Exits`] asks `pane_eof` and a dead child says *over* at once — the gate directly
+    /// above measures it. [`DoneWhen::Settles`] is
+    /// [`INNER_SESSION_ENDS`](crate::outer::INNER_SESSION_ENDS), *the contract this loop makes
+    /// load-bearing*, and it asks a SUPERVISOR whether the agent came back to rest. **A process
+    /// that is gone is reported by nobody**, so the answer is never *yes* — not *no*, never
+    /// answered at all.
+    ///
+    /// ⚠⚠ What that costs, and it is why the question was owed before a refusal could be designed:
+    /// every pass of a loop whose agent's process died spends the whole per-turn bound waiting for
+    /// evidence that cannot arrive, and only the RUN's own clock ends it. **The document has no
+    /// transition for a turn that overran** (`watch`'s `Over::NotYet` arm raises nothing), so
+    /// nothing about the run says *your peer is dead* — it says nothing at all, for as long as the
+    /// budget lasts.
+    ///
+    /// ⚠⚠⚠ And it is the same pane an [`Orchestrator`](crate::orchestrator::Orchestrator) would go
+    /// on typing its stimulus into every step, which is the route the 43-hour wedge was reached by
+    /// (items 304, 310). **This is the fact a refusal has to be built on**: `Exits` needs no help,
+    /// and `Settles` cannot tell *dead* from *thinking* without asking the eye that already knows.
+    ///
+    /// # ⚠⚠ Why the agent is reported ALIVE first
+    ///
+    /// That is the production sequence: a turn is armed against a peer that exists, and the child
+    /// dies during it. Arming against a supervisor that already answers nothing would leave
+    /// `addressed` unset, and `Settles` is unsatisfied for that reason too — a gate that skipped
+    /// the arming would be measuring the wrong `None`.
+    ///
+    /// # ⚠⚠⚠⚠ MUTATED WITH THE OBVIOUS FIX, AND THE OBVIOUS FIX IS WRONG
+    ///
+    /// Adding `if panes.pane_eof(pane) == Some(true) { return true }` to the arm below turns this
+    /// gate red at once — which is the *"repurpose it, do not delete it"* contract working. But
+    /// read what it makes the product SAY: [`Over::Yes`] means *the peer answered on the evidence
+    /// you named*, and this peer did not answer, it died. A loop told `Yes` goes on to `judging`
+    /// and judges a turn that never happened.
+    ///
+    /// ⚠⚠⚠ **THERE IS NO [`Over`] VARIANT FOR *THE PEER IS GONE***, and that — not the missing
+    /// `pane_eof` call — is what the fix is actually blocked on. It is a word this crate does not
+    /// have and a transition `ai_loop.scxml` does not have either, which makes it the DOCUMENT's
+    /// decision rather than a line in this file (register item 323).
+    #[test]
+    fn the_contract_a_loop_runs_on_is_never_satisfied_once_its_agent_is_gone() {
+        /// Long enough that "never" is not "not yet scheduled", short enough to pay twice.
+        const BOUND: Duration = Duration::from_millis(600);
+
+        let (access, pane) = sh_access("exit 0", 20, 4);
+        // ⚠ WHAT THE SUPERVISOR SAYS, and the test moves it: `None` is *there is no such process*,
+        // which is what a real supervisor answers for a pane whose child has been reaped.
+        let seen: Arc<Mutex<Option<AgentObservation>>> =
+            Arc::new(Mutex::new(Some(AgentObservation {
+                state: AgentState::Working,
+                agent: Some("claude".to_string()),
+                authority: Authority::Reported {
+                    source: "test".to_string(),
+                },
+                seq: 7,
+                asking: None,
+            })));
+        let source = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |_id: PaneId| seen.lock().expect("the reported mutex").clone())
+        };
+        let access = access.with_agent_state(Some(source));
+
+        let began = Instant::now();
+        while access.pane_eof(pane) != Some(true) && began.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(true),
+            "⚠ THE FIXTURE: the child must be gone, or neither answer below is about a dead pane",
+        );
+
+        // ⚠⚠⚠ THE EYE IS OPEN AND ONE CONTRACT ALREADY LOOKS THROUGH IT. Same pane, same instant:
+        // `Exits` asks `pane_eof` and gets its answer immediately. So the knowledge a refusal would
+        // need is not missing from the product, and everything below is about a contract that does
+        // not consult it rather than about a fact nobody has.
+        assert_eq!(
+            Completion::new(DoneWhen::Exits).wait(
+                &access,
+                pane,
+                BOUND,
+                &RunContext::uncancellable()
+            ),
+            Over::Yes,
+            "⚠ THE SECOND CONTROL: the OTHER contract must answer at once at this very pane, or \
+             the comparison below is between a working rule and a broken fixture",
+        );
+
+        // ⚠⚠ ARMED WHILE THE AGENT IS STILL REPORTED — the production order, see the doc above.
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+
+        // ── the process is reaped: nobody reports it any more ──
+        *seen.lock().expect("the reported mutex") = None;
+        let waited = Instant::now();
+        assert_eq!(
+            done.wait(&access, pane, BOUND, &RunContext::uncancellable()),
+            Over::NotYet,
+            "⚠⚠⚠⚠ THE MEASUREMENT: at the pane `Exits` just called finished, the loop's own turn \
+             contract answers NOT YET — it does not report the peer as done and it does not report \
+             it as failed, so every pass burns the whole per-turn bound and the run says nothing \
+             is wrong until its own clock runs out. ⚠⚠⚠ A DEAD AGENT AND A THINKING ONE ARE THE \
+             SAME PICTURE to this rule, which is exactly why `pane_eof` has to be consulted here \
+             for a refusal to be possible at all (register items 309, 311, 320)",
+        );
+        assert!(
+            waited.elapsed() >= BOUND,
+            "⚠ and it spent the whole bound doing it, which is the cost per pass: {:?}",
+            waited.elapsed(),
+        );
+
+        // ── THE CONTROL, and without it the line above is just *"this evaluator says no"* ──
+        //
+        // ⚠⚠⚠ The SAME contract, the SAME dead pane, the SAME armed evaluator: report the agent at
+        // rest with a published change and it answers YES. So what strands the turn is the agent's
+        // disappearance and not the pane being dead, not the arming, and not the contract.
+        *seen.lock().expect("the reported mutex") = Some(AgentObservation {
+            state: AgentState::Idle,
+            agent: Some("claude".to_string()),
+            authority: Authority::Reported {
+                source: "test".to_string(),
+            },
+            seq: 8,
+            asking: None,
+        });
+        assert_eq!(
+            done.wait(&access, pane, BOUND, &RunContext::uncancellable()),
+            Over::Yes,
+            "⚠⚠⚠ THE CONTROL FAILED, so the measurement above is about a contract that answers no \
+             to everything rather than about a missing agent",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
 }
