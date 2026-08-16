@@ -977,7 +977,7 @@ fn latched(high: &SeqHighWater, pane: PaneId, rows: &[String]) -> u64 {
 /// arm where an agent DOES decide one is [`standin_agent_reflecting`]'s, and mixing the two would
 /// make every gate here also a gate about the reflection's reader.
 pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
     let script = format!(
         "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
          while read line; do \
@@ -1008,7 +1008,7 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), 80, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
             .expect("spawn pane")
     };
     started(
@@ -1059,7 +1059,41 @@ pub(crate) fn standin_agent_reflecting(
     next_milestone: &str,
     next_reference: &str,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    standin_agent_reflecting_at(
+        STANDIN_COLUMNS,
+        prompts_before_done,
+        next_milestone,
+        next_reference,
+    )
+}
+
+/// The width every stand-in here is spawned at unless a gate is ABOUT the width.
+///
+/// ⚠ It is eighty because that is what a terminal is, and for most gates it is a number nobody
+/// looked at. **One gate has looked**: `done_instruction` is 109 characters with its marker at 92
+/// and `reflect_prompt`'s last line is 152 with its marker at 134, so 80 breaks neither of them at
+/// a marker — which is exactly why the hazard those two lines carry went unmeasured until it was
+/// asked for on purpose. See [`standin_agent_reflecting_at`].
+pub(crate) const STANDIN_COLUMNS: u16 = 80;
+
+/// [`standin_agent_reflecting`] on a pane of a chosen width.
+///
+/// # ⚠⚠⚠ Why a width is a parameter at all
+///
+/// Every other fixture in this module takes [`STANDIN_COLUMNS`], and that is fine while nothing
+/// depends on the width. **The markers depend on it.** `reflect_prompt`'s last
+/// line ENDS with `north_star_marker` and is 152 characters with the marker at 134, so a pane 67 or
+/// 134 columns wide breaks that sentence exactly there and leaves the marker alone on a row — a row
+/// that `stands_alone` accepts, on a screen where the agent has said nothing. A caller does not
+/// choose their agent's pane width, so the driver has to survive every one of them, and a gate that
+/// says so needs to be able to spawn a hostile one.
+pub(crate) fn standin_agent_reflecting_at(
+    columns: u16,
+    prompts_before_done: u32,
+    next_milestone: &str,
+    next_reference: &str,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((columns, 16))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
 bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
@@ -1095,7 +1129,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), 80, 16)
+            .spawn(command, "sh".to_string(), columns, 16)
             .expect("spawn pane")
     };
     started(
@@ -1123,16 +1157,20 @@ done"
 /// # ⚠⚠ Why it does NOT stage the wrapped echo its siblings stage
 ///
 /// [`standin_agent_reflecting`] paints a wrapped echo on purpose because
-/// [`OuterLoop::proposed`](crate::outer::OuterLoop) has a rule that discounts one.
-/// `said_marker` has no such rule — it rests on FRESH plus STANDING ALONE — so an echo staged here
-/// would not test a reader, it would converge the run on the loop's own instruction and the gate
-/// above it would pass for the wrong reason. ⚠ **That is a live hazard and it is registered rather
-/// than staged**: the prompt's last line ENDS with the marker, so a pane whose width breaks the line
-/// exactly there puts the marker alone on a row. The gate that uses this peer carries a control run
-/// — the same prompt, the same echo, a peer that never says the marker — which is what says the
-/// answer and not the echo is doing the work.
+/// [`OuterLoop::proposed`](crate::outer::OuterLoop) has a rule that discounts one. `said_marker`'s
+/// rules are different ones — a LINE rather than a row, standing alone, and not the tail of the
+/// question broken — so an echo staged here would be testing that reader through a peer whose axis
+/// is the reflection's ANSWER, and mixing the two is what this module keeps apart.
+///
+/// ⚠ **THE HAZARD ITSELF IS STAGED, ELSEWHERE AND ON PURPOSE** — register item 270, paid: the
+/// prompt's last line ENDS with the marker, so a pane whose width breaks it exactly there puts the
+/// marker alone on a row. `a_reflection_on_a_pane_that_breaks_the_north_star_line_does_not_close_
+/// the_run` spawns that pane through [`standin_agent_reflecting_at`], and three gates in
+/// `crate::outer` hold the same rules for `done_marker`. The gate that uses THIS peer still carries
+/// its control run — the same prompt, the same echo, a peer that never says the marker — because a
+/// control on the answer is worth having whatever the driver's rules are.
 pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
     let script = format!(
         "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
          while read line; do \
@@ -1165,7 +1203,7 @@ pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Wo
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), 80, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
             .expect("spawn pane")
     };
     started(
@@ -1236,7 +1274,7 @@ pub(crate) fn standin_agent_reporting(
     accounts: Accounts,
     thinks_for: Duration,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
     let mut report = vec![
         accounts.echo_slice().to_owned(),
         REPORT_RULE.to_owned(),
@@ -1286,7 +1324,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), 80, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
             .expect("spawn pane")
     };
     started(
@@ -1599,7 +1637,7 @@ pub(crate) fn parsed_dialog(rows: &[&str]) -> Option<sprag_detect::Question> {
 /// outlives the run**. The peer is the same program; only the moment differs, which is exactly what
 /// makes it a parameter rather than a second fixture.
 pub(crate) fn standin_agent_asking(asks: Asks) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; s=0; k=''; \
 readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
@@ -1639,7 +1677,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), 80, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
             .expect("spawn pane")
     };
     started(
@@ -1718,7 +1756,7 @@ pub(crate) fn standin_agent_refusing(
     turns_after_redirect: u32,
     asks_on_its_second_life: Option<&std::path::Path>,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((80, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
     // ⚠ `27` is Escape's byte, and `0` is a byte no key sends — so the un-dismissable peer is the
     // SAME program waiting for something that never arrives, rather than a different fixture whose
     // difference a reader has to take on trust.
@@ -1800,7 +1838,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), 80, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
             .expect("spawn pane")
     };
     started(

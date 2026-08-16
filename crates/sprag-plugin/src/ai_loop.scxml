@@ -945,6 +945,17 @@
         and the driver's second rule (*discount what this loop itself said*) is
         what actually decides. See `OuterLoop::proposed`.
 
+        ⚠⚠⚠ AND THE LAST CLAUSE BELOW CANNOT BE WRITTEN THAT WAY, which is why
+        the driver has a rule of its own for it. `north_star_marker` has to be
+        the END of what the agent is told to say — the instruction IS *"make the
+        last line of your reply exactly this"* — so unlike the two labels it
+        cannot be buried mid-sentence. This line is 152 characters with the
+        marker at 134, so a pane 67 or 134 columns wide puts those three words
+        alone on a row of a screen where nobody has answered anything. Register
+        item 270, paid: `OuterLoop::said_marker` reads a logical LINE rather
+        than a row, and discounts a line that is this sentence's own tail.
+        ⚠ The same is true of `done_instruction` above, at 109 and 92.
+
         ⚠⚠ NO TOOL IS ASKED FOR, deliberately: a reflection is a question about
         work already done, and an agent that reaches for a tool here raises a
         dialog in a state that cannot screen one (see `reflecting`'s own

@@ -9,7 +9,7 @@
 //! # ⚠⚠⚠ The reader was chosen by measurement, against a live agent, and the habit lost
 //!
 //! Every *what happened since* reader in the outer driver — `said_done`, `judged`, `proposed` —
-//! compares the RENDERING through [`RowTrail`], so a fourth one would have been written that way
+//! compared the RENDERING through [`RowTrail`], so a fourth one would have been written that way
 //! without a thought. `what_a_live_agents_report_looks_like_to_a_reader` asked a real `claude` for
 //! sixty labelled lines on a forty-row pane and read both:
 //!
@@ -26,6 +26,13 @@
 //!
 //! So the address is what a report is read through, and the trail stays as the fallback for a host
 //! that cannot number its lines — named as a degradation rather than as an equivalent.
+//!
+//! ⚠⚠⚠ **AND `said_done` FOLLOWED IT, ONE ROUND LATER AND FOR A SHARPER REASON** (register item
+//! 270). Asking *"is the marker the whole ROW?"* is asking a question about a width nobody chose:
+//! `done_instruction` is 109 characters with its marker at 92, so a pane 23, 46 or 92 columns wide
+//! breaks that sentence exactly at the marker. It now reads [`Since`] — the same mark, the same
+//! address — so **a run's convergence and its account are read out of one text**, which is what
+//! stops them coming to disagree about what the agent said.
 //!
 //! # ⚠⚠ What else is in those lines, measured off the same probe
 //!

@@ -3456,16 +3456,19 @@ mod tests {
     ///
     /// # ⚠⚠⚠ The control, and why this gate needs one its elders did not
     ///
-    /// `said_marker` has no echo discount — unlike
-    /// [`OuterLoop::proposed`](crate::outer::OuterLoop), which discounts what the loop itself just
-    /// said — and `reflect_prompt`'s last line ENDS with the marker it asks for. So a pane that
-    /// wrapped that line exactly at the marker would converge a run on its own instruction, and
-    /// arm 1 below would go green having measured the ECHO.
+    /// `reflect_prompt`'s last line ENDS with the marker it asks for, so a pane that wrapped that
+    /// line exactly at the marker would converge a run on its own instruction and arm 1 below would
+    /// go green having measured the ECHO. ⚠ When this gate was written `said_marker` had no echo
+    /// discount at all — unlike [`OuterLoop::proposed`](crate::outer::OuterLoop) — and the hazard
+    /// was registered as item 270. **It is paid**: the marker is read off a logical LINE and a line
+    /// that is the tail of the question, broken, is discounted.
     ///
     /// **The control is the same prompt with the answer taken away**: [`standin_agent_reflecting`]
     /// is asked the identical reflection, paints the identical echo, and answers with a successor
-    /// instead of the marker. Its run must never reach `closing` at all. ⚠ Registered as debt in its
-    /// own right, because a control proves this pane's width is safe and not that every width is.
+    /// instead of the marker. Its run must never reach `closing` at all. ⚠ It proves this pane's
+    /// width is safe and not that every width is — which is
+    /// [`a_reflection_on_a_pane_that_breaks_the_north_star_line_does_not_close_the_run`]'s claim,
+    /// on a pane 67 columns wide because 134 is 2×67.
     ///
     /// ⚠⚠ AND THE TWO ARMS MUST COVER THE WHOLE VOCABULARY, asserted rather than assumed — a
     /// `DoneReason` arm no run here reaches is a sentence nobody has ever read.
@@ -3532,9 +3535,9 @@ mod tests {
             "⚠⚠⚠ THE CONTROL: this peer is asked the SAME reflection and paints the SAME echo of \
              it, and answers with a successor rather than the marker — so it must never reach \
              `closing`. If it does, `reflect_prompt`'s own last line has been read as the agent \
-             saying the north star was reached (`said_marker` has no echo discount, and that line \
-             ENDS with the marker), and arm 1 below is measuring this loop's own instruction. \
-             Walked {echoed_walk:?}",
+             saying the north star was reached — that line ENDS with the marker, which is why \
+             `said_marker` discounts a line that is the tail of the question broken — and arm 1 \
+             below is measuring this loop's own instruction. Walked {echoed_walk:?}",
         );
 
         let arms = [
@@ -3625,6 +3628,117 @@ mod tests {
              if two causes still render one string — which is exactly what {THE_EDGE:?} did for \
              both of them before this gate existed: {lines:?}",
         );
+    }
+
+    /// ⚠⚠⚠ **AND THE WIDTH THE GATE ABOVE LEFT AS A RESIDUE IS MEASURED HERE** — register item 270,
+    /// the half of it that only a whole run can say.
+    ///
+    /// # ⚠⚠⚠ What the control above proves, and what it does not
+    ///
+    /// `the_walk_says_which_ending_closed_the_run` carries a peer that is asked the same reflection,
+    /// paints the same echo and never says the marker — and its own note says what that leaves
+    /// open: *"a control proves this pane's width is safe and not that every width is."* **This is
+    /// every other width**, or the one that matters: `reflect_prompt`'s last line is 152 characters
+    /// with `north_star_marker` starting at 134, so a pane **67 columns** wide breaks it exactly
+    /// there and puts the marker alone on a row of a screen where the agent has said nothing.
+    ///
+    /// ⚠⚠⚠ **THE ARITHMETIC IS ASSERTED OFF THE PRODUCT'S OWN COMPOSED TEXT**, not written into a
+    /// comment. If somebody rewords that clause the width this gate chose stops being hostile, and
+    /// what says so is the first assertion below rather than a silent green.
+    ///
+    /// ⚠ What it is NOT: a claim about the composer's break, which no width can undo — that is
+    /// `a_composer_that_re_wraps_the_question_onto_the_marker_is_not_an_agent_saying_it`, one crate
+    /// module over and about the same predicate.
+    #[test]
+    fn a_reflection_on_a_pane_that_breaks_the_north_star_line_does_not_close_the_run() {
+        /// 134 is 2×67 and 152−134 is 18, so the echo of that sentence ends on a row that is the
+        /// marker and nothing else.
+        const FATAL: u16 = 67;
+        /// What the peer proposes instead of declaring the job finished.
+        const NEXT: &str = "the debt after this one";
+        /// And where it says the replacement should start.
+        const READ_NEXT: &str = "the register entry for it";
+        /// The one edge a run must not take on a screen it wrote itself.
+        const THE_EDGE: &str = "Reflecting --ReflectDone--> Closing";
+
+        let (workspace, pane) =
+            crate::testing::standin_agent_reflecting_at(FATAL, 2, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 60,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+
+        // ── THE FIXTURE'S OWN CLAIM, CHECKED AGAINST THE PRODUCT ──
+        let reflect = loops
+            .authored()
+            .expect("a primed machine holds its composed prompts")
+            .reflect;
+        let last = reflect
+            .lines()
+            .last()
+            .expect("the reflection prompt has lines")
+            .to_owned();
+        assert!(
+            last.is_ascii(),
+            "⚠ the arithmetic below counts CHARACTERS as columns, which is only true while this \
+             clause is ASCII: {last:?}",
+        );
+        let at = last
+            .find(crate::testing::NORTH_STAR_SAID)
+            .expect("the document asks for the marker this fixture answers with");
+        assert!(
+            at.is_multiple_of(usize::from(FATAL)) && last.len() - at <= usize::from(FATAL),
+            "⚠⚠⚠ THE FIXTURE MUST STAGE THE HAZARD OR THIS GATE MEASURES NOTHING: at {FATAL} \
+             columns the marker has to start a row and finish on it, which needs its offset \
+             ({at}) to be a multiple of the width and the remainder ({}) to fit. Somebody has \
+             reworded the clause — pick a width that is hostile to the new one rather than \
+             deleting this: {last:?}",
+            last.len() - at,
+        );
+
+        // ── AND THE RUN MUST NOT HAVE CLOSED ON IT ──
+        assert!(
+            !walk.iter().any(|note| note.starts_with(THE_EDGE)),
+            "⚠⚠⚠ REGISTER ITEM 270: this peer answered the reflection with a SUCCESSOR and never \
+             said the north star was reached — so the only thing on that pane carrying those three \
+             words is the loop's own question, broken across rows by a terminal that wraps where it \
+             likes. A run that closes here reports the whole job finished on the strength of having \
+             asked whether it was. Walked {walk:?}",
+        );
+        assert!(
+            walk.iter().any(|note| note.contains("Reflecting")),
+            "⚠ the control: this run has to have REFLECTED at all, or the assertion above is about \
+             an edge nothing came near. Walked {walk:?}",
+        );
+        // ⚠⚠ AND THE OUTCOME SAYS IT TOO, which is the half a caller reads. `converged` is the one
+        // word this run may not end on: both doors of `closing` mean *the work is finished*, and
+        // this peer has said the opposite every time it was asked.
+        assert_ne!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⚠⚠⚠ REGISTER ITEM 270, as the caller sees it: this run must not report itself \
+             CONVERGED, because nothing but its own question ever said the north star was reached. \
+             Walked {walk:?}",
+        );
+
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
     }
 
     /// ⚠⚠⚠ **A QUESTION NOBODY WROTE A RULE FOR PAUSES THE RUN, AND A PERSON'S ANSWER RESUMES IT** —

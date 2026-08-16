@@ -1260,11 +1260,16 @@ struct Session {
     /// The barrier the pane must clear before anything is typed into it.
     ready: Readiness,
     /// **WHAT THE PANE HELD BEFORE THIS TURN'S PROMPT WENT IN** —
-    /// [`said_done`](OuterLoop::said_done)'s arming, and [`Completion::begin`]'s discipline applied to
+    /// [`proposed`](OuterLoop::proposed)'s arming, and [`Completion::begin`]'s discipline applied to
     /// TEXT rather than to a supervisor's verdict.
     ///
-    /// Marked at the same moment the contract is, for the same reason: a marker that was on the
+    /// Marked at the same moment the contract is, for the same reason: a label that was on the
     /// screen before this turn started is not this turn's answer.
+    ///
+    /// ⚠ `said_marker` used to read this too and now reads [`Since`](Self::since) instead — a
+    /// RENDERING cannot say whether a marker is a whole line or the tail of one the terminal broke.
+    /// A reflection's labels do not have that problem, because their reader requires the label to
+    /// OPEN the row and the prompt names them mid-sentence. See register item 270.
     judged: crate::access::RowTrail,
     /// **WHERE THIS TURN'S OUTPUT BEGINS**, as an ADDRESS into the pane's logical lines — what the
     /// closing report is read from, and per-pane for the same reason everything else here is: a
@@ -1275,6 +1280,32 @@ struct Session {
     /// argued: a sixty-line reply on a forty-row pane came back through the rendering opening at
     /// `LINE-29`, and through this opening at `LINE-1`. See [`crate::report`].
     since: crate::report::Since,
+    /// **WHAT THIS PEER WAS LAST TOLD, VERBATIM** — the bytes [`OuterLoop::say`] put on its
+    /// pseudoterminal, kept because everything the pane prints next is read against them.
+    ///
+    /// # ⚠⚠⚠ Why the driver keeps a copy of something the datamodel already holds
+    ///
+    /// It does not. The datamodel holds the document's PROMPTS; this holds **what went in**, and the
+    /// two come apart for two reasons that are both live. A screen rule's text is typed at the peer
+    /// and is in no prompt slot at all, and `stopping` composes its ceiling clause on the edge that
+    /// delivers it — so *"read the slot back later"* is an approximation of this, and
+    /// [`account`](OuterLoop::account) says as much in its own comment about reading at the moment
+    /// of the account.
+    ///
+    /// ⚠ It cannot go stale the way a cached prompt can, because it is written in the same breath as
+    /// the injection it describes and replaced by the next one. What would go stale is a copy taken
+    /// at COMPOSITION time, which is the thing that comment refuses.
+    ///
+    /// ⚠⚠ Read by [`said_marker`](OuterLoop::said_marker), whose whole difficulty is that the
+    /// question NAMES the answer, and by [`account`](OuterLoop::account), which takes the same echo
+    /// off a report. **One record, two readers** — the alternative was each of them naming a prompt
+    /// SLOT, which is two answers to one question and wrong for the same case.
+    ///
+    /// ⚠ A screen rule's text lands here too, and that is right rather than tolerated: after a
+    /// redirect the last thing this peer was told IS the rule, and everything the readers above look
+    /// at was produced after it. ⚠⚠ Unmeasured, stated: no gate drives a rule and then reads a
+    /// marker in the same turn.
+    asked: String,
     /// **THE NAME THIS SESSION FILES ITS OWN RECORD UNDER**, latched the first time it can be read.
     ///
     /// # ⚠⚠ Why it is latched rather than read when wanted
@@ -1305,6 +1336,10 @@ impl Session {
             // ⚠ A LINE ADDRESS IS A FACT ABOUT ONE PANE. The replacement numbers its own lines from
             // the beginning, so the predecessor's cursor would point into the middle of it.
             since: crate::report::Since::default(),
+            // ⚠ AND A FRESH SESSION HAS BEEN TOLD NOTHING. Carried over, the replacement's first
+            // reply would be read against a question asked of the agent it replaced — and `priming`
+            // runs immediately after this, so the value is only ever unset for the moment between.
+            asked: String::new(),
             // ⚠⚠⚠ A REPLACEMENT IS A DIFFERENT SESSION AND MUST BE NAMED AFRESH. Carrying the old
             // name over would point every later reading at the record of a session that has been
             // closed — the spend would freeze at whatever the predecessor last spent and look like
@@ -1505,6 +1540,8 @@ impl OuterLoop {
                 ),
                 judged: crate::access::RowTrail::default(),
                 since: crate::report::Since::default(),
+                // Nothing has been typed at this pane yet — `priming` is the first thing that does.
+                asked: String::new(),
                 // Learned on the first look at a pane whose agent is up, not here: at construction
                 // the child may not have `exec`d yet, and a `None` cached now would be indistinguishable
                 // from one that will never be answerable.
@@ -2024,13 +2061,15 @@ impl OuterLoop {
                         // run is over. Taken here, on the state rather than on the event, because
                         // `turn.done` is what five states raise and only these two asked for one.
                         //
-                        // ⚠⚠ WHICH PROMPT IS DISCOUNTED IS THE STATE'S ANSWER AND NOT A CONSTANT.
+                        // ⚠⚠ WHETHER THIS ENDING HAS AN ACCOUNT TO COLLECT IS THE STATE'S ANSWER.
+                        // ⚠ WHICH text is discounted is no longer decided here and must not be:
                         // `report::account` takes off this run's own echo, and the echo is whatever
-                        // was typed to ask for the account — `end_prompt` in one state and
-                        // `stop_prompt` in the other. Passing the wrong one leaves the caller's own
-                        // question in the agent's report and takes a line of the report out.
-                        if let Some(asked) = Owed::asked_for_an_account(from) {
-                            self.reported = self.account(panes, asked);
+                        // was actually typed — which the session recorded as it went in
+                        // ([`Session::asked`]). Naming a SLOT here was right for the two endings and
+                        // wrong for a turn a screen rule had spoken into, and it was a second answer
+                        // to a question something else already answers.
+                        if Owed::asked_for_an_account(from).is_some() {
+                            self.reported = self.account(panes);
                         }
                         Raise::carrying(
                             AiLoopEvent::TurnDone,
@@ -3166,6 +3205,13 @@ impl OuterLoop {
         // produce* is the same question whichever turn asks it, and a mark taken only in `closing`
         // would be a fourth thing to keep in step with the other three.
         self.driving.since = crate::report::Since::mark(panes, self.driving.pane);
+        // ⚠⚠⚠ AND THE FOURTH: WHAT THIS PEER IS ABOUT TO BE TOLD, kept because the readers above
+        // have to be able to tell the peer's answer from this run's own question coming back — and
+        // the question NAMES the answer, since a marker nobody asks for is one nobody ever says.
+        // See [`said_marker`](Self::said_marker) and [`Session::asked`]. ⚠ Here rather than at any
+        // composition site, because a screen rule's text is typed at the peer too and is in no
+        // prompt slot at all.
+        self.driving.asked = text.to_owned();
         if !self.shows_the_prompt {
             // The WRITE, not the delivery — see [`shows_the_prompt`](Self::shows_the_prompt). A
             // peer that paints nothing until it is submitted cannot be confirmed before the submit.
@@ -3308,17 +3354,52 @@ impl OuterLoop {
     /// driver's own gate said so in its own words: `Judging -> Judge -> Closing` on the FIRST
     /// judge, `turns() == 1` where the peer had been prompted once and had answered nothing.
     ///
-    /// So two independent things are required, and each closes a hole the other cannot:
+    /// So three independent things are required, and each closes a hole the others cannot:
     ///
-    /// * **FRESH** — the row changed since this turn's prompt was delivered (`Self::judged`).
-    ///   What this closes is a marker left on the screen by an EARLIER turn, or by whoever had the
-    ///   pane before this run: `Completion::begin`'s discipline, applied to text. It does NOT
-    ///   close the echo, because the echo is fresh output too.
-    /// * **STANDING ALONE** — the marker is the whole row, save for decoration. What this closes is
+    /// * **THIS TURN'S** — the line was produced since this turn's prompt was delivered
+    ///   (`Self::since`). What this closes is a marker left on the screen by an EARLIER turn, or by
+    ///   whoever had the pane before this run: `Completion::begin`'s discipline, applied to text.
+    ///   It does NOT close the echo, because the echo is this turn's output too.
+    /// * **STANDING ALONE** — the marker is the whole LINE, save for decoration. What this closes is
     ///   the echo, and it is not a trick: it is exactly what `done_instruction` ASKS FOR (*"make
     ///   the last line of your reply exactly …"*), so the check enforces the contract the prompt
     ///   states rather than a second, weaker one. It does not close a stale marker, which stands
     ///   alone perfectly well.
+    /// * **NOT THE QUESTION, BROKEN** — the line above it does not run straight into the marker in
+    ///   what this peer was told (`wraps_onto`). What this closes is the echo of a prompt some
+    ///   OTHER program re-wrapped, which no reading of the pane can undo.
+    ///
+    /// # ⚠⚠⚠ A LINE, NOT A ROW — and the arithmetic is what says so
+    ///
+    /// This asked its question of `judged`'s ROWS, and *"the marker is the whole row"* is a claim
+    /// about a width nobody chose. `done_instruction` is **109 characters with `MILESTONE REACHED`
+    /// at 92**, so a pane **23, 46 or 92 columns** wide breaks that sentence exactly at the marker
+    /// and leaves it alone on a row; `reflect_prompt`'s last line is **152 with `NORTH STAR
+    /// REACHED` at 134**, so **67 or 134** do it there. A caller does not choose their agent's pane
+    /// width. Measured, not argued:
+    /// `a_pane_that_wraps_the_instruction_onto_the_marker_is_not_an_agent_saying_it` drives a peer
+    /// that says nothing of its own at 46 columns and this answered YES.
+    ///
+    /// A logical LINE is the unit the child produced — [`sprag_vt::Screen::lines_since`]'s whole
+    /// argument, and `crate::report`'s reader, chosen there by a live measurement. Read that way
+    /// the sentence comes back whole at every width and `stands_alone` rejects it on its own words.
+    /// **That closes the terminal's wrap and only the terminal's.**
+    ///
+    /// # ⚠⚠⚠ And the third rule, because a composer wraps too
+    ///
+    /// An agent CLI paints the prompt into its own BOX, re-breaking it wherever that box ends — and
+    /// those breaks are the program's, so the line store holds them as complete lines. Measured
+    /// live in `crate::report`: a three-line prompt came back as the single line `"  not number
+    /// them any other way and do not add commentary."`, a FRAGMENT. Nothing downstream can rejoin
+    /// it, so a fragment ending at the marker is indistinguishable from an answer **by shape** and
+    /// has to be told apart by CONTENT.
+    ///
+    /// ⚠⚠⚠ **AND `proposed`'s DISCOUNT DOES NOT TRANSFER.** There the answer is a
+    /// SENTENCE the agent writes after a label, so *"reject what the prompt already contains"*
+    /// leaves every real answer standing. Here **the line IS the marker** and the prompt contains
+    /// it by construction — that rule would reject every genuine answer there has ever been. So the
+    /// evidence is the line ABOVE: an echo's marker is preceded by the rest of its own sentence,
+    /// and an answer's is not.
     ///
     /// ⚠ The alternative considered first was this crate's existing echo rule —
     /// [`Orchestrator`](crate::orchestrator)'s *"a changed row is the ECHO when what it holds is a
@@ -3328,9 +3409,11 @@ impl OuterLoop {
     /// discounting. Reused where it fits; not reused where the fixture would have been the only
     /// thing it worked against.
     ///
-    /// ⚠ **IT FAILS SAFE.** A marker the agent decorated past recognising costs one more turn; the
-    /// direction this rule refuses to fail in is converging a run that proved nothing, which is
-    /// this crate's most expensive failure class and is what it did before.
+    /// ⚠ **IT FAILS SAFE, IN ALL THREE.** A marker the agent decorated past recognising, one whose
+    /// line the history evicted, and one the agent wrote directly under a quotation of the prompt's
+    /// own tail each cost ONE MORE TURN; the direction these rules refuse to fail in is converging
+    /// a run that proved nothing, which is this crate's most expensive failure class and is what it
+    /// did before.
     ///
     /// ⚠ The marker is read from the datamodel at the moment the question is asked, for
     /// [`authored`](Self::authored)'s reason. A datamodel that cannot answer leaves the loop
@@ -3345,17 +3428,37 @@ impl OuterLoop {
     ///
     /// [`said_done`](Self::said_done)'s whole rule, named once because a second marker arrived and
     /// the two must be read identically: the run's convergence and its continuation would otherwise
-    /// rest on two subtly different notions of *the agent said it*. See `said_done` for the two
-    /// pieces of evidence (FRESH, and STANDING ALONE) and what each closes.
+    /// rest on two subtly different notions of *the agent said it*. See `said_done` for the three
+    /// pieces of evidence and what each closes.
+    ///
+    /// ⚠ The `partial` line is deliberately not offered a candidate: the peer has not finished
+    /// writing it, so a marker found there is one the agent may still be adding words to. Waiting
+    /// costs a poll; acting costs a convergence. ⚠⚠ **THE RESIDUE, STATED, AND IT IS THIS CHANGE'S
+    /// OWN**: a peer whose reply does not end in a newline keeps its last line there for ever, and
+    /// the ROW reader this replaced could see one. [`sprag_vt::LinesSince::partial`] says the only
+    /// case where an unfinished line is final is a child that has EXITED, and a caller who drove
+    /// this loop with [`DoneWhen::Exits`] would have exactly that. Nothing here can establish the
+    /// EOF, and inventing it would be this crate guessing that a peer had stopped talking.
+    ///
+    /// ⚠⚠ **AND AN EVICTION CAN STILL RE-OPEN THE ECHO.** [`crate::report::Produced::lost`] counts
+    /// the complete lines the retained history threw away before this read, and if the one thrown
+    /// away is the HEAD of a broken instruction, the marker becomes the first line with nothing
+    /// above it and the discount has nothing to work with. It is not read here, and the alternative
+    /// — refusing to converge any turn that outran the scrollback — would end a long run on its
+    /// most productive turn. **Registered rather than guessed at.**
     fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> bool {
         let Some(marker) = self.text_of(variable) else {
             return false;
         };
-        self.driving
-            .judged
-            .fresh(panes, self.driving.pane)
-            .iter()
-            .any(|row| stands_alone(row, &marker))
+        let produced = self.driving.since.taken(panes, self.driving.pane);
+        produced.lines.iter().enumerate().any(|(at, line)| {
+            stands_alone(line, &marker)
+                && !wraps_onto(
+                    &self.driving.asked,
+                    at.checked_sub(1).map_or("", |above| &produced.lines[above]),
+                    &marker,
+                )
+        })
     }
 
     /// **THE ACCOUNT THE AGENT JUST WROTE**, off the pane the closing turn ran on — or [`None`]
@@ -3373,15 +3476,20 @@ impl OuterLoop {
     /// a measurement of what a live agent's pane holds, and the measurement, the rules and their
     /// gates read together or not at all.
     ///
-    /// ⚠⚠ READ AT THE MOMENT OF THE ACCOUNT, which is what keeps the discount honest now that one
-    /// of the two questions is COMPOSED. `stop_prompt` gains its ceiling clause on entry to
-    /// `stopping`, so the string discounted here is the one that was actually typed — a cached copy
-    /// taken any earlier would leave that clause in the agent's report as if the agent had written
-    /// it.
-    fn account(&self, panes: &dyn PaneAccess, asked: Owed) -> Option<String> {
+    /// ⚠⚠ WHAT IS DISCOUNTED IS WHAT WENT IN, and [`Session::asked`] is the record of it. This used
+    /// to read the slot back out of the datamodel *at the moment of the account*, which is an
+    /// APPROXIMATION of the same thing — an accurate one for the two ending prompts, because
+    /// `stopping` composes its ceiling clause before it delivers, and a wrong one for a turn a
+    /// screen rule spoke into, whose text is in no slot at all. ⚠ A copy taken at COMPOSITION time
+    /// would be the stale thing the old comment warned about; this one is written by the injection
+    /// it describes.
+    ///
+    /// ⚠ `asked` therefore says only WHETHER this ending has an account to collect — see
+    /// [`Owed::asked_for_an_account`].
+    fn account(&self, panes: &dyn PaneAccess) -> Option<String> {
         crate::report::account(
             &self.driving.since.taken(panes, self.driving.pane),
-            &self.text_of(asked.variable()).unwrap_or_default(),
+            &self.driving.asked,
         )
     }
 
@@ -3445,14 +3553,61 @@ fn once_each(standing: &str) -> String {
 /// too. What an agent CLI actually puts in front of its own text is a bullet, a box edge or a
 /// prompt glyph, and that is the list.
 fn opens_with(row: &str, label: &str) -> Option<String> {
-    /// What an agent CLI draws in front of a line of its own reply.
-    const DECORATION: &[char] = &['●', '⏺', '│', '|', '>', '❯', '*', '-', '•', ' ', '\t'];
     Some(
         row.trim_matches(DECORATION)
             .strip_prefix(label)?
             .trim()
             .to_owned(),
     )
+}
+
+/// What an agent CLI draws around a line of its own reply — a bullet, a box edge, a prompt glyph.
+///
+/// ⚠ ONE LIST, because two readers now take it off: [`opens_with`], which must not mistake
+/// decoration for the start of a label, and [`wraps_onto`], which compares a decorated line against
+/// the undecorated bytes this run typed. A second spelling would let a glyph one reader knows about
+/// blind the other.
+const DECORATION: &[char] = &['●', '⏺', '│', '|', '>', '❯', '*', '-', '•', ' ', '\t'];
+
+/// Whether `above` is a stretch of `asked` that runs straight into `marker` — i.e. the two lines
+/// are ONE line of the question, broken by whatever painted it.
+///
+/// # ⚠⚠⚠ Why this is the only shape that separates the echo from the answer
+///
+/// The prompt has to name the marker — nothing ever says a word nobody asked for — so *"the prompt
+/// contains this"* is true of every genuine answer as well ([`OuterLoop::said_marker`] says what
+/// that costs [`OuterLoop::proposed`]'s rule). What the prompt does NOT contain is *the agent's own
+/// previous line followed by the marker*. So the evidence is ORDER: an echoed marker is preceded by
+/// the rest of its own sentence, and an agent's is preceded by whatever the agent was saying.
+///
+/// ⚠ It looks the fragment up in `asked` rather than assuming where the break fell, because that is
+/// the one thing about somebody else's renderer that cannot be known: a break may eat the space
+/// before the marker or leave it, may fall mid-word, and may happen more than once in the same
+/// sentence. Asking *"what comes after this fragment in the question?"* covers all of them.
+///
+/// ⚠⚠ **DECORATION COMES OFF THE FRAGMENT, NOT OFF `asked`.** The pane's copy is what carries a box
+/// edge or a bullet; `asked` is the bytes this run typed and has none. Trimming both would be
+/// trimming a peer's rendering off the driver's own record.
+///
+/// ⚠ An empty fragment is never a match: at the top of a turn's output there is nothing above the
+/// line, and *"no evidence of an echo"* must not read as *"proof of one"* — the direction that
+/// costs a turn rather than a convergence is the other one, and it is [`OuterLoop::said_marker`]'s
+/// two remaining rules that stand there. Held by
+/// `a_peer_that_paints_none_of_the_question_is_still_heard_when_it_answers`.
+///
+/// ⚠⚠ **THE RESIDUE: THE LINE DIRECTLY ABOVE IS THE ONLY PLACE IT LOOKS.** A composer that put a
+/// blank between the two halves of one sentence would defeat this — and the live capture in
+/// `crate::report` shows a peer that does put a blank between its echo and its reply, which is the
+/// same habit one line further out. Widening it to *the nearest line with words* was refused for
+/// now because it would start discounting across the agent's own text, and that is how
+/// `crate::report`'s first draft deleted an answer. **Measure a composer that does it before
+/// widening this.**
+fn wraps_onto(asked: &str, above: &str, marker: &str) -> bool {
+    let above = above.trim_matches(DECORATION);
+    !above.is_empty()
+        && asked
+            .match_indices(above)
+            .any(|(at, _)| asked[at + above.len()..].trim_start().starts_with(marker))
 }
 
 /// Whether `row` is `marker` and nothing else a reader would call words.
@@ -5015,6 +5170,382 @@ mod tests {
              previous turn's answer being counted twice — the arming discipline `Completion::begin` \
              exists for, applied to text. Screen: {:?}",
             access.pane_collapsed(pane),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A PANE WHOSE WIDTH BREAKS THE INSTRUCTION AT THE MARKER STILL MUST NOT CONVERGE.**
+    ///
+    /// The gate above stages the echo at EIGHTY columns, where `done_instruction`'s 109 characters
+    /// break at 80 and the marker — which starts at 92 — lands in the middle of the second row with
+    /// `y: ` in front of it. `stands_alone` rejects that row on its own, so the gate passes without
+    /// the driver having to discount anything.
+    ///
+    /// **Forty-six is the same screen at a width the arithmetic hates.** 92 is 2×46, so the third
+    /// row of that echo is the marker and nothing else — a row that stands alone perfectly well and
+    /// that no agent wrote. 23 and 92 do it too; for `north_star_marker` (152 characters, the marker
+    /// at 134) it is 67 and 134. **A caller does not choose their agent's pane width**, and this
+    /// crate's most expensive failure class is converging a run that proved nothing.
+    #[test]
+    fn a_pane_that_wraps_the_instruction_onto_the_marker_is_not_an_agent_saying_it() {
+        /// 92 is 2×46 and 109-92 is 17, so `done_instruction` breaks onto exactly three rows and
+        /// the last is the marker alone. Arithmetic, not a guess — see the gate's own doc.
+        const FATAL: u16 = 46;
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((FATAL, 24))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(
+                "stty -echo; printf 'PARROT-READY\\n'; while read line; do \
+                 printf '%s\\n' \"$line\"; done",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), FATAL, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+
+        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+            .expect("the document's datamodel must carry its four authored strings");
+        let run = RunContext::uncancellable();
+        loops
+            .pump(&access, &run)
+            .expect("the parrot stays readable");
+        let marker = loops
+            .authored()
+            .expect("a primed machine answers with its four strings")
+            .done_marker;
+
+        // ⚠⚠⚠ THE HAZARD IS WAITED FOR, NOT ASSUMED. What makes this gate a measurement rather
+        // than an argument is that the pane really does hold a row that IS the marker — so the
+        // assertion below is about the driver's rule and not about whether the fixture wrapped.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let alone = |access: &WorkspacePaneAccess| {
+            access
+                .pane_rows(pane)
+                .unwrap_or_default()
+                .iter()
+                .any(|row| row.text.trim() == marker)
+        };
+        while !alone(&access) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            alone(&access),
+            "⚠⚠⚠ THE FIXTURE MUST STAGE THE HAZARD OR THE GATE BELOW MEASURES NOTHING: at {FATAL} \
+             columns the echo of `done_instruction` has to put the marker alone on its third row. \
+             Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+        assert!(
+            !loops.said_done(&access),
+            "⚠⚠⚠ THAT ROW IS THE LOOP'S OWN INSTRUCTION, BROKEN BY THE TERMINAL. The parrot has \
+             said nothing of its own — every byte on that screen came out of this run's prompt — \
+             and a judge satisfied here converges a run in which no agent ever did anything, \
+             reporting a milestone reached against a screen that says nothing of the kind. \
+             Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND A PEER THAT PAINTS NONE OF THE QUESTION IS STILL HEARD WHEN IT ANSWERS.**
+    ///
+    /// The three gates around this one are all about refusing an echo, and a discount written only
+    /// against them has an easy way to be wrong: treat *nothing above this line* as evidence of one.
+    /// It reads plausibly — the echo comes first, so a marker with nothing in front of it must be
+    /// the top of the echo — and it makes an entire kind of peer undriveable.
+    ///
+    /// **This is that kind of peer.** [`AiLoopSpec::shows_the_prompt`] exists because peers differ
+    /// on whether they paint what they are told: an agent CLI renders each character into its box,
+    /// and a program reading a pty in the ordinary way paints nothing at all. The second sort
+    /// answers with its reply and nothing else, so the marker is the FIRST line the turn produced —
+    /// and *no evidence of an echo* must not read as *proof of one*.
+    ///
+    /// ⚠ It is the direction the other three do not cover, and it is the one that fails LOUD: a run
+    /// against such a peer would never converge, whatever its agent said.
+    #[test]
+    fn a_peer_that_paints_none_of_the_question_is_still_heard_when_it_answers() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // ⚠ It swallows every line and says the marker for the one that asks for it — the
+            // whole point being that it paints NOTHING of what it was told.
+            command.arg(
+                "stty -echo; printf 'MUTE-READY\\n'; while read line; do \
+                 case \"$line\" in *exactly:*) printf 'MILESTONE REACHED\\n';; esac; done",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "MUTE-READY");
+
+        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+            .expect("the document's datamodel must carry its four authored strings");
+        let run = RunContext::uncancellable();
+        loops
+            .pump(&access, &run)
+            .expect("the mute peer stays readable");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !loops.said_done(&access) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            loops.said_done(&access),
+            "⚠⚠⚠ THIS PEER ANSWERED AND PAINTED NOTHING ELSE, so the marker is the first line the \
+             turn produced and there is nothing above it. A discount that read that absence as an \
+             echo would make every peer that does not paint its prompt impossible to drive — a run \
+             that can never converge, whatever its agent says. Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND WHEN THE REST OF THE SENTENCE HAS SCROLLED OFF THE GRID, THE RENDERING NO LONGER
+    /// HOLDS THE EVIDENCE — THE ADDRESS DOES.**
+    ///
+    /// # ⚠⚠⚠ This gate exists because a mutation did NOT bite
+    ///
+    /// The first two gates were written believing each held one of the two rules. They do not: with
+    /// `said_marker` put back onto `judged`'s ROWS, both stayed green — because at 46 columns the
+    /// head of the broken sentence is the row directly above the marker, so the discount catches the
+    /// terminal's wrap as well as a composer's. **A rule nothing can break is a rule nobody is
+    /// holding**, and the honest answer is to find the case that separates them rather than to drop
+    /// the claim or to keep it unmeasured.
+    ///
+    /// **The case is a screen that has scrolled.** The head and the marker are ADJACENT rows, so the
+    /// only arrangement where one is on the grid and the other is not is the marker at row zero —
+    /// and every pane passes through it, once per scroll, as the agent's own reply pushes the prompt
+    /// up. Through the rendering the discount then has nothing above to compare against and the run
+    /// converges on its own question. Through the LINE ADDRESS the sentence is rebuilt across the
+    /// scrollback boundary and comes back whole — [`sprag_vt::Screen::lines_since`] does that on
+    /// purpose, and [`crate::report`] chose it after a live agent lost twenty-eight lines to the
+    /// other reader.
+    ///
+    /// ⚠ The scroll is DRIVEN, one line at a time, and the arrangement is asserted rather than
+    /// computed: how many rows the composed prompt occupies is the document's business and would go
+    /// stale here the first time somebody edited it.
+    #[test]
+    fn a_marker_whose_sentence_scrolled_off_the_grid_is_still_the_question() {
+        /// 92 is 2×46 — the same hostile arithmetic as the gate above.
+        const FATAL: u16 = 46;
+        /// Short enough that the sentence's head leaves the grid within a line or two of scrolling.
+        const SHALLOW: u16 = 3;
+        /// Bounded so a fixture that never reaches the arrangement fails instead of spinning.
+        const SCROLLS: usize = 40;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((FATAL, SHALLOW))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(
+                "stty -echo; printf 'PARROT-READY\\n'; while read line; do \
+                 printf '%s\\n' \"$line\"; done",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), FATAL, SHALLOW)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+
+        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+            .expect("the document's datamodel must carry its four authored strings");
+        let run = RunContext::uncancellable();
+        loops
+            .pump(&access, &run)
+            .expect("the parrot stays readable");
+        let marker = loops
+            .authored()
+            .expect("a primed machine answers with its four strings")
+            .done_marker;
+
+        // ── SCROLL UNTIL THE MARKER IS THE TOP ROW AND ITS SENTENCE'S HEAD IS GONE ──
+        // ⚠ One line at a time, checking after each: the marker occupies row zero for exactly one
+        // scroll step, so a fixture that pushed two lines at once would step over the arrangement
+        // it is here to build.
+        let top_is_marker = |access: &WorkspacePaneAccess| {
+            access
+                .pane_rows(pane)
+                .unwrap_or_default()
+                .first()
+                .is_some_and(|row| stands_alone(&row.text, &marker))
+        };
+        let mut scrolled = 0;
+        while !top_is_marker(&access) && scrolled < SCROLLS {
+            let before = access.pane_rows(pane).unwrap_or_default();
+            let typed = access
+                .inject(pane, &[crate::access::KeyStroke::named("Enter")])
+                .expect("the parrot takes a blank line");
+            assert!(
+                typed.bytes() > 0,
+                "a newline that reached no pane scrolls nothing",
+            );
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while access.pane_rows(pane).unwrap_or_default() == before
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            scrolled += 1;
+        }
+        assert!(
+            top_is_marker(&access),
+            "⚠⚠⚠ THE FIXTURE MUST STAGE THE HAZARD OR THE GATE BELOW MEASURES NOTHING: after \
+             {scrolled} scrolls the marker still is not the grid's top row, so the head of its \
+             sentence has not left the screen and the rendering has lost nothing yet. Rows: {:?}",
+            access.pane_rows(pane),
+        );
+        assert!(
+            !loops.said_done(&access),
+            "⚠⚠⚠ REGISTER ITEM 270, THE HALF A DISCOUNT CANNOT REACH: the row above this marker is \
+             off the grid, so *what does the line above say?* has no answer in the RENDERING — and \
+             the loop's own instruction converges the run. The pane still knows: a logical line is \
+             rebuilt across the scrollback boundary, and read that way the sentence comes back \
+             whole. Rows: {:?}",
+            access.pane_rows(pane),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND A PEER THAT RE-WRAPS THE QUESTION ITSELF IS NOT AN AGENT ANSWERING IT.**
+    ///
+    /// The gate above is closed by reading LINES instead of rows, because the break it stages is the
+    /// terminal's and a logical line is defined as surviving one. **This one stages a break no
+    /// reading can undo.** An agent CLI paints the prompt into its own box and re-breaks it wherever
+    /// that box ends; those breaks are the program's own, so the line store holds them as complete
+    /// lines — measured live in [`crate::report`], where a three-line prompt came back as the single
+    /// fragment `"  not number them any other way and do not add commentary."`.
+    ///
+    /// This peer does exactly that and nothing else: every line it is told, it paints back **behind
+    /// its own box edge**, and the one carrying `exactly:` it paints back **in two pieces, broken at
+    /// the marker**. The pane is eighty columns — not one of the fatal widths — so the terminal is
+    /// not the thing breaking anything. Every byte on that screen still came out of this run's own
+    /// prompt.
+    ///
+    /// ⚠⚠ **THE BOX EDGE IS NOT DRESSING.** `stands_alone` already allows decoration in front of a
+    /// marker, so an undecorated fixture would leave the discount comparing the pane's copy of a
+    /// sentence against the driver's — two strings that happen to be identical — and the day a real
+    /// composer put a glyph in front of one, nothing here would have said so.
+    ///
+    /// ⚠⚠⚠ **AND THE CONTROL IS A PEER THAT ACTUALLY ANSWERS**, because a rule that refuses
+    /// everything passes the assertion above for free. The same peer, told a word of its own and
+    /// then the marker, must converge — which is what says the discount discriminates rather than
+    /// declines. R399's own lesson, one round on: a negative control needs a peer, not an argument.
+    #[test]
+    fn a_composer_that_re_wraps_the_question_onto_the_marker_is_not_an_agent_saying_it() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // ⚠ `${line%: *}` is the sentence up to its colon and `${line##*: }` is what follows it
+            // — the composer's break, expressed in the only two words `sh` has for one.
+            command.arg(
+                "stty -echo; printf 'COMPOSER-READY\\n'; while read line; do \
+                 case \"$line\" in \
+                   *'exactly: '*) printf '| %s:\\n' \"${line%: *}\"; \
+                                  printf '| %s\\n' \"${line##*: }\";; \
+                   *) printf '| %s\\n' \"$line\";; \
+                 esac; done",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "COMPOSER-READY");
+
+        let mut loops = OuterLoop::new(lua, pane, &spec(None, turn_of(Duration::from_millis(200))))
+            .expect("the document's datamodel must carry its four authored strings");
+        let run = RunContext::uncancellable();
+        loops
+            .pump(&access, &run)
+            .expect("the composer stays readable");
+        let marker = loops
+            .authored()
+            .expect("a primed machine answers with its four strings")
+            .done_marker;
+
+        // ⚠⚠⚠ THE HAZARD IS WAITED FOR, NOT ASSUMED — and here it must be waited for on the LINES,
+        // because a row-shaped assertion would be satisfied by the terminal's own wrap and this
+        // gate is about the peer's.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let alone = |access: &WorkspacePaneAccess| {
+            access
+                .pane_full_lines(pane)
+                .unwrap_or_default()
+                .iter()
+                .any(|line| stands_alone(line, &marker))
+        };
+        while !alone(&access) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            alone(&access),
+            "⚠⚠⚠ THE FIXTURE MUST STAGE THE HAZARD OR THE GATE BELOW MEASURES NOTHING: this peer \
+             has to paint the instruction back in two pieces, so that the marker is a COMPLETE \
+             line of the pane's own store and not a row the terminal happened to break. \
+             Lines: {:?}",
+            access.pane_full_lines(pane),
+        );
+        assert!(
+            !loops.said_done(&access),
+            "⚠⚠⚠ THAT LINE IS THE LOOP'S OWN INSTRUCTION, BROKEN BY THE PEER'S COMPOSER — and no \
+             reader can rejoin it, because the break is the program's own. What tells it from an \
+             answer is the line ABOVE it: the rest of the same sentence, which is a shape no agent \
+             writing its own reply produces. Lines: {:?}",
+            access.pane_full_lines(pane),
+        );
+
+        // ── THE CONTROL ── the same peer, now with a word of its own in front of the marker.
+        let typed = access
+            .inject(pane, &{
+                let mut keys = crate::access::KeyStroke::text("ACK");
+                keys.push(crate::access::KeyStroke::named("Enter"));
+                keys.extend(crate::access::KeyStroke::text(&marker));
+                keys.push(crate::access::KeyStroke::named("Enter"));
+                keys
+            })
+            .expect("the composer takes two lines");
+        assert!(
+            typed.bytes() > 0,
+            "an answer that reached no pane cannot be read back off one",
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !loops.said_done(&access) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            loops.said_done(&access),
+            "⚠⚠⚠ AND THE SAME MARKER, WRITTEN UNDER THE PEER'S OWN WORD, MUST BE READ AS AN \
+             ANSWER — or the discount above is a predicate that says no to everything and the run \
+             can never converge at all. Lines: {:?}",
+            access.pane_full_lines(pane),
         );
 
         access.lifecycle().expect("lifecycle").close(pane);

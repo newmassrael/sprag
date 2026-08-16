@@ -4051,8 +4051,11 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
 /// pane produced since a mark*, and their difference is stated in [`Agent::capture`]'s own doc:
 ///
 /// * [`RowTrail`] compares the RENDERING — repaint-proof, and **the rows that scrolled off were
-///   never in it at all**. Every reader in the outer driver uses it (`said_done`, `judged`,
-///   `proposed`), so it is the one a new reader would reach for by habit.
+///   never in it at all**. Every reader in the outer driver used it (`said_done`, `judged`,
+///   `proposed`), so it is the one a new reader would reach for by habit. ⚠ `said_done` has since
+///   moved to the address for the same reason this measurement gives, and register item 270 is
+///   where the cost of the habit was paid a second time: a marker whose sentence had scrolled past
+///   the top of the grid converged a run on its own instruction.
 /// * [`PaneOutputLines::pane_lines_since`] is an ADDRESS into the pane's logical lines, so it
 ///   survives a scroll and reports what the retained history evicted.
 ///
