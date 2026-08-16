@@ -56,8 +56,26 @@ mnemosyne-cli validate-workspace
 # Unconditional, unlike clippy below: a citation breaks from EITHER side — a
 # comment naming a section that is gone, or a store edit that removes one — and
 # the second touches no `*.rs` at all. It costs ~16ms.
+#
+# ⚠⚠⚠⚠ AND ITS REPORT IS NO LONGER THROWN AWAY — register item 213, whose whole point is that a
+# check nothing reads accumulates silently. Measured on this tree, 2026-08-17:
+#
+#   violations: total=52 ... citation_unbound=47 ... impl_missing=5   →   exit 0
+#
+# The code is RIGHT — `severity_missing = "reject"` covers `missing` / `section_missing`, both at
+# zero — but fifty-two findings were being printed into `/dev/null`, so the one number that would
+# show this drifting was visible to nobody. That is the clippy defect one command over: the gate
+# said something and the hook discarded it.
+#
+# ⚠⚠ THE EXIT CODE STILL DECIDES. This prints the summary line and blocks on nothing new, because
+# which classes should REJECT is a store-configuration decision and not a hook's to take. What
+# changes is that the number now appears at the commit that moves it.
 echo "pre-commit: mnemosyne-cli validate-code-refs ..." >&2
-mnemosyne-cli validate-code-refs >/dev/null
+if ! refs_report="$(mnemosyne-cli validate-code-refs 2>&1)"; then
+    printf 'pre-commit: validate-code-refs REFUSED:\n%s\n' "$refs_report" >&2
+    exit 1
+fi
+printf '%s\n' "$refs_report" | grep -E '^violations:' >&2 || true
 
 # rustfmt gate — only the STAGED *.rs files, so it is sprag-scoped: a pinion
 # path-dep file cannot be staged from here, while `cargo fmt --all` WOULD walk
