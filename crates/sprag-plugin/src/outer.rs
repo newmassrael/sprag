@@ -1011,11 +1011,28 @@ pub enum DoneReason {
     /// to weigh. Ending is the SAFE direction (the caller's checkpoint was met, so the account is
     /// true) and it is the terminating one — but it is not a claim about the destination.
     NoSuccessor,
+    /// **A PERSON ASKED THIS RUN TO STAND DOWN, AND IT FINISHED THE MILESTONE FIRST** — the ending
+    /// that could not be reached before the orders region existed.
+    ///
+    /// ⚠⚠⚠ **IT IS NOT `Cancelled`, AND THE DIFFERENCE IS THE WHOLE POINT.** A cancel stops a run
+    /// mid-turn and throws that turn away; this waits for the checkpoint the agent was working
+    /// toward, takes its account, and converges. Reporting the two under one word would tell a
+    /// reader that work was discarded when it was banked.
+    ///
+    /// ⚠⚠ NOR IS IT [`NoSuccessor`](Self::NoSuccessor), which is the run running OUT of things to
+    /// propose. Here there was more to do and somebody said stop — so the account is true about
+    /// what was finished and says nothing about what remained, which is exactly what a reader
+    /// weighing whether to start another run needs to know.
+    ///
+    /// ⚠ Unlike its two siblings this one is a fact the DOCUMENT can see — the order is a state in
+    /// its own orders region — so the document assigns this word as a literal rather than echoing
+    /// one the driver sent. That is the first time an ending has been the document's own to spell.
+    StoodDown,
 }
 
 impl DoneReason {
     /// Every arm, so the runs that produce them and the readers below are one list.
-    pub const ALL: [Self; 2] = [Self::Declared, Self::NoSuccessor];
+    pub const ALL: [Self; 3] = [Self::Declared, Self::NoSuccessor, Self::StoodDown];
 
     /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.done_reason`.
     ///
@@ -1027,6 +1044,10 @@ impl DoneReason {
         match self {
             Self::Declared => "declared",
             Self::NoSuccessor => "no_successor",
+            // ⚠ Spelled in the DOCUMENT too, as a literal on the edge out of `judging` — the one
+            // ending whose fact the document can see for itself. A gate holds the two spellings
+            // together, because a word that drifted here would leave a run ending in silence.
+            Self::StoodDown => "stood_down",
         }
     }
 
@@ -1050,6 +1071,12 @@ impl DoneReason {
                  declared the north star met — the run ended because there was nothing left to ask \
                  this agent for; read the milestone it finished and decide whether the run is \
                  really done"
+            }
+            Self::StoodDown => {
+                "somebody asked this run to stand down and it finished the milestone it was on \
+                 first, so the work in the account was BANKED rather than discarded — there was \
+                 more to do and a person said stop, which is what makes this different from a run \
+                 that ran out of things to propose"
             }
         }
     }
@@ -2061,6 +2088,30 @@ impl OuterLoop {
     /// [`noticed`](Self::noticed) at that ending — so a `take` that emptied the field would
     /// destroy the question a `blocked` outcome is supposed to publish. **This one leaves them
     /// alone**, which is what makes the two uses safe to sit on one field.
+    /// **TELL THIS RUN TO STAND DOWN** — finish the milestone it is on, then stop.
+    ///
+    /// # ⚠⚠⚠ The sentence that could not be said
+    ///
+    /// The only thing anybody could say to a running loop was `cancel`: *stop now, mid-turn, and
+    /// throw the turn away*. What a person actually wants at the end of a working day is the other
+    /// one — **let it bank what it is doing and then stand down** — and there was nowhere to put it.
+    /// A flat machine cannot hold an instruction that arrives while something else is going on.
+    ///
+    /// So the order goes into the document's ORDERS REGION, which runs beside the work. This raises
+    /// the event and returns; **nothing about the turn in flight changes.** The order is read at the
+    /// next milestone, by the document, in `judging`.
+    ///
+    /// ⚠⚠ IT IS A STATE THERE, NOT A FLAG, which is why this method has nothing to store: the
+    /// machine holds the order, so it is in the run's walk with everything else. A boolean out here
+    /// would be a decision living outside the document — and invisible to anybody reading the run.
+    ///
+    /// ⚠ IDEMPOTENT AND ONE-WAY. A second call finds the orders region already standing down and
+    /// changes nothing; there is no edge back, because a *stand down, no wait, carry on* racing a
+    /// milestone would make a run's ending depend on which of two messages arrived first.
+    pub fn stand_down(&mut self) {
+        self.machine.process_event(AiLoopEvent::StandDown);
+    }
+
     pub fn took_answer(&mut self) -> Option<crate::consent::Answered> {
         match self.noticed {
             Some(Noticed::Answered(_)) => match self.noticed.take() {
@@ -5172,35 +5223,68 @@ mod tests {
              is holding a document with no closing report in it at all",
         );
 
-        // ── 1. EVERY ONE OF THEM REFUSES TO FIRE WITHOUT AN ENDING ──
-        let unguarded: Vec<usize> = edges
+        // ── EVERY ONE OF THEM NAMES AN ENDING, BY ONE OF EXACTLY TWO ROUTES ──
+        //
+        // ⚠⚠⚠ THIS USED TO BE ONE ROUTE, and the second arrived with the orders region. The
+        // invariant is unchanged and is the only thing that matters: **`closing` cannot be reached
+        // without a word.** `done_reason` is not cleared on entry, so a wordless edge does not
+        // merely leave a run silent — it reports the PREVIOUS ending, confidently. Measured:
+        // unguarded, a `reflect.done` raised with no word fires, assigns `nil`, and writes a bare
+        // arrow indistinguishable from a correct run.
+        //
+        // What changed is WHOSE fact the ending is:
+        //
+        // * **the driver's** — a marker on somebody's pane, or that marker's absence beside a
+        //   reflection reason. This file cannot spell either, so the edge is guarded on the
+        //   driver's key and assigns it. Both original endings are these.
+        // * **the document's own** — an order standing in its own orders region, which the document
+        //   can see for itself with `In()`. Spelling a literal here is not the driver's word being
+        //   guessed at; it is a fact this file holds. ⚠ It is held to `DoneReason`'s vocabulary all
+        //   the same, because a literal nobody can read back is the silence this whole gate is about
+        //   wearing a different hat.
+        let words: Vec<&str> = DoneReason::ALL.iter().map(|it| it.word()).collect();
+        let nameless: Vec<(usize, bool, Option<&str>)> = edges
             .iter()
-            .filter(|(_, guarded, _)| !guarded)
-            .map(|(line, _, _)| *line)
-            .collect();
-        assert!(
-            unguarded.is_empty(),
-            "⚠⚠⚠ REGISTER ITEM 267: `ai_loop.scxml` line(s) {unguarded:?} take an edge into \
-             `closing` without `cond=\"{DRIVERS_KEY}\"`. Measured: unguarded, a `reflect.done` \
-             raised with no word still fires, assigns `nil`, and writes the bare arrow this item is \
-             about — a run that ended for one of two opposite reasons, reported as neither. The \
-             guard is what makes a wordless raise unable to reach this state",
-        );
-
-        // ── 2. AND EVERY ONE OF THEM CARRIES THE DRIVER'S OWN WORD ──
-        let unknown: Vec<(usize, bool, Option<&str>)> = edges
-            .iter()
-            .filter(|(_, _, assigned)| *assigned != Some(DRIVERS_KEY))
+            .filter(|(_, guarded_on_driver, assigned)| {
+                let carries_drivers_word = *guarded_on_driver && *assigned == Some(DRIVERS_KEY);
+                let spells_its_own = assigned.is_some_and(|expr| {
+                    expr.strip_prefix('\'')
+                        .and_then(|it| it.strip_suffix('\''))
+                        .is_some_and(|word| words.contains(&word))
+                });
+                !carries_drivers_word && !spells_its_own
+            })
             .copied()
             .collect();
         assert!(
-            unknown.is_empty(),
-            "⚠⚠⚠ the document assigns a `done_reason` this driver did not send: {unknown:?}. Both \
-             endings are facts only the driver can see — a marker on somebody's pane, and that \
-             marker's absence beside a reflection reason — so unlike `reflect_reason` there is no \
-             literal this file could correctly spell. It must be {DRIVERS_KEY}, whose value is \
-             already one of {:?}",
-            DoneReason::ALL.map(DoneReason::word),
+            nameless.is_empty(),
+            "⚠⚠⚠ REGISTER ITEM 267: `ai_loop.scxml` line(s) {nameless:?} reach `closing` without \
+             naming an ending. An edge must either be guarded on `cond=\"{DRIVERS_KEY}\"` AND assign \
+             it — for the endings only the driver can see — or assign a LITERAL from {words:?}, for \
+             an ending this document can see for itself. Anything else ends a run reporting the \
+             PREVIOUS one's reason",
+        );
+
+        // ── AND A DOCUMENT-SPELLED ENDING IS GUARDED ON SOMETHING ──
+        //
+        // ⚠⚠ The driver-key route gets its guard for free (the key IS the guard). A literal route
+        // does not: an unguarded edge assigning `'stood_down'` would close every run that reached
+        // it, and it would do so while reporting a stand-down nobody asked for. So the literal route
+        // owes a `cond` of its own, whatever it reads.
+        let ungoverned: Vec<usize> = edges
+            .iter()
+            .filter(|(line, guarded_on_driver, assigned)| {
+                assigned.is_some_and(|expr| expr.starts_with('\''))
+                    && !guarded_on_driver
+                    && !lines[line - 1].contains("cond=")
+            })
+            .map(|(line, _, _)| *line)
+            .collect();
+        assert!(
+            ungoverned.is_empty(),
+            "⚠⚠⚠ `ai_loop.scxml` line(s) {ungoverned:?} spell their own ending and fire \
+             UNCONDITIONALLY. A literal is only honest under a guard that makes it true — without \
+             one, every run reaching that edge ends reporting something nobody did",
         );
     }
 

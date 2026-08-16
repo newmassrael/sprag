@@ -1044,6 +1044,7 @@
       datamodel is unverified (see `judged_rules`).
     -->
     <data id="done_reason" expr="''"/>
+
   </datamodel>
 
   <!--
@@ -1633,6 +1634,56 @@
       alternative (testing the budget first) would report `exhausted` for a run
       that had plainly reached what it was asked for.
     -->
+    <!--
+      ⚠⚠⚠⚠ SOMEBODY ASKED THIS RUN TO STAND DOWN, AND THE MILESTONE IS NOW DONE.
+      The sentence that could not be said before the orders region existed:
+      *finish what you are doing and then stop.*
+
+      ⚠⚠⚠ IT IS ORDERED ABOVE THE MILESTONE EDGE BELOW, AND THE ORDER IS THE
+      DECISION. Both guards are true at this moment — the agent said the word AND
+      an order is standing — and document order is what picks between them.
+      Below, the run would reflect and go looking for the next checkpoint, which
+      is precisely what the person asked it not to do.
+
+      ⚠⚠ IT WAITS FOR `_event.data.done`, WHICH IS WHAT MAKES IT A STAND-DOWN AND
+      NOT A CANCEL. A cancel takes the run mid-turn and throws that turn away;
+      this one fires only once the milestone the agent was working toward is
+      finished, so the work is BANKED and `closing` still takes its account. The
+      two are different endings and are reported as different words.
+
+      ⚠⚠⚠⚠ `&amp;&amp;` AND NOT `and`, AND THE FIRST DRAFT OF THIS EDGE WROTE `and`
+      AND NEVER FIRED. This is the trap this file's own header warns about,
+      sprung: a `cond` is PARSED as ECMAScript (the datamodel's declared name)
+      and EVALUATED as Lua (the only engine there is). Lua's `and` is not
+      ECMAScript, so the generator turned the whole guard into
+
+          error("SCXML cond is not valid ECMAScript: ... unexpected token: 'and'")
+
+      which the runtime evaluates to FALSE. The machine compiled, the run ran,
+      and the edge was simply never taken — **no error reached anybody**. It was
+      found by reading the generated Rust after a run that would not stand down.
+
+      Written `&amp;&amp;`, the generator rewrites it to Lua and keeps the call:
+      `(_scxml_truthy(_event.data.done) and _scxml_truthy(In("standing_down")))`.
+
+      ⚠⚠ SO THE RULE FOR THIS FILE IS: WRITE ECMASCRIPT, NOT LUA. The header says
+      the same thing about `===`, `JSON.stringify` and template literals, and
+      this is the first time it has been paid for.
+
+      ⚠ `In('standing_down')` READS THE OTHER REGION, and it works in a COMPOUND
+      guard — measured here after a wrong first reading blamed `In()` for what
+      `and` had done. `probe_parallel.scxml` asks the same question standalone.
+
+      ⚠⚠⚠ AND THE WORD IS A LITERAL HERE, unlike the other two endings. Those are
+      facts only the driver can see — a marker on somebody's pane, and that
+      marker's absence beside a reflection reason — so this file could not
+      correctly spell either. A stand-down is this document's OWN fact: the order
+      is a state in its own orders region. So it says so itself, and a gate holds
+      this spelling against `DoneReason`'s.
+    -->
+    <transition event="judge" cond="_event.data.done &amp;&amp; In('standing_down')" target="closing">
+      <assign location="done_reason" expr="'stood_down'"/>
+    </transition>
     <transition event="judge" cond="_event.data.done" target="reflecting">
       <assign location="reflect_reason" expr="'milestone'"/>
     </transition>

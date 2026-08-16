@@ -200,6 +200,12 @@ impl AiLoop {
         self.inner.consenting()
     }
 
+    /// **TELL THIS RUN TO STAND DOWN** — finish the milestone it is on, then stop. See
+    /// [`OuterLoop::stand_down`] for why this is not `cancel` and why the order is a state.
+    pub fn stand_down(&mut self) {
+        self.inner.stand_down();
+    }
+
     /// How many turns the AGENT has taken — the document's own counter, which its `max_turns`
     /// guard compares against.
     ///
@@ -3854,16 +3860,49 @@ mod tests {
              below is measuring this loop's own instruction. Walked {echoed_walk:?}",
         );
 
+        // ── ARM 3: A PERSON ASKED IT TO STAND DOWN, AND IT FINISHED THE MILESTONE FIRST ──
+        //
+        // ⚠⚠⚠ THE SAME PEER AS ARM 2, and that is the whole design of this arm. It says the
+        // milestone marker and has no opinion about what comes next — left alone it ends
+        // `no_successor`, which arm 2 just measured. The ONLY difference here is that somebody spoke
+        // to the run. If the two came out with the same word, the order would be doing nothing and
+        // the orders region would be decoration.
+        //
+        // ⚠⚠ THE ORDER IS GIVEN BEFORE THE FIRST PUMP, which is the honest hard case: it stands
+        // through every working turn and has to still be standing when `judging` finally asks. An
+        // order given just before the milestone would prove far less — it would not distinguish *the
+        // region held it* from *the event happened to arrive at the right moment*.
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        loops.stand_down();
+        let (stood_down_state, stood_down_walk) = run_of(&mut loops, &access);
+
+        // ⚠⚠⚠ EACH ARM CARRIES THE ARROW IT ARRIVES BY, because they are not all the same one any
+        // more. The two reflection endings pass through `reflecting` — the run asked what was next
+        // and the answer ended it. A STAND-DOWN does not: the order is already standing when the
+        // milestone lands, so `judging` closes directly and **the run never spends a reflection turn
+        // it was told not to need.** A gate that kept one arrow for all three would be asserting that
+        // a stood-down run reflects first, which is a model call nobody asked for.
         let arms = [
             (
                 "the agent declared it",
                 DoneReason::Declared,
                 &declared_walk,
+                "Reflecting --ReflectDone--> Closing",
             ),
             (
                 "no successor was named",
                 DoneReason::NoSuccessor,
                 &no_successor_walk,
+                "Reflecting --ReflectDone--> Closing",
+            ),
+            (
+                "a person asked it to stand down",
+                DoneReason::StoodDown,
+                &stood_down_walk,
+                "Judging --Judge--> Closing",
             ),
         ];
 
@@ -3874,6 +3913,16 @@ mod tests {
                 "no successor was named",
                 no_successor_state,
                 &no_successor_walk,
+            ),
+            // ⚠⚠⚠ A STAND-DOWN CONVERGES TOO, and that is the claim, not an accident of the loop.
+            // The run banked the milestone and took its account — so the word a reader gets is
+            // `Converged`, exactly as for the other two, and the walk is what says a PERSON ended it
+            // rather than the work running out. A stand-down that reported `Cancelled` would tell a
+            // reader the turn was thrown away when it was finished.
+            (
+                "a person asked it to stand down",
+                stood_down_state,
+                &stood_down_walk,
             ),
         ] {
             assert_eq!(
@@ -3887,7 +3936,7 @@ mod tests {
 
         // ── THE CONTROL ON THE VOCABULARY: these two are all of it ──
         let covered: std::collections::BTreeSet<DoneReason> =
-            arms.iter().map(|(_, ending, _)| *ending).collect();
+            arms.iter().map(|(_, ending, _, _)| *ending).collect();
         assert_eq!(
             covered,
             DoneReason::ALL.into_iter().collect(),
@@ -3898,11 +3947,11 @@ mod tests {
 
         // ── AND THE WALK SAYS WHICH ──
         let mut lines: Vec<&str> = Vec::new();
-        for (label, ending, walk) in arms {
-            let mut found = walk.iter().filter(|note| note.starts_with(THE_EDGE));
+        for (label, ending, walk, the_edge) in arms {
+            let mut found = walk.iter().filter(|note| note.starts_with(the_edge));
             let line = found.next().unwrap_or_else(|| {
                 panic!(
-                    "⚠ the control for {label}: this run must have taken {THE_EDGE:?}, or what \
+                    "⚠ the control for {label}: this run must have taken {the_edge:?}, or what \
                      follows is about an edge it never took. Walked {walk:?}"
                 )
             });
@@ -3913,7 +3962,7 @@ mod tests {
             );
             assert_eq!(
                 line,
-                &format!("{THE_EDGE} — {}", ending.noted()),
+                &format!("{the_edge} — {}", ending.noted()),
                 "⚠⚠⚠ REGISTER ITEM 267: this run closed because {label}, and the one line its walk \
                  wrote about ending must say so. Two runs with opposite remedies — *weigh the \
                  account it wrote* against *nobody said the job was done, look at the milestone* — \
@@ -5355,6 +5404,38 @@ mod tests {
     /// `working --turn.interrupted--> awaiting_human` was a sentence in an XML
     /// comment, and the Rust that implements the same idea was gated against its own
     /// hand-written vocabulary with nothing joining the two.
+    /// ⚠⚠⚠ **AN ORDER REACHES THE ORDERS REGION AND LEAVES THE WORK WHERE IT WAS** — the smallest
+    /// claim the stand-down handle rests on, and the one that tells a broken HANDLE apart from a
+    /// broken GUARD.
+    ///
+    /// Without it, a run that failed to stand down has two indistinguishable causes: the order never
+    /// arrived, or it arrived and `In()` could not see it. Those have opposite fixes.
+    #[test]
+    fn an_order_moves_the_orders_region_and_nothing_else() {
+        let (mut engine, _lua, _session) = started();
+        let before = engine.get_active_states();
+        assert!(
+            before.contains(&AiLoopState::Standing),
+            "the control: a fresh run is resting under no orders. active = {before:?}",
+        );
+
+        engine.process_event(AiLoopEvent::StandDown);
+
+        let after = engine.get_active_states();
+        assert!(
+            after.contains(&AiLoopState::StandingDown),
+            "⚠⚠⚠ THE ORDER NEVER REACHED THE ORDERS REGION. Whatever `judging` then decides is about \
+             a run nobody spoke to — so a handle that looked wired would do nothing, silently. \
+             active = {after:?}",
+        );
+        assert!(
+            after.contains(&AiLoopState::Idle),
+            "⚠⚠⚠ AND THE WORK REGION MUST NOT HAVE MOVED. That is the entire difference between \
+             standing a run down and cancelling it: the turn in flight is untouched. active = \
+             {after:?}",
+        );
+    }
+
     #[test]
     fn the_outer_loop_runs_the_edges_the_last_two_rounds_built() {
         let (mut engine, _lua, _session) = started();
