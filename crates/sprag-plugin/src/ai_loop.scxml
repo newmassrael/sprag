@@ -43,12 +43,12 @@
   FALSE IN BOTH DIRECTIONS. It is kept here, struck through, because what
   replaced it is the shape of the whole feature rather than a detail:
 
-  * A CALLER may declare consents (`AiLoopSpec::may_answer`), and the barrier
-    takes an offered option on them. That is somebody saying *yes* in advance,
-    and R382 measured what its absence cost: a loop whose agent asked one
-    permission question stopped with ZERO turns judged, and every milestone
-    that touches a file ends there.
-  * The AUTHOR may write standing instructions (`screen_rules`), and `screening`
+  * This DOCUMENT declares consents (`may_answer`), and the barrier takes an
+    offered option on them. That is somebody saying *yes* in advance, and R382
+    measured what its absence cost: a loop whose agent asked one permission
+    question stopped with ZERO turns judged, and every milestone that touches a
+    file ends there.
+  * This DOCUMENT writes standing instructions (`screen_rules`), and `screening`
     carries them out by REFUSING the call and saying what to do instead.
 
   The sentence was right about the principle and wrong about the conclusion.
@@ -57,6 +57,13 @@
   than the machine deciding. What the loop still never does is decide something
   nobody wrote down; a dialog neither a consent nor a rule reaches still stops
   the run and waits for somebody.
+
+  ⚠⚠⚠ AND THE FIRST BULLET USED TO READ *«a CALLER may declare consents
+  (`AiLoopSpec::may_answer`)»*. It is corrected rather than deleted because the
+  correction is the rule this file now lives under: EVERY DECISION IS THIS
+  DOCUMENT'S, and a run argument binds a run to its pane — which agent, in which
+  pane — never what that run may decide. Approval and refusal were the last pair
+  living in two worlds, and they no longer are.
 
   datamodel="ecmascript" (not the `null` its two siblings use) because a loop's
   prompts and goals ARE its definition: the whole point is that a person edits
@@ -426,17 +433,49 @@
       flag could never have done is tell a permission dialog from a design one —
       it needed the very taxonomy R383 measured away.
 
-      ⚠ THE SHIPPED RULE IS A PLACEHOLDER, in this document's own `(edit me)`
-      idiom, and deliberately claims nothing. A shipped needle would have to be
-      invented: the dialogs a loop meets are MEASURED for tool permissions and
-      unmeasured for design questions, and quoting words nobody has seen is the
-      mistake this file made the last time. A loop that meets a dialog no rule
-      claims says so in its own report (`no_rule`, naming the dialog), so an
-      unedited placeholder is visible rather than silent.
+      ⚠⚠⚠ THE SHIPPED RULE USED TO BE A PLACEHOLDER, and half of its reason has
+      been discharged by measurement since. It read: *«a shipped needle would have
+      to be invented: the dialogs a loop meets are MEASURED for tool permissions
+      and unmeasured for design questions, and quoting words nobody has seen is
+      the mistake this file made the last time»*. **The first half of that
+      sentence is the discharge**: tool-permission dialogs ARE measured, and every
+      one seen so far — `Do you want to make this edit?`, `Do you want to create
+      PROBE.txt?` — opens with the same four words. So the needle below quotes
+      what has been SEEN; it is not invented, and the design-question case is
+      still left to whoever meets one.
+
+      ⚠⚠ AND AN UNEDITED PLACEHOLDER WAS NOT VISIBLE, WHICH IS WHY THIS CHANGED.
+      The argument for it was that a loop meeting an unclaimed dialog reports
+      `no_rule` naming it. True — and what a person does with that report is
+      answer the dialog, which nobody was there to do: the live run of 2026-08-16
+      stood at one for an hour and died at a ceiling. A document whose shipped
+      state cannot run its own loop is not a safe default, it is a broken one.
+
+      ⚠⚠⚠ AND IT QUOTES `create`, NOT THE WHOLE `Do you want to` FAMILY — a
+      widening that was tried and MEASURED WRONG in the same round. The bare
+      family needle swallows the COMMAND dialog (`Bash command … Do you want to
+      proceed?`), so a loop carrying this rule would have been refused every
+      `cargo test` it asked for and told to think again: **a loop that may edit
+      but may not run is a loop that cannot verify a milestone it claims to have
+      reached.** Running is a consent's job, one door up, and it has one now.
+
+      ⚠ WHAT IS LEFT FOR THIS RULE IS THE FILE THAT DID NOT EXIST YET, and it is
+      exactly the pair this comment has already used twice: `Do you want to
+      create PROBE.txt?` writes the word *ready*, and `Do you want to create
+      DESIGN.txt?` commits 256 lines that chose JSON over SQLite. **No quote
+      separates those two** — which is `judged_rules`' argument, not this one —
+      so until somebody writes a criterion, both are turned down and the agent
+      is told to think again about the shape before writing it. That is the
+      cheapest correct answer to a question a rule cannot tell apart.
+
+      ⚠ THE RESIDUE: this is a standing instruction and withdrawing it means
+      editing this file. It can never GRANT anything — the act's first key is a
+      REFUSAL (`screen::REFUSES`) — so the failure it can cause is a loop told to
+      reconsider too often, never a loop that did something nobody allowed.
     -->
     <data id="screen_rules"
           expr="[
-            { when: '(edit me) words the dialog carries, quoted from the agent',
+            { when: 'Do you want to create',
               text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' }
           ]"/>
 
@@ -470,15 +509,52 @@
       real difference from an argument. A clause in this file authorises EVERY
       run of it, for everybody, until somebody edits the file — where an argument
       authorised one run. **A standing yes is a different kind of promise from a
-      standing think-about-it-again**, which is why the placeholder below is
-      empty and a rule's placeholder is not.
+      standing think-about-it-again.**
+
+      ⚠⚠⚠ THAT COST BOUGHT AN EMPTY LIST FOR ONE ROUND, AND THE EMPTY LIST KILLED
+      A RUN. The paragraph above used to end *«which is why the placeholder below
+      is empty and a rule's placeholder is not»*, and it is quoted rather than
+      deleted because the reasoning was sound and the conclusion was still wrong.
+      MEASURED: the live run of 2026-08-16 met `Do you want to make this edit?`
+      on its first milestone, nobody answered, and it stood in `awaiting_human`
+      until an iteration ceiling ended it. Every milestone this loop exists to
+      reach touches a file, so a document that authors no consent is a document
+      that cannot run its own loop — and *"pass it as an argument instead"* is
+      the split this file spent the round removing.
+
+      ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: the clauses below are standing
+      yesses, and editing this file is the only way to withdraw them. They claim
+      the TWO dialogs a debt-repaying loop meets on every milestone and nothing
+      else — change a file, run a command. Creating new files, reaching the
+      network and every design question are left to `screen_rules` or to a
+      person.
+
+      ⚠⚠⚠ BOTH ARE HERE BECAUSE EITHER ALONE IS A LOOP THAT CANNOT WORK. A run
+      allowed to edit but not to run commands cannot test what it edited, and a
+      milestone this loop calls reached is one it has verified. **One consent is
+      not half a working loop, it is a loop that stops at the other dialog** —
+      278's shape, one tool over.
+
+      ⚠⚠ NEITHER `answer` NEEDLE IS `Yes`, measured, and the reason is the same
+      both times: the edit dialog offers `1. Yes` / `2. Yes, allow all edits
+      during this session` and the command dialog offers `1. Yes` / `2. Yes, and
+      do not ask again` / `3. No, and tell me what to do`. **`Yes` is carried by
+      two options in each, so it names neither** — `Consents` answers nothing at
+      all when a needle reaches two (`a_needle_two_options_carry_authorises_
+      neither`). Each needle below is text only ONE option carries.
 
       ⚠ A clause may never name the key that APPROVES a dialog `screen_rules`
       would refuse: rules author WHICH dialog and WHAT TO SAY, never the key, and
       `screen.rs` holds the measurement that settled it. Approval has its own
       door and this is it.
     -->
-    <data id="may_answer" expr="[]"/>
+    <data id="may_answer"
+          expr="[
+            { asked: 'Do you want to make this edit',
+              answer: 'allow all edits during this session' },
+            { asked: 'Bash command',
+              answer: 'do not ask again' }
+          ]"/>
 
     <!--
       ⚠⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP TURNS DOWN, and what it says instead.

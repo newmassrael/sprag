@@ -902,6 +902,42 @@ mod tests {
         }
     }
 
+    /// **A CONSENT ABOUT A QUESTION THE STAND-INS DO NOT ASK** — how a gate says *nobody here
+    /// answers a dialog* now that the empty list is unsayable.
+    ///
+    /// # ⚠⚠⚠ Why a gate cannot simply decline to arm one
+    ///
+    /// [`Consents::of`](crate::consent::Consents::of) refuses the empty list, and an absent
+    /// `may_answer` means **the document decides** — and the shipped document authors the two
+    /// dialogs a working loop meets, one of which is the COMMAND question
+    /// [`standin_agent_asking`](crate::testing::standin_agent_asking) raises. So a gate that briefs
+    /// nothing gets its dialog ANSWERED, and every gate measuring a run that STOPS at one silently
+    /// stopped measuring it: three did, in the round that authored the clauses, and the walks said
+    /// `answered the peer with 2. "Yes, and do not ask again"`.
+    ///
+    /// ⚠⚠ **THIS IS `await_person_ms: Some(0)`'s LESSON, ONE FIELD OVER** — a gate that wants a
+    /// value SAYS it rather than inheriting one, because the thing it would inherit from is the
+    /// shipped document and the shipped document is allowed to change. What this clause proves is
+    /// *"none of my consents is about this"* — `other_question` — which is the honest sentence for
+    /// a run holding a list that does not reach the dialog on screen.
+    /// ⚠⚠ The needle is deliberately a question **no stand-in in this workspace raises**. The four
+    /// they do raise are *"Bash command … Do you want to proceed?"*, *"Do you want to make this
+    /// edit…"*, *"Do you want to create PROBE.txt?"* and *"Which way should I build this?"* — and
+    /// the first draft of this helper picked the fourth, which collided: the screening peer's own
+    /// dialog was suddenly claimed, the clause pressed a key at it, and `the_walk_says_which_
+    /// refusal_left_the_run_waiting_for_a_person` reported `unwitnessed` instead of the edge it
+    /// gates. **A control that matches something is not a control.**
+    fn a_consent_about_something_else() -> crate::consent::Consents {
+        crate::consent::Consents::of(vec![
+            crate::consent::Consent::parse(
+                "Shall I publish this release?".to_string(),
+                "Publish it".to_string(),
+            )
+            .expect("both needles are non-empty"),
+        ])
+        .expect("a non-empty consent list")
+    }
+
     /// A brief that reaches a milestone in `max_turns` and never reflects.
     fn brief_for(max_turns: i64) -> Brief {
         Brief {
@@ -916,9 +952,12 @@ mod tests {
             // that does NOT set this measures a loop with screening available and unarmed, which
             // is the shipped shape.
             screen_rules: None,
-            // ⚠ ANSWER NOTHING — the shipped document's own value, and what these gates held when
-            // it was a spec field. A gate that arms a consent says so in its own brief.
-            may_answer: None,
+            // ⚠⚠⚠ ANSWER NOTHING **THESE STAND-INS ASK**, written rather than inherited — and the
+            // comment here used to read *"the shipped document's own value"*, which stopped being
+            // true the day that document authored its consents. `None` now means the run may take
+            // the command dialog outright; see [`a_consent_about_something_else`]. A gate that arms
+            // a consent for real says so in its own brief.
+            may_answer: Some(a_consent_about_something_else()),
             // ⚠⚠⚠ NOBODY IS WATCHING, WRITTEN RATHER THAN INHERITED. This was `AiLoopSpec`'s
             // default until the patience moved into the document, and the gates below were written
             // against it: a run that ends at the first dialog it cannot answer. Leaving these
@@ -2141,16 +2180,33 @@ mod tests {
     ///
     /// ⚠⚠ IT IS A PAIR, and the pair is the whole claim:
     ///
-    /// * **given no consent, the run STOPS**, publishes the question, and says `no_consent` — which
-    ///   is honest and is the end of the run;
-    /// * **given the caller's own consent, the same peer, the same brief and the same fixture
+    /// * **given no consent that is ABOUT this dialog, the run STOPS**, publishes the question, and
+    ///   keeps the consent-level reason underneath — which is honest and is the end of the run;
+    /// * **given a consent that IS about it, the same peer, the same brief and the same fixture
     ///   CONVERGE** — the dialog is answered, the loop takes its next turn and the agent reaches
     ///   the milestone.
     ///
     /// Either half alone would be a fact about one arrangement. Together they say the consent is
     /// what makes the difference, and nothing else about the run changed.
+    ///
+    /// # ⚠⚠⚠ Both halves BRIEF a consent now, and the unarmed one is the interesting change
+    ///
+    /// Briefing nothing no longer means *answer nothing* — it means **the document decides**, and
+    /// the shipped document authors the two dialogs a working loop meets: the EDIT question and the
+    /// COMMAND question. This peer raises the command one, so an unbriefed run would be ANSWERED
+    /// and this pair would have no unarmed half at all.
+    ///
+    /// ⚠⚠ So the unarmed half briefs a consent that is deliberately **about a different question**,
+    /// which REPLACES the document's clauses (`Brief::may_answer`'s rule: `Some` overrides, `None`
+    /// echoes). That stages the hazard the name claims — a run holding consents, none of them about
+    /// the dialog on screen — and it no longer depends on what the shipped document happens to say.
+    ///
+    /// ⚠ **WHAT NO GATE HERE CAN STAGE ANY MORE IS `no_consent`** — a run with no clauses at all.
+    /// A caller cannot spell it ([`Consents::of`](crate::consent::Consents::of) refuses the empty
+    /// list, and an absent `may_answer` defers to the document), so it is reachable only by
+    /// authoring `[]` in the file. Registered rather than papered over.
     #[test]
-    fn a_loop_whose_agent_asks_stops_without_a_consent_and_goes_on_with_one() {
+    fn a_loop_whose_agent_asks_stops_unless_a_consent_is_about_the_question() {
         /// One run against a peer that raises a permission dialog on its first turn, with whatever
         /// answering contract `may_answer` declares — and what became of it.
         fn run_with(may_answer: Option<crate::consent::Consents>) -> (OutcomeState, Option<i64>) {
@@ -2180,7 +2236,7 @@ mod tests {
         }
 
         // ── THE DEFECT, IN ITS OWN WORDS ──
-        let (unarmed, unarmed_turns) = run_with(None);
+        let (unarmed, unarmed_turns) = run_with(Some(a_consent_about_something_else()));
         let OutcomeState::Blocked(Some(unanswered)) = &unarmed else {
             panic!(
                 "⚠⚠⚠ a loop whose agent stops to ask must report BLOCKED with the question, not \
@@ -2202,11 +2258,14 @@ mod tests {
         assert!(
             unanswered
                 .explain()
-                .contains(crate::consent::Refusal::NoConsent.wire_str()),
-            "⚠⚠⚠ AND THE CONSENT-LEVEL REASON MUST SURVIVE UNDERNEATH. `no_consent` is the reason \
-             whose remedy is a change to the CALL — the very change the second half of this pair \
-             makes — and a run that reported only `no_rule` would send its caller to write a \
-             standing instruction about a dialog that offers `Yes`: {}",
+                .contains(crate::consent::Refusal::OtherQuestion.wire_str()),
+            "⚠⚠⚠ AND THE CONSENT-LEVEL REASON MUST SURVIVE UNDERNEATH. It is the reason whose \
+             remedy is a change to the CONSENTS — the very change the second half of this pair \
+             makes — and a run that reported only `no_rule` would send its author to write a \
+             standing instruction about a dialog that offers `Yes`. ⚠ It reads `other_question` \
+             and not `no_consent` because the document authors a clause now: this run HAS \
+             consents and none of them is about this question, which is a different sentence with \
+             a different remedy — widen a needle, do not write one: {}",
             unanswered.explain(),
         );
         assert!(
@@ -5629,19 +5688,44 @@ mod tests {
                  rules. The engine answered {other:?}",
             ),
         };
-        // ⚠⚠ ONE, and it is the document's `(edit me)` PLACEHOLDER — this used to be three, matched
-        // by dialog KIND. R383 measured that quoting the agent covers what a taxonomy would, and
-        // R384 measured that a shipped needle would have to be INVENTED for the one dialog family
-        // nobody has captured. So the file ships the shape and claims nothing with it.
+        // ⚠⚠ ONE, and it USED TO BE the document's `(edit me)` placeholder — before that, three
+        // matched by dialog KIND. R383 measured that quoting the agent covers what a taxonomy
+        // would, and R384 that a shipped needle would have to be INVENTED for the one dialog family
+        // nobody has captured. The placeholder went when a live run stood at an unclaimed dialog
+        // for an hour and died at a ceiling: **a document whose shipped state cannot run its own
+        // loop is a broken default, not a safe one.**
         assert_eq!(rules.len(), 1, "the document declares one rule: {rules:?}");
         let first = match &rules[0] {
             ScriptValue::Object(fields) => fields,
             other => panic!("a rule is an object of `when`/`text`: {other:?}"),
         };
+        let Some(ScriptValue::String(when)) = first.get("when") else {
+            panic!(
+                "⚠ its FIELDS must survive the `key:` → `key =` rewrite, not just its shape: \
+                 {first:?}",
+            );
+        };
+        // ⚠⚠⚠ AND WHAT THE NEEDLE MAY AND MAY NOT SWALLOW, asserted against the three dialogs this
+        // workspace has actually captured — because the document ARGUES about exactly this and an
+        // argument in a comment is not a gate. The widening that reads best (`Do you want to`, the
+        // whole family) was written, run, and MEASURED WRONG: it claims the COMMAND dialog, so a
+        // loop carrying it is refused every `cargo test` it asks for. Running is a consent's job.
+        //
+        // ⚠ The two it must not claim are named as SCREEN LINES, spelled the way the peers that
+        // raise them spell them, so a reworded product breaks this rather than passing quietly.
+        for spoken_for in ["Do you want to proceed?", "Do you want to make this edit?"] {
+            assert!(
+                !spoken_for.contains(when.as_str()),
+                "⚠⚠⚠ THE STANDING INSTRUCTION MUST NOT CLAIM A DIALOG A CONSENT ANSWERS. {when:?} \
+                 is carried by {spoken_for:?} — the command and edit dialogs are `may_answer`'s, \
+                 and a rule reaching one turns a loop that works into a loop that is told to think \
+                 again about every tool call it makes",
+            );
+        }
         assert!(
-            matches!(first.get("when"), Some(ScriptValue::String(w)) if w.contains("(edit me)")),
-            "⚠ and its FIELDS must survive the `key:` → `key =` rewrite, not just \
-             its shape: {first:?}",
+            "Do you want to create PROBE.txt?".contains(when.as_str()),
+            "⚠⚠ and it must still claim the one left to it — the file that does not exist yet, \
+             which no quote can tell from a design decision (`judged_rules`' argument): {when:?}",
         );
         // ⚠ AND `keys` MUST BE GONE. It is asserted as an ABSENCE because its presence would be a
         // rule able to name the key that APPROVES — a live probe pressed `Tab` at a real permission
