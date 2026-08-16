@@ -181,6 +181,25 @@ impl AiLoop {
         self.inner.authored()
     }
 
+    /// **WHICH DIALOGS THIS RUN MAY ANSWER**, read live off its datamodel — or [`None`] for a run
+    /// that answers none.
+    ///
+    /// ⚠⚠⚠ It exists so the CARRYING can be gated. The clauses no longer come from this loop's own
+    /// document: the template stopped deciding for the repositories that copy it, a KIND document
+    /// holds them, and something has to hand them across at `start`. **A carrier nothing can observe
+    /// is a carrier that can quietly drop what it carries** — a run would come up looking configured
+    /// and stop at the first dialog, which is exactly the failure a live run already paid for once.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::outer::NotScreenable`] when the datamodel holds something unreadable as a clause
+    /// list — the same refusal the barrier makes, rather than a second reading of it.
+    pub fn consenting(
+        &self,
+    ) -> Result<Option<crate::consent::Consents>, crate::outer::NotScreenable> {
+        self.inner.consenting()
+    }
+
     /// How many turns the AGENT has taken — the document's own counter, which its `max_turns`
     /// guard compares against.
     ///

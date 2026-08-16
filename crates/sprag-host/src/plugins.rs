@@ -598,6 +598,40 @@ impl PluginsExternal {
                 let pane = require_pane_id(map, "pane")?;
                 self.require_pane(pane)?;
                 let max_turns = require_count(map, "max_turns")?;
+                // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
+                // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
+                // this crate; the manifest carries the argument. It is per RUN and not shared: a
+                // datamodel is a run's own state, and two loops sharing one interpreter would be two
+                // runs sharing their north star.
+                let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+                    Arc::new(sce_rust_lua::LuaEngine::new());
+                // ⚠⚠⚠ AND THE DECISIONS THIS REPOSITORY'S RUNS RUN UNDER, read off THIS
+                // repository's own document.
+                //
+                // The template used to author them, which meant sprag's standing yesses authorised
+                // every run of a file other repositories copy. They moved to `debt_loop.scxml`, so
+                // something has to carry them across — and this is that something. **It decides
+                // nothing**: it reads one document and hands the values to another, which is the
+                // whole of what the governing rule permits a driver to do with a decision.
+                //
+                // ⚠⚠ WHICH KIND IS NOT A WIRE ARGUMENT YET, and that is scope rather than design.
+                // There is one kind, so naming it would be a key with one legal value — and adding
+                // an ARGUMENT is a wire bump. The day a second kind exists, that bump is what pays
+                // for it.
+                let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+                    .map_err(|why| refused(why.to_string()))?;
+                let kind_consents = kind.consents().map_err(|why| {
+                    refused(format!(
+                        "this repository's loop-kind document holds a consent list this driver \
+                         cannot read ({why:?}); a run cannot start on decisions nobody can check"
+                    ))
+                })?;
+                let kind_rules = kind.screen_rules().map_err(|why| {
+                    refused(format!(
+                        "this repository's loop-kind document holds a rule list this driver cannot \
+                         read ({why:?}); a run cannot start on decisions nobody can check"
+                    ))
+                })?;
                 let brief = Brief {
                     north_star: require_str(map, "north_star")?.to_string(),
                     milestone: require_str(map, "milestone")?.to_string(),
@@ -621,8 +655,13 @@ impl PluginsExternal {
                     // The rules live in the loop template, so a caller who says nothing about
                     // screening is not overriding it — and the driver echoes the document's own
                     // rules back through the brief rather than deleting them.
-                    screen_rules: opt_screen_rules(map)?,
-                    may_answer: opt_may_answer(map)?,
+                    // ⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and it used to
+                    // mean *"what the template's author wrote"*. The template no longer writes any
+                    // — a standing instruction there is answered on behalf of every repository that
+                    // copies it — so the fallback moved with the values. A caller who says nothing
+                    // about screening is still not overriding anything.
+                    screen_rules: opt_screen_rules(map)?.or(kind_rules),
+                    may_answer: opt_may_answer(map)?.or(kind_consents),
                     // ⚠⚠⚠ THE SAME TWO KEYS, NOW WRITTEN INTO THE DOCUMENT instead of into the
                     // spec. `awaiting_human`'s only run-ending exit is *nobody came within the
                     // patience*, so the patience is the loop DOCUMENT's own data — the argument
@@ -690,13 +729,6 @@ impl PluginsExternal {
                 // ⚠⚠⚠ IT IS ON THE BRIEF NOW, not the spec: a consent is a decision somebody made
                 // in advance and in writing, which is what this document holds — the same move
                 // `screen_rules` made, and the end of refusal and approval living in two worlds.
-                // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building
-                // a concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
-                // this crate; the manifest carries the argument. It is per RUN and not shared: a
-                // datamodel is a run's own state, and two loops sharing one interpreter would be
-                // two runs sharing their north star.
-                let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
-                    Arc::new(sce_rust_lua::LuaEngine::new());
                 let label = format!("ai_loop pane={}", pane.0);
                 let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
                     .map_err(|why| refused(ai_loop_refusal(&why)))?;
@@ -1860,6 +1892,110 @@ mod tests {
     /// document's datamodel as an event, `priming` composed a prompt out of it, and the driver
     /// delivered that prompt into a live pseudoterminal.
     ///
+    /// ⚠⚠⚠ **A RUN THAT NAMES NO CONSENTS GETS THIS REPOSITORY'S OWN** — the carrying, gated at the
+    /// one place it happens.
+    ///
+    /// # Why this needs a gate of its own
+    ///
+    /// The clauses used to be authored in `ai_loop.scxml`, and a run that named none got the
+    /// document's. That made this repository's standing yesses authorise every run of a file other
+    /// repositories copy, so they moved to `debt_loop.scxml` — and the template now ships an EMPTY
+    /// list. **Something has to carry them across, and a carrier nothing observes is a carrier that
+    /// can quietly drop what it carries.** What that looks like from outside is a run that comes up
+    /// perfectly configured and stops at its first permission dialog: measured once already, on a
+    /// live loop that stood there until an iteration ceiling ended it.
+    ///
+    /// ⚠ The count is asserted against what the KIND holds rather than against `2`, so an author
+    /// adding a third clause to their own document does not have to come and edit a number here —
+    /// and so this cannot pass by agreeing with a literal that drifted.
+    ///
+    /// ⚠⚠ AND THE CONTROL IS THE OTHER DIRECTION: a caller who DOES name consents must still win.
+    /// Without it, "the kind is consulted" and "the kind always wins" are the same green, and the
+    /// second one silently discards what a caller asked for.
+    #[test]
+    fn a_run_that_names_no_consents_gets_this_repositorys_own() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // What this repository's kind document holds — the authority the assertion compares to.
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let owed = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document must open")
+            .consents()
+            .expect("its clause list must be readable")
+            .expect("a debt run answers dialogs");
+        assert!(
+            !owed.clauses().is_empty(),
+            "the control: the kind must ship clauses, or every assertion below is vacuous",
+        );
+
+        let asked = ai_loop_request(pane, json!({}));
+        let (built, _label) = external
+            .build_plugin(asked.as_object().expect("an object"))
+            .expect("a run that names no consents is well-formed");
+        let PluginKind::AiLoop(loops) = built else {
+            panic!("the control: an `ai_loop` request builds an ai_loop");
+        };
+        let carried = loops
+            .consenting()
+            .expect("the run's clause list must be readable")
+            .expect(
+                "⚠⚠⚠ THE RUN CAME UP ANSWERING NOTHING. The template ships an empty list on \
+                     purpose and the kind document holds the clauses; a run that reaches its first \
+                     permission dialog with none stops there and waits for somebody who is not \
+                     watching",
+            );
+        assert_eq!(
+            carried.clauses().len(),
+            owed.clauses().len(),
+            "⚠⚠⚠ every clause this repository authored must reach the run. Carried {carried:?}, \
+             authored {owed:?}",
+        );
+        for clause in owed.clauses() {
+            assert!(
+                carried
+                    .clauses()
+                    .iter()
+                    .any(|got| got.asked() == clause.asked() && got.answer() == clause.answer()),
+                "⚠⚠ and each one whole — a clause that arrived with half its text claims a dialog \
+                 it cannot answer: {clause:?} missing from {carried:?}",
+            );
+        }
+
+        // ── THE CONTROL: A CALLER WHO NAMES CONSENTS STILL WINS ──
+        let named = ai_loop_request(
+            pane,
+            json!({ Consents::WIRE_KEY: [{ Consent::ASKED_KEY: "only this", Consent::ANSWER_KEY: "and only this" }] }),
+        );
+        let (built, _label) = external
+            .build_plugin(named.as_object().expect("an object"))
+            .expect("a run that names its own consents is well-formed");
+        let PluginKind::AiLoop(loops) = built else {
+            panic!("the control: an `ai_loop` request builds an ai_loop");
+        };
+        let carried = loops
+            .consenting()
+            .expect("readable")
+            .expect("a caller's own list is not nothing");
+        assert_eq!(
+            carried.clauses().len(),
+            1,
+            "⚠⚠⚠ A CALLER'S OWN CONSENTS MUST WIN OVER THE KIND'S. Falling back is what an ABSENT \
+             key means; overriding a present one would discard what somebody asked for, and would \
+             make the assertion above pass for the wrong reason. Got {carried:?}",
+        );
+    }
+
     /// ⚠⚠ **AND IT IS CANCELLED RATHER THAN RUN TO CONVERGENCE**, deliberately. Convergence needs a
     /// supervisor that can call this peer's turns over, which is `sprag-plugin`'s own gate against
     /// its `supervised` fixture. What is measured HERE is the door, and a gate that also waited for
