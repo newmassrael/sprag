@@ -1947,10 +1947,57 @@ impl OuterLoop {
         }
     }
 
-    /// Where the machine is.
+    /// Where the machine is — **the DEEPEST state it is actually in**, not the one a flattening
+    /// call happens to name.
+    ///
+    /// # ⚠⚠⚠ Why this reads a set instead of asking for one state
+    ///
+    /// This is the value [`pump`](Self::pump) switches on, so it decides what the driver DOES.
+    /// `Engine::get_current_state` has to flatten a set of active states to one value, and
+    /// `probe_parallel.scxml` measured what that costs the moment a machine has regions: the same
+    /// document answered `Both` (the parallel root) with its final beside the regions and `Done`
+    /// (the finished leaf) with the final inside one. **Two arrangements a reader would call
+    /// equivalent, two different answers.**
+    ///
+    /// ⚠⚠ So a driver switching on it is switching on an ARRANGEMENT rather than on a state, and
+    /// every arm of `pump`'s match would go unreachable the day this document grows a `<parallel>` —
+    /// silently, because the code still compiles. Register item 349.
+    ///
+    /// # ⚠⚠ What it answers today, and why that is not a change
+    ///
+    /// `ai_loop.scxml` is flat, so the active set is one state and this returns exactly what the
+    /// flattening call did. **Nothing about today's behaviour moves**; what moves is that the
+    /// machine may now grow regions without this call quietly becoming a constant. The deepest
+    /// member is the one taken because a compound state is ACTIVE while its child is, so the
+    /// shallowest answer is the one that stops distinguishing anything.
+    ///
+    /// ⚠ [`AiLoopState`] is the generated set, so `get_parent` is the generator's own answer about
+    /// nesting rather than a second copy of the topology kept out here — the copy this crate calls
+    /// *two copies of one rule*.
     #[must_use]
     pub fn state(&self) -> AiLoopState {
-        self.machine.get_current_state()
+        use sce_rust_runtime::StatePolicy as _;
+
+        let flattened = self.machine.get_current_state();
+        let deepest = self
+            .machine
+            .get_active_states()
+            .into_iter()
+            .map(|active| {
+                let mut depth = 0_usize;
+                let mut at = crate::sm::ai_loop::AiLoopPolicy::get_parent(active);
+                while let Some(parent) = at {
+                    depth += 1;
+                    at = crate::sm::ai_loop::AiLoopPolicy::get_parent(parent);
+                }
+                (depth, active)
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, active)| active);
+        // ⚠ The flattening call is the FALLBACK rather than the answer: an empty active set is a
+        // machine that has not been initialised, and inventing a state for it here would hide that
+        // from the one caller who could report it.
+        deepest.unwrap_or(flattened)
     }
 
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].

@@ -190,30 +190,224 @@ mod tests {
              above exists for wearing different clothes. If this ever flips, the orders-region \
              design gets simpler and this gate is the place that says so",
         );
-        // ⚠⚠⚠⚠ AND THE ANSWER THAT DECIDED THE DESIGN, WHICH IS NOT THE ONE THIS GATE WAS DRAFTED
-        // EXPECTING. `get_current_state` answers with the PARALLEL ROOT — `Both` — not with the
-        // region that finished and not with the one still running. That is correct of the engine
-        // (a parallel's "current state" is the parallel) and it is fatal to one design:
+        // ⚠⚠⚠⚠ AND THE ANSWER THAT DECIDED THE DESIGN — WHICH IS NOT A VALUE, IT IS THAT THE VALUE
+        // MOVES. `get_current_state()` was measured TWICE on this same document, and it answered
+        // differently for two arrangements that a reader would call equivalent:
         //
-        //   `OuterLoop::pump` switches on `get_current_state()` to decide what to DO. A machine
-        //   whose top level is `<parallel>` answers that call with one root for ever, so every
-        //   arm of that match becomes unreachable in one edit.
+        //   `<final>` as a sibling of the regions   -> `Both`, the parallel root
+        //   `<final>` inside its own region         -> `Done`, the finished leaf
         //
-        // ⚠⚠⚠ SO STANDING ORDERS MAY NOT BE A TOP-LEVEL REGION BESIDE THE WORK. They can live in a
-        // region only if the WORK region is itself a compound state the driver reads through the
-        // ACTIVE SET rather than through this call — which is a driver change, not a document one,
-        // and is the thing to measure before writing either.
+        // ⚠ The first arrangement was also wrong for another reason — `get_parallel_regions`
+        // counted the stray final as a THIRD region — so it is not that one answer is right. It is
+        // that **a single-state reader has no stable meaning once a machine has regions**, because
+        // it must flatten a set to one value and the flattening depends on shape.
         //
-        // ⚠ Asserted as the measurement rather than as a preference: if an engine ever answers with
-        // the finished region instead, this gate fails and the design opens back up. That is what a
-        // gate on somebody else's engine is for.
+        // ⚠⚠⚠ SO THE FINDING IS NOT *"it answers Both"*, IT IS *"a driver may not switch on it"*.
+        // `OuterLoop::pump` does exactly that today. Giving the loop regions therefore requires the
+        // driver to read the ACTIVE SET — which the gate below proves it can — and this assertion
+        // is deliberately the WEAK one, because pinning a value here would pin an arrangement
+        // rather than a property.
+        let flattened = engine.get_current_state();
+        assert!(
+            matches!(
+                flattened,
+                ProbeParallelState::Both | ProbeParallelState::Done
+            ),
+            "⚠⚠⚠ MEASURED: the single-state reader flattens a REGION SET to one value, and which \
+             one depends on where the finals sit — `Both` with the final beside the regions, \
+             `Done` with it inside one. Either way a driver switching on it is switching on an \
+             arrangement rather than on a state, which is why `pump` must read the active set \
+             before this machine ever gets regions. Got {flattened:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **CAN A DRIVER ASK A NAMED REGION WHAT STATE IT IS IN** — the remaining gate on the
+    /// standing-orders design, and the one that decides whether it is buildable at all.
+    ///
+    /// # ⚠⚠⚠ What this is deciding
+    ///
+    /// The gate above measured that `get_current_state()` answers with the PARALLEL ROOT. So a
+    /// driver that switches on it — `OuterLoop::pump` does — cannot be given a parallel top level
+    /// without every arm of that match going dead in one silent edit.
+    ///
+    /// The way out, if there is one, is for the driver to stop asking *"what state am I in"* and
+    /// start asking *"what state is the WORK region in"*. That question has to be answerable from
+    /// what the generated policy publishes, or the design is finished here.
+    ///
+    /// ⚠⚠ **THIS IS A CAPABILITY QUESTION ABOUT SOMEBODY ELSE'S CODEGEN**, which is the whole
+    /// reason it is a probe: `StatePolicy` declaring `get_parent` and `get_parallel_regions` is a
+    /// fact about the TRAIT, and what a generated document puts behind them is a fact about the
+    /// generator. This drives the real one.
+    #[test]
+    fn a_driver_can_ask_a_named_region_what_state_it_is_in() {
+        use sce_rust_runtime::StatePolicy as _;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeParallelPolicy::new(lua));
+        engine.initialize();
+
+        // ── THE ROOT MUST NAME ITS REGIONS ──
+        //
+        // ⚠ Asked of the POLICY rather than written down here: a driver that carried its own list
+        // of region roots would hold a second copy of the document's topology, which is the failure
+        // this workspace calls *two copies of one rule*.
+        assert!(
+            ProbeParallelPolicy::is_parallel_state(ProbeParallelState::Both),
+            "⚠⚠ the control: the root must be known to BE parallel, or nothing below is about a \
+             parallel machine",
+        );
+        let regions = ProbeParallelPolicy::get_parallel_regions(ProbeParallelState::Both);
+        assert_eq!(
+            regions.len(),
+            2,
+            "⚠⚠⚠ THE ROOT MUST PUBLISH ITS REGIONS. A driver that cannot enumerate them cannot ask \
+             any of them anything, and standing orders in a region would be a design nothing can \
+             read. Got {regions:?}",
+        );
+
+        /// What `region` is currently in — the question a driver would actually ask, answered from
+        /// the active set by walking each member's parents until the region is found.
+        ///
+        /// ⚠ The ANCESTRY is what makes this work for a region that is itself compound, which the
+        /// work region would be: a leaf several levels down still names its region through
+        /// `get_parent`. A driver reading only the direct children would answer `None` the moment
+        /// somebody nested a state, and nothing would say why.
+        ///
+        /// ⚠⚠ **THE DEEPEST ACTIVE DESCENDANT, NOT THE FIRST.** A compound region is ITSELF active
+        /// while its child is, so a `find` answers with the region root and a driver switching on
+        /// that would see one state for every state the region is ever in. Measured: the first
+        /// draft did exactly that and reported `Ticking` for a region sitting in `Done`.
+        fn state_of(
+            engine: &Engine<ProbeParallelPolicy>,
+            region: ProbeParallelState,
+        ) -> Option<ProbeParallelState> {
+            /// How far `state` sits below `region`, or `None` if it is not under it at all.
+            fn depth_under(state: ProbeParallelState, region: ProbeParallelState) -> Option<usize> {
+                let mut at = Some(state);
+                let mut deep = 0;
+                while let Some(here) = at {
+                    if here == region {
+                        return Some(deep);
+                    }
+                    deep += 1;
+                    at = ProbeParallelPolicy::get_parent(here);
+                }
+                None
+            }
+
+            engine
+                .get_active_states()
+                .into_iter()
+                .filter_map(|active| depth_under(active, region).map(|deep| (deep, active)))
+                .max_by_key(|(deep, _)| *deep)
+                .map(|(_, active)| active)
+        }
+
+        assert_eq!(
+            state_of(&engine, ProbeParallelState::Ticking),
+            // ⚠ The LEAF inside the region, not the region itself — which is exactly what a driver
+            // needs to switch on, and exactly what `get_current_state` cannot be trusted to give.
+            Some(ProbeParallelState::Counting),
+            "⚠⚠⚠ A NAMED REGION MUST ANSWER WITH ITS OWN CURRENT STATE. This is the call that would \
+             replace `get_current_state` in a driver whose machine has regions — if it cannot be \
+             built out of what the policy publishes, standing orders cannot live in a region and \
+             the alternative is repeating one transition on every state of a flat machine",
+        );
+        assert_eq!(
+            state_of(&engine, ProbeParallelState::Watching),
+            Some(ProbeParallelState::Watching),
+            "⚠⚠ and the SIBLING must answer independently, or the two regions are one answer wearing \
+             two names and a standing order could not be read while work was going on",
+        );
+
+        // ── AND IT MUST KEEP ANSWERING AFTER ONE REGION HAS FINISHED ──
+        //
+        // ⚠⚠⚠ The arrangement the design lives in: work over, orders still standing. A driver that
+        // could read the regions only while both ran would go blind at exactly the moment it has to
+        // decide what a finished run means.
+        engine.raise(sce_rust_runtime::EventWithMetadata::new(
+            ProbeParallelEvent::Finish,
+        ));
+        engine.step();
+        assert_eq!(
+            state_of(&engine, ProbeParallelState::Ticking),
+            Some(ProbeParallelState::Done),
+            "⚠⚠⚠ the work region must report its FINAL by the same call — that is how a driver \
+             learns a run ended when `is_in_final_state` cannot say so, which the gate above \
+             measured it cannot",
+        );
+        assert_eq!(
+            state_of(&engine, ProbeParallelState::Watching),
+            Some(ProbeParallelState::Watching),
+            "⚠⚠⚠ AND THE ORDERS REGION MUST STILL ANSWER. If a finished sibling silenced it, a \
+             person could not stand a run down at the one moment the handle is for",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **THE DRIVER'S OWN READER, DRIVEN AGAINST A MACHINE THAT HAS REGIONS** — the gate that
+    /// holds `OuterLoop::state`'s change, because the loop's own document cannot exercise it yet.
+    ///
+    /// # ⚠⚠⚠ Why this gate exists at all
+    ///
+    /// `OuterLoop::state` stopped asking `get_current_state` and started taking the deepest member
+    /// of the active set. Against `ai_loop.scxml` — which is flat — **both answers are identical**,
+    /// so the whole plugin suite stayed green and NOTHING held the change. A change no gate can
+    /// break is a change nobody is holding, and the next person to "simplify" it back would find
+    /// every test agreeing with them.
+    ///
+    /// ⚠⚠ The hazard only appears on a machine with regions, and the only one this crate has is
+    /// this probe. So the READER is re-implemented here over the probe's policy and asserted to
+    /// disagree with the flattening call — which is the entire point of having made the change.
+    #[test]
+    fn the_deepest_active_state_is_not_what_the_flattening_call_answers() {
+        use sce_rust_runtime::StatePolicy as _;
+
+        /// `OuterLoop::state`'s rule, over this probe's machine: the deepest active member.
+        fn deepest(engine: &Engine<ProbeParallelPolicy>) -> Option<ProbeParallelState> {
+            engine
+                .get_active_states()
+                .into_iter()
+                .map(|active| {
+                    let mut depth = 0_usize;
+                    let mut at = ProbeParallelPolicy::get_parent(active);
+                    while let Some(parent) = at {
+                        depth += 1;
+                        at = ProbeParallelPolicy::get_parent(parent);
+                    }
+                    (depth, active)
+                })
+                .max_by_key(|(depth, _)| *depth)
+                .map(|(_, active)| active)
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeParallelPolicy::new(lua));
+        engine.initialize();
+
+        // ⚠ At rest the two agree on nothing useful: the flattening call names the ROOT, and the
+        // deepest member names a leaf a driver could switch on. That difference IS the change.
         assert_eq!(
             engine.get_current_state(),
             ProbeParallelState::Both,
-            "⚠⚠⚠ MEASURED: the single-state reader answers with the PARALLEL ROOT. A driver that \
-             switches on it — which `OuterLoop::pump` does — sees one state for ever the moment its \
-             top level becomes parallel. This is the fact that decides where standing orders may \
-             live",
+            "⚠ the control: the flattening call names the parallel root while both regions run, \
+             which is what makes it useless to a driver",
+        );
+        assert_ne!(
+            deepest(&engine),
+            Some(engine.get_current_state()),
+            "⚠⚠⚠ THE TWO READERS MUST DISAGREE HERE, or this gate is holding nothing and \
+             `OuterLoop::state`'s change is unmeasured. The flattening call answers the root; the \
+             deepest member answers a state a driver can act on",
+        );
+        assert!(
+            deepest(&engine).is_some_and(|state| matches!(
+                state,
+                ProbeParallelState::Counting | ProbeParallelState::Watching
+            )),
+            "⚠⚠ and it must be a LEAF of one of the regions rather than a region root — a compound \
+             state is active while its child is, so an answer that stopped at the region would stop \
+             distinguishing the states inside it. Got {:?}",
+            deepest(&engine),
         );
     }
 

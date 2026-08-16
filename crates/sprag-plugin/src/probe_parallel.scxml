@@ -70,18 +70,32 @@
       state, so the exit set of that transition is where a parallel root can be
       swallowed.
     -->
-    <state id="ticking">
-      <transition event="tick" target="ticking">
-        <assign location="ticks" expr="ticks + 1"/>
-      </transition>
-      <!--
-        ⚠⚠⚠ QUESTION 5's DOOR: region A can finish while region B never will.
-        See the note under region B for what rests on the answer.
-      -->
-      <transition event="finish" target="done"/>
-    </state>
+    <!--
+      ⚠⚠⚠ REGION A IS COMPOUND, AND THAT IS A MEASUREMENT RATHER THAN TIDINESS.
+      The first draft put this region's `<final>` as a SIBLING of the regions,
+      directly under `<parallel>` — and `get_parallel_regions` then answered
+      THREE, counting the final as a region of its own. A driver enumerating
+      regions would have found one that is not one.
 
-    <final id="done"/>
+      A region's own ending belongs INSIDE it. That is also the arrangement the
+      real design needs: the work region finishes while the orders region never
+      does, which cannot even be expressed if a final is a sibling of both.
+    -->
+    <state id="ticking" initial="counting">
+
+      <state id="counting">
+        <transition event="tick" target="counting">
+          <assign location="ticks" expr="ticks + 1"/>
+        </transition>
+        <!--
+          ⚠⚠⚠ QUESTION 5's DOOR: region A can finish while region B never will.
+          See the note under region B for what rests on the answer.
+        -->
+        <transition event="finish" target="done"/>
+      </state>
+
+      <final id="done"/>
+    </state>
 
     <!--
       REGION B — never self-transitions, so if this stops counting while region A
