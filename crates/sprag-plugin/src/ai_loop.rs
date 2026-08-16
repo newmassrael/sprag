@@ -4596,12 +4596,35 @@ mod tests {
             "the loop took {honoured:?} to come back after the flag went up — a shutdown's join \
              deadline is chosen against this number, so it has to be measured when it moves",
         );
+        // ⚠⚠⚠⚠ **THE LOOP MUST HAVE REACHED FOR THE JOB — AND WHAT IT GETS BACK IS THE PLATFORM'S**
+        // (register item 151, a macOS red diagnosed and never reproduced off macOS until here).
+        //
+        // Stopping a pane's own program under the narrow reach is decided by asking the kernel
+        // whether the signal would KILL it, and that question has an answer only where a
+        // disposition can be read: `/proc/<pid>/status` on Linux, and on macOS a `kinfo_proc` that
+        // `libc` declares no type for. So macOS answers *cannot tell* and `stop.rs` refuses rather
+        // than guessing — deliberately, and its own gates state that divergence with this same
+        // `cfg!`. This one did not: it demanded `Stopped::Job(_)` on every platform, so a macOS
+        // runner reported `Unreached(NotStopped(CannotTellIfItWouldEnd))` as a failure of the LOOP
+        // when it is an absent capability of the HOST.
+        //
+        // ⚠⚠ What is platform-independent, and what this therefore asserts on both: the run
+        // REACHED for the work it set going — `stopped` is `Some(_)`, never `None`, which is what
+        // *"the loop's door closed on a room its agent is still working in"* would look like.
         assert!(
-            matches!(outcome.stopped, Some(Stopped::Job(_))),
-            "⚠⚠⚠ the pane's job must have been SIGNALLED. Anything else means the loop's door \
-             closed on a room its agent is still working in: {:?}",
+            outcome.stopped.is_some(),
+            "⚠⚠⚠ the loop ended without reaching for the job at all, which is its door closing on \
+             a room its agent is still working in: {:?}",
             outcome.stopped,
         );
+        if cfg!(target_os = "linux") {
+            assert!(
+                matches!(outcome.stopped, Some(Stopped::Job(_))),
+                "⚠⚠⚠ on a host that CAN read a disposition the pane's job must have been \
+                 SIGNALLED: {:?}",
+                outcome.stopped,
+            );
+        }
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
