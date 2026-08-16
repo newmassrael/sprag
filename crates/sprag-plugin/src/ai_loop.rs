@@ -2022,17 +2022,21 @@ mod tests {
     /// # ⚠⚠⚠ WHAT THIS GATE DOES **NOT** HOLD, AND THE ARM IT CANNOT REACH
     ///
     /// **It does not reach `Over::Asking` — the arm the fix is in.** Restoring
-    /// `Over::Asking(_) => return Null` leaves this GREEN, which was measured, not assumed. Two
-    /// arrangements were tried and both land on `Over::NotYet` instead:
+    /// `Over::Asking(_) => return Null` leaves this GREEN, which was measured, not assumed.
     ///
-    /// * `standin_agent_refusing(true, 2, None)` reaching the state through `screen.none`;
-    /// * `standin_agent_asking(Asks::OnItsFirstPrompt)`, whose peer asks during a turn this loop
-    ///   armed — the shape [`Completion::asked`] documents as its own precondition.
+    /// ⚠⚠⚠⚠ **AND THE REASON IS A DIFFERENT ROUTE, NOT A WEAK FIXTURE** — which took three
+    /// arrangements to learn. Register item 297 concluded *"the fixture is what is missing, not the
+    /// path"*, and a peer that WORKS BEFORE ASKING was built for it
+    /// ([`Asks::OnItsFirstPromptAfterWorking`], since a peer that blocks having painted nothing
+    /// leaves [`Completion::asked`]'s `seen.seq > began_at` false). It changed nothing here, and
+    /// the mutation that says why is decisive: killing `Reached::Asking => TurnBlocked` — the
+    /// READINESS barrier's route — makes this gate fail to enter `awaiting_human` at all, walking
+    /// forty steps of *"looked, nothing had happened"* instead.
     ///
-    /// Both left after **~16.4s = twice the turn's bound**, where the arm under test leaves after
-    /// the PERSON's patience. `Completion::asked` answers `None` unless the evaluator is armed AND
-    /// its peer has moved since the prompt, and by the time `awaiting_human` is entered that has
-    /// stopped being true here.
+    /// So this loop meets a dialog at its BARRIER, before `Completion::wait` is ever consulted, and
+    /// no fixture on the completion side can change that. A gate for `Over::Asking` needs a peer
+    /// that goes quiet asking **after the barrier has already passed** — a different arrangement
+    /// altogether, and the one item 297 is really asking for.
     ///
     /// ⚠⚠⚠ **THE ARM IS REACHED IN PRODUCTION AND THE ARITHMETIC IS THE PROOF.** On `NotYet` the
     /// wait parks for the turn's bound — 30 minutes on the live run — which is about two steps an
@@ -2058,8 +2062,9 @@ mod tests {
         // leaves `ended()` answering `None`, the wait falls to `Over::NotYet`, and that arm was
         // never the broken one. Measured: the earlier arrangement left after **16.4s** — twice the
         // TURN's bound — where the arm under test leaves after the PERSON's patience.
-        let (workspace, pane) =
-            crate::testing::standin_agent_asking(crate::testing::Asks::OnItsFirstPrompt);
+        let (workspace, pane) = crate::testing::standin_agent_asking(
+            crate::testing::Asks::OnItsFirstPromptAfterWorking,
+        );
         let access = crate::testing::supervised_asking(&workspace);
         let mut loops = AiLoop::new(
             engine(),
@@ -2128,6 +2133,19 @@ mod tests {
             "⚠⚠⚠ AND IT MUST ACTUALLY HAVE WAITED. Leaving took only {took:?} of a {PATIENCE:?} \
              patience, which is the opposite defect: a person who was promised that long did not \
              get it, and the run gave up while they were still on their way.",
+        );
+        // ⚠⚠⚠⚠ **AND IT MUST HAVE LEFT ON THE PERSON'S CLOCK, NOT THE TURN'S** — the assertion
+        // register item 297 was missing, and without which this gate passed under its own mutation.
+        // `Over::NotYet` parks for the TURN's bound; only `Over::Asking` returns on the patience
+        // authored above. With both bounds equal the two are one number, which is why the spec sets
+        // them an order of magnitude apart — see `TURN_BOUND`.
+        assert!(
+            took < TURN_BOUND,
+            "⚠⚠⚠⚠ THE RUN LEFT ON THE TURN'S CLOCK, NOT THE PERSON'S. {took:?} is past the \
+             {TURN_BOUND:?} turn bound and far past the {PATIENCE:?} a person was promised, so \
+             this wait ended on `Over::NotYet` and the `Over::Asking` arm — the one that notices a \
+             peer has STOPPED TO ASK — was never entered. On the live run that difference was \
+             ~100,000 steps in one hour at a single dialog.",
         );
         assert_ne!(
             loops.state(),

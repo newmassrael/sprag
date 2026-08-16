@@ -1390,14 +1390,37 @@ pub(crate) enum Asks {
     /// Only when asked where the run got to, answering every working prompt plainly — so the run
     /// spends its budget, reaches `stopping`, and its ACCOUNT is the turn that gets blocked.
     WhenTheRunStopsShort,
+    /// ⚠⚠⚠⚠ **THE FIRST PROMPT, BUT HAVING WORKED FIRST — WHICH IS THE ONLY WAY TO REACH
+    /// [`Completion::asked`](crate::completion)**, and the fixture register item 297 says is
+    /// missing.
+    ///
+    /// Its siblings paint the dialog and nothing else, so the peer's observation sequence has NOT
+    /// moved since the prompt — and `asked` answers `None` unless the evaluator is armed AND
+    /// `seen.seq > began_at`. Every gate driving them therefore lands on `Over::NotYet` and leaves
+    /// after twice the TURN's bound, never touching the arm that leaves after a PERSON's patience.
+    ///
+    /// ⚠⚠ **AND THIS IS THE MORE FAITHFUL PEER, NOT A CONVENIENCE.** A real agent CLI answers a
+    /// prompt by working — printing as it goes — and stops to ask partway through; one that blocks
+    /// having emitted nothing at all is the unusual shape. So this bumps its counter before raising
+    /// the menu, and the difference is one `bump` in the script.
+    OnItsFirstPromptAfterWorking,
 }
 
 impl Asks {
     /// The `case` pattern that decides it: everything, or the stopping question alone.
     const fn pattern(self) -> &'static str {
         match self {
-            Self::OnItsFirstPrompt => "*",
+            Self::OnItsFirstPrompt | Self::OnItsFirstPromptAfterWorking => "*",
             Self::WhenTheRunStopsShort => "*'STOP_QUESTION'*",
+        }
+    }
+
+    /// What the peer does BEFORE it raises the menu — a `bump` for the variant that has worked, and
+    /// nothing for the two that ask straight away.
+    const fn works_before_asking(self) -> &'static str {
+        match self {
+            Self::OnItsFirstPromptAfterWorking => "bump; ",
+            Self::OnItsFirstPrompt | Self::WhenTheRunStopsShort => "",
         }
     }
 }
@@ -1647,7 +1670,7 @@ while read line; do \
   case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
   case \"$line\" in ASKS_AT) ;; *) n=$((n+1)); printf 'ACK %s\\n' \"$n\"; bump; continue;; esac; \
   if [ $asked -eq 0 ]; then \
-    asked=1; \
+    asked=1; WORKS_FIRST\
     printf 'Bash command\\n'; \
     printf 'Do you want to proceed?\\n'; \
     printf '\\342\\235\\257 1. Yes\\n'; \
@@ -1668,6 +1691,7 @@ done"
         // ⚠ THE PATTERN FIRST: it CONTAINS the placeholder for one of the two variants, so
         // substituting the question first would leave the pattern's own copy unreplaced.
         .replace("ASKS_AT", asks.pattern())
+        .replace("WORKS_FIRST", asks.works_before_asking())
         .replace("STOP_QUESTION", STOP_QUESTION);
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
