@@ -6584,26 +6584,19 @@ mod tests {
                 .first()
                 .is_some_and(|row| stands_alone(&row.text, &marker))
         };
-        // ⚠⚠⚠⚠ **WHAT THE ROWS SAY, NOT WHAT THEY HAD REPAINTED.** [`PaneRow`] carries a damage
-        // GENERATION beside its text and derives equality over both, so comparing whole rows asks
-        // *has this pane been repainted?* when the question here is *has a line gone by?* — and
-        // [`PaneRow`]'s own doc says a paint signal is stamped by ordinary events "while no program
-        // produces a byte". Answered that way the wait below returns before the parrot's line has
-        // landed, this loop sends its next Enter early, and it walks the screen PAST the one scroll
-        // step where the marker is the top row. Measured as a red inside a loaded workspace run:
-        // *"after 40 scrolls the marker still is not the grid's top row"*, with the rows blank at
-        // generation 379 — a three-row pane scrolled far beyond the arrangement it was building.
-        let rows_now = |access: &WorkspacePaneAccess| -> Vec<String> {
-            access
-                .pane_rows(pane)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|row| row.text)
-                .collect()
-        };
+        // ⚠⚠⚠⚠ **THROUGH A [`RowTrail`], WHICH IS THE PRODUCT'S OWN ANSWER TO THIS EXACT QUESTION.**
+        // This loop waited for `pane_rows(pane) != before`, and [`PaneRow`] derives equality over
+        // its damage GENERATION as well as its text — so it asked *has this pane been repainted?*
+        // when what it needs is *has a line gone by?*. A generation is a PAINT signal, stamped by a
+        // resize or a palette change "while no program produces a byte" ([`RowTrail`]'s own doc,
+        // which exists because four plugins made this mistake before this fixture did). Answered
+        // that way the wait returns before the parrot's line lands, the loop sends its next Enter
+        // early and walks a three-row screen PAST the one scroll step where the marker is the top
+        // row. Measured as a red inside a loaded workspace run — *"after 40 scrolls the marker
+        // still is not the grid's top row"*, rows blank at generation 379.
         let mut scrolled = 0;
         while !top_is_marker(&access) && scrolled < SCROLLS {
-            let before = rows_now(&access);
+            let before = crate::access::RowTrail::mark(&access, pane);
             let typed = access
                 .inject(pane, &[crate::access::KeyStroke::named("Enter")])
                 .expect("the parrot takes a blank line");
@@ -6612,7 +6605,7 @@ mod tests {
                 "a newline that reached no pane scrolls nothing",
             );
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while rows_now(&access) == before && std::time::Instant::now() < deadline {
+            while before.fresh(&access, pane).is_empty() && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
             scrolled += 1;
