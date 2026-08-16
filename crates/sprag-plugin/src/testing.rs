@@ -1949,6 +1949,87 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
     WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
 }
 
+/// **A SUPERVISOR THAT RAISES ITS DIALOG BETWEEN THE TWO READS OF ONE PASS** — the only arrangement
+/// in which [`Over::Asking`](crate::completion::Over) can fire, and the fixture register item 297
+/// spent four peers failing to find.
+///
+/// # ⚠⚠⚠⚠ Why no PEER can stage this, however it behaves
+///
+/// `OuterLoop::watch` asks the readiness barrier FIRST and consults the turn's `Completion` only if
+/// that says nothing. The barrier's [`peer_asking`](crate::readiness) fires on `state == Blocked`
+/// alone, while `Completion::asked` also demands the addressed agent AND a moved sequence — so the
+/// barrier's condition is a strict SUPERSET. Any dialog that is up when a pass begins is therefore
+/// caught by the earlier read, whatever the peer script does, and the arm is reachable only when the
+/// state CHANGES between the two reads of a single pass. A shell peer cannot time itself to a
+/// caller's internal ordering; a double can.
+///
+/// # What it promises, and the one assumption it rests on
+///
+/// Idle until [`raise`](DialogBetweenTheReads::raise) is called; then **exactly one more Idle read**
+/// — spent by the barrier — and `Blocked` from the next read onward, which is the completion's poll.
+/// ⚠⚠ The assumption is stated rather than hidden: **the first supervisor read of a pass is the
+/// barrier's**, which is `watch`'s own documented order. If that order ever changes this fixture
+/// stops staging the window, and the gate standing on it says so by going red.
+pub(crate) struct DialogBetweenTheReads {
+    raised: Arc<std::sync::atomic::AtomicBool>,
+    grace: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DialogBetweenTheReads {
+    /// The double, and the access that reads through it.
+    pub(crate) fn over(workspace: &Arc<Mutex<Workspace>>) -> (Self, WorkspacePaneAccess) {
+        let raised: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let grace: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let source = {
+            let workspace = Arc::clone(workspace);
+            let raised = Arc::clone(&raised);
+            let grace = Arc::clone(&grace);
+            Arc::new(move |id: PaneId| {
+                let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                    .pane_full_lines(id)
+                    .unwrap_or_default();
+                let blocked = raised.load(std::sync::atomic::Ordering::Acquire)
+                    // ⚠ THE ONE GRACE READ IS THE BARRIER'S, and it is spent here: the first read
+                    // after `raise` still answers *working*, every read after it sees the dialog.
+                    // `swap` so the grace cannot be spent twice.
+                    && !grace.swap(false, std::sync::atomic::Ordering::AcqRel);
+                Some(AgentObservation {
+                    state: if blocked {
+                        AgentState::Blocked
+                    } else {
+                        AgentState::Idle
+                    },
+                    agent: has_painted(&rows).then(|| "claude".to_string()),
+                    authority: Authority::Scraped {
+                        rule: Some("dialog-choice-list".to_string()),
+                    },
+                    // ⚠ Moves with the peer's own counter, so `Completion::asked`'s third clause —
+                    // *this peer has moved since the turn began* — is satisfied by the same read
+                    // that reports the dialog, which is what a working agent that stops to ask is.
+                    seq: peer_seq(&rows) + u64::from(blocked),
+                    // ⚠ `None` even while blocked: what this fixture stages is the ARM, and the
+                    // arm's own doc says the question it carries is DROPPED — the barrier reads the
+                    // pane again and its reading is the one an answer is decided from. A question
+                    // invented here would be a second parse nothing in the product would use.
+                    asking: None,
+                })
+            }) as AgentStateSource
+        };
+        (
+            Self { raised, grace },
+            WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source)),
+        )
+    }
+
+    /// Raise the dialog — from the NEXT read but one, so the barrier of the pass that follows still
+    /// sees a working peer and only the completion's poll meets the question.
+    pub(crate) fn raise(&self) {
+        self.grace.store(true, std::sync::atomic::Ordering::Release);
+        self.raised
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The supervision a real host would provide for [`standin_agent`], derived from the peer's OWN
 /// output.
 ///

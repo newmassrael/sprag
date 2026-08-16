@@ -2156,6 +2156,91 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠⚠ **THE TURN'S OWN READ NOTICES A DIALOG THE BARRIER MISSED** — `Over::Asking`, the arm
+    /// register item 297 called unreachable through four fixtures.
+    ///
+    /// # ⚠⚠⚠ Why its neighbour above cannot hold this, and why no peer can
+    ///
+    /// [`OuterLoop::watch`] asks the readiness barrier FIRST and consults the turn's `Completion`
+    /// only when that says nothing — and the barrier's `peer_asking` fires on `Blocked` alone where
+    /// `Completion::asked` also demands the addressed agent and a moved sequence. The barrier's
+    /// condition is a strict SUPERSET, so a dialog that is up when a pass begins is always caught
+    /// there. Two mutations proved the arm is nonetheless live: stub the pre-check and the
+    /// neighbouring gate arrives through this arm (green); stub it AND kill the arm and it goes red.
+    ///
+    /// So the arm is a RACE-WINDOW handler — it fires when the peer stops to ask **between** the
+    /// two reads of one pass — and staging that needs a supervisor that answers the two reads
+    /// differently, which is [`DialogBetweenTheReads`](crate::testing::DialogBetweenTheReads).
+    ///
+    /// ⚠⚠ What this gate holds is the ROUTE, not the wait: that the loop notices a peer which went
+    /// quiet asking after its barrier had already passed, and blocks rather than spinning out the
+    /// turn's whole bound. The wait itself is its neighbour's.
+    #[test]
+    fn a_peer_that_asks_after_the_barrier_passed_is_still_noticed() {
+        let (workspace, pane) = crate::testing::standin_agent(u32::MAX);
+        let (dialog, access) = crate::testing::DialogBetweenTheReads::over(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                await_person_ms: Some(200),
+                handback_still_ms: Some(50),
+                // ⚠ Long, so a run that fell through to `Over::NotYet` would spin here rather than
+                // block — the difference this gate is about.
+                turn_within_ms: Some(30_000),
+                ..brief_for(1_000_000)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        // Under way with its barrier passed and nothing asking.
+        for _ in 0..8 {
+            if loops.state() == AiLoopState::Working {
+                break;
+            }
+            loops.step(&access, &run).expect("a working run steps");
+        }
+        assert_eq!(
+            loops.state(),
+            AiLoopState::Working,
+            "⚠ the control: the loop must be WORKING with its barrier behind it before a dialog \
+             raised inside a pass can be about the turn's own read",
+        );
+
+        // THE WINDOW: from here the next supervisor read still answers *working* — the barrier's —
+        // and every read after it carries the dialog.
+        dialog.raise();
+        let mut walked: Vec<String> = Vec::new();
+        let mut passes = 0_u32;
+        for _ in 0..8 {
+            if loops.state() != AiLoopState::Working {
+                break;
+            }
+            passes += 1;
+            if let Some(note) = loops.step(&access, &run).expect("a blocked run steps").note {
+                walked.push(note);
+            }
+        }
+
+        assert_ne!(
+            loops.state(),
+            AiLoopState::Working,
+            "⚠⚠⚠⚠ THE TURN'S READ NOTICED NOTHING. Walked {walked:?}",
+        );
+        assert_eq!(
+            passes, 1,
+            "⚠⚠⚠⚠ IT TOOK {passes} PASSES, AND THE ARM IS WORTH EXACTLY ONE. `Over::Asking` exists \
+             so the pass that MEETS the dialog is the pass that raises it; without it the barrier \
+             of the NEXT pass catches the same dialog and the run blocks one pump later. That is \
+             the whole difference — measured, not assumed — and this number is the only thing that \
+             can tell the two routes apart, since both end with the run out of `working`. \
+             Walked {walked:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **A WINDOW THAT RAN OUT BEFORE THE ACCOUNT ARRIVED SAYS SO, IN THE RUN'S JOURNAL** —
     /// the silence item 208 removes, put back one step later and removed again.
     ///
