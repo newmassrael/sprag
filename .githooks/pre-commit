@@ -9,10 +9,17 @@
 #      - atomic-store consistency (entries / sections; store-direct)
 #
 #   2. `rustfmt --check` on the STAGED *.rs files (edition 2024)
-#      - sprag-scoped BY CONSTRUCTION: a pinion path-dep source file cannot
-#        be staged from this repo, so this never reaches (or reformats)
-#        pinion — UNLIKE `cargo fmt --all`, which walks path-deps INTO pinion
-#        (never use `--all` here; the never-touch-pinion rule).
+#      - checks exactly what is being committed, and nothing else: no
+#        untouched file can fail a commit that did not touch it.
+#      - ⚠ THE REASON THIS ONCE GAVE WAS FALSE, and it is corrected rather
+#        than deleted because a reader acted on it. It said `cargo fmt --all`
+#        "walks path-deps INTO pinion". Measured 2026-08-17 with
+#        `cargo fmt -v --all`: 60 targets, every one under
+#        `/home/coin/sprag/crates/`, not one pinion path. `--all` means
+#        WORKSPACE MEMBERS, and pinion is not one — it has been a pinned git
+#        rev since R54 (see Cargo.toml: "sprag NO LONGER reads the sibling
+#        ../pinion working tree"), so it lives in cargo's checkout cache and
+#        is not reachable from here at all.
 #
 #   3. `cargo clippy --workspace --all-targets -- -D warnings`
 #      - only runs when a Cargo workspace exists (Cargo.toml present) AND
@@ -77,9 +84,9 @@ if ! refs_report="$(mnemosyne-cli validate-code-refs 2>&1)"; then
 fi
 printf '%s\n' "$refs_report" | grep -E '^violations:' >&2 || true
 
-# rustfmt gate — only the STAGED *.rs files, so it is sprag-scoped: a pinion
-# path-dep file cannot be staged from here, while `cargo fmt --all` WOULD walk
-# into pinion. Blocks on any unformatted staged file.
+# rustfmt gate — only the STAGED *.rs files, so a commit is judged on what it
+# actually carries. Blocks on any unformatted staged file. (The pinion claim
+# this used to give as its reason was measured false; see the header.)
 staged_rs="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.rs$' || true)"
 if [ -n "$staged_rs" ]; then
     echo "pre-commit: rustfmt --check (staged *.rs) ..." >&2
