@@ -648,4 +648,108 @@ mod tests {
              answer the next one. active = {still:?}",
         );
     }
+
+    /// ⚠⚠⚠⚠ **CAN A DOCUMENT SPELL *"NO BOUND"* WITH ONE `<data>`** — asked before the debt loop's
+    /// turn budget is made declinable, because the wrong answer is a loop that exhausts on its
+    /// first judged turn.
+    ///
+    /// # ⚠⚠⚠ What is being decided
+    ///
+    /// The owner has asked for a debt loop that reflects every five turns and **never ends on
+    /// turns**. `judging` guards on `turns >= max_turns`, so the absence of a bound needs a
+    /// spelling. Two are available and only one of them is measured here, because the other is
+    /// known to work and known to cost:
+    ///
+    /// * a number and a BOOLEAN beside it, read together — one decision written in two places,
+    ///   which is the shape this workspace has twice recorded the price of;
+    /// * ⭐ ONE `<data>`, declared and empty, with the guard short circuiting on it.
+    ///
+    /// The second is better if the generator allows it, and whether it does is a fact about THIS
+    /// crate at the pinned rev rather than about ECMAScript.
+    ///
+    /// # ⚠⚠⚠⚠ Why three arms, and why none is decoration
+    ///
+    /// A `cond` is PARSED as ECMAScript and EVALUATED as Lua, and one the generator cannot parse
+    /// becomes an `error(...)` call that evaluates FALSE — it compiles, it runs, the edge is never
+    /// taken and nothing is reported. That trap already cost this repository two wrong conclusions.
+    /// So *"the guard did not fire"* is the same observation for **the short circuit worked** and
+    /// for **the guard was never a guard**, and a single-arm probe would report the second as the
+    /// first.
+    ///
+    /// Arm 2 fires the SAME guard shape over an id holding a number: it proves the shape parses.
+    /// Arm 3 names ONLY the empty id and expects it falsy: it proves arm 1's silence is about the
+    /// VALUE, not about a guard mentioning that id failing to parse. ⚠ Arm 2 alone would not do —
+    /// it names a different id, so a parse failure peculiar to arm 1's text would still read green.
+    #[test]
+    fn an_id_a_document_declares_and_leaves_empty_is_falsy_and_safe_to_guard_on() {
+        use crate::sm::probe_absent_sm::{ProbeAbsentEvent, ProbeAbsentPolicy};
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeAbsentPolicy::new(lua));
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<ProbeAbsentPolicy>, name: &str| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, name)
+        {
+            Ok(ScriptValue::Int(held)) => held,
+            other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+        };
+        let send = |engine: &mut Engine<ProbeAbsentPolicy>, event: ProbeAbsentEvent| {
+            engine.raise(sce_rust_runtime::EventWithMetadata::new(event));
+            engine.step();
+        };
+
+        // Three turns, so the control's bound of two is passed rather than merely reached.
+        for _ in 0..3 {
+            send(&mut engine, ProbeAbsentEvent::Tick);
+        }
+        assert_eq!(count(&engine, "turns"), 3, "the counter must have moved");
+
+        send(&mut engine, ProbeAbsentEvent::AskPresent);
+        assert_eq!(
+            count(&engine, "present_fired"),
+            1,
+            "⚠⚠⚠⚠ THE CONTROL FOR THE WHOLE PROBE. `present && turns >= present` over an id \
+             holding 2, with turns at 3, MUST fire. If it does not, this guard shape does not \
+             parse at the pinned rev and every other assertion here is measuring a syntax error \
+             rather than a datamodel",
+        );
+
+        send(&mut engine, ProbeAbsentEvent::AskUnset);
+        assert_eq!(
+            count(&engine, "unset_seen"),
+            1,
+            "⚠⚠⚠⚠ THE SECOND CONTROL, and the one that makes the answer specific. `!absent` must \
+             be TRUE, which says two things at once: the empty id is falsy, AND a `cond` naming it \
+             parses. Without this, arm 1 staying at zero would be the same observation for *the \
+             short circuit worked* and *a guard mentioning `absent` is an error() that returns \
+             false*",
+        );
+
+        send(&mut engine, ProbeAbsentEvent::AskAbsent);
+        assert_eq!(
+            count(&engine, "absent_asked"),
+            1,
+            "⚠⚠⚠⚠ THE DELIVERY PROOF, and it comes FIRST because the assertion after it is a ZERO. \
+             `absent_fired == 0` is equally what this reads when the event never arrived, when the \
+             transition was never generated, or when the name is misspelled in the document — a \
+             guarded arrow that declined and an arrow nobody rang are the same observation. The \
+             plain arrow behind the guarded one is what tells them apart",
+        );
+        assert_eq!(
+            count(&engine, "absent_fired"),
+            0,
+            "⚠⚠⚠⚠ THE ANSWER. `absent && turns >= absent` must NOT fire, at any number of turns. \
+             This is what lets `max_turns` mean *no bound* by being declared and left empty, \
+             instead of needing a boolean beside it. If this fires, the one-`<data>` spelling is \
+             REFUSED and the debt loop's *never ends on turns* has to be written as a pair",
+        );
+    }
 }

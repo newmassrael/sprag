@@ -7423,6 +7423,7 @@ mod tests {
         // language — which is exactly why it is here and not there.
         "debt_loop",
         "orchestration",
+        "probe_absent",
         "probe_child",
         "probe_parallel",
         "probe_parent",

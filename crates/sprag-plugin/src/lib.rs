@@ -72,6 +72,14 @@ pub(crate) mod sm {
         include!(concat!(env!("OUT_DIR"), "/probe_parallel_sm.rs"));
     }
 
+    // ⚠⚠ THE `<data>`-WITH-NO-VALUE PROBE. Same standing as the two above: whether an id a document
+    // declares and leaves empty is readable, and safe to guard on, is a fact about THIS generator at
+    // the pinned rev — and a wrong answer is a loop that exhausts on its first judged turn.
+    pub(crate) mod probe_absent_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/probe_absent_sm.rs"));
+    }
+
     // ⚠ `<stem>_sm` because `ai_loop.scxml` will reach it as a child — see the note above.
     pub(crate) mod context_review_sm {
         #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]

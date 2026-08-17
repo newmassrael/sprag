@@ -54,6 +54,11 @@ const STATECHARTS: &[&str] = &[
     // parallel root — which SCE's own suite records shipping once, invisible to every W3C fixture
     // because they are one region deep. See `probe_parallel.scxml`.
     "probe_parallel",
+    // ⚠⚠ THE THIRD PROBE, and the smallest: does a `<data>` DECLARED WITH NO VALUE reach the
+    // datamodel, and is a `cond` that short circuits on it safe? The owner has asked for a debt loop
+    // with no turn budget, so *"no bound"* needs a spelling, and the alternative to this one is a
+    // boolean beside the number — one decision in two places. See `probe_absent.scxml`.
+    "probe_absent",
     // ⚠⚠ WHAT A RUN LEARNED ABOUT ITS OWN SESSIONS — a child machine, and inert until it is here.
     "context_review",
 ];

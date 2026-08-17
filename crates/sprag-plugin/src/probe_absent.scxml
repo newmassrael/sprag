@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WHAT A DOCUMENT HOLDS WHEN IT DECLARES AN id AND GIVES IT NO VALUE, and what a
+  guard reading that id makes of it.
+
+  ⚠⚠⚠ WHY THIS IS ASKED BEFORE ANYTHING IS BUILT ON IT. The owner has asked for a
+  debt loop with NO TURN BUDGET. Today `max_turns` is a number and `judging`
+  guards on `turns >= max_turns`, so *"no bound"* needs a spelling, and there are
+  only two candidates:
+
+    * ONE `<data>`, declared and empty, with the guard short circuiting on it:
+      `cond="max_turns &amp;&amp; turns &gt;= max_turns"`;
+    * TWO `<data>`, a number and a boolean beside it, which is one decision
+      written in two places and drifts the way this workspace has already
+      recorded twice.
+
+  The first is the better shape IF it works, and whether it works is a fact about
+  THIS crate's generator at the pinned rev, not about ECMAScript. So it is
+  measured here rather than assumed at the guard, where a wrong answer is a debt
+  loop that exhausts on its first judged turn.
+
+  ⚠⚠⚠⚠ AND THE MEASUREMENT CAN LIE, WHICH IS THE WHOLE REASON FOR THE CONTROLS.
+  A `cond` is PARSED as ECMAScript and EVALUATED as Lua, and a `cond` the
+  generator cannot parse becomes an `error(...)` call that evaluates FALSE. It
+  compiles, it runs, the edge is never taken and nothing is reported. So
+  *"the guard did not fire"* is the SAME observation for
+
+    (a) the id is empty and the short circuit worked, which is the answer wanted;
+    (b) the guard is a syntax error and no id was ever read.
+
+  Three arms tell them apart, and none of them is decoration:
+
+    1. `ask.absent`  the guard under test. Must NOT fire.
+    2. `ask.present` the SAME guard shape over an id that HOLDS a number. Must
+       fire, which proves the shape parses and evaluates at all.
+    3. `ask.unset`   a guard that mentions ONLY the empty id and expects it
+       falsy. Must fire, which proves arm 1's silence is about the VALUE rather
+       than about a guard naming that id failing to parse.
+
+  Arm 2 alone is not enough: it names a different id, so a parse failure peculiar
+  to arm 1's text would still read as success.
+
+  ⚠ THE ARMS ARE THREE SEPARATE EVENTS, deliberately. On one event they would be
+  three transitions in document order and the first enabled one would consume it,
+  so an arm that fired wrongly would mask the arm after it.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_absent"
+       datamodel="ecmascript"
+       initial="counting">
+
+  <datamodel>
+    <!-- Stands in for the loop's own turn counter. -->
+    <data id="turns" expr="0"/>
+
+    <!--
+      ⚠⚠⚠ DECLARED AND GIVEN NOTHING. This is the construct under test. It is
+      NOT the same as omitting the `<data>` altogether: an id a document never
+      declares cannot be filled by anything later, and the template's own purity
+      gate already records that deleting a `<data id>` is the cheap green that
+      makes the split impossible.
+    -->
+    <data id="absent"/>
+
+    <!-- The control's id, holding a real number so arm 2 can fire. -->
+    <data id="present" expr="2"/>
+
+    <data id="absent_fired" expr="0"/>
+    <data id="present_fired" expr="0"/>
+    <data id="unset_seen" expr="0"/>
+
+    <!--
+      ⚠⚠⚠⚠ PROOF THAT ARM 1's EVENT WAS DELIVERED AT ALL, and it is not
+      bookkeeping. `absent_fired == 0` is ALSO what a probe reads when the event
+      never arrived, when the transition was never generated, or when the event
+      name is misspelled here. A guarded arrow that stayed silent and an arrow
+      nobody rang are the same observation, and only the second counter tells
+      them apart.
+    -->
+    <data id="absent_asked" expr="0"/>
+  </datamodel>
+
+  <state id="counting">
+    <transition event="tick">
+      <assign location="turns" expr="turns + 1"/>
+    </transition>
+
+    <!-- ARM 1: the guard under test. Must not fire, however many turns pass. -->
+    <transition event="ask.absent" cond="absent &amp;&amp; turns &gt;= absent">
+      <assign location="absent_fired" expr="absent_fired + 1"/>
+    </transition>
+    <!--
+      ARM 1's DELIVERY PROOF, and it must stay AFTER the guarded arrow: document
+      order decides, so this one is reached only when the guard above declined.
+      Its counter is what separates "the guard was false" from "nothing rang".
+    -->
+    <transition event="ask.absent">
+      <assign location="absent_asked" expr="absent_asked + 1"/>
+    </transition>
+
+    <!-- ARM 2: the same shape over a number. Must fire once turns reach it. -->
+    <transition event="ask.present" cond="present &amp;&amp; turns &gt;= present">
+      <assign location="present_fired" expr="present_fired + 1"/>
+    </transition>
+
+    <!-- ARM 3: only the empty id, expected falsy. Must fire. -->
+    <transition event="ask.unset" cond="!absent">
+      <assign location="unset_seen" expr="unset_seen + 1"/>
+    </transition>
+  </state>
+
+</scxml>
