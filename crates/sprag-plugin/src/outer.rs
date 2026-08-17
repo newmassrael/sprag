@@ -1533,8 +1533,9 @@ struct Session {
     /// session* — no `PaneForegroundJob`, a pane whose agent a person launched with its own name,
     /// an agent sprag does not instrument — and the only thing lost is knowing what it spends.
     identity: Option<String>,
-    /// **WHERE THIS SESSION'S AGENT SAID IT IS WRITING ITS TRANSCRIPT**, latched the first time it
-    /// says so — the road [`identity`](Self::identity) is now only the fallback for.
+    /// **WHERE THIS SESSION'S AGENT SAID IT IS WRITING ITS TRANSCRIPT** — the last thing it said,
+    /// remembered for as long as it says nothing else. The road [`identity`](Self::identity) is now
+    /// only the fallback for.
     ///
     /// # ⚠⚠⚠⚠ Why a stated path outranks a name, measured rather than argued
     ///
@@ -1549,13 +1550,25 @@ struct Session {
     /// received the payload and dropped everything but the word *working*. It arrives here through
     /// [`AgentObservation::transcript`](crate::access::AgentObservation::transcript).
     ///
-    /// # ⚠⚠ Why it is LATCHED, which is [`identity`](Self::identity)'s reason and one more
+    /// # ⚠⚠⚠ Why it is REMEMBERED but not LATCHED, which is the sharper half
     ///
-    /// A report is bound to the agent that made it and is released when that agent exits, and the
-    /// supervision surface answers [`None`] for a pane no manifest claims. Re-asking every turn
-    /// would therefore let a session that has been named fall back to the derived path — the very
-    /// path that reads nothing — halfway through a run. Latched, what a session learned about
-    /// itself is what it keeps.
+    /// [`identity`](Self::identity) is latched outright: it is scraped off the pane's foreground
+    /// job, so a momentary child must not be allowed to take a session's name away. This is not
+    /// scraped — the AGENT states it, and an agent's newest statement about where it writes is the
+    /// truest fact available. So a fresh statement REPLACES what is held.
+    ///
+    /// Both halves are needed, and each closes what the other cannot:
+    ///
+    /// * **Remembering** covers the report going quiet. A hook report is bound to the agent that
+    ///   made it and is released when that agent exits, and the supervision surface answers
+    ///   [`None`] for a pane no manifest claims. Forgetting on the first silent look would drop the
+    ///   run back onto the derived path — the very path that reads nothing — mid-run.
+    /// * **Replacing** covers an agent restarted IN PLACE. The loop's own replacement makes a new
+    ///   pane and this value goes with the old one, but a person re-running `claude` in the same
+    ///   pane is not that — and item 421 says every failed delivery forces exactly that, because
+    ///   the composer cannot be cleared. Latched, the run would read the dead session's record for
+    ///   ever: a file that stops growing rather than disappearing, which is a fossil wearing a
+    ///   measurement's clothes.
     ///
     /// ⚠ `None` is *nobody stated one*, never *there is no transcript*: an agent with no hooks
     /// installed states nothing ever, and that peer is exactly who the fallback exists for.
@@ -1609,15 +1622,17 @@ impl Session {
         self.identity.as_deref()
     }
 
-    /// Where this session's agent SAID it is writing, learning it if it has said so — see
-    /// [`Session::transcript`].
+    /// Where this session's agent SAID it is writing — the newest statement if it is making one,
+    /// and otherwise the last one it made. See [`Session::transcript`] for why it is both.
     fn stated_record(&mut self, panes: &dyn PaneAccess) -> Option<&std::path::Path> {
-        if self.transcript.is_none() {
-            self.transcript = panes
-                .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(self.pane))
-                .and_then(|seen| seen.transcript)
-                .map(std::path::PathBuf::from);
+        // ⚠ ASKED EVERY TIME AND ONLY OVERWRITTEN ON AN ANSWER. A look that finds nothing is a
+        // report that has gone quiet, not a session that has stopped writing.
+        if let Some(said) = panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(self.pane))
+            .and_then(|seen| seen.transcript)
+        {
+            self.transcript = Some(std::path::PathBuf::from(said));
         }
         self.transcript.as_deref()
     }
@@ -5639,6 +5654,87 @@ mod tests {
              the numbers here too would be reading them from somewhere this test did not put them. \
              Got {untold}",
         );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AN AGENT THAT SAYS IT IS WRITING SOMEWHERE ELSE IS BELIEVED, AND ONE THAT SAYS
+    /// NOTHING IS REMEMBERED** — the two halves of [`Session::transcript`], which pull opposite
+    /// ways.
+    ///
+    /// # ⚠⚠⚠⚠ Both halves were reachable, and the first was a hole this round nearly shipped
+    ///
+    /// The field began LATCHED, copying [`Session::identity`]'s rule. That is right for a name
+    /// SCRAPED off a foreground job, where a momentary child must not take a session's identity
+    /// away — and wrong for a fact the AGENT states, because an agent restarted **in the same pane**
+    /// states a new path and a latch would refuse it. That restart is not hypothetical here: the
+    /// loop's own replacement makes a NEW pane (so this value goes with the old one), but register
+    /// item 421 records that every failed delivery forces a person to re-make the pane by hand,
+    /// because the composer cannot be cleared. Latched, the run would read the dead session's
+    /// record for ever — **a file that stops growing rather than disappearing, which reads as a
+    /// measurement and is a fossil.**
+    ///
+    /// ⚠⚠ And the other half is what stops the obvious fix from being a regression: a report is
+    /// released when its agent exits and supervision answers [`None`] for a pane no manifest
+    /// claims, so *forget it whenever a look says nothing* would drop the run back onto the derived
+    /// path mid-run — which is the whole defect of register item 431.
+    #[test]
+    fn a_session_takes_its_agents_newest_statement_and_keeps_the_last_one_when_it_goes_quiet() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+
+        // What the supervisor states on the NEXT look, swapped by the test between reads.
+        let says: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(Some("/one.jsonl".to_owned())));
+        let stated = Arc::clone(&says);
+        let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
+            Some(crate::access::AgentObservation {
+                state: sprag_detect::AgentState::Working,
+                agent: Some("claude".to_owned()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_owned(),
+                },
+                seq: 1,
+                asking: None,
+                asked: None,
+                transcript: stated.lock().expect("what the agent says").clone(),
+            })
+        });
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        let held = |loops: &mut OuterLoop| {
+            loops
+                .driving
+                .stated_record(&access)
+                .map(|path| path.display().to_string())
+        };
+
+        assert_eq!(
+            held(&mut loops).as_deref(),
+            Some("/one.jsonl"),
+            "⚠ the first statement is taken",
+        );
+
+        *says.lock().expect("what the agent says") = Some("/two.jsonl".to_owned());
+        assert_eq!(
+            held(&mut loops).as_deref(),
+            Some("/two.jsonl"),
+            "⚠⚠⚠⚠⚠ AN AGENT RESTARTED IN THE SAME PANE FILES SOMEWHERE ELSE AND SAYS SO. A reader \
+             that kept the first answer would price this run against a record that has stopped \
+             growing — and would go on doing it for the rest of the run, confidently.",
+        );
+
+        *says.lock().expect("what the agent says") = None;
+        assert_eq!(
+            held(&mut loops).as_deref(),
+            Some("/two.jsonl"),
+            "⚠⚠⚠ AND SILENCE IS NOT A RETRACTION. A hook report is released when its agent exits \
+             and supervision answers None for a pane no manifest claims, so forgetting here drops \
+             the run back onto the path derived from a launch name — which is register item 431 \
+             itself.",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠⚠⚠ **A REPLACEMENT SESSION FORGETS BOTH ROADS TO A RECORD** — the name it was launched
