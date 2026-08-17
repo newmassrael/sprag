@@ -178,8 +178,13 @@ const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 /// this front keeps meeting. The env was the temporary channel; the option is the durable one.
 fn detach_on_destroy(unset: DetachOnDestroy) -> DetachOnDestroy {
     match sprag_host::config::options() {
+        // ⚠⚠⚠⚠ `chosen`, NOT `get` — and this line is the whole defect of register item 359's
+        // second round. `get` is TOTAL: it answers the registry's default for every option, so
+        // `map_or`'s fallback arm was unreachable and the window's own default was dead code that
+        // read as live. The gate passed because it called the fallback directly. The owner met it as
+        // a window that still closed with its session, after being told it was fixed.
         Ok(options) => options
-            .get(sprag_host::options::DETACH_ON_DESTROY)
+            .chosen(sprag_host::options::DETACH_ON_DESTROY)
             .map_or(unset, parse_detach_on_destroy),
         Err(error) => {
             tracing::warn!(
@@ -3717,10 +3722,15 @@ impl HostClient for WireHost {
             .request("scene/invoke", params, "kill_session")
             .and_then(|answer| ended_of(&answer, "kill_session"));
         if is_own {
-            // Own kill with nothing to switch to → DETACH. The reply may have been SEVERED by the
-            // daemon's own exit, which is success and is why `ended` is `None` here as often as not
-            // — the client is leaving either way, so there is nobody left to tell.
-            self.quit.request_quit();
+            // Own kill with nothing to switch to. The reply may have been SEVERED by the daemon's
+            // own exit, which is success and is why `ended` is `None` here as often as not.
+            //
+            // ⚠⚠⚠⚠ AND THIS IS THE SECOND QUIT SITE, WHICH A FIX TO `follow` DOES NOT REACH —
+            // register item 359. The branch above calls `follow` only for a plan that is NOT
+            // `Detach`, so the whole detach case arrives here instead, and a repair made in
+            // `follow`'s `Detach` arm was invisible from the sidebar's × for exactly that reason.
+            // **Two exits for one decision is how a fix comes to be believed.**
+            let _ = self.detached();
         } else {
             // Another session killed → keep serving ours; drop the killed row now.
             self.refresh_sessions();
@@ -5463,6 +5473,58 @@ mod tests {
              launched from, which is tmux's own default and correct here — a `sprag-tui` that \
              switched instead would repaint their terminal with a session they never asked for. If \
              this arm goes, the fix has replaced one wrong-for-half default with another",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE WINDOW'S OWN DEFAULT MUST BE REACHABLE THROUGH A REAL `Options`** — register
+    /// item 359, and the assertion whose absence let a fix be believed for two rounds.
+    ///
+    /// # What the gate beside this one could not see
+    ///
+    /// `the_windows_unset_destroy_policy_switches_where_the_terminals_leaves` calls
+    /// `Frontend::unset_destroy_policy()` DIRECTLY and hands the answer to `plan`. That holds the
+    /// constant and nothing else. Production never calls it that way — it reads the option table
+    /// first — and the table seeds **every** name with its registry default, so the `map_or` fallback
+    /// carrying the window's answer **could not run at all**. The constant was right, its gate was
+    /// green, its mutation reddened it, and the product still closed the window: the owner reported
+    /// the same defect twice, after being told it was fixed.
+    ///
+    /// ⚠⚠⚠ **SO THIS ONE ASKS THE TABLE.** A defaults-only `Options` must leave the frontend's
+    /// answer standing; a person's explicit choice must beat it. Nothing here constructs a policy by
+    /// hand — that is precisely the shortcut that hid the defect.
+    ///
+    /// ⚠⚠ AND THE EXPLICIT ARM USES THE SAME VALUE AS THE REGISTRY DEFAULT (`on`) ON PURPOSE. A
+    /// *"compare the value against the default"* implementation would pass every other case and fail
+    /// exactly this one — a person who chose the default meant it, and their choice must not be read
+    /// as silence.
+    #[test]
+    fn a_windows_default_survives_the_option_table_and_a_persons_choice_beats_it() {
+        use sprag_host::options::{DETACH_ON_DESTROY, Options};
+
+        let untouched = Options::default();
+        assert_eq!(
+            untouched.get(DETACH_ON_DESTROY),
+            Some("on"),
+            "the control for the whole gate: the registry answers for an option nobody set, which \
+             is why a caller cannot use `get` to detect silence",
+        );
+        assert_eq!(
+            untouched.chosen(DETACH_ON_DESTROY),
+            None,
+            "⚠⚠⚠⚠ AND NOBODY CHOSE IT. If this ever answers `Some`, the window's own default is \
+             unreachable again and every gate about it is asserting dead code",
+        );
+
+        let mut asked = Options::default();
+        asked
+            .set(DETACH_ON_DESTROY, "on")
+            .expect("`on` is a value this option takes");
+        assert_eq!(
+            asked.chosen(DETACH_ON_DESTROY),
+            Some("on"),
+            "⚠⚠⚠ A PERSON WHO CHOSE THE DEFAULT VALUE STILL CHOSE IT. An implementation that \
+             compared against the registry default would call this silence and overrule them — \
+             which is the one case that separates *chosen* from *differs from default*",
         );
     }
 

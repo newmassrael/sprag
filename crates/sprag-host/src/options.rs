@@ -57,7 +57,7 @@
 
 use crate::outward::Forward;
 use crate::window::WindowSize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::keymap::KeySpec;
 
@@ -676,16 +676,20 @@ pub struct Options {
     /// not an option cannot be stored. `BTreeMap` for the iteration order: `show-options` output is
     /// sorted by name, like tmux's.
     values: BTreeMap<&'static str, String>,
+    /// **THE NAMES SOMEBODY ACTUALLY CHOSE**, as opposed to the ones standing at their registry
+    /// default — see [`chosen`](Self::chosen).
+    picked: BTreeSet<&'static str>,
 }
 
 impl Default for Options {
-    /// Every option at its [`OptionSpec::default`].
+    /// Every option at its [`OptionSpec::default`], and nothing chosen.
     fn default() -> Self {
         Self {
             values: OPTIONS
                 .iter()
                 .map(|spec| (spec.name, spec.default.to_owned()))
                 .collect(),
+            picked: BTreeSet::new(),
         }
     }
 }
@@ -705,8 +709,38 @@ impl Options {
     /// one in force rather than a half-applied table.
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), OptionError> {
         let setting = OptionSetting::parse(name, value)?;
+        self.picked.insert(setting.spec.name);
         self.values.insert(setting.spec.name, setting.value);
         Ok(())
+    }
+
+    /// **THE VALUE SOMEBODY CHOSE FOR `name`**, or [`None`] where it is standing at the registry's
+    /// default — as distinct from [`get`](Self::get), which always answers.
+    ///
+    /// # ⚠⚠⚠⚠ Why the distinction has to exist, measured
+    ///
+    /// [`get`](Self::get) is *"what is in force"* and is deliberately total: a caller must never have
+    /// to remember a default, which is the second copy this module exists to prevent. But a caller
+    /// that wants to supply its OWN default cannot use it — **the answer is never absent**, so the
+    /// caller's arm is unreachable and a default written there is dead code that reads as live.
+    ///
+    /// That is exactly what happened. `detach-on-destroy` is right as `on` for a terminal client and
+    /// wrong for a window, so the window was given its own fallback through
+    /// `options.get(..).map_or(mine, parse)` — and `get` answered `Some("on")` from this table every
+    /// time, so the window's fallback never ran. **Its gate passed**, because the gate called the
+    /// fallback directly instead of through here. The defect reached the owner as *a window that
+    /// closes when you close a session*, twice, after being reported fixed.
+    ///
+    /// ⚠⚠⚠ SO THE QUESTION A PER-CALLER DEFAULT MUST ASK IS *"did anybody choose this"*, and only
+    /// this answers it. An option nobody set reads [`None`] here and the caller's own default is
+    /// reachable; an option a person set to the same value as the default still reads [`Some`], and
+    /// their choice wins — which is the half a *"compare against the default"* trick gets wrong.
+    #[must_use]
+    pub fn chosen(&self, name: &str) -> Option<&str> {
+        self.picked
+            .contains(name)
+            .then(|| self.values.get(name).map(String::as_str))
+            .flatten()
     }
 
     /// The value in force for a [`OptionKind::Number`] option, or `None` when `name` is not one.
