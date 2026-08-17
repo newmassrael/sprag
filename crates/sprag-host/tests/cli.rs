@@ -1793,13 +1793,18 @@ fn the_cli_ssh_tmux_preset_reaches_exec_and_rejects_a_conflict() {
     );
 }
 
-/// `--pane` narrows the sweep to ONE pane, and naming a pane the window does not hold is a clean
-/// ERROR rather than an empty result.
+/// `--pane` narrows the sweep to ONE pane, and naming a pane that is nowhere in the session is a
+/// clean ERROR rather than an empty result.
 ///
 /// The asymmetry is the point: finding no matches for a needle IS the answer, but finding no
 /// matches for a pane that is not there answers a question the caller did not ask. Two panes print
 /// the SAME needle so the filter has something to exclude — a one-pane fixture would pass whether
 /// the filter worked or not.
+///
+/// ⚠ It said *"a pane the WINDOW does not hold"* until 2026-08-17, and every pane it names is one
+/// that exists NOWHERE (`9999`, `abc`) — so the sentence made a claim about the one case it never
+/// ran. A pane one window over resolves and IS searched;
+/// `find_narrowed_to_a_pane_reaches_a_window_the_sweep_does_not` is where that lives now.
 #[test]
 fn the_cli_find_narrows_to_one_pane_and_rejects_an_absent_one() {
     let printer = "printf 'shared marker\\n'; exec cat";
@@ -1857,6 +1862,88 @@ fn the_cli_find_narrows_to_one_pane_and_rejects_an_absent_one() {
         "with a clear message: {}",
         bad.stderr,
     );
+}
+
+/// **NARROWING `find` TO A PANE MAKES IT FIND MORE, NOT LESS** — the sweep stops at the current
+/// window and `--pane` reaches any window of the session.
+///
+/// # Why this is pinned rather than fixed
+///
+/// It is a DECISION, and the code says so where it is made: *"the narrowed form resolves
+/// session-wide (a name reaches any window), and the sweep does not: searching every window would
+/// change what an unnarrowed `sprag find` means for every caller that has one."* R312 widened pane
+/// RESOLUTION to the whole session for every verb; the sweep was deliberately left where it was.
+///
+/// What was NOT deliberate is that nothing measured it. The neighbouring test above says in its own
+/// doc that *"naming a pane the window does not hold is a clean ERROR"* and then only ever names
+/// panes that exist nowhere at all (`9999`, `abc`) — so the one case that separates the two reaches
+/// was never run, and `find`'s doc drifted into claiming both answers at once (item 429).
+///
+/// # ⚠ If this test goes RED because the sweep now reaches every window
+///
+/// That is item 429 being PAID, not a regression. Delete the first assertion, keep the rest, and
+/// close the item — the whole point of pinning an asymmetry is that changing it must be a decision
+/// somebody makes on purpose rather than a side effect nobody noticed.
+#[test]
+fn find_narrowed_to_a_pane_reaches_a_window_the_sweep_does_not() {
+    let marker = "MARKER-IN-WINDOW-ZERO";
+    let (_host, sock) =
+        spawn_host_running(&["sh", "-c", &format!("printf '{marker}\\n'; exec cat")]);
+
+    // The marker's pane, named, while it is still the current window's.
+    let far = sprag(&sock, &["panes", "-t", "0"])
+        .stdout
+        .lines()
+        .next()
+        .and_then(|row| row.split(':').next().map(str::to_owned))
+        .expect("the boot pane");
+    assert!(sprag(&sock, &["rename-pane", &far, "marked", "-t", "0"]).ok);
+    // It has to be FOUND before the window moves, or a later empty answer would be the pane never
+    // having printed rather than the sweep not reaching it — the control this whole test rests on.
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            sprag(&sock, &["find", marker, "-t", "0"])
+                .stdout
+                .contains(marker)
+        }),
+        "the sweep finds the marker while its pane is in the CURRENT window: {}",
+        sprag(&sock, &["find", marker, "-t", "0"]).stdout,
+    );
+
+    // A second window, which `new-window` selects — so the marker's pane is now elsewhere.
+    assert!(sprag(&sock, &["new-window", "-t", "0", "elsewhere"]).ok);
+    let here = sprag(&sock, &["panes", "-t", "0"]).stdout;
+    assert!(
+        !here.lines().any(|row| row.starts_with(&format!("{far}:"))),
+        "the marked pane must be OUT of the current window or nothing here discriminates: {here}",
+    );
+
+    // THE SWEEP STOPS AT THE WINDOW. Read the ⚠ section above before changing this.
+    let swept = sprag(&sock, &["find", marker, "-t", "0"]);
+    assert!(swept.ok, "the sweep still succeeds: {}", swept.stderr);
+    assert!(
+        !swept.stdout.contains(marker),
+        "an unnarrowed sweep does not cross into another window — if this went red because the \
+         sweep now reaches every window, that is register item 429 being PAID: {}",
+        swept.stdout,
+    );
+
+    // ...AND `--pane` REACHES PAST IT, by id and by the name R312 made addressable. This is the
+    // half that makes the line above an asymmetry rather than just a scope.
+    for spelling in [far.as_str(), "marked"] {
+        let narrowed = sprag(&sock, &["find", marker, "--pane", spelling, "-t", "0"]);
+        assert!(
+            narrowed.ok,
+            "find --pane {spelling} succeeded: {}",
+            narrowed.stderr,
+        );
+        assert_eq!(
+            narrowed.stdout.trim_end(),
+            format!("{far}:0: {marker}"),
+            "--pane {spelling} reaches a window the sweep did not: {}",
+            narrowed.stdout,
+        );
+    }
 }
 
 /// `--regex` sends a DIFFERENT query, not the same one with a flag: the same argument matches

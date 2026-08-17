@@ -1179,18 +1179,28 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
 /// `sprag find NEEDLE [-t SESSION] [--pane N]` — search the session's current window and print each
 /// matching line as `PANE:LINE: text`, the `grep -n` shape a script or an agent can slice.
 ///
-/// **Session-wide by DEFAULT, not per-pane, on purpose.** The question a terminal user actually has
-/// is "which pane has the error", so the sweep is the useful unit; `--pane` narrows it once the
-/// answer to that question is known. An agent that already knows its pane uses the `find_in_pane`
-/// MCP tool instead. None of the three implements a second search: all read the host's
-/// `find.<needle>` family, so there is ONE definition of what matches (`sprag_vt::Screen::find`) and
-/// the CLI cannot drift from the GUI's highlight.
+/// **A SWEEP by default, not per-pane, on purpose.** The question a terminal user actually has is
+/// "which pane has the error", so the sweep is the useful unit; `--pane` narrows it once the answer
+/// to that question is known. An agent that already knows its pane uses the `find_in_pane` MCP tool
+/// instead. None of the three implements a second search: all read the host's `find.<needle>`
+/// family, so there is ONE definition of what matches (`sprag_vt::Screen::find`) and the CLI cannot
+/// drift from the GUI's highlight.
 ///
-/// A `--pane` naming a pane the session's current window does not hold is a clean ERROR, not an
-/// empty result: the caller asked for a specific pane, and reporting "no matches" for a pane that
-/// is not there would answer a question they did not ask. Contrast the needle itself, where finding
-/// nothing IS the answer. An invalid `--regex` pattern is an error for the same reason — the search
-/// never ran, so exiting 0 with no output would claim it had.
+/// ⚠⚠ **THE TWO FORMS DO NOT REACH THE SAME PANES, AND NARROWING REACHES FURTHER.** The sweep stops
+/// at the scoped session's CURRENT WINDOW; `--pane` resolves anywhere in the session, because R312
+/// made pane resolution session-wide for every verb and the sweep was deliberately left where it
+/// was (see the comment at the call). So `find X --pane marked` can print a line that `find X` did
+/// not — a filter that widens its own answer. This paragraph used to claim the sweep was
+/// *"session-wide by default"* one line after the synopsis said *current window*, and both halves
+/// of that pair could not be true; measured 2026-08-17, the synopsis was the honest one. Pinned by
+/// `find_narrowed_to_a_pane_reaches_a_window_the_sweep_does_not`, open as register item 429.
+///
+/// A `--pane` naming a pane that is nowhere in the session is a clean ERROR, not an empty result:
+/// the caller asked for a specific pane, and reporting "no matches" for a pane that is not there
+/// would answer a question they did not ask. (It says *the session*, not *the current window*, for
+/// the reach stated above — a pane one window over resolves and is searched.) Contrast the needle
+/// itself, where finding nothing IS the answer. An invalid `--regex` pattern is an error for the
+/// same reason — the search never ran, so exiting 0 with no output would claim it had.
 ///
 /// `--regex` selects a different QUERY, not a mode on the same one. A needle and a pattern are
 /// separate languages in which the same string means different things (`a.b`), so the host keeps
