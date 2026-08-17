@@ -414,6 +414,9 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
             let sink = sink.clone();
             Box::new(
                 WireHost::spawn_or_attach(
+                    // A WINDOW: detaching leaves nothing to draw, so its destroy default prefers a
+                    // surviving session rather than tmux's `on`. Item 282.
+                    sprag_client::Frontend::Window,
                     pane_argv(),
                     cols,
                     rows,

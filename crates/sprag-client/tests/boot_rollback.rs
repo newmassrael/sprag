@@ -172,6 +172,8 @@ fn failing_boot(sock: &Path) -> BootError {
             cols: 80,
             rows: 24,
             panes: 1,
+            // Not under test: this boot never completes, so no destroy policy is ever read.
+            frontend: sprag_client::Frontend::Window,
         },
         Arc::new(|| {}),
         Arc::new(NeverQuits),

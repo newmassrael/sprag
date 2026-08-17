@@ -249,6 +249,8 @@ fn main() -> ExitCode {
             "exec cat"
         };
         let host = match WireHost::spawn_or_attach(
+            // A terminal example, so the terminal's defaults — nothing here destroys a session.
+            sprag_client::Frontend::Terminal,
             Some(vec!["/bin/sh".into(), "-c".into(), painter.into()]),
             80,
             24,

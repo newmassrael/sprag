@@ -154,6 +154,21 @@ const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 /// `no-detached` switches only to a session NO OTHER client is viewing, detaching rather than pile a
 /// second client onto one another client already holds.
 ///
+/// # ⚠⚠⚠ THE DEFAULT IS THE FRONTEND'S, AND IT USED TO BE THIS FILE'S
+///
+/// `unset` was `Detach` for every caller, because that is tmux's own default — and it is the WRONG
+/// default for a window. Register item 282, measured by the owner with a mouse: closing the attached
+/// session QUIT THE WHOLE APP with three other sessions alive. That is not a crash; it is the honest
+/// consequence of detaching a client that has nowhere to put an empty screen. **A terminal client
+/// detaches to a shell; a window detaches to nothing**, so one constant cannot serve both, and this
+/// file is the wrong place to know which is asking.
+///
+/// The reference is herdr (read at `9a4ce5e1`, `src/app/actions.rs:1665`), whose own comment states
+/// the rule this now defaults to: *"Keep focus on the previously focused workspace"* — and which,
+/// with none left, keeps the app alive on an empty state rather than ending. ⚠ **sprag has no word
+/// for that last part** and cannot get one here: a `WireHost` is scoped to a session at boot, so
+/// *no session* is not a state it can hold. Registered rather than half-built.
+///
 /// # Why this is no longer `SPRAG_DETACH_ON_DESTROY`
 ///
 /// It was an env var read once at boot, and its own note said a runtime `set-option` would write the
@@ -161,18 +176,18 @@ const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 /// reconcile them: `sprag show-options` runs in its own process and cannot see the environment of the
 /// client it is describing, so it would print a policy that client is not using — the exact failure
 /// this front keeps meeting. The env was the temporary channel; the option is the durable one.
-fn detach_on_destroy() -> DetachOnDestroy {
+fn detach_on_destroy(unset: DetachOnDestroy) -> DetachOnDestroy {
     match sprag_host::config::options() {
         Ok(options) => options
             .get(sprag_host::options::DETACH_ON_DESTROY)
-            .map_or(DetachOnDestroy::Detach, parse_detach_on_destroy),
+            .map_or(unset, parse_detach_on_destroy),
         Err(error) => {
             tracing::warn!(
                 target: "sprag_client::wire",
                 %error,
                 "using the default destroy policy",
             );
-            DetachOnDestroy::Detach
+            unset
         }
     }
 }
@@ -964,6 +979,52 @@ fn scope_to_view(conn: &mut HostConn, session: &str, attached: bool) {
     }
 }
 
+/// **WHICH KIND OF FRONTEND IS BOOTING** — for the decisions whose right answer differs between a
+/// window and a terminal, and for nothing else.
+///
+/// # ⚠⚠⚠ Why this exists rather than one constant
+///
+/// Register item 282: closing the attached session QUIT THE WHOLE APP while three other sessions
+/// were alive. The policy behind it (`DetachOnDestroy`, private to this module) defaulted to tmux's
+/// `on` for every caller,
+/// and that default is right for exactly one of the two frontends this crate serves. **A terminal
+/// client that detaches hands the person back their shell; a window that detaches has nothing to
+/// draw and ends.** Same policy, same code, opposite outcome — so the default is a fact about the
+/// caller, and a caller is the only party that can state it.
+///
+/// ⚠ It is deliberately NOT *"is there a GPU"* or *"is this sprag-gui"*. What the decision turns on
+/// is whether detaching leaves the person somewhere, and a future frontend answers that about
+/// itself rather than being recognised by name here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Frontend {
+    /// A WINDOW. Detaching leaves an empty frame nobody asked for, so its destroy default prefers a
+    /// surviving session. The reference is herdr (`src/app/actions.rs:1665` at `9a4ce5e1`): *"Keep
+    /// focus on the previously focused workspace"*.
+    Window,
+    /// A TERMINAL client. Detaching returns the person to the shell they launched from, which is
+    /// where tmux's own `on` default is correct and why it stays.
+    Terminal,
+}
+
+impl Frontend {
+    /// This frontend's `DetachOnDestroy` when the user has set none.
+    ///
+    /// ⚠ The type is spelled rather than LINKED: it is private to this module and this method is
+    /// reachable from a public one, so an intra-doc link here is `private_intra_doc_links` under
+    /// `-D warnings`. Measured, not styled — it refused a commit.
+    ///
+    /// ⚠ `Off` rather than `Next` for the window: `Off` prefers the session this client was LAST
+    /// VIEWING and falls back to the list neighbour, which is herdr's rule in both halves — it
+    /// re-finds the previously focused workspace by id, and only when that is gone does it take
+    /// whatever occupies the index.
+    const fn unset_destroy_policy(self) -> DetachOnDestroy {
+        match self {
+            Self::Window => DetachOnDestroy::Off,
+            Self::Terminal => DetachOnDestroy::Detach,
+        }
+    }
+}
+
 /// What this client does when its attached session is DESTROYED — by its own sidebar kill OR out of
 /// band (another client / the `sprag` CLI killing it, its last pane exiting) — the tmux
 /// `detach-on-destroy` policy. The ONE decision "my session is gone, now what": the default
@@ -973,6 +1034,12 @@ fn scope_to_view(conn: &mut HostConn, session: &str, attached: bool) {
 /// (never switch on one trigger and detach on the other). Only the LATENCY differs: the sidebar kill
 /// switches inline, while an out-of-band destroy applies its switch on the next paint (the poll flags
 /// it and the UI-thread reconcile performs it), a beat later.
+///
+/// ⚠⚠⚠⚠ **THIS DOC BELONGS TO THIS ENUM AND WAS SEPARATED FROM IT ONCE**, on 2026-08-17, by a
+/// supervising session that inserted [`Frontend`] between the two. Rust then read the whole block as
+/// `Frontend`'s: `Self::Detach` stopped resolving and a public item was documenting a link to a
+/// private one, which `-D warnings` refuses. It cost the loop sharing this tree a refused commit.
+/// **An item goes above a doc block, never between one and the item it describes.**
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum DetachOnDestroy {
     /// tmux `on` (default): DETACH — the client leaves (asks the shell to quit).
@@ -1220,6 +1287,9 @@ fn destroy_successor(
 
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
 pub struct WireHost {
+    /// WHICH KIND OF FRONTEND holds this client, kept for the whole of its life because the
+    /// decision it feeds is taken on a DESTROY — long after the boot that knew. See [`Frontend`].
+    frontend: Frontend,
     /// The pane data cache ([`Cache`]) in host order: identity + live frame + tracked
     /// dims per pane. The UI thread reads it under a brief lock; the poll thread refreshes
     /// each pane's frame under the same lock. Addressed by [`PaneId`] — the GUI's
@@ -1510,6 +1580,10 @@ pub struct BootSpec<'a> {
     /// How many panes to ensure when this boot CREATES its session (an attach adopts what is
     /// there and ignores this).
     pub panes: usize,
+    /// WHICH KIND OF FRONTEND this is, for the defaults whose right answer differs between a window
+    /// and a terminal — today only the destroy policy. See [`Frontend`], and item 282 for what one
+    /// shared default cost.
+    pub frontend: Frontend,
 }
 
 /// A session THIS boot created — and the obligation that comes with having created it.
@@ -1720,6 +1794,7 @@ impl WireHost {
     /// it is a detached process this GUI does not own. Every failure carries a [`BootError`]
     /// (naming the endpoint, and what became of a session this boot created); see [`boot`](Self::boot).
     pub fn spawn_or_attach(
+        frontend: Frontend,
         argv: Option<Vec<String>>,
         cols: u16,
         rows: u16,
@@ -1742,6 +1817,7 @@ impl WireHost {
                 cols,
                 rows,
                 panes: n_panes,
+                frontend,
             },
             on_change,
             quit,
@@ -1932,6 +2008,7 @@ impl WireHost {
         // path a session switch re-spawns through ([`spawn_poll_for`]) — one poll-spawn SSOT for
         // boot and switch, so neither can drift from the other.
         let host = Self {
+            frontend: spec.frontend,
             cache,
             layout,
             windows,
@@ -2035,7 +2112,13 @@ impl WireHost {
             Arc::clone(&self.message),
             Arc::clone(&self.on_change),
             Arc::clone(&self.quit),
-            Arc::new(detach_on_destroy),
+            {
+                // Resolved on every DESTROY, never captured as a value: the user may `set-option`
+                // mid-run and the poll thread must read what is true then. Only the frontend's
+                // fallback is captured, because that one cannot change.
+                let unset = self.frontend.unset_destroy_policy();
+                Arc::new(move || detach_on_destroy(unset))
+            },
             Arc::clone(&self.lost_session),
             Arc::clone(&stop),
             since0,
@@ -2551,7 +2634,13 @@ impl WireHost {
             (held.list.clone(), held.anchor)
         };
         let now = self.live_sessions().unwrap_or_else(|| seen.clone());
-        destroy_successor(detach_on_destroy(), &seen, anchor, &now, killed)
+        destroy_successor(
+            detach_on_destroy(self.frontend.unset_destroy_policy()),
+            &seen,
+            anchor,
+            &now,
+            killed,
+        )
     }
 
     /// Every session as of NOW, read on this client's own connection — or [`None`] when the daemon
@@ -5148,6 +5237,54 @@ mod tests {
                 attached: 0,
             })
             .collect()
+    }
+
+    /// ⚠⚠⚠⚠ **A WINDOW THAT CLOSES ITS OWN SESSION GOES SOMEWHERE; A TERMINAL LEAVES** — register
+    /// item 282, which the owner found with a mouse: the app quit with three other sessions alive.
+    ///
+    /// # Why this asserts the CONSEQUENCE and not the constant
+    ///
+    /// `Frontend::Window.unset_destroy_policy() == Off` is a restatement of the line it is meant to
+    /// hold, and it would stay green if `Off` itself came to detach. What a person met was not a
+    /// policy name, it was a window ending — so the claim is *the successor is not a detach*, read
+    /// through the same function the live client calls.
+    ///
+    /// ⚠⚠⚠ **AND THE TERMINAL HALF IS NOT SYMMETRY, IT IS THE POINT.** One shared default is what
+    /// caused this, so a fix that made BOTH frontends switch would have replaced one wrong-for-half
+    /// constant with another: a `sprag-tui` client that switched sessions instead of detaching would
+    /// leave the person's terminal painting a session they did not ask for, where tmux hands their
+    /// shell back. The two arms must DIFFER, and either arm alone would pass while the other rotted.
+    ///
+    /// ⚠⚠ REVERT-PROOF: give `Frontend::Window` the terminal's answer and the first assertion goes
+    /// red naming the item; give the terminal the window's and the second does.
+    ///
+    /// ⚠ The reference for the window's arm is herdr at `9a4ce5e1`
+    /// (`src/app/actions.rs:1665 close_selected_workspace`), whose own comment is *"Keep focus on the
+    /// previously focused workspace"* — `Off`'s two halves exactly. What herdr ALSO does and this
+    /// cannot reach is stay alive on an empty state when nothing survives; a `WireHost` is scoped to
+    /// a session at boot, so *no session* is not a state it can hold. That half is registered, not
+    /// silently dropped.
+    #[test]
+    fn the_windows_unset_destroy_policy_switches_where_the_terminals_leaves() {
+        let list = session_list(&["a", "b", "c"]);
+        let window = plan(Frontend::Window.unset_destroy_policy(), &list, "b");
+        assert_ne!(
+            window,
+            Successor::Detach,
+            "⚠⚠⚠⚠ ITEM 282: a WINDOW that destroys its own session must land on another one while \
+             any other session is alive. Detaching a window leaves nothing to draw and the app \
+             ends — measured by the owner with sessions 1, 3 and 4 still there. Got {window:?}",
+        );
+
+        let terminal = plan(Frontend::Terminal.unset_destroy_policy(), &list, "b");
+        assert_eq!(
+            terminal,
+            Successor::Detach,
+            "⚠⚠⚠ AND THE TERMINAL MUST STILL LEAVE. Detaching hands the person back the shell they \
+             launched from, which is tmux's own default and correct here — a `sprag-tui` that \
+             switched instead would repaint their terminal with a session they never asked for. If \
+             this arm goes, the fix has replaced one wrong-for-half default with another",
+        );
     }
 
     /// The policy names parse to the tmux values, DEFAULTING to detach for anything unrecognized —

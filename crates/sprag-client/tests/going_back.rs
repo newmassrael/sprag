@@ -135,6 +135,9 @@ fn boot(sock: &Path) -> WireHost {
             cols: 80,
             rows: 24,
             panes: 1,
+            // Not what this file measures — nothing here destroys a session, so no destroy policy is
+            // consulted. `Window` because that is the frontend whose client this stands in for.
+            frontend: sprag_client::Frontend::Window,
         },
         Arc::new(|| {}),
         Arc::new(NeverQuits),

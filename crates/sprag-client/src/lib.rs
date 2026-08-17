@@ -63,3 +63,11 @@ pub use wire::WireHost;
 /// [`WireHost::boot`], and a caller that must decide what to tell its user about a failed boot
 /// needs the facts (which daemon, what was left behind) rather than a formatted sentence.
 pub use wire::{BootError, BootSpec};
+
+/// WHICH KIND OF FRONTEND is booting, for the defaults whose right answer differs between a window
+/// and a terminal.
+///
+/// Public because only the caller can answer it: this crate serves both frontends and one shared
+/// default is what register item 282 measured — a window that closed its attached session and quit
+/// with three others alive, because it inherited the default that is correct for a terminal.
+pub use wire::Frontend;

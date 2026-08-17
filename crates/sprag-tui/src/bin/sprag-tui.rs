@@ -205,6 +205,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let waker = terminal.waker();
 
     let host = WireHost::spawn_or_attach(
+        // A TERMINAL client: detaching hands the person back the shell they launched from, which is
+        // where tmux's own `on` default is right. The window's is not — item 282.
+        sprag_client::Frontend::Terminal,
         // No argv: the host's own `$SHELL`, the same default `sprag attach` gives the GUI.
         None,
         split.panes.cols,

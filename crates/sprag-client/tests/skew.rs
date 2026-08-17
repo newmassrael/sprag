@@ -144,6 +144,9 @@ fn boot(sock: &Path, session: &str) -> WireHost {
             cols: 80,
             rows: 24,
             panes: 1,
+            // Irrelevant here: a skew is refused at `client/hello`, long before any destroy policy
+            // is read. `Window` stands in for the frontend a person actually meets a skew from.
+            frontend: sprag_client::Frontend::Window,
         },
         Arc::new(|| {}),
         Arc::new(NeverQuits),
