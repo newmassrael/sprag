@@ -1203,6 +1203,197 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **A TURN THAT OUTRUNS ITS BOUND IS LOOKED AT AGAIN, NEVER JUDGED — SO NO BOUND CAN MAKE
+/// A JUDGE DEAF.** Item 441's third control, and it rules the last CHEAP cause out.
+///
+/// # ⚠⚠⚠⚠ What was being hunted, and what this answered instead
+///
+/// Two controls have driven a live `claude` and both HEARD the marker, so the deaf run's brief and
+/// its budget pair are out. The remaining suspect was the fourth difference — *what the agent
+/// does*, whose visible half is that the deaf run's turns are minutes long where a control's is
+/// seconds — and the cheapest way to make a turn end somewhere other than the agent's own full stop
+/// is to bound it far too short. **The guess was that such a turn is judged on a fragment**, which
+/// would produce `Heard::NotSaid` with `lost` 0: item 441's exact reading.
+///
+/// It is not. `Over::NotYet` — the bound running out with the peer still working — raises
+/// `AiLoopEvent::Null` and **the machine stays in `working`**; the next pass simply looks again.
+/// Measured here rather than only read: at a bound of [`CUT_SHORT`] the walk carries
+/// `Working: looked, nothing had happened` twice on the first turn alone, and every judgement that
+/// eventually happened happened **after the agent had really finished** — `heard: true`, deaf
+/// judgements 0, three milestone reflections. ⇒ **A short bound costs passes, not evidence.**
+///
+/// ⚠⚠ **ITS UNIT SIBLING ALREADY HOLDS THE RULE** (`outer.rs`: *"a turn that overran is NOT an
+/// event — the document has no word for it"*), so what this adds is the LIVE premise: a real agent
+/// really does outrun a bound this size, repeatedly, and the judge is still never handed the
+/// fragment. **A stand-in cannot say that, because a stand-in's turn is over in milliseconds.**
+///
+/// # ⚠⚠⚠ The one field
+///
+/// [`a_live_judge_hears_the_marker_whatever_the_milestone_asked_for`] with `turn_within_ms` alone
+/// changed — from the 20 seconds a live reply comfortably fits in, down to [`CUT_SHORT`], which no
+/// agent finishes a sentence inside. Everything else is that gate's, including the brief the deaf
+/// run used and the 3-and-3 budget.
+///
+/// # ⚠⚠⚠⚠ What it asserts, and why the PREMISE is asserted too
+///
+/// Both halves, because either alone is a gate that can answer about nothing. The bound must
+/// actually have expired mid-turn — otherwise this is the first control again under another name —
+/// **and** no judgement may have said the agent declined to declare. ⚠ A run whose agent replied
+/// inside 2.5 seconds would satisfy the second and measure none of it, which is register item 404's
+/// disease; the first assertion is what refuses that reading.
+///
+/// ⚠⚠⚠ **AND IT GOES RED FOR THE MUTATION THAT MATTERS**: give `Over::NotYet` an event of its own
+/// into `judging` and this run judges three fragments, so `deaf` stops being 0.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::{AiLoopState, Brief};
+
+    /// The same budget as both controls, and equal to `reflect_every` for the same reason: with the
+    /// two equal the BUDGET road cannot open, so a run that never hears its marker ends by
+    /// exhausting the budget — and **its pane is therefore still there to be read**, which a run
+    /// that reflected would not leave behind.
+    const LIVE_MAX_TURNS: i64 = 3;
+
+    /// **THE ONE FIELD.** Short enough that no live agent finishes a reply inside it, long enough
+    /// that the prompt is delivered and the peer is plainly working on it — so what this cuts short
+    /// is a turn IN PROGRESS rather than one that never started.
+    const CUT_SHORT: Duration = Duration::from_millis(2_500);
+
+    let live = Live::start("cut-short");
+
+    let brief = Brief {
+        // ⚠ THE DEAF RUN'S OWN BRIEF, held fixed at the value the first control proved innocent.
+        north_star: "count from one to four in English words, one number per milestone; say the \
+                     north star is reached only after you have said the word four"
+            .to_string(),
+        milestone: "say the word one".to_string(),
+        reference: "answer in one short line and use no tools".to_string(),
+        closing_rules: None,
+        max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
+        reflect_every: Some(LIVE_MAX_TURNS),
+        screen_rules: None,
+        may_answer: None,
+        await_person_ms: Some(0),
+        handback_still_ms: None,
+        ready_timeout_ms: None,
+        // ⚠⚠⚠⚠ THE ONE THING CHANGED. The neighbour says `TURN_BOUND`, which a one-line reply fits
+        // inside with room to spare; this says a bound the same reply cannot fit inside at all.
+        turn_within_ms: Some(CUT_SHORT.as_millis() as i64),
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
+    )
+    .expect("a loop whose turns are bounded short still starts");
+    let marker = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .done_marker;
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 24,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let walked: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    // ⚠⚠ DIAGNOSTIC ONLY, and it is usually EMPTY: this run hears its marker, a heard marker
+    // reflects, and a reflection replaces the session — so `live.pane` is a pane that no longer
+    // exists by the time this reads it. The neighbours say the same thing in more words.
+    let screen = live.screen();
+    let marker_rows: Vec<&str> = screen
+        .lines()
+        .filter(|row| row.contains(marker.as_str()))
+        .collect();
+    let heard = walked
+        .iter()
+        .any(|note| note.contains("milestone: the agent said the milestone was reached"));
+    let deaf = walked
+        .iter()
+        .filter(|note| note.contains("the agent had not declared"))
+        .count();
+    // ⚠⚠⚠⚠ THE OTHER READING, COUNTED SEPARATELY, BECAUSE IT IS THE HONEST ONE. A judge that knows
+    // it could not read the whole turn says `Unheard` and names what it lost — item 441's entry
+    // rules eviction out of the deaf run precisely because that reading did NOT appear. If a
+    // cut-short turn produces THIS instead, the driver is already telling the truth and the defect
+    // is somewhere else; the assertion below says so rather than treating the two as one.
+    let unheard = walked
+        .iter()
+        .filter(|note| note.contains("COULD NOT READ THE WHOLE TURN"))
+        .count();
+    // ⚠⚠⚠⚠ **THE PREMISE, AND IT IS A COUNT BECAUSE ONE IS NOT ENOUGH TO PROVE THE BOUND BIT.**
+    // This is the line the driver writes for a pass that raised `AiLoopEvent::Null`. Under
+    // `working` that is `Over::NotYet` — the bound expiring on a peer still at work — or a menu
+    // that vanished between two reads, and this brief raises no menu: it asks for one line and no
+    // tool, and `claude` runs here in auto mode. ⚠ Named rather than assumed, because *the premise
+    // holds for a second reason* is how a control stops being one.
+    let looked_again = walked
+        .iter()
+        .filter(|note| note.starts_with("Working: looked, nothing had happened"))
+        .count();
+    println!(
+        "\n== item 441, control 3: a turn bounded at {CUT_SHORT:?} ==\n  agent: {}\n  heard the \
+         marker: {heard}\n  judgements that said NOT declared: {deaf}\n  judgements that said COULD \
+         NOT READ: {unheard}\n  passes that looked again mid-turn: {looked_again}\n  ended: {:?} \
+         after {} iterations\n  rows on the pane carrying the marker:\n{}\n  walk: {walked:?}\n  \
+         the pane:\n{}\n",
+        live.agent,
+        outcome.state,
+        outcome.iterations,
+        marker_rows
+            .iter()
+            .map(|row| format!("    {row:?}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        live.tail(14),
+    );
+
+    // ── ⚠⚠⚠⚠ 1. THE PREMISE: THE BOUND REALLY DID EXPIRE UNDER A WORKING AGENT ──
+    assert!(
+        looked_again >= 2,
+        "⚠⚠⚠⚠ this gate measured NOTHING: at {CUT_SHORT:?} a live turn must outrun its bound and \
+         leave the loop looking again, and the walk shows that {looked_again} time(s). Either the \
+         agent answered inside the bound — in which case this is the first control under another \
+         name — or the run never got a turn under way at all. Walk: {walked:?}",
+    );
+    // ── ⚠⚠⚠⚠⚠ 2. AND NO FRAGMENT WAS EVER JUDGED ──
+    assert!(
+        deaf == 0 && unheard == 0,
+        "⚠⚠⚠⚠⚠ A BOUND CAN MAKE A JUDGE DEAF AFTER ALL, which is item 441's reading arriving from \
+         a road the register never listed: the loop looked again {looked_again} time(s), so turns \
+         WERE outrunning {CUT_SHORT:?}, and it still judged {deaf} turn(s) as *the agent had not \
+         declared* and {unheard} as *could not read the whole turn*. A turn the bound ended is a \
+         fragment, and neither reading is a statement anybody may make about one. Walk: {walked:?}",
+    );
+    // ── ⚠⚠ 3. AND THE MARKER WAS STILL HEARD, so the bound cost passes rather than evidence ──
+    assert!(
+        heard,
+        "⚠⚠⚠ the agent's marker must still reach the judge on a run whose turns outran their bound \
+         — a bound that costs the RUN its convergence is not merely cheap in the wrong place. \
+         Looked again {looked_again} time(s), ended {:?}. Walk: {walked:?}",
+        outcome.state,
+    );
+    assert_ne!(
+        loops.state(),
+        AiLoopState::Failed,
+        "⚠⚠ a run that FAILED was not measuring what its judge can hear. Walk: {walked:?}",
+    );
+}
+
 #[test]
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_briefed_loop_converges_against_a_live_agent() {
