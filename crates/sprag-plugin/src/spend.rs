@@ -30,6 +30,19 @@
 //! `JobProcess::argv`, which already answers on both platforms sprag builds for. The file is called
 //! what sprag called it, and no directory is involved.
 //!
+//! # ⚠⚠⚠⚠ AND THAT ROAD IS ONLY OPEN FOR AN AGENT SPRAG ITSELF LAUNCHED
+//!
+//! A minted name is a claim about **who started the process**, and nothing else here owns that
+//! fact. Measured 2026-08-17 on the machine this loop runs on: `claude` 2.1.233 honours
+//! `--session-id` exactly (a probe filed its record under the name it was given), and **not one of
+//! the twenty-five live `claude` processes carried the flag at all**. An agent a person started, or
+//! a pane re-made by hand after a failed delivery, has no minted name — so the whole road answers
+//! `None` and the loop reads a zero it cannot distinguish from a small session (register item 431).
+//!
+//! ⇒ [`spend_at`] is the road that does not depend on who launched the agent: the agent STATES
+//! where it writes on its own submit hook, and a statement needs no derivation. This one stays as
+//! the fallback for a peer with no hooks, which is the only peer that states nothing.
+//!
 //! # This is a per-tool adapter, exactly as [`reply`](crate::reply) is
 //!
 //! `claude`'s record is JSONL under `~/.claude/projects/<dir>/<session>.jsonl`. A second agent adds
