@@ -5192,7 +5192,16 @@ impl OuterLoop {
     /// most productive turn. **Registered rather than guessed at.**
     fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> Heard {
         let Some(marker) = self.text_of(variable) else {
-            return Heard::NotSaid;
+            // ⚠⚠⚠⚠⚠ **THE FOURTH WORLD, AND IT LOOKS AT NO PANE AT ALL** — register item 441. A
+            // datamodel that cannot say what the marker IS leaves this predicate answering *the
+            // agent did not declare*, which is the fail-safe direction (one more turn, never a
+            // convergence nobody earned) and is also a claim about an agent nobody asked.
+            //
+            // ⚠⚠⚠ `read: 0` IS HONEST HERE — nothing was read — but it is the SAME `0` a turn that
+            // printed nothing leaves, so this world is narrowed rather than separated. Giving it a
+            // reading of its own changes what the DOCUMENT does with it, and that is a decision
+            // with its own measurement rather than a rider on this one. **Registered.**
+            return Heard::NotSaid { read: 0 };
         };
         let produced = self.driving.since.taken(panes, self.driving.pane);
         // ⚠⚠⚠⚠ **AND THE UNFINISHED LAST LINE COUNTS WHEN — AND ONLY WHEN — THE CHILD HAS EXITED.**
@@ -5239,7 +5248,14 @@ impl OuterLoop {
             // ⚠⚠⚠ THE ORDER IS THE CLAIM: a marker FOUND is `Said` whatever was evicted, because a
             // line that is there was not lost. Only an absence has to be qualified, and this is the
             // qualification the answer could not carry before.
-            (false, 0) => Heard::NotSaid,
+            //
+            // ⚠⚠⚠⚠ AND THE ABSENCE NOW SAYS WHAT IT WAS AN ABSENCE IN — register item 441. `lines`
+            // is exactly what the predicate above looked at, so the number is the reading's own and
+            // not a second look at the pane; a caller told `0` knows the turn printed nothing, and
+            // one told sixty knows the marker was REJECTED rather than missing.
+            (false, 0) => Heard::NotSaid {
+                read: lines.len() as u64,
+            },
             (false, lost) => Heard::Unheard { lost },
         }
     }
@@ -5427,7 +5443,31 @@ pub enum Heard {
     /// The marker is on a line this turn produced, and no echo discount claimed it.
     Said,
     /// It is not there, and nothing this turn produced was thrown away — so it was not said.
-    NotSaid,
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND IT CARRIES WHAT IT READ, BECAUSE THIS ONE WORD COVERED FOUR WORLDS AND A LIVE
+    /// RUN SPENT NINE TURNS INSIDE THEM** — register item 441. A judgement saying *the agent had
+    /// not declared* is produced when the agent printed nothing this turn, when the line carrying
+    /// the marker failed `stands_alone`, when `wraps_onto` discounted it as the question coming
+    /// back, and when the datamodel could not say what the marker even is. ⚠ Those three are named
+    /// rather than linked: they are crate-private, and a public item's doc may not point at one.
+    /// **Every one of them
+    /// reached the document, the walk and the register as the same sentence**, so nine identical
+    /// judgements could not be told from one another or from an ordinary quiet turn — which is this
+    /// crate's oldest disease, and the rule at the top of its method file.
+    ///
+    /// The count separates them at no cost to anybody: a turn that printed nothing reads **0**, and
+    /// a turn whose marker was rejected reads the whole reply. ⚠ It is complete LINES since this
+    /// turn's mark — `report::Since`'s unit, not the pane's rows — so it is the number the
+    /// predicate itself looked at rather than a second measurement of the screen.
+    ///
+    /// ⚠⚠ **IT IS NOT ON THE WIRE AND MUST NOT BE.** The machine routes on
+    /// `_event.data.unheard`, which stays `false` here; this number reaches a reader through the
+    /// walk's prose, which is free. **What the document decides is unchanged** — an unheard marker
+    /// still costs one more turn.
+    NotSaid {
+        /// Complete lines the judge read since this turn's prompt was delivered.
+        read: u64,
+    },
     /// ⚠⚠⚠ **IT IS NOT THERE AND LINES WERE LOST**, so this run cannot tell the two apart. Carries
     /// how many complete lines the history evicted, because *"some"* is not something a reader can
     /// act on and the count is what says whether a bigger scrollback would have held it.
@@ -5455,7 +5495,7 @@ impl Heard {
     pub const fn unheard(self) -> Option<u64> {
         match self {
             Self::Unheard { lost } => Some(lost),
-            Self::Said | Self::NotSaid => None,
+            Self::Said | Self::NotSaid { .. } => None,
         }
     }
 
@@ -5478,11 +5518,17 @@ impl Heard {
             // goes to `reflecting`, never back to work — and answered rather than left to a panic,
             // because the type is public and a caller printing a reading is a reader too.
             Self::Said => "the agent said the marker".to_string(),
-            Self::NotSaid => {
-                "the judge read this whole turn and the agent had not declared, which is what an \
-                 ordinary turn looks like — nothing here needs acting on"
-                    .to_string()
-            }
+            // ⚠⚠⚠⚠ THE COUNT IS IN THE SENTENCE FOR `Unheard`'s REASON, one arm down: it is the
+            // whole of what a reader acts on. A judgement that read NOTHING and one that read a
+            // sixty-line reply and rejected the marker in it are the same word and completely
+            // different problems — register item 441, where nine of these in a row said nothing
+            // about which.
+            Self::NotSaid { read } => format!(
+                "the judge read this whole turn — {read} complete line(s) of it — and the agent had \
+                 not declared, which is what an ordinary turn looks like; nothing here needs acting \
+                 on. ⚠ A 0 here is a turn that printed nothing since its prompt, which an agent \
+                 that answered is not"
+            ),
             Self::Unheard { lost } => format!(
                 "THE JUDGE COULD NOT READ THE WHOLE TURN: {lost} complete lines were evicted from \
                  the pane's history before it looked, so the marker's absence is not the agent \
@@ -8575,7 +8621,11 @@ mod tests {
 
         assert_eq!(
             loops.said_done(&Lossy { lost: 0 }),
-            Heard::NotSaid,
+            // ⚠⚠⚠ THE COUNT IS THIS DOUBLE'S OWN ONE LINE, and spelling it is not decoration —
+            // register item 441. It says the judge REACHED the pane and read what was there, which
+            // is what separates *the agent said nothing* from *nobody looked*; a `0` here would be
+            // the same word about a completely different failure.
+            Heard::NotSaid { read: 1 },
             "⚠⚠ THE CONTROL: with nothing evicted, a marker that is not there was NOT SAID, and the \
              run may act on that absence. If this arm is ever `Unheard` the type says every turn is \
              unreadable and the distinction is worth nothing",
@@ -8652,6 +8702,123 @@ mod tests {
              answer is still that this run DOES NOT KNOW — `Said` converges on text that may \
              predate the turn, and `NotSaid` claims an agent was silent when nobody looked. \
              ⚠ `lost: 0` is the point: the doubt is not a shortage and does not travel as one",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AN ABSENCE SAYS HOW MUCH OF A TURN IT IS AN ABSENCE IN** — register item 441, and
+    /// the number that would have ended it on its first judgement.
+    ///
+    /// # ⚠⚠⚠⚠ What one word was hiding, measured on a live run before this existed
+    ///
+    /// A live agent said `MILESTONE REACHED` on **nine** turns and every judgement came back *the
+    /// agent had not declared*. That sentence is produced by four different worlds — the turn
+    /// printed nothing since its prompt, the line carrying the marker failed [`stands_alone`],
+    /// [`wraps_onto`] discounted it as the question coming back, and the datamodel could not say
+    /// what the marker IS — and **all four reached the walk, the document and the register
+    /// identically**. Three live controls had to be run to rule out things the reading itself could
+    /// have answered.
+    ///
+    /// The count splits the first world off from the rest at no cost to anybody: **0 is a turn that
+    /// printed nothing**, and anything else is a turn whose lines were read and whose marker was
+    /// not among them — or was and got rejected. ⚠ It does not separate the last three from each
+    /// other, and does not pretend to; what it does is tell *nobody looked* from *nothing was
+    /// there*, which is this crate's oldest disease in its most expensive place.
+    ///
+    /// # ⚠⚠ Why a double rather than a live pane
+    ///
+    /// The claim is about the ARITHMETIC of the answer — that the number reported is the number of
+    /// lines the predicate itself looked at — and a real pane cannot be made to hand back exactly
+    /// three lines on demand without becoming a fixture about scrolling. Both arms come from one
+    /// stand-in differing in one field, so nothing but what was printed separates them.
+    #[test]
+    fn an_unsaid_marker_says_how_many_lines_the_judge_read() {
+        /// A pane that produced exactly the lines it was given, lost nothing, and never says the
+        /// marker.
+        struct Printed(Vec<String>);
+        impl PaneAccess for Printed {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            // ⚠ ALIVE, for the eviction gate's reason above: a peer this double called gone would
+            // send the run down a different door, and `partial` would start counting.
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Printed {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                Some(sprag_vt::LinesSince {
+                    lines: self.0.clone(),
+                    next: 10,
+                    // ⚠⚠ NOTHING EVICTED, or the answer would be `Unheard` and this gate would be
+                    // the eviction gate above under another name.
+                    lost: 0,
+                    partial: String::new(),
+                    restarted: false,
+                })
+            }
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "printf 'PARROT-READY\\n'; exec cat"]);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        let run = RunContext::uncancellable();
+        // ⚠ Driven to a prompt so `since` is an ADDRESS rather than a row trail — the trail
+        // fallback cannot report a line count that means anything.
+        loops.pump(&access, &run).expect("idle to priming");
+
+        assert_eq!(
+            loops.said_done(&Printed(Vec::new())),
+            Heard::NotSaid { read: 0 },
+            "⚠⚠⚠ A TURN THAT PRINTED NOTHING MUST SAY SO. This is the world where the peer never \
+             answered — the run's own question did not even come back — and it is the one a reader \
+             must act on differently: prompting again is right here and useless when the agent DID \
+             reply and its marker was rejected",
+        );
+        assert_eq!(
+            loops.said_done(&Printed(vec![
+                "● I looked at the file and it is unchanged.".to_string(),
+                String::new(),
+                "Nothing further is required.".to_string(),
+            ])),
+            Heard::NotSaid { read: 3 },
+            "⚠⚠⚠⚠ AND A TURN THE JUDGE READ THREE LINES OF MUST SAY THREE — the same word as the \
+             arm above and a completely different problem. ⚠ The number is `lines`' own length, so \
+             a reading that answered `0` here would be claiming the judge never reached a pane it \
+             plainly did, which is register item 441's nine judgements exactly",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
@@ -9374,7 +9541,9 @@ mod tests {
                  against the agent either",
             );
             assert_eq!(
-                loops.checked(&access, &run, Heard::NotSaid),
+                // ⚠ The count is immaterial to THIS claim — nothing is asked whatever the judge
+                // read — so it is spelled `0` rather than dressed up as a measurement.
+                loops.checked(&access, &run, Heard::NotSaid { read: 0 }),
                 Checked::NotAsked,
                 "⚠⚠⚠ AND NOTHING IS ASKED WHERE NOTHING WAS CLAIMED: a check answers *was that \
                  claim true*, so it has no meaning before there is a claim — and a process spawned \
@@ -9628,12 +9797,15 @@ mod tests {
         let (evicted_said, evicted_reads) =
             judged(&evicted).expect("the evicted run must judge once");
 
-        assert_eq!(
-            plain_said,
-            Some(Because::Judged(Heard::NotSaid)),
+        // ⚠⚠ THE VARIANT AND NOT THE COUNT, because the count is a fact about how much this
+        // fixture's peer happened to print and this claim is about which READING the edge carried
+        // (item 423). `an_unsaid_marker_says_how_many_lines_the_judge_read` is where the number
+        // itself is held.
+        assert!(
+            matches!(plain_said, Some(Because::Judged(Heard::NotSaid { .. }))),
             "⚠⚠ THE ORDINARY TURN, and it must say so rather than say nothing: a reader who cannot \
              tell this from an unreadable turn has to guess which of the two their run is having. \
-             Walked {plain:?}",
+             It said {plain_said:?}. Walked {plain:?}",
         );
         assert_eq!(
             evicted_said,
@@ -9899,15 +10071,20 @@ mod tests {
                     // silence 423 is about. `Judged(NotSaid)` is the door: this fixture's history
                     // evicts nothing, so an `Unheard` here would mean the run could not read a turn
                     // it plainly can, and the convergence below would be luck.
-                    const DOORS: [Because; 3] = [
-                        Because::Reflected(ReflectReason::Milestone),
-                        Because::Closed(DoneReason::NoSuccessor),
-                        Because::Judged(Heard::NotSaid),
-                    ];
+                    // ⚠⚠ A MATCH RATHER THAN A LIST SINCE `NotSaid` GAINED ITS COUNT (item 441):
+                    // how many lines this peer printed on an ordinary turn is not one of the three
+                    // doors, and a `contains` over concrete values would have made it one.
+                    const DOORS: &str =
+                        "Reflected(Milestone), Closed(NoSuccessor), Judged(NotSaid)";
                     assert!(
-                        because.is_none_or(|reason| DOORS.contains(&reason)),
+                        because.is_none_or(|reason| matches!(
+                            reason,
+                            Because::Reflected(ReflectReason::Milestone)
+                                | Because::Closed(DoneReason::NoSuccessor)
+                                | Because::Judged(Heard::NotSaid { .. })
+                        )),
                         "⚠⚠ {from:?} --{raised:?}--> {to:?} says the edge was taken because \
-                         {because:?}, and the only doors this brief leaves open are {DOORS:?} — \
+                         {because:?}, and the only doors this brief leaves open are {DOORS} — \
                          this run has budget to spare, so it cannot reach `stopping`, and its peer \
                          never says the north star marker. Walked {walked:?}",
                     );
