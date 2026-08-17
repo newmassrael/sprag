@@ -1231,6 +1231,26 @@ pub enum Because {
     /// declaring the north star reached, or a reached milestone with no successor named. See
     /// [`DoneReason`].
     Closed(DoneReason),
+    /// The pass LEFT `judging` for another turn, and this is **WHAT THE JUDGE SAW** — see [`Heard`].
+    ///
+    /// # ⚠⚠⚠⚠ The two edges this separates are the ones that decide whether a run can converge
+    ///
+    /// `judging` has two doors onto `working` and they mean opposite things: `_event.data.unheard`
+    /// (the driver COULD NOT READ the turn) and the bare default (it read it, and the agent had not
+    /// declared). **Both rendered `Judging --Judge--> Working`, byte for byte**, so a run that could
+    /// never converge looked exactly like a run doing ordinary work — measured on the owner's own
+    /// loop as **32 judgements and 0 declarations**, and again at 23/0, while the pane held
+    /// `MILESTONE REACHED`. Register item 423.
+    ///
+    /// ⚠⚠ **AND THE ONE THAT MATTERS IS THE ONE A READER CAN ACT ON.** *Unheard* says grow the
+    /// scrollback, or find out why a turn is producing enough output to evict its own answer; *not
+    /// said* says nothing at all, because it is what an ordinary turn looks like. A channel that
+    /// spelled them the same asked every reader to guess which of the two they had.
+    ///
+    /// ⚠ It is the FROM state that selects this arm and not the TO — `working` is entered from four
+    /// states and only this one has a reading behind it. The other three carry [`None`], which is
+    /// the honest answer: nothing judged anything on the way there.
+    Judged(Heard),
 }
 
 impl Because {
@@ -1242,6 +1262,7 @@ impl Because {
             Self::Reflected(reason) => reason.noted(),
             Self::Stopped(ceiling) => ceiling.noted(),
             Self::Closed(ending) => ending.noted(),
+            Self::Judged(heard) => heard.noted(),
         }
     }
 }
@@ -1815,6 +1836,20 @@ pub struct OuterLoop {
     /// A turn that was never started can never end, so there is nothing here to wait for and
     /// nothing to judge — see `say`, which holds the live measurement this field exists for.
     unasked: bool,
+    /// ⚠⚠⚠ **WHAT THE JUDGE SAW ON THIS JUDGEMENT** — the reading behind `_event.data.unheard`,
+    /// kept so the edge out of `judging` can say which of its two meanings it had. Register item
+    /// 423; see [`Because::Judged`].
+    ///
+    /// ⚠⚠ **WRITTEN FRESH ON EVERY JUDGEMENT AND NEVER LATCHED**, unlike
+    /// [`stopping_short`](Self::stopping_short) one field up — and the two are worth reading
+    /// together, because they are opposite facts. A ceiling that fell stays fallen for the rest of
+    /// the run; a reading belongs to ONE turn, and carrying a stale one onto a later edge is R396's
+    /// thirteen identical lines in a third place.
+    ///
+    /// ⚠ [`None`] until the first judgement, which is why the reader is keyed on the FROM state: a
+    /// pass that entered `working` from anywhere else has judged nothing, and there is nothing here
+    /// that would be true of it.
+    saw: Option<Heard>,
 }
 
 impl OuterLoop {
@@ -1889,6 +1924,7 @@ impl OuterLoop {
             ended: Vec::new(),
             stopping_short: None,
             unasked: false,
+            saw: None,
         })
     }
 
@@ -2869,30 +2905,47 @@ impl OuterLoop {
             // EVERY run to `stopping`. Nothing can publish one — every `Ceiling::wire_str` is a
             // non-empty literal, and a gate holds that rather than this comment. `judged`'s
             // measured reason for a boolean beside a name, one key over, is the same fact.
-            AiLoopState::Judging => Raise::carrying(
-                AiLoopEvent::Judge,
-                serde_json::json!({
-                    "done": self.said_done(panes).said(),
-                    // ⚠⚠⚠ AND WHETHER A `false` ABOVE IS TRUSTWORTHY. `done` is a yes-or-no and
-                    // cannot say *"I could not see"*; this is that third answer, published so the
-                    // DOCUMENT decides what an unreadable turn is worth. `false` when the absence
-                    // is trustworthy, the LOST LINE COUNT when it is not — a number rather than a
-                    // flag, because what a reader does about it depends on whether one line went
-                    // or a thousand. See [`Heard`].
-                    //
-                    // ⚠⚠ A NUMBER OR `false`, NEVER `0`, for the reason two keys down: this
-                    // datamodel is Lua, where `0` is TRUE, so a zero would make every judgement of
-                    // every run look unreadable.
-                    "unheard": match self.said_done(panes).unheard() {
-                        Some(lost) => serde_json::Value::from(lost),
-                        None => serde_json::Value::Bool(false),
-                    },
-                    "stop_short": match self.stopping_short {
-                        Some(ceiling) => serde_json::Value::from(ceiling.wire_str()),
-                        None => serde_json::Value::Bool(false),
-                    },
-                }),
-            ),
+            AiLoopState::Judging => {
+                // ⚠⚠⚠⚠ **THE PANE IS READ ONCE AND THE READING IS KEPT** — and both halves of that
+                // are fixes rather than tidying.
+                //
+                // ONCE: `done` and `unheard` are two faces of ONE answer, and this arm used to call
+                // `said_done` twice — two reads of a live pane, a turn's output arriving between
+                // them. A screen that gained a line in that gap could publish `done: false` beside
+                // `unheard: false` off two different moments, which is a judgement about no
+                // observation that ever existed. The crate's own rule, from 368 and 429: **two
+                // values that are compared are read at the same moment.**
+                //
+                // KEPT: what the judge saw is the only thing that distinguishes the two edges out
+                // of here onto `working`, and it is gone the instant this payload is built. See
+                // [`Because::Judged`] and register item 423.
+                let heard = self.said_done(panes);
+                self.saw = Some(heard);
+                Raise::carrying(
+                    AiLoopEvent::Judge,
+                    serde_json::json!({
+                        "done": heard.said(),
+                        // ⚠⚠⚠ AND WHETHER A `false` ABOVE IS TRUSTWORTHY. `done` is a yes-or-no and
+                        // cannot say *"I could not see"*; this is that third answer, published so the
+                        // DOCUMENT decides what an unreadable turn is worth. `false` when the absence
+                        // is trustworthy, the LOST LINE COUNT when it is not — a number rather than a
+                        // flag, because what a reader does about it depends on whether one line went
+                        // or a thousand. See [`Heard`].
+                        //
+                        // ⚠⚠ A NUMBER OR `false`, NEVER `0`, for the reason two keys down: this
+                        // datamodel is Lua, where `0` is TRUE, so a zero would make every judgement of
+                        // every run look unreadable.
+                        "unheard": match heard.unheard() {
+                            Some(lost) => serde_json::Value::from(lost),
+                            None => serde_json::Value::Bool(false),
+                        },
+                        "stop_short": match self.stopping_short {
+                            Some(ceiling) => serde_json::Value::from(ceiling.wire_str()),
+                            None => serde_json::Value::Bool(false),
+                        },
+                    }),
+                )
+            }
 
             // ⚠⚠⚠ THE AUTHOR'S STANDING INSTRUCTIONS, CARRIED OUT. A dialog no consent covered is
             // here; whether one of the document's own rules claims it — and what happens if one
@@ -2990,6 +3043,14 @@ impl OuterLoop {
                 // `<transition>`s but `return`s in [`Self::reflect`], which is why counting the
                 // document's edges would not have found it. Register item 267.
                 AiLoopState::Closing => self.closing_because().map(Because::Closed),
+                // ⚠⚠⚠⚠ TWO DOORS ONTO `working` AND THEY MEAN OPPOSITE THINGS — an unreadable turn
+                // and an ordinary one — and this is the ONE arm keyed on where the pass came FROM.
+                // `working` is entered from four states and only a judgement has a reading behind
+                // it; the other three would be handed a value belonging to some earlier turn, which
+                // is the staleness `saw`'s own doc refuses. Register item 423.
+                AiLoopState::Working if from == AiLoopState::Judging => {
+                    self.saw.map(Because::Judged)
+                }
                 AiLoopState::Idle
                 | AiLoopState::Priming
                 | AiLoopState::Working
@@ -4848,6 +4909,40 @@ impl Heard {
         match self {
             Self::Unheard { lost } => Some(lost),
             Self::Said | Self::NotSaid => None,
+        }
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — the sentence a walk carries when this
+    /// reading is why an edge was taken. See [`Because::Judged`].
+    ///
+    /// ⚠⚠ **NO WORD IN FRONT OF IT, UNLIKE ITS THREE SIBLINGS IN [`Because`].** Those each render
+    /// `word(): describe()`, and their words are datamodel values the document assigns and echoes
+    /// back. This reading crosses as a COUNT or `false` (`_event.data.unheard`), so there is no word
+    /// to be faithful to — inventing one here would publish a spelling nothing else in the product
+    /// serves, which is the defect `every_published_word_is_a_word_the_plugin_host_accepts` exists
+    /// to catch.
+    ///
+    /// ⚠ The count is IN the sentence, because it is the whole of what a reader acts on: one evicted
+    /// line and a thousand are the same fact and completely different problems.
+    #[must_use]
+    pub fn noted(self) -> String {
+        match self {
+            // ⚠ Unreachable on the edge this is written for — a judgement that HEARD the marker
+            // goes to `reflecting`, never back to work — and answered rather than left to a panic,
+            // because the type is public and a caller printing a reading is a reader too.
+            Self::Said => "the agent said the marker".to_string(),
+            Self::NotSaid => {
+                "the judge read this whole turn and the agent had not declared, which is what an \
+                 ordinary turn looks like — nothing here needs acting on"
+                    .to_string()
+            }
+            Self::Unheard { lost } => format!(
+                "THE JUDGE COULD NOT READ THE WHOLE TURN: {lost} complete lines were evicted from \
+                 the pane's history before it looked, so the marker's absence is not the agent \
+                 declining to declare — a run whose judgements all say this cannot converge however \
+                 long it goes on, and what fixes it is a bigger scrollback or a turn that prints \
+                 less after its answer"
+            ),
         }
     }
 }
@@ -8140,6 +8235,277 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHAT THE JUDGE SAW** — register item 423, which is 240/261/265's class
+    /// at the one state where the answer decides whether the run can converge AT ALL.
+    ///
+    /// # ⚠⚠⚠ What was measured, and what it cost
+    ///
+    /// `judging` has two doors onto `working`: `_event.data.unheard` — the driver could not read the
+    /// turn — and the bare default, where it read it and the agent had not declared. **Both wrote
+    /// `Judging --Judge--> Working`.** On the owner's own loop that was **32 judgements and 0
+    /// declarations** in one run and 23/0 in the next, with `MILESTONE REACHED` on the pane the whole
+    /// time: a run that could not converge, reported in the same words as a run doing ordinary work.
+    /// `sprag events -t <S>` was read too and carries no judgement data at all.
+    ///
+    /// # ⚠⚠ Two runs differing in ONE fact, and it is not the fixture's screen
+    ///
+    /// Both arms are the same stand-in agent, the same brief and the same pane. The second one's
+    /// access ADDS an eviction to what the real history answers — `pane_lines_since` with `lost`
+    /// bumped — so the marker is equally absent in both and only the accountability of that absence
+    /// differs. A double that also changed the lines would be measuring its own screen.
+    ///
+    /// ⚠ The claim is asserted on the FIRST judgement of each run, because that is where the two
+    /// readings are comparable: driven on, the evicted run never converges (which is the defect) and
+    /// the plain one goes on to reflect (which is another gate's subject).
+    #[test]
+    fn the_walk_says_what_the_judge_saw() {
+        /// The one edge this gate is about — one arrow, two opposite meanings.
+        const THE_EDGE: &str = "Judging --Judge--> Working";
+
+        /// The gate's access with LINES THROWN AWAY UNDER IT: everything the real one answers, and a
+        /// history that admits to having evicted `lost` more complete lines before each read.
+        ///
+        /// ⚠⚠ ADDITIVE over the real read rather than a synthetic one, so the run underneath stays a
+        /// real run — the same peer, the same output, the same judgement, with an eviction the only
+        /// difference. `lost: 0` is therefore the untouched control by construction rather than by a
+        /// second fixture somebody has to keep in step.
+        struct Evicting {
+            pane: WorkspacePaneAccess,
+            lost: u64,
+            /// How many times this pane's produced lines have been read — the other half of the
+            /// judgement's claim. See the last block of this gate.
+            reads: Mutex<u32>,
+        }
+        impl PaneAccess for Evicting {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                self.pane.pane_ids()
+            }
+            fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+                self.pane.pane_collapsed(id)
+            }
+            fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                self.pane.pane_rows(id)
+            }
+            fn pane_eof(&self, id: PaneId) -> Option<bool> {
+                self.pane.pane_eof(id)
+            }
+            fn pane_full_text(&self, id: PaneId) -> Option<String> {
+                self.pane.pane_full_text(id)
+            }
+            fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+                self.pane.pane_full_lines(id)
+            }
+            fn inject(
+                &self,
+                id: PaneId,
+                keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                self.pane.inject(id, keys)
+            }
+            fn lifecycle(&self) -> Option<&dyn crate::access::PaneLifecycle> {
+                self.pane.lifecycle()
+            }
+            fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+                self.pane.supervision()
+            }
+            fn input_echo(&self) -> Option<&dyn crate::access::PaneInputEcho> {
+                self.pane.input_echo()
+            }
+            fn terminal_modes(&self) -> Option<&dyn crate::access::PaneTerminalModes> {
+                self.pane.terminal_modes()
+            }
+            fn foreground_job(&self) -> Option<&dyn crate::access::PaneForegroundJob> {
+                self.pane.foreground_job()
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Evicting {
+            fn pane_lines_since(&self, id: PaneId, cursor: u64) -> Option<sprag_vt::LinesSince> {
+                *self.reads.lock().expect("the read counter") += 1;
+                let mut since = self.pane.output_lines()?.pane_lines_since(id, cursor)?;
+                since.lost += self.lost;
+                Some(since)
+            }
+        }
+
+        /// Drive a run for `passes` pumps (or until it ends) and hand back every edge it took: where
+        /// from, where to, what it said about itself, and **how many times that one pass read the
+        /// pane's produced lines**.
+        fn walk(lost: u64, passes: usize) -> Vec<(AiLoopState, AiLoopState, Option<Because>, u32)> {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠⚠ A PEER THAT NAMES A SUCCESSOR, so the run REFLECTS AND GOES BACK TO WORK rather
+            // than closing at its first reflection. That road is what makes the last assertion
+            // below possible at all: `working` has to be entered from somewhere other than a
+            // judgement AFTER a judgement has set a reading, or the leak it guards against cannot
+            // occur in this fixture and its mutation would pass.
+            let (workspace, pane) = crate::testing::standin_agent_reflecting(
+                2,
+                "the next checkpoint this stand-in proposes",
+                "the register entry for it",
+            );
+            let access = Evicting {
+                pane: supervised(&workspace),
+                lost,
+                reads: Mutex::new(0),
+            };
+            let mut loops = ready_bounded_at(
+                lua,
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "the stand-in answers two prompts and then says the marker"
+                        .to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    max_turns: Some(Counted::Of(40)),
+                    // ⚠ OFF, so nothing but the judge's own reading can move this run: a budget that
+                    // came round would take the edge into `reflecting` instead, and the pass below
+                    // would be about a different door.
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked = Vec::new();
+            while walked.len() < passes {
+                let before = *access.reads.lock().expect("the read counter");
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from, to, because, ..
+                    } => {
+                        let reads = *access.reads.lock().expect("the read counter") - before;
+                        walked.push((from, to, because, reads));
+                    }
+                    // ⚠ An ENDING stops the walk and is not a failure: the plain arm converges, and
+                    // this gate's claims are about the edges it took on the way.
+                    Pumped::Ended(_) => break,
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            access.lifecycle().expect("lifecycle").close(pane);
+            walked
+        }
+
+        /// The first `judging --> working` edge of `walked`: what it said, and how many times that
+        /// pass read the pane.
+        fn judged(
+            walked: &[(AiLoopState, AiLoopState, Option<Because>, u32)],
+        ) -> Option<(Option<Because>, u32)> {
+            walked
+                .iter()
+                .find(|(from, to, _, _)| {
+                    *from == AiLoopState::Judging && *to == AiLoopState::Working
+                })
+                .map(|(_, _, because, reads)| (*because, *reads))
+        }
+
+        // ⚠ The plain arm is walked FAR ENOUGH TO REFLECT AND PRIME AGAIN, because the last claim
+        // below is about an edge that only exists after a judgement has happened. The evicted arm
+        // needs no such room: it can never converge, which is the defect.
+        let plain = walk(0, 24);
+        let evicted = walk(7, 12);
+
+        let (plain_said, plain_reads) = judged(&plain).expect("the plain run must judge once");
+        let (evicted_said, evicted_reads) =
+            judged(&evicted).expect("the evicted run must judge once");
+
+        assert_eq!(
+            plain_said,
+            Some(Because::Judged(Heard::NotSaid)),
+            "⚠⚠ THE ORDINARY TURN, and it must say so rather than say nothing: a reader who cannot \
+             tell this from an unreadable turn has to guess which of the two their run is having. \
+             Walked {plain:?}",
+        );
+        assert_eq!(
+            evicted_said,
+            Some(Because::Judged(Heard::Unheard { lost: 7 })),
+            "⚠⚠⚠⚠⚠ ITEM 423: the same run with seven lines evicted took the SAME arrow for the \
+             opposite reason — the judge could not read the turn — and the count is what a reader \
+             acts on. Walked {evicted:?}",
+        );
+
+        // ⚠⚠⚠⚠ **AND THE JUDGEMENT READ THE PANE ONCE.** `done` and `unheard` are two faces of ONE
+        // answer and this arm used to ask for it TWICE, so the pair could be composed out of two
+        // different moments of a live pane — a judgement about an observation that never existed
+        // (368 and 429: two values that are compared are read at the same moment). Nothing about the
+        // ANSWER can show that, because on a pane that is not moving both reads agree, and every
+        // fixture's pane is one that is not moving. The count is the only thing that can.
+        //
+        // ⚠⚠⚠ **TWO, AND THE SECOND ONE IS NOT THE JUDGE'S — MEASURED RATHER THAN ASSUMED.** This
+        // pass judges AND owes the next turn's prompt (`Owed::on(Judge, Working)`), and `say` marks a
+        // fresh baseline before typing, which reads the pane's lines for its cursor. So the honest
+        // claim is *the judgement is one of these two*: a judgement that asked twice made it three,
+        // which is the mutation this number catches.
+        assert_eq!(
+            (plain_reads, evicted_reads),
+            (2, 2),
+            "⚠⚠⚠ one judgement and one baseline mark. A third read on this pass is the judge asking \
+             the same question twice. Walked {plain:?} and {evicted:?}",
+        );
+
+        let (ordinary, unread) = (
+            plain_said.expect("the ordinary reading").noted(),
+            evicted_said.expect("the unreadable reading").noted(),
+        );
+        assert_ne!(
+            ordinary, unread,
+            "⚠⚠⚠ AND THE TWO SENTENCES MUST DIFFER, which is the whole of what a person reads. \
+             {THE_EDGE:?} rendered one string for both, and one of them is a run that can never \
+             converge",
+        );
+        assert!(
+            unread.contains('7'),
+            "⚠⚠ and the unreadable one carries HOW MANY lines went, because one evicted line and a \
+             thousand are the same fact and different problems: {unread:?}",
+        );
+
+        // ⚠⚠⚠⚠ **AND NO OTHER ROAD INTO `working` MAY CARRY A READING** — the mutation that says why
+        // this assertion exists. Keying the reason on the STATE ENTERED rather than on the EDGE
+        // passes every claim above and still writes *"the agent said the marker"* onto the fresh
+        // prompt of the next session, because the reading is a LEVEL that outlives the judgement
+        // that set it. That is R396's thirteen identical lines, and it was GREEN here until this
+        // block existed.
+        let elsewhere: Vec<_> = plain
+            .iter()
+            .filter(|(from, to, _, _)| *to == AiLoopState::Working && *from != AiLoopState::Judging)
+            .collect();
+        // ⚠⚠⚠ THE POPULATION IS ASSERTED FIRST, because *"none of them carries a reason"* is
+        // satisfied by there being none — and the leak needs a judgement to have already happened,
+        // so a walk that stopped at the first turn would pass this while proving nothing.
+        assert!(
+            elsewhere.len() > 1,
+            "⚠⚠ this walk must ENTER `working` from somewhere other than a judgement, more than \
+             once — the first prompt, and at least one after a judgement has set a reading — or the \
+             next assertion is about an empty set: {plain:?}",
+        );
+        assert!(
+            elsewhere.iter().all(|(_, _, because, _)| because.is_none()),
+            "⚠⚠⚠ a pass that judged NOTHING must say nothing about a judgement. These did: {:?}",
+            elsewhere
+                .iter()
+                .filter(|(_, _, because, _)| because.is_some())
+                .collect::<Vec<_>>(),
+        );
+    }
+
     /// ⚠⚠⚠ **THE OUTER LOOP DRIVES A REAL PANE — debt 74's driver, end to end.**
     ///
     /// Everything before this round drove `ai_loop.scxml`'s machine by hand-feeding it events. The
@@ -8262,7 +8628,7 @@ mod tests {
                          longer the unobstructed run the assertions below are about. Walked \
                          {walked:?}",
                     );
-                    // ⚠⚠ AND THIS RUN PASSES EXACTLY TWO MANY-DOORED STATES, BY THE ONE DOOR EACH
+                    // ⚠⚠ AND THIS RUN PASSES EXACTLY THREE MANY-DOORED STATES, BY THE ONE DOOR EACH
                     // THAT ITS BRIEF LEAVES OPEN. This brief's `reflect_every` equals its
                     // `max_turns` and this peer asks nothing, so neither the budget guard nor the
                     // standing-instruction one can fire — the agent saying the marker is the only
@@ -8276,9 +8642,17 @@ mod tests {
                     // ⚠ It was ONE reason until register item 267 split `closing`'s arrow, and the
                     // list is spelled rather than loosened: a run that reported `Closed(Declared)`
                     // would mean this peer had claimed the whole job finished, which it cannot do.
-                    const DOORS: [Because; 2] = [
+                    //
+                    // ⚠⚠⚠ **AND THE THIRD ARRIVED THE SAME WAY, ONE ROUND LATER (item 423).** This
+                    // peer answers two prompts before it says the marker, so its FIRST judgement is
+                    // an ordinary turn — and that edge used to carry nothing, which is exactly the
+                    // silence 423 is about. `Judged(NotSaid)` is the door: this fixture's history
+                    // evicts nothing, so an `Unheard` here would mean the run could not read a turn
+                    // it plainly can, and the convergence below would be luck.
+                    const DOORS: [Because; 3] = [
                         Because::Reflected(ReflectReason::Milestone),
                         Because::Closed(DoneReason::NoSuccessor),
+                        Because::Judged(Heard::NotSaid),
                     ];
                     assert!(
                         because.is_none_or(|reason| DOORS.contains(&reason)),
