@@ -4491,7 +4491,9 @@ const RUN_POLL: Duration = Duration::from_millis(120);
 fn orchestrate(args: Vec<String>) -> io::Result<()> {
     let wants_help = args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h");
     let (session, args) = scope_and_rest(args, "orchestrate")?;
-    let mut conn = connect()?;
+    // PRE-FLIGHTED, like every window and pane verb — see [`runs`] for the answer a mistyped
+    // session used to get from this family.
+    let mut conn = connect_scoped(session.as_deref())?;
     let forms = published_forms(
         &mut conn,
         session.as_deref(),
@@ -4866,7 +4868,32 @@ fn usage_for(
     }
 }
 
-/// `runs`: every loop this daemon holds, and how the finished ones ended.
+/// `runs [-t SESSION]`: every loop this daemon holds, and how the finished ones ended.
+///
+/// # Why the scope is PRE-FLIGHTED, and what it used to answer instead
+///
+/// These four verbs pass `-t` through as a request's out-of-band scope. A session name nobody has
+/// is refused by the daemon as *nothing is served at that path*, because that is the only thing an
+/// unresolvable scope can look like from the wire — and this client reads that fault as VERSION
+/// SKEW, which for every other cause it is. So a typo used to come back as one of two wrong
+/// answers, measured 2026-08-17 against a daemon built from HEAD that serves all four paths:
+///
+/// ```text
+///                       -t work (a session that exists)   -t nosuch
+/// orchestrate           names the plugins                 host rpc error: NoExternalAtPath
+/// runs                  no runs (start one ...)           host rpc error: NoExternalAtPath
+/// cancel-run 999        no run 999 is in flight           "... is older than this build of
+/// stand-down 999        no run 999 is in flight            sprag. Restart it: `sprag kill-server`"
+/// ```
+///
+/// ⚠⚠⚠⚠ **The second pair is worse than the leaked variant name.** A leaked variant is ugly and
+/// admits it failed; that sentence is confident and wrong — it diagnoses skew that is not there and
+/// tells the operator to end EVERY session on the machine, in answer to a mistyped word. On a host
+/// running the debt loop, following it kills live runs.
+///
+/// [`connect_scoped`] is the pre-flight every window and pane verb already made, and the one item
+/// 425 gave `processes` / `resources` for this same half of the same defect. Found by the sweep
+/// that item asked of every other verb publishing `-t`: nine readers probed, eight already clean.
 fn runs(args: Vec<String>) -> io::Result<()> {
     let (session, args) = scope_and_rest(args, "runs")?;
     if let Some(extra) = args.first() {
@@ -4874,7 +4901,7 @@ fn runs(args: Vec<String>) -> io::Result<()> {
             "runs: unexpected argument {extra:?} (it takes only -t SESSION)"
         )));
     }
-    let mut conn = connect()?;
+    let mut conn = connect_scoped(session.as_deref())?;
     let answer = query_slot(
         &mut conn,
         scoped_params(
@@ -5124,7 +5151,8 @@ fn cancel_run(args: Vec<String>) -> io::Result<()> {
             "cancel-run: {id:?} is not a run id (see `sprag runs`)"
         ))
     })?;
-    let mut conn = connect()?;
+    // Pre-flighted, and this verb is why the family's own defect mattered — see [`runs`].
+    let mut conn = connect_scoped(session.as_deref())?;
     invoke_action(
         &mut conn,
         scoped_call(
@@ -5169,7 +5197,8 @@ fn stand_down(args: Vec<String>) -> io::Result<()> {
             "stand-down: {id:?} is not a run id (see `sprag runs`)"
         ))
     })?;
-    let mut conn = connect()?;
+    // Pre-flighted for [`cancel_run`]'s reason, which is [`runs`]'.
+    let mut conn = connect_scoped(session.as_deref())?;
     invoke_action(
         &mut conn,
         scoped_call(

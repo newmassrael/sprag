@@ -9024,6 +9024,104 @@ fn a_running_loop_is_cancelled_and_an_absent_one_is_told_apart() {
     );
 }
 
+/// **A MISTYPED SESSION IS A MISTYPED SESSION AT THE RUN VERBS TOO — not a Rust variant name, and
+/// above all not an order to kill the daemon.**
+///
+/// # The defect, measured
+///
+/// Found by the sweep that item 425 (`processes` / `resources` ignoring `-t`) ended with: the same
+/// question asked of every other verb that publishes `-t SESSION`. Nine readers were probed and
+/// eight refused an unknown scope cleanly. The run family did not. Measured 2026-08-17 against a
+/// daemon built from HEAD — which serves every one of these paths, and the `-t 0` column is the
+/// control that PROVES it serves them:
+///
+/// ```text
+///                       -t 0 (control)              -t nosuch
+/// orchestrate           names the plugins           host rpc error: NoExternalAtPath
+/// runs                  no runs (start one ...)     host rpc error: NoExternalAtPath
+/// cancel-run 999        no run 999 is in flight     "... is older than this build of sprag.
+/// stand-down 999        no run 999 is in flight      Restart it: `sprag kill-server`"
+/// ```
+///
+/// ⚠⚠⚠⚠ **THE SECOND PAIR IS THE SHARP ONE AND IT IS WORSE THAN A LEAKED VARIANT NAME.** A leaked
+/// variant is ugly and admits it failed. This one is CONFIDENT AND WRONG: it diagnoses version skew
+/// that is not there and prescribes `sprag kill-server` — so the answer to a typo'd session name is
+/// an instruction to end every session on the machine. On the box that runs the debt loop, a person
+/// following it would kill live runs.
+///
+/// # Why it lands here and not on the daemon
+///
+/// The verbs pass `-t` through as the request's out-of-band scope and never pre-flight the name, so
+/// the daemon's refusal of an unknown scope arrives as *this path is not served* — which the client
+/// then reads as skew, because for every OTHER cause that is what it means. [`connect_scoped`] is
+/// the pre-flight every window and pane verb already makes, and 425 gave it to `processes` and
+/// `resources` for exactly this half of the same defect.
+///
+/// # What is asserted
+///
+/// Every verb of the family, each with its own required arguments, and the CONTROL beside it: the
+/// same command scoped to a session that DOES exist must still reach the daemon and answer about
+/// the run registry. Without that column this test would pass on a build where `-t` refused
+/// everything, which is the opposite defect.
+#[test]
+fn a_mistyped_session_at_the_run_verbs_is_not_an_order_to_kill_the_daemon() {
+    let (_guard, sock, _pane) = daemon_with_one_pane("scoped-run-verbs");
+
+    // (argv without the scope, a phrase the REAL session's answer carries). The control phrase is
+    // what proves this daemon serves the path, so a refusal below can only be about the name.
+    let family: &[(&[&str], &str)] = &[
+        (&["orchestrate"], "orchestrate"),
+        (&["runs"], "no runs"),
+        (&["cancel-run", "999"], "no run 999 is in flight"),
+        (&["stand-down", "999"], "no run 999 is in flight"),
+    ];
+
+    for (argv, reached) in family {
+        // THE CONTROL FIRST. `work` exists, so whatever comes back is the verb's own answer and
+        // this daemon demonstrably serves the path the refusal below would otherwise be blamed on.
+        let mut real: Vec<&str> = argv.to_vec();
+        real.extend(["-t", "work"]);
+        let run = sprag(&sock, &real);
+        assert!(
+            run.stdout.contains(reached) || run.stderr.contains(reached),
+            "`sprag {}` reaches the run registry, or nothing below discriminates: {} / {}",
+            real.join(" "),
+            run.stdout,
+            run.stderr,
+        );
+
+        let mut ghosted: Vec<&str> = argv.to_vec();
+        ghosted.extend(["-t", "nosuch"]);
+        let ghost = sprag(&sock, &ghosted);
+        assert!(
+            !ghost.ok,
+            "`sprag {}` is refused: {}",
+            ghosted.join(" "),
+            ghost.stdout,
+        );
+        assert!(
+            ghost.stderr.contains("no session named"),
+            "`sprag {}` names the session the caller got wrong: {}",
+            ghosted.join(" "),
+            ghost.stderr,
+        );
+        // The two wrong answers this exists to remove, named as themselves so a future rewrite
+        // cannot reintroduce either while still saying something plausible.
+        assert!(
+            !ghost.stderr.contains("NoExternalAtPath"),
+            "`sprag {}` must not print a Rust variant name at an operator: {}",
+            ghosted.join(" "),
+            ghost.stderr,
+        );
+        assert!(
+            !ghost.stderr.contains("kill-server"),
+            "`sprag {}` must not answer a typo with an order to end every session: {}",
+            ghosted.join(" "),
+            ghost.stderr,
+        );
+    }
+}
+
 /// ⚠⚠ **THE DOOR ONTO THE WIRE'S GRAMMAR CAN BE POINTED AT THE LOOP** — and what it says there
 /// includes the arguments INSIDE `guardrails`.
 ///
