@@ -658,6 +658,124 @@ impl Delivered {
     }
 }
 
+/// **WHAT PROVED THE PROMPT ARRIVED** — the evidence one delivery was accepted on, kept so a run's
+/// walk can say it and a person reading one knows what they will find on the pane.
+///
+/// # ⚠⚠⚠⚠ Why a delivery that SUCCEEDED still owes a word — register item 434
+///
+/// [`Delivered::Confirmed`] and [`Delivered::Reported`] are both successes and they say OPPOSITE
+/// things about the pane: one has the prompt painted on it and the other has nothing of the prompt
+/// on it at all, because a composer folded the paste away. Every caller reduced the two to *how
+/// many bytes went in* — `OuterLoop::say` answered `Ok(bytes)` — so **a supervisor sent to look at
+/// the pane for a prompt that was folded away had nothing telling them it will not be there.** It
+/// is register item 423's disease in a fourth place: the result is written down and the grounds are
+/// not.
+///
+/// # ⚠⚠⚠⚠⚠ AND IT IS WHAT MAKES ITEM 421'S ROAD READABLE OFF A LIVE RUN — register item 433
+///
+/// That fix's claim is that a prompt a composer folded away is delivered on the AGENT'S OWN
+/// ACCOUNT, and its own entry says no gate can schedule the proof: only a live run retires it.
+/// [`Account`](Self::Account) in a walk **is** that proof, read where it happened.
+///
+/// The first attempt at taking it had to go the other way round and the difference is the argument
+/// for this type. On 2026-08-18 a live run reached `reflecting`, delivered the driver's own
+/// reflection prompt and replaced its session — and NOTHING in the run said which road the delivery
+/// took. It had to be reconstructed afterwards from arithmetic on the walk's byte counts against the
+/// agent's transcript (2 × 1,314 + 1 = the 2,629 the walk reported, so two injections and one
+/// submit, so the first was swallowed and the screen carried the second) — a reading nobody
+/// supervising a run will do, and one that is only possible while the transcript still exists.
+///
+/// # ⚠⚠ Why a word rather than the two `bool`s that already answer it
+///
+/// [`Delivered::is_confirmed`] and [`Delivered::is_on_screen`] answer this between them, and a
+/// caller carrying the pair would be publishing a two-bit code with four readings, of which no
+/// delivery produces two. A closed vocabulary is what a journal LINE can render and a reader can
+/// scan for.
+///
+/// ⚠ **NO WORD IN FRONT OF THE SENTENCE**, deliberately, and for [`crate::outer::Heard`]'s reason:
+/// nothing in this product spells any of these as a wire value or a datamodel word, so inventing
+/// one here would publish a spelling nothing serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Witnessed {
+    /// The pane painted the prompt back and nothing but the program could have painted it —
+    /// [`Delivered::Confirmed`]. The ordinary road, and the one a person can check by eye.
+    Painted,
+    /// The prompt is on the screen and the TERMINAL may be what put it there — the pane's echo is
+    /// on, so this is not evidence the program read a byte ([`Delivered::OnScreenOnly`]).
+    Echoed,
+    /// ⚠⚠⚠⚠⚠ **THE AGENT NAMED THIS QUESTION AS THE ONE IT RECEIVED, AND ITS SCREEN NEVER CARRIED
+    /// THE TEXT** — [`Delivered::Reported`], register item 421's road.
+    ///
+    /// The strongest evidence a delivery has and the one where LOOKING AT THE PANE ANSWERS NOTHING:
+    /// the composer folded the paste away, so a supervisor sent there finds `[Pasted text +N lines]`
+    /// where they were told to expect a prompt.
+    Account,
+    /// Nothing was asked of the screen, because this peer paints nothing until its prompt is
+    /// submitted — the caller's `shows_the_prompt` is false, so the bytes went in and the submit
+    /// was pressed on trust.
+    ///
+    /// ⚠ Not a failure and not a weaker [`Painted`](Self::Painted): it is the honest answer for a
+    /// peer whose screen could never have carried the evidence.
+    Unchecked,
+    /// The run ended between the typing and the submit — [`Delivered::Stopped`]. Nothing was asked,
+    /// and the composer may be holding the text.
+    Unasked,
+    /// The submit went out and the run ended before its evidence could arrive —
+    /// [`Delivered::Unwitnessed`]. A question may well have been asked; nothing here saw it land.
+    Unproven,
+}
+
+impl Witnessed {
+    /// The evidence `delivered` was accepted on, or [`None`] for the two answers that are REFUSALS
+    /// rather than deliveries ([`Delivered::Unconfirmed`] and [`Delivered::Unsubmitted`]) — whose
+    /// callers turn them into a named [`PaneError`] and never reach a walk's evidence channel at
+    /// all.
+    ///
+    /// ⚠⚠ EXHAUSTIVE over [`Delivered`], so an eighth answer arrives here as a variant that no
+    /// longer compiles rather than as a delivery a walk silently says nothing about.
+    #[must_use]
+    pub const fn of(delivered: Delivered) -> Option<Self> {
+        match delivered {
+            Delivered::Confirmed { .. } => Some(Self::Painted),
+            Delivered::OnScreenOnly { .. } => Some(Self::Echoed),
+            Delivered::Reported { .. } => Some(Self::Account),
+            Delivered::Stopped { .. } => Some(Self::Unasked),
+            Delivered::Unwitnessed { .. } => Some(Self::Unproven),
+            Delivered::Unconfirmed { .. } | Delivered::Unsubmitted { .. } => None,
+        }
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — the sentence a walk carries for the
+    /// delivery this pass made.
+    #[must_use]
+    pub const fn noted(self) -> &'static str {
+        match self {
+            Self::Painted => "the pane painted the prompt back, so it is on that screen",
+            Self::Echoed => {
+                "the prompt is on that screen and the pane's own echo could have put it there, so \
+                 nothing here proves the program has read it"
+            }
+            Self::Account => {
+                "the agent itself named this question as the one it received and the prompt is \
+                 NOWHERE ON THAT SCREEN — its composer folded the paste away, so a person sent to \
+                 look at the pane for it will find a fold and not the text"
+            }
+            Self::Unchecked => {
+                "nothing was asked of the screen: this peer paints nothing before a submit, so the \
+                 prompt went in and the Enter was pressed on trust"
+            }
+            Self::Unasked => {
+                "the run ended between the typing and the Enter, so nothing was asked — and the \
+                 composer may still be holding the text"
+            }
+            Self::Unproven => {
+                "the Enter went out and the run ended before anything could see it land, so a \
+                 question may well have been asked"
+            }
+        }
+    }
+}
+
 /// Inject `text` into `pane` and confirm the pane took it, re-injecting until it does.
 ///
 /// The read-back is [`PaneAccess::pane_collapsed`] — the pane's rows joined with nothing between
@@ -2227,6 +2345,114 @@ mod tests {
             "⚠⚠ an agent with no hooks reports no question, so a press over a screen that never \
              showed the text would be exactly the blind submit this module exists to prevent. Got \
              {by_the_screen:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **EVERY ANSWER THIS MODULE GIVES SAYS WHAT PROVED IT, AND THE TWO REFUSALS SAY
+    /// NOTHING** — register item 434, held over the mapping itself rather than through a driver.
+    ///
+    /// # ⚠⚠⚠ Why a pure gate here as well as the loop's two
+    ///
+    /// The gates that drive a loop reach exactly the answers their fixtures can produce —
+    /// `Unchecked` for the end-to-end peer, `Account` for the folded one — and the four remaining
+    /// arms are reachable only through a pty race (a run's clock expiring INSIDE a delivery) or a
+    /// pane in cooked mode. A timing fixture for those would be flaky, and **a flaky gate is worse
+    /// than no gate**; this one is neither, because the mapping is a total function over a closed
+    /// set and can simply be enumerated.
+    ///
+    /// ⚠⚠ **IT IS THE MUTATION THE DRIVER GATES LET THROUGH THAT ARGUES FOR IT.** Narrowing
+    /// [`Witnessed::of`] to answer [`None`] for the two stop answers is green against every fixture
+    /// that drives a loop — and it would put a run's clock expiring mid-delivery into the SAME
+    /// reading as a pass that delivered nothing at all, which is this register's oldest disease.
+    #[test]
+    fn every_delivery_answer_says_what_proved_it_and_the_two_refusals_say_nothing() {
+        let bytes = Written::of(7);
+        let answers = [
+            (
+                Delivered::Confirmed {
+                    attempts: 1,
+                    written: bytes,
+                },
+                Some(Witnessed::Painted),
+            ),
+            (
+                Delivered::OnScreenOnly {
+                    attempts: 1,
+                    written: bytes,
+                    echo: Some(PaneEcho::ByTheTerminal),
+                },
+                Some(Witnessed::Echoed),
+            ),
+            (
+                Delivered::Reported {
+                    attempts: 1,
+                    written: bytes,
+                },
+                Some(Witnessed::Account),
+            ),
+            (
+                Delivered::Stopped {
+                    attempts: 1,
+                    written: bytes,
+                },
+                Some(Witnessed::Unasked),
+            ),
+            (
+                Delivered::Unwitnessed {
+                    attempts: 1,
+                    written: bytes,
+                    wanted: SubmittedWhen::Unchecked,
+                },
+                Some(Witnessed::Unproven),
+            ),
+            // ⚠ The two that are REFUSALS. Their callers turn them into a named `PaneError`, so a
+            // walk never sees the delivery at all — and answering something here would put a
+            // sentence about arrived evidence on a prompt that did not arrive.
+            (
+                Delivered::Unconfirmed {
+                    attempts: 3,
+                    written: bytes,
+                },
+                None,
+            ),
+            (
+                Delivered::Unsubmitted {
+                    attempts: 1,
+                    written: bytes,
+                    wanted: SubmittedWhen::Unchecked,
+                },
+                None,
+            ),
+        ];
+        for (delivered, expected) in answers {
+            assert_eq!(
+                Witnessed::of(delivered),
+                expected,
+                "⚠⚠⚠ ITEM 434: {delivered:?} must report {expected:?}. A success whose grounds are \
+                 dropped reaches a supervisor as the same `Ok(bytes)` every other success does",
+            );
+        }
+
+        // ⚠⚠⚠⚠ AND NO TWO ANSWERS SHARE A SENTENCE, which is the property a reader actually uses:
+        // a vocabulary whose arms rendered alike would pass every assertion above and still leave
+        // a walk unable to say which road it walked.
+        let sentences: std::collections::BTreeSet<&str> = [
+            Witnessed::Painted,
+            Witnessed::Echoed,
+            Witnessed::Account,
+            Witnessed::Unchecked,
+            Witnessed::Unasked,
+            Witnessed::Unproven,
+        ]
+        .into_iter()
+        .map(Witnessed::noted)
+        .collect();
+        assert_eq!(
+            sentences.len(),
+            6,
+            "⚠⚠⚠ six answers and {} distinct sentences — two roads rendering alike is the defect \
+             this vocabulary was written to end: {sentences:?}",
+            sentences.len(),
         );
     }
 

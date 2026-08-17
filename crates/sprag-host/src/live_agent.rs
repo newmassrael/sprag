@@ -670,6 +670,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 because,
                 unreadable,
                 checked,
+                witnessed,
                 spent: _,
             } => {
                 // ⚠⚠ THE REFUSAL A PASS ARRIVED AT GOES INTO THE LINE, and so does WHY IT TOOK THE
@@ -712,9 +713,24 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 let verdict = checked
                     .map(|verdict| format!(" — {}", verdict.describe()))
                     .unwrap_or_default();
+                // ⚠⚠⚠⚠⚠ AND WHAT PROVED THE PROMPT ARRIVED — register item 434, and **this harness
+                // is the one place it can be measured against a real `claude` rather than a
+                // double**. Item 421's claim is that a prompt an agent's composer FOLDED AWAY is
+                // delivered on that agent's own account, and item 433 says only a live run can
+                // retire it: `Witnessed::Account` on this line is what that looks like when it
+                // happens, and `Painted` is what says the peer's composer did not fold this one.
+                //
+                // ⚠⚠ It is a CHANGE that is published (see `Told`), so a run whose prompts all take
+                // one road says so once — which is what a person watching wants, and what stops
+                // this line repeating down a live walk.
+                let evidence = witnessed
+                    .map(|proof| format!(" — {}", proof.noted()))
+                    .unwrap_or_default();
                 step(
                     began,
-                    &format!("{from:?} --{raised:?}--> {to:?}{cause}{arrived}{unread}{verdict}"),
+                    &format!(
+                        "{from:?} --{raised:?}--> {to:?}{cause}{verdict}{evidence}{arrived}{unread}"
+                    ),
                 );
                 walked.push((from, raised, to));
 
@@ -2033,8 +2049,14 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         "Restarting --SessionReplaced--> Resuming",
         "Resuming --SessionReady--> Priming",
     ] {
+        // ⚠⚠ THE ARROW IS THE CLAIM, AND THE CLAUSES AFTER IT ARE NOT. `==` was right while a walk
+        // line was only ever its arrow; the third of these edges DELIVERS a prompt, so register item
+        // 434's evidence lands on it whenever the road it took differs from the last one a reader
+        // was told about — and this assertion is about *the replacement happened as three acts*,
+        // which no sentence after the arrow can make more or less true. A gate that failed on it
+        // would fail for something it does not claim, in the one live gate that proves item 433.
         assert!(
-            walked.iter().any(|note| note == edge),
+            walked.iter().any(|note| note.starts_with(edge)),
             "⚠⚠⚠ the run must have gone through the replacement as three separate acts — `{edge}` is \
              missing. Walked {walked:?}",
         );

@@ -1380,6 +1380,25 @@ pub enum Pumped {
         /// [`Cost::Bytes`](crate::plugin::Cost::Bytes), so the same `max_cost` ceiling that bounds
         /// every other byte-relay run bounds a loop, and a run's published spend is real.
         spent: u64,
+        /// **WHAT PROVED THIS PASS'S DELIVERY ARRIVED** — and [`None`] both for a pass that
+        /// delivered nothing and for one whose evidence is what this run was already told. See
+        /// [`Witnessed`](crate::deliver::Witnessed) for why a success still owes a word (register
+        /// item 434), and `told` for why it is a CHANGE that is published rather than every
+        /// delivery.
+        ///
+        /// # ⚠⚠⚠ Why it sits beside [`spent`](Self::Moved::spent) and not in
+        /// [`because`](Self::Moved::because)
+        ///
+        /// The two are one fact's two halves — *how many bytes went into the pane* and *what proved
+        /// they arrived* — and the pass that publishes one always has the other. `because` answers a
+        /// different question entirely (*this pass entered a many-doored state; which door?*) and it
+        /// is ALREADY TAKEN on the delivery that matters most: the edge into `reflecting` carries
+        /// both a [`ReflectReason`] and the driver's own reflection prompt, which is the longest
+        /// thing this loop ever delivers and the one item 421 measured three live deaths on.
+        ///
+        /// ⚠ Taken from the loop rather than diffed, because a delivery is an EVENT — see the
+        /// field it is taken from.
+        witnessed: Option<crate::deliver::Witnessed>,
         /// **THE REFUSAL THIS PASS ARRIVED AT** — [`None`] for a pass that reached none, and for
         /// one that merely went on holding the refusal it began with.
         ///
@@ -2147,6 +2166,88 @@ pub struct OuterLoop {
     /// reported — and one that breaks AGAIN, or a replacement session naming a different unreadable
     /// file, is a new finding rather than a silence.
     unaccountable: Option<std::path::PathBuf>,
+    /// ⚠⚠⚠⚠ **WHAT PROVED THIS PASS'S DELIVERY ARRIVED** — register item 434. Written by
+    /// [`say`](Self::say) on every delivery it makes, whichever caller asked for one, and read at
+    /// the funnel so it belongs to the pass that earned it. See
+    /// [`Witnessed`](crate::deliver::Witnessed).
+    ///
+    /// ⚠⚠⚠ **AN EVENT, WHERE [`unaccountable`](Self#structfield.unaccountable) ONE FIELD UP IS A
+    /// LEVEL — and the `take` here is right for exactly the reason it was wrong there.** That field
+    /// is recomputed every judged turn, so taking it only empties a slot about to be refilled and
+    /// the sentence lands on every step anyway. This one is written ONLY WHERE A DELIVERY HAPPENS,
+    /// so an empty slot is the fact *this pass delivered nothing* rather than *there was nothing to
+    /// say* — and a level here would write one delivery's evidence onto every later step, which is
+    /// R396's thirteen identical lines in a fourth place.
+    ///
+    /// ⚠⚠ **AND IT IS WRITTEN AT `say` RATHER THAN AT ITS CALLERS**, which is what makes the claim
+    /// *every delivery this loop makes says what proved it* structural instead of a list of the two
+    /// call sites that exist today. Register item 436 is that list being wrong one module over: a
+    /// second caller of `deliver` was invisible for a whole round because it never asked the
+    /// question.
+    ///
+    /// ⚠ **THE RESIDUE, STATED**: a pass that delivered TWICE would carry the last one's evidence.
+    /// No pass can today — the redirect and the screen rule both `say` from `pumping`, and the
+    /// events they raise (`redirect.done`, `screen.matched`) land in states that owe no prompt
+    /// (`Owed::on`) — so a list would be a shape nothing produces and no reader has.
+    witnessed: Option<crate::deliver::Witnessed>,
+    /// ⚠⚠⚠ **THE EVIDENCE THIS RUN HAS ALREADY TOLD ITS READER ABOUT** — the level
+    /// [`witnessed`](Self#structfield.witnessed)'s event is DIFFED against, so a walk carries the
+    /// answer once and then again whenever it CHANGES.
+    ///
+    /// # ⚠⚠⚠⚠ Why a diff, measured rather than guessed
+    ///
+    /// The first build of this said the evidence on every delivery, and **six neighbouring gates
+    /// went red in one run** — each asserting a walk line that had grown a clause. Reading them is
+    /// what settled the design: `Witnessed::Unchecked` is a fact about the PEER (its caller declared
+    /// `shows_the_prompt`), fixed for the whole run, so a per-delivery sentence repeats one constant
+    /// down the journal. Item 277 measured what that costs — ~99,987 looks erased the transition
+    /// that explained a whole ending — and this loop delivers on most of its steps.
+    ///
+    /// ⚠⚠ **AND THE EVENT THE DIFF EXISTS TO SURFACE IS THE ONE THAT MATTERS**: a run whose
+    /// deliveries have been painting turns to [`Account`](crate::deliver::Witnessed::Account) the
+    /// moment one folds, and THAT line is the one a supervisor must not miss. Silence in between is
+    /// the honest reading — *nothing about the evidence changed* — and it is the same discipline
+    /// `found` is reported under two fields up, for the same reason.
+    ///
+    /// ⚠ **THE TRADE, STATED**: a reader who joins a walk part-way sees no evidence line until the
+    /// road changes. The alternative is one repeated sentence per step, which is the failure above.
+    told: Told,
+}
+
+/// **WHAT A RUN HAS ALREADY BEEN TOLD ABOUT THE GROUNDS OF ITS DELIVERIES** — the level a pass's
+/// own evidence is diffed against, so a walk carries the answer once and again on every CHANGE.
+///
+/// # ⚠⚠⚠⚠ A type rather than two lines at the funnel, because the rule is what breaks
+///
+/// The difference between *say it once* and *say it once and never again* is one comparison, and
+/// **both readings are green against every fixture whose evidence never changes** — which is every
+/// fixture this crate had when this was written. Register item 431 is the same fork one field over:
+/// a value that began LATCHED, which was right for a name scraped off a foreground job and wrong
+/// for a fact the agent states, and the latch refused every later statement in silence.
+///
+/// So the rule lives where it can be driven ON ITS OWN, through a road that changes and changes
+/// back — `a_runs_delivery_evidence_is_said_once_and_again_when_the_road_changes`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Told(Option<crate::deliver::Witnessed>);
+
+impl Told {
+    /// **WHAT THIS PASS SHOULD PUBLISH** given the evidence it earned — [`None`] for a pass that
+    /// delivered nothing, and for one whose grounds are what this run was already told.
+    ///
+    /// ⚠ It RECORDS as it answers, so *what has been told* and *what a walk carries* are one act.
+    /// Two of them would be two facts nobody keeps in step.
+    fn tell(
+        &mut self,
+        now: Option<crate::deliver::Witnessed>,
+    ) -> Option<crate::deliver::Witnessed> {
+        match now {
+            Some(evidence) if self.0 != Some(evidence) => {
+                self.0 = Some(evidence);
+                Some(evidence)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl OuterLoop {
@@ -2224,6 +2325,8 @@ impl OuterLoop {
             saw: None,
             verdict: None,
             unaccountable: None,
+            witnessed: None,
+            told: Told::default(),
         })
     }
 
@@ -3059,6 +3162,13 @@ impl OuterLoop {
         if run.stood_down() {
             self.stand_down();
         }
+        // ⚠⚠⚠⚠ **THE DELIVERY EVIDENCE IS EMPTIED HERE AND NOWHERE ELSE** — register item 434.
+        // Cleared at the TOP of the pass rather than taken at the funnel, because a pass has six
+        // exits and five of them are `?`: a `take` at the funnel would leave a refused delivery's
+        // evidence in the slot for the NEXT pass to publish, which is a sentence about somebody
+        // else's prompt. One line here makes *whatever is in this slot belongs to this pass* true
+        // by construction rather than by every exit remembering.
+        self.witnessed = None;
         let from = self.state();
         match self.pumping(panes, run) {
             // ⚠ NO NOTICE IS RECORDED, and that is deliberate — see [`Noticed`]'s own comment where
@@ -3071,6 +3181,10 @@ impl OuterLoop {
                     raised: AiLoopEvent::PeerGone,
                     to: self.state(),
                     spent: 0,
+                    // ⚠ Diffed rather than written `None`, so this arm cannot become the one place
+                    // a delivery goes unreported if a future act ever types before the door
+                    // refuses. Nothing was delivered here, so it answers `None` today.
+                    witnessed: self.told.tell(self.witnessed),
                     found: None,
                     because: None,
                     // ⚠ This pass never reached a turn's end, so it read no record and discovered
@@ -3418,6 +3532,10 @@ impl OuterLoop {
             raised: event,
             to,
             spent,
+            // ⚠ What `say` recorded during this pass, unless the run has already been told it —
+            // see `telling`. `None` for a pass that delivered nothing at all, since the slot was
+            // emptied at the top of this one.
+            witnessed: self.told.tell(self.witnessed),
             found,
             because,
             unreadable,
@@ -4697,7 +4815,13 @@ impl OuterLoop {
             // peer that paints nothing until it is submitted cannot be confirmed before the submit.
             let mut keys = crate::access::KeyStroke::text(text);
             keys.push(crate::access::KeyStroke::named("Enter"));
-            return Ok(panes.inject(self.driving.pane, &keys)?.bytes());
+            let written = panes.inject(self.driving.pane, &keys)?.bytes();
+            // ⚠ AND THIS DELIVERY SAYS SO TOO — register item 434. A caller whose peer paints
+            // nothing before a submit is precisely the one whose walk must not be read as *the
+            // prompt is on that pane*; recording nothing here would leave it indistinguishable
+            // from a pass that delivered nothing at all.
+            self.witnessed = Some(crate::deliver::Witnessed::Unchecked);
+            return Ok(written);
         }
         let delivered = deliver(
             panes,
@@ -4712,6 +4836,17 @@ impl OuterLoop {
                 ..Delivery::new()
             },
         )?;
+        // ⚠⚠⚠⚠ **WHAT PROVED IT ARRIVED, BEFORE ANY OF THE REFUSALS BELOW READ THE SAME ANSWER** —
+        // register item 434. Written unconditionally so the slot describes THIS delivery and only
+        // this one: the two answers that are refusals map to `None`, which clears an earlier
+        // delivery's evidence rather than leaving a pass to publish somebody else's.
+        //
+        // ⚠⚠ It is the ANSWER that is read and not the contract that was asked for, and those are
+        // different facts: `submit_lands_when` says what WOULD have counted, and this says what
+        // did. A peer whose hooks report the question can still be `Painted`, on a prompt short
+        // enough for its composer to show — so a walk that published the contract would say item
+        // 421's road was taken on every delivery to a hooked agent.
+        self.witnessed = crate::deliver::Witnessed::of(delivered);
         // ⚠ A prompt the pane never took is a REFUSAL, not a turn to wait out. The alternative is
         // a loop that waits its whole bound for an answer to a question that was never asked, and
         // then judges the screen anyway — this crate's most expensive failure class.
@@ -6050,6 +6185,68 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A RUN'S DELIVERY EVIDENCE IS SAID ONCE — AND AGAIN THE MOMENT THE ROAD CHANGES, AND
+    /// AGAIN WHEN IT CHANGES BACK** — register item 434's diff, driven on its own.
+    ///
+    /// # ⚠⚠⚠⚠ The two wrong readings are green against every loop fixture there is
+    ///
+    /// *Say it on every delivery* fills a bounded journal with one constant (item 277's measured
+    /// cost). *Say it once and never again* is a LATCH, which is item 431's defect one field over:
+    /// a value latched because the first reading looked authoritative, and every later statement
+    /// refused in silence. **Neither is visible to a fixture whose evidence never changes**, and
+    /// every loop fixture in this crate has exactly one peer with one contract for its whole life —
+    /// so the rule is driven here, where a road can change and change back.
+    ///
+    /// ⚠⚠ **THE CHANGE-BACK IS THE THIRD CASE AND IT IS THE ONE THAT ROTS.** A run whose deliveries
+    /// paint, then fold, then paint again has three findings, and a channel that reported the first
+    /// two would look correct in every walk anybody had bothered to read. It is the residue register
+    /// item 431 left open on its own diff — *broken → better → broken has no gate* — met here.
+    #[test]
+    fn a_runs_delivery_evidence_is_said_once_and_again_when_the_road_changes() {
+        use crate::deliver::Witnessed;
+
+        let mut told = Told::default();
+        let said: Vec<Option<Witnessed>> = [
+            // A pass that delivered nothing, before anything has been delivered at all.
+            None,
+            Some(Witnessed::Painted),
+            // The same grounds twice more — the constant this diff exists to stop repeating.
+            Some(Witnessed::Painted),
+            Some(Witnessed::Painted),
+            // ⚠ The road changes: the composer folded this one away, and the pane now carries
+            // nothing of the prompt. THIS is the line a supervisor must not miss.
+            Some(Witnessed::Account),
+            Some(Witnessed::Account),
+            // ⚠⚠ AND IT CHANGES BACK, which a latch would swallow.
+            Some(Witnessed::Painted),
+            // A pass with no delivery does not disturb what the run was told.
+            None,
+            Some(Witnessed::Painted),
+        ]
+        .into_iter()
+        .map(|earned| told.tell(earned))
+        .collect();
+
+        assert_eq!(
+            said,
+            vec![
+                None,
+                Some(Witnessed::Painted),
+                None,
+                None,
+                Some(Witnessed::Account),
+                None,
+                Some(Witnessed::Painted),
+                None,
+                None,
+            ],
+            "⚠⚠⚠⚠⚠ ITEM 434: three findings and six silences. Reporting every delivery puts one \
+             constant on most of a bounded journal's steps; reporting only the first is a LATCH, \
+             and a run whose deliveries stopped being visible on the pane would say nothing about \
+             it for the rest of its life",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A LOOP WHOSE PEER FOLDED THE PROMPT AWAY IS DELIVERED ON THE AGENT'S OWN ACCOUNT** —
     /// register item 421, driven from the LOOP's end rather than from `deliver`'s.
     ///
@@ -6192,6 +6389,27 @@ mod tests {
         assert!(
             matches!(moved, Pumped::Moved { .. }),
             "and the loop walks on into the turn it just asked for. Got {moved:?}",
+        );
+        // ⚠⚠⚠⚠⚠ **AND THE RUN SAYS WHICH ROAD IT WALKED** — register item 434, and the half that
+        // makes item 433's live proof READABLE instead of reconstructed.
+        //
+        // The assertion above is satisfied by a delivery confirmed off a SCREEN, which is what
+        // every ordinary prompt to this loop is. The one thing that distinguishes item 421's road
+        // is that the agent's own account was the verdict — and until this field existed the two
+        // reached a supervisor as the same `Ok(bytes)`. Measured on 2026-08-18: a live run took
+        // this whole cycle, and which road its delivery took had to be worked out afterwards from
+        // arithmetic on the walk's byte totals against the agent's transcript.
+        assert!(
+            matches!(
+                moved,
+                Pumped::Moved {
+                    witnessed: Some(crate::deliver::Witnessed::Account),
+                    ..
+                },
+            ),
+            "⚠⚠⚠⚠⚠ ITEM 434: this delivery was accepted on the AGENT'S OWN ACCOUNT and nothing on \
+             that pane carries the prompt, so a supervisor sent to look at it must be told. Got \
+             {moved:?}",
         );
 
         let (refused, control_screen) = start(false);
@@ -7661,6 +7879,9 @@ mod tests {
                 raised: AiLoopEvent::Start,
                 to: AiLoopState::Failed,
                 spent: 0,
+                // ⚠ AND NOTHING WAS DELIVERED — the datamodel stopped answering before a prompt
+                // could be composed, so there is no delivery for evidence to be about.
+                witnessed: None,
                 // ⚠ A DATAMODEL THAT STOPPED ANSWERING IS `Noticed::Undrivable`, not a refusal
                 // about somebody's dialog — so this pass arrived at none, and the journal line for
                 // it carries no reason beyond the edge itself.
@@ -9578,6 +9799,7 @@ mod tests {
         let run = RunContext::uncancellable();
         let mut walked: Vec<(AiLoopState, AiLoopEvent, AiLoopState)> = Vec::new();
         let mut spent_total = 0_u64;
+        let mut evidence_lines = 0_usize;
         let ended = loop {
             // ⚠ Well above the five passes the authored happy path takes and well below the
             // document's own 40-turn ceiling, so a stall is caught by THIS bound and a run that
@@ -9595,12 +9817,39 @@ mod tests {
                     raised,
                     to,
                     spent,
+                    witnessed,
                     found,
                     because,
                     unreadable,
                     checked,
                 } => {
                     spent_total += spent;
+                    // ⚠⚠⚠⚠ **NO PASS REPORTS EVIDENCE ABOUT A DELIVERY IT DID NOT MAKE** — register
+                    // item 434's half that would rot silently. A slot outliving its pass writes one
+                    // delivery's evidence onto every later step, and every assertion about the
+                    // first delivery still passes while it does; the count below is the other half.
+                    assert!(
+                        witnessed.is_none() || spent > 0,
+                        "⚠⚠⚠ {from:?} --{raised:?}--> {to:?} spent nothing and still reports \
+                         {witnessed:?}, so a delivery's evidence has outlived the pass that earned \
+                         it. Walked {walked:?}",
+                    );
+                    // ⚠⚠⚠ **AND WHAT THIS FIXTURE'S EVIDENCE IS, PINNED — because it is not the
+                    // interesting one and a reader of this gate must not think it is.** This peer
+                    // declares `shows_the_prompt: false`, so every delivery here is `Unchecked`:
+                    // NOTHING in this run exercises the screen read-back or item 421's account
+                    // road. The gate that drives those is
+                    // `a_loop_delivers_a_prompt_its_peer_folded_away_when_the_agent_can_name_it`,
+                    // and pinning the word here is what stops this one being read as covering them.
+                    assert!(
+                        witnessed
+                            .is_none_or(|evidence| evidence == crate::deliver::Witnessed::Unchecked),
+                        "⚠⚠ {from:?} --{raised:?}--> {to:?} reports {witnessed:?}, and this \
+                         fixture's peer paints nothing before a submit — so either the peer changed \
+                         or the evidence is being read off something other than the delivery. \
+                         Walked {walked:?}",
+                    );
+                    evidence_lines += usize::from(witnessed.is_some());
                     // ⚠⚠⚠ AND THIS RUN'S MILESTONE IS ON THE AGENT'S OWN WORD, asserted rather than
                     // assumed — register item 428. This document authors no `milestone_check`, so
                     // every claimed milestone here must report `NotAsked`: a `Passed` would mean
@@ -9725,6 +9974,24 @@ mod tests {
             "⚠⚠ the three prompts weigh {authored_weight} bytes and the run reports spending \
              {spent_total}. A loop whose spend is less than what it typed is not reporting its \
              own cost, which is the one thing a bounded run always owes. Walked: {walked:?}",
+        );
+        // ⚠⚠⚠⚠ **AND THE DELIVERY EVIDENCE IS SAID ONCE, ACROSS A RUN THAT DELIVERS ON MOST OF ITS
+        // PASSES** — register item 434's noise half, which is item 431(a)'s *said once* discipline
+        // and item 277's measured cost read from the other side.
+        //
+        // This peer's `shows_the_prompt` is false for its whole life, so every delivery in this
+        // walk has the SAME grounds — and a channel that repeated them would put one constant on
+        // most of a bounded journal's steps, where ~99,987 looks once erased the transition that
+        // explained a whole ending. Exactly one, because the first delivery is a change from
+        // nothing and no later one changes anything.
+        //
+        // ⚠ It is the COUNT that holds this and not a sentence, because the defect is arithmetic: a
+        // reader looking at any single line cannot tell a channel that speaks once from one that
+        // speaks always.
+        assert_eq!(
+            evidence_lines, 1,
+            "⚠⚠⚠ this run's deliveries all have the same grounds, so its walk owes exactly one \
+             line about them and wrote {evidence_lines}. Walked: {walked:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

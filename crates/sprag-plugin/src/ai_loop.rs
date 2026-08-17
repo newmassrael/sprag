@@ -120,6 +120,34 @@ impl std::fmt::Debug for AiLoop {
     }
 }
 
+/// **WHAT ONE PASS OF THE DRIVER DISCOVERED, BESIDE THE EDGE IT TOOK** — everything
+/// [`AiLoop::walked`] composes after the arrow, and nothing else.
+///
+/// # ⚠⚠⚠ One argument because the list is what grows
+///
+/// Each of these arrived a round apart, each for the same reason — an edge is not its own cause,
+/// its own verdict, its own evidence or its own finding — and each was a fresh parameter until there
+/// were five and the signature had eight. [`Because`](crate::outer::Because)'s doc had already
+/// named that shape as a debt of this crate; the sixth fact is a field here and no change to
+/// `walked` at all.
+///
+/// ⚠ [`Default`] is derived and is the honest reading for a pass that discovered nothing: every
+/// field is *this pass has nothing to say about that*, which is what [`None`] means at each of them.
+#[derive(Clone, Copy, Debug, Default)]
+struct Learned<'a> {
+    /// The refusal this pass ARRIVED AT — never one it was already holding.
+    found: Option<&'a crate::consent::Unanswered>,
+    /// WHY this pass's edge was taken, for a state several edges reach with several meanings.
+    because: Option<crate::outer::Because>,
+    /// A record this run's agent named and nothing could read — register item 431(a).
+    unreadable: Option<&'a std::path::Path>,
+    /// What an independent check said about the milestone this judgement claimed — item 428.
+    checked: Option<crate::outer::Checked>,
+    /// What proved this pass's delivery arrived, when that is not what the run was already told —
+    /// register item 434.
+    witnessed: Option<crate::deliver::Witnessed>,
+}
+
 impl AiLoop {
     /// Start a loop over `pane`, evaluated by `script`, for what `brief` says it is for, driven on
     /// the contracts `spec` declares.
@@ -327,15 +355,28 @@ impl AiLoop {
     /// notice, so nothing can be arrived at on it — and this composes both anyway rather than
     /// choosing, because a line that silently dropped one of two true things is the failure this
     /// whole function keeps being about.
+    ///
+    /// # ⚠⚠⚠ Why the facts arrive as one argument — and what said so
+    ///
+    /// [`Because`](crate::outer::Because)'s own doc predicted this: a second field beside the first
+    /// makes the third state a third field *"and the walk that composes them a longer and longer
+    /// list of `did this one happen` — the flat driver this crate already owes for."* The fifth fact
+    /// (register item 434) made the argument list EIGHT, which is where `clippy` stopped it — so the
+    /// debt that doc registered is paid here rather than silenced with an `allow`. A sixth fact is
+    /// now a field on [`Learned`] and no change to this signature at all.
     fn walked(
         from: AiLoopState,
         raised: AiLoopEvent,
         to: AiLoopState,
-        found: Option<&crate::consent::Unanswered>,
-        because: Option<crate::outer::Because>,
-        unreadable: Option<&std::path::Path>,
-        checked: Option<crate::outer::Checked>,
+        learned: Learned<'_>,
     ) -> String {
+        let Learned {
+            found,
+            because,
+            unreadable,
+            checked,
+            witnessed,
+        } = learned;
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
         } else {
@@ -351,6 +392,17 @@ impl AiLoop {
         // make room for another. Both, in a fixed order, is this function's own rule.
         if let Some(verdict) = checked {
             note = format!("{note} — {}", verdict.describe());
+        }
+        // ⚠⚠⚠⚠ **WHAT PROVED THE PROMPT THIS EDGE DELIVERED ACTUALLY ARRIVED** — register item 434,
+        // straight after the cause and the verdict because it is about the act this edge PERFORMED,
+        // where the two facts below are about what the pass ran into and what it could not measure.
+        //
+        // ⚠⚠⚠ IT IS SAID ON EVERY DELIVERY AND NOT ONLY ON THE INTERESTING ONE. Publishing only
+        // `Account` would be telling two facts apart by the ABSENCE of a sentence — the reading this
+        // workspace has burned wire numbers over — and the ordinary answer is one line a reader
+        // skips, where a missing one is a question they cannot answer without the transcript.
+        if let Some(evidence) = witnessed {
+            note = format!("{note} — {}", evidence.noted());
         }
         if let Some(unanswered) = found {
             note = format!("{note} — {}", unanswered.noted());
@@ -648,6 +700,7 @@ impl Plugin for AiLoop {
                 raised,
                 to,
                 spent,
+                witnessed,
                 found,
                 because,
                 unreadable,
@@ -694,10 +747,13 @@ impl Plugin for AiLoop {
                     from,
                     raised,
                     to,
-                    found.as_ref(),
-                    because,
-                    unreadable.as_deref(),
-                    checked,
+                    Learned {
+                        found: found.as_ref(),
+                        because,
+                        unreadable: unreadable.as_deref(),
+                        checked,
+                        witnessed,
+                    },
                 );
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
@@ -996,7 +1052,7 @@ mod tests {
 
     use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
 
-    use super::{AiLoop, NotStarted};
+    use super::{AiLoop, Learned, NotStarted};
     use crate::access::PaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState, ProgressCell, Stopped};
     // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
@@ -4031,14 +4087,12 @@ mod tests {
     /// whoever rewrites the sentence free to say it better.
     #[test]
     fn a_look_that_found_nothing_is_not_written_down_as_a_step() {
+        // ⚠ A look discovers nothing and delivers nothing, so every fact is absent.
         let looked = AiLoop::walked(
             AiLoopState::Working,
             AiLoopEvent::Null,
             AiLoopState::Working,
-            None,
-            None,
-            None,
-            None,
+            Learned::default(),
         );
         assert!(
             !looked.contains("-->"),
@@ -4063,10 +4117,7 @@ mod tests {
             AiLoopState::Judging,
             AiLoopEvent::Judge,
             AiLoopState::Reflecting,
-            None,
-            None,
-            None,
-            None,
+            Learned::default(),
         );
         assert_eq!(
             moved, "Judging --Judge--> Reflecting",
@@ -4076,6 +4127,81 @@ mod tests {
         // ⚠ AND THE ARROW IS STILL THE WHOLE LINE WHEN NOTHING ELSE IS KNOWN. A driver that could
         // not read `reflect_reason` reports the edge it took and no cause, rather than an empty
         // clause after a dash that a reader has to decide the meaning of.
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A WALK SAYS WHAT PROVED THE PROMPT ARRIVED, AND SAYS SOMETHING DIFFERENT FOR THE
+    /// ROAD WHERE THE PANE CARRIES NOTHING** — register item 434.
+    ///
+    /// # ⚠⚠⚠⚠ What a walk that did not say it costs, measured
+    ///
+    /// `Delivered::Confirmed` and `Delivered::Reported` are both successes and they say OPPOSITE
+    /// things about the pane — one has the prompt painted on it and the other has none of it — and
+    /// `OuterLoop::say` answered `Ok(bytes)` for both. So a supervisor reading a run had no way to
+    /// know whether looking at the pane would show them the prompt, which is item 423's disease in a
+    /// fourth place: the result written down and the grounds dropped.
+    ///
+    /// **Measured on 2026-08-18**: a live run reached `reflecting`, delivered the driver's own
+    /// reflection prompt and replaced its session — and which road that delivery took had to be
+    /// reconstructed afterwards from arithmetic on the walk's byte totals against the agent's
+    /// transcript (2 × 1,314 + 1 = the 2,629 the walk reported ⇒ two injections and one submit ⇒
+    /// the first was swallowed and the screen carried the second). Nobody supervising a run does
+    /// that, and it is only possible while the transcript still exists.
+    ///
+    /// # ⚠⚠ What is asserted: the DIFFERENCE, and that the ordinary road is not silent
+    ///
+    /// Asserting only that the account road says something would pass for a channel that said the
+    /// same sentence for every delivery — and asserting only that the two differ would pass for one
+    /// that said nothing at all on both. So: the account line names the fold, the painted line does
+    /// not, and neither is empty. ⚠ The clauses are asserted rather than the whole sentence, so a
+    /// reword does not fail this gate while a SILENCE does.
+    #[test]
+    fn a_walk_says_what_proved_the_prompt_arrived() {
+        let walked = |evidence| {
+            AiLoop::walked(
+                AiLoopState::Priming,
+                AiLoopEvent::PromptSent,
+                AiLoopState::Working,
+                Learned {
+                    witnessed: Some(evidence),
+                    ..Learned::default()
+                },
+            )
+        };
+        let bare = AiLoop::walked(
+            AiLoopState::Priming,
+            AiLoopEvent::PromptSent,
+            AiLoopState::Working,
+            Learned::default(),
+        );
+
+        let account = walked(crate::deliver::Witnessed::Account);
+        assert!(
+            account.contains("NOWHERE ON THAT SCREEN"),
+            "⚠⚠⚠⚠⚠ ITEM 434: the prompt is not on that pane and a person sent to look for it must \
+             be told so IN THE WALK, which is the only thing they have: {account:?}",
+        );
+
+        // ── AND THE ORDINARY ROAD IS NOT SILENT, which is what stops the line above being read
+        //    off the ABSENCE of a sentence rather than off its presence ──
+        let painted = walked(crate::deliver::Witnessed::Painted);
+        assert!(
+            painted.len() > bare.len() && painted.contains("painted"),
+            "⚠⚠⚠ a delivery the pane DID paint says so too. Telling the two roads apart by which \
+             one carries a clause is reading a fact off an absence — the reading this workspace has \
+             burned wire numbers over: {painted:?} against the bare {bare:?}",
+        );
+        assert_ne!(
+            painted, account,
+            "⚠⚠⚠⚠ and the two sentences are DIFFERENT, or the channel exists and answers the same \
+             thing whichever road was walked",
+        );
+
+        // ── AND A PASS THAT DELIVERED NOTHING SAYS NOTHING ──
+        assert_eq!(
+            bare, "Priming --PromptSent--> Working",
+            "⚠⚠ a pass with no delivery must add no clause about one, or every look in a walk \
+             grows a sentence about a prompt that was not sent: {bare:?}",
+        );
     }
 
     /// ⚠⚠⚠ **A REACHED MILESTONE ASKS WHAT IS NEXT — IT DOES NOT END THE RUN** — and the run ends
