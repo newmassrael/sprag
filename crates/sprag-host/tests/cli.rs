@@ -9024,8 +9024,8 @@ fn a_running_loop_is_cancelled_and_an_absent_one_is_told_apart() {
     );
 }
 
-/// **A MISTYPED SESSION IS A MISTYPED SESSION AT THE RUN VERBS TOO — not a Rust variant name, and
-/// above all not an order to kill the daemon.**
+/// **A MISTYPED SESSION IS A MISTYPED SESSION AT EVERY VERB — not a Rust variant name, and above
+/// all not an order to kill the daemon.**
 ///
 /// # The defect, measured
 ///
@@ -9041,13 +9041,20 @@ fn a_running_loop_is_cancelled_and_an_absent_one_is_told_apart() {
 /// runs                  no runs (start one ...)     host rpc error: NoExternalAtPath
 /// cancel-run 999        no run 999 is in flight     "... is older than this build of sprag.
 /// stand-down 999        no run 999 is in flight      Restart it: `sprag kill-server`"
+/// display-message hi    shown to nobody: ...        (the same kill-server sentence)
 /// ```
 ///
-/// ⚠⚠⚠⚠ **THE SECOND PAIR IS THE SHARP ONE AND IT IS WORSE THAN A LEAKED VARIANT NAME.** A leaked
+/// ⚠⚠⚠⚠ **THE SKEW SENTENCE IS THE SHARP ONE AND IT IS WORSE THAN A LEAKED VARIANT NAME.** A leaked
 /// variant is ugly and admits it failed. This one is CONFIDENT AND WRONG: it diagnoses version skew
 /// that is not there and prescribes `sprag kill-server` — so the answer to a typo'd session name is
 /// an instruction to end every session on the machine. On the box that runs the debt loop, a person
 /// following it would kill live runs.
+///
+/// ⚠⚠⚠ **`display-message` IS NOT A RUN VERB AND WAS FOUND BY A SECOND SWEEP.** The first pass
+/// asked only the readers that take no argument; this one asked the seventeen verbs that ACT, where
+/// a dropped scope would not merely answer wrong but act on the WRONG SESSION. Sixteen refused and
+/// left the workspace byte-identical — the hazard is not there — and the seventeenth carried this
+/// same false remedy. **A fix applied to a FAMILY is a fix applied to a list somebody wrote.**
 ///
 /// # Why it lands here and not on the daemon
 ///
@@ -9059,10 +9066,9 @@ fn a_running_loop_is_cancelled_and_an_absent_one_is_told_apart() {
 ///
 /// # What is asserted
 ///
-/// Every verb of the family, each with its own required arguments, and the CONTROL beside it: the
-/// same command scoped to a session that DOES exist must still reach the daemon and answer about
-/// the run registry. Without that column this test would pass on a build where `-t` refused
-/// everything, which is the opposite defect.
+/// Every verb, each with its own required arguments, and the CONTROL beside it: the same command
+/// scoped to a session that DOES exist must still reach the daemon and answer. Without that column
+/// this test would pass on a build where `-t` refused everything, which is the opposite defect.
 #[test]
 fn a_mistyped_session_at_the_run_verbs_is_not_an_order_to_kill_the_daemon() {
     let (_guard, sock, _pane) = daemon_with_one_pane("scoped-run-verbs");
@@ -9074,6 +9080,9 @@ fn a_mistyped_session_at_the_run_verbs_is_not_an_order_to_kill_the_daemon() {
         (&["runs"], "no runs"),
         (&["cancel-run", "999"], "no run 999 is in flight"),
         (&["stand-down", "999"], "no run 999 is in flight"),
+        // NOT a run verb. It is here because it carried the identical sentence and because a list
+        // is what this defect hides behind: the round that fixed the family would have left it.
+        (&["display-message", "hello"], "shown to"),
     ];
 
     for (argv, reached) in family {

@@ -3016,7 +3016,9 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
             format!("display-message: {why}"),
         )
     })?;
-    let mut conn = connect()?;
+    // Pre-flighted for [`runs`]' reason, and this verb is the one that proves the reason is not
+    // about the RUN family: it carried the identical false skew sentence and is not one of them.
+    let mut conn = connect_scoped(session.as_deref())?;
     let mut params = serde_json::json!({ "text": text.as_str() });
     if let Some(severity) = severity {
         params["severity"] = Value::String(severity);
