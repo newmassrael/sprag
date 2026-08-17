@@ -4310,6 +4310,24 @@ impl OuterLoop {
                     &marker,
                 )
         });
+        // ⚠⚠⚠⚠ A RE-SEEDED READ CANNOT SUPPORT *"IN THIS TURN"*, WHICH IS THIS FUNCTION'S FIRST
+        // RULE — register items 366 and 367. When the pane's addresses restart under the mark, what
+        // comes back is what the screen HOLDS rather than what arrived since the prompt, so a marker
+        // in it may predate this turn entirely. `Said` would be a convergence on stale text.
+        //
+        // ⚠⚠⚠ IT IS `Unheard` AND NOT `NotSaid`, and the difference is the whole point: this run
+        // does not know whether the agent answered. `NotSaid` is a claim that it did not, and the
+        // document routes on that — a loop told `NotSaid` prompts again as if nothing happened,
+        // which is exactly the silence two live runs spent 32 and 23 judged turns inside.
+        //
+        // ⚠⚠ `lost` may be 0 on this path and the arm is still correct: the quantity is *how many
+        // complete lines are known missing*, and a restart makes the whole read unaccountable rather
+        // than short by a count. A caller reading the number gets the honest 0 with the doubt.
+        if produced.restarted {
+            return Heard::Unheard {
+                lost: produced.lost,
+            };
+        }
         match (said, produced.lost) {
             (true, _) => Heard::Said,
             // ⚠⚠⚠ THE ORDER IS THE CLAIM: a marker FOUND is `Said` whatever was evicted, because a
@@ -6685,6 +6703,70 @@ mod tests {
              agent had not — silently, on the one judgement that decides whether the loop reflects \
              or takes another turn. The count travels because what a reader does about it depends \
              on whether one line went or a thousand",
+        );
+
+        // ── AND THE OTHER DISCONTINUITY: THE ADDRESSES RESTARTED (items 366, 367) ──
+        //
+        // ⚠⚠⚠⚠ THE MARKER IS PRESENT HERE, AND THE ANSWER MUST STILL NOT BE `Said`. A re-seeded
+        // read hands back what the SCREEN HOLDS, not what arrived since this turn's prompt — so the
+        // marker in it may be one the agent wrote turns ago, and converging on it would end a run on
+        // stale text. This is the arm that separates *"I did not hear it"* from *"it was not said"*.
+        struct Reseeded;
+        impl PaneAccess for Reseeded {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            // ⚠ ALIVE, for `Lossy`'s reason above: a peer this double called gone would send the
+            // run down a different door and the answer below would differ for the wrong cause.
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Reseeded {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                Some(sprag_vt::LinesSince {
+                    // ⚠ The marker, standing alone — everything `said_marker`'s three rules want.
+                    // Only `restarted` stands between this and a convergence.
+                    // ⚠ Spelled, as `standin_agent` spells it and for the reason stated there: a
+                    // fixture cannot read the datamodel it is standing in for. It must match the
+                    // document's `done_marker`, and the run above is driven with that document.
+                    lines: vec!["MILESTONE REACHED".to_string()],
+                    next: 10,
+                    // ⚠⚠ ZERO, DELIBERATELY. A restart is not a shortage, so a fix that keyed on
+                    // `lost` instead would read this as an ordinary complete turn and answer `Said`.
+                    lost: 0,
+                    partial: String::new(),
+                    restarted: true,
+                })
+            }
+        }
+        assert_eq!(
+            loops.said_done(&Reseeded),
+            Heard::Unheard { lost: 0 },
+            "⚠⚠⚠⚠ ITEM 366/367: a read whose addresses restarted under it cannot support *in THIS \
+             turn*, which is `said_marker`'s first rule. The marker is right there and the honest \
+             answer is still that this run DOES NOT KNOW — `Said` converges on text that may \
+             predate the turn, and `NotSaid` claims an agent was silent when nobody looked. \
+             ⚠ `lost: 0` is the point: the doubt is not a shortage and does not travel as one",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);

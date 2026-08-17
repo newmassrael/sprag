@@ -110,6 +110,7 @@ impl Since {
                     lines: since.lines,
                     partial: since.partial,
                     lost: since.lost,
+                    restarted: since.restarted,
                 }),
             Self::Rows(trail) => Produced {
                 lines: trail.fresh(panes, pane),
@@ -119,6 +120,9 @@ impl Since {
                 // is named as, not a claim about the pane.
                 partial: String::new(),
                 lost: 0,
+                // ⚠ And a rendering comparison has no address space to lose, so there is nothing
+                // here that COULD restart — `false` is the truth rather than a default.
+                restarted: false,
             },
         }
     }
@@ -136,6 +140,18 @@ pub(crate) struct Produced {
     /// Complete lines the retained history evicted before this read — `0` in the ordinary case, and
     /// `0` also means UNKNOWN through [`Since::Rows`].
     pub(crate) lost: u64,
+    /// **THE ADDRESSES CHANGED UNDER THIS READER**, so `lines` starts from what the pane retains
+    /// rather than from where this mark left off — [`sprag_vt::LinesSince::restarted`].
+    ///
+    /// ⚠⚠⚠ What it costs a consumer, and why it cannot be folded into [`lost`](Self::lost): after a
+    /// restart the lines handed back are *what this screen holds*, not *what arrived since the
+    /// mark*. Any reader whose rule is **"in THIS turn"** has lost that guarantee for this read —
+    /// the text may predate the turn entirely. `lost` says lines are missing; this says the ones
+    /// present may not be the ones asked for.
+    ///
+    /// ⚠ Always `false` through [`Since::Rows`], which compares renderings and has no address space
+    /// to lose — the same shape as `lost` being an admitted unknown there.
+    pub(crate) restarted: bool,
 }
 
 /// **WHAT THE AGENT SAID, OUT OF WHAT THE PANE PRINTED** — `lines` with this run's own echo and the
@@ -325,6 +341,9 @@ mod tests {
             lines: lines(&["what changed", "what is left"]),
             partial: String::new(),
             lost,
+            // ⚠ This fixture varies `lost` alone. A restart is the other discontinuity (item 366)
+            // and staging it here would blur which one the account's sentence is about.
+            restarted: false,
         };
         let whole = produced(0);
         let cut = produced(7);
