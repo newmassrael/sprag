@@ -1846,11 +1846,10 @@ fn listed_pane_ids(listed: &str) -> Vec<u64> {
 /// correctly over a blank window), which makes *does the client show what the daemon holds* the
 /// question actually worth gating.
 ///
-/// The CONTROL comes first and is what makes the rest a claim about ATTACHING: the client that
-/// CREATED this session is shown painting a marker driven through the daemon. Without it a red below
-/// could be a pane that never echoed or a shell that had not started. The marker earns a second keep
-/// besides: it puts a long, distinctive line on the screen, so the comparison below rests on
-/// something better than a bare prompt every pane in the run would satisfy.
+/// The CONTROL comes first and is what makes the rest a claim about ATTACHING: the SAME measurement
+/// is run against the client that CREATED this session, so the only difference between the two
+/// readings is the relaunch between them. Without it a red below could be a client that was not
+/// painting at all, or a daemon answering about a pane nothing was showing.
 ///
 /// It hands on what it was given: the same client, on the same session, over the same panes. And it
 /// asserts nothing about HOW MANY there are — the count comes from the daemon on the run's own
@@ -1876,39 +1875,40 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
     let Some(&pane) = ids.first() else {
         return;
     };
-    let Ok(mut daemon) = smoke.daemon() else {
-        report.check(
-            "the daemon answers a second connection to drive a pane",
-            false,
-        );
-        return;
-    };
-
-    // ── The control: the marker reaches the pixels of the client that CREATED this session.
-    const MARKER: &str = "attach-paints-r368";
-    let driven = daemon.call(
-        "scene/invoke",
-        json!({
-            "path": format!("/pane_{pane}/sprag_input/external/text"),
-            "args": { "text": format!("echo {MARKER}\n") },
-            "session": session,
-        }),
-    );
-    let painted_by_the_creator = smoke
-        .wait_for(|s| {
-            (0..s.pane_count().ok()?)
-                .any(|tile| {
-                    s.pane_rows(tile)
-                        .is_ok_and(|rows| rows.iter().any(|row| row.contains(MARKER)))
-                })
-                .then_some(())
-        })
+    // The fixture: a pane with something ON it. A blank pane would make every claim below true of
+    // nothing, and a shell that has printed its prompt is the cheapest guarantee there is one.
+    let ready = smoke
+        .wait_for(|s| daemon_screen_line(s, &session, pane))
         .is_ok();
     report.check(
-        &format!("the marker reaches the painted grid of the client that CREATED the session ({driven:?})"),
-        painted_by_the_creator,
+        &format!("the pane the client joins has something on its screen (pane {pane})"),
+        ready,
     );
-    if !painted_by_the_creator {
+    if !ready {
+        return;
+    }
+
+    // ── The CONTROL: the client that CREATED this session already agrees with the daemon.
+    //
+    // ⚠⚠⚠⚠ THIS USED TO TYPE A MARKER INTO THE PANE, AND TWO REJECTED PUSHES PAID FOR REMOVING IT.
+    // `echo <marker>` reached the daemon (`Ok(Null)`) and never appeared in the client's paint — in
+    // release, under the load of the build that precedes the smoke, while five earlier runs passed.
+    // Waiting for the shell's prompt first did not fix it either. **The codebase already knew**: the
+    // neighbouring damage check hunts an echoed line and records failing about one run in eight,
+    // which is why IT tolerates the miss. A control that flakes is worse than no control, and
+    // typing was never what this check is about.
+    //
+    // So nothing is driven at all. The control is the CLAIM's own measurement run against the
+    // client that made the session — the only difference between the two is the relaunch between
+    // them, which is exactly the variable under test.
+    let by_the_creator = client_shows_what_the_daemon_holds(smoke, &session, pane);
+    report.check(
+        &format!(
+            "the client that CREATED the session paints what the daemon holds ({by_the_creator:?})"
+        ),
+        by_the_creator.is_ok(),
+    );
+    if by_the_creator.is_err() {
         return;
     }
 
@@ -1939,43 +1939,61 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
         tiles.is_ok(),
     );
 
-    // ── The content claim, and BOTH SIDES ARE READ AT THE SAME MOMENT — which is what keeps it
-    // from expiring. The obvious form (drive a marker, attach, hunt the marker) has a false failure
-    // in it that the mutation run exposed: attaching re-arbitrates the window size, the pane
-    // REFLOWS, and a line that was on its screen can leave it — measured, `cells.0` answering
-    // `false` for a marker the creating client had painted seconds before. A gate that can go red
-    // for that is a gate nobody may trust when it goes red for the real thing.
-    //
-    // So the reference is whatever the DAEMON says is on that pane's screen NOW, re-read on every
-    // poll: the loop settles when the two agree and can only time out on a client that never paints
-    // what the daemon holds. That is item 368's question in one line — the daemon was measured
-    // innocent, so the claim worth gating is *does the client show what the daemon has*.
-    let agreed = smoke.wait_for(|s| {
-        let screen = s
-            .cli(&["capture-pane", &pane.to_string(), "-p", "-t", &session])
-            .ok()?;
-        // The LONGEST line, so the claim rests on something distinctive rather than on a bare
-        // prompt every pane in the run would satisfy. `MARKER` is driven above precisely so there
-        // is one; if the reflow took it, the next longest is still a real thing to demand.
-        let reference = screen
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty())
-            .max_by_key(|line| line.len())?
-            .to_owned();
-        (0..s.pane_count().ok()?)
-            .any(|tile| {
-                s.pane_rows(tile)
-                    .is_ok_and(|rows| rows.iter().any(|row| row.contains(&reference)))
-            })
-            .then_some(reference)
-    });
+    // ── The claim itself: the same measurement as the control, after the relaunch.
+    let agreed = client_shows_what_the_daemon_holds(smoke, &session, pane);
     report.check(
         &format!(
             "an attaching client paints the CONTENT the daemon says its panes hold ({agreed:?})"
         ),
         agreed.is_ok(),
     );
+}
+
+/// Wait until this client paints a line the DAEMON currently says pane `pane` of `session` holds,
+/// answering the line they agreed on.
+///
+/// ⚠⚠⚠ BOTH SIDES ARE READ ON EVERY POLL, and that is the whole design: a reference captured once
+/// and hunted afterwards can EXPIRE — attaching re-arbitrates the window size, the pane REFLOWS, and
+/// a line that was on the screen can leave it (measured: `cells.0` answering `false` for a line the
+/// creating client had painted seconds earlier). Re-reading makes the loop SETTLE on agreement, so
+/// the only thing it can time out on is a client that never paints what the daemon holds — which is
+/// item 368's question exactly, the daemon having been measured innocent.
+///
+/// The LONGEST non-blank line, so the comparison rests on the most distinctive thing on the screen
+/// rather than on whichever row happens to be first. ⚠ Residue, stated rather than hidden: on an
+/// idle pane that line is the shell PROMPT, which every pane in a run shares — so this separates
+/// *painting* from *blank*, and would not catch a client painting some OTHER pane's identical
+/// prompt. The tile-count claim beside it is what holds the structural half.
+fn client_shows_what_the_daemon_holds(
+    smoke: &mut Smoke,
+    session: &str,
+    pane: u64,
+) -> Result<String, String> {
+    smoke.wait_for(|s| {
+        let reference = daemon_screen_line(s, session, pane)?;
+        (0..s.pane_count().ok()?)
+            .any(|tile| {
+                s.pane_rows(tile)
+                    .is_ok_and(|rows| rows.iter().any(|row| row.contains(&reference)))
+            })
+            .then_some(reference)
+    })
+}
+
+/// The longest non-blank line the DAEMON says pane `pane` of `session` is showing right now.
+///
+/// Read through `capture-pane`, which is the plain user path and — measured when item 368 was
+/// re-opened — one of the three daemon answers that were correct while the window was blank.
+fn daemon_screen_line(smoke: &mut Smoke, session: &str, pane: u64) -> Option<String> {
+    let screen = smoke
+        .cli(&["capture-pane", &pane.to_string(), "-p", "-t", session])
+        .ok()?;
+    screen
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .max_by_key(|line| line.len())
+        .map(str::to_owned)
 }
 
 /// **THE GATE for what a LAUNCH means** — register item 284, and the pair of claims is the point.
