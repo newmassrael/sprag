@@ -95,12 +95,30 @@ pub(crate) fn use_selection() -> Signal<Option<PaneSelection>> {
 /// Production behaviour is unchanged. The provider resolves once, to exactly the arboard handle it
 /// resolved to before, and this stays the single accessor every consumer (including
 /// [`crate::clipboard_osc`]) goes through — so the ONE-handle invariant above is the same invariant.
+/// # ⚠⚠⚠⚠ THE TWO LOOKUPS ARE SEQUENTIAL AND MUST STAY THAT WAY — register item 407
+///
+/// This read the obvious way once: `cache(PROVIDER_KEY, || use_app_clipboard(CLIPBOARD_KEY))`. But
+/// `use_app_clipboard` is ITSELF an `Owner::cache`, so that is a factory running inside a factory,
+/// and pinion refuses exactly that — *"Owner::cache factory closures must not call Owner::cache"*.
+/// **Measured on the owner's own window: selecting text to copy exited the app with code 101**, and
+/// the register blamed a session-tab click and then blamed upstream, both wrong.
+///
+/// ⚠⚠⚠ THE FAKE MUST STILL WIN, which is why this is not simply the inner call. `seed_clipboard`
+/// installs a test's own handle under the provider key, and resolving the real one first would both
+/// bypass it and write to the DEVELOPER'S OS CLIPBOARD — the hazard the provider slot exists for. So
+/// the seeded value is read FIRST, and the real handle is resolved only when nothing is parked.
+///
+/// ⚠⚠ And the real handle is resolved OUTSIDE the outer `cache` call, then parked by it. Both slots
+/// still hold exactly what they held before; only the nesting is gone.
 pub(crate) fn clipboard() -> Rc<dyn Clipboard> {
-    Owner::current()
-        .expect("clipboard() requires an active Owner scope")
-        .cache(CLIPBOARD_PROVIDER_KEY, || {
-            pinion_platform_clipboard::use_app_clipboard(CLIPBOARD_KEY)
-        })
+    let owner = Owner::current().expect("clipboard() requires an active Owner scope");
+    if let Some(parked) = owner.cache_get_by_str::<Rc<dyn Clipboard>>(CLIPBOARD_PROVIDER_KEY) {
+        return parked.as_ref().clone();
+    }
+    // Nothing parked: resolve the platform handle here, with no factory running.
+    let resolved = pinion_platform_clipboard::use_app_clipboard(CLIPBOARD_KEY);
+    owner
+        .cache(CLIPBOARD_PROVIDER_KEY, || resolved)
         .as_ref()
         .clone()
 }
@@ -468,6 +486,41 @@ mod tests {
                 cell_at(&scene, 0, x, y),
                 Some((9, 3)),
                 "in the widget's surplus strip: the pane's LAST cell, not one it lacks",
+            );
+        });
+    }
+
+    /// ⚠⚠⚠⚠ **RESOLVING THE CLIPBOARD WITH NOTHING SEEDED MUST NOT PANIC** — register item 407, and
+    /// the one gesture nobody could make without losing the window.
+    ///
+    /// # What this reproduces, and why no earlier test could
+    ///
+    /// `clipboard()` used to be `cache(PROVIDER_KEY, || use_app_clipboard(CLIPBOARD_KEY))`, and the
+    /// inner call is itself an `Owner::cache` — a factory inside a factory, which pinion's own guard
+    /// refuses by design (*"Owner::cache factory closures must not call Owner::cache"*). **Every
+    /// existing test of a copy seeds a fake first**, which parks the provider slot and means the
+    /// outer factory never runs: the nesting was unreachable from the suite and reachable from every
+    /// real drag-select. Measured on the owner's window as `[exited with code 101]`.
+    ///
+    /// ⚠⚠⚠ SO THE FIXTURE'S WHOLE CONTENT IS THE ABSENCE OF A SEED. Adding one here would restore
+    /// exactly the condition that hid this for the life of the defect.
+    ///
+    /// ⚠⚠ It asserts nothing about WHICH handle comes back — under test that is pinion's in-memory
+    /// fallback, and naming it would pin a platform decision this file does not make. What is held
+    /// is that the call RETURNS.
+    #[test]
+    fn resolving_the_clipboard_with_nothing_seeded_does_not_nest_a_cache_factory() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let first = clipboard();
+            // ⚠ And twice, because the second call takes the PARKED path while the first took the
+            // resolving one — a fix that only un-nested the miss would still panic on the hit.
+            let again = clipboard();
+            assert!(
+                Rc::ptr_eq(&first, &again),
+                "⚠⚠⚠ ONE HANDLE, BOTH TIMES. The provider slot exists so every consumer shares a \
+                 single clipboard; two handles means the second call re-resolved the platform and \
+                 the parking did not happen, which is the invariant this accessor is for",
             );
         });
     }
