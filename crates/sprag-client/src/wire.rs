@@ -1593,8 +1593,21 @@ pub struct BootSpec<'a> {
     /// The daemon to connect-or-spawn on, WITH its provenance — every failure this boot reports
     /// names it, so a client can never drive a daemon nobody named without saying so.
     pub endpoint: &'a HostEndpoint,
-    /// The session to ATTACH to (adopting its live panes), or `None` to allocate a fresh one.
+    /// The session to ATTACH to (adopting its live panes), or `None` to let this boot decide —
+    /// which since item 284 means *adopt what is there*, and create only when there is nothing.
     pub session: Option<&'a str>,
+    /// **ASK FOR A SESSION OF THIS BOOT'S OWN**, even where one could be adopted — the explicit
+    /// *new* that the default stopped being.
+    ///
+    /// ⚠⚠⚠ It exists because making adoption the default removed the only way to say the other
+    /// thing. The owner's specification is *"the existing sessions are just there, and a new one
+    /// appears only when I press new"* — two verbs, and a launch that could only ever create was
+    /// wrong in one direction while a launch that can only ever adopt is wrong in the other.
+    ///
+    /// ⚠ Ignored when [`session`](Self::session) names one: attaching to a named session and
+    /// creating a fresh one are different requests, and honouring both would mean guessing which
+    /// the caller meant.
+    pub fresh: bool,
     /// The command each booted pane runs, or `None` for the host's own `$SHELL`.
     pub argv: Option<&'a [String]>,
     /// The pane grid this client boots at.
@@ -1837,6 +1850,12 @@ impl WireHost {
             &BootSpec {
                 endpoint: &HostEndpoint::client(),
                 session: requested.as_deref(),
+                // ⚠⚠ A LAUNCH DOES NOT ASK FOR A NEW ONE — item 284. This is the entry point every
+                // window and every `sprag attach` comes through, and *take me to my work* is what
+                // naming nothing means here. The explicit `new` belongs to a caller that says so;
+                // ⚠ TODAY THE ONLY ONE IS A TEST, so nothing a person can press reaches it yet, and
+                // the sidebar's "+" is a running client's `new_session` rather than a boot.
+                fresh: false,
                 argv: argv.as_deref(),
                 cols,
                 rows,
@@ -1918,11 +1937,17 @@ impl WireHost {
         // ALLOCATES a fresh one (spawn our own panes) — the "each launch is its own session"
         // model. `boot_panes` branches on `created`, replacing the old "did we spawn the host"
         // key with "did we create the session".
-        let (session, created) =
-            match resolve_session(&mut conn, spec.session, spec.argv, spec.cols, spec.rows) {
-                Ok(resolved) => resolved,
-                Err(cause) => return Err(BootError::left_nothing(endpoint.clone(), cause).into()),
-            };
+        let (session, created) = match resolve_session(
+            &mut conn,
+            spec.session,
+            spec.fresh,
+            spec.argv,
+            spec.cols,
+            spec.rows,
+        ) {
+            Ok(resolved) => resolved,
+            Err(cause) => return Err(BootError::left_nothing(endpoint.clone(), cause).into()),
+        };
         // From here on this boot OWNS the session if it made it. The guard is the only thing
         // that knows how to undo the creation, and the single `match` below is the only place
         // the tail's failure can reach — so no later edit can add an early return that skips it.
@@ -2335,10 +2360,7 @@ impl WireHost {
     #[must_use = "where a destroy left this client is the one fact no re-read can recover"]
     fn follow(&self, successor: Successor) -> Option<String> {
         match successor {
-            Successor::Detach => {
-                self.quit.request_quit();
-                None
-            }
+            Successor::Detach => self.detached(),
             Successor::Named(next) => self.switch_session_named(&next),
             Successor::LastViewed {
                 unattached,
@@ -2356,6 +2378,59 @@ impl WireHost {
                 }
             },
         }
+    }
+
+    /// **WHERE A CLIENT GOES WHEN THERE IS NOWHERE TO GO** — register items 282 and 359, and the
+    /// half that `ab07598` left owed.
+    ///
+    /// # ⚠⚠⚠⚠ Why a window does not end here and a terminal does
+    ///
+    /// Making the window's destroy default `Off` fixed the case where another session survives. It
+    /// left the LAST one: with nothing to switch to, the policy answers `Detach`, and a detached
+    /// window has nothing to draw — so the app exited, which is what the owner reported as *"the
+    /// program dies completely"*. A terminal client detaching hands the person back the shell they
+    /// launched from; a window detaching hands them nothing.
+    ///
+    /// ⚠⚠⚠ **SO A WINDOW OPENS A SESSION RATHER THAN ENDING.** The reference is herdr
+    /// (`src/app/actions.rs:1709` at `9a4ce5e1`): with nothing left it sets `active = None` and
+    /// KEEPS DRAWING. sprag cannot hold that state — a `WireHost` is scoped to a session at boot and
+    /// 56 reads depend on it — so the nearest true thing is a window showing a session with nothing
+    /// in it yet. **Registered rather than pretended**: a real empty state is item 359's remainder.
+    ///
+    /// ⚠⚠ AND IT IS NOT ITEM 284's GARBAGE. That one is about a LAUNCH inventing a session nobody
+    /// asked for and walking away; this is a person at the keyboard whose window would otherwise
+    /// vanish, and the session it opens is the one they are looking at.
+    ///
+    /// ⚠ Quitting stays the answer when the daemon will not serve one, which is the honest end: a
+    /// window that cannot reach a host has nothing left to be.
+    fn detached(&self) -> Option<String> {
+        if self.frontend == Frontend::Terminal {
+            self.quit.request_quit();
+            return None;
+        }
+        // ⚠⚠⚠ THE REQUEST IS MADE HERE RATHER THAN THROUGH `new_session`, and that is not a
+        // duplication to tidy away: on failure that method answers `current_session()` — the name of
+        // the session that was JUST DESTROYED — which is a perfectly non-empty string and would read
+        // as success. The one thing this arm must be able to see is the daemon refusing.
+        let (cols, rows) = self.boot_dims;
+        let created = self.request(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(NEW_SESSION_ACTION),
+                json!({ "cols": cols, "rows": rows }),
+            ),
+            "new_session",
+        );
+        let Some(opened) = created.as_ref().and_then(Value::as_str).map(str::to_owned) else {
+            tracing::error!(
+                target: "sprag_gui::wire",
+                "the last session was destroyed and the daemon would not open another; ending",
+            );
+            self.quit.request_quit();
+            return None;
+        };
+        self.switch_session(&opened);
+        Some(opened)
     }
 
     /// A [`Successor::LastViewed`]'s fallback: the named session, or a DETACH when the policy named
@@ -4446,6 +4521,7 @@ fn parse_clipboard_query(value: &Value) -> Option<PaneClipboardQuery> {
 fn resolve_session(
     conn: &mut HostConn,
     requested: Option<&str>,
+    fresh: bool,
     argv: Option<&[String]>,
     cols: u16,
     rows: u16,
@@ -4471,7 +4547,8 @@ fn resolve_session(
     // old prose was protecting while still never manufacturing one. Only when every session is
     // occupied does a launch pile onto one (the host serves multi-attach, tmux-style), and only when
     // there are none at all does it create.
-    if let Some(free) = query_sessions(conn).ok().and_then(|live| adoptable(&live)) {
+    // ⚠ `fresh` is the caller saying *new*, which is the verb the default stopped being.
+    if !fresh && let Some(free) = query_sessions(conn).ok().and_then(|live| adoptable(&live)) {
         return Ok((free, false));
     }
     let mut args = json!({ "cols": cols, "rows": rows });
@@ -7675,7 +7752,7 @@ mod tests {
     fn resolve_session_creates_with_the_clients_first_pane() {
         let (mut conn, server, _guard, seen) = a_recording_host_conn("create", "7");
         let argv = ["vim".to_owned(), "README".to_owned()];
-        let (name, created) = resolve_session(&mut conn, None, Some(&argv), 100, 40)
+        let (name, created) = resolve_session(&mut conn, None, false, Some(&argv), 100, 40)
             .expect("resolve_session creates");
         drop(conn); // let the server thread see EOF and exit
         server.join().expect("server thread exited");
@@ -7720,7 +7797,7 @@ mod tests {
     #[test]
     fn resolve_session_attaches_without_sending_new_session() {
         let (mut conn, server, _guard, seen) = a_recording_host_conn("attach", "unused");
-        let (name, created) = resolve_session(&mut conn, Some("mysession"), None, 80, 24)
+        let (name, created) = resolve_session(&mut conn, Some("mysession"), false, None, 80, 24)
             .expect("resolve_session attaches");
         drop(conn);
         server.join().expect("server thread exited");

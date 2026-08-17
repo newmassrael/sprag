@@ -168,6 +168,11 @@ fn failing_boot(sock: &Path) -> BootError {
         &BootSpec {
             endpoint: &endpoint,
             session: None,
+            // ⚠⚠⚠ EXPLICIT, since item 284: naming no session now ADOPTS one where there is
+            // anything to adopt, and this daemon is started with a pane. Left implicit, this boot
+            // would attach — which spawns nothing, cannot fail, and would leave the rollback this
+            // file is entirely about unexercised. Asking for a fresh session is what it always meant.
+            fresh: true,
             argv: Some(&argv),
             cols: 80,
             rows: 24,

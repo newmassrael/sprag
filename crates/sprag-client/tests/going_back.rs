@@ -131,6 +131,10 @@ fn boot(sock: &Path) -> WireHost {
         &BootSpec {
             endpoint: &endpoint,
             session: None,
+            // ⚠⚠ EXPLICIT since item 284. This file is about a client that VISITED sessions, and
+            // its first must be its own — adopting one the daemon already had would make the visit
+            // history it measures start somewhere nobody chose.
+            fresh: true,
             argv: Some(&argv),
             cols: 80,
             rows: 24,

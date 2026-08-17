@@ -140,6 +140,9 @@ fn boot(sock: &Path, session: &str) -> WireHost {
         &BootSpec {
             endpoint: &endpoint,
             session: Some(session),
+            // ⚠ Ignored beside a named session, and stated rather than left to the reader: this
+            // fixture attaches to one it made itself.
+            fresh: false,
             argv: Some(&argv),
             cols: 80,
             rows: 24,
