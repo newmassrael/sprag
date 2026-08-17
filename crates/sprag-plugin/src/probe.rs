@@ -712,6 +712,40 @@ mod tests {
         }
         assert_eq!(count(&engine, "turns"), 3, "the counter must have moved");
 
+        // ⚠⚠⚠⚠ AND THE READING THAT DECIDES WHERE THIS SPELLING MAY BE USED — measured, and it
+        // refutes the design it was asked for.
+        //
+        // An empty `<data>` is a fine spelling for *no bound* in a document whose declarations are
+        // FIXED and checkable as text: the template's own purity gate already reads `<data id="…"`
+        // out of the file. It is NOT a fine spelling for a DECISION one document carries to another,
+        // and this is why.
+        let declared_empty = engine
+            .policy()
+            .script_engine
+            .get_variable(&session, "absent");
+        let never_declared = engine
+            .policy()
+            .script_engine
+            .get_variable(&session, "no_such_id_is_declared_anywhere_in_this_document");
+        assert_eq!(
+            format!("{declared_empty:?}"),
+            format!("{never_declared:?}"),
+            "the finding below rests on these two reading the SAME; if they have diverged at a new \
+             SCE rev, the constraint this records has been lifted and the kind document may spell \
+             its decline by declaring an empty id after all",
+        );
+        assert_eq!(
+            format!("{declared_empty:?}"),
+            "Ok(Null)",
+            "⚠⚠⚠⚠ DECLARED-AND-EMPTY AND NEVER-DECLARED ARE ONE OBSERVATION, and that forbids a \
+             design. A loop KIND that spelled *no turn bound* by declaring the id and leaving it \
+             empty could not be told apart from a kind that FORGOT the key — so forgetting would \
+             grant an unbounded run. ⚠⚠⚠ It kills the obvious alternative too: a boolean beside \
+             the number is no better, because an absent boolean and a `false` one are both falsy. \
+             **Only a value that is neither a number nor nil can carry this decision between \
+             documents**, which is why the kind spells its decline as a WORD",
+        );
+
         send(&mut engine, ProbeAbsentEvent::AskPresent);
         assert_eq!(
             count(&engine, "present_fired"),
