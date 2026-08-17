@@ -147,6 +147,13 @@ const CONFIRM_WHOLE_UP_TO: usize = 40;
 /// records that tightening the predicate is ruled out and that the answer is clearing the composer
 /// or evidence from the program.
 ///
+/// ⚠⚠⚠ **AND THIS IS NO LONGER THE LOOP'S PRIMARY EVIDENCE, WHICH IS WHY IT SURVIVES UNCHANGED.**
+/// Where the pane's agent reports what it was asked, [`OuterLoop::submit_lands_when`] asks
+/// [`SubmittedWhen::Took`] and a screen that MOVED without showing this needle is settled by the
+/// agent's own account (`Delivered::Reported`, register item 421) rather than by refusing. So the
+/// needle is now the fast path and the fallback for an unhooked peer — which is where the residue
+/// above still lands, and only there.
+///
 /// ⚠⚠ The width authority is [`sprag_vt::char_columns`] — the same one the emulator's print path
 /// classifies a glyph with — so this cannot disagree with what the pane will actually draw. A second
 /// width model here would be a second answer to *"how wide is this?"*, which is the shape this

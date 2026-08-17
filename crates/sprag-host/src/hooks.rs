@@ -1716,9 +1716,9 @@ mod tests {
         assert_eq!(
             asked.prompt, "reply with the single word: pong",
             "⚠⚠⚠⚠ THE PROMPT IS THE AGENT'S OWN STATEMENT OF WHAT IT RECEIVED — the evidence item \
-             223's gate says the screen cannot give and item 224 records nothing offers. Delivery \
-             is confirmed today by hunting a fragment of the typed text on a pane, and every \
-             failure of that has bought another predicate",
+             223's gate says the screen cannot give. It is what the delivery path now confirms a \
+             folded paste on (item 421): a screen that moved without showing the text is settled by \
+             this field, where four rounds of screen predicates could settle nothing",
         );
         assert_eq!(
             asked.transcript,

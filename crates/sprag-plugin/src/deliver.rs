@@ -1972,7 +1972,16 @@ mod tests {
     /// because a prompt box may split the text, so **a needle being a fragment is a documented
     /// requirement, not an oversight**. Whatever pays this item, it is not a stricter read-back:
     /// it is clearing the composer before typing, or evidence from the PROGRAM rather than the
-    /// screen — which item 224 records nothing on `PaneAccess` offers.
+    /// screen.
+    ///
+    /// ⚠⚠⚠ **THAT SECOND ROAD EXISTS NOW, AND IT IS WHY THIS GATE STILL PASSES RATHER THAN BEING
+    /// STALE**: `PaneAccess::supervision` carries the agent's own account of the question it
+    /// received ([`SubmittedWhen::Took`]), and its neighbour
+    /// [`a_prompt_the_agent_never_reports_receiving_is_refused_however_the_screen_reads`] drives
+    /// THIS fixture through it and gets the opposite verdict. What keeps this one open is that the
+    /// road is the CALLER's to ask for: a delivery under the default contract still reads the
+    /// screen, so a dirty composer is still confirmed for every peer whose caller has not said
+    /// otherwise. ⚠ The `PaneAccess` half of item 224 is paid; the DEFAULT is not.
     ///
     /// ⚠⚠ **AND IT GETS COMMONER THE LONGER A RUN GOES**: a loop repeating one prompt is exactly
     /// the input that trains the suggestion, so the population this fires on is the loop's own.
