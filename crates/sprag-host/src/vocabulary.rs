@@ -869,14 +869,14 @@ impl Verb {
             Self::Processes => (
                 "processes",
                 Group::Pane,
-                Shell::Runs("[PANE] [-t SESSION]"),
+                Shell::Runs("[PANE] [-t SESSION] [-a]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["pane_processes"]),
             ),
             Self::Resources => (
                 "resources",
                 Group::Pane,
-                Shell::Runs("[PANE] [-t SESSION]"),
+                Shell::Runs("[PANE] [-t SESSION] [-a]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["pane_resources"]),
             ),

@@ -6647,6 +6647,242 @@ fn the_cli_says_what_each_pane_is_running() {
     );
 }
 
+/// The pane ids a `processes` / `resources` listing NAMED, in the order it printed them.
+///
+/// A row's own line starts at column 0 with `ID:`; a process line is indented, and the age header
+/// is neither — so this reads the listing exactly as the rendering defines it rather than by
+/// counting lines.
+fn pane_ids_in(listing: &str) -> Vec<u64> {
+    listing
+        .lines()
+        .filter(|line| !line.starts_with(' '))
+        .filter_map(|line| line.split_once(':'))
+        .filter_map(|(id, _)| id.parse().ok())
+        .collect()
+}
+
+/// Sorted [`pane_ids_in`] — for comparing a listing against the set of panes a session HOLDS,
+/// which has no order the daemon promises.
+fn pane_id_set_in(listing: &str) -> Vec<u64> {
+    let mut ids = pane_ids_in(listing);
+    ids.sort_unstable();
+    ids
+}
+
+/// **`processes` and `resources` ANSWER ABOUT THE SESSION THEY WERE SCOPED TO** — and `-a` is the
+/// word for the machine-wide answer they used to give whatever you asked for.
+///
+/// # The defect, measured
+///
+/// Both verbs took `-t SESSION`, published it in `--help`, and then dropped it: the reading is
+/// registry-wide, the narrowing was by PANE only, so with no pane named the scope reached nothing.
+/// Against a live daemon on 2026-08-17, one session holding panes 0 and 2 and another holding 1
+/// and 3:
+///
+/// ```text
+/// sprag panes     -t 0       -> 0                    sprag panes     -t work -> 1  3
+/// sprag processes -t 0       -> 0  2  1  3           sprag processes -t work -> 0  2  1  3
+/// sprag processes -t nosuch  -> 0  2  1  3           sprag panes     -t nosuch -> no session named
+/// ```
+///
+/// — the same four panes for every session, and a session name nobody has accepted in silence
+/// where every other `-t` verb refuses it.
+///
+/// # What is asserted, and why each half is here
+///
+/// The two scoped listings are compared to the sessions' OWN pane sets and to EACH OTHER: an answer
+/// that narrowed to something wrong would satisfy the first alone, and the defect's own sentence is
+/// that the two answers are identical, so the discriminator is asserted as itself.
+///
+/// Each session holds panes in TWO WINDOWS, because the narrowing must be SESSION-wide — the same
+/// reach [`resolve_pane`] gives a pane argument. A fixture with one window each would pass a
+/// narrowing that stopped at the current window, which is a different (and smaller) answer.
+///
+/// `-a` is asserted to still see both sessions. Losing the machine-wide reading would be the wrong
+/// repair: the pane eating the CPU may well be in a session the caller is not scoped to, which is
+/// why that answer needs a WORD rather than an accident.
+///
+/// Both verbs, in one test, for the reason `pane_and_scope` is one function: they make the same
+/// claim in `--help`, so a round that fixed one and left the other is the drift that helper exists
+/// to prevent.
+#[test]
+fn a_scoped_process_listing_answers_about_that_session_and_not_the_machine() {
+    let (_host, sock) = spawn_host();
+
+    // The session this daemon booted with, and a second one — the two subjects.
+    let created = sprag(&sock, &["new", "work"]);
+    assert!(created.ok, "the second session: {}", created.stderr);
+
+    // A SECOND WINDOW in each, holding a pane of its own. `new-window` selects what it makes, so
+    // the pane it was born with is what `panes` then lists — the fixture shape the pane ratchet
+    // next door already uses.
+    let sole_pane_of_current_window = |session: &str| -> u64 {
+        let listed = sprag(&sock, &["panes", "-t", session]);
+        assert!(listed.ok, "panes -t {session}: {}", listed.stderr);
+        let ids = pane_ids_in(&listed.stdout);
+        assert_eq!(
+            ids.len(),
+            1,
+            "a freshly made window holds exactly one pane, or this fixture is reading the wrong \
+             window: {}",
+            listed.stdout,
+        );
+        ids[0]
+    };
+    let first_of_boot = sole_pane_of_current_window("0");
+    let first_of_work = sole_pane_of_current_window("work");
+    assert!(sprag(&sock, &["new-window", "-t", "0", "spare"]).ok);
+    let second_of_boot = sole_pane_of_current_window("0");
+    assert!(sprag(&sock, &["new-window", "-t", "work", "extra"]).ok);
+    let second_of_work = sole_pane_of_current_window("work");
+
+    let mut boot: Vec<u64> = vec![first_of_boot, second_of_boot];
+    boot.sort_unstable();
+    let mut work: Vec<u64> = vec![first_of_work, second_of_work];
+    work.sort_unstable();
+    let mut every: Vec<u64> = boot.iter().chain(&work).copied().collect();
+    every.sort_unstable();
+    assert_eq!(every.len(), 4, "four distinct panes: {every:?}");
+
+    // NOTHING IS POLLED HERE, and that is a decision rather than an omission. The reading is a
+    // fresh walk (tolerance zero) of the very registry `sprag panes` was just read out of, so a
+    // pane this fixture has already listed is in it — and the assertions below read pane IDS, never
+    // a job, so they cannot race the moment a child takes its terminal. A `wait_for` would also
+    // have had to name a listing to wait ON, and every listing here is one this round changes.
+    let ran = |args: &[&str]| -> CliRun { sprag(&sock, args) };
+    // The CLI's own published claim about these two verbs — a flag nothing names is a flag nobody
+    // can find, and the usage is the SECOND list this binary keeps of what it accepts.
+    let usage = ran(&["--nonsense"]).stderr;
+
+    for verb in ["processes", "resources"] {
+        assert!(
+            usage.contains(&format!("{verb} [PANE] [-t SESSION] [-a]")),
+            "the usage spells {verb}'s pane, its scope and its -a: {usage}",
+        );
+
+        let scoped_to_boot = ran(&[verb, "-t", "0"]);
+        assert!(
+            scoped_to_boot.ok,
+            "{verb} -t 0 answered: {}",
+            scoped_to_boot.stderr
+        );
+        let scoped_to_work = ran(&[verb, "-t", "work"]);
+        assert!(
+            scoped_to_work.ok,
+            "{verb} -t work answered: {}",
+            scoped_to_work.stderr
+        );
+        assert_eq!(
+            pane_id_set_in(&scoped_to_boot.stdout),
+            boot,
+            "{verb} -t 0 lists the boot session's panes, both windows of it: {}",
+            scoped_to_boot.stdout,
+        );
+        assert_eq!(
+            pane_id_set_in(&scoped_to_work.stdout),
+            work,
+            "{verb} -t work lists the other session's panes, both windows of it: {}",
+            scoped_to_work.stdout,
+        );
+        // THE DISCRIMINATOR, as the defect's own sentence: the two scopes must not print the same
+        // panes. Asserted directly, because both equalities above would hold for a narrowing that
+        // was right by accident on one fixture and this cannot.
+        assert_ne!(
+            pane_id_set_in(&scoped_to_boot.stdout),
+            pane_id_set_in(&scoped_to_work.stdout),
+            "the two sessions get DIFFERENT answers: {} vs {}",
+            scoped_to_boot.stdout,
+            scoped_to_work.stdout,
+        );
+
+        // The machine-wide reading is still reachable, and now it has a word.
+        let everywhere = ran(&[verb, "-a"]);
+        assert!(everywhere.ok, "{verb} -a answered: {}", everywhere.stderr);
+        assert_eq!(
+            pane_id_set_in(&everywhere.stdout),
+            every,
+            "{verb} -a crosses every session: {}",
+            everywhere.stdout,
+        );
+
+        // A session nobody has is REFUSED, the way every other `-t` verb refuses it — it used to be
+        // accepted in silence and answered with the whole machine. BOTH SPELLINGS, and the second
+        // one is why the refusal is a PRE-FLIGHT rather than a by-product: a narrowed listing
+        // refuses a bad scope on its way to reading the session's panes, but `-a` reads nothing
+        // scoped at all, so without the pre-flight `sprag processes -a -t nosuch` would answer
+        // happily about a session that does not exist. A green mutation is what asked this
+        // question — dropping `connect_scoped` left every other assertion here passing.
+        for ghosted in [vec![verb, "-t", "nosuch"], vec![verb, "-a", "-t", "nosuch"]] {
+            let ghost = ran(&ghosted);
+            assert!(
+                !ghost.ok,
+                "`sprag {}` is refused rather than answered: {}",
+                ghosted.join(" "),
+                ghost.stdout,
+            );
+            assert!(
+                ghost.stderr.contains("no session named"),
+                "`sprag {}` names the missing session: {}",
+                ghosted.join(" "),
+                ghost.stderr,
+            );
+        }
+
+        // A PANE still wins over the scope, and still reaches a window over — `second_of_boot` is
+        // in the `spare` window, and the caller is scoped to the session, not to that window.
+        let one = ran(&[verb, &second_of_boot.to_string(), "-t", "0"]);
+        assert!(one.ok, "{verb} PANE answered: {}", one.stderr);
+        assert_eq!(
+            pane_id_set_in(&one.stdout),
+            vec![second_of_boot],
+            "{verb} PANE narrows to that pane alone: {}",
+            one.stdout,
+        );
+
+        // `-a` and a PANE are a contradiction — every pane, and this one — so it is refused rather
+        // than silently resolved one way, which is the failure this whole test is about.
+        let both = ran(&[verb, &second_of_boot.to_string(), "-a"]);
+        assert!(
+            !both.ok,
+            "{verb} PANE -a is refused as a contradiction: {}",
+            both.stdout,
+        );
+
+        // A CALLER STANDING IN A PANE has one resolved for it with nothing named, so `-a` must be
+        // read BEFORE that — a flag tested after the ambient pane is a flag accepted and dropped,
+        // which is this test's own subject one level down. The env is set explicitly because the
+        // harness strips it (item 226), so both lines below are a stated intention.
+        let standing_in = second_of_boot.to_string();
+        let inside = [(sprag_host::PANE_ENV_VAR, standing_in.as_str())];
+        // THE CONTROL. Without it the `-a` arm proves nothing: a build that never resolved an
+        // ambient pane at all would satisfy the assertion under it for the wrong reason.
+        let ambient = sprag_env(&sock, &[verb], &inside);
+        assert!(
+            ambient.ok,
+            "{verb} inside a pane answered: {}",
+            ambient.stderr
+        );
+        assert_eq!(
+            pane_id_set_in(&ambient.stdout),
+            vec![second_of_boot],
+            "{verb} run inside a pane answers about that pane: {}",
+            ambient.stdout,
+        );
+        let ambient_all = sprag_env(&sock, &[verb, "-a"], &inside);
+        assert!(
+            ambient_all.ok,
+            "{verb} -a inside a pane answered: {}",
+            ambient_all.stderr,
+        );
+        assert_eq!(
+            pane_id_set_in(&ambient_all.stdout),
+            every,
+            "{verb} -a asks past the pane it is standing in: {}",
+            ambient_all.stdout,
+        );
+    }
+}
+
 /// `list-keys -N` is the same table in the form a PERSON reads — and the paste-back form is
 /// untouched, which is the contract this flag exists to protect.
 ///
@@ -7093,7 +7329,19 @@ fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
         // is gone because the verb stopped reading anything — see the assertion below this loop,
         // which is what it turned into. Leaving it here would have been asserting that the REMEDY
         // every sentence in this sweep carries is itself unreachable.
-        (&["processes"], "/sprag_mux/external/pane_processes.0"),
+        // BOTH SPELLINGS OF `processes`, because the scope decides which read comes first and the
+        // sweep is about the FIRST one. A scoped listing has to learn which panes the session holds
+        // before it can narrow the reading, so its first read is the window list — `capture-pane`'s
+        // shape exactly, and for the same reason. `-a` narrows to nothing, so it goes straight at
+        // the verb's own address, which is the pairing this entry was written for: R290 added
+        // `pane_processes` under an unchanged `WIRE_PROTOCOL`, and against a daemon that predates
+        // only THAT address (rather than this fixture's daemon, which serves nothing) both
+        // spellings still name it, because the window list is served.
+        (&["processes"], "/sprag_mux/external/windows"),
+        (&["processes", "-a"], "/sprag_mux/external/pane_processes.0"),
+        // Its sibling, which shares the parse and the narrowing and was never on this list.
+        (&["resources"], "/sprag_mux/external/windows"),
+        (&["resources", "-a"], "/sprag_mux/external/pane_resources.0"),
         (&["find", "x"], "/sprag_mux/external/panes"),
         (&["select-pane", "1"], "/sprag_mux/external/panes"),
     ];

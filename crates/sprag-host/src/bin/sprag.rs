@@ -3729,8 +3729,8 @@ fn layout(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// `processes [PANE]`: WHAT EACH PANE IS RUNNING — its terminal device, the child the daemon
-/// spawned, and the job that currently owns its terminal, with every process in that job.
+/// `processes [PANE] [-t SESSION] [-a]`: WHAT EACH PANE IS RUNNING — its terminal device, the child
+/// the daemon spawned, and the job that currently owns its terminal, with every process in that job.
 ///
 /// The third of the pane verbs and the one the other two cannot answer: [`panes`] says WHO (and its
 /// `command` is the label a pane was SPAWNED with, frozen at birth — a pane opened as `bash` and now
@@ -3739,14 +3739,18 @@ fn layout(args: Vec<String>) -> io::Result<()> {
 /// job ends, so the foreground group is the OS's own answer to "what did the user set going", and
 /// until this verb existed nothing outside the daemon could ask for it.
 ///
-/// # Why it takes no `-t`
+/// # Why the reading is registry-wide and the ANSWER is not
 ///
-/// Because the daemon's answer is registry-wide by construction and pretending otherwise would cost
+/// The daemon's answer is registry-wide by construction and pretending otherwise would cost
 /// something: `/proc` carries no index by process group, so enumerating ONE pane's job is the same
-/// full pass that answers every other pane. Narrowing here would mean either a second slot read to
-/// learn which ids are in scope, or two scopes each paying the same walk. A row names its pane by
-/// the id every other verb takes, so `sprag processes 7` narrows client-side without either cost —
-/// which is also strictly more than a rival that can ask about one pane at a time.
+/// full pass that answers every other pane. Narrowing at the daemon would mean either a second slot
+/// read to learn which ids are in scope, or two scopes each paying the same walk.
+///
+/// So the walk stays whole and the NARROWING is here, in the client, where it costs a filter —
+/// which is why this verb can take `-t SESSION` and mean by it exactly what every other pane verb
+/// means, and take `[PANE]` and mean one pane, off the same reading. `-a` asks for the reading as
+/// it was taken, every session at once, and is the answer to *which pane on this machine is eating
+/// it*. [`pane_and_scope`] holds the parse and the measurement of what this used to do instead.
 ///
 /// # The rendering, and the one thing it must not do
 ///
@@ -3762,14 +3766,14 @@ fn layout(args: Vec<String>) -> io::Result<()> {
 /// identical to one that does not. Tolerance zero, so a one-shot human command waits for its own
 /// fresh walk rather than printing something held for a display poll.
 fn processes(args: Vec<String>) -> io::Result<()> {
-    let (session, asked) = pane_and_scope(args, "processes")?;
-    let mut conn = connect()?;
-    // The READING is registry-wide and the NARROWING is client-side, so `-t` says only which
-    // session a pane NAME is resolved in — which is what makes `sprag processes buildout -t work`
-    // mean anything.
-    let wanted =
-        resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "processes")?
-            .map(|site| site.id);
+    let scope = pane_and_scope(args, "processes")?;
+    // Scoped, so a session nobody has is a clean *no session named* rather than an answer about
+    // the whole machine — the pre-flight `sprag panes` has always made, and the second half of the
+    // defect [`pane_and_scope`] records.
+    let mut conn = connect_scoped(scope.session.as_deref())?;
+    // The READING is registry-wide and the NARROWING is client-side — which is what lets `-t` mean
+    // the same thing here as everywhere else without a second walk of `/proc`.
+    let narrowing = scope.narrowing(&mut conn, "processes")?;
     let reading = query_slot(
         &mut conn,
         json!({ "path": mux_action_path(&pane_processes_at(0)) }),
@@ -3782,9 +3786,9 @@ fn processes(args: Vec<String>) -> io::Result<()> {
     let rows: Vec<_> = wire
         .panes
         .iter()
-        .filter(|row| wanted.is_none_or(|id| row.id == id))
+        .filter(|row| narrowing.holds(row.id))
         .collect();
-    if let Some(id) = wanted
+    if let Some(id) = narrowing.named_pane()
         && rows.is_empty()
     {
         // The caller ASKED about that pane, so silence would be the wrong answer — the same rule
@@ -3832,10 +3836,10 @@ fn processes(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// `VERB [PANE] [-t SESSION]`: the optional pane and the optional scope, for the two verbs whose
-/// READING is registry-wide and whose NARROWING is a pane name.
+/// `VERB [PANE] [-t SESSION] [-a]`: what a registry-wide READING is narrowed to before it prints,
+/// for the two verbs that take one — [`processes`] and [`resources`].
 ///
-/// # The defect this exists to have fixed
+/// # The two defects this exists to have fixed
 ///
 /// `processes` shipped at R290 with a usage line reading `processes [PANE] [-t SESSION]` and a
 /// parser that refused any second argument, so `sprag processes buildout -t work` answered
@@ -3844,21 +3848,143 @@ fn processes(args: Vec<String>) -> io::Result<()> {
 /// this one function rather than two: the two verbs make the same claim in `--help`, so they must
 /// take the same arguments, and a shared parser is the only shape where that cannot drift.
 ///
-/// The scope is NOT a filter on the answer. Both readings cover the whole registry, because the
-/// question each asks is about the machine; `-t` says which session a pane NAME is looked up in.
-fn pane_and_scope(args: Vec<String>, verb: &str) -> io::Result<(Option<String>, Option<String>)> {
+/// Then the flag was accepted and DROPPED. Both readings cover the whole registry, and the
+/// narrowing was by PANE alone — so with no pane named the scope reached nothing, and every session
+/// got the same answer. Measured on a live daemon on 2026-08-17, session `0` holding panes 0 and 2
+/// and `work` holding 1 and 3:
+///
+/// ```text
+/// sprag panes     -t 0      -> 0                     sprag panes -t work   -> 1  3
+/// sprag processes -t 0      -> 0  2  1  3            sprag processes -t work -> 0  2  1  3
+/// sprag processes -t nosuch -> 0  2  1  3            sprag panes -t nosuch -> no session named
+/// ```
+///
+/// The doc above this function said so in as many words — *"the scope is NOT a filter on the
+/// answer"* — which made a silently-ignored flag read as a decision. It was not one: `-t` means the
+/// same thing on every other pane verb, and a verb that publishes it and then answers about the
+/// machine is telling the caller their scope was heard.
+///
+/// # Why the machine-wide answer needed a WORD
+///
+/// It is a real question — *which pane on this box is eating the CPU* — and the pane eating it may
+/// well be in a session the caller is not scoped to, which is why the reading is registry-wide in
+/// the first place. Narrowing without giving that answer a spelling would have traded one lost
+/// capability for another, so `-a` is it: tmux's own `list-panes -a`, the same letter for the same
+/// meaning.
+///
+/// `-a` WITH a pane is refused here rather than resolved one way, because the two are a
+/// contradiction (*every pane*, and *this one*) and picking a winner silently is the failure this
+/// whole shape exists to remove.
+fn pane_and_scope(args: Vec<String>, verb: &str) -> io::Result<PaneScope> {
     let (session, rest) = scope_and_rest(args, verb)?;
-    let mut rest = rest.into_iter();
-    let asked = rest.next();
-    if let Some(other) = rest.next() {
+    let mut pane = None;
+    let mut everywhere = false;
+    for arg in rest {
+        match arg.as_str() {
+            "-a" | "--all" => everywhere = true,
+            _ if pane.is_none() => pane = Some(arg),
+            other => {
+                return Err(bad_input(&format!(
+                    "{verb}: unexpected argument {other:?} ({verb} [PANE] [-t SESSION] [-a])"
+                )));
+            }
+        }
+    }
+    if everywhere && let Some(named) = &pane {
         return Err(bad_input(&format!(
-            "{verb}: unexpected argument {other:?} ({verb} [PANE] [-t SESSION])"
+            "{verb} -a answers about every pane on this daemon, so it cannot also be narrowed to \
+             {named:?} — drop one of them"
         )));
     }
-    Ok((session, asked))
+    Ok(PaneScope {
+        session,
+        pane,
+        everywhere,
+    })
 }
 
-/// `resources [PANE] [-t SESSION]`: what each pane is TAKING of the machine.
+/// What [`pane_and_scope`] parsed: which session, which pane, and whether the caller asked past
+/// both.
+struct PaneScope {
+    /// The `-t SESSION` the caller named, or [`None`] for the session they are standing in (and
+    /// failing that, the daemon's default).
+    session: Option<String>,
+    /// The `PANE` the caller named, as they SPELLED it — an id or a name, told apart by
+    /// [`resolve_pane`].
+    pane: Option<String>,
+    /// `-a`: every pane the daemon has, whatever session holds it.
+    everywhere: bool,
+}
+
+impl PaneScope {
+    /// Which rows of a registry-wide reading this scope keeps.
+    ///
+    /// The order is the answer to *"what did the caller ask about"*, most specific first, with ONE
+    /// exception that is the point of it: `-a` is read BEFORE the ambient pane. A caller standing
+    /// in a pane has one resolved for them ([`resolve_optional_pane`]), so testing the pane first
+    /// would let `sprag processes -a` run inside a pane mean *this pane* — a flag accepted and
+    /// dropped, which is the defect one function up. An EXPLICIT pane cannot reach here beside
+    /// `-a`; [`pane_and_scope`] refused that pair already.
+    fn narrowing(&self, conn: &mut HostConn, verb: &str) -> io::Result<Narrowing> {
+        if self.everywhere {
+            return Ok(Narrowing::Everywhere);
+        }
+        if let Some(site) =
+            resolve_optional_pane(conn, self.session.as_deref(), self.pane.as_deref(), verb)?
+        {
+            return Ok(Narrowing::Pane(site.id));
+        }
+        // Every WINDOW of the scoped session, which is the reach a pane argument already has here
+        // ([`resolve_pane`]) — so the two spellings of "in this session" cannot disagree. It is
+        // strictly more than `sprag panes`, which answers about one window because a display client
+        // projects one window.
+        Ok(Narrowing::Session(
+            session_panes(conn, self.session.as_deref())?
+                .into_iter()
+                .map(|(_, id, _)| id)
+                .collect(),
+        ))
+    }
+}
+
+/// Which panes of a registry-wide reading get printed.
+///
+/// A closed set rather than an `Option<u64>` plus a flag: the three answers are what the caller can
+/// ASK for, and the two verbs that render them must not each work out the combination themselves.
+enum Narrowing {
+    /// One pane — the caller named it, or is standing in it.
+    Pane(u64),
+    /// Every pane the scoped session holds, in any of its windows.
+    Session(Vec<u64>),
+    /// Every pane on the daemon — `-a`, the reading as it is taken.
+    Everywhere,
+}
+
+impl Narrowing {
+    /// Whether a row for pane `id` belongs in the answer.
+    fn holds(&self, id: u64) -> bool {
+        match self {
+            Self::Pane(pane) => *pane == id,
+            Self::Session(ids) => ids.contains(&id),
+            Self::Everywhere => true,
+        }
+    }
+
+    /// The pane the caller NAMED, for the one refusal that is only owed to a caller who named one:
+    /// silence is the right answer to a scope that holds nothing and the wrong answer to a pane.
+    fn named_pane(&self) -> Option<u64> {
+        match self {
+            Self::Pane(id) => Some(*id),
+            Self::Session(_) | Self::Everywhere => None,
+        }
+    }
+}
+
+/// `resources [PANE] [-t SESSION] [-a]`: what each pane is TAKING of the machine.
+///
+/// Scoped exactly as [`processes`] is, through the same [`pane_and_scope`] — and `-a` earns its
+/// keep here most of all, because the pane starving this one may be in a session the caller has
+/// never scoped to.
 ///
 /// # Two numbers, printed together, because either alone misleads
 ///
@@ -3874,14 +4000,12 @@ fn pane_and_scope(args: Vec<String>, verb: &str) -> io::Result<(Option<String>, 
 /// answer to that — one extra read after `SETTLE`, and the same one `sprag-mcp` makes, so the CLI
 /// and an agent cannot come to disagree about how long is long enough.
 fn resources(args: Vec<String>) -> io::Result<()> {
-    let (session, asked) = pane_and_scope(args, "resources")?;
-    let mut conn = connect()?;
+    let scope = pane_and_scope(args, "resources")?;
+    let mut conn = connect_scoped(scope.session.as_deref())?;
     // The READING is registry-wide — a machine is not divided by session, and the pane eating it may
-    // be in one the caller is not scoped to — so the narrowing is client-side, exactly as
-    // `processes` does it.
-    let wanted =
-        resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "resources")?
-            .map(|site| site.id);
+    // be in one the caller is not scoped to, which is what `-a` is for — so the narrowing is
+    // client-side, exactly as `processes` does it.
+    let narrowing = scope.narrowing(&mut conn, "resources")?;
     let wire = settled(|| {
         let reading = query_slot(
             &mut conn,
@@ -3896,9 +4020,9 @@ fn resources(args: Vec<String>) -> io::Result<()> {
     let rows: Vec<_> = wire
         .panes
         .iter()
-        .filter(|row| wanted.is_none_or(|id| row.id == id))
+        .filter(|row| narrowing.holds(row.id))
         .collect();
-    if let Some(id) = wanted
+    if let Some(id) = narrowing.named_pane()
         && rows.is_empty()
     {
         return Err(io::Error::new(
