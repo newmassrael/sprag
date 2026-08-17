@@ -4766,6 +4766,149 @@ fn what_a_live_agent_does_with_a_submit_it_was_never_given() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **WHAT MAKES A LIVE AGENT'S COMPOSER FOLD THE PROMPT AWAY** — register item 433's
+/// blocker, asked of the peer instead of guessed at.
+///
+/// # ⚠⚠⚠⚠ Why this had to be measured before another run was budgeted for it
+///
+/// Item 421's fix says a prompt a composer FOLDED away is delivered on the agent's own account, and
+/// item 433 says only a live run retires that claim. The obvious plan — run the loop until a
+/// reflection folds — rests on the fold being a property of the TEXT, and **the register's own
+/// numbers say it is not**:
+///
+/// | run | the reflection prompt | what the screen showed |
+/// |---|---|---|
+/// | 10 | 3 × **1,334** bytes, 6 lines | `[Pasted text #2 +5 lines]` — folded, run died |
+/// | 13 | 2 × **1,314** bytes, 6 lines | the prompt, painted; delivery confirmed |
+///
+/// **The same prompt shape, twenty bytes apart, opposite outcomes.** So *"measure the limit and
+/// refuse above it"* — which is what item 421's own entry first asked for — is answering a question
+/// about length that the evidence has already ruled out. What varies has to be something about the
+/// WRITE or about the peer's state when it arrives, and this asks which.
+///
+/// # ⚠⚠ One live agent per reading, deliberately
+///
+/// A composer that has taken a delivery cannot be emptied — `C-u` does not clear it (items
+/// 223/224), so a second delivery into the same pane CONCATENATES and the reading after the first
+/// is about a composer holding two prompts. Three agents cost three cold starts and buy three
+/// independent readings.
+///
+/// ⚠ **NOTHING IS SUBMITTED.** The question is what the composer SHOWS, so no `Enter` is pressed
+/// and no turn is spent; each pane is dropped holding its prompt.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, spawns several, takes minutes"]
+fn what_makes_a_live_agents_composer_fold_the_prompt_away() {
+    /// The placeholder a folded paste paints — matched on its stable head, since the `#N` and the
+    /// line count are the peer's to choose.
+    const FOLD: &str = "[Pasted text";
+    /// How long to let the composer paint before deciding what it shows.
+    const PAINT_WITHIN: Duration = Duration::from_secs(3);
+
+    // The loop's own reflection prompt, in shape and in size: six lines, ~1,320 bytes — the
+    // population both readings in the table above were taken from.
+    let prompt = format!(
+        "North star: {}\nYou have been working toward: {}\nWhat this session has cost: {}\nStop \
+         and decide what comes next, from what you have just done.\nReply with exactly two lines \
+         and nothing else, the first opening NEXT MILESTONE: and the second NEXT REFERENCE:.\nIf \
+         the north star itself is fully reached, make the last line exactly: NORTH STAR REACHED",
+        "x".repeat(300),
+        "y".repeat(300),
+        "z".repeat(300),
+    );
+
+    let began = Instant::now();
+    let run = RunContext::uncancellable();
+
+    // ⚠ ONE closure for every reading, so they differ ONLY in HOW the bytes are written. Two
+    // hand-written arms would be two instruments, which is this module's own rule.
+    let reading = |label: &str, chunk: Option<usize>| -> (String, String) {
+        let live = Live::start(label);
+        let reached = Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable");
+        assert_eq!(
+            reached,
+            Reached::Yes,
+            "⚠ THE PREMISE OF EVERY READING: the composer must be up and at rest before anything is \
+             typed into it, or this measures a swallowed write rather than a fold. {}",
+            live.tail(3),
+        );
+
+        let wrote = match chunk {
+            // One write, which is what `PaneAccess::inject` does for a whole prompt today.
+            None => live
+                .access
+                .inject(live.pane, &KeyStroke::text(&prompt))
+                .expect("the pane takes the bytes")
+                .bytes(),
+            // ⚠ The same bytes, handed over the way a person's keyboard hands them over: small
+            // pieces with time between them. If the fold is a burst heuristic this is what does
+            // not trigger it, and the difference IS the answer.
+            Some(size) => {
+                let mut wrote = 0;
+                let chars: Vec<char> = prompt.chars().collect();
+                for piece in chars.chunks(size) {
+                    let text: String = piece.iter().collect();
+                    wrote += live
+                        .access
+                        .inject(live.pane, &KeyStroke::text(&text))
+                        .expect("the pane takes the bytes")
+                        .bytes();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                wrote
+            }
+        };
+
+        // Let it paint. ⚠ Bounded by a clock rather than by a predicate: BOTH outcomes are things
+        // this is trying to tell apart, so waiting for either would decide the answer.
+        std::thread::sleep(PAINT_WITHIN);
+        let screen = live.screen();
+        let saw = if screen.contains(FOLD) {
+            "FOLDED"
+        } else if screen.contains(&prompt.chars().take(40).collect::<String>()) {
+            "painted (its head is readable back)"
+        } else {
+            "neither — the prompt's head is not on that screen and no placeholder is either"
+        };
+        step(
+            began,
+            &format!("{label}: wrote {wrote} bytes in {chunk:?}-sized pieces -> {saw}"),
+        );
+        (saw.to_owned(), live.tail(6))
+    };
+
+    let (bulk, bulk_pane) = reading("fold-bulk", None);
+    let (typed, typed_pane) = reading("fold-typed", Some(16));
+
+    println!(
+        "\n== what makes a live composer fold ==\n  \
+         one write of {} bytes : {bulk}\n{bulk_pane}\n  \
+         the same in 16-char pieces : {typed}\n{typed_pane}\n",
+        prompt.len(),
+    );
+
+    // ⚠⚠⚠⚠⚠ THE CLAIM: the fold is something the WRITE does, not something the text is. If both
+    // readings agree, this measurement has ruled that out too — and the register's next step is a
+    // different question, which is why the message says what was actually seen rather than only
+    // that a comparison failed.
+    assert_ne!(
+        bulk,
+        typed,
+        "⚠⚠⚠⚠⚠ ITEM 433: the same {} bytes reached the same composer two ways and it showed the \
+         SAME thing for both. So the fold is not a property of how the bytes are written either, \
+         and neither is it the text (run 10's 1,334 bytes folded where run 13's 1,314 painted) — \
+         which leaves the peer's own state, and no run of this loop can be budgeted to produce a \
+         fold until that is known.",
+        prompt.len(),
+    );
+}
+
 /// [`one_turn`] against a pane that is not [`Live::pane`] — what a replacement needs.
 fn one_turn_on(live: &Live, pane: PaneId, run: &RunContext, index: usize, began: Instant) -> Turn {
     let token = format!("ORTHOGONAL-{index}7");
