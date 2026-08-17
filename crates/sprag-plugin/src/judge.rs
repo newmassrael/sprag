@@ -249,12 +249,58 @@ pub fn judges(
     question: &Question,
     spec: &JudgeSpec,
 ) -> Option<Judgement> {
-    if criterion.trim().is_empty() || spec.argv.is_empty() {
+    if criterion.trim().is_empty() {
+        return None;
+    }
+    asked_of_another(
+        panes,
+        run,
+        &spec.argv,
+        &render(criterion, question),
+        spec.within,
+    )
+}
+
+/// **PUT ONE YES-OR-NO QUESTION TO A PROCESS NOBODY IN THIS RUN IS**, bounded, and hand back what
+/// its first word was — or [`None`] where it said nothing this can read.
+///
+/// # ⚠⚠⚠⚠ Why this is its own function, with two callers and a name of its own
+///
+/// It is the whole of what makes a verdict INDEPENDENT, and independence is the property two
+/// different questions in this crate need for the same measured reason:
+///
+/// * a dialog's meaning cannot be told from its wording ([`judges`], and the module doc's two
+///   captured dialogs that ask the identical question);
+/// * **a milestone cannot be certified by the agent that worked on it** (register item 428): the
+///   literature it cites measured 92 of 100 runs recorded `succeeded` where `succeeded` meant *the
+///   branch was pushed*, with 18 of the 100 being repairs of runs already recorded that way. The
+///   remedy is named twice and is the same both times — *an independent check, **not the model's own
+///   say-so***, and *a DIFFERENT agent, in a NEW session, shown only the artifact*.
+///
+/// A fresh process in a fresh pane, handed one rendered question and nothing else, is exactly that
+/// shape. What it must NOT become is a second implementation of it — this crate has paid for two
+/// answers to one question often enough to name it a class.
+///
+/// # ⚠⚠⚠ Every silence is [`None`], and that direction is the safety property
+///
+/// No argv, no lifecycle, a spawn that failed, a process that outran `within`, a run that ended
+/// underneath, or a reply whose first word is not a verdict — all of them answer `None`, and the
+/// CALLER decides what nothing means. **Silence is never a yes**, and it is never a no either: a
+/// `false` here would look exactly like a considered verdict against, which is a different fact.
+#[must_use]
+pub fn asked_of_another(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    argv: &[String],
+    question: &str,
+    within: Duration,
+) -> Option<Judgement> {
+    if argv.is_empty() {
         return None;
     }
     let life = panes.lifecycle()?;
-    let mut argv = spec.argv.clone();
-    argv.push(render(criterion, question));
+    let mut argv = argv.to_vec();
+    argv.push(question.to_owned());
 
     let began = Instant::now();
     let pane = life
@@ -262,7 +308,7 @@ pub fn judges(
         .ok()?;
     // From here every exit path closes the pane. A judge left running would hold a pty and a
     // process for the rest of the run, once per blocked turn.
-    let over = Completion::new(DoneWhen::Exits).wait(panes, pane, spec.within, run);
+    let over = Completion::new(DoneWhen::Exits).wait(panes, pane, within, run);
     let reply = panes.pane_full_text(pane).unwrap_or_default();
     life.close(pane);
 

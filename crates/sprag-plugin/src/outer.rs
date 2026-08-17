@@ -269,6 +269,45 @@ impl Authored {
 /// The datamodel variable holding the word the agent says when it is finished.
 const DONE_MARKER: &str = "done_marker";
 
+/// **THE COMMAND THAT DECIDES WHETHER A CLAIMED MILESTONE WAS ACTUALLY REACHED** — an argv, split on
+/// whitespace, run by nobody this loop is driving. Empty in the shipped document, which is exactly
+/// today's behaviour: the agent's word, and nothing else.
+///
+/// # ⚠⚠⚠⚠⚠ Why a loop needs this — register item 428
+///
+/// Everything about a milestone rests on one string the WORKING AGENT writes: it prints
+/// `MILESTONE REACHED`, the driver reads it off the pane, and `judge`'s third door sends the run to
+/// `reflecting`. **The party that did the work is the party that certifies it**, which is the one
+/// failure the measured literature this item cites puts a number on — 92 of 100 runs recorded
+/// `succeeded`, where `succeeded` meant *the branch was pushed*, and 18 of those 100 were repairs of
+/// runs already recorded that way (rework: 26% of spend).
+///
+/// The remedy is named twice, independently, and identically: *an independent check, **not the
+/// model's own say-so**, decides when the work is done*, and *a DIFFERENT agent, in a NEW session,
+/// shown only the artifact*. This is the document's slot for it.
+///
+/// ⚠⚠ **IT IS THE DOCUMENT'S AND NOT A CALLER ARGUMENT**, which is where the done-when put it: *"the
+/// cheapest honest version is that the DOCUMENT names the check"*. It also keeps the wire out of this
+/// round — an added argument is this surface's commonest bump cause, and the decision about who may
+/// declare a check is worth its own.
+///
+/// ⚠ **EMPTY MEANS NOBODY CHECKS, AND SAYS SO** rather than meaning *passed*. See
+/// [`Checked`], whose three answers exist so that *nothing checked this* can never be read as
+/// *something checked this and was satisfied*.
+const MILESTONE_CHECK: &str = "milestone_check";
+
+/// How long a milestone check may take before it is abandoned as [`Checked::Silent`].
+///
+/// ⚠⚠ Sized like [`JudgeSpec`](crate::judge::JudgeSpec)'s and then some: a judged dialog asks about
+/// four lines of menu and was measured at 4-6 s against a cheap model, and this one is shown a whole
+/// turn's output. It is not in the critical path of a BLOCKED agent — the peer has finished its turn
+/// and said so — so patience here costs a slower judgement rather than a stalled one.
+///
+/// ⚠ It is a constant and not a `<data>`, on register item 314's correction: the rule that a
+/// duration belongs to the document bites on durations a CALLER can pass, and no caller can pass
+/// this. The day a check becomes a wire argument, its bound goes beside it.
+const CHECK_WITHIN: Duration = Duration::from_secs(120);
+
 /// The datamodel variable holding the word the agent says when there is **nothing left at all** —
 /// asked for by the reflection, and the only thing that reaches `closing`.
 ///
@@ -1354,6 +1393,23 @@ pub enum Pumped {
         /// of diffed, a four-turn fixture reported it three times — because taking empties a slot
         /// that the next turn's read refills. Item 277 priced that shape at a whole diagnosis.
         unreadable: Option<std::path::PathBuf>,
+        /// **WHAT AN INDEPENDENT CHECK SAID ABOUT THE MILESTONE THIS PASS'S AGENT CLAIMED** —
+        /// [`None`] on every pass where nothing was claimed. Register item 428, and see [`Checked`].
+        ///
+        /// # ⚠⚠⚠⚠ Why it is a fact of its own and not a [`Because`] arm
+        ///
+        /// It was written as one, and three neighbouring gates said no in the same run: the milestone
+        /// edge's reason is `Reflected(Milestone)` — *the agent said the milestone was reached* — and
+        /// a verdict that REPLACED it dropped a true thing to make room for another true thing.
+        /// [`AiLoop::walked`](crate::ai_loop::AiLoop)'s own doc had already settled this: the facts
+        /// are appended separately and in a fixed order, *"because a line that silently dropped one
+        /// of two true things is the failure this whole function keeps being about"*.
+        ///
+        /// ⚠⚠ **AND IT IS CARRIED WHERE THE CHECK PASSED OR WAS NEVER ASKED, not only where it
+        /// refused.** That is where a reader decides what the milestone is WORTH: a run that reflects
+        /// with `NotAsked` has a milestone resting on the working agent's own word, and the whole of
+        /// item 428 is that nothing said so.
+        checked: Option<Checked>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -1720,6 +1776,89 @@ impl Session {
     }
 }
 
+/// **WHAT AN INDEPENDENT CHECK SAID ABOUT A CLAIMED MILESTONE** — register item 428.
+///
+/// # ⚠⚠⚠⚠ Three answers, because *nobody looked* must never read as *somebody was satisfied*
+///
+/// The whole point of the item is that a `done` with nothing behind it is indistinguishable from a
+/// `done` that was verified — so a type with two arms would rebuild the defect one layer up. The
+/// document routes on the WORD ([`wire_str`](Self::wire_str)), and `NotAsked` publishes `false`
+/// rather than a word, so a run with no check authored behaves exactly as it did before this
+/// existed and **says that is what happened**.
+///
+/// ⚠⚠ **A CHECK THAT SAID NOTHING IS [`NotAsked`](Self::NotAsked)'s NEIGHBOUR AND NOT ITS TWIN.** A
+/// spawn that failed, a checker that outran its bound, a reply whose first word is not a verdict —
+/// [`asked_of_another`](crate::judge::asked_of_another) answers `None` to all of them, and this
+/// crate's standing direction applies: **silence is never a yes**. It is [`Silent`](Self::Silent),
+/// which is a fault a reader can act on (the checker is broken) where `NotAsked` is a decision the
+/// author made.
+///
+/// ⚠ What the DOCUMENT does with each is the document's — see `ai_loop.scxml`'s `judging`. This type
+/// is the driver reporting a fact, which is the arrangement `done` and `unheard` already have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Checked {
+    /// The document authors no check, so nothing looked. **Today's behaviour, named.**
+    NotAsked,
+    /// An independent process was asked and said the milestone was reached.
+    Passed,
+    /// An independent process was asked and said it was NOT.
+    Failed,
+    /// An independent process was asked and **said nothing this could read** — it would not start,
+    /// it outran its bound, the run ended underneath it, or its first word was not a verdict.
+    Silent,
+}
+
+impl Checked {
+    /// Every arm, so the runs that produce them and the document that routes on them are one list.
+    pub const ALL: [Self; 4] = [Self::NotAsked, Self::Passed, Self::Failed, Self::Silent];
+
+    /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.checked`, or [`None`] for the arm that
+    /// publishes `false`.
+    ///
+    /// ⚠⚠ A WORD OR `false`, NEVER AN EMPTY STRING — `stop_short`'s measured reason, one key over:
+    /// this datamodel is Lua, where `''` is TRUE, so an empty spelling would make every judgement of
+    /// every run look checked.
+    #[must_use]
+    pub const fn wire_str(self) -> Option<&'static str> {
+        match self {
+            // ⚠ NOT a word: the document's guards test truthiness, and *nobody checked* must be the
+            // falsy one — a run with no check authored has to take exactly the edges it always did.
+            Self::NotAsked => None,
+            Self::Passed => Some("passed"),
+            Self::Failed => Some("failed"),
+            Self::Silent => Some("silent"),
+        }
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — the sentence a walk carries.
+    ///
+    /// ⚠⚠ It says only what the CHECK adds. The edge's own cause already says the agent claimed the
+    /// milestone (`Reflected(Milestone)`, `DoneReason::StoodDown`), and a clause that repeated it
+    /// would put the same sentence in one line twice — measured, in the three neighbouring gates
+    /// this first landed in.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::NotAsked => {
+                "NOTHING CHECKED THAT CLAIM: this document authors no `milestone_check`, so the \
+                 party that did the work is the party that certified it (register item 428)"
+            }
+            Self::Passed => {
+                "and an independent process, shown the milestone and what this turn produced, agreed"
+            }
+            Self::Failed => {
+                "and an independent process shown the same disagreed, so this run bought one more \
+                 turn rather than a convergence nobody earned"
+            }
+            Self::Silent => {
+                "and the check said nothing this run could read — it would not start, outran its \
+                 bound, or answered something that is not a verdict. Silence is not agreement: fix \
+                 the checker, or the milestone is resting on the working agent's own word"
+            }
+        }
+    }
+}
+
 /// **WHAT A SESSION CAN SAY ABOUT ITS OWN SPEND** — three answers, because two of them look like
 /// zero and only one of them is a fault.
 ///
@@ -1928,6 +2067,14 @@ pub struct OuterLoop {
     /// pass that entered `working` from anywhere else has judged nothing, and there is nothing here
     /// that would be true of it.
     saw: Option<Heard>,
+    /// ⚠⚠⚠ **WHAT AN INDEPENDENT CHECK SAID ABOUT THE MILESTONE THIS JUDGEMENT CLAIMED** — register
+    /// item 428, and [`None`] on every judgement where the agent claimed nothing, because there was
+    /// no claim to check.
+    ///
+    /// ⚠⚠ Written fresh on every judgement beside [`saw`](Self::saw) and never latched, for that
+    /// field's reason: a verdict belongs to ONE claim, and carrying a stale one onto a later edge
+    /// would put a check's answer on a milestone it never saw.
+    verdict: Option<Checked>,
     /// ⚠⚠⚠ **A RECORD THIS RUN'S AGENT NAMED AND NOTHING COULD READ** — register item 431(a). See
     /// [`Accounted::Unreadable`], and [`Pumped::Moved`]'s `unreadable`, which is how the CHANGE in
     /// this level reaches a reader.
@@ -2025,6 +2172,7 @@ impl OuterLoop {
             stopping_short: None,
             unasked: false,
             saw: None,
+            verdict: None,
             unaccountable: None,
         })
     }
@@ -2879,6 +3027,9 @@ impl OuterLoop {
                     // nothing about one. A break the run was already holding stays held, and the
                     // step that discovered it has already said so.
                     unreadable: None,
+                    // ⚠ AND NO JUDGEMENT HAPPENED, so no milestone was claimed for anything to
+                    // check: this pass is a pane whose program has gone.
+                    checked: None,
                 })
             }
             otherwise => otherwise,
@@ -3030,10 +3181,26 @@ impl OuterLoop {
                 // [`Because::Judged`] and register item 423.
                 let heard = self.said_done(panes);
                 self.saw = Some(heard);
+                // ⚠⚠⚠⚠⚠ AND THE THIRD FACT: **DID ANYBODY WHO DID NOT DO THE WORK AGREE** — register
+                // item 428. Asked only where the agent has claimed the milestone, and answered by a
+                // process in a pane of its own. See [`Self::checked`] and [`Checked`].
+                let checked = self.checked(panes, run, heard);
+                // ⚠⚠ KEPT BESIDE THE READING IT ANSWERS ABOUT, and for the same reason: it belongs
+                // to THIS judgement and is gone the instant the payload is built. It travels on
+                // [`Pumped::Moved`]'s `checked` — BESIDE the edge's own cause and never instead of
+                // it, which three neighbouring gates had to say before it was written that way.
+                self.verdict = heard.said().then_some(checked);
                 Raise::carrying(
                     AiLoopEvent::Judge,
                     serde_json::json!({
                         "done": heard.said(),
+                        // ⚠⚠ A WORD OR `false`, NEVER AN EMPTY STRING, for `stop_short`'s measured
+                        // reason two keys down — and `false` is the arm that means NOBODY CHECKED,
+                        // so a document authoring no check takes exactly the edges it always did.
+                        "checked": match checked.wire_str() {
+                            Some(word) => serde_json::Value::from(word),
+                            None => serde_json::Value::Bool(false),
+                        },
                         // ⚠⚠⚠ AND WHETHER A `false` ABOVE IS TRUSTWORTHY. `done` is a yes-or-no and
                         // cannot say *"I could not see"*; this is that third answer, published so the
                         // DOCUMENT decides what an unreadable turn is worth. `false` when the absence
@@ -3204,6 +3371,12 @@ impl OuterLoop {
             found,
             because,
             unreadable,
+            // ⚠ ON THE EDGES OUT OF A JUDGEMENT AND NO OTHER PASS. The verdict belongs to the claim
+            // this judgement made, and `verdict` is written fresh by every judgement — so a later
+            // pass reading it would put a check's answer on a milestone it never saw.
+            checked: (from == AiLoopState::Judging)
+                .then_some(self.verdict)
+                .flatten(),
         })
     }
 
@@ -4593,6 +4766,58 @@ impl OuterLoop {
         match (submit_lands_when(self.done_when), reported) {
             (SubmittedWhen::Stirs { within }, true) => SubmittedWhen::Took { within },
             (weaker, _) => weaker,
+        }
+    }
+
+    /// **ASK SOMEBODY WHO DID NOT DO THE WORK WHETHER THE MILESTONE WAS REACHED** — register item
+    /// 428, and the one claim in this system that had nothing behind it.
+    ///
+    /// # ⚠⚠⚠ Asked ONLY when the agent has claimed it, and that is not an optimisation
+    ///
+    /// A check is a process, a pane and a bounded wait, and running one on every judged turn would
+    /// price every ordinary turn at the cost of a claim nobody made. **The question this answers is
+    /// *was that claim true*, so it has no meaning before there is a claim** — which is also why the
+    /// caller passes the reading it already took rather than this asking the pane a second time
+    /// (368/429: two values that are compared are read at the same moment).
+    ///
+    /// # ⚠⚠ What the checker is shown, and what it is deliberately NOT shown
+    ///
+    /// The MILESTONE as the document holds it, and WHAT THIS TURN PRODUCED. It is not told what the
+    /// agent said about its own work, is not given the run's history, and is not told that a marker
+    /// was printed — *"내가 방금 이렇게 하려고 했다"* must not be able to enter the verdict, which is
+    /// the whole of the `graph engineering` shape this item cites.
+    ///
+    /// ⚠ It runs in a pane of its own through
+    /// [`asked_of_another`](crate::judge::asked_of_another), which is the same bounded, closing,
+    /// silence-is-never-a-yes machinery a judged dialog uses. Two callers, one implementation.
+    fn checked(&mut self, panes: &dyn PaneAccess, run: &RunContext, said: Heard) -> Checked {
+        if !said.said() {
+            return Checked::NotAsked;
+        }
+        let argv: Vec<String> = self
+            .text_of(MILESTONE_CHECK)
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(ToOwned::to_owned)
+            .collect();
+        if argv.is_empty() {
+            return Checked::NotAsked;
+        }
+        let milestone = self.text_of(MILESTONE).unwrap_or_default();
+        let produced = self.driving.since.taken(panes, self.driving.pane);
+        let question = format!(
+            "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\nBelow is what it \
+             produced while working on it. Decide whether the checkpoint was actually reached — \
+             judge the work, not the claim.\n\nReply with exactly one word: YES or NO. Do not \
+             explain.\n\nWhat it produced:\n{}\n",
+            produced.lines.join("\n"),
+        );
+        match crate::judge::asked_of_another(panes, run, &argv, &question, CHECK_WITHIN) {
+            Some(judged) if judged.holds => Checked::Passed,
+            Some(_) => Checked::Failed,
+            // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
+            // and this crate's standing direction: silence is never a yes.
+            None => Checked::Silent,
         }
     }
 
@@ -7394,6 +7619,8 @@ mod tests {
                 because: None,
                 // ⚠ AND NO TURN ENDED, so no record was read: this run failed at its first prompt.
                 unreadable: None,
+                // ⚠ AND NOTHING WAS JUDGED, so no milestone was claimed to be checked.
+                checked: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
              own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
@@ -8543,6 +8770,222 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠⚠⚠ **A MILESTONE THE AGENT CLAIMS AND AN INDEPENDENT CHECK DENIES IS NOT A MILESTONE** —
+    /// register item 428, the one claim in this system that had nothing behind it.
+    ///
+    /// # ⚠⚠⚠ The defect, and the numbers that make it an item rather than an opinion
+    ///
+    /// The whole convergence of a run rested on one string the WORKING AGENT writes. It prints
+    /// `MILESTONE REACHED`, the driver reads it off the pane, and `judge`'s door sends the run to
+    /// `reflecting` — **the party that did the work is the party that certifies it**. Measured on an
+    /// unrelated system: 92 of 100 runs recorded `succeeded`, where `succeeded` meant *the branch was
+    /// pushed*; **18 of those 100 were repairs of runs already recorded that way**, and rework was 26%
+    /// of spend. The remedy is named twice and identically — *an independent check, not the model's
+    /// own say-so*, and *a different agent, in a new session, shown only the artifact*.
+    ///
+    /// # ⚠⚠ Three runs differing in ONE fact: what the checker says
+    ///
+    /// The same stand-in agent claims the milestone in all three. What changes is the `milestone_check`
+    /// the DOCUMENT authors — a command that answers `NO`, one that answers `YES`, and none at all —
+    /// so the verdict is the only thing that can move the run. ⚠ The third is the shipped shape and
+    /// must behave exactly as it did before this existed, or every run in the world changes meaning.
+    #[test]
+    fn a_milestone_an_independent_check_denies_does_not_reflect() {
+        /// A checker that denies the claim, whatever it is shown.
+        ///
+        /// ⚠ `echo` rather than a shell, because the slot is ONE STRING split on whitespace and
+        /// `sh -c 'printf NO'` cannot be spelled in one — the residue the slot's own doc states. The
+        /// question is APPENDED as the last argument, exactly as a judged dialog's is, so it is
+        /// echoed after the verdict and the reader takes the FIRST WORD.
+        const DENIES: &str = "/bin/echo NO";
+        /// And one that agrees — the control that says the arm above is about the VERDICT rather
+        /// than about any check at all being authored.
+        const AGREES: &str = "/bin/echo YES";
+        /// And one that RUNS, EXITS AND ANSWERS NOTHING A VERDICT CAN BE READ FROM — a checker that
+        /// is merely broken. It is the arm the module's standing direction is about: **silence is
+        /// never a yes**, and a `Passed` here would certify a milestone on nobody's decision.
+        const MUMBLES: &str = "/bin/echo perhaps";
+
+        /// Drive a run to the pass that judges its FIRST claimed milestone, and say where it went
+        /// and what the check said about it.
+        fn judged(check: Option<&str>) -> (AiLoopState, Option<Checked>, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠ ONE prompt to the marker: this gate is about the FIRST claim, and a peer that
+            // worked longer would only make the walk harder to read.
+            let (workspace, pane) = standin_agent(1);
+            let access = supervised(&workspace);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            if let Some(check) = check {
+                // ⚠⚠ AUTHORED INTO THE DOCUMENT, which is where the item put it and what makes this
+                // a gate about the product rather than about a caller argument that does not exist.
+                loops
+                    .script
+                    .set_variable(
+                        &loops.session,
+                        MILESTONE_CHECK,
+                        ScriptValue::String(check.to_string()),
+                    )
+                    .expect("the document's own check is writable");
+            }
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "the stand-in answers one prompt and then says the marker"
+                        .to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    max_turns: Some(Counted::Of(40)),
+                    // ⚠ OFF, so the budget cannot be what moves this run.
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut landed = None;
+            while walked.len() < 12 {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        checked,
+                        ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if from == AiLoopState::Judging && raised == AiLoopEvent::Judge {
+                            landed = Some((to, checked));
+                            break;
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            access.lifecycle().expect("lifecycle").close(pane);
+            let Some((to, checked)) = landed else {
+                panic!("no run reached a judgement in 12 passes: {walked:?}");
+            };
+            (to, checked, walked)
+        }
+
+        // ⚠⚠⚠⚠ THE INSTRUMENT FIRST, because every claim below is about a verdict and a check that
+        // never RAN would send the run to the same place a denied one should. This asks the driver
+        // directly, with the reading a judgement would have taken.
+        {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = supervised(&workspace);
+            let mut loops = bounded_at(lua, pane, Duration::from_secs(5))
+                .expect("the document's datamodel must carry its four authored strings");
+            let run = RunContext::uncancellable();
+            let ask = |loops: &mut OuterLoop, check: &str| {
+                loops
+                    .script
+                    .set_variable(
+                        &loops.session,
+                        MILESTONE_CHECK,
+                        ScriptValue::String(check.to_string()),
+                    )
+                    .expect("the document's own check is writable");
+                loops.checked(&access, &run, Heard::Said)
+            };
+            assert_eq!(
+                (ask(&mut loops, DENIES), ask(&mut loops, AGREES)),
+                (Checked::Failed, Checked::Passed),
+                "⚠⚠⚠ the checker must actually run and its verdict must reach the driver, or every \
+                 claim in this gate is about a check that never happened",
+            );
+            // ⚠⚠⚠⚠ AND A CHECKER THAT ANSWERS NOTHING IS NOT A CHECKER THAT AGREED — this crate's
+            // standing direction, and the arm a mutation walked straight through: reading silence as
+            // `Passed` certifies a milestone on NOBODY's decision, which is worse than the defect
+            // item 428 is about, because it looks like a check.
+            assert_eq!(
+                ask(&mut loops, MUMBLES),
+                Checked::Silent,
+                "⚠⚠⚠ a reply whose first word is not a verdict is SILENCE — a broken checker, and a \
+                 fact a reader can act on. It must not be an agreement, and it must not be a verdict \
+                 against the agent either",
+            );
+            assert_eq!(
+                loops.checked(&access, &run, Heard::NotSaid),
+                Checked::NotAsked,
+                "⚠⚠⚠ AND NOTHING IS ASKED WHERE NOTHING WAS CLAIMED: a check answers *was that \
+                 claim true*, so it has no meaning before there is a claim — and a process spawned \
+                 on every ordinary turn would price every turn at the cost of one nobody made",
+            );
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+
+        let (denied, why, denied_walk) = judged(Some(DENIES));
+        assert_eq!(
+            denied,
+            AiLoopState::Working,
+            "⚠⚠⚠⚠⚠ ITEM 428: the agent said the milestone was reached and an independent process \
+             said it was not, so this run must buy ONE MORE TURN rather than a convergence nobody \
+             earned. Walked {denied_walk:?}",
+        );
+        assert_eq!(
+            why,
+            Some(Checked::Failed),
+            "⚠⚠⚠ and the edge must CARRY the verdict that moved it — a run sent back to work by a \
+             check reads exactly like one whose agent had not finished, which is the silence item \
+             423 paid for one door over",
+        );
+        assert!(
+            Checked::Failed.describe().contains("disagreed"),
+            "⚠⚠ and the sentence a reader gets must say a check disagreed, not merely that \
+             something did: {:?}",
+            Checked::Failed.describe(),
+        );
+
+        // ⚠⚠⚠ THE CONTROL THAT SAYS THIS IS ABOUT THE VERDICT: the same claim, the same machinery,
+        // a checker that AGREES. A run refused here would mean the door had been closed rather than
+        // gated, and no loop could ever converge again.
+        let (agreed, _, agreed_walk) = judged(Some(AGREES));
+        assert_eq!(
+            agreed,
+            AiLoopState::Reflecting,
+            "⚠⚠⚠ a claimed milestone an independent process AGREES with must go on exactly as it \
+             always did. Walked {agreed_walk:?}",
+        );
+
+        // ⚠⚠⚠⚠ AND THE SHIPPED SHAPE IS UNCHANGED. The document authors no check, so nothing looked
+        // — and *nobody checked* must never be read as *somebody was satisfied*: the run goes on, and
+        // the walk says the claim rests on the working agent's own word.
+        let (unchecked, unchecked_why, unchecked_walk) = judged(None);
+        assert_eq!(
+            (unchecked, unchecked_why),
+            (AiLoopState::Reflecting, Some(Checked::NotAsked)),
+            "⚠⚠ a document that authors no check behaves exactly as this one always has — AND SAYS \
+             SO. *Nobody checked* reaching a reader as silence is the whole of item 428: it is what \
+             let a run report a milestone in the same words whether or not anything had verified it. \
+             Walked {unchecked_walk:?}",
+        );
+        assert!(
+            Checked::NotAsked.describe().contains("NOTHING CHECKED"),
+            "⚠⚠⚠ and the sentence must say it plainly. A reader who is told nothing concludes the \
+             milestone was verified, because that is what a milestone sounds like: {:?}",
+            Checked::NotAsked.describe(),
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHAT THE JUDGE SAW** — register item 423, which is 240/261/265's class
     /// at the one state where the answer decides whether the run can converge AT ALL.
     ///
@@ -8926,8 +9369,19 @@ mod tests {
                     found,
                     because,
                     unreadable,
+                    checked,
                 } => {
                     spent_total += spent;
+                    // ⚠⚠⚠ AND THIS RUN'S MILESTONE IS ON THE AGENT'S OWN WORD, asserted rather than
+                    // assumed — register item 428. This document authors no `milestone_check`, so
+                    // every claimed milestone here must report `NotAsked`: a `Passed` would mean
+                    // something had checked it, which nothing in this fixture can do, and a `Failed`
+                    // would mean the convergence below was reached past a refusal.
+                    assert!(
+                        checked.is_none_or(|verdict| verdict == Checked::NotAsked),
+                        "⚠⚠ {from:?} --{raised:?}--> {to:?} reports {checked:?}, and this run \
+                         authors no check. Walked {walked:?}",
+                    );
                     // ⚠⚠ AND NOTHING IN THIS RUN IS UNREADABLE, which is a control rather than a
                     // formality: this peer's supervisor states no record, so a pass that named one
                     // would be naming a file this fixture never mentioned — and the three cost

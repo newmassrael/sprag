@@ -186,6 +186,36 @@
     <data id="done_marker" expr="'MILESTONE REACHED'"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ AND WHO SAYS THE AGENT IS RIGHT ABOUT THAT — register item 428.
+
+      Everything above rests on a string the WORKING AGENT writes. It prints
+      `done_marker`, the driver reads it off the pane, and `judge`'s door below
+      sends the run to `reflecting`: the party that did the work is the party
+      that certifies it.
+
+      ⚠⚠⚠ MEASURED ON AN UNRELATED SYSTEM, and the numbers are why this is a slot
+      rather than a comment: 92 of 100 runs recorded `succeeded` — where
+      `succeeded` meant *the branch was pushed* — while 18 of those 100 were
+      REPAIRS of runs already recorded that way, and rework was 26% of spend. Its
+      pull requests merged 100%, with 0 reviews and a median of 1.9 minutes.
+
+      The remedy is named twice, independently, and identically: *an independent
+      check, NOT the model's own say-so, decides when the work is done*, and *a
+      DIFFERENT agent, in a NEW session, shown only the artifact*.
+
+      This is an ARGV, split on whitespace, run by nobody this loop is driving.
+      The driver appends one rendered question — the milestone, and what the turn
+      produced — and reads the first word of the reply as YES or NO.
+
+      ⚠⚠ EMPTY IS THE SHIPPED VALUE AND MEANS NOBODY CHECKS, which is exactly the
+      behaviour this document had before the slot existed. It does NOT mean
+      *passed*: the driver publishes `checked = false` for it, and the run's walk
+      says in words that nothing checked the claim. An author who wants the
+      milestone to mean something writes a command here.
+    -->
+    <data id="milestone_check" expr="''"/>
+
+    <!--
       ⚠⚠⚠ AND WHAT THE AGENT SAYS WHEN THERE IS NOTHING LEFT TO DO AT ALL.
 
       `done_marker` ends a MILESTONE; this ends the RUN. Until both existed a
@@ -1867,6 +1897,40 @@
     -->
     <transition event="judge" cond="_event.data.done &amp;&amp; In('standing_down')" target="closing">
       <assign location="done_reason" expr="'stood_down'"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE CLAIM WAS CHECKED AND THE CHECK SAID NO — register item 428, and
+      the only door in this document that can refuse a milestone.
+
+      `_event.data.checked` is the word an INDEPENDENT process gave when it was
+      shown the milestone and what the turn produced (`milestone_check`, in the
+      datamodel above). `'failed'` is that process saying the checkpoint was not
+      reached, and the run buys ONE MORE TURN — which is `unheard`'s direction
+      further down, for the same reason: **a convergence nobody earned is the
+      expensive mistake, and one more turn is the cheap one.**
+
+      ⚠⚠⚠ IT IS BELOW THE STAND-DOWN AND ABOVE THE PLAIN `done`, and both halves
+      of that placement are decisions:
+
+        below   a stand-down is a PERSON saying stop. Refusing to stop because a
+                check disagreed would keep a run going against an order, which is
+                worse than banking an account whose milestone is arguable — and
+                the account says what was finished in the agent's own words, so a
+                reader can weigh it.
+        above   otherwise this edge is unreachable: the plain `done` below fires
+                first and the check would be a number nobody acts on, which is
+                exactly the state item 428 describes.
+
+      ⚠⚠ ONLY `'failed'` REFUSES. `false` is *nobody checked* — the shipped
+      document, and the behaviour every run had before this existed — and
+      `'silent'` is a checker that would not start or would not answer. Neither is
+      a verdict against the agent, and treating either as one would stop every
+      run whose checker is merely broken. What says so instead is the walk: the
+      driver puts the difference in words on the edge itself, beside the reason
+      the edge was taken rather than instead of it (`Pumped::Moved`'s `checked`).
+    -->
+    <transition event="judge" cond="_event.data.done &amp;&amp; _event.data.checked == 'failed'" target="working">
+      <send event="prompt.turn"/>
     </transition>
     <transition event="judge" cond="_event.data.done" target="reflecting">
       <assign location="reflect_reason" expr="'milestone'"/>

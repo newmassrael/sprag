@@ -669,6 +669,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 found,
                 because,
                 unreadable,
+                checked,
                 spent: _,
             } => {
                 // ⚠⚠ THE REFUSAL A PASS ARRIVED AT GOES INTO THE LINE, and so does WHY IT TOOK THE
@@ -703,9 +704,17 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                         )
                     })
                     .unwrap_or_default();
+                // ⚠⚠⚠⚠ AND WHAT CHECKED A CLAIMED MILESTONE — register item 428, and this harness is
+                // where it matters most: the reader is a PERSON watching a live agent claim it has
+                // finished. Without this clause, *the agent said the milestone was reached* is the
+                // whole of what they are told, and the party that did the work is the party that
+                // certified it.
+                let verdict = checked
+                    .map(|verdict| format!(" — {}", verdict.describe()))
+                    .unwrap_or_default();
                 step(
                     began,
-                    &format!("{from:?} --{raised:?}--> {to:?}{cause}{arrived}{unread}"),
+                    &format!("{from:?} --{raised:?}--> {to:?}{cause}{arrived}{unread}{verdict}"),
                 );
                 walked.push((from, raised, to));
 

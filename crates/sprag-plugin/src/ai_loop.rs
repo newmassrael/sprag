@@ -334,6 +334,7 @@ impl AiLoop {
         found: Option<&crate::consent::Unanswered>,
         because: Option<crate::outer::Because>,
         unreadable: Option<&std::path::Path>,
+        checked: Option<crate::outer::Checked>,
     ) -> String {
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
@@ -342,6 +343,14 @@ impl AiLoop {
         };
         if let Some(reason) = because {
             note = format!("{note} — {}", reason.noted());
+        }
+        // ⚠⚠⚠⚠ THE CLAIM'S VERDICT COMES STRAIGHT AFTER THE CAUSE, and it is APPENDED rather than
+        // substituted — register item 428, learned from three neighbouring gates in one run. The
+        // milestone edge's cause is *the agent said the milestone was reached*, which is true and is
+        // exactly the claim in question; a verdict that replaced it would drop one true thing to
+        // make room for another. Both, in a fixed order, is this function's own rule.
+        if let Some(verdict) = checked {
+            note = format!("{note} — {}", verdict.describe());
         }
         if let Some(unanswered) = found {
             note = format!("{note} — {}", unanswered.noted());
@@ -642,6 +651,7 @@ impl Plugin for AiLoop {
                 found,
                 because,
                 unreadable,
+                checked,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
                 // is reported once. The barrier answered the peer's question inside this pump, on
@@ -687,6 +697,7 @@ impl Plugin for AiLoop {
                     found.as_ref(),
                     because,
                     unreadable.as_deref(),
+                    checked,
                 );
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
@@ -4027,6 +4038,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(
             !looked.contains("-->"),
@@ -4051,6 +4063,7 @@ mod tests {
             AiLoopState::Judging,
             AiLoopEvent::Judge,
             AiLoopState::Reflecting,
+            None,
             None,
             None,
             None,
@@ -4149,9 +4162,13 @@ mod tests {
         // budget is off and nothing is screened, so `milestone` is the only reason a reflection
         // here can have — register item 261, and the arm of it whose word the driver's own
         // livelock guard also reads.
+        // ⚠⚠⚠ AND THE CLAIM'S VERDICT IS PART OF THE LINE — register item 428. This document authors
+        // no `milestone_check`, so the edge carries `NotAsked`: the milestone rests on the working
+        // agent's own word, and a walk that did not say so is what that item is about.
         let reflected = format!(
-            "Judging --Judge--> Reflecting — {}",
-            crate::outer::ReflectReason::Milestone.noted()
+            "Judging --Judge--> Reflecting — {} — {}",
+            crate::outer::ReflectReason::Milestone.noted(),
+            crate::outer::Checked::NotAsked.describe(),
         );
         assert!(
             walked.iter().any(|note| note == &reflected),
@@ -4442,9 +4459,19 @@ mod tests {
                 "⚠ the control for {label}: a run closes ONCE, and a second such line means the \
                  line read below is not the one whose cause is being asserted. Walked {walk:?}",
             );
+            // ⚠⚠⚠ THE STAND-DOWN ARM CARRIES A CLAIM'S VERDICT TOO — register item 428. That
+            // ending is reached straight out of `judging` by an agent that SAID the marker, so the
+            // edge says what checked it (nothing: no document under test authors a
+            // `milestone_check`). The other ending comes through `reflecting`, where no claim was
+            // judged, so nothing is appended — and that difference is itself part of the assertion.
+            let verdict = if the_edge == "Judging --Judge--> Closing" {
+                format!(" — {}", crate::outer::Checked::NotAsked.describe())
+            } else {
+                String::new()
+            };
             assert_eq!(
                 line,
-                &format!("{the_edge} — {}", ending.noted()),
+                &format!("{the_edge} — {}{verdict}", ending.noted()),
                 "⚠⚠⚠ REGISTER ITEM 267: this run closed because {label}, and the one line its walk \
                  wrote about ending must say so. Two runs with opposite remedies — *weigh the \
                  account it wrote* against *nobody said the job was done, look at the milestone* — \
@@ -5660,9 +5687,19 @@ mod tests {
         // ── AND THE WALK SAYS WHICH ──
         for (label, reason, walk) in arms {
             let line = the_line(label, walk);
+            // ⚠⚠⚠ THE MILESTONE ARM CARRIES A SECOND TRUE FACT — register item 428: its agent
+            // CLAIMED something, so the edge says what checked the claim (here: nothing, because no
+            // document under test authors a `milestone_check`). The other two arms carry no claim —
+            // a standing instruction and a spent budget are the loop's own housekeeping — so nothing
+            // is appended to them, and that difference is itself the assertion.
+            let verdict = if reason == ReflectReason::Milestone {
+                format!(" — {}", crate::outer::Checked::NotAsked.describe())
+            } else {
+                String::new()
+            };
             assert_eq!(
                 line,
-                format!("{THE_EDGE} — {}", reason.noted()),
+                format!("{THE_EDGE} — {}{verdict}", reason.noted()),
                 "⚠⚠⚠ REGISTER ITEM 261: this run reflected because {label}, and the one line its \
                  walk wrote about leaving `judging` must say so. Three causes with three different \
                  remedies — *look at the checkpoint the agent chose*, *look at the instruction and \
