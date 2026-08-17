@@ -171,7 +171,12 @@
           expr="'A session repeated this command many times over one piece of work. In ONE line, say what the next session should do instead. If nothing would have helped, answer exactly: NOTHING TO CARRY'"/>
 
     <!-- The label a usable answer opens its line with, read back the way
-         `ai_loop.scxml` reads a reflection's. -->
+         `ai_loop.scxml` reads a reflection's.
+
+         ⚠⚠ NOTHING CONSULTS IT YET — see `asking` below. The second agent it
+         describes is not wired, so this is a decision authored ahead of its
+         mechanism; it is named here so a reader meets that fact at the
+         declaration rather than inferring it from a grep. -->
     <data id="carry_marker" expr="'INSTEAD:'"/>
 
     <!-- ── below the line: what the driver publishes, not what an author writes ── -->
@@ -232,6 +237,20 @@
     ⚠ An answer that carries no `carry_marker` is `ask.none`, for the reason a
     judged dialog answers `false` on silence: the failure of this mechanism must
     be its own absence, never a line invented to fill the slot.
+
+    ⚠⚠⚠ AND THAT RULE IS AUTHORED AHEAD OF ITS MECHANISM, WHICH THIS SAID AS
+    THOUGH IT WERE ALREADY IN FORCE. No second agent is wired: the driver answers
+    `ask.none` UNCONDITIONALLY here, so `ask.done` is unreachable and nothing —
+    not this document, not `review.rs` — ever reads `carry_marker`. Measured
+    2026-08-17 over every `<data>` in this crate's eight documents, counting a
+    USE as an `expr`/`cond`/`location`/`<param>` or a Rust reader rather than a
+    mention in prose: it is the only one of sixty-one that nothing consults.
+
+    ⚠⚠ IT STAYS RATHER THAN GOING, and the distinction is the owner's rule.
+    Decisions belong in the `.scxml`, so a marker authored before the code that
+    needs it is a decision waiting for a mechanism, not dead weight — what was
+    wrong was a sentence that let a reader believe the mechanism had arrived.
+    `review.rs` says the same thing at its own site; these two now agree.
   -->
   <state id="asking">
     <onentry>
