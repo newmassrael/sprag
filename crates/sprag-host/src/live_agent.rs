@@ -2410,6 +2410,15 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
     // through THREE replacements in 61 seconds, and every one of them walked exactly these four
     // lines and never the old first one. **A live walk is what says what the acts are.**
     //
+    // ⚠⚠⚠⚠⚠ **AND WITH THE LIST CORRECTED THIS GATE GOES THREE BLOCKS FURTHER, WHICH THE REGISTER
+    // HAD RECORDED AS IMPOSSIBLE.** Re-run live 2026-08-18 (76 s, `turns: 3`, `iterations: 20`):
+    // the run replaced its session **twice**, started on pane 0 and ended on pane 2, and converged.
+    // So *the run closes instead of restarting* was the stale assertion talking, not the product.
+    // What is still red is further down and is the real defect — the fresh session's first prompt
+    // carries no standing instruction, because `claude` in AUTO MODE raises no dialog for a screen
+    // rule to match (`calls refused: 0`, `dialogs answered: 0`). **A red's message is a claim about
+    // the product and ages exactly like a doc does.**
+    //
     // ⚠⚠⚠ AND THE SECOND ACT IS NAMED BY ITS STATE AND NOT BY ITS WORD, deliberately. `reviewing`
     // reaches `restarting` by `review.done` AND by `review.none` — *there were records to read* and
     // *there were none* — and which one a run takes is a fact about what its closed sessions left
