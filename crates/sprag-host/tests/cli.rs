@@ -6753,11 +6753,41 @@ fn a_scoped_process_listing_answers_about_that_session_and_not_the_machine() {
     // The CLI's own published claim about these two verbs — a flag nothing names is a flag nobody
     // can find, and the usage is the SECOND list this binary keeps of what it accepts.
     let usage = ran(&["--nonsense"]).stderr;
+    // Which session an UNSCOPED request lands in is the daemon's to say, so it is read rather than
+    // assumed — the assertion about a bare invocation below is a claim about that session.
+    let listed = ran(&["ls"]);
+    assert!(listed.ok, "ls answered: {}", listed.stderr);
+    assert!(
+        listed
+            .stdout
+            .lines()
+            .any(|row| row.starts_with("0:") && row.contains("(default)")),
+        "the boot session is the daemon's default, or the bare invocation below means \
+         something else: {}",
+        listed.stdout,
+    );
 
     for verb in ["processes", "resources"] {
         assert!(
             usage.contains(&format!("{verb} [PANE] [-t SESSION] [-a]")),
             "the usage spells {verb}'s pane, its scope and its -a: {usage}",
+        );
+
+        // THE BARE INVOCATION — no pane, no scope, no `-a` — which is the commonest one and the one
+        // whose meaning this round moved furthest. It lands where `sprag panes` lands with nothing
+        // named: the daemon's DEFAULT session, not the machine. Asserted separately from `-t 0`
+        // because a fix that narrowed only an EXPLICIT scope would pass every other line here.
+        let bare = ran(&[verb]);
+        assert!(
+            bare.ok,
+            "{verb} with nothing named answered: {}",
+            bare.stderr
+        );
+        assert_eq!(
+            pane_id_set_in(&bare.stdout),
+            boot,
+            "{verb} with nothing named is the default session's panes: {}",
+            bare.stdout,
         );
 
         let scoped_to_boot = ran(&[verb, "-t", "0"]);
