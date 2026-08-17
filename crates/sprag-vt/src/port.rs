@@ -3957,6 +3957,72 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A READER THAT FOLLOWED A PANE ACROSS AN ALT-SCREEN ENTRY GOES BLIND FOR EVER** —
+    /// register item 366, and it is the defect under two whole AI-loop runs that could not converge.
+    ///
+    /// # What was measured on the live daemon before this was written
+    ///
+    /// A run's agent said its completion marker, standing alone on the pane, and the driver's
+    /// judgement never saw it: **23 judge decisions, every one back to `working`**. The predicates
+    /// were traced by hand and all accept the text; `sprag find` could not see ANY string on that
+    /// pane while the same call answered on the shell pane beside it. `claude` is a fullscreen app
+    /// and holds the alternate screen for the whole run.
+    ///
+    /// # The mechanism this pins
+    ///
+    /// Entering the alt screen installs a FRESH [`Screen`], whose logical-line numbering starts at
+    /// zero. A cursor taken before the entry is a number from the MAIN screen's sequence, and
+    /// [`Screen::lines_since`] clamps with `cursor.max(oldest)` — so the reader asks for lines past
+    /// an address the new screen will not reach until it has shed that many of its own. Every read
+    /// answers EMPTY, and `lost` stays `0`, **so nothing anywhere reports that anything is missing**.
+    ///
+    /// ⚠⚠⚠ It is NOT *"the alt screen has no scrollback"*, which was the first reading and is
+    /// wrong: `lines_since` reads the visible rows above the cursor too, so a fresh reader sees the
+    /// app's output perfectly well. The defect is entirely in the CURSOR surviving a numbering that
+    /// did not.
+    ///
+    /// ⚠⚠ **THIS GATE ASSERTS THE DEFECT AND MUST BE REPURPOSED, NOT DELETED, WHEN IT IS FIXED.**
+    /// The control below is what makes it honest: the same screen, read from `0`, hands back the
+    /// line — so the emptiness is about the cursor and not about the screen being unreadable.
+    #[test]
+    fn a_cursor_taken_before_the_alt_screen_can_never_read_the_app_that_took_it() {
+        // Main screen, scrolled enough to put the reader's cursor well past zero.
+        let mut e = em(24, 3, "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
+        let carried = e.screen().lines_since(0).next;
+        assert!(
+            carried > 0,
+            "the control for the fixture itself: the main screen must have advanced the numbering, \
+             or the cursor below is zero and the defect cannot show",
+        );
+
+        // The fullscreen app takes the terminal and says the thing the loop is listening for.
+        e.advance(b"\x1b[?1049h");
+        e.advance(b"MILESTONE REACHED\r\n");
+
+        let followed = e.screen().lines_since(carried);
+        assert!(
+            followed.lines.is_empty(),
+            "⚠⚠⚠⚠ ITEM 366 — if this now yields the line, the defect is FIXED and this gate is to \
+             be repurposed into its opposite rather than deleted. Got {:?}",
+            followed.lines,
+        );
+        assert_eq!(
+            followed.lost, 0,
+            "⚠⚠⚠⚠ AND THE SILENCE IS THE HARM: nothing is reported lost, so no consumer can tell \
+             this apart from an agent that said nothing. A non-zero `lost` would at least have been \
+             a signal somebody could act on",
+        );
+
+        let fresh = e.screen().lines_since(0);
+        assert!(
+            fresh.lines.iter().any(|line| line == "MILESTONE REACHED"),
+            "⚠⚠⚠ THE CONTROL, AND WITHOUT IT THIS GATE CLAIMS THE WRONG THING. Read from zero the \
+             very same screen hands the line back — so the emptiness above is the CURSOR outliving \
+             a numbering that restarted, not the alt screen being unreadable. Got {:?}",
+            fresh.lines,
+        );
+    }
+
     #[test]
     fn alt_screen_does_not_accumulate_or_disturb_scrollback() {
         let mut e = em(8, 2, "a\r\nb\r\nc"); // main scrolls: scrollback ["a"]
