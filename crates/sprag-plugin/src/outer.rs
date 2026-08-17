@@ -121,8 +121,31 @@ pub use crate::sm::ai_loop::{AiLoopEvent, AiLoopState};
 /// the sentence promised *"none of them ever appeared"*. See [`PaneError::NeverTook`].
 const CONFIRM_WHOLE_UP_TO: usize = 40;
 
-/// **THE LEADING RUN OF `text` THAT FITS IN [`CONFIRM_WHOLE_UP_TO`] SCREEN COLUMNS**, or [`None`]
+/// **THE TRAILING RUN OF `text` THAT FITS IN [`CONFIRM_WHOLE_UP_TO`] SCREEN COLUMNS**, or [`None`]
 /// where the whole prompt already does and can be confirmed entire.
+///
+/// # ⚠⚠⚠⚠ The TAIL, and it was the head for as long as this existed — register item 421
+///
+/// The constant above reasons carefully about how many COLUMNS a needle may occupy and says nothing
+/// about the box MOVING. An agent's prompt box scrolls to its cursor, and `claude` additionally
+/// folds a bulk arrival into a `[Pasted text #N +M lines]` placeholder — so **for any prompt longer
+/// than the box, the head is precisely the fragment that is guaranteed not to be on screen.** The
+/// read-back was asking for the one part that cannot be there.
+///
+/// **MEASURED, THREE LIVE RUNS**: 8, 9 and 10 each died `failed` — *"3 injections put N bytes … none
+/// of them CHANGED it into a screen carrying the confirmation"* — while the pane was plainly
+/// holding the prompt. Run 10 died at its FIFTH judgement, on the DOCUMENT'S OWN reflection prompt,
+/// which no caller can shorten: the loop could not complete one cycle, so it could never replace a
+/// session or choose a next milestone.
+///
+/// ⚠⚠ **THE TAIL IS THE STRONGER EVIDENCE, not merely the available one**: the submit acts at the
+/// END of the composer, so confirming the tail says *the text is where Enter will land*, where the
+/// head only said *some of it arrived somewhere*.
+///
+/// ⚠ **WHAT IT DOES NOT FIX, STATED**: a needle is still a SUBSTRING, so a composer already holding
+/// an identical tail can confirm text that never arrived — the mirror of item 223, whose gate
+/// records that tightening the predicate is ruled out and that the answer is clearing the composer
+/// or evidence from the program.
 ///
 /// ⚠⚠ The width authority is [`sprag_vt::char_columns`] — the same one the emulator's print path
 /// classifies a glyph with — so this cannot disagree with what the pane will actually draw. A second
@@ -133,13 +156,13 @@ const CONFIRM_WHOLE_UP_TO: usize = 40;
 /// a needle ending mid-glyph is not text any pane ever painted.
 fn confirmable(text: &str) -> Option<String> {
     let mut columns = 0_usize;
-    let mut prefix = String::new();
-    for ch in text.chars() {
+    let mut suffix = std::collections::VecDeque::new();
+    for ch in text.chars().rev() {
         columns += sprag_vt::char_columns(ch);
         if columns > CONFIRM_WHOLE_UP_TO {
-            return Some(prefix);
+            return Some(suffix.into_iter().collect());
         }
-        prefix.push(ch);
+        suffix.push_front(ch);
     }
     None
 }
@@ -4776,15 +4799,166 @@ mod tests {
             narrow.chars().count(),
         );
         assert!(
-            KOREAN.starts_with(wide.as_str()) && ASCII.starts_with(narrow.as_str()),
-            "⚠ and each must still be a LEADING run of what was typed, or it is not a read-back of \
-             anything",
+            KOREAN.ends_with(wide.as_str()) && ASCII.ends_with(narrow.as_str()),
+            "⚠⚠⚠ and each must be a TRAILING run of what was typed — item 421. This asserted a \
+             LEADING one and said *or it is not a read-back of anything*, which was true of the \
+             substring and wrong about the screen: an agent's prompt box scrolls to its cursor, so \
+             for any prompt longer than the box the head is the one fragment guaranteed NOT to be \
+             showing. The tail is also where the submit acts, which makes it the stronger evidence \
+             rather than merely the available one",
         );
         assert_eq!(
             confirmable("short enough"),
             None,
             "⚠ a prompt that already fits is confirmed WHOLE, which is the stronger evidence and \
              what `Delivery::confirm`'s `None` means",
+        );
+    }
+
+    /// **THE GATE FOR ITEM 421 — A COMPOSER SCROLLS, AND THE NEEDLE IS THE PART THAT LEAVES FIRST.**
+    ///
+    /// [`confirmable`] takes a LEADING run, and the constant above reasons at length about how many
+    /// COLUMNS it may occupy. **Neither says anything about the box moving.** An agent's prompt box
+    /// shows the END of what it holds — it scrolls to the cursor, and `claude` additionally folds a
+    /// bulk arrival into a `[Pasted text #N +M lines]` placeholder — so for any prompt longer than
+    /// the box, **the head is precisely the part that is guaranteed not to be on screen.** The
+    /// read-back then asks for the one fragment that cannot be there.
+    ///
+    /// # ⚠⚠⚠ Measured on the live loop, three runs, before this gate existed
+    ///
+    /// Runs 8, 9 and 10 all died `failed` with *"3 injections put N bytes … none of them CHANGED it
+    /// into a screen carrying the confirmation"*. Run 10 reached its FIFTH judgement — where the
+    /// cadence opens `reflecting` — and the prompt that could not be confirmed was **the document's
+    /// own reflection prompt**, which no caller can shorten. The pane was read afterwards and was
+    /// plainly holding it, beginning mid-sentence with the head scrolled away and ending
+    /// `NORTH STAR REACHED[Pasted text #2 +5 lines]`.
+    ///
+    /// ⚠⚠⚠⚠ **SO THE LOOP CANNOT COMPLETE ONE CYCLE**: no reflection means no session replacement,
+    /// no context shed and no next milestone — every other item about the loop's cadence or its
+    /// convergence is downstream of this.
+    ///
+    /// ⚠⚠ **THE ERROR ALSO NAMES THE WRONG CAUSE**, which cost two rounds: it offers *"one too
+    /// narrow to carry the confirmation on one row"*, so the width was widened twice and the prompt
+    /// was translated out of Korean, and the run failed identically at 80 columns in ASCII.
+    ///
+    /// **THIS GATE WAS WRITTEN RED-FIRST AND TURNED AROUND IN THE SAME ROUND** — item 312's shape.
+    /// It first asserted `Delivered::Unconfirmed`, which is what the product did; the fix (a
+    /// TRAILING needle) was then applied and this became the assertion below. ⚠⚠ Its worth is that
+    /// it fails for the ORIGINAL reason: revert `confirmable` to a leading run and this goes red
+    /// while 334 neighbours stay green — measured, and the one neighbour that moves is the
+    /// assertion that spelled out *leading*, which is the decision itself rather than a requirement.
+    #[test]
+    fn a_prompt_a_composer_scrolled_past_is_confirmed_because_the_needle_is_its_tail() {
+        /// Longer than [`CONFIRM_WHOLE_UP_TO`] by a wide margin, and shaped like the prompt that
+        /// actually failed: an instruction whose distinguishing words are at the FRONT.
+        const PROMPT: &str = "Continue toward: fix the scope flag. Do the next smallest thing \
+                              that is verifiable, then report. When the milestone is fully \
+                              reached AND verified, make the last line of your reply exactly: \
+                              MILESTONE REACHED";
+        /// What the box can show at once. Small enough that `PROMPT`'s head falls off it, which is
+        /// the whole staging — a composer that showed everything would not be this hazard.
+        const KEEPS: usize = 60;
+
+        /// A composer that keeps only the END of what it has been given.
+        ///
+        /// ⚠⚠ **IT ACCUMULATES WHAT IS INJECTED rather than answering a fixed string**, because the
+        /// claim under test is about the relationship between what was typed and what is visible.
+        /// A double answering a constant could not tell *the text arrived and scrolled* from *the
+        /// text never arrived*, which is the very distinction the failing sentence gets wrong.
+        struct Scrolled {
+            held: std::sync::Mutex<String>,
+        }
+        impl PaneAccess for Scrolled {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                let held = self.held.lock().expect("the composer");
+                // The tail, by characters — the box shows the end and the head is gone.
+                let shown: String = held
+                    .chars()
+                    .rev()
+                    .take(KEEPS)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                Some(shown)
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                None
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                None
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                let mut held = self.held.lock().expect("the composer");
+                for key in keys {
+                    held.push_str(&key.key);
+                }
+                Ok(crate::access::Written::of(keys.len() as u64))
+            }
+        }
+
+        let spec = |text: &str| Delivery {
+            confirm: confirmable(text),
+            // No submit: what this gate is about is the READ-BACK, and a press would add a second
+            // question (did the submit land) to a gate that is asking one.
+            then_press: Vec::new(),
+            echo_timeout: std::time::Duration::from_millis(1),
+            attempts: 1,
+            ..Delivery::new()
+        };
+
+        let scrolled = Scrolled {
+            held: std::sync::Mutex::new(String::new()),
+        };
+        let delivered = deliver(
+            &scrolled,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            PROMPT,
+            &spec(PROMPT),
+        )
+        .expect("the double never errors");
+
+        assert!(
+            !matches!(delivered, Delivered::Unconfirmed { .. }),
+            "⚠⚠⚠⚠ ITEM 421: the pane IS holding the prompt — every byte of it went in and the \
+             composer's own tail proves it — so a refusal here is the product asking for the one \
+             fragment a scrolling box cannot show, and the run it produces reports that nothing \
+             was submitted and blames the pane's WIDTH. Three live runs died this way, the last of \
+             them on the document's own reflection prompt, which no caller can shorten. Got \
+             {delivered:?}, needle {:?}, screen {:?}",
+            confirmable(PROMPT),
+            scrolled.pane_collapsed(PaneId(1)),
+        );
+
+        // ⚠⚠⚠ THE CONTROL, and it is what says the double is not simply refusing everything: a
+        // prompt SHORT enough to stay whole on the same box confirms, through the same call.
+        const SHORT: &str = "carry on";
+        let small = Scrolled {
+            held: std::sync::Mutex::new(String::new()),
+        };
+        let confirmed = deliver(
+            &small,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            SHORT,
+            &spec(SHORT),
+        )
+        .expect("the double never errors");
+        assert!(
+            !matches!(confirmed, Delivered::Unconfirmed { .. }),
+            "⚠ the control: a prompt the box shows whole must confirm, or the gate above is about \
+             a broken double rather than about the needle. Got {confirmed:?}",
         );
     }
 
