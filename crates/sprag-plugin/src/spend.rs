@@ -65,6 +65,21 @@ pub const CLAUDE_IDENTITY_FLAG: &str = "--session-id";
 /// `None` when `$HOME` is unset, the projects directory does not exist, or no record carries that
 /// name — which is the ordinary state of a session that has been started and has not yet been asked
 /// anything, since nothing is written until there is something to record.
+///
+/// # ⚠⚠⚠⚠ AND THE NAME IS STILL A DERIVATION, WHICH WAS MEASURED READING NOTHING
+///
+/// The name this resolves is the one the SESSION WAS LAUNCHED WITH, and an agent may file under a
+/// different one. Measured 2026-08-17 (register item 431): a pane born
+/// `--session-id 97f5ffd9-…` reported `3f4ffa52-…` while it worked; there is no `97f5ffd9-…`
+/// record anywhere under `$HOME/.claude/projects`, and the `3f4ffa52-…` record was 3,422,727 bytes
+/// with `"cache_read_input_tokens":466013` on its last request. **A loop composed `context: 0` out
+/// of a file holding 466,013**, because the two names are not the same name.
+///
+/// So this is the FALLBACK and [`spend_at`] is the road: where the agent has STATED where it
+/// writes — its submit hook carries `transcript_path`, and
+/// [`AgentObservation::transcript`](crate::access::AgentObservation::transcript) carries it here —
+/// there is nothing left to derive. This stays for the peer that states nothing, which is every
+/// agent whose hooks are not installed.
 #[must_use]
 pub fn record_of(identity: &str) -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -84,9 +99,29 @@ pub fn record_of(identity: &str) -> Option<std::path::PathBuf> {
 /// ⚠ The read is a whole-file parse on every call, which is what makes it the CALLER's business how
 /// often to ask. A record grows with the session, and a loop that consulted this on every poll
 /// rather than once a turn would spend more reading about its agent than its agent spends thinking.
+///
+/// ⚠⚠⚠ **THE NAME IS A DERIVATION AND [`spend_at`] IS NOT** — see [`record_of`], which carries what
+/// deriving cost. A caller holding a path the agent STATED must not come through here.
 #[must_use]
 pub fn spend_of(identity: &str) -> Option<Spend> {
-    let record = record_of(identity)?;
+    spend_at(&record_of(identity)?)
+}
+
+/// What the session writing `record` has been charged, or `None` where that file cannot be read.
+///
+/// # ⚠⚠⚠⚠ The reader for a path somebody STATED, which is the only kind that cannot be wrong
+///
+/// [`record_of`]'s doc holds the measurement: a name is what a session was LAUNCHED with, and an
+/// agent that files under another name leaves every reader of the derived path answering about a
+/// file that does not exist — silently, as a zero. An agent's own submit hook states
+/// `transcript_path` outright, so a caller that has one has nothing to guess.
+///
+/// ⚠ [`None`] means **this file could not be read**, and it is worth keeping apart from
+/// `Some(Spend::default())`, which means *the record is there and holds no billed request yet*. A
+/// caller that flattened the two would report a session it cannot see as one that has spent
+/// nothing.
+#[must_use]
+pub fn spend_at(record: &std::path::Path) -> Option<Spend> {
     Some(spend_in(&std::fs::read_to_string(record).ok()?))
 }
 

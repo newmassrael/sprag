@@ -907,10 +907,20 @@
       request adds 861 tokens at the median and 633,749 at the maximum.
 
       ⚠⚠ ZERO MEANS "DO NOT DECIDE ON THIS", not "nothing has accumulated". A run
-      whose session cannot be named — an agent sprag did not name, a host that
-      cannot read a process, an agent that has not written yet — reads 0, and the
-      two are indistinguishable here on purpose: the alternative is refusing to
-      drive a loop over a number that is only ever an optimisation.
+      whose session cannot be reached — an agent that states no transcript and
+      that sprag did not name either, a host that cannot read a process, an agent
+      that has not written yet — reads 0, and the two are indistinguishable here
+      on purpose: the alternative is refusing to drive a loop over a number that
+      is only ever an optimisation.
+
+      ⚠⚠⚠⚠ ONE CAUSE OF THAT ZERO WAS A DEFECT AND HAS BEEN PAID (register item
+      431). The driver used to resolve the record from the name the pane was
+      LAUNCHED with, and an agent may file under another one: measured
+      2026-08-17, a pane born as session `97f5ffd9` reported `3f4ffa52` while it
+      worked, no `97f5ffd9` record exists anywhere, and the `3f4ffa52` record held
+      466,013 tokens of cache read on its last request. This variable was 0 and
+      `reflecting` composed a paragraph of arithmetic out of it. The agent states
+      where it writes on its own submit hook, and that is read first now.
 
       ⚠ NOTHING GUARDS ON IT, and that is deliberate rather than unfinished.
       What a guard would be for is deciding whether `restarting` is worth its

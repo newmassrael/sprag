@@ -3266,6 +3266,11 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
     let turns = loops.turns();
     let held = loops.context();
     let names = minted.lock().expect("the log").clone();
+    // ⚠⚠⚠⚠ AND THIS IS NOW AN INDEPENDENT ORACLE RATHER THAN THE SAME READ TWICE. The loop reads
+    // the transcript its agent STATED on its submit hook; this reads the record filed under the
+    // name the HARNESS minted. Register item 431 is exactly the case where those two come apart —
+    // a pane born as one session reported another, and no record of the first was ever written —
+    // so a red on the size comparison below is that divergence showing up, not a flake.
     let recorded = names.first().and_then(|name| sprag_plugin::spend_of(name));
 
     println!("\n== what the loop knew about its own session ==");

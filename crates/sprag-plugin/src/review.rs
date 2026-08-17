@@ -243,6 +243,9 @@ fn act_of(name: &str, input: Option<&Value>) -> Option<String> {
 pub struct Reviewed {
     /// The name the session filed its record under — the door, kept so a later reader can open the
     /// same transcript and count something this build did not think to.
+    ///
+    /// ⚠ Read off the RECORD's own file name and not off what anybody called the session: those
+    /// two came apart in the field, and only the first opens anything (register item 431).
     pub identity: String,
     /// What it did more than once. See [`Counted`].
     pub counted: Counted,
@@ -445,20 +448,30 @@ impl ContextReview {
         }
     }
 
-    /// **RUN THE REVIEW OVER `ended`** — the sessions this run has closed, oldest first.
+    /// **RUN THE REVIEW OVER `ended`** — the RECORDS this run has closed, oldest first.
     ///
     /// The document decides how far back to look and how many repeats are too many; this opens the
     /// records, counts, and answers each state's effect. See the module docs for the split.
     ///
+    /// # ⚠⚠⚠⚠ Why this takes paths where it used to take names
+    ///
+    /// It resolved each record from the session NAME through [`crate::spend::record_of`], and that
+    /// is a derivation: the name a pane was launched with is not necessarily the one its agent
+    /// filed under. Register item 431 measured the gap — a pane born `--session-id 97f5ffd9-…`
+    /// wrote as `3f4ffa52-…`, and no record of the first name exists anywhere — so a review of a
+    /// run's own closed sessions opened NOTHING and reported `reading` as the state it gave up in.
+    /// The caller now knows which file each session was writing (its agent said so), so there is
+    /// nothing left here to guess.
+    ///
     /// ⚠ `asking` is answered `ask.none` — a second agent is not wired here yet, and a review that
     /// invented a line would be worse than one that carries none. The counts still land.
-    pub fn run(&mut self, ended: &[String]) -> Review {
+    pub fn run(&mut self, ended: &[std::path::PathBuf]) -> Review {
         let look_back = self.number("look_back", 3) as usize;
         let limit = self.number("repeat_limit", 8);
 
         // ⚠ The MOST RECENT `look_back`, not the first: a review is about what the run has been
         // doing lately, and a run long enough to need one has closed more sessions than it looks at.
-        let names: Vec<&String> = ended.iter().rev().take(look_back).rev().collect();
+        let records: Vec<&std::path::PathBuf> = ended.iter().rev().take(look_back).rev().collect();
 
         let mut sessions: Vec<Reviewed> = Vec::new();
         let mut gave_up_at = None;
@@ -471,15 +484,19 @@ impl ContextReview {
         for _ in 0..64 {
             match self.machine.get_current_state() {
                 ContextReviewState::Reading => {
-                    for name in &names {
-                        let Some(path) = crate::spend::record_of(name) else {
-                            continue;
-                        };
-                        let Ok(text) = std::fs::read_to_string(&path) else {
+                    for record in &records {
+                        let Ok(text) = std::fs::read_to_string(record) else {
                             continue;
                         };
                         sessions.push(Reviewed {
-                            identity: (*name).clone(),
+                            // ⚠ READ OFF THE RECORD'S OWN NAME rather than taken from the caller:
+                            // the file is what the agent filed, so its stem is the identity the
+                            // agent actually used — which is the one a later reader needs to open
+                            // it again, and not necessarily the one the pane was launched with.
+                            identity: record
+                                .file_stem()
+                                .map(|stem| stem.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
                             counted: habits_in(&text, limit),
                             context: Some(crate::spend::spend_in(&text))
                                 .and_then(|spend| (spend.requests > 0).then_some(spend.context)),
@@ -669,6 +686,80 @@ mod ledger_tests {
              reading can never be compared with anything",
         );
         let _ = std::fs::remove_file(&into);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A REVIEW OPENS THE RECORD IT IS HANDED, WITHOUT DERIVING A PATH FROM A NAME** —
+    /// register item 431 reaching its second reader.
+    ///
+    /// # ⚠⚠⚠⚠ What the derived road did to this state, and why no gate saw it
+    ///
+    /// This resolved each closed session through `crate::spend::record_of`, which searches
+    /// `$HOME/.claude/projects` for `<name>.jsonl`. The name a run holds is the one its pane was
+    /// LAUNCHED with, and an agent may file under another: measured 2026-08-17, a pane born as
+    /// session `97f5ffd9` reported `3f4ffa52`, and no `97f5ffd9` record exists anywhere. So every
+    /// door this state was handed opened onto nothing — `sessions` empty, `gave_up_at: "reading"` —
+    /// **which is exactly what the gate above asserts for a run that has closed NO sessions at
+    /// all.** The healthy state and the broken one are the same reading, and that is why the defect
+    /// could sit here unseen.
+    ///
+    /// ⚠⚠ So this gate's subject is the OTHER answer: a review handed one real record must open it,
+    /// report what it cost, and name the session by **the record's own file name** rather than by
+    /// anything a caller called it.
+    #[test]
+    fn a_review_opens_the_record_it_was_handed_rather_than_one_derived_from_a_name() {
+        /// One closed session's record: two billed requests and a repeated act, so both halves of a
+        /// review — what it cost and what it did twice — have something to find.
+        const WRITTEN: &str = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":100,"cache_creation_input_tokens":0,"output_tokens":1},"#,
+            r#""content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a"}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1},"#,
+            r#""content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a"}}]}}"#,
+        );
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut review =
+            ContextReview::new(Arc::clone(&lua)).expect("the document opens a session");
+
+        let home = std::env::temp_dir().join(format!("sprag-review-record-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        // ⚠ NOT under `$HOME/.claude/projects`, which is the point: a reader that still derived a
+        // path from this stem would search a tree this file is not in and find nothing.
+        let record = home.join("3f4ffa52-what-the-agent-filed.jsonl");
+        std::fs::write(&record, WRITTEN).expect("a closed session's record");
+
+        let answered = review.run(std::slice::from_ref(&record));
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            answered.sessions.len(),
+            1,
+            "⚠⚠⚠⚠ THE RECORD IS RIGHT THERE AND THE REVIEW MUST OPEN IT. Zero sessions here is \
+             the reading a run that closed NOTHING gives, which is how this went unnoticed for as \
+             long as the path was derived. Got {answered:?}",
+        );
+        assert_eq!(
+            answered.sessions[0].context,
+            Some(466_013),
+            "⚠⚠⚠ and it must report what that session was charged on its last request — the axis \
+             a turn count cannot stand in for. Got {:?}",
+            answered.sessions[0],
+        );
+        assert_eq!(
+            answered.sessions[0].identity, "3f4ffa52-what-the-agent-filed",
+            "⚠⚠ and it names the session by THE RECORD'S OWN FILE NAME, which is the identity the \
+             agent actually filed under — the only one that opens this file again. Got {:?}",
+            answered.sessions[0],
+        );
+        assert_ne!(
+            answered.gave_up_at,
+            Some("reading"),
+            "⚠⚠⚠ a review that opened a record did not give up in `reading`: that exit means \
+             THERE WAS NOTHING TO OPEN, and reporting it here is the defect wearing the healthy \
+             run's clothes. Got {answered:?}",
+        );
     }
 }
 

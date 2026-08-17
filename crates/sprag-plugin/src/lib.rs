@@ -147,4 +147,6 @@ pub use readiness::{
 pub use reply::{AgentReply, parse_claude_json};
 pub use run::{RunContext, Waited, poll_until};
 pub use screen::{Malformed, REFUSES, ScreenRule, ScreenRules, Screened};
-pub use spend::{CLAUDE_IDENTITY_FLAG, Spend, identity_in, record_of, spend_in, spend_of};
+pub use spend::{
+    CLAUDE_IDENTITY_FLAG, Spend, identity_in, record_of, spend_at, spend_in, spend_of,
+};

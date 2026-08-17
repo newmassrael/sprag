@@ -1533,6 +1533,33 @@ struct Session {
     /// session* — no `PaneForegroundJob`, a pane whose agent a person launched with its own name,
     /// an agent sprag does not instrument — and the only thing lost is knowing what it spends.
     identity: Option<String>,
+    /// **WHERE THIS SESSION'S AGENT SAID IT IS WRITING ITS TRANSCRIPT**, latched the first time it
+    /// says so — the road [`identity`](Self::identity) is now only the fallback for.
+    ///
+    /// # ⚠⚠⚠⚠ Why a stated path outranks a name, measured rather than argued
+    ///
+    /// The name above is what the pane was LAUNCHED with, and an agent may file under another one.
+    /// Register item 431, measured 2026-08-17: a pane born `--session-id 97f5ffd9-…` reported
+    /// `3f4ffa52-…` while it worked, no `97f5ffd9-…` record exists anywhere, and the `3f4ffa52-…`
+    /// record was 3.4 MB carrying `"cache_read_input_tokens":466013` on its last request. **This
+    /// loop published `context: 0` out of that file**, and a zero here is indistinguishable from a
+    /// small session — so `reflecting` composed a whole paragraph of arithmetic out of nothing.
+    ///
+    /// The agent states this on its own submit hook (`transcript_path`) and always did; sprag
+    /// received the payload and dropped everything but the word *working*. It arrives here through
+    /// [`AgentObservation::transcript`](crate::access::AgentObservation::transcript).
+    ///
+    /// # ⚠⚠ Why it is LATCHED, which is [`identity`](Self::identity)'s reason and one more
+    ///
+    /// A report is bound to the agent that made it and is released when that agent exits, and the
+    /// supervision surface answers [`None`] for a pane no manifest claims. Re-asking every turn
+    /// would therefore let a session that has been named fall back to the derived path — the very
+    /// path that reads nothing — halfway through a run. Latched, what a session learned about
+    /// itself is what it keeps.
+    ///
+    /// ⚠ `None` is *nobody stated one*, never *there is no transcript*: an agent with no hooks
+    /// installed states nothing ever, and that peer is exactly who the fallback exists for.
+    transcript: Option<std::path::PathBuf>,
 }
 
 impl Session {
@@ -1559,6 +1586,12 @@ impl Session {
             // an agent doing nothing. Measured upstream of this: a launch handed a name already in
             // use is refused outright, so the two really are distinct sessions and not one resumed.
             identity: None,
+            // ⚠⚠⚠ AND SO IS THE FILE IT WRITES. Carried over, every reading of the replacement's
+            // spend would come off the record of the session it replaced — which does not stop
+            // growing the moment that session is closed, it stops moving, so the loop would read a
+            // fresh agent as one doing nothing at all. The name above says the same thing about the
+            // derived road; this says it about the stated one.
+            transcript: None,
         }
     }
 
@@ -1574,6 +1607,48 @@ impl Session {
                 });
         }
         self.identity.as_deref()
+    }
+
+    /// Where this session's agent SAID it is writing, learning it if it has said so — see
+    /// [`Session::transcript`].
+    fn stated_record(&mut self, panes: &dyn PaneAccess) -> Option<&std::path::Path> {
+        if self.transcript.is_none() {
+            self.transcript = panes
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(self.pane))
+                .and_then(|seen| seen.transcript)
+                .map(std::path::PathBuf::from);
+        }
+        self.transcript.as_deref()
+    }
+
+    /// **WHICH FILE THIS SESSION IS WRITING** — where its agent SAID it writes, and only a path
+    /// derived from a launch name where nobody said.
+    ///
+    /// # ⚠⚠⚠⚠ The stated path is not a preference, it is the whole of register item 431
+    ///
+    /// A derived path was measured resolving to NOTHING for a session whose record existed and held
+    /// the exact numbers [`spent`](Self::spent) reports — see [`Session::transcript`]. So a run that
+    /// has been told where its agent writes does **not** fall back: the fallback is a different
+    /// session's record, and answering out of it is how a zero became a paragraph of arithmetic. The
+    /// order is *stated, or nothing*; the derived road is what a peer that states nothing gets, and
+    /// only that peer.
+    ///
+    /// ⚠⚠⚠ **ONE ANSWER FOR TWO READERS.** [`spent`](Self::spent) asks it every judged turn and
+    /// [`OuterLoop::replace`] asks it once, as the last thing it does before letting the pane go —
+    /// and a second derivation at either site is how the run would come to disagree with itself
+    /// about which transcript its own session left behind.
+    fn record(&mut self, panes: &dyn PaneAccess) -> Option<std::path::PathBuf> {
+        if let Some(stated) = self.stated_record(panes) {
+            return Some(stated.to_path_buf());
+        }
+        self.identify(panes).and_then(crate::spend::record_of)
+    }
+
+    /// **WHAT THIS SESSION HAS BEEN CHARGED**, out of the record it is writing — see
+    /// [`record`](Self::record) for which file that is and why.
+    fn spent(&mut self, panes: &dyn PaneAccess) -> Option<crate::spend::Spend> {
+        crate::spend::spend_at(&self.record(panes)?)
     }
 }
 
@@ -1670,16 +1745,24 @@ pub struct OuterLoop {
     /// This is [`reported`](Self::reported)'s argument one step further: the sessions are what a
     /// run has to outlive, so what outlives them lives here.
     ///
-    /// ⚠⚠ IT IS A LIST OF NAMES AND NOT A SUMMARY, and that is the point. A count, a total or a
+    /// ⚠⚠ IT IS A LIST OF DOORS AND NOT A SUMMARY, and that is the point. A count, a total or a
     /// digest computed at replacement time would fix — at the moment of least knowledge — which
-    /// questions can ever be asked. A name is a door: whatever the record holds is still there to
-    /// be counted later, by something that has since learned what to count.
+    /// questions can ever be asked. A record is a door: whatever it holds is still there to be
+    /// counted later, by something that has since learned what to count.
     ///
-    /// ⚠ Sessions this build could not NAME are absent rather than represented by a placeholder —
-    /// see [`Session::identity`], where `None` is not an error. A reader that must know how many
-    /// sessions there were counts replacements; this answers *which ones can be opened*, and those
-    /// are different questions that a filler entry would silently merge.
-    ended: Vec<String>,
+    /// ⚠⚠⚠⚠ **AND IT HOLDS THE RECORD ITSELF RATHER THAN A NAME TO DERIVE ONE FROM, WHICH IS
+    /// REGISTER ITEM 431 REACHING A SECOND READER.** A name was resolved through
+    /// [`crate::spend::record_of`], and the name a pane is LAUNCHED with is not necessarily the one
+    /// its agent files under — measured, `97f5ffd9-…` against `3f4ffa52-…`, with no record of the
+    /// first anywhere. So every door in this list opened onto nothing and `reviewing` gave up in
+    /// `reading` while the transcripts sat on disk. [`Session::record`] answers what the agent said,
+    /// and a stated path needs no resolving.
+    ///
+    /// ⚠ Sessions whose record this build could not name are absent rather than represented by a
+    /// placeholder — see [`Session::identity`], where `None` is not an error. A reader that must
+    /// know how many sessions there were counts replacements; this answers *which ones can be
+    /// opened*, and those are different questions that a filler entry would silently merge.
+    ended: Vec<std::path::PathBuf>,
     /// ⚠⚠⚠ **THE RUN IS STOPPING SHORT ON A CEILING THIS MACHINE CANNOT SEE** — set by
     /// [`stop_short`](Self::stop_short) and read into every `judge` the driver raises after it.
     ///
@@ -1768,6 +1851,9 @@ impl OuterLoop {
                 // the child may not have `exec`d yet, and a `None` cached now would be indistinguishable
                 // from one that will never be answerable.
                 identity: None,
+                // ⚠ And this one cannot be known here even in principle: an agent states where it
+                // writes on the hook that opens its FIRST TURN, and nothing has been asked yet.
+                transcript: None,
             },
             machine,
             script,
@@ -3746,22 +3832,23 @@ impl OuterLoop {
                     .to_owned(),
             )
         })?;
-        // ⚠⚠⚠ THE OUTGOING SESSION IS NAMED BEFORE IT IS LET GO, AND THIS IS THE LAST MOMENT AT
-        // WHICH IT CAN BE. `replacing` answers a session with `identity: None` — correct, because
-        // the replacement really is a different session — and `respawn` closes the pane the name is
-        // recovered from. Between those two the name reaches nobody, which is why every session
-        // this run has closed so far is a transcript nothing can open. See [`Self::ended`].
+        // ⚠⚠⚠ THE OUTGOING SESSION'S RECORD IS TAKEN BEFORE IT IS LET GO, AND THIS IS THE LAST
+        // MOMENT AT WHICH IT CAN BE. `replacing` answers a session that knows neither where it
+        // writes nor what it is called — correct, because the replacement really is a different
+        // session — and `respawn` closes the pane both of those are recovered from. Between those
+        // two the record reaches nobody, which is why every session this run has closed so far was a
+        // transcript nothing could open. See [`Self::ended`].
         //
-        // ⚠ `identify` is ASKED once more rather than read off its latch. It recovers the name from
-        // the pane's foreground job, so it needs the old pane to still be there and to still have
-        // the agent in front — true here and nowhere after here. A run whose agent held the
-        // foreground only briefly may not have been named yet, and this is its last chance.
+        // ⚠ `record` is ASKED once more rather than read off its latches. Both roads to it run
+        // through the live pane — the agent's report and its foreground job — so each needs the old
+        // pane to still be there, and one of them needs the agent to still be in front. A run whose
+        // agent held the foreground only briefly may not have been named yet, and this is its last
+        // chance.
         //
-        // ⚠ `None` pushes nothing. A session this build cannot name is one whose record cannot be
-        // opened either, so a placeholder would only promise a door that does not exist.
-        let closing = self.driving.identify(panes).map(str::to_owned);
-        if let Some(name) = closing {
-            self.ended.push(name);
+        // ⚠ `None` pushes nothing. A session whose record this build cannot name is one nothing can
+        // open, so a placeholder would only promise a door that does not exist.
+        if let Some(record) = self.driving.record(panes) {
+            self.ended.push(record);
         }
         // ⚠⚠⚠ ONE ASSIGNMENT, and that is the point — see [`Session`]. Setting the pane and leaving
         // the barrier behind is a defect NO STAND-IN IN THIS CRATE CATCHES (measured, as a mutation
@@ -4323,10 +4410,20 @@ impl OuterLoop {
     ///
     /// # ⚠⚠ ZERO IS A DEGRADATION AND NOT A MEASUREMENT, which is why it is safe
     ///
-    /// A run that cannot name its session, or whose agent has written nothing yet, reads `0`. Every
-    /// consumer must therefore treat `0` as *"do not decide on this"* rather than as *"nothing has
-    /// accumulated"* — the two are indistinguishable here on purpose, because the alternative is
-    /// refusing to drive an agent over a number that is only ever an optimisation.
+    /// A run whose agent states nothing and carries no launch name, or whose agent has written
+    /// nothing yet, reads `0`. Every consumer must therefore treat `0` as *"do not decide on this"*
+    /// rather than as *"nothing has accumulated"* — the two are indistinguishable here on purpose,
+    /// because the alternative is refusing to drive an agent over a number that is only ever an
+    /// optimisation.
+    ///
+    /// ⚠⚠⚠⚠ **AND ONE CAUSE OF THAT ZERO WAS A DEFECT, NOT A DEGRADATION** — register item 431. A
+    /// record resolved from the name a pane was LAUNCHED with is a guess, and it was measured
+    /// reading nothing for a session whose 3.4 MB record held `466013` on its last request: the
+    /// agent had filed under a different name and said so on every turn. The stated path is read
+    /// first now (see [`Session::spent`]), so `0` is back to meaning only what this section says it
+    /// means. ⚠ The residue is that it still says it QUIETLY — nothing announces a stated
+    /// transcript that could not be read, which is 431's remaining half.
+    ///
     /// # ⚠⚠⚠ Why the three travel together and not one at a time
     ///
     /// A restart decision is a comparison, and each of these is meaningless without the others:
@@ -4337,10 +4434,11 @@ impl OuterLoop {
     /// ⚠ Every one degrades to `0` together and for the same reason, so a consumer that already
     /// treats `context: 0` as *"do not decide on this"* needs no second rule.
     fn costs_now(&mut self, panes: &dyn PaneAccess) -> serde_json::Value {
-        let spend = self
-            .driving
-            .identify(panes)
-            .and_then(crate::spend::spend_of);
+        // ⚠⚠⚠⚠ WHERE THE AGENT SAID IT WRITES, AND ONLY THEN A NAME. This used to resolve a record
+        // from the session's LAUNCH name, and register item 431 measured that reading nothing for a
+        // session whose record held 466,013 tokens — the three numbers below were 0 while the file
+        // was on disk. See [`Session::spent`], which holds the order and why it does not fall back.
+        let spend = self.driving.spent(panes);
         serde_json::json!({
             "context": spend.as_ref().map_or(0, |spend| spend.context),
             "cold": spend.as_ref().map_or(0, |spend| spend.cold),
@@ -5421,6 +5519,178 @@ mod tests {
              the same prompt go through — a rule that refused here would refuse every loop there \
              is. Got {moved:?}",
         );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A LOOP READS THE TRANSCRIPT ITS AGENT NAMED, NOT ONE DERIVED FROM THE NAME ITS PANE
+    /// WAS LAUNCHED WITH** — register item 431, and the defect it pins was measured rather than
+    /// imagined.
+    ///
+    /// # ⚠⚠⚠⚠ What the derived road cost, in the numbers it was measured on
+    ///
+    /// A live loop's reflection prompt published *"**0** read on its last request, of which **0** is
+    /// a floor no restart escapes, leaving **0** that replacing this session would discard"* — a
+    /// whole paragraph of arithmetic composed out of nothing. The pane was born
+    /// `--session-id 97f5ffd9-…` and its agent reported `3f4ffa52-…`; no `97f5ffd9-…` record exists
+    /// anywhere under `$HOME/.claude/projects`, while the `3f4ffa52-…` one was **3,422,727 bytes
+    /// carrying `"cache_read_input_tokens":466013`** on its last request. The file was there and the
+    /// reader was looking somewhere else.
+    ///
+    /// ⚠⚠ **AND A ZERO CANNOT SAY THAT.** `context: 0` means *do not decide on this* and reads
+    /// exactly like a small session, so nothing downstream could tell the difference — which is why
+    /// this is a gate on the READ rather than a sentence in a doc.
+    ///
+    /// # ⚠⚠⚠ What is asserted, and why the fixture's three numbers are all different
+    ///
+    /// `cold`, `floor` and `context` come off DIFFERENT requests of one record — the first
+    /// request's cache write, the second's cache read, the last one's whole charge. A fixture that
+    /// used one number for all three would pass for a reader that returned any of them for all of
+    /// them. The last is the real 466,013, so the assertion and the measurement are the same number.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE SAME PANE UNDER A SUPERVISOR THAT STATES NOTHING**, and it must read
+    /// `0`: that is what says the numbers above arrived through the STATED path. This peer is
+    /// `/bin/sh`, so it carries no `--session-id` and the derived road can name nothing — which is
+    /// the shape of the live defect, where the derived road named a file that was never written.
+    ///
+    /// ⚠ **RESIDUE, STATED:** this does not prove the ORDER when BOTH roads resolve, because the
+    /// derived one is rooted at `$HOME/.claude/projects` and a gate that moved `$HOME` would be a
+    /// process-wide mutation under a threaded runner. What holds that half is
+    /// [`Session::spent`]'s shape — it returns on the stated path and never reaches the fallback.
+    #[test]
+    fn a_loop_reads_the_transcript_its_agent_named_rather_than_one_derived_from_a_launch_name() {
+        /// The record the agent says it is writing. ⚠ Three billed requests, because `cold` is the
+        /// FIRST one's cache write and `floor` is the SECOND one's cache read — a two-request
+        /// fixture cannot tell a reader that confuses them from one that does not.
+        const WRITTEN: &str = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":0,"cache_creation_input_tokens":7000,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":38500,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
+        );
+
+        let home = std::env::temp_dir().join(format!("sprag-stated-record-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        // ⚠ NAMED FOR NOTHING THE PANE CARRIES. `record_of` would search for `<launch name>.jsonl`
+        // under `$HOME/.claude/projects`; this file is neither in that tree nor called that, so the
+        // only way any reader reaches it is by being TOLD where it is.
+        let record = home.join("what-the-agent-said.jsonl");
+        std::fs::write(&record, WRITTEN).expect("the agent's own record");
+
+        let read = |stated: Option<&std::path::Path>| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let said = stated.map(|path| path.display().to_string());
+            let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Working,
+                    agent: Some("claude".to_owned()),
+                    // ⚠ REPORTED, because that is what a transcript path arrives on: the agent's
+                    // own submit hook. A scraped observation could never carry one.
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_owned(),
+                    },
+                    seq: 1,
+                    asking: None,
+                    asked: None,
+                    transcript: said.clone(),
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+                .expect("the document's datamodel must carry its four authored strings");
+            let costs = loops.costs_now(&access);
+            access.lifecycle().expect("lifecycle").close(pane);
+            costs
+        };
+
+        let told = read(Some(&record));
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            told["context"], 466_013,
+            "⚠⚠⚠⚠ THE NUMBER IS IN THE FILE THE AGENT NAMED. A loop that resolves its record from \
+             the name its pane was LAUNCHED with reads 0 here, which is exactly what a live run \
+             published while this quantity sat on disk (register item 431). Got {told}",
+        );
+        assert_eq!(
+            told["floor"], 38_500,
+            "⚠⚠ and the floor a restart cannot escape — the SECOND request's cache read: {told}",
+        );
+        assert_eq!(
+            told["cold"], 7_000,
+            "⚠⚠ and the toll a restart re-pays — the FIRST request's cache write: {told}",
+        );
+
+        let untold = read(None);
+        assert_eq!(
+            (&untold["context"], &untold["floor"], &untold["cold"]),
+            (
+                &serde_json::json!(0),
+                &serde_json::json!(0),
+                &serde_json::json!(0)
+            ),
+            "⚠⚠⚠ THE CONTROL, and it is what makes the three above attributable: the same pane \
+             under a supervisor that STATES NOTHING has no road to that record at all — this peer \
+             is `/bin/sh` and carries no session name for anything to derive. A fixture that read \
+             the numbers here too would be reading them from somewhere this test did not put them. \
+             Got {untold}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **A REPLACEMENT SESSION FORGETS BOTH ROADS TO A RECORD** — the name it was launched
+    /// with AND the file its predecessor said it was writing.
+    ///
+    /// # ⚠⚠⚠ Why this needs a gate when [`Session::replacing`] says the compiler is the ratchet
+    ///
+    /// The compiler asks for every FIELD, which is what stops one being forgotten. It cannot ask
+    /// for the right VALUE, and `transcript: self.transcript.clone()` compiles perfectly — that
+    /// struct's own doc records a mutation of exactly this kind (dropping the barrier's re-arm)
+    /// that left every gate in this crate green.
+    ///
+    /// ⚠⚠ **AND CARRYING THIS ONE OVER FAILS IN THE DIRECTION THAT LOOKS LIKE DATA.** A closed
+    /// session's record does not vanish, it stops moving: a replacement reading it would publish a
+    /// plausible `context` that never changes again, so the loop would price restarts it had
+    /// already made against a session that no longer exists. That is worse than the zero register
+    /// item 431 measured, because a zero at least announces itself as *do not decide on this*.
+    #[test]
+    fn a_replacement_session_forgets_the_record_its_predecessor_was_writing() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        loops.driving.identity = Some("97f5ffd9-the-name-it-was-born-with".to_owned());
+        loops.driving.transcript = Some(std::path::PathBuf::from(
+            "/tmp/3f4ffa52-what-it-said-it-wrote.jsonl",
+        ));
+
+        // ⚠ A DIFFERENT PANE ID, because that is what `respawn` answers and the whole point of the
+        // value: everything true of the pane that has gone is left with it.
+        let fresh = loops.driving.replacing(PaneId(loops.driving.pane.0 + 1));
+
+        assert_eq!(
+            fresh.transcript, None,
+            "⚠⚠⚠⚠ THE FRESH SESSION IS WRITING SOMEWHERE ELSE, and it has not said where yet. \
+             Carried over, every reading of this run's spend would come off a file the closed \
+             session stopped appending to — a number that looks like a measurement and is a \
+             fossil. Got {:?}",
+            fresh.transcript,
+        );
+        assert_eq!(
+            fresh.identity, None,
+            "⚠⚠ and the other road to a record is forgotten on the same terms: a launch name is a \
+             fact about the process that has gone. Got {:?}",
+            fresh.identity,
+        );
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
     }
 
     /// ⚠⚠⚠ **EVERY EDGE INTO `reflecting` SAYS WHY, IN A WORD THIS DRIVER HAS AN ARM FOR** —
