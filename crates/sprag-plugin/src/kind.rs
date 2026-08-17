@@ -44,7 +44,7 @@ use std::sync::Arc;
 use sce_rust_runtime::{Engine, IScriptEngine};
 
 use crate::consent::Consents;
-use crate::outer::{NotScreenable, OuterLoop};
+use crate::outer::{Counted, NotScreenable, OuterLoop};
 use crate::screen::ScreenRules;
 
 /// One loop kind's authored decisions, read off its own document.
@@ -133,6 +133,42 @@ impl LoopKind {
     /// [`NotScreenable`] when the document holds something this driver cannot read as a rule list.
     pub fn screen_rules(&self) -> Result<Option<ScreenRules>, NotScreenable> {
         OuterLoop::rules_in(&self.script, &self.session)
+    }
+
+    /// **THE TEXT THIS KIND ADDS TO ITS CLOSING QUESTION**, or [`None`] for a kind that adds none.
+    ///
+    /// ⚠ Read as a plain string rather than through a list reader, because it is APPENDED to a
+    /// sentence the template owns: a kind may extend what its runs are asked at the end, and cannot
+    /// replace it. That asymmetry is the whole shape — the template keeps the account it needs from
+    /// every ending, the repository adds what only it can know it wants.
+    #[must_use]
+    pub fn closing_rules(&self) -> Option<String> {
+        OuterLoop::authored_text_in(&self.script, &self.session, "closing_rules")
+    }
+
+    /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
+    /// the template's own number stands.
+    ///
+    /// ⚠⚠ [`Counted::Never`] is a DECISION and not an absence — a debt run's job is a list nobody
+    /// has finished, so it ends on its work rather than on a count. See this kind's document for
+    /// what that costs and why the spelling is a word.
+    #[must_use]
+    pub fn turn_budget(&self) -> Option<Counted> {
+        OuterLoop::authored_count_in(&self.script, &self.session, "max_turns")
+    }
+
+    /// **HOW OFTEN A RUN OF THIS KIND STOPS TO IMPROVE ITSELF**, or [`None`] where it says nothing.
+    ///
+    /// ⚠⚠⚠ A kind that declines the turn budget MUST answer this, and the driver refuses the pair
+    /// rather than guessing: the template's default for reflection is *the number that makes the
+    /// reflect guard unreachable*, which only exists while there IS a budget. Declining one without
+    /// naming a cadence asks for a loop that runs for ever and never improves itself.
+    #[must_use]
+    pub fn reflect_every(&self) -> Option<i64> {
+        match OuterLoop::authored_count_in(&self.script, &self.session, "reflect_every") {
+            Some(Counted::Of(cadence)) => Some(cadence),
+            _ => None,
+        }
     }
 }
 
@@ -275,6 +311,80 @@ mod tests {
                 .any(|rule| "Do you want to create PROBE.txt?".contains(rule.when())),
             "⚠⚠ and it must still claim the one left to it — the file that does not exist yet, which \
              no quote can tell from a design decision (`judged_rules`' argument): {rules:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **THIS KIND DOES NOT END ON TURNS, AND THEREFORE MUST NAME A CADENCE.**
+    ///
+    /// # Why the pair is one gate and not two
+    ///
+    /// The template's default for reflection is *the number that makes the reflect guard
+    /// unreachable* — it borrows `max_turns`, because `judging` tests the budget first. That number
+    /// only exists while there IS a budget. A kind that declines one and says nothing about
+    /// reflection is therefore asking for a loop that runs for ever and never once stops to improve
+    /// itself, and `OuterLoop::brief` refuses that pairing rather than guessing at it.
+    ///
+    /// **So the decline is only safe while the cadence is beside it**, and holding them apart would
+    /// let either be deleted with the other still green.
+    ///
+    /// ⚠⚠⚠ THE DECLINE IS A WORD, and that is not style. `probe_absent` measured the alternatives:
+    /// an id declared and left EMPTY reads `Ok(Null)` — and so does an id nobody declares at all —
+    /// so a kind that FORGOT this key would be granted an unbounded run. A boolean has the same
+    /// disease, absent and `false` being equally falsy. Only a value that is neither a number nor
+    /// nil can carry a decision between documents.
+    #[test]
+    fn the_debt_kind_declines_the_turn_budget_and_names_a_reflection_cadence() {
+        let kind = debt();
+        assert_eq!(
+            kind.turn_budget(),
+            Some(Counted::Never),
+            "⚠⚠⚠⚠ a debt run's job is a list nobody has finished, so it ends on its WORK — the north \
+             star declared, a person standing it down, a guardrail — and not on a count. Two live \
+             runs ended `exhausted (turns)` mid-milestone, and what the document said about it was \
+             true and useless: a sentence about a number, never about the work",
+        );
+        let cadence = kind.reflect_every().expect(
+            "⚠⚠⚠⚠ AND A KIND THAT DECLINES THE BUDGET MUST SAY THIS. Without it the template would \
+             borrow a default from a budget that is not there, which is a loop that never improves \
+             itself — the driver refuses the pair, so a run of this kind would not start at all",
+        );
+        assert!(
+            cadence >= 1,
+            "a cadence of zero or less reflects on every judgement or on none: {cadence}",
+        );
+    }
+
+    /// **AND IT ASKS FOR ITS OWN SWEEP AT THE END** — the clause the template ships empty.
+    ///
+    /// ⚠⚠⚠ Why a repository needs this at all: a run that noticed a defect and neither fixed nor
+    /// registered it has SPENT the finding, and the next round pays to find it again. This
+    /// repository's own record says both halves — *the sweep starts with «no» every time and every
+    /// time it found something*, and *a recorded lesson is not an applied one*.
+    ///
+    /// ⚠⚠ The assertion is on the DEMAND rather than on the wording, which is prose and would make
+    /// this a test agreeing with a renderer. What must hold is that both answers are open: a run
+    /// that can only report a FIX cannot honestly say *"I ran out of room"*, and a clause that
+    /// forced one would make hiding an unfixed finding the way to look finished.
+    #[test]
+    fn the_debt_kind_asks_its_endings_to_sweep_and_lets_either_answer_close_it() {
+        let kind = debt();
+        let clause = kind
+            .closing_rules()
+            .expect("this kind adds to its closing question");
+        let lower = clause.to_lowercase();
+        for demand in ["sweep", "pay", "register"] {
+            assert!(
+                lower.contains(demand),
+                "⚠⚠⚠ the clause must ask for the sweep AND leave both endings open — paying it or \
+                 registering it are each a complete answer, and a clause that named only the fix \
+                 would make an honest *I could not* impossible to give. Missing {demand:?} in \
+                 {clause:?}",
+            );
+        }
+        assert!(
+            clause.starts_with(' '),
+            "⚠⚠ it is APPENDED to the template's own sentence, so it must not run into the last \
+             word of it: {clause:?}",
         );
     }
 }

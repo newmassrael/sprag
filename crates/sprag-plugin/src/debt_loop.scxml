@@ -133,6 +133,73 @@
       discovering which of two documents the id belongs to.
     -->
     <data id="judged_rules" expr="[]"/>
+
+    <!--
+      ⚠⚠⚠⚠ THIS LOOP DOES NOT END ON TURNS, AND THAT IS THIS REPOSITORY'S
+      DECISION RATHER THAN THE TEMPLATE'S.
+
+      A debt run's job is a list nobody has finished, so a turn count is not what
+      it is bounded by. It ends where a debt run actually ends: the north star
+      declared, a person standing it down, a guardrail, or a peer that has gone.
+
+      ⚠⚠⚠ MEASURED, AND IT IS WHY THE TURN CAP WAS NEVER THE RIGHT CEILING. Two
+      runs ended `exhausted (turns)` mid-milestone, and what the document said
+      about it was true and useless — *the plugin's own declared budget is spent*
+      is a sentence about a number, never about the work. A run cut at a count
+      leaves its milestone half-paid and its successor re-deriving where it got
+      to; item 352 registers what that costs.
+
+      ⚠⚠ THE WORD, NOT A BLANK OR A ZERO. `probe_absent.scxml` measured all three
+      spellings: an id declared and left empty reads `Null`, and so does an id
+      NOBODY DECLARED — so a kind that forgot this key would be granted an
+      unbounded run. A boolean has the same disease (absent and `false` are both
+      falsy). Only a value that is neither a number nor nil can carry a decision
+      between documents.
+
+      ⚠ AND IT IS NOT AN UNBOUNDED RUN. `max_iterations` and `max_seconds` still
+      bound it in the substrate's own units; what is gone is a ceiling denominated
+      in something the bill is not.
+    -->
+    <data id="max_turns" expr="'never'"/>
+
+    <!--
+      ⚠⚠⚠⚠ HOW OFTEN THIS LOOP STOPS TO IMPROVE ITSELF — FIVE TURNS, AND IT MUST
+      BE SAID HERE BECAUSE THE BUDGET ABOVE IS DECLINED.
+
+      The template defaults this to `max_turns`, which is *never reflect on the
+      budget* spelled as the one number that makes the guard unreachable. With no
+      budget there is no such number, so a kind that declined one and said nothing
+      here would ask for a loop that runs for ever and never once improves itself.
+      The driver refuses that pairing rather than guessing; this is the answer.
+
+      ⚠⚠⚠ FIVE IS AN IMPROVEMENT CADENCE AND KNOWN TO LOSE ON COST, which the
+      template's own budget note argues at length: the restart-cost curve pays
+      above roughly 15,000-21,000 tokens of discardable context, real work here
+      accumulates about 2,342 per turn, so five turns discard about 11,700 —
+      BELOW the band. It is chosen on the axis `reflect_every` is actually for,
+      and the numbers now travel in the reflection prompt so the loop can weigh
+      its own cadence rather than obey it blindly.
+    -->
+    <data id="reflect_every" expr="5"/>
+
+    <!--
+      ⚠⚠⚠⚠ WHAT A DEBT RUN OWES AT ITS ENDING, BEYOND THE ACCOUNT EVERY RUN GIVES.
+      Appended to the template's closing question through `closing_rules`.
+
+      ⚠⚠⚠ THE SWEEP IS THE POINT, AND IT IS NOT A COURTESY. This repository's own
+      record says it twice over: *the sweep starts with «no» every time and every
+      time it found something*, and *a recorded lesson is not an applied one*. A
+      run that noticed a defect and neither fixed nor registered it has spent the
+      finding — the next round pays to find it again, and this has happened often
+      enough to be the reason this clause exists rather than a worry.
+
+      ⚠⚠ PAY IT OR REGISTER IT, AND EITHER IS A COMPLETE ANSWER. Demanding the
+      fix would make the honest reply *"I ran out of room"* impossible to give,
+      and a run that hides an unfixed finding to look finished is the failure this
+      is trying to prevent, not a version of success.
+    -->
+    <data id="closing_rules"
+          expr="' Then sweep for debt this session turned up — anything you found and did not fix, and anything you learned that the next run would otherwise re-derive. Pay what you can pay now; register the rest, with what you measured. Say which you did for each.'"/>
   </datamodel>
 
   <!--

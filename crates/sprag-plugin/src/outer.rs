@@ -318,6 +318,13 @@ const STANDING: &str = "standing";
 /// to is built. `screen_permissions` is not here because it no longer exists — see the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Brief {
+    /// **WHAT THIS REPOSITORY ADDS TO THE CLOSING QUESTION**, or [`None`] to leave the template's
+    /// own sentence standing alone.
+    ///
+    /// ⚠⚠ APPENDED, NEVER SUBSTITUTED. The template asks every ending for an account and a kind may
+    /// extend that, not replace it — so a repository can demand its own sweep without any kind being
+    /// able to drop the report the document needs from every run.
+    pub closing_rules: Option<String>,
     /// Where this loop is ultimately going. Never rewritten by reflection.
     pub north_star: String,
     /// The step being worked on now. Reflection may rewrite this.
@@ -342,7 +349,13 @@ pub struct Brief {
     /// decision the document is structurally forbidden from making**, which is a harder case than
     /// item 300's two durations (those were already optional). [`None`] now means what it means for
     /// every other judgement here: the author decides.
-    pub max_turns: Option<i64>,
+    ///
+    /// ⚠⚠⚠ **AND IT CARRIES [`Counted::Never`] BECAUSE A LOOP KIND MAY DECLINE THE CEILING
+    /// ALTOGETHER.** A debt run's job is a list nobody has finished, so it ends on its work rather
+    /// than on a count — and that decision lives in a document ([`crate::kind`]) and has to cross to
+    /// here to be obeyed. [`None`] still means *nobody said*, which is a different thing from *the
+    /// author said not to*: one falls through to the template's number, the other overrides it.
+    pub max_turns: Option<Counted>,
     /// How often the loop stops to improve its own setup, or [`None`] for *never, on the budget* —
     /// which is spelled as [`max_turns`](Self::max_turns) rather than as a magic zero.
     ///
@@ -976,6 +989,32 @@ impl ReflectReason {
     #[must_use]
     pub fn noted(self) -> String {
         format!("{}: {}", self.word(), self.describe())
+    }
+}
+
+/// **A COUNT A DOCUMENT MAY ALSO DECLINE** — read off a datamodel by `OuterLoop::authored_count`.
+///
+/// ⚠ The reader is spelled rather than LINKED: it is crate-private and this type is public, so an
+/// intra-doc link is `private_intra_doc_links` under `-D warnings`. Item 365, met a third time.
+///
+/// ⚠ Two arms rather than `Option<i64>` because [`None`] already means *nothing readable is there*,
+/// and *the author said not to bound this* is the opposite of that: one is a document to refuse,
+/// the other is a document to obey.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Counted {
+    /// A bound.
+    Of(i64),
+    /// The author declined to bound it.
+    Never,
+}
+
+impl Counted {
+    /// What crosses the datamodel — the number, or the word.
+    pub(crate) fn as_json(self) -> serde_json::Value {
+        match self {
+            Self::Of(count) => serde_json::json!(count),
+            Self::Never => serde_json::json!(OuterLoop::NEVER),
+        }
     }
 }
 
@@ -1901,10 +1940,7 @@ impl OuterLoop {
         // the key was malformed rather than deferring, and **a required judgement is a decision the
         // document is structurally forbidden from making.** It is declinable now, and declining it
         // means what it means everywhere else here — the author decides.
-        let Some(turns) = brief
-            .max_turns
-            .or_else(|| self.authored_number("max_turns"))
-        else {
+        let Some(turns) = brief.max_turns.or_else(|| self.authored_count("max_turns")) else {
             // A document that cannot say how long its own run may be is one this driver cannot
             // drive, and it is refused exactly like a document that cannot say who it expects.
             self.machine.process_event(AiLoopEvent::Fail);
@@ -1924,7 +1960,27 @@ impl OuterLoop {
         // ⚠⚠ THE DEFAULT IS STILL NOT THE DOCUMENT'S OWN `reflect_every`, deliberately: a
         // reflection restarts a session, which closes a pane a person may be reading, and a caller
         // who said nothing about reflection has not asked for that.
-        let reflect = brief.reflect_every.unwrap_or(turns);
+        // ⚠⚠⚠⚠ AND A DECLINED BUDGET CANNOT BE THE REFLECTION DEFAULT, which is the whole hazard of
+        // this pairing. The default is *the number that makes the reflect guard unreachable*, and
+        // when the budget is `never` there is no such number — inheriting it would spell
+        // `reflect_every = never` and produce a loop that runs for ever and never once stops to
+        // improve itself. **The unbounded case is exactly where a kind must say a cadence out loud**,
+        // and a document that declines the budget without naming one is refused below rather than
+        // silently given the worst of both.
+        let reflect = match (brief.reflect_every, turns) {
+            (Some(named), _) => Counted::Of(named),
+            (None, Counted::Of(bound)) => Counted::Of(bound),
+            (None, Counted::Never) => match self.authored_count("reflect_every") {
+                Some(Counted::Of(cadence)) => Counted::Of(cadence),
+                _ => {
+                    self.machine.process_event(AiLoopEvent::Fail);
+                    return Briefed::NotHeld {
+                        part: "reflect_every",
+                        held: None,
+                    };
+                }
+            },
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             crate::consent::Consents::WIRE_KEY: clauses.as_ref().map_or_else(Vec::new, |held| {
@@ -1944,8 +2000,11 @@ impl OuterLoop {
             crate::readiness::Handback::WIRE_KEY: still_ms,
             crate::readiness::Readiness::WIRE_KEY: ready_ms,
             Turn::WIRE_KEY: turn_ms,
-            "max_turns": turns,
-            "reflect_every": reflect,
+            "max_turns": turns.as_json(),
+            "reflect_every": reflect.as_json(),
+            // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
+            // ships `''` and a caller who adds nothing must not delete what the document composes.
+            "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
             ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
                 rules
                     .rules()
@@ -1988,7 +2047,7 @@ impl OuterLoop {
         &self,
         brief: &Brief,
         rules: Option<&ScreenRules>,
-        counts: (i64, i64),
+        counts: (Counted, Counted),
     ) -> Briefed {
         for (part, sent) in [
             ("north_star", &brief.north_star),
@@ -2006,13 +2065,24 @@ impl OuterLoop {
                 _ => return Briefed::NotHeld { part, held: None },
             }
         }
+        // ⚠⚠⚠ THE READ-BACK COVERS THE DECLINE TOO, and it has to: the whole point of item 316 is
+        // that a number crossing unverified is a run bounded by something nobody asked for, and a
+        // WORD crossing unverified is a run bounded by nothing at all — the louder half of the same
+        // failure. So each is checked in the shape it was sent.
         for (part, sent) in [("max_turns", counts.0), ("reflect_every", counts.1)] {
-            match self.script.get_variable(&self.session, part) {
-                Ok(ScriptValue::Int(held)) if held == sent => {}
-                Ok(ScriptValue::Int(held)) => {
+            match (self.script.get_variable(&self.session, part), sent) {
+                (Ok(ScriptValue::Int(held)), Counted::Of(count)) if held == count => {}
+                (Ok(ScriptValue::String(held)), Counted::Never) if held == Self::NEVER => {}
+                (Ok(ScriptValue::Int(held)), _) => {
                     return Briefed::NotHeld {
                         part,
                         held: Some(held.to_string()),
+                    };
+                }
+                (Ok(ScriptValue::String(held)), _) => {
+                    return Briefed::NotHeld {
+                        part,
+                        held: Some(held),
                     };
                 }
                 _ => return Briefed::NotHeld { part, held: None },
@@ -3784,6 +3854,69 @@ impl OuterLoop {
         }
     }
 
+    /// **WHAT A DOCUMENT SAYS ABOUT A COUNT IT MAY ALSO DECLINE** — a number, the word
+    /// [`NEVER`](Self::NEVER), or [`None`] for something no reader can make either of.
+    ///
+    /// # ⚠⚠⚠⚠ Why a WORD and not a blank, a zero, or a boolean
+    ///
+    /// All three were measured before this was written (`probe_absent.scxml`), and each fails the
+    /// same way: **it cannot be told apart from a document that said nothing.**
+    ///
+    /// * An id DECLARED AND LEFT EMPTY reads `Ok(Null)` — and so does an id no document declares at
+    ///   all. A kind that simply forgot the key would be granted the decline.
+    /// * A boolean beside the number is no better: an absent boolean and a `false` one are both
+    ///   falsy.
+    /// * A magic `0` or `-1` changes what an existing caller's value means, which this tree has
+    ///   already refused twice (see `ready_within`'s note on `ready_timeout_ms: 0`).
+    ///
+    /// Only a value that is neither a number nor nil can carry a DECISION between documents, so the
+    /// decline is spelled. ⚠ The same word is in the template's guard, and a gate holds the two
+    /// spellings together for `DoneReason::word`'s reason: a word that drifted on one side would
+    /// leave a run bounded by a budget nobody can see.
+    pub(crate) fn authored_count(&self, name: &str) -> Option<Counted> {
+        Self::authored_count_in(&self.script, &self.session, name)
+    }
+
+    /// [`authored_count`](Self::authored_count)'s reading, separated from the loop that holds the
+    /// engine — `consents_in`'s shape, and for its reason: a loop KIND authors these in its own
+    /// document ([`crate::kind`]), and a kind and a template that disagreed about what a decline IS
+    /// would be two spellings of one rule.
+    pub(crate) fn authored_count_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+        name: &str,
+    ) -> Option<Counted> {
+        match script.get_variable(session, name) {
+            Ok(ScriptValue::Int(held)) if held >= 0 => Some(Counted::Of(held)),
+            Ok(ScriptValue::Double(held)) if held >= 0.0 => Some(Counted::Of(held as i64)),
+            Ok(ScriptValue::String(held)) if held == Self::NEVER => Some(Counted::Never),
+            _ => None,
+        }
+    }
+
+    /// The word a document spells to decline a count. Spelled here and in `ai_loop.scxml`'s guard,
+    /// held together by a gate.
+    pub(crate) const NEVER: &'static str = "never";
+
+    /// **AUTHORED TEXT UNDER `name`**, or [`None`] where the document holds nothing a reader would
+    /// take as a sentence — an id it does not declare, or one it declares EMPTY.
+    ///
+    /// ⚠ An empty string reads as [`None`] here and that is the right reading for this use: the
+    /// template ships `''` for the slots a kind may fill, and *declared but empty* is exactly *this
+    /// document adds nothing*. It is the opposite polarity to [`authored_count`](Self::authored_count),
+    /// where empty had to be distinguishable from silent — because there the value carries a
+    /// DECISION and here it carries only text to append.
+    pub(crate) fn authored_text_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+        name: &str,
+    ) -> Option<String> {
+        match script.get_variable(session, name) {
+            Ok(ScriptValue::String(held)) if !held.is_empty() => Some(held),
+            _ => None,
+        }
+    }
+
     /// **HOW MANY TURNS THIS RUN MAY TAKE, AS THE DATAMODEL NOW HOLDS IT** — the caller's number
     /// once a brief has been taken, and the document's own before one has.
     ///
@@ -3791,8 +3924,8 @@ impl OuterLoop {
     /// whole point (item 312): while the budget was a required argument its *"at least 1"* could be
     /// settled from the caller's own numbers before anything was built. Now the number may be the
     /// document's, and **the only place both possibilities have become one value is the datamodel.**
-    pub(crate) fn turn_budget(&self) -> Option<i64> {
-        self.authored_number("max_turns")
+    pub(crate) fn turn_budget(&self) -> Option<Counted> {
+        self.authored_count("max_turns")
     }
 
     /// **HOW LONG THIS DOCUMENT SAYS THE BARRIER MAY WAIT**, read at the moment of the look —
@@ -5662,7 +5795,10 @@ mod tests {
             north_star: "ship \"sprag\" 1.0 — don't break the wire {yet}".to_string(),
             milestone: "바깥 루프가\n혼자 돈다".to_string(),
             reference: "~/herdr, ~/ghostty, 그리고 DESIGN.md §5".to_string(),
-            max_turns: Some(3),
+            // ⚠ This gate is about the BRIEF's parts crossing the datamodel; the kind's closing
+            // clause crosses on the same route and has its own gate rather than riding this one.
+            closing_rules: None,
+            max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
@@ -5777,7 +5913,8 @@ mod tests {
             north_star: "n".to_string(),
             milestone: "m".to_string(),
             reference: "r".to_string(),
-            max_turns: Some(3),
+            closing_rules: None,
+            max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             screen_rules: None,
             may_answer: None,
@@ -5851,7 +5988,8 @@ mod tests {
             north_star: "what the caller asked for".to_string(),
             milestone: "m".to_string(),
             reference: "r".to_string(),
-            max_turns: Some(3),
+            closing_rules: None,
+            max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
@@ -5929,7 +6067,8 @@ mod tests {
                 north_star: "n".to_string(),
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
-                max_turns: Some(3),
+                closing_rules: None,
+                max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
                 screen_rules: None,
                 may_answer: None,
@@ -6054,7 +6193,8 @@ mod tests {
             north_star: "the one the run is actually for".to_string(),
             milestone: "step one".to_string(),
             reference: "none".to_string(),
-            max_turns: Some(3),
+            closing_rules: None,
+            max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
@@ -6240,7 +6380,8 @@ mod tests {
                 north_star: "prove the bound is the document's".to_string(),
                 milestone: "wait exactly as long as the file says".to_string(),
                 reference: "register item 300".to_string(),
-                max_turns: Some(3),
+                closing_rules: None,
+                max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
                 screen_rules: None,
                 may_answer: None,
@@ -7197,7 +7338,8 @@ mod tests {
             north_star: "the stand-in answers two prompts and then says the marker".to_string(),
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
-            max_turns: Some(40),
+            closing_rules: None,
+            max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.

@@ -667,10 +667,20 @@ impl PluginsExternal {
                     ))
                 })?;
                 let brief = Brief {
+                    // ⚠⚠ NO WIRE KEY, DELIBERATELY. What a repository asks its own runs at the end
+                    // is its document's business; a caller that could override it could delete the
+                    // sweep this repository's record says it pays for twice over when it is missing.
+                    closing_rules: kind.closing_rules(),
                     north_star: require_str(map, "north_star")?.to_string(),
                     milestone: require_str(map, "milestone")?.to_string(),
                     reference: require_str(map, "reference")?.to_string(),
-                    max_turns,
+                    // ⚠⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and only then
+                    // the template's own number. A debt run ends on its work rather than on a turn
+                    // count, and that decision is the kind's to make — it reaches here as
+                    // `Counted::Never` rather than as a number nobody could write.
+                    max_turns: max_turns
+                        .map(sprag_plugin::Counted::Of)
+                        .or_else(|| kind.turn_budget()),
                     // ⚠⚠ ABSENT STILL MEANS "NEVER, ON THE BUDGET", spelled as the one number that
                     // makes the budget guard unreachable rather than as a magic zero: `judging`
                     // tests `turns >= max_turns` BEFORE `turns_since_reflect >= reflect_every`, so
@@ -689,7 +699,12 @@ impl PluginsExternal {
                     // reflection when a standing instruction fires, which is the correctness edge
                     // (item 148) and not a budget — `screened > screened_carried` is not spelled
                     // here because no caller sets it.
-                    reflect_every: opt_count(map, "reflect_every")?,
+                    // ⚠⚠⚠ AND THE KIND ANSWERS THIS TOO, which it MUST when it declines the budget:
+                    // the template's default for reflection is *the number that makes the reflect
+                    // guard unreachable*, and that number only exists while there is a budget to
+                    // borrow it from. `OuterLoop::brief` refuses the pair rather than guessing.
+                    reflect_every: opt_count(map, "reflect_every")?
+                        .or_else(|| kind.reflect_every()),
                     // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
                     // The rules live in the loop template, so a caller who says nothing about
                     // screening is not overriding it — and the driver echoes the document's own

@@ -282,8 +282,27 @@
       nothing else in this datamodel — so it stays a plain literal, and a
       reader can tell the two kinds apart by whether `priming` writes them.
     -->
+    <!--
+      ⚠⚠⚠ WHAT A REPOSITORY ADDS TO ITS OWN CLOSING QUESTION — EMPTY HERE, AND
+      DECLARED SO A KIND CAN FILL IT.
+
+      The sentence below is true of every loop that finishes: summarise, say what
+      was verified, say what is open. What a PARTICULAR repository wants beyond
+      that is its own — a sweep for work the session turned up, a form to file, a
+      record to update — and every one of those is a decision about a place this
+      file has never been. It belongs in the KIND document, not in a file other
+      repositories copy.
+
+      ⚠⚠ DECLARED-AND-EMPTY RATHER THAN ABSENT, for `may_answer`'s reason: a
+      `<param>` can only fill an id the child declares, and deleting the
+      declaration is the cheap green that makes the split impossible.
+
+      ⚠ It is APPENDED rather than substituted, so a kind cannot quietly drop the
+      account this document asks every ending for.
+    -->
+    <data id="closing_rules" expr="''"/>
     <data id="end_prompt"
-          expr="'Summarise what changed, what was verified, and what is left open.'"/>
+          expr="'Summarise what changed, what was verified, and what is left open.' + closing_rules"/>
     <!--
       ⚠⚠⚠ AND THE SAME REQUEST MADE OF A RUN THAT IS ENDING WITHOUT GETTING
       THERE — `stopping`'s prompt, and the answer to *"an exhausted run has no
@@ -1851,7 +1870,29 @@
       told the two apart by *which key is missing* is the reading register items
       264 and 265 are about.
     -->
-    <transition event="judge" cond="turns &gt;= max_turns" target="stopping">
+    <!--
+      ⚠⚠⚠⚠ THE BUDGET CAN BE DECLINED, AND THE SPELLING IS A WORD BECAUSE TWO
+      PROBES KILLED THE ALTERNATIVES.
+
+      A repository may want a loop that does not end on turns. Three spellings
+      were measured before this one was written (`probe_absent.scxml`):
+        * a magic `0` or `-1` — refused twice already in this tree, and the
+          `ready_timeout_ms` entry argues why: a value's meaning changing under a
+          caller is what earns a wire bump;
+        * DECLARING the id and leaving it empty — the datamodel answers `Null`
+          for that AND for an id nobody declared, so a kind that FORGOT the key
+          would be granted an unbounded run;
+        * a boolean beside the number — an absent boolean and a `false` one are
+          both falsy, so it has the same disease.
+      Only a value that is neither a number nor nil can carry the decision, so
+      the decline is the word `never`.
+
+      ⚠⚠ `turns >= max_turns` is left EXACTLY as it was and guarded in front,
+      rather than rewritten to tolerate a string: comparing a count against a
+      word is where a Lua datamodel stops being readable, and this document has
+      already paid for one guard that compiled and never fired.
+    -->
+    <transition event="judge" cond="max_turns != 'never' &amp;&amp; turns &gt;= max_turns" target="stopping">
       <assign location="stop_reason" expr="'turns'"/>
     </transition>
     <!--

@@ -135,7 +135,7 @@ pub use driver::{
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use outer::{
-    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, INNER_SESSION_ENDS,
+    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Counted, INNER_SESSION_ENDS,
     NotScreenable, Noticed, OuterLoop, Pumped,
 };
 pub use pipe::{Pipe, PipeSpec};

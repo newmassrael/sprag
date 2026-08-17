@@ -161,8 +161,15 @@ impl AiLoop {
         //
         // ⚠⚠ The cost of the move is a briefing round trip on a run that is about to be refused.
         // Nothing has been spoken to at this point: the pane is untouched and no agent exists yet.
-        if inner.turn_budget().is_none_or(|turns| turns < 1) {
-            return Err(NotStarted::Unbuilt(AiLoopState::Exhausted));
+        // ⚠⚠⚠ A DECLINED BUDGET IS NOT A BUDGET OF ZERO, and the two must not meet the same refusal.
+        // *No turns at all* is a run that can only judge itself exhausted before its agent has
+        // answered anything, which is what this refuses. *Never bounded on turns* is an author
+        // saying the run ends some other way — `converged`, a guardrail, a stand-down — and it is a
+        // document to obey. `None` remains the third thing: a budget no reader can make sense of.
+        match inner.turn_budget() {
+            Some(crate::outer::Counted::Never) => {}
+            Some(crate::outer::Counted::Of(turns)) if turns >= 1 => {}
+            _ => return Err(NotStarted::Unbuilt(AiLoopState::Exhausted)),
         }
         // ⚠⚠ ASKED AFTER THE BRIEF, because the brief may REPLACE the rules — so validating first
         // would be validating a document the run is not going to use. A caller's own rules are
@@ -1062,7 +1069,10 @@ mod tests {
             north_star: "the stand-in answers prompts and then says the marker".to_string(),
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
-            max_turns: Some(max_turns),
+            // ⚠ These fixtures measure a BOUNDED run; the declined budget is a kind's decision and
+            // has its own gate rather than being folded in here.
+            closing_rules: None,
+            max_turns: Some(crate::outer::Counted::Of(max_turns)),
             // ⚠ EQUAL, which is what makes `reflecting` unreachable — `judging` tests the turn
             // budget first. `AiLoop::new` refuses anything smaller, and the gate below drives that.
             //
@@ -2432,7 +2442,7 @@ mod tests {
         .expect("⚠⚠⚠ ITEM 312: a caller may decline the budget and let the document decide");
         assert_eq!(
             deferred.inner.turn_budget(),
-            Some(40),
+            Some(crate::outer::Counted::Of(40)),
             "⚠⚠⚠⚠ the declining caller must be bounded by the DOCUMENT's own `expr=\"40\"`. Any \
              other number means the resolution invented one, which is the failure this item is \
              about wearing a different face",
@@ -2450,8 +2460,68 @@ mod tests {
             .expect("a caller who names a budget is obeyed");
         assert_eq!(
             named.inner.turn_budget(),
-            Some(3),
+            Some(crate::outer::Counted::Of(3)),
             "a caller's own number must still win over the document's",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠ **A DECLINED BUDGET REACHES THE DATAMODEL AS A WORD, AND THE RUN STARTS** — the
+    /// resolution half of the kind's *"this loop does not end on turns"*.
+    ///
+    /// # ⚠⚠⚠ What this holds and what it deliberately does not
+    ///
+    /// It holds the RESOLUTION: a brief carrying [`Counted::Never`] leaves the document holding the
+    /// word rather than a number, and `AiLoop::new`'s *at least 1* check — which refuses a budget of
+    /// zero — lets it through. Those are two different refusals that were one before: *no turns at
+    /// all* is a run that can only judge itself exhausted, and *never bounded on turns* is an author
+    /// saying the run ends some other way.
+    ///
+    /// ⚠⚠ **IT DOES NOT HOLD THE DOOR'S WIRING**, and that is measured rather than assumed:
+    /// deleting `.or_else(|| kind.turn_budget())` from `plugins.rs` leaves the entire workspace
+    /// GREEN. What would catch it is an observable of the RESOLVED budget on a run started through
+    /// the wire, and `turn_budget` is crate-private — so the residue is registered rather than
+    /// papered over with a gate that re-implements the line it is checking.
+    ///
+    /// ⚠ The cadence is named here for the reason the kind names one: with no budget there is no
+    /// number for reflection to borrow, and the driver refuses the pair rather than guessing.
+    #[test]
+    fn a_declined_budget_crosses_as_a_word_and_the_run_is_not_refused() {
+        let (workspace, pane) = crate::testing::standin_agent(9);
+        let access = supervised(&workspace);
+        let unbounded = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                max_turns: Some(crate::outer::Counted::Never),
+                reflect_every: Some(5),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect(
+            "⚠⚠⚠⚠ a run whose author declined the turn ceiling must START. Before the decline \
+             existed the budget was refused unless it was a number of at least one, so *never* and \
+             *zero* met the same door — and the second is a run that can only judge itself \
+             exhausted before its agent has answered anything",
+        );
+        assert_eq!(
+            unbounded.inner.turn_budget(),
+            Some(crate::outer::Counted::Never),
+            "⚠⚠⚠⚠ AND THE DOCUMENT MUST HOLD THE WORD, not a number the resolution invented. The \
+             template's guard reads `max_turns != 'never'` before it compares, so a number here \
+             would restore the ceiling the author declined — silently, and only visible as a run \
+             that stopped mid-milestone saying its budget was spent",
+        );
+
+        // ⚠⚠⚠ THE CONTROL: declining the budget must not become declining every budget. Without
+        // this, a resolution that answered `Never` for everybody would satisfy the assertion above.
+        let bounded = AiLoop::new(engine(), pane, &brief_for(7), &standin_spec())
+            .expect("a caller who names a number is still obeyed");
+        assert_eq!(
+            bounded.inner.turn_budget(),
+            Some(crate::outer::Counted::Of(7)),
+            "a named budget must survive the decline being possible",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
