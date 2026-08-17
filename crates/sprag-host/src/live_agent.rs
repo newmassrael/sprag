@@ -4907,6 +4907,91 @@ fn what_makes_a_live_agents_composer_fold_the_prompt_away() {
          fold until that is known.",
         prompt.len(),
     );
+
+    // ── ⚠⚠⚠⚠⚠ AND WHAT A DELIVERY MAKES OF IT — item 421's live death, reproduced on HEAD ──
+    //
+    // Everything above is about what the composer SHOWS. This is what `deliver` does when it is
+    // shown that: a peer whose supervisor cannot publish an account keeps the screen predicate, so
+    // the read-back can never match, the submit is withheld and the run gets a REFUSAL. That is the
+    // control half of item 421's claim — the half that does NOT need a hook-instrumented peer — and
+    // until now it was held only by a `/bin/sh` double printing a placeholder.
+    //
+    // ⚠⚠⚠ **THE PREMISE IS ASSERTED, NOT ASSUMED**: this harness's own detector reports
+    // `Authority::Scraped` (measured, `rule: Some("idle-glyph")`), which is exactly the peer
+    // `submit_lands_when` refuses to escalate for. A run of this against a HOOKED peer would take
+    // the other road and prove the opposite thing, so the reading is recorded beside the answer.
+    let live = Live::start("fold-refused");
+    assert_eq!(
+        Readiness::new(
+            Some(ReadyWhen::Settles(live.agent.clone())),
+            Some(STARTUP_BOUND),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&live.access, live.pane, &run)
+        .expect("the pane must stay readable"),
+        Reached::Yes,
+        "the composer must be up before it is delivered into: {}",
+        live.tail(3),
+    );
+    let authority = live
+        .access
+        .supervision()
+        .and_then(|supervisor| supervisor.pane_agent_state(live.pane))
+        .map(|seen| format!("{:?}", seen.authority));
+    let delivered = deliver(
+        &live.access,
+        &run,
+        live.pane,
+        &prompt,
+        &Delivery {
+            confirm: Some(prompt.chars().take(40).collect()),
+            then_press: vec![KeyStroke::named("Enter")],
+            // What a peer whose verdict is SCRAPED gets — see `OuterLoop::submit_lands_when`.
+            submitted_when: SubmittedWhen::Stirs {
+                within: sprag_plugin::DEFAULT_SUBMIT_GRACE,
+            },
+            // ⚠⚠⚠⚠⚠ **ONE, AND THE FIRST RUN OF THIS ARM IS WHY** — measured 2026-08-18. With the
+            // default three it came back `Confirmed { attempts: 2, written: 2477 }` = 2 × 1,238 + 1,
+            // and the pane's final screen carried the WHOLE prompt with the agent already working.
+            // **The peer expands its own fold when the identical paste arrives again**, and it says
+            // so on the screen: the placeholder is followed by *"paste again to expand"*. So
+            // `deliver`'s retry does not merely re-send — on this peer it UN-FOLDS, which is the
+            // complete explanation of run 13's `2 × 1,314 + 1` and of why that run survived on a
+            // daemon without item 421's fix at all.
+            //
+            // ⚠⚠⚠ This arm is about what a delivery sees of a FOLDED screen, so it must not be
+            // allowed to heal it first. One attempt is also exactly the shape the register quotes
+            // from the live deaths — *"the live `Unconfirmed { attempts: 1 }` verbatim"*.
+            attempts: 1,
+            ..Delivery::new()
+        },
+    )
+    .expect("the pane takes the bytes");
+    let refused_screen = live.screen();
+    step(
+        began,
+        &format!("fold-refused: authority {authority:?} -> {delivered:?}"),
+    );
+    println!(
+        "\n== what a delivery makes of a folded paste, live ==\n  authority: {authority:?}\n  \
+         answer   : {delivered:?}\n{}\n",
+        live.tail(6),
+    );
+    assert!(
+        refused_screen.contains(FOLD),
+        "⚠ THE PREMISE AGAIN: this arm is only about a folded paste if the composer folded it. \
+         Screen: {}",
+        live.tail(6),
+    );
+    assert!(
+        matches!(delivered, Delivered::Unconfirmed { attempts: 1, .. })
+            && !delivered.is_confirmed(),
+        "⚠⚠⚠⚠⚠ ITEM 421, LIVE ON HEAD: a real composer folded the prompt away and this peer's \
+         supervisor publishes no account, so the screen is all there is and it cannot carry the \
+         text. The delivery MUST refuse rather than press over it — that refusal is what ended \
+         three live runs at 0 iterations, and it is correct here. Got {delivered:?}",
+    );
 }
 
 /// [`one_turn`] against a pane that is not [`Live::pane`] — what a replacement needs.
