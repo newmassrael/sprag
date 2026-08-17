@@ -714,6 +714,8 @@ mod tests {
                         source: "test".to_string(),
                     },
                     seq: u64::from(prompted) + 1,
+                    asked: None,
+                    transcript: None,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {
                             asked: vec!["Do you want to edit lib.rs?".to_string()],
@@ -904,6 +906,8 @@ mod tests {
                     },
                     seq: if asking { 2 } else { 1 },
                     asking: None,
+                    asked: None,
+                    transcript: None,
                 })
             })
         };

@@ -810,6 +810,8 @@ impl InlineGrammar {
         ArgGrammar::open(AGENT_NAME_KEY, "string").optional(),
         ArgGrammar::open(AGENT_SEQ_KEY, "int").optional(),
         ArgGrammar::open(AGENT_BIND_KEY, "bool").optional(),
+        ArgGrammar::open(AGENT_ASKED_KEY, "string").optional(),
+        ArgGrammar::open(AGENT_TRANSCRIPT_KEY, "string").optional(),
     ])];
 }
 
@@ -1641,6 +1643,24 @@ pub const AGENT_NAME_KEY: &str = "name";
 pub const AGENT_SEQ_KEY: &str = "seq";
 /// [`REPORT_AGENT_ACTION`]'s key asking the daemon to bind the report to the pane's process group.
 pub const AGENT_BIND_KEY: &str = "bind";
+/// [`REPORT_AGENT_ACTION`]'s key carrying **THE PROMPT THE AGENT SAYS IT WAS ASKED**.
+///
+/// ⚠⚠⚠⚠ The one fact a terminal cannot supply. Delivery has been confirmed by hunting a fragment of
+/// the typed text on the pane's SCREEN, and each failure of that oracle bought another predicate —
+/// 40 chars became 40 COLUMNS, the head became the TAIL, an exact match became a whitespace-
+/// insensitive one — while the gate at `a_prompt_typed_onto_a_dirty_composer…` already recorded
+/// that tightening it is RULED OUT and that what is needed is *"evidence from the PROGRAM rather
+/// than the screen"*. This is that evidence: the agent states what it received, so a composer that
+/// appended the delivery to somebody else's text reports a prompt that is not the one sent — which
+/// no screen predicate can distinguish, because both are the same pixels.
+pub const AGENT_ASKED_KEY: &str = "asked";
+/// [`REPORT_AGENT_ACTION`]'s key carrying **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT**.
+///
+/// ⚠⚠⚠ Stated rather than resolved. The spend reader finds a transcript by deriving a path from a
+/// session id, and was measured answering `0` for a session whose 3.4 MB transcript existed and
+/// held the very number it reports (register item 431) — while the agent was naming the file on
+/// every turn.
+pub const AGENT_TRANSCRIPT_KEY: &str = "transcript";
 
 /// The key carrying WHAT A BLOCKED PEER IS ASKING — on a pane's `agent` object and on a run's
 /// outcome alike.
@@ -7534,7 +7554,10 @@ mod tests {
             // word is produced by `orchestrator` too, which every version of this wire can send.
             // That plugin is the one the 43-hour wedge's preserved stack showed, so the word is not
             // merely reachable by an old client, it is the one an old client is likeliest to meet.
-            36,
+            // ⚠ 37: re-stamped with every ANSWER vocabulary unchanged. `report_agent` gained two
+            // ARGUMENTS (`asked`, `transcript`) and still answers `{accepted, changed}` — what a
+            // caller may SAY grew, and what it is told did not.
+            37,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7862,7 +7885,11 @@ mod tests {
             // ⚠ R401: re-stamped with every published REQUEST vocabulary unchanged, for R394's
             // reason exactly. An eighth `verdict` word (`peer_gone`) moved an ANSWER's value
             // space, and a verdict is not a word a caller may send.
-            36,
+            // ⚠ 37: re-stamped with every published REQUEST vocabulary unchanged. The two arguments
+            // `report_agent` gained are OPEN strings — a prompt and a path — so no closed word list
+            // moved; a vocabulary pin cannot see them, which is why the shape pin is the one that
+            // does.
+            37,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -8112,7 +8139,10 @@ mod tests {
             // ⚠ R401: re-stamped with every argument SHAPE unchanged, for R394's reason. The round
             // added a WORD to what a stopped run answers with and a REFUSAL TO WRITE behind it;
             // neither is an argument, and a caller sends nothing to receive either.
-            36,
+            // ⚠⚠ 37: re-stamped BECAUSE AN ARGUMENT SHAPE MOVED — the first of these four re-stamps
+            // that this pin is the SUBJECT of rather than a bystander to. `report_agent` gained
+            // `asked` and `transcript`, both optional strings, and the list above carries them.
+            37,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -8143,7 +8173,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_pane[object]:pane:int name:string?",
                 "sprag_workspace/sprag_mux/rename_session[object]:name:string",
                 "sprag_workspace/sprag_mux/rename_window[object]:window:string? name:string",
-                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool?",
+                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? transcript:string?",
                 "sprag_workspace/sprag_mux/resize[object]:id:int cols:int rows:int cell_width:int? cell_height:int?",
                 "sprag_workspace/sprag_mux/resize_pane[object]:dir:string pane:int? cells:int?",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",
@@ -8656,7 +8686,10 @@ mod tests {
         // a plugin now REFUSES to write at a pane whose child has exited, which changes what an
         // unchanged request does. That is why `WIRE_PROTOCOL`'s own entry for 36 is the place a
         // reader is sent, and not this list.
-        36,
+        // ⚠ 37: re-stamped with the SURFACE unchanged — no address was added or removed. What moved
+        // is inside a form (`report_agent`'s two new arguments), which this pin does not walk; the
+        // shape pin is the one that saw it.
+        37,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

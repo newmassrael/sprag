@@ -1809,6 +1809,8 @@ mod tests {
                     },
                     seq: 1,
                     asking: None,
+                    asked: None,
+                    transcript: None,
                 })
             })
         };
@@ -2752,6 +2754,8 @@ mod tests {
                     },
                     seq: 1,
                     asking: None,
+                    asked: None,
+                    transcript: None,
                 })
             }
         }
@@ -3450,6 +3454,8 @@ mod tests {
                 },
                 seq: 3,
                 asking: None,
+                asked: None,
+                transcript: None,
             })
         }) as crate::access::AgentStateSource;
         let access =

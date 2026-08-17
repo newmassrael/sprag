@@ -256,6 +256,8 @@ fn a_reported_pane_costs_no_evaluation() {
         source: "hook".to_owned(),
         seq: None,
         owner: None,
+        asked: None,
+        transcript: None,
     });
 
     // The screen moves, so the quiescence gate is not what is being measured here.

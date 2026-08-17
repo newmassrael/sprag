@@ -353,7 +353,12 @@ pub(crate) mod grammar {
         // ⚠⚠ R401 is the FOURTH, one edit again, and an ANSWER again: an eighth `verdict` word
         // (`peer_gone`), for a run whose peer's program has exited. Four for four, and no window
         // publishes, serves or reads a verdict either.
-        36,
+        // ⚠⚠ THE FIFTH, one edit again, and an ARGUMENT again: `asked` and `transcript` on the
+        // daemon's `report_agent` form, so an agent's own hook can state what it was asked and
+        // where it is writing. **A window neither reports an agent nor reads one's report** — it
+        // draws the verdict the daemon publishes — so this pin moves for a fifth cause it takes no
+        // part in. Five for five, which is the rate the pin's own argument was built from.
+        37,
         &[
             (
                 "the command palette",

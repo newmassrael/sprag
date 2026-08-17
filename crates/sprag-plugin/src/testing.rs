@@ -489,6 +489,8 @@ pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
                     },
                     seq: 1,
                     asking,
+                    asked: None,
+                    transcript: None,
                 })
             })
         }) as AgentStateSource
@@ -1942,6 +1944,8 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     },
                     seq,
                     asking,
+                    asked: None,
+                    transcript: None,
                 })
             })
         }) as AgentStateSource
@@ -2007,6 +2011,8 @@ impl DialogBetweenTheReads {
                     // *this peer has moved since the turn began* — is satisfied by the same read
                     // that reports the dialog, which is what a working agent that stops to ask is.
                     seq: peer_seq(&rows) + u64::from(blocked),
+                    asked: None,
+                    transcript: None,
                     // ⚠ `None` even while blocked: what this fixture stages is the ARM, and the
                     // arm's own doc says the question it carries is DROPPED — the barrier reads the
                     // pane again and its reading is the one an answer is decided from. A question
@@ -2071,6 +2077,8 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                 },
                 seq,
                 asking: None,
+                asked: None,
+                transcript: None,
             })
         })
     };

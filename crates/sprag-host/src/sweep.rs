@@ -408,6 +408,8 @@ mod tests {
                 source: "hook".to_owned(),
                 seq: None,
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             sprag_detect::Hysteresis::default,
         );
@@ -485,6 +487,8 @@ mod tests {
                 source: "hook:claude".to_owned(),
                 seq: None,
                 owner: Some(u64::from(owner)),
+                asked: None,
+                transcript: None,
             },
             sprag_detect::Hysteresis::default,
         );
@@ -539,6 +543,8 @@ mod tests {
                 source: "cli".to_owned(),
                 seq: None,
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             sprag_detect::Hysteresis::default,
         );

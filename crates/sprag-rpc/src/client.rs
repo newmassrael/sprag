@@ -977,7 +977,38 @@ impl ScopeAsk {
 ///   without a writer already parked for ever, so no client of any version had an answer here to
 ///   lose. No key, argument, form or answer word moved; one boolean gained a reason. See
 ///   `sprag_terminal::pane_pty`'s `DeviceInput`, where the trade is written out.
-pub const WIRE_PROTOCOL: u32 = 36;
+/// * **37 — AN AGENT REPORTS WHAT IT WAS ASKED, SO A DELIVERY STOPS BEING GUESSED FROM PIXELS.**
+///   Two optional arguments on `report_agent`: `asked`, the prompt the agent states it received,
+///   and `transcript`, the file it states it is writing.
+///
+///   ⚠⚠⚠ **AN ADDED REQUEST ARGUMENT, WHICH IS ONE OF THIS WIRE'S NAMED BUMP CAUSES AND IS
+///   MEASURED RATHER THAN ARGUED** — `an_argument_this_surface_does_not_declare_is_swallowed_rather
+///   _than_refused` sends a key no version declared and the call **succeeds**. So a reporter that
+///   names `asked` to a daemon predating this key is answered `accepted` while the fact is dropped,
+///   and a delivery waiting on that evidence would wait for something the daemon threw away. Same
+///   shape as 34 (`done_when`) and for the same reason.
+///
+///   ⚠⚠⚠⚠ **WHY IT IS WORTH A NUMBER: THE SCREEN CANNOT ANSWER THE QUESTION AND NEVER COULD.**
+///   Whether a prompt arrived has been decided by hunting a fragment of the typed text on the
+///   pane, and each way that failed bought another predicate — 40 characters became 40 COLUMNS
+///   when a Korean prompt asked for twice the pane's width; the HEAD became the TAIL when a
+///   composer was found to scroll it away; an exact match became a whitespace-insensitive one when
+///   the box was found to re-wrap what it was given. Three live runs died at that predicate in one
+///   evening, the last of them on a prompt the caller could not shorten. **The gate at
+///   `a_prompt_typed_onto_a_dirty_composer_is_confirmed_and_submitted_anyway` had already recorded
+///   that tightening it is ruled out** and that what is needed is *"evidence from the PROGRAM
+///   rather than the screen"*. The program was already sending it: `UserPromptSubmit`'s payload
+///   carries `prompt` and `transcript_path`, captured from a real agent, and sprag reduced the
+///   whole message to the single word *working* and dropped the rest.
+///
+///   ⚠⚠ **NO ANSWER WORD MOVED.** `report_agent` answers `{accepted, changed}` as it always has;
+///   what a caller may SAY grew, and what it is told did not.
+///
+///   ⚠ **AND THE BUMP HAS A COST THIS REPOSITORY HAS PAID BEFORE (register item 344)**: the hook
+///   binary is hardlinked to `target/debug/sprag`, so building this silences every live agent's
+///   reporter until the daemon is restarted — a hook refused at `client/hello` leaves the last
+///   `working` true for ever. Build and restart are one act, not two.
+pub const WIRE_PROTOCOL: u32 = 37;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

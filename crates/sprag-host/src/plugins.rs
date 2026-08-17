@@ -944,6 +944,10 @@ pub(crate) fn agent_state_source(
                 // same instant, and having two sites derive it is how the run surface and the pane
                 // surface would come to disagree about what one pane is asking (R367 moved it).
                 asking: facts.asking,
+                // The agent's own account, carried through untouched — see `AgentObservation::asked`
+                // for what a supervisor can do with it that no screen read can.
+                asked: facts.asked,
+                transcript: facts.transcript,
                 state,
                 agent: facts.agent,
                 authority,
@@ -2913,6 +2917,8 @@ mod tests {
                 source: "claude-hook".to_owned(),
                 seq: Some(1),
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             instant_window,
         );
@@ -2964,6 +2970,8 @@ mod tests {
                 source: "claude-hook".to_owned(),
                 seq: Some(1),
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             instant_window,
         );
@@ -3010,6 +3018,8 @@ mod tests {
             source: "claude-hook".to_owned(),
             seq: Some(seq),
             owner: None,
+            asked: None,
+            transcript: None,
         };
         agents.report(id, hook(AgentState::Idle, 1), instant_window);
         let before = read(id).expect("an agent");
@@ -3128,6 +3138,8 @@ mod tests {
             source: "claude-hook".to_owned(),
             seq: Some(seq),
             owner: None,
+            asked: None,
+            transcript: None,
         };
 
         wait_for_screen(&access, id, "GO");

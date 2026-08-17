@@ -1269,6 +1269,18 @@ impl WorkspaceExternal {
             None | Some(Value::Null) => false,
             Some(value) => value.as_bool().ok_or(InvokeError::TypeMismatch)?,
         };
+        // ⚠⚠⚠ WHAT THE AGENT STATED, refused when malformed rather than dropped — the rule the
+        // `name` comment above spells out, applied to the two keys added with it. Absent and `null`
+        // are the same thing here and mean *this event said nothing about a prompt*, which is true
+        // of every event but the one that opens a turn.
+        let asked = match map.get(crate::wire::AGENT_ASKED_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
+        let transcript = match map.get(crate::wire::AGENT_TRANSCRIPT_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
         let Some(agents) = self.agents.as_ref() else {
             // No detector on this host (a GUI's in-process host, a unit test): there is no memory to
             // report INTO, and inventing one here would publish a verdict the pane list cannot read.
@@ -1286,6 +1298,8 @@ impl WorkspaceExternal {
                 source: source.to_owned(),
                 seq,
                 owner: owner.flatten().map(u64::from),
+                asked,
+                transcript,
             },
             crate::config::agent_settle,
         );
@@ -8884,7 +8898,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            30,
+            32,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
              verb, a message's text and audience, a report's source and name, and a dropped path",
@@ -8902,7 +8916,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            62,
+            64,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -8916,7 +8930,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            102,
+            104,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
              per form rather than per verb: 31 across the seven ask-backed verbs and 64 across the \
              twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \

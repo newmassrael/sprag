@@ -229,6 +229,18 @@ struct Reported {
     /// It is on the report rather than on the tracker because it belongs to ONE report — the next
     /// report is a new claim by a possibly new speaker, and it brings its own.
     owner: Option<u64>,
+    /// **THE LAST PROMPT THIS PANE'S AGENT SAID IT WAS ASKED**, and `None` until one has said so.
+    ///
+    /// ⚠⚠⚠ CARRIED FORWARD ACROSS REPORTS THAT SAY NOTHING ABOUT IT, which is the opposite of every
+    /// other field here and is the whole reason it is a field rather than a copy of the report. Only
+    /// the event that OPENS a turn carries a prompt; the events that end one carry none. A field
+    /// replaced wholesale would therefore be erased by the very next report — `Stop` arrives seconds
+    /// after `UserPromptSubmit` — and the fact would be gone before any reader could use it.
+    asked: Option<String>,
+    /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, carried forward for [`asked`](Self::asked)'s
+    /// reason exactly: a transcript path is stated on the turn's first event and on no other, while
+    /// the file goes on existing for the whole session.
+    transcript: Option<String>,
 }
 
 /// What a reporter said about a pane, as one message.
@@ -253,6 +265,24 @@ pub struct Report {
     /// An opaque token for the thing whose existence keeps this report standing, or `None` for one
     /// that stands until it is released. The tracker stores it and never interprets it.
     pub owner: Option<u64>,
+    /// **THE PROMPT THE AGENT SAYS IT WAS ASKED**, on the one event that opens a turn, and `None`
+    /// on every other — which is most of them.
+    ///
+    /// ⚠⚠⚠⚠ It is an ACCOUNT, not a claim this crate evaluates. Whether it matches what somebody
+    /// typed is the caller's question, and it is a question no terminal can answer: a screen shows
+    /// the same pixels for text a run delivered and text a composer already held. **This is the
+    /// only place the two can be told apart**, which is why it travels with the state rather than
+    /// being inferred beside it.
+    ///
+    /// ⚠ Kept as the LAST one reported rather than a history: what a delivery asks is *did my
+    /// question arrive*, and the answer to that is about the most recent turn.
+    pub asked: Option<String>,
+    /// **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT.**
+    ///
+    /// Stated rather than resolved from an id — see the wire key's own doc for what resolving it
+    /// has cost. `None` where the reporter did not say, which is not a fault: an agent that reports
+    /// its turn while writing no transcript is a working agent.
+    pub transcript: Option<String>,
 }
 
 /// What a [`report`](Tracker::report) did.
@@ -428,6 +458,8 @@ impl Tracker {
             source,
             seq,
             owner,
+            asked,
+            transcript,
         } = report;
         if let Some(held) = &self.reported
             && held.source == source
@@ -458,7 +490,20 @@ impl Tracker {
         };
         // Kept even when the state has not moved: the new `seq` is what the NEXT report is judged
         // against, so a duplicate still advances the reporter's clock.
-        self.reported = Some(Reported { source, seq, owner });
+        // ⚠⚠⚠ THE TWO STATED FACTS ARE CARRIED FORWARD, NOT REPLACED — see `Reported::asked`. Only
+        // the event that opens a turn states them, so taking the incoming value unconditionally
+        // would erase the prompt on the very next report, which arrives when the turn ENDS. `or`
+        // rather than `unwrap_or`: a report that states one keeps it, a report that states nothing
+        // leaves what stands.
+        let carried = self.reported.take();
+        self.reported = Some(Reported {
+            source,
+            seq,
+            owner,
+            asked: asked.or_else(|| carried.as_ref().and_then(|held| held.asked.clone())),
+            transcript: transcript
+                .or_else(|| carried.as_ref().and_then(|held| held.transcript.clone())),
+        });
         self.owes_look = false;
         let changed = verdict != self.published;
         if changed {
@@ -514,6 +559,26 @@ impl Tracker {
     #[must_use]
     pub fn reported_owner(&self) -> Option<u64> {
         self.reported.as_ref().and_then(|held| held.owner)
+    }
+
+    /// **THE LAST PROMPT THIS PANE'S AGENT SAID IT WAS ASKED**, or `None` if none ever has.
+    ///
+    /// ⚠⚠⚠ The answer to *did my question arrive*, from the only party that can give one. A screen
+    /// shows the same pixels for text a run delivered and text a composer already held, so no
+    /// reading of a terminal can tell them apart; this can.
+    #[must_use]
+    pub fn reported_asked(&self) -> Option<&str> {
+        self.reported
+            .as_ref()
+            .and_then(|held| held.asked.as_deref())
+    }
+
+    /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, or `None` if none ever has.
+    #[must_use]
+    pub fn reported_transcript(&self) -> Option<&str> {
+        self.reported
+            .as_ref()
+            .and_then(|held| held.transcript.as_deref())
     }
 
     /// Whether this pane owes a fresh look that no screen event will ask for.
@@ -1250,6 +1315,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: Some(1),
             owner: None,
+            asked: None,
+            transcript: None,
         });
         assert_eq!(
             outcome,
@@ -1300,6 +1367,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: Some(1),
             owner: None,
+            asked: None,
+            transcript: None,
         });
         assert_eq!(
             tracker.verdict().agent.as_deref(),
@@ -1364,6 +1433,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: None,
             owner: None,
+            asked: None,
+            transcript: None,
         });
         assert!(!tracker.owes_look(), "a report is its own answer");
 
@@ -1396,7 +1467,9 @@ mod tests {
                     agent: None,
                     source: "hook".to_owned(),
                     seq: Some(5),
-                    owner: None
+                    owner: None,
+                    asked: None,
+                    transcript: None,
                 })
                 .accepted,
         );
@@ -1406,7 +1479,9 @@ mod tests {
                 agent: None,
                 source: "hook".to_owned(),
                 seq: Some(5),
-                owner: None
+                owner: None,
+                asked: None,
+                transcript: None,
             }),
             ReportOutcome {
                 accepted: false,
@@ -1425,7 +1500,9 @@ mod tests {
                 agent: None,
                 source: "hook".to_owned(),
                 seq: Some(4),
-                owner: None
+                owner: None,
+                asked: None,
+                transcript: None,
             }),
             ReportOutcome {
                 accepted: false,
@@ -1440,7 +1517,9 @@ mod tests {
                     agent: None,
                     source: "hook".to_owned(),
                     seq: Some(6),
-                    owner: None
+                    owner: None,
+                    asked: None,
+                    transcript: None,
                 })
                 .accepted,
             "forwards is heard",
@@ -1455,7 +1534,9 @@ mod tests {
                     agent: None,
                     source: "other".to_owned(),
                     seq: Some(1),
-                    owner: None
+                    owner: None,
+                    asked: None,
+                    transcript: None,
                 })
                 .accepted,
             "a new speaker is not judged by the old one's clock",
@@ -1469,7 +1550,9 @@ mod tests {
                     agent: None,
                     source: "cli".to_owned(),
                     seq: None,
-                    owner: None
+                    owner: None,
+                    asked: None,
+                    transcript: None,
                 })
                 .accepted,
         );
@@ -1480,7 +1563,9 @@ mod tests {
                     agent: None,
                     source: "cli".to_owned(),
                     seq: None,
-                    owner: None
+                    owner: None,
+                    asked: None,
+                    transcript: None,
                 })
                 .accepted,
             "with nothing to be stale against, nothing is refused",
@@ -1498,6 +1583,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: Some(1),
             owner: None,
+            asked: None,
+            transcript: None,
         });
         let published = tracker.seq();
 
@@ -1507,6 +1594,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: Some(2),
             owner: None,
+            asked: None,
+            transcript: None,
         });
         assert_eq!(
             outcome,
@@ -1528,7 +1617,9 @@ mod tests {
                     agent: None,
                     source: "hook".to_owned(),
                     seq: Some(2),
-                    owner: None
+                    owner: None,
+                    asked: None,
+                    transcript: None,
                 })
                 .accepted,
             "a duplicate still advances the source's sequence",
@@ -1554,6 +1645,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: None,
             owner: Some(4242),
+            asked: None,
+            transcript: None,
         });
         assert_eq!(tracker.reported_owner(), Some(4242));
 
@@ -1564,6 +1657,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: None,
             owner: Some(99),
+            asked: None,
+            transcript: None,
         });
         assert_eq!(tracker.reported_owner(), Some(99));
 
@@ -1575,6 +1670,8 @@ mod tests {
             source: "cli".to_owned(),
             seq: None,
             owner: None,
+            asked: None,
+            transcript: None,
         });
         assert_eq!(tracker.reported_owner(), None);
         assert_eq!(
@@ -1589,6 +1686,8 @@ mod tests {
             source: "hook".to_owned(),
             seq: None,
             owner: Some(7),
+            asked: None,
+            transcript: None,
         });
         assert!(tracker.release_report(), "a report was in force");
         assert_eq!(

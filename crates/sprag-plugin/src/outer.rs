@@ -4198,7 +4198,7 @@ impl OuterLoop {
                 // A prompt longer than the pane is wide arrives in pieces — see the constant.
                 confirm: confirmable(text),
                 then_press: vec![crate::access::KeyStroke::named("Enter")],
-                submitted_when: self.submit_lands_when(),
+                submitted_when: self.submit_lands_when(panes),
                 ..Delivery::new()
             },
         )?;
@@ -4283,8 +4283,30 @@ impl OuterLoop {
     /// now refuses its first delivery instead of waiting out every turn's bound in silence. That
     /// run was already broken — nothing could ever end one of its turns — and a named refusal on
     /// the first prompt is the better half of the same fact.
-    const fn submit_lands_when(&self) -> SubmittedWhen {
-        submit_lands_when(self.done_when)
+    ///
+    /// ⚠⚠⚠⚠ **AND IT ASKS THE STRONGER QUESTION OF A PEER THAT CAN ANSWER IT** — register item 421.
+    /// Where the pane's verdict comes from the AGENT'S OWN REPORT rather than from this build
+    /// reading its screen, [`SubmittedWhen::Took`] compares the question the agent says it received
+    /// against the one that was sent. That is the only evidence that separates *my prompt arrived*
+    /// from *something that contains my prompt arrived* — a composer holding somebody else's text
+    /// takes this delivery onto the end of it, and no screen predicate can tell the two apart
+    /// (item 223's gate, which records that tightening the predicate is ruled out).
+    ///
+    /// ⚠ **A SCRAPED PANE KEEPS THE OLD CONTRACT, deliberately.** An agent with no hooks installed
+    /// reports no prompt ever, so `Took` could only ever go unsatisfied there — asking it would
+    /// refuse every delivery to a peer this build supervises by eye. The choice is made on the
+    /// authority the supervisor publishes, so it is a fact about the peer rather than a hope.
+    fn submit_lands_when(&self, panes: &dyn PaneAccess) -> SubmittedWhen {
+        let reported = panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane))
+            .is_some_and(|seen| {
+                matches!(seen.authority, crate::access::Authority::Reported { .. })
+            });
+        match (submit_lands_when(self.done_when), reported) {
+            (SubmittedWhen::Stirs { within }, true) => SubmittedWhen::Took { within },
+            (weaker, _) => weaker,
+        }
     }
 
     /// **WHAT THE INNER SESSION HAS BEEN CHARGED TO READ**, as of its most recent billed request —
@@ -4858,6 +4880,11 @@ mod tests {
         /// What the box can show at once. Small enough that `PROMPT`'s head falls off it, which is
         /// the whole staging — a composer that showed everything would not be this hazard.
         const KEEPS: usize = 60;
+        /// Where the box breaks a line of its own accord. ⚠ Chosen SMALLER than the needle so the
+        /// needle is guaranteed to straddle a break: a wrap the needle happens to fit inside would
+        /// make this gate pass for the wrong reason, which is exactly how the first fix looked
+        /// right in the suite and failed on the live loop.
+        const WRAPS_AT: usize = 25;
 
         /// A composer that keeps only the END of what it has been given.
         ///
@@ -4883,7 +4910,31 @@ mod tests {
                     .into_iter()
                     .rev()
                     .collect();
-                Some(shown)
+                // ⚠⚠⚠⚠ AND IT RE-WRAPS WHAT IT SHOWS, which is the half a scroll-only double
+                // cannot model and the half that beat the first fix. A real box breaks the text
+                // onto lines of ITS choosing and indents them, so the screen carries newlines the
+                // typed text never had — logical lines the CHILD wrote, which `pane_collapsed`
+                // must not rejoin because the terminal did not make them. Measured on run 11:
+                // `…make the last line of your\n  reply exactly: MILESTONE REACHED`.
+                // ⚠ AT WORD BOUNDARIES, which is what was measured — `…of your\n  reply exactly:`.
+                // A double breaking mid-word was tried first and it is HARSHER than the peer: it
+                // puts a space inside a word, which no squeeze can undo. That case is real for a
+                // long unbroken token (a path) and is named as residue rather than modelled here,
+                // because a fixture crueller than the product proves nothing about the product.
+                let mut wrapped = String::new();
+                let mut column = 0_usize;
+                for word in shown.split(' ') {
+                    if column > 0 && column + 1 + word.chars().count() > WRAPS_AT {
+                        wrapped.push_str("\n  ");
+                        column = 2;
+                    } else if column > 0 {
+                        wrapped.push(' ');
+                        column += 1;
+                    }
+                    wrapped.push_str(word);
+                    column += word.chars().count();
+                }
+                Some(wrapped)
             }
             fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
                 None
@@ -5301,6 +5352,8 @@ mod tests {
                     },
                     seq: *seq,
                     asking: None,
+                    asked: None,
+                    transcript: None,
                 })
             });
             let access = WorkspacePaneAccess::new(Arc::clone(&workspace))

@@ -263,6 +263,47 @@ pub enum SubmittedWhen {
         /// [`Delivered::Unsubmitted`].
         within: Duration,
     },
+    /// **THE AGENT HAS NAMED THE QUESTION IT RECEIVED, AND IT IS THIS ONE** — its own submit hook
+    /// reported the prompt, within `within`.
+    ///
+    /// # ⚠⚠⚠⚠ The strongest of the four, and the only one that is about the TEXT
+    ///
+    /// The three above answer *did something happen after the keystroke*. This answers *was my
+    /// question the one that was asked* — which is the question a delivery has always been trying
+    /// to answer and could not, because everything else it could reach is a rendering.
+    ///
+    /// **A SCREEN CANNOT SETTLE IT, AND THAT IS MEASURED RATHER THAN ARGUED.** Text a run delivered
+    /// and text a composer was already holding are the same pixels, so the read-back's `contains`
+    /// says *something like mine is on the pane*: the gate at
+    /// `a_prompt_typed_onto_a_dirty_composer_is_confirmed_and_submitted_anyway` drives exactly that
+    /// and records that tightening the predicate is RULED OUT — `ends_with` was tried, it did not
+    /// fix the case and it reddened a neighbour whose whole existence is that a needle may be a
+    /// fragment. Its conclusion names this: *"evidence from the PROGRAM rather than the screen"*.
+    ///
+    /// ⚠⚠⚠ **AND THE SCREEN ORACLE HAS BEEN PATCHED THREE TIMES WITHOUT BECOMING SOUND** — 40
+    /// characters became 40 COLUMNS when a Korean prompt asked for twice the pane's width; the HEAD
+    /// became the TAIL when a composer was found to scroll it away; an exact match became a
+    /// whitespace-insensitive one when the box was found to re-wrap what it was given. Three live
+    /// runs died at that predicate in one evening, the last on a prompt no caller could shorten.
+    ///
+    /// # ⚠⚠ Both halves are required, and each rules out a different false yes
+    ///
+    /// * **The reported prompt must match this delivery's text**, whitespace aside — so a composer
+    ///   that appended this text to somebody else's reports a longer question and is refused.
+    /// * **The observation must have MOVED since the submit went in** ([`Stirs`](Self::Stirs)'
+    ///   `seq` discipline) — so a pane still holding the report of an IDENTICAL earlier turn cannot
+    ///   satisfy it. A loop repeating one prompt is exactly the population that would.
+    ///
+    /// ⚠ Never satisfied where nothing can answer: a host with no supervisor, a pane no manifest
+    /// claims, or an agent with no hooks installed — which reports no prompt at all. That is
+    /// [`Stirs`](Self::Stirs)' rule and [`ReadyWhen::Runs`](crate::readiness::ReadyWhen::Runs)': a
+    /// contract that cannot be answered says so rather than being read as a yes, and the caller
+    /// falls back to a weaker contract deliberately rather than by accident.
+    Took {
+        /// How long to wait for that, after which the delivery answers
+        /// [`Delivered::Unsubmitted`].
+        within: Duration,
+    },
 }
 
 impl SubmittedWhen {
@@ -271,7 +312,9 @@ impl SubmittedWhen {
     pub const fn within(self) -> Option<Duration> {
         match self {
             Self::Unchecked => None,
-            Self::Repaints { within } | Self::Stirs { within } => Some(within),
+            Self::Repaints { within } | Self::Stirs { within } | Self::Took { within } => {
+                Some(within)
+            }
         }
     }
 
@@ -291,6 +334,10 @@ impl SubmittedWhen {
             Self::Unchecked => "was not asked to show anything",
             Self::Repaints { .. } => "did not repaint",
             Self::Stirs { .. } => "did not stir",
+            // ⚠ It names the QUESTION rather than the pane, because that is what went unanswered:
+            // the peer may well have stirred, and what did not arrive is any account of having been
+            // asked THIS. A caller reading *"did not stir"* here would go looking at the wrong end.
+            Self::Took { .. } => "never reported the question it was asked",
         }
     }
 }
@@ -620,7 +667,7 @@ pub fn deliver(
                     // end. Armed after the keystroke, the change it looks for is one it may already
                     // have missed, and a peer quick enough to answer would be reported as having
                     // ignored the submit.
-                    let witness = Submission::arm(panes, pane, spec.submitted_when);
+                    let witness = Submission::arm(panes, pane, spec.submitted_when, text);
                     written += panes.inject(pane, &spec.then_press)?.bytes();
                     match witness.await_landing(panes, run, pane) {
                         Seen::No => {
@@ -719,6 +766,15 @@ enum Seen {
 /// hole the deadline was added to close. So EVERY wait in this crate asks
 /// [`RunContext::stopped`](crate::run::RunContext::stopped) — this one, `poll_until`, and the
 /// submit's own ([`Submission::await_landing`]) — which is the one definition of *the run is over*.
+/// `text` with every run of whitespace flattened to one space, and the ends trimmed.
+///
+/// **The one place a needle and a screen are made comparable** — see the hazard at its only call
+/// site. A peer that re-wraps what it was typed produces the same words with different breaks, and
+/// a comparison that reads a newline as content asks the peer not to have a text box.
+fn squeezed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn await_text(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -735,7 +791,26 @@ fn await_text(
         // An unknown pane can never show anything, and saying so at once beats spending the whole
         // grace on it — the caller's next `inject` will report `UnknownPane` properly.
         match panes.pane_collapsed(pane) {
-            Some(text) if text.contains(needle) && Some(text.as_str()) != before => {
+            // ⚠⚠⚠⚠ THE MATCH IS WHITESPACE-INSENSITIVE AND THE CHANGE TEST IS NOT — item 421, and
+            // the two halves are deliberately different questions. *Did this delivery move the
+            // screen* is about the screen exactly as it is; *is my text on it* must survive the
+            // peer RE-FLOWING it, because an agent's prompt box re-wraps what it was given onto
+            // lines of its own choosing and indents them. Those are logical lines the CHILD wrote,
+            // so `pane_collapsed` cannot rejoin them — it undoes the TERMINAL's wrapping, which is
+            // a different thing and the only thing it can know about.
+            //
+            // ⚠⚠⚠ MEASURED, run 11: the pane was holding the prompt three times over and the tail
+            // was plainly on screen as `…make the last line of your\n  reply exactly: MILESTONE
+            // REACHED`. No contiguous run of the delivered text existed anywhere on that screen, so
+            // NO choice of needle — head, tail or middle — could have matched it.
+            //
+            // ⚠ What this gives up, stated: two texts differing only in whitespace now confirm each
+            // other. That is the same class as the substring match item 223 records, and narrower
+            // than it — nothing on a screen distinguishes a space from a wrap, so demanding one
+            // would be demanding evidence a terminal does not carry.
+            Some(text)
+                if squeezed(&text).contains(&squeezed(needle)) && Some(text.as_str()) != before =>
+            {
                 return Seen::Yes;
             }
             None => return Seen::No,
@@ -776,17 +851,25 @@ struct Submission {
     /// pane, or an observation naming no agent. That is not evidence about a keystroke, so the
     /// contract is never satisfied — see the kind's own doc.
     agent: Option<(String, u64)>,
+    /// WHAT THIS DELIVERY IS ASKING, for [`SubmittedWhen::Took`] to compare the agent's own account
+    /// against.
+    ///
+    /// ⚠ The delivery's TEXT, not its needle: the needle is a fragment chosen to be findable on a
+    /// screen, and the agent reports the whole question. Comparing against a fragment would accept
+    /// a peer that was asked something this text is only part of, which is the dirty-composer case
+    /// this contract exists to catch.
+    asked: Option<String>,
 }
 
 impl Submission {
     /// Read what this contract will be compared against — **called before the submit is injected**.
-    fn arm(panes: &dyn PaneAccess, pane: PaneId, wanted: SubmittedWhen) -> Self {
+    fn arm(panes: &dyn PaneAccess, pane: PaneId, wanted: SubmittedWhen, text: &str) -> Self {
         let (screen, agent) = match wanted {
             // Nothing is asked, so nothing is read. A baseline taken for an unchecked submit would
             // be a pane read every delivery pays for and nothing consults.
             SubmittedWhen::Unchecked => (None, None),
             SubmittedWhen::Repaints { .. } => (panes.pane_collapsed(pane), None),
-            SubmittedWhen::Stirs { .. } => (
+            SubmittedWhen::Stirs { .. } | SubmittedWhen::Took { .. } => (
                 None,
                 panes
                     .supervision()
@@ -798,6 +881,9 @@ impl Submission {
             wanted,
             screen,
             agent,
+            // Only the contract that compares it keeps it: a delivery that asks nothing of the
+            // agent's account has no business holding a copy of its own prompt.
+            asked: matches!(wanted, SubmittedWhen::Took { .. }).then(|| text.to_owned()),
         }
     }
 
@@ -829,6 +915,28 @@ impl Submission {
                             // submit went to rather than about whatever is in the pane now.
                             seen.seq > *pressed_at
                                 && seen.agent.as_deref() == Some(addressed.as_str())
+                        }),
+                )
+            }
+            SubmittedWhen::Took { .. } => {
+                let (addressed, pressed_at) = self.agent.as_ref()?;
+                let asked = self.asked.as_deref()?;
+                Some(
+                    panes
+                        .supervision()
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                        .is_some_and(|seen| {
+                            // ⚠⚠⚠ THREE THINGS, and dropping any one of them admits a false yes:
+                            // the peer is the one addressed, its state has MOVED since the press
+                            // (so an identical earlier turn's report cannot stand in), and the
+                            // question it names is THIS one rather than one this text is merely
+                            // part of.
+                            seen.seq > *pressed_at
+                                && seen.agent.as_deref() == Some(addressed.as_str())
+                                && seen
+                                    .asked
+                                    .as_deref()
+                                    .is_some_and(|said| squeezed(said) == squeezed(asked))
                         }),
                 )
             }
@@ -1070,6 +1178,8 @@ mod tests {
                 },
                 seq: last.1,
                 asking: None,
+                asked: None,
+                transcript: None,
             })
         });
 
@@ -1437,6 +1547,80 @@ mod tests {
                 .any(|keys| keys == &vec!["Enter".to_owned()])
         }
 
+        /// One delivery against this double under [`SubmittedWhen::Took`], with the agent reporting
+        /// `said` as the question it received once the submit has gone in.
+        ///
+        /// ⚠⚠ THE REPORT IS TIED TO THE SUBMIT, which is the product's own timing: an agent's hook
+        /// fires when a prompt is SUBMITTED, so a contract that could be satisfied before the
+        /// keystroke would be satisfied by the previous turn's report. The `seq` moves with it for
+        /// the same reason.
+        fn deliver_asking(self, text: &str, said: Option<&str>) -> Delivered {
+            struct Reporting {
+                inner: Recorder,
+                said: Option<String>,
+            }
+            impl PaneAccess for Reporting {
+                fn pane_ids(&self) -> Vec<PaneId> {
+                    self.inner.pane_ids()
+                }
+                fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+                    self.inner.pane_collapsed(id)
+                }
+                fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                    self.inner.pane_rows(id)
+                }
+                fn pane_eof(&self, id: PaneId) -> Option<bool> {
+                    self.inner.pane_eof(id)
+                }
+                fn pane_full_text(&self, id: PaneId) -> Option<String> {
+                    self.inner.pane_full_text(id)
+                }
+                fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+                    self.inner.inject(id, keys)
+                }
+                fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+                    Some(self)
+                }
+            }
+            impl crate::access::PaneSupervision for Reporting {
+                fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+                    let submitted = self.inner.submitted();
+                    Some(crate::access::AgentObservation {
+                        state: sprag_detect::AgentState::Working,
+                        agent: Some("claude".to_owned()),
+                        authority: crate::access::Authority::Reported {
+                            source: "hook:claude".to_owned(),
+                        },
+                        seq: u64::from(submitted),
+                        asking: None,
+                        asked: submitted.then(|| self.said.clone()).flatten(),
+                        transcript: None,
+                    })
+                }
+            }
+
+            let double = Reporting {
+                inner: self,
+                said: said.map(str::to_owned),
+            };
+            let spec = Delivery {
+                echo_timeout: Duration::from_millis(1),
+                attempts: 1,
+                submitted_when: SubmittedWhen::Took {
+                    within: Duration::from_millis(50),
+                },
+                ..Delivery::new()
+            };
+            deliver(
+                &double,
+                &RunContext::uncancellable(),
+                PaneId(1),
+                text,
+                &spec,
+            )
+            .expect("no error")
+        }
+
         /// One delivery against this double, with a short grace and no retries.
         fn deliver_once(self, text: &str, confirm: Option<&str>) -> Delivered {
             let spec = Delivery {
@@ -1605,6 +1789,66 @@ mod tests {
             on_clean.is_confirmed(),
             "a clean composer must still confirm, or this gate is measuring a broken read-back \
              rather than a dirty composer: {on_clean:?}",
+        );
+    }
+
+    /// **THE GATE FOR EVIDENCE FROM THE PROGRAM** — register items 421, 223 and 224, which are one
+    /// defect seen from three sides.
+    ///
+    /// The screen cannot answer *did MY question arrive*: text a run delivered and text a composer
+    /// already held are the same pixels, so the read-back's `contains` says only *something like
+    /// mine is on the pane*. Its neighbour
+    /// [`a_prompt_typed_onto_a_dirty_composer_is_confirmed_and_submitted_anyway`] drives exactly
+    /// that and records that tightening the predicate is RULED OUT — measured, not assumed.
+    ///
+    /// ⚠⚠⚠ **THIS ASKS THE AGENT INSTEAD.** Its own submit hook names the question it received, so
+    /// the concatenation the composer produced is visible as a different string. The first case is
+    /// the same fixture the neighbour passes with, and the difference between the two gates is the
+    /// whole point: same screen, same delivery, opposite verdicts.
+    #[test]
+    fn a_prompt_the_agent_never_reports_receiving_is_refused_however_the_screen_reads() {
+        const OFFERED: &str = "> what is 3 plus 3 in English?";
+        const SENT: &str = "what is 4 plus 4?";
+
+        // The composer already holds a suggestion and appends the delivery to it — the screen the
+        // neighbouring gate confirms on. The agent reports the WHOLE line it was handed.
+        let dirty = Recorder {
+            text: format!("{OFFERED}{SENT}"),
+            showing_before: OFFERED.to_owned(),
+            ..Recorder::showing(SENT)
+        };
+        let delivered = dirty.deliver_asking(SENT, Some(&format!("{OFFERED}{SENT}")));
+        assert!(
+            matches!(delivered, Delivered::Unsubmitted { .. }),
+            "⚠⚠⚠⚠ ITEM 223, SETTLED BY THE PROGRAM: the screen says the delivery arrived — it \
+             does contain {SENT:?} — and the agent says it was asked {OFFERED:?} with this text on \
+             the end of it. Those are different questions, and only the agent can say so. Got \
+             {delivered:?}",
+        );
+
+        // The control: the same delivery onto a CLEAN composer, where the agent reports exactly
+        // what was sent.
+        let clean = Recorder::showing(SENT);
+        let confirmed = clean.deliver_asking(SENT, Some(SENT));
+        assert!(
+            !matches!(
+                confirmed,
+                Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
+            ),
+            "⚠ the control: an agent reporting the question that was sent must confirm, or the \
+             claim above is about a contract that refuses everything. Got {confirmed:?}",
+        );
+
+        // ⚠⚠ AND A PEER THAT REPORTS NOTHING IS REFUSED RATHER THAN ASSUMED — an agent with no
+        // hooks says nothing, and a delivery that read silence as success would be the old oracle
+        // with extra steps. The loop asks this contract only of a pane whose verdict is REPORTED,
+        // which is what keeps a scraped peer on the screen predicate instead.
+        let silent = Recorder::showing(SENT);
+        let unheard = silent.deliver_asking(SENT, None);
+        assert!(
+            matches!(unheard, Delivered::Unsubmitted { .. }),
+            "⚠⚠ silence is not evidence: a peer that never names the question it took cannot \
+             satisfy a contract about the question it took. Got {unheard:?}",
         );
     }
 

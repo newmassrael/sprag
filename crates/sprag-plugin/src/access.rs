@@ -1025,6 +1025,28 @@ pub struct AgentObservation {
     /// no menu at all. A supervisor that finds `None` here has to hand the pane to a person, which
     /// is the correct answer to a question it cannot read.
     pub asking: Option<Question>,
+    /// **THE LAST PROMPT THE AGENT SAID IT WAS ASKED**, and `None` where none has said so.
+    ///
+    /// ⚠⚠⚠⚠ **THIS IS THE SURFACE REGISTER ITEM 224 RECORDED AS MISSING** — *"evidence from the
+    /// PROGRAM rather than the screen, which nothing on `PaneAccess` offers"*. It is here now
+    /// because the agent's own submit hook carries it and always did: sprag received the payload,
+    /// reduced it to the single word *working*, and dropped the rest.
+    ///
+    /// What it settles is the question a terminal cannot: text a run delivered and text a composer
+    /// was already holding are the same pixels, so `contains` on a screen answers *something like
+    /// mine is there* where a delivery needs *mine arrived*. Confirming against this instead makes
+    /// a dirty composer visible — the agent reports the concatenation, which is not what was sent.
+    ///
+    /// ⚠ `None` is *nobody told us*, never *nothing was asked*: an agent with no hooks installed
+    /// reports nothing at all, and a supervisor that read this as an empty prompt would conclude
+    /// every unhooked peer had been asked nothing.
+    pub asked: Option<String>,
+    /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT**, and `None` where none has said so.
+    ///
+    /// Stated rather than derived. The spend reader resolves this path from a session id and was
+    /// measured answering `0` for a session whose transcript existed and held the very number it
+    /// reports (register item 431).
+    pub transcript: Option<String>,
 }
 
 /// Pane *supervision*: what the AGENT in a pane is doing. Reached via

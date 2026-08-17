@@ -3513,7 +3513,13 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
     let target = hooks::target(args.first()?)?;
     let mut payload = String::new();
     io::stdin().read_to_string(&mut payload).ok()?;
-    let outcome = hooks::report_for(target, &serde_json::from_str(&payload).ok()?)?;
+    let payload: Value = serde_json::from_str(&payload).ok()?;
+    let outcome = hooks::report_for(target, &payload)?;
+    // ⚠⚠⚠⚠ WHAT THE AGENT STATES, ALONGSIDE WHAT IT MEANS — see [`hooks::asked_in`]. Read here and
+    // not inside `report_for` because the two are different kinds of thing: one is this crate's
+    // decision about a state, the other is the agent's own account of its turn, and only the second
+    // can settle whether a prompt arrived.
+    let asked = hooks::asked_in(&payload);
     let pane = std::env::var(sprag_host::PANE_ENV_VAR)
         .ok()?
         .parse::<u64>()
@@ -3541,6 +3547,14 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                 "source": format!("hook:{}", target.name),
                 "name": target.agent,
                 "seq": hooks::report_seq()?,
+                // ⚠⚠⚠ THE TWO FACTS ONLY THE AGENT KNOWS, sent when it stated them and OMITTED
+                // otherwise — `null` would be a claim that it said nothing, and most events say
+                // nothing about a prompt because they are not the event that opens a turn.
+                sprag_host::wire::AGENT_ASKED_KEY: asked.as_ref().map(|a| a.prompt.clone()),
+                sprag_host::wire::AGENT_TRANSCRIPT_KEY: asked
+                    .as_ref()
+                    .and_then(|a| a.transcript.as_ref())
+                    .map(|path| path.display().to_string()),
                 // This report is made ON BEHALF OF the agent that spawned this process, not by it,
                 // so it must not outlive that agent. `SessionEnd` covers the graceful exit; this
                 // covers the two it cannot — an agent that is killed or crashes runs no hook, and

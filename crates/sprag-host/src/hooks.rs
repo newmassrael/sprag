@@ -733,6 +733,77 @@ pub fn report_for(target: &Target, payload: &Value) -> Option<Outcome> {
         .map(|(_, outcome)| *outcome)
 }
 
+/// **WHAT A SUBMIT PAYLOAD STATES ABOUT THE TURN IT OPENS** — the two facts a screen cannot supply.
+///
+/// # ⚠⚠⚠⚠ Why this exists at all: the program was already talking and nothing listened
+///
+/// [`report_for`] reduces a whole payload to one word — *working* — and the rest is dropped. Two of
+/// the things dropped are the answers to questions this workspace has spent rounds failing to
+/// obtain from a terminal:
+///
+/// * **`prompt`** is the agent's own statement of what it was asked. Delivery has been confirmed by
+///   hunting a fragment of the typed text on the pane's SCREEN, and every failure of that oracle
+///   bought another predicate — 40 chars became 40 COLUMNS, the head became the TAIL, an exact
+///   match became a whitespace-insensitive one — while item 223's gate already recorded that
+///   tightening it is ruled out and that the answer is *"evidence from the PROGRAM rather than the
+///   screen"*. **This is that evidence**, and it settles the question the screen cannot: a composer
+///   that concatenated somebody else's text reports a prompt that is not the one that was sent.
+/// * **`transcript_path`** is where the agent is writing. The spend reader resolves that path from
+///   a session id and has been measured answering 0 for a session whose transcript exists (register
+///   item 431) — **the agent states it outright.**
+///
+/// ⚠⚠ CAPTURED, not inferred: a real `claude` 2.1.233 was run with a recording hook and the payload
+/// carried `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`,
+/// `hook_event_name` and `prompt`. The gate below uses that capture as its fixture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    /// The prompt the agent says it received, verbatim.
+    pub prompt: String,
+    /// Where the agent says it is writing this session's transcript.
+    ///
+    /// [`None`] where the payload does not carry one: this is a fact to USE when offered and never
+    /// one to demand, because an agent that reports its turn honestly while writing no transcript
+    /// is a working agent, not a broken one.
+    pub transcript: Option<PathBuf>,
+}
+
+/// What `payload` STATES, for the one event that opens a turn — or [`None`] for anything else.
+///
+/// ⚠⚠⚠ **IT JUDGES NOTHING**, which is what keeps it beside [`report_for`] rather than inside it:
+/// that one answers *what state does this put the agent in*, a decision this crate owns, and this
+/// one answers *what did the agent say*, which is the agent's to state and nobody else's to infer.
+/// A reader that did both would have to be consulted about a state it has no business deciding.
+///
+/// ⚠ A submit with no `prompt` is [`None`] rather than an empty one: *the agent was asked nothing*
+/// is a claim, and a payload that omits the key has not made it.
+#[must_use]
+pub fn asked_in(payload: &Value) -> Option<Asked> {
+    if payload.get("hook_event_name")?.as_str()? != SUBMIT_EVENT {
+        return None;
+    }
+    // A subagent's turn is not the pane's turn — the same exclusion `report_for` opens with, and
+    // for the same reason: what a sub-agent was asked says nothing about the prompt this pane took.
+    if payload
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return None;
+    }
+    Some(Asked {
+        prompt: payload.get("prompt")?.as_str()?.to_owned(),
+        transcript: payload
+            .get("transcript_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+    })
+}
+
+/// The event that opens a turn, named once — [`asked_in`]'s subject and a row in every
+/// [`Target::events`] table below.
+const SUBMIT_EVENT: &str = "UserPromptSubmit";
+
 /// Where a target stands: whether the agent is on this machine at all, and how much of the
 /// integration is in place.
 ///
@@ -1611,6 +1682,91 @@ mod tests {
     /// Where the installed binary is pretended to live. Absolute, because that is what an install
     /// resolves and what the recognition rule reads back.
     const EXE: &str = "/usr/local/bin/sprag";
+
+    /// **THE PAYLOAD A REAL AGENT SENT**, captured 2026-08-17 from `claude` 2.1.233 by installing a
+    /// hook whose whole body was `cat > payload.json` and asking it one question.
+    ///
+    /// ⚠⚠⚠ A CAPTURE RATHER THAN A HAND-WRITTEN OBJECT, and the difference is the point: every
+    /// other fixture in this module states what this crate BUILDS, and this one states what the
+    /// agent SENDS. A payload invented here would gate this reader against my belief about the
+    /// agent's schema, which is exactly the belief that needs checking — the two facts below were
+    /// assumed absent for rounds while they were arriving on every turn.
+    ///
+    /// Verbatim but for the values, which are shortened; the KEYS and their shapes are as captured.
+    fn captured_submit() -> Value {
+        serde_json::json!({
+            "session_id": "2987c0d6-b456-4847-8a90-8e4d701d97a1",
+            "transcript_path": "/home/coin/.claude/projects/-tmp-probe/2987c0d6.jsonl",
+            "cwd": "/tmp/probe",
+            "prompt_id": "c47d7f47-933f-469e-bd8e-efc61818894f",
+            "permission_mode": "default",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "reply with the single word: pong",
+        })
+    }
+
+    /// **THE GATE FOR THE EVIDENCE A SCREEN CANNOT GIVE** — the agent states what it was asked and
+    /// where it is writing, and until now both were dropped on the floor.
+    ///
+    /// See [`Asked`] for what each is worth. The claims here are deliberately about the CAPTURE:
+    /// what this reader must survive is the agent's schema, not this crate's idea of it.
+    #[test]
+    fn a_submit_payload_states_the_prompt_and_the_transcript_it_is_writing() {
+        let asked = asked_in(&captured_submit()).expect("a submit states what it was asked");
+        assert_eq!(
+            asked.prompt, "reply with the single word: pong",
+            "⚠⚠⚠⚠ THE PROMPT IS THE AGENT'S OWN STATEMENT OF WHAT IT RECEIVED — the evidence item \
+             223's gate says the screen cannot give and item 224 records nothing offers. Delivery \
+             is confirmed today by hunting a fragment of the typed text on a pane, and every \
+             failure of that has bought another predicate",
+        );
+        assert_eq!(
+            asked.transcript,
+            Some(PathBuf::from(
+                "/home/coin/.claude/projects/-tmp-probe/2987c0d6.jsonl"
+            )),
+            "⚠⚠⚠ AND WHERE IT IS WRITING — register item 431 measured the spend reader answering 0 \
+             for a session whose transcript existed, because it resolves that path from an id. The \
+             agent hands it over",
+        );
+
+        // ⚠⚠ THE CONTROLS. Each says this reader is not simply answering yes.
+        let stop = serde_json::json!({ "hook_event_name": "Stop", "prompt": "not this one" });
+        assert_eq!(
+            asked_in(&stop),
+            None,
+            "⚠ only the event that OPENS a turn states a prompt; a `Stop` carrying the key must not \
+             be read as one, or a turn's end would confirm its beginning",
+        );
+        let mut subagent = captured_submit();
+        subagent["agent_id"] = serde_json::json!("sub-1");
+        assert_eq!(
+            asked_in(&subagent),
+            None,
+            "⚠⚠ and a SUBAGENT's turn is not the pane's — the same exclusion `report_for` opens \
+             with. What a sub-agent was asked says nothing about the prompt this pane took",
+        );
+        let mut promptless = captured_submit();
+        promptless
+            .as_object_mut()
+            .expect("an object")
+            .remove("prompt");
+        assert_eq!(
+            asked_in(&promptless),
+            None,
+            "⚠ a submit with no `prompt` states nothing rather than states an empty one: *the agent \
+             was asked nothing* is a claim, and a payload that omits the key has not made it",
+        );
+        let mut no_transcript = captured_submit();
+        no_transcript["transcript_path"] = serde_json::json!("");
+        assert_eq!(
+            asked_in(&no_transcript).expect("still a submit").transcript,
+            None,
+            "⚠⚠ but a MISSING transcript is not a missing turn: this is a fact to use when offered \
+             and never one to demand, or an agent writing no transcript would stop being able to \
+             report the prompt it took",
+        );
+    }
 
     /// The identity a test's launch is named with — FIXED, so what a rule answers is a function of
     /// the argv and not of the round it was run in. [`mint_session_id`] is measured separately, by

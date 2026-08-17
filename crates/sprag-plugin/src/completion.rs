@@ -605,6 +605,8 @@ mod tests {
             },
             seq,
             asking: None,
+            asked: None,
+            transcript: None,
         }));
         let source = {
             let reported = Arc::clone(&reported);
@@ -1124,6 +1126,8 @@ mod tests {
                 },
                 seq: 7,
                 asking: None,
+                asked: None,
+                transcript: None,
             })));
         let source = {
             let seen = Arc::clone(&seen);
@@ -1204,6 +1208,8 @@ mod tests {
             },
             seq: 8,
             asking: None,
+            asked: None,
+            transcript: None,
         });
         assert_eq!(
             done.wait(&access, pane, BOUND, &RunContext::uncancellable()),

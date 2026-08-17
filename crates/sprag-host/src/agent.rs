@@ -151,6 +151,15 @@ pub struct AgentFacts {
     /// workspace of working and idle panes pays nothing, and a blocked pane pays one bottom-anchored
     /// parse of a screen that is already mapped.
     pub asking: Option<Question>,
+    /// **THE LAST PROMPT THE AGENT ITSELF SAID IT WAS ASKED**, carried from its own submit hook.
+    ///
+    /// Beside [`asking`](Self::asking) and the opposite kind of fact: that one is what THIS BUILD
+    /// read off a screen, and this one is what the AGENT said. A supervisor confirming that its
+    /// question arrived can only use the second — a screen renders text a run delivered and text a
+    /// composer already held as the same pixels.
+    pub asked: Option<String>,
+    /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT** — stated, never derived from an id.
+    pub transcript: Option<String>,
 }
 
 /// A [`Question`] in the shape BOTH surfaces put it on the wire — the ONE renderer, so a pane's
@@ -385,6 +394,11 @@ impl AgentRegistry {
             rule,
             seq: tracker.seq(),
             source: tracker.reported_source().map(str::to_owned),
+            // ⚠ Taken from the TRACKER rather than from this look: they are stated by the agent on
+            // its own hook and survive every screen the pane has painted since. A look cannot
+            // produce them and must not clear them.
+            asked: tracker.reported_asked().map(str::to_owned),
+            transcript: tracker.reported_transcript().map(str::to_owned),
         })
     }
 
@@ -833,6 +847,8 @@ mod tests {
                 source: "herdr:claude".to_owned(),
                 seq: Some(7),
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             Hysteresis::default,
         );
@@ -870,6 +886,8 @@ mod tests {
                     source: "hook".to_owned(),
                     seq: None,
                     owner: None,
+                    asked: None,
+                    transcript: None,
                 },
                 || {
                     *reads += 1;
@@ -915,6 +933,8 @@ mod tests {
                 source: "hook".to_owned(),
                 seq: None,
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             Hysteresis::default,
         );
@@ -1232,6 +1252,8 @@ mod clock_tests {
                 source: "hook".to_owned(),
                 seq: None,
                 owner: None,
+                asked: None,
+                transcript: None,
             },
             Hysteresis::default,
         );
