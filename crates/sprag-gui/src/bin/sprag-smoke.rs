@@ -184,7 +184,7 @@ fn main() -> ExitCode {
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
-            check_killing_the_attached_session_ends_the_client(&mut smoke, &mut report);
+            check_killing_the_attached_session_keeps_the_client(&mut smoke, &mut report);
             // After it, deliberately: this one reads the log the departed client left behind, so
             // running it here covers every frame of the whole run and needs nothing alive.
             check_every_painted_frame_settled(&smoke, &mut report);
@@ -1036,18 +1036,23 @@ fn run_the_destroyed_session_checks(smoke: &mut Smoke, report: &mut Report) {
 }
 
 /// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
-/// unit-tested against a fake socket; that a REAL rendering process, mid-frame, actually leaves — and
-/// does not sit painting a session that no longer exists — is a fact only a live client can settle.
+/// unit-tested against a fake socket; what a REAL rendering process does about it, mid-frame, is a
+/// fact only a live client can settle.
 ///
-/// The assertion is on the PROCESS, deliberately. There is no pixel to read here: the correct
-/// outcome is that there are no more pixels, and a window that lingers empty would look identical to
-/// one still working over any scene query this tool could make.
+/// ⚠⚠⚠⚠ **IT ASSERTED THE OPPOSITE UNTIL 2026-08-17, AND THE PRODUCT AGREED WITH IT** — destroying
+/// the attached session ended the app, which the owner met three times as *"the program dies
+/// completely"*. A terminal client detaching hands its person back a shell; a window detaching hands
+/// them nothing. Item 359 inverted the contract, and this check with it.
+///
+/// The assertion is on the PROCESS and now also on WHERE IT WENT. A window that survived but sat on
+/// a session that no longer exists would satisfy *"still running"* and be just as broken, and that
+/// second question only became askable when the client stopped leaving.
 ///
 /// The session is DISCOVERED ([`Smoke::attached_session`]), never assumed to be the first one the
 /// palette lists — the daemon has its own boot session and a GUI gets a second, so the first
 /// `Kill session` row belongs to somebody else. That mistake is a convincing false alarm: the
 /// client keeps running, exactly as it should, and the check calls it a failure to detach.
-fn check_killing_the_attached_session_ends_the_client(smoke: &mut Smoke, report: &mut Report) {
+fn check_killing_the_attached_session_keeps_the_client(smoke: &mut Smoke, report: &mut Report) {
     let Some(mine) = smoke.attached_session() else {
         report.check("the client says which session it is attached to", false);
         return;
@@ -1070,11 +1075,33 @@ fn check_killing_the_attached_session_ends_the_client(smoke: &mut Smoke, report:
         !smoke.gui_exited(),
     );
 
-    // From here the socket is expected to die, so nothing may assert through it again.
+    // ⚠⚠⚠⚠ THE CONTRACT INVERTED HERE ON 2026-08-17, AND THE SOCKET SURVIVES WITH IT — item 359.
+    //
+    // This asserted that the client LEFT, and it was right about the product: destroying the
+    // attached session ended the app. The owner reported that as *"the program dies completely"*
+    // three times, and it is a window vanishing with somebody's work on screen. A multiplexer's
+    // window falls back to another session; herdr, with nothing left at all, keeps drawing
+    // (`src/app/actions.rs:1709` at `9a4ce5e1`).
+    //
+    // ⚠⚠⚠ **THIS CHECK IS WHY THE INVERSION IS TRUSTWORTHY, AND IT IS THE ONLY THING THAT CAUGHT
+    // THE FIX BEING INCOMPLETE.** Three unit gates passed while the product still died — one called
+    // a function production never reaches, and two repaired doors out of a decision that had three.
+    // The smoke drives the real client, so it saw what none of them could. **Repurposed, not
+    // deleted**: what it measured is now what it forbids.
+    //
+    // ⚠⚠ And the old comment's *"the socket is expected to die"* is gone with the behaviour — a
+    // client that stays is a client that can still be asked where it went, which is a stronger
+    // question than whether it is breathing.
     let _ = smoke.invoke("sprag_confirm", "accept", Value::Null);
     report.check(
-        "the client LEFT when its session was destroyed",
-        smoke.wait_for(|s| s.gui_exited().then_some(())).is_ok(),
+        "the client STAYED when its session was destroyed",
+        smoke.wait_for(|s| (!s.gui_exited()).then_some(())).is_ok(),
+    );
+    report.check(
+        "...and it is on a session again, rather than alive with nothing to show",
+        smoke
+            .wait_for(|s| s.attached_session())
+            .is_ok_and(|landed| landed != mine),
     );
 }
 
