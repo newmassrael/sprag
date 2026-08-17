@@ -830,7 +830,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                         // `HostClient::select_toward`'s own doc said stopped at its signature —
                         // *"the day one wants \"you are at the edge\", this signature is where the
                         // fact stops"* — and it stops here instead now.
-                        let report = if host.select_toward(dir) {
+                        // ⚠ `is_some()` and not the pane: this front's focus comes from
+                        // `reconcile` below, which re-reads the host's active pane every pass —
+                        // so unlike the GUI (item 409) it has no ring of its own to seat, and the
+                        // destination the answer now carries would be a second path to a fact this
+                        // client already follows one line later.
+                        let report = if host.select_toward(dir).is_some() {
                             Report::on_screen()
                         } else {
                             Report::nowhere(&BoundAction::SelectPaneToward { dir })

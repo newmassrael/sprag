@@ -185,11 +185,25 @@ impl SlotView {
     /// the same wire action, resolved against the arrangement rather than against this client's
     /// tiles (see [`HostClient::select_toward`]).
     ///
-    /// Answers whether the focus MOVED. WHICH pane it moved to is still not adopted here — that is
-    /// exactly what [`crate::active_pane`] already follows, and a second path to it would be a
-    /// second answer — but whether it moved at all is a fact no repaint carries, because a select
-    /// at the arrangement's edge changes nothing on the screen.
-    pub(crate) fn select_toward(&self, dir: PaneDir) -> bool {
+    /// Answers WHICH PANE it landed on, or `None` at the arrangement's edge — a fact no repaint
+    /// carries, because a select that moved nothing changes nothing on the screen.
+    ///
+    /// # ⚠⚠⚠⚠ This used to answer a bare `bool`, and the paragraph here said the destination was
+    /// deliberately not adopted
+    ///
+    /// It said [`crate::active_pane`] already follows the daemon's answer and *"a second path to it
+    /// would be a second answer"*. The premise was right and the conclusion cost the keyboard: that
+    /// module follows on the PAINT path, and pinion drains a focus request at the end of a
+    /// DISPATCH — so a ring moved from there lands on the next input event and swallows it. Item
+    /// 409, measured: `prefix ArrowRight` moved the session's active pane and left the keyboard
+    /// behind, while `prefix o` — which never asks the daemon and requests focus in-dispatch —
+    /// worked throughout.
+    ///
+    /// ⚠⚠ **It is still not a second ANSWER**, which is what that paragraph was protecting: the
+    /// daemon resolves the direction and this adopts what it resolved. What changed is only WHERE
+    /// the adoption happens — inside the dispatch that asked, which is the discipline
+    /// [`Self::reseed_pane_focus_if_idle`] states one door down for every other op on this type.
+    pub(crate) fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
         self.host.select_toward(dir)
     }
 

@@ -2329,6 +2329,75 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE ARROW CHORD ANSWERS THE KEYSTROKE THAT ASKED** — register item 409. What this
+    /// gate holds is WHERE the assertion sits, not what it says.
+    ///
+    /// `prefix ArrowRight` and `prefix o` are one gesture to a person, and only one of them moved
+    /// the keyboard. The toward-arm asked the daemon and left this client's ring to
+    /// [`crate::active_pane`], which reconciles on the PAINT path — and pinion drains a focus
+    /// request at the end of a DISPATCH, so the request sat in the mailbox until the next input
+    /// arrived and swallowed it. Measured on the owner's own window 2026-08-18: a `select-pane`
+    /// from a shell left the title on the old pane, and moving the pointer ONE PIXEL flipped it.
+    ///
+    /// # ⚠⚠⚠⚠ Why nothing is painted between the chord and the assertion
+    ///
+    /// That gap IS the gate. A test that painted and finalised first would drain the mailbox itself
+    /// and go green against the defect — the ring does land, one input late, which is the bug
+    /// wearing a passing test. `clicking_a_pane_focuses_it` above is asserted the same way and for
+    /// the same reason: **a gesture that needs a SECOND event to take effect has not taken
+    /// effect.**
+    ///
+    /// ⚠⚠⚠ And it drives the REAL CHORD through the substrate seam rather than calling
+    /// `select_toward`. The CLI, the wire and the daemon all resolved this correctly the whole time
+    /// — `sprag select-pane -R` was measured landing on the right pane while the keyboard stayed
+    /// put — so a gate that called any of them would have passed before the fix and proved nothing.
+    #[test]
+    fn the_arrow_chord_moves_the_keyboard_and_not_only_the_session() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        assert_eq!(core.focus().focused(), Some(pane_tag(0)), "boots on pane 0");
+
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::empty()
+        };
+        let chord = |core: &mut ShellCore<TerminalViewer>, arrow: &str| {
+            core.set_modifiers(ctrl);
+            let prefix = core.key_press_for_window(dock::MAIN_WINDOW_ID, "b", false);
+            core.set_modifiers(Modifiers::empty());
+            let acted = core.key_press_for_window(dock::MAIN_WINDOW_ID, arrow, false);
+            // ⚠ THE SEAM'S OWN ADMISSION, asserted rather than dropped: `key_press_for_window`
+            // answers whether the gate DISPATCHED the press, and a chord whose halves were gated
+            // out would leave the ring where it was and read exactly like the defect.
+            assert!(
+                prefix && acted,
+                "the {arrow} chord was admitted: {prefix} {acted}"
+            );
+        };
+
+        chord(&mut core, "ArrowRight");
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(1)),
+            "⚠⚠⚠⚠⚠ THE KEYBOARD MUST BE ON THE PANE THE CHORD SELECTED, IN THE DISPATCH THAT ASKED \
+             — a ring still on pane 0 here is the measured defect: the session moved and the person \
+             kept typing into the pane they had left",
+        );
+
+        // ── AND BACK, or a ring that merely drifted one way would pass ──
+        // ⚠ NO SECOND PREFIX: `ArrowRight` is bound `-r`, so it armed a REPEAT WINDOW and a bare
+        // arrow is the table's own way to say "again". Pressing the prefix here would be the third
+        // keystroke of a two-key gesture.
+        core.set_modifiers(Modifiers::empty());
+        core.key_press_for_window(dock::MAIN_WINDOW_ID, "ArrowLeft", false);
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(0)),
+            "the opposite arrow must be answered by the same keystroke too",
+        );
+    }
+
     /// End-to-end through the REAL pinion raw-pointer router (R1416 / PINION-PR72): a TRACKING pane's
     /// oracle owns the raw multi-button stream, so a RIGHT and a MIDDLE press+release route through
     /// the shell's `pointer_button_for_window` seam (the same one winit's `MouseInput` reaches) ->

@@ -658,11 +658,33 @@ pub trait HostClient: crate::wake::WakeSource {
     /// from its ring. A floating pane is in no arrangement, so that call answers unmoved and the
     /// ring stays where it was.
     ///
-    /// Defaulted to `false`, like [`swap_toward`](Self::swap_toward) — the wire client overrides it.
-    #[must_use = "`false` is the EDGE, which no repaint can show because nothing moved"]
-    fn select_toward(&self, dir: PaneDir) -> bool {
+    /// # ⚠⚠⚠⚠⚠ It answers WHICH PANE, and that is a fix rather than a convenience (item 409)
+    ///
+    /// This answered a bare `bool`, on the argument that *"the daemon answers the pane the window
+    /// is on either way, so the id says nothing about whether the key did anything"*. True, and it
+    /// left the caller with the one thing it could not compute: a client's own focus ring has to
+    /// land on the pane the DAEMON chose, and only the daemon knows which that is.
+    ///
+    /// What the missing half cost, measured 2026-08-18 on the owner's window: `prefix ArrowRight`
+    /// moved the session's active pane and NOT the keyboard. The GUI's ring was left to follow the
+    /// mirror on its paint path, and pinion drains a focus request at the end of a DISPATCH — so
+    /// the request sat in the mailbox until the next input arrived and swallowed it. `prefix o`
+    /// worked the whole time, because that verb moves the ring in-dispatch and never asks the
+    /// daemon. **Two keys for one gesture, one of which answered the keystroke that asked.**
+    ///
+    /// So the destination travels now: `Some(pane)` is *it moved, and here is where to put the
+    /// ring*, and `None` is the EDGE. The moved/not-moved answer is unchanged — it is
+    /// [`Option::is_some`] — which is why no caller that only asked *"did anything happen"* has to
+    /// change its mind about anything.
+    ///
+    /// ⚠ **`None` still is not a refusal.** Reaching the edge is a well-formed request whose honest
+    /// answer is "nothing that way", exactly as the section above says.
+    ///
+    /// Defaulted to `None`, like [`swap_toward`](Self::swap_toward) — the wire client overrides it.
+    #[must_use = "`None` is the EDGE, which no repaint can show because nothing moved"]
+    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
         let _ = dir;
-        false
+        None
     }
 
     /// Trade the session's active pane with its NEIGHBOUR in `dir` — tmux `swap-pane`, and the
@@ -3243,13 +3265,18 @@ impl HostClient for Host {
 
     /// Straight to the resolve-and-select the wire action calls, so the in-process arm and a wire
     /// client walk ONE arrangement with one lock — not two implementations that agree today.
-    fn select_toward(&self, dir: PaneDir) -> bool {
+    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+        // ⚠ THE PANE ONLY WHEN IT CHANGED. `select_pane` answers the pane the window is on either
+        // way, so passing it through unfiltered would report the UNMOVED pane at a layout's edge —
+        // and a caller reading `Some` as "it moved" would then re-seat its ring on the pane it was
+        // already on, every time an arrow key is held against the edge.
         select_pane(
             &self.registry,
             &self.scope(),
             SelectAsk::Toward { dir, from: None },
         )
-        .is_some_and(|selection| selection.how.changed())
+        .filter(|selection| selection.how.changed())
+        .map(|selection| selection.pane)
     }
 
     /// ...and the same for the SWAP, through the same one function the wire action calls.

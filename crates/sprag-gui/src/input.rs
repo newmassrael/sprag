@@ -400,17 +400,35 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
             // itself — which is not a refusal, it is the answer.
             Report::on_screen()
         }
-        // Unlike the cycle above, this one does NOT move the ring: it asks the daemon to move the
-        // session's active pane, and `crate::active_pane`'s reconcile follows that onto a focus
-        // request on the next pass. One path to "which pane the session is on" rather than two,
-        // which is the same discipline the zoom below leans on.
-        // `false` is the EDGE, which no repaint can show because nothing moved — the fact
-        // `HostClient::select_toward`'s own doc said stopped at its signature until R316.
+        // Unlike the cycle above, the DAEMON resolves this one: the direction travels and it walks
+        // its own arrangement under one lock, which is the authority split `HostClient` argues for.
+        // `None` is the EDGE, which no repaint can show because nothing moved.
+        //
+        // ⚠⚠⚠⚠⚠ AND THE RING MOVES HERE, IN THE DISPATCH THAT ASKED — item 409, measured on the
+        // owner's window. This arm used to leave the ring to `crate::active_pane`'s reconcile,
+        // which is right about WHO decides and wrong about WHEN: that reconcile runs on the PAINT
+        // path, and pinion drains a focus request at the end of a DISPATCH, so the request sat in
+        // the mailbox until the next input arrived — and swallowed it. `prefix ArrowRight` moved
+        // the session's active pane while the keyboard stayed where it was, for as long as this
+        // binding has existed, and `prefix o` (which never asks the daemon) worked the whole time.
+        // `SlotView::reseed_pane_focus_if_idle` states the rule this now follows: every caller of
+        // these ops is inside a dispatch, so the request belongs here rather than on the paint path.
+        //
+        // ⚠⚠ It is NOT a second answer to "which pane": the daemon resolved it and this adopts what
+        // it resolved. `active_pane` still follows the same fact for the moves this client did not
+        // make, and adopting it twice is idempotent — the request names the pane already focused.
         BoundAction::SelectPaneToward { dir } => {
-            if use_terminal().slots.select_toward(*dir) {
-                Report::on_screen()
-            } else {
-                Report::nowhere(&action)
+            let landed = use_terminal().slots.select_toward(*dir);
+            match landed.and_then(|pane| use_terminal().slots.slot_of(pane)) {
+                Some(slot) => {
+                    pinion_core::focus_request::request(pane_tag(slot));
+                    Report::on_screen()
+                }
+                // ⚠ TWO CASES, ONE REPORT, and they are honestly the same one: the edge (`None`),
+                // and a pane this client holds no tile for — a window whose pane set this client
+                // has not caught up with. Neither is a place to put a ring, and both leave the
+                // keyboard where the user left it rather than on a tile that is not painted.
+                None => Report::nowhere(&action),
             }
         }
         // The same shape one verb over, and for the same reason: the daemon resolves the direction
@@ -1482,21 +1500,33 @@ mod tests {
         });
     }
 
-    /// **A directional key moves the SESSION's pane and requests no focus of its own** — the arm's
-    /// whole difference from the cycle above, asserted as both halves.
+    /// **A directional key moves the SESSION's pane AND asks for the ring in the same keystroke** —
+    /// the arm's whole difference from the cycle above, asserted as both halves.
     ///
-    /// `select-pane -t :.+` is resolved by this client and lands as a `focus_request`;
-    /// `select-pane -L` is resolved by the HOST, and the ring follows through
-    /// [`crate::active_pane`]'s reconcile on the next frame. A client that answered a direction with
-    /// `cycle_focus` would drain a request here and move nothing on the host — which is exactly what
-    /// the two assertions below are, one each.
+    /// `select-pane -t :.+` is resolved by this client; `select-pane -L` is resolved by the HOST,
+    /// which is the authority split `HostClient::select_toward` argues for and is unchanged. What
+    /// the client does with the daemon's answer is the half this holds.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THIS GATE MEASURED THE DEFECT AND WENT RED WHEN IT WAS FIXED (item 409)
+    ///
+    /// It was named `..._and_requests_no_focus`, and its last assertion was
+    /// `focus_request::drain() == None` under the sentence *"a directional key asks the HOST and
+    /// lets the reconcile move the ring"*. That reconcile ([`crate::active_pane`]) runs on the
+    /// PAINT path, and pinion drains a focus request at the end of a DISPATCH — so the ring landed
+    /// on the NEXT input event and swallowed it. Measured on the owner's window 2026-08-18:
+    /// `prefix ArrowRight` moved the session's active pane while the keyboard stayed where it was,
+    /// and `prefix o` — which never asks the daemon — worked throughout. **The absence this gate
+    /// was pinning was the bug**, so the pin is now the opposite fact, written per-step rather than
+    /// once at the end: an absence at the end could be satisfied by a request that fired for the
+    /// wrong step.
     ///
     /// The EDGES are what make the middle mean something: two lefts settle on the leftmost pane and
-    /// stay, so a direction is not a cycle. Pane 0 is the leftmost because
+    /// stay, so a direction is not a cycle — and an edge asks for NO ring, which is the same
+    /// `None`-is-the-edge answer one layer up. Pane 0 is the leftmost because
     /// [`LayoutTree::append_pane`](sprag_terminal::LayoutTree::append_pane) puts each birth at the
     /// rightmost position, so spawn order IS left-to-right here.
     #[test]
-    fn a_directional_key_moves_the_hosts_pane_and_requests_no_focus() {
+    fn a_directional_key_moves_the_hosts_pane_and_asks_for_the_ring() {
         let (host, _pane0) = two_cats();
         let owner = Owner::new();
         owner.run(|| {
@@ -1525,22 +1555,35 @@ mod tests {
             // Each press either MOVES a state the one before it established, or holds an EDGE the
             // one before it reached. No assertion here is true of the state that preceded it.
             let steps = [
-                ("ArrowRight", right, "right crosses to the second pane"),
-                ("ArrowRight", right, "the right edge is quiet, not a wrap"),
-                ("ArrowLeft", left, "left crosses back"),
-                ("ArrowLeft", left, "and the left edge is quiet too"),
+                (
+                    "ArrowRight",
+                    right,
+                    Some(1),
+                    "right crosses to the second pane",
+                ),
+                (
+                    "ArrowRight",
+                    right,
+                    None,
+                    "the right edge is quiet, not a wrap",
+                ),
+                ("ArrowLeft", left, Some(0), "left crosses back"),
+                ("ArrowLeft", left, None, "and the left edge is quiet too"),
             ];
-            for (key, want, why) in steps {
+            for (key, want, ring, why) in steps {
                 assert!(press(0, "b", ctrl()));
                 assert!(press(0, key, Modifiers::default()));
                 assert_eq!(slots.active_pane(), want, "{why}");
+                assert_eq!(
+                    pinion_core::focus_request::drain().as_deref(),
+                    ring.map(pane_tag),
+                    "⚠⚠⚠⚠⚠ AND THE RING IS ASKED FOR IN THE SAME KEYSTROKE ({why}). A move that \
+                     only reaches the host leaves the person typing into the pane they left — \
+                     item 409, measured on the owner's window, where `prefix ArrowRight` moved the \
+                     session and the keyboard stayed behind for as long as the binding existed. An \
+                     EDGE asks for nothing, because nothing moved.",
+                );
             }
-
-            assert_eq!(
-                pinion_core::focus_request::drain(),
-                None,
-                "a directional key asks the HOST and lets the reconcile move the ring",
-            );
         });
     }
 

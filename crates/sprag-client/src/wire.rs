@@ -3027,8 +3027,8 @@ impl HostClient for WireHost {
     /// than left for a reader to wonder about: the trait answers where to put the focus ring, and
     /// nothing that draws one has anything to SAY about why it did not move. The day a client wants
     /// "you are at the edge", this signature is where the fact stops.
-    fn select_toward(&self, dir: PaneDir) -> bool {
-        let Some(answer) = self.request(
+    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+        let answer = self.request(
             "scene/invoke",
             invoke(
                 &mux_action_path(SELECT_PANE_ACTION),
@@ -3039,13 +3039,20 @@ impl HostClient for WireHost {
                 SelectAsk::Toward { dir, from: None }.to_args(),
             ),
             "select_toward",
-        ) else {
-            return false;
-        };
-        // `changed` and not the pane id: the daemon answers the pane the window is on either way,
-        // so the id says nothing about whether the key did anything. This key is the one the swap
-        // and the resize beside it already read this way.
-        answer["changed"].as_bool().unwrap_or(false)
+        )?;
+        // ⚠⚠⚠ BOTH HALVES, AND `changed` IS STILL THE ONE THAT DECIDES. The daemon answers the
+        // pane the window is on either way, so the id alone cannot say whether the key did
+        // anything; the id alone is also the only thing that can tell a client's focus ring where
+        // to go. Reading `changed` first and the pane second keeps the old answer exactly
+        // (`is_some()`) and adds the destination the ring needs — item 409, where a GUI that had
+        // only the boolean left its keyboard behind on every arrow key.
+        if !answer["changed"].as_bool().unwrap_or(false) {
+            return None;
+        }
+        // ⚠ A `changed` with no readable pane is a daemon disagreeing with itself. `None` — the
+        // edge — is the safe reading: it moves no ring, where a guessed pane would seat one on a
+        // tile this client may not even hold.
+        answer["pane"].as_u64().map(PaneId)
     }
 
     /// Send the DIRECTION and let the daemon trade the two leaves — the same action
