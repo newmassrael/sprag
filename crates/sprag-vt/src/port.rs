@@ -3351,6 +3351,31 @@ impl Screen {
                 self.push_scrollback(line);
             }
             self.trim_scrollback();
+        } else if to_scrollback && top == 0 {
+            // ⚠⚠⚠⚠ THE ALT SCREEN KEEPS NOTHING AND MUST STILL COUNT — register item 367.
+            //
+            // Retention is correctly refused above: an alternate-screen buffer is app furniture its
+            // own program redraws, and no terminal scrolls it into history. But `logical_shed` is
+            // not retention, it is the ADDRESS SPACE — the monotonic count `lines_since` subtracts
+            // to answer `lost`. Skipping it with the push made a line that scrolled off the alt
+            // screen vanish with `lost` at ZERO, so a reader could not tell *the child said nothing*
+            // from *the child spoke and it is gone*.
+            //
+            // ⚠⚠⚠ MEASURED, AND IT IS WHY THIS IS HERE: a supervising loop drives a fullscreen
+            // agent, and its ONLY completion signal is a marker line read off this surface. Two runs
+            // judged 32 and 23 turns and heard the marker on none of them. The
+            // `Heard::Unheard { lost }` arm built for exactly this case (item 289) could never fire,
+            // because on the alt screen `lost` was structurally zero.
+            //
+            // ⚠⚠ THE LINE IS STILL LOST — this does not recover it and must not pretend to. What it
+            // buys is that the loss is REPORTABLE, which is the difference between a run that says
+            // *"I may not have seen the answer"* and one that records an agent as silent.
+            for r in 0..n {
+                if self.continues[r as usize].is_none() {
+                    self.logical_shed += 1;
+                }
+            }
+            self.touch_scrollback();
         }
         let cols = self.cols as usize;
         let shift = height - n; // rows that survive and move up by `n`
@@ -4088,6 +4113,79 @@ mod tests {
              every poll, for ever. Got restarted={} lines={:?}",
             steady.restarted,
             steady.lines,
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **WHAT AN ALT SCREEN DOES TO A LINE THAT SCROLLS OFF, AND WHETHER A READER CAN TELL**
+    /// — register item 367, and the question decides whether a supervising loop can ever trust this
+    /// surface for a fullscreen agent.
+    ///
+    /// # What was measured live, and why it is asked here
+    ///
+    /// `sprag find` could not see a string that had been on an agent's pane. Two controlled probes
+    /// exonerated the obvious suspects: a plain alt-screen pane IS searchable, and so is one under a
+    /// repainting TUI (`watch`). The separating probe was VOLUME — 200 lines into a shorter alt
+    /// screen, after which the last line is found and the first is **gone**. There is no scrollback
+    /// on the alternate screen, so what leaves the grid leaves existence.
+    ///
+    /// ⚠⚠⚠ **SO THE ONLY QUESTION LEFT IS WHETHER THE LOSS IS REPORTED.** A reader that is told
+    /// `lost` can say *"the agent may have answered and I could not see it"* — the
+    /// `Heard::Unheard { lost }` arm item 289 built exists for exactly that. A reader told nothing
+    /// records an agent that said nothing, and a run converges or grinds on a false negative.
+    #[test]
+    fn an_alt_screen_line_that_scrolls_off_is_gone_and_the_reader_is_told_how_many() {
+        let mut e = em(24, 4, "");
+        e.advance(b"\x1b[?1049h");
+        let base = e.screen().lines_since(u64::MAX).next;
+        // ⚠⚠⚠⚠ EVERY THIRD LINE IS WIDER THAN THE GRID, SO ROWS AND LOGICAL LINES DIFFER — and
+        // that is the whole reason the fixture is shaped this way. Written with short lines only,
+        // one row IS one line, and a fix that counted ROWS was indistinguishable from one that
+        // counted LINES: the mutation passed. A fixture whose two readings agree by construction
+        // cannot separate them, which this session has now paid for three times.
+        for n in 1..=12 {
+            if n % 3 == 0 {
+                e.advance(
+                    format!("scrolled {n} padded past the twenty-four column grid\r\n").as_bytes(),
+                );
+            } else {
+                e.advance(format!("scrolled {n}\r\n").as_bytes());
+            }
+        }
+
+        let seen = e.screen().lines_since(base);
+        assert!(
+            !seen.lines.iter().any(|line| line == "scrolled 1"),
+            "the fixture must actually overflow the grid, or nothing below is being measured: {:?}",
+            seen.lines,
+        );
+        assert!(
+            seen.lines
+                .iter()
+                .any(|line| line.starts_with("scrolled 12")),
+            "⚠ and the control: what is still ON the grid must be readable, or this measures a \
+             broken reader rather than a lost line. Got {:?}",
+            seen.lines,
+        );
+        assert!(
+            seen.lost > 0,
+            "⚠⚠⚠⚠ ITEM 367 — THE WHOLE QUESTION. An alt screen keeps no scrollback, so a line that \
+             scrolls off is unrecoverable by any reader. That is the terminal's design and not a \
+             defect. **The defect would be losing it in SILENCE**: `lost` is what lets a supervising \
+             loop answer *the agent may have spoken and I could not see it* instead of recording \
+             that it said nothing. If this is 0, a fullscreen agent's completion marker can vanish \
+             with nothing anywhere able to report it, and every run that grinds past its own \
+             milestone looks exactly like a run whose agent never finished",
+        );
+        assert_eq!(
+            seen.lost as usize + seen.lines.len(),
+            12,
+            "⚠⚠⚠⚠ AND THE COUNT MUST BE THE TRUTH, NOT MERELY NON-ZERO. Every complete line the \
+             child produced is either still readable or counted as lost, and nothing is both or \
+             neither — which is what makes `lost` a quantity a caller can reason with rather than a \
+             flag. Counting soft-wrapped continuation ROWS instead of logical LINES would inflate \
+             it and pass a `> 0` check; this is what separates them. lost={} readable={:?}",
+            seen.lost,
+            seen.lines,
         );
     }
 
