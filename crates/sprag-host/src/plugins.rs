@@ -113,6 +113,22 @@ const RUN_ID_KEY: &str = "id";
 /// The answer key carrying the pane whose occupant asked for a run — absent for a run nobody
 /// claims, on [`sprag_terminal::Pane::opened_by`]'s terms.
 const RUN_OPENED_BY_KEY: &str = "opened_by";
+/// The answer key naming WHICH BUILD DROVE a run — absent when nothing recorded one.
+///
+/// # ⚠⚠⚠⚠⚠ What it is for: a walk is evidence about the daemon's build, not about the tree
+///
+/// A daemon outlives its clients, so the ordinary state after a day's work is a daemon running code
+/// the tree has already replaced. Every other column here describes what a run DID; this one says
+/// which code did it, and without it a run driven by a daemon that predates a fix reads exactly
+/// like one that carries it (register item 438, measured 2026-08-18 at the cost of a round).
+///
+/// ⚠⚠ **Absent is not "this build".** It is a run restored from a log written before the field
+/// existed — see [`crate::runs::RunSummary::build`]. Filling it in with the reader's own build
+/// would date a dead daemon's work to its successor.
+///
+/// ⚠ An added ANSWER key earns no `WIRE_PROTOCOL` bump (that constant's own rule at version 5:
+/// absent-not-wrong to an old reader), and no pin covers a slot's answer shape.
+pub const RUN_BUILD_KEY: &str = "build";
 /// The answer key naming WHICH GUARDRAIL exhausted a run — absent unless one did.
 ///
 /// Its vocabulary is [`sprag_plugin::Ceiling`]'s own words, so the host never spells a variant and
@@ -1616,6 +1632,13 @@ fn run_to_json(run: &RunSummary) -> Value {
     });
     if let Some(opener) = run.opened_by {
         entry[RUN_OPENED_BY_KEY] = json!(opener);
+    }
+    // ⚠⚠⚠ AND THE BUILD FOLLOWS THE SAME OMIT-RATHER-THAN-NULL RULE, for a reason of its own:
+    // absent means NOTHING RECORDED WHICH BUILD THIS WAS — a run restored from a log written before
+    // the field existed — and a reader that filled that in with the daemon it is talking to would
+    // date a dead daemon's work to its successor. See `crate::runs::RunSummary::build`.
+    if let Some(build) = &run.build {
+        entry[RUN_BUILD_KEY] = json!(build);
     }
     entry
 }

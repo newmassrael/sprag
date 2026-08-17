@@ -44,8 +44,8 @@ use crate::notify::{ChannelRegistry, OutputQuery};
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
-    AttachAsk, AttachFault, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_MESSAGES_METHOD,
-    CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD,
+    AttachAsk, AttachFault, BUILD, BUILD_FIELD, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD,
+    CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD,
     EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, GOTO_PANE_PARAM, GOTO_PARAM, GOTO_SESSION_PARAM,
     GOTO_WINDOW_PARAM, INVALID_PARAMS, LAST_PARAM, MESSAGE_FIELD, NEEDLE_PARAM, PANE_PARAM,
     PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM,
@@ -1170,6 +1170,12 @@ fn window_moved(state: &HostState, session: &str) {
 /// param and answers every request happily, so a client that never heard back about the shape
 /// would go on to misread the first slot that changed. A daemon outliving its clients is the
 /// design, so that skew is the ORDINARY one after a rebuild, not an exotic case.
+///
+/// ⚠⚠⚠ AND IT CARRIES [`BUILD`] BESIDE THE NUMBER, which answers the OTHER half of that same
+/// sentence. A daemon outliving its clients does not only risk speaking a different shape — it
+/// keeps running BEHAVIOUR its clients' tree has already replaced, and no shape moves when it does.
+/// The number refuses; this one only tells. Register item 438 is what a run costs when nothing
+/// tells: a whole walk was read as evidence about code the daemon driving it did not contain.
 fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<String> {
     match request.params.as_ref().and_then(|p| p.get(CLIENT_PARAM)) {
         Some(serde_json::Value::String(client)) => {
@@ -1179,7 +1185,7 @@ fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<St
                 serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": { PROTOCOL_FIELD: WIRE_PROTOCOL },
+                    "result": { PROTOCOL_FIELD: WIRE_PROTOCOL, BUILD_FIELD: BUILD },
                 })
                 .to_string(),
             )

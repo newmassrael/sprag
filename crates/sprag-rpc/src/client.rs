@@ -1010,6 +1010,32 @@ impl ScopeAsk {
 ///   `working` true for ever. Build and restart are one act, not two.
 pub const WIRE_PROTOCOL: u32 = 37;
 
+/// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
+/// this crate's build script as the commit it was compiled from (or `unknown`).
+///
+/// # ⚠⚠⚠⚠⚠ Why it sits beside a number that answers a different question (register item 438)
+///
+/// The constant above is a SHAPE, and it moves only when a shape moves. A fix that changes what a
+/// run DOES — a new transition, a guard, a different word on a walk — earns no bump by that pin's
+/// own list, so both ends agree across it and neither can tell that one of them predates the fix.
+/// A daemon outlives its clients by design, so that skew is the ordinary state after a rebuild
+/// rather than an exotic one, and it is invisible from either end.
+///
+/// Measured 2026-08-18, which is what this exists for: a loop's entire walk was produced by a
+/// daemon built before two commits that changed the very edges the walk was being read for, and it
+/// was indistinguishable from a walk that carried them. The only probe that answered was `grep`
+/// over `/proc/<pid>/exe`.
+///
+/// ⚠⚠ **It is deliberately NOT a second version check.** Nothing refuses a connection over it and
+/// nothing should: a skew here is a fact a reader needs, not a shape neither end can parse. The
+/// number above owns refusal; this owns provenance, and conflating them would make every rebuild a
+/// forced restart.
+///
+/// ⚠ Every binary linking this crate is stamped with the SAME value — this is the identity of the
+/// image, not of a role — so a client and a daemon built from one `cargo build` agree, and one
+/// built later does not.
+pub const BUILD: &str = env!("SPRAG_BUILD");
+
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
 /// must carry belongs at the one seam that builds them all, never at each call site.
@@ -1023,6 +1049,18 @@ pub const PROTOCOL_PARAM: &str = "protocol";
 /// the client can only learn the truth from a reply. A reply with no such key is a daemon from
 /// before the handshake, which is a mismatch and is reported as one.
 pub const PROTOCOL_FIELD: &str = "protocol";
+
+/// The [`CLIENT_HELLO_METHOD`] REPLY key carrying the daemon's own [`BUILD`].
+///
+/// # ⚠⚠⚠⚠ An ABSENT key here means "this daemon cannot say", NEVER "it matches"
+///
+/// That reading is the whole reason this needs no [`WIRE_PROTOCOL`] bump. An added ANSWER key is
+/// absent-not-wrong to an old reader — the rule version 5 states beside the first argument bump —
+/// so a daemon predating this answers as it always did and a new client learns nothing, which is
+/// the honest outcome. **The moment a reader treats the absence as agreement, that stops being
+/// true and the key earns a number**, exactly as version 10 spells out for `ended`: the difference
+/// between *"this daemon cannot say"* and the cheapest answer is the whole fact.
+pub const BUILD_FIELD: &str = "build";
 
 /// The JSON-RPC method a connection sends ONCE to announce which CLIENT it belongs to
 /// (R-PR67 Stage 1) — `params: { "client": "<opaque client id>" }`.
@@ -1378,6 +1416,14 @@ pub struct HostConn {
     /// client that opens a subscription and then never reads it is choosing to buffer, exactly as one
     /// that never reads its socket is.
     pending: VecDeque<Value>,
+    /// WHICH BUILD the daemon on the other end said it is, read from the [`CLIENT_HELLO_METHOD`]
+    /// reply's [`BUILD_FIELD`] — `None` until [`handshake`](Self::handshake) has run, and `None`
+    /// after it against a daemon that does not carry the key.
+    ///
+    /// ⚠⚠ **The two `None`s mean the same thing on purpose**: *this connection cannot say what the
+    /// daemon is*. Neither is *"it matches"* — see [`BUILD_FIELD`], which is the sentence that keeps
+    /// this key off [`WIRE_PROTOCOL`]'s ledger.
+    daemon_build: Option<String>,
 }
 
 impl HostConn {
@@ -1414,6 +1460,7 @@ impl HostConn {
             scope: ScopeAsk::Default,
             timed_out: false,
             pending: VecDeque::new(),
+            daemon_build: None,
         })
     }
 
@@ -1518,11 +1565,29 @@ impl HostConn {
             CLIENT_HELLO_METHOD,
             serde_json::json!({ CLIENT_PARAM: client_id }),
         )?;
+        // ⚠ TAKEN BEFORE THE SHAPE IS JUDGED, deliberately: the reply that REFUSES is the one a
+        // reader most wants attributed, and a mismatch is exactly the moment somebody asks which
+        // daemon they are talking to. Storing it costs nothing on the happy path and is the only
+        // chance to store it on the other one.
+        self.daemon_build = reply
+            .get(BUILD_FIELD)
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         match reply.get(PROTOCOL_FIELD).and_then(Value::as_u64) {
             Some(daemon) if daemon == u64::from(WIRE_PROTOCOL) => Ok(()),
             Some(daemon) => Err(protocol_mismatch(&daemon.to_string())),
             None => Err(protocol_mismatch("none (a daemon older than this check)")),
         }
+    }
+
+    /// WHICH BUILD the daemon on the other end said it is, or `None` when this connection cannot
+    /// say — see [`BUILD_FIELD`] for why those are one answer and not two.
+    ///
+    /// Answers `None` before [`handshake`](Self::handshake) has run, because a connection that has
+    /// not asked has not been told.
+    #[must_use]
+    pub fn daemon_build(&self) -> Option<&str> {
+        self.daemon_build.as_deref()
     }
 
     /// A clone of the underlying stream usable ONLY to cancel a blocked

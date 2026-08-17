@@ -937,8 +937,26 @@ fn print_usage() {
 /// fork/exec and nothing else. Until R281 sprag had none, so that control was measuring the
 /// unknown-command path — which prints usage to STDERR and exits 2, i.e. neither the same work nor
 /// a success, and the harness recorded the exit code for two rounds before anyone read it.
+///
+/// # ⚠⚠⚠⚠ It names the COMMIT now, and it still asks no daemon — both halves are decisions
+///
+/// `CARGO_PKG_VERSION` is `0.0.1` and has never moved, so *"which build is this"* had an answer
+/// that was the same sentence for every build this repository has ever produced. The commit is the
+/// part that distinguishes them ([`sprag_host::wire::BUILD`]).
+///
+/// ⚠⚠⚠ **And this is THIS BINARY, never the daemon's** — which is the trap register item 438 was
+/// filed for. The client is rebuilt every round and the daemon is not, so a `--version` that
+/// printed one number would be read as naming both, and it would name the one that was never in
+/// doubt. Contacting the daemon here is refused for the reason above (a version that only answers
+/// while the server is healthy cannot answer the question it exists for), so the PAIR is
+/// [`doctor`]'s to report — a command that already requires a daemon and whose whole job is saying
+/// what is wrong with the machine.
 fn print_version() {
-    println!("sprag {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "sprag {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        sprag_host::wire::BUILD
+    );
 }
 
 /// Env override: the `sprag-gui` binary [`attach`] launches (else the sibling of this exe — they
@@ -4247,6 +4265,50 @@ fn footprint(memory: Counted) -> String {
     }
 }
 
+/// WHICH BUILD each end of this connection is, as [`doctor`]'s opening lines — one line when they
+/// agree, three when they do not, and a different three when the daemon cannot say.
+///
+/// # ⚠⚠⚠⚠⚠ Why a skew is a FINDING and not a footnote (register item 438)
+///
+/// A daemon outlives its clients by design: `sprag` is rebuilt every time anybody touches the tree
+/// and the daemon is whatever was running when it was last started. So the ordinary state after a
+/// day's work is a daemon running code the tree has already replaced — and NOTHING said so. What
+/// that cost, measured 2026-08-18: a loop's whole walk was read as evidence about two commits the
+/// daemon driving it did not contain, and the walk of a daemon that carried them is the same text.
+/// The only probe that answered was `grep` over `/proc/<pid>/exe`.
+///
+/// It is deliberately not a refusal. `WIRE_PROTOCOL` owns refusal, and it is right to: a shape
+/// neither end can parse must stop, where a behaviour skew is a fact a reader acts on. Refusing
+/// here would make every rebuild a forced restart of a daemon holding somebody's panes.
+///
+/// # ⚠⚠⚠⚠ The third case is the one this function exists to keep honest
+///
+/// A daemon that answers no build is NOT a daemon that matches. The absent key means *it cannot
+/// say* — see `sprag_rpc::BUILD_FIELD`, whose whole argument for needing no protocol bump is that
+/// nobody reads its absence as a promise. Printing "agree" there would break that argument and
+/// earn the number, which is why the three cases are three and not two.
+///
+/// Pure, and takes the daemon's answer rather than a connection, so the sentences are gateable
+/// without a live daemon — including the case a live daemon cannot be made to produce, which is an
+/// old one that does not carry the key.
+fn build_report(daemon: Option<&str>) -> String {
+    let client = sprag_host::wire::BUILD;
+    match daemon {
+        Some(build) if build == client => format!("build {client} (daemon and client agree)\n"),
+        Some(build) => format!(
+            "build {client} (this client)\nbuild {build} (the running daemon)\n\
+             the daemon is running other code than this tree built; restart it to promote \
+             (`sprag kill-server`, then start it again) — until then a run's walk is evidence \
+             about the daemon's build, not about yours\n"
+        ),
+        None => format!(
+            "build {client} (this client)\nbuild unknown (the running daemon does not say)\n\
+             a daemon predating this answer cannot be dated; an absent build is not a matching \
+             one\n"
+        ),
+    }
+}
+
 /// `doctor`: what is WRONG with the machine the panes run on.
 ///
 /// # Why it prints the healthy rows too, and why every row carries a number
@@ -4273,6 +4335,7 @@ fn doctor(args: Vec<String>) -> io::Result<()> {
         )));
     }
     let mut conn = connect()?;
+    print!("{}", build_report(conn.daemon_build()));
     let answer = query_slot(
         &mut conn,
         json!({ "path": mux_action_path(&doctor_over(DOCTOR_WINDOW_MS)) }),
@@ -5059,6 +5122,37 @@ fn render_question(asking: &Value, indent: &str) -> String {
     said
 }
 
+/// WHICH BUILD DROVE a run, as a clause on its heading — EMPTY when it is the build this client
+/// is, which is the common case and the quiet one.
+///
+/// # ⚠⚠⚠⚠⚠ Why silence is allowed to mean "the same build" HERE and nowhere else
+///
+/// Every other reader of this fact is forbidden to fill in an absence: an absent
+/// [`sprag_host::plugins::RUN_BUILD_KEY`] means *nothing recorded which build this was*, and a
+/// reader that took it for its own would date a dead daemon's work to its successor. That rule is
+/// not broken here, because this function does not print the ABSENCE — it prints a COMPARISON it
+/// resolved, against a value it knows for certain (its own [`sprag_host::wire::BUILD`]). An empty
+/// clause therefore asserts *"same as this client"*, which is a positive answer, and the two cases
+/// that cannot be resolved get words of their own.
+///
+/// # Why the clause goes on the HEADING and not under it
+///
+/// The line below a run's heading is its STATUS, and the line after that begins its walk. Both are
+/// parsed — this repository's own outer-loop watcher takes the status by `getline` off the heading
+/// and reads the walk's last line by position. A new line anywhere under the heading moves one of
+/// them. What a build belongs to is the run, which is what the heading names.
+fn render_build(run: &Value) -> String {
+    match run[sprag_host::plugins::RUN_BUILD_KEY].as_str() {
+        Some(build) if build == sprag_host::wire::BUILD => String::new(),
+        // ⚠ THE ONE A READER MUST ACT ON: this run was driven by other code than the client asking
+        // about it is built from, so its walk is evidence about that build and not about the tree.
+        Some(build) => format!("  (driven by build {build})"),
+        // ⚠ AND THE ONE THAT MUST NOT BE SILENT: a run restored from a log written before daemons
+        // recorded this. It is not "the same build"; it is nobody knowing.
+        None => "  (build not recorded)".to_owned(),
+    }
+}
+
 /// One run as a person reads it: what it is, who asked for it, and where it got to.
 fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
@@ -5067,7 +5161,7 @@ fn render_run(run: &Value) -> String {
         .as_u64()
         .map_or_else(String::new, |pane| format!("  (asked for by pane {pane})"));
     let state = &run["state"];
-    let head = format!("run {id}  {label}{opener}\n");
+    let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
@@ -7922,6 +8016,109 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⚠⚠⚠⚠⚠ **A DAEMON THAT CANNOT SAY WHICH BUILD IT IS, IS NOT A DAEMON THAT MATCHES** — the one
+    /// sentence `sprag_rpc::BUILD_FIELD`'s whole argument for needing no protocol bump rests on.
+    ///
+    /// The key is added to the `client/hello` reply, and an added ANSWER key earns no
+    /// `WIRE_PROTOCOL` bump because it is *absent-not-wrong* to an old reader. That licence is
+    /// CONDITIONAL: it holds only while nobody reads the absence as a promise. The moment a reader
+    /// prints "agree" for a daemon that said nothing, the key is making a claim old daemons cannot
+    /// support, and it earns the number after all.
+    ///
+    /// So this gate pins the THREE cases as three, and the mutation it exists to catch is the one a
+    /// reviewer would wave through: folding `None` into the equal arm. That reads as tidy, passes
+    /// every other test in this file, and quietly converts *"nobody knows"* into *"nothing is
+    /// wrong"* — which is the reading register item 438 cost a round to.
+    #[test]
+    fn a_daemon_that_cannot_say_which_build_it_is_is_not_a_daemon_that_matches() {
+        let mine = sprag_host::wire::BUILD;
+
+        let agreed = build_report(Some(mine));
+        assert!(
+            agreed.contains(mine) && agreed.contains("agree"),
+            "the ordinary case names the build once and says the ends agree: {agreed:?}",
+        );
+
+        // ── A SKEW IS A FINDING, and it must carry BOTH builds and the remedy ──
+        let skewed = build_report(Some("0000deadbeef"));
+        assert!(
+            skewed.contains(mine) && skewed.contains("0000deadbeef"),
+            "⚠⚠⚠ a skew that names only one build tells a reader nothing about which is which, \
+             which is the state this whole field exists to end: {skewed:?}",
+        );
+        assert!(
+            skewed.contains("restart"),
+            "⚠⚠ a finding a reader cannot act on is a footnote. The remedy is a restart and the \
+             report must say so: {skewed:?}",
+        );
+        assert!(
+            !skewed.contains("agree"),
+            "two different builds do not agree: {skewed:?}",
+        );
+
+        // ── AND THE CASE NO LIVE DAEMON ON THIS MACHINE CAN PRODUCE ANY MORE ──
+        // ⚠ It is reachable only from a daemon predating the key, which is exactly why it is
+        // driven here as a value rather than left to a fixture that would have to be an old build.
+        let silent = build_report(None);
+        assert!(
+            !silent.contains("agree"),
+            "⚠⚠⚠⚠⚠ AN ABSENT BUILD IS NOT A MATCHING ONE. Saying they agree here would be this \
+             client inventing the answer an old daemon could not give — and it is the reading that \
+             breaks the no-bump argument on `BUILD_FIELD`: {silent:?}",
+        );
+        assert!(
+            silent.contains(mine),
+            "the client still knows its own half, and a reader needs it to compare by hand: \
+             {silent:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **A RUN WITH NO RECORDED BUILD SAYS SO, WHERE ONE THAT MATCHES SAYS NOTHING** — the
+    /// same rule as the gate above, met at the one place that is allowed to bend it.
+    ///
+    /// Every other reader of this fact is forbidden to fill in an absence. [`render_build`] is the
+    /// exception and the exception is narrow: it does not print the absence, it prints a COMPARISON
+    /// against a value it knows for certain. So an empty clause is a positive claim — *this run was
+    /// driven by the build you are running* — and the two cases it cannot resolve must both speak.
+    ///
+    /// ⚠⚠⚠ The mutation this catches: rendering `None` as the empty string "because it is missing
+    /// anyway". Every run in `sprag runs` would then read as driven by the reader's own build,
+    /// including runs a dead daemon drove — the wrong answer that decodes cleanly.
+    #[test]
+    fn a_run_with_no_recorded_build_says_so_where_one_that_matches_says_nothing() {
+        use serde_json::json;
+        let key = sprag_host::plugins::RUN_BUILD_KEY;
+
+        assert_eq!(
+            render_build(&json!({ key: sprag_host::wire::BUILD })),
+            "",
+            "the common case is silent, so a hundred rows are not a hundred repetitions of one \
+             fact",
+        );
+
+        let other = render_build(&json!({ key: "0000deadbeef" }));
+        assert!(
+            other.contains("0000deadbeef"),
+            "⚠⚠ a run driven by other code must name it — its walk is evidence about THAT build: \
+             {other:?}",
+        );
+
+        // ⚠ A run restored from a log written before daemons recorded this. The KEY IS ABSENT, which
+        // is how the daemon spells it (omitted, never `null`), so the fixture omits it too.
+        let unrecorded = render_build(&json!({ "id": 3 }));
+        assert!(
+            !unrecorded.is_empty(),
+            "⚠⚠⚠⚠⚠ SILENCE HERE WOULD SAY «driven by your build», about a run this build never \
+             drove. Absent means nobody recorded it, and the row must say that out loud",
+        );
+        assert_ne!(
+            unrecorded,
+            render_build(&json!({ key: sprag_host::wire::BUILD })),
+            "⚠⚠⚠ and it must not render the SAME as agreement, or the distinction is only in the \
+             source",
+        );
+    }
 
     /// ⚠⚠⚠⚠ **A DAEMON WHOSE BINARY WAS REPLACED UNDER IT IS STILL A DAEMON** — the case that broke
     /// `kill-server` at the exact moment it was written for.

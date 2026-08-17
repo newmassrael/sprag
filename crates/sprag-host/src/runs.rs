@@ -87,6 +87,24 @@ struct RunRecord {
     /// run that banked its milestone and the run that lost it look identical from here, and those
     /// are exactly the two outcomes the person raising one is choosing between.
     order: Arc<AtomicBool>,
+    /// WHICH BUILD DROVE THIS RUN — [`crate::wire::BUILD`] for a run this daemon started, the dead
+    /// daemon's for one taken from a predecessor's log, and [`None`] for a log written before this
+    /// field existed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is not the caller's to say, which is why it is absent from [`NewRun`]
+    ///
+    /// Everything else a run brings arrives through that struct because a caller chose it. This one
+    /// is a fact ABOUT THE IMAGE the worker will run inside, so letting it travel with the request
+    /// would let a caller name a build that did not drive anything — and the whole point (register
+    /// item 438) is that the value comes off the running image rather than off anybody's account of
+    /// it. [`RunRegistry::submit`] stamps it; only [`RunRegistry::restore`] sets a different one,
+    /// and what it sets is what a previous image already said about itself.
+    ///
+    /// ⚠⚠ **[`None`] means *"nothing recorded which build this was"*, never *"this build"*.** A run
+    /// log from an older daemon has no such field, and reading its absence as the reader's own
+    /// build would date every restored run to whoever happened to read it — the exact wrong answer
+    /// that decodes cleanly which this field exists to prevent.
+    build: Option<String>,
 }
 
 /// ONE RUN as the `runs` slot reports it.
@@ -107,6 +125,9 @@ pub struct RunSummary {
     /// What it has spent so far — meaningful while [`state`](Self::state) is
     /// [`RunState::Running`], and the last reading the driver took once it is not.
     pub progress: Progress,
+    /// WHICH BUILD DROVE IT, or [`None`] when nothing recorded one — see `RunRecord::build` for
+    /// why those are different answers and why a reader must not fill the second one in.
+    pub build: Option<String>,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -167,6 +188,17 @@ pub struct PersistedRun {
     pub ceiling: Option<String>,
     /// What it captured, when it captured anything.
     pub output: Option<String>,
+    /// WHICH BUILD DROVE IT — see `RunRecord::build`. `#[serde(default)]`, so a log written before
+    /// this field loads as [`None`] rather than being refused.
+    ///
+    /// ⚠⚠⚠ **AND THAT IS WHY [`RUN_LOG_VERSION`] DOES NOT MOVE.** That constant refuses a format
+    /// this build cannot READ, and an optional field with a default is readable in both directions:
+    /// an older daemon ignores a key it does not know (serde's default for an unknown field), and
+    /// this one fills the absence with the honest answer. Bumping it would throw away every run
+    /// record the running daemon holds in exchange for a field nothing needs to be told twice —
+    /// the same trade the wire's own *added answer key* rule declines.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 /// The versioned file a daemon leaves behind for its successor.
@@ -249,6 +281,10 @@ impl RunRegistry {
             progress: run.progress,
             cancel: run.cancel,
             order: run.order,
+            // ⚠ STAMPED HERE AND NOWHERE ELSE ON THIS PATH — see `RunRecord::build`. The worker
+            // about to run is inside THIS image, so this image is the only honest answer, and it
+            // is read from the constant the same binary published at `client/hello`.
+            build: Some(crate::wire::BUILD.to_owned()),
         });
         id
     }
@@ -341,6 +377,7 @@ impl RunRegistry {
                         outcome,
                         ceiling,
                         output,
+                        build: run.build.clone(),
                     }
                 })
                 .collect(),
@@ -434,6 +471,13 @@ impl RunRegistry {
                 // Persisting an order would let a restart resurrect an instruction nobody could act
                 // on.
                 order: Arc::new(AtomicBool::new(false)),
+                // ⚠⚠⚠ AND THIS ONE IS TAKEN FROM THE LOG RATHER THAN STAMPED, which is the
+                // opposite decision to every field above and the reason the field exists. The rest
+                // of this record is about a run that is over, so inventing a value would assert
+                // something nobody wrote; the BUILD was written down, by the image that actually
+                // drove it. Stamping this daemon's here would date a dead daemon's work to its
+                // successor — which is precisely the confusion register item 438 was filed for.
+                build: saved.build.clone(),
             });
         }
     }
@@ -449,6 +493,7 @@ impl RunRegistry {
                 opened_by: record.opened_by,
                 state: lock(&record.state).clone(),
                 progress: lock(&record.progress).clone(),
+                build: record.build.clone(),
             })
             .collect()
     }
@@ -711,6 +756,83 @@ mod tests {
     fn a_worker_that_comes_back_after(id: RunId, delay: Duration) -> NewRun {
         let handle = std::thread::spawn(move || std::thread::sleep(delay));
         parked_run(id, "healthy".to_string(), handle)
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RESTORED RUN KEEPS THE BUILD THAT DROVE IT, AND A NEW ONE IS STAMPED WITH THIS
+    /// IMAGE** — the two halves of register item 438's *"a run says which build drove it"*, and
+    /// they are opposite decisions made three lines apart.
+    ///
+    /// `submit` stamps, because the worker it is about to start runs inside THIS image and no other
+    /// answer is honest. `restore` copies, because the run it is about is over and a previous image
+    /// already said what it was. Stamping in `restore` is the mutation this exists to catch: it
+    /// compiles, it reads as consistency, every other gate here stays green — and it dates a dead
+    /// daemon's work to whichever successor happens to read the log. That is the confusion the item
+    /// was filed for, reproduced by the fix meant to end it.
+    ///
+    /// # ⚠⚠⚠⚠ And the third case is why [`RUN_LOG_VERSION`] does not move
+    ///
+    /// A log written before this field must LOAD, not be refused — that constant's own rule is that
+    /// a format this build cannot read is ignored wholesale, so bumping it would throw away every
+    /// run record a running daemon holds to gain a column. The optional field with a default is
+    /// what makes the bump unnecessary, and it is only true while the JSON actually parses without
+    /// the key, which no other gate here reads.
+    ///
+    /// ⚠⚠ It loads as [`None`] and NOT as this image: the absence means nobody recorded it.
+    #[test]
+    fn a_restored_run_keeps_the_build_that_drove_it_and_a_new_one_is_stamped_with_this_image() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(a_worker_that_comes_back_after(id, Duration::from_millis(1)));
+
+        assert_eq!(
+            registry.snapshot()[0].build.as_deref(),
+            Some(crate::wire::BUILD),
+            "⚠⚠⚠ a run this daemon started was driven by this daemon, and nothing else can be the \
+             honest answer",
+        );
+        assert_eq!(
+            registry.persistable().runs[0].build.as_deref(),
+            Some(crate::wire::BUILD),
+            "and what it leaves on disk must carry it, or the successor has nothing to read",
+        );
+
+        // ── A PREDECESSOR'S LOG, naming a build this image is not ──
+        let mut log = registry.persistable();
+        log.runs[0].build = Some("0000deadbeef".to_owned());
+        let mut successor = RunRegistry::default();
+        successor.restore(&log);
+        assert_eq!(
+            successor.snapshot()[0].build.as_deref(),
+            Some("0000deadbeef"),
+            "⚠⚠⚠⚠⚠ THE DEAD DAEMON'S BUILD SURVIVES ITS DAEMON. A successor that stamped its own \
+             here would report every restored run as driven by code that never ran it",
+        );
+
+        // ── AND A LOG FROM BEFORE THE FIELD EXISTED, as JSON rather than as a struct ──
+        // ⚠ Hand-written on purpose: serialising `PersistedRun` would always EMIT the key, so a
+        // fixture built from the type could never stage the file this compatibility claim is about.
+        let old: RunLog = serde_json::from_str(
+            r#"{"version":1,"runs":[{"id":7,"label":"ai_loop pane=3","iterations":2,
+                "cost":null,"unit":null,"finished":true,"outcome":"converged",
+                "ceiling":null,"output":null}]}"#,
+        )
+        .expect(
+            "⚠⚠⚠ a log written before this field must still PARSE — if it does not, the field \
+             owed `RUN_LOG_VERSION` a bump and every run record on a live daemon is being thrown \
+             away",
+        );
+        assert_eq!(
+            old.runs[0].build, None,
+            "⚠⚠ and it loads as «nobody recorded it», never as the build that happens to be \
+             reading it",
+        );
+        let mut reader = RunRegistry::default();
+        reader.restore(&old);
+        assert_eq!(
+            reader.snapshot()[0].build,
+            None,
+            "the absence must survive the restore too, or the honest answer is lost one layer in",
+        );
     }
 
     fn parked_run(id: RunId, label: String, handle: JoinHandle<()>) -> NewRun {

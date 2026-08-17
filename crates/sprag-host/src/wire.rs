@@ -2522,6 +2522,22 @@ pub use sprag_rpc::{NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_P
 /// a client decodes whole.
 pub use sprag_rpc::{INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCOL};
 
+/// WHICH BUILD this image is, and the [`CLIENT_HELLO_METHOD`] reply key it travels on — the
+/// PROVENANCE half of the pair above, kept separate from it on purpose.
+///
+/// The shape agreement decides whether two ends may speak at all; this decides nothing and refuses
+/// nothing. It exists so a walk, a run record or a bug report can be dated to the code that
+/// produced it, which [`WIRE_PROTOCOL`] structurally cannot do: that number moves on a SHAPE, and
+/// the skew this names is a daemon whose behaviour changed while every shape stayed put (register
+/// item 438).
+///
+/// ⚠⚠⚠ **Adding [`BUILD_FIELD`] to the hello reply earns no bump**, and the rule is not this
+/// module's to invent — [`WIRE_PROTOCOL`]'s own doc states it at version 5: *an added answer key is
+/// absent-not-wrong to an old reader*. The condition on that rule is that nobody reads the absence
+/// as a promise, which is written on [`BUILD_FIELD`] itself and is the thing to check if this key
+/// ever grows a consumer.
+pub use sprag_rpc::{BUILD, BUILD_FIELD};
+
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].
 ///
