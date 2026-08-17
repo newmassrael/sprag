@@ -161,6 +161,13 @@ fn main() -> ExitCode {
             // client twice. Before the session kill, which is happy to kill whichever session the
             // client it finds is attached to.
             check_the_gui_follows_the_users_font(&mut smoke, &mut report);
+            // Straight after the font gate, which has just replaced the client twice — so this one
+            // is not spending a relaunch that the run had not already paid for.
+            // It inherits NO particular pane set and needs none: it reads the daemon's own list and
+            // compares the client against that, so whatever the checks above left is the fixture.
+            // (Measured at this point: two panes in the current window.) It hands that on unchanged
+            // — same client, same session, same panes — which the checks below depend on.
+            check_a_client_that_attaches_paints_the_panes_it_joined(&mut smoke, &mut report);
             // AFTER it, and that ordering is load-bearing twice over: the check above needs
             // exactly ONE pane to make the daemon-to-client pane correspondence unambiguous, and
             // this one SPLITS until the pane set can attribute its own cost. It also leaves those
@@ -1804,6 +1811,165 @@ fn check_the_gui_follows_the_users_font(smoke: &mut Smoke, report: &mut Report) 
         // Not merely `<`: an off-by-one would satisfy that, and what a doubled glyph must produce is
         // roughly half the columns. Two thirds is the loose bound the exact cell metric may land in.
         large_cols * 3 < default_cols * 2,
+    );
+}
+
+/// The pane ids `sprag panes` listed, in the order the daemon gave them.
+///
+/// CURRENT-WINDOW scoped, and that is measured rather than assumed: a session carrying two windows
+/// lists only the current one's panes, which is exactly the set a client paints. So this count and a
+/// client's tile count are answers to the same question and may be compared directly.
+fn listed_pane_ids(listed: &str) -> Vec<u64> {
+    listed
+        .lines()
+        .filter_map(|line| line.split(':').next()?.trim().parse().ok())
+        .collect()
+}
+
+/// **THE GATE for a client that ATTACHES: it must PAINT the panes it joined** — register item 368.
+///
+/// A window that attached drew its sidebar, its session rows, its window tabs and all of its chrome,
+/// and left the terminal area BLANK over live PTYs. Nothing in this file could see it, and the
+/// reason is structural rather than an oversight: **every client this run boots CREATES its session**,
+/// so the attach route had never been painted by any gate at all. It was found by a person
+/// screenshotting a window, which is not a place a suite can stand.
+///
+/// The claim is about the pane's CONTENT and not only about its tiles, so a client that put up the
+/// right number of EMPTY rectangles fails exactly as loudly as one that put up none. What it is
+/// measured against is the DAEMON's own screen for that pane, re-read on every poll — the daemon was
+/// measured innocent when the defect was found (`panes`, `layout` and `capture-pane` all answered
+/// correctly over a blank window), which makes *does the client show what the daemon holds* the
+/// question actually worth gating.
+///
+/// The CONTROL comes first and is what makes the rest a claim about ATTACHING: the client that
+/// CREATED this session is shown painting a marker driven through the daemon. Without it a red below
+/// could be a pane that never echoed or a shell that had not started. The marker earns a second keep
+/// besides: it puts a long, distinctive line on the screen, so the comparison below rests on
+/// something better than a bare prompt every pane in the run would satisfy.
+///
+/// It hands on what it was given: the same client, on the same session, over the same panes. And it
+/// asserts nothing about HOW MANY there are — the count comes from the daemon on the run's own
+/// fixture, so a neighbour that splits or kills a pane cannot make this check wrong, only different.
+///
+/// REVERT-PROOF, and MEASURED rather than asserted: answering `Ok(Vec::new())` from `boot_panes`'s
+/// attach arm in `sprag-client` mirrors no panes on attach, and the run went
+/// `an attaching client paints one tile per pane the daemon reports (Ok(0) of 1)` — both claims red,
+/// the control still green, which is the recorded symptom exactly.
+fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session it is attached to", false);
+        return;
+    };
+    let listed = smoke.cli(&["panes", "-t", &session]);
+    let ids = listed.as_deref().map(listed_pane_ids).unwrap_or_default();
+    // The fixture, asserted rather than assumed: with no pane there is nothing to attach TO, and
+    // every claim below would pass by being about nothing.
+    report.check(
+        &format!("the daemon lists the panes there are to attach to ({ids:?})"),
+        !ids.is_empty(),
+    );
+    let Some(&pane) = ids.first() else {
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check(
+            "the daemon answers a second connection to drive a pane",
+            false,
+        );
+        return;
+    };
+
+    // ── The control: the marker reaches the pixels of the client that CREATED this session.
+    const MARKER: &str = "attach-paints-r368";
+    let driven = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": format!("/pane_{pane}/sprag_input/external/text"),
+            "args": { "text": format!("echo {MARKER}\n") },
+            "session": session,
+        }),
+    );
+    let painted_by_the_creator = smoke
+        .wait_for(|s| {
+            (0..s.pane_count().ok()?)
+                .any(|tile| {
+                    s.pane_rows(tile)
+                        .is_ok_and(|rows| rows.iter().any(|row| row.contains(MARKER)))
+                })
+                .then_some(())
+        })
+        .is_ok();
+    report.check(
+        &format!("the marker reaches the painted grid of the client that CREATED the session ({driven:?})"),
+        painted_by_the_creator,
+    );
+    if !painted_by_the_creator {
+        return;
+    }
+
+    // ── The act. The ONE thing that changes is the variable the product branches on.
+    if let Err(error) = smoke.relaunch_gui_attached(&session) {
+        report.check(
+            &format!("a client relaunches naming a session ({error})"),
+            false,
+        );
+        return;
+    }
+
+    // It ATTACHED rather than making one of its own — the half item 243 read as missing entirely.
+    let joined = smoke
+        .wait_for(|s| s.attached_session().filter(|now| *now == session))
+        .is_ok();
+    report.check(
+        &format!("a client that names a session lands ON it ({session})"),
+        joined,
+    );
+
+    let tiles = smoke.wait_for(|s| s.pane_count().ok().filter(|painted| *painted == ids.len()));
+    report.check(
+        &format!(
+            "an attaching client paints one tile per pane the daemon reports ({tiles:?} of {})",
+            ids.len()
+        ),
+        tiles.is_ok(),
+    );
+
+    // ── The content claim, and BOTH SIDES ARE READ AT THE SAME MOMENT — which is what keeps it
+    // from expiring. The obvious form (drive a marker, attach, hunt the marker) has a false failure
+    // in it that the mutation run exposed: attaching re-arbitrates the window size, the pane
+    // REFLOWS, and a line that was on its screen can leave it — measured, `cells.0` answering
+    // `false` for a marker the creating client had painted seconds before. A gate that can go red
+    // for that is a gate nobody may trust when it goes red for the real thing.
+    //
+    // So the reference is whatever the DAEMON says is on that pane's screen NOW, re-read on every
+    // poll: the loop settles when the two agree and can only time out on a client that never paints
+    // what the daemon holds. That is item 368's question in one line — the daemon was measured
+    // innocent, so the claim worth gating is *does the client show what the daemon has*.
+    let agreed = smoke.wait_for(|s| {
+        let screen = s
+            .cli(&["capture-pane", &pane.to_string(), "-p", "-t", &session])
+            .ok()?;
+        // The LONGEST line, so the claim rests on something distinctive rather than on a bare
+        // prompt every pane in the run would satisfy. `MARKER` is driven above precisely so there
+        // is one; if the reflow took it, the next longest is still a real thing to demand.
+        let reference = screen
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.trim().is_empty())
+            .max_by_key(|line| line.len())?
+            .to_owned();
+        (0..s.pane_count().ok()?)
+            .any(|tile| {
+                s.pane_rows(tile)
+                    .is_ok_and(|rows| rows.iter().any(|row| row.contains(&reference)))
+            })
+            .then_some(reference)
+    });
+    report.check(
+        &format!(
+            "an attaching client paints the CONTENT the daemon says its panes hold ({agreed:?})"
+        ),
+        agreed.is_ok(),
     );
 }
 
@@ -4848,6 +5014,9 @@ const MAX_VISIBLE_ROWS: usize = 10;
 /// The window strip's "+" (new window) button tag — the same gesture a user clicks, addressed
 /// symbolically because a synthesised pointer coordinate never lands headless.
 const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
+/// The environment variable a client reads to learn WHICH session to attach to — the one
+/// `sprag attach` sets, and the only route by which a launch can be told to join existing work.
+const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 
 // ─── The harness ─────────────────────────────────────────────────────────────────────────────────
 
@@ -4925,14 +5094,18 @@ impl Smoke {
             &gui_sock,
             &state,
             &daemon_log,
+            None,
         )?;
         wait_for_path(&host_sock)?;
+        // The boot client names no session, which is the launch a person performs from a desktop
+        // entry. What that means is the product's own decision and this run does not pre-empt it.
         let gui = spawn(
             &target.join("sprag-gui"),
             &host_sock,
             &gui_sock,
             &state,
             &gui_log,
+            None,
         )?;
         wait_for_path(&gui_sock)?;
         let conn = HostConn::connect(&gui_sock, PATIENCE)?;
@@ -5067,7 +5240,7 @@ impl Smoke {
         rows: u16,
     ) -> Result<sprag_terminal::PanePty, String> {
         let mut command = sprag_terminal::CommandBuilder::new(self.target.join("sprag-tui"));
-        command.env("SPRAG_GUI_SESSION", session);
+        command.env(SESSION_ENV, session);
         command.env("SPRAG_GUI_HOST_SOCK", &self.host_sock);
         command.env("SPRAG_HOST_RPC_SOCK", &self.host_sock);
         command.env("XDG_STATE_HOME", &self.state);
@@ -5397,6 +5570,20 @@ impl Smoke {
     /// Its log goes to a SECOND file, so a failure after this can still be read against the first
     /// launch's output — `spawn` creates the log, and reusing the path would truncate it.
     fn relaunch_gui(&mut self) -> Result<(), String> {
+        self.relaunch_gui_as(None)
+    }
+
+    /// Relaunch the client so that it ATTACHES to `session`, the route `sprag attach` takes.
+    ///
+    /// The same act as [`relaunch_gui`](Self::relaunch_gui) and deliberately so: the ONLY difference
+    /// between the two is the one environment variable the product branches on, so a check that
+    /// compares them is comparing the product's two answers and nothing of this harness's.
+    fn relaunch_gui_attached(&mut self, session: &str) -> Result<(), String> {
+        self.relaunch_gui_as(Some(session))
+    }
+
+    /// The body both relaunches share — `session` as [`spawn`] takes it.
+    fn relaunch_gui_as(&mut self, session: Option<&str>) -> Result<(), String> {
         let _ = self.gui.kill();
         let _ = self.gui.wait();
         let _ = std::fs::remove_file(&self.gui_sock);
@@ -5410,6 +5597,7 @@ impl Smoke {
             &self.gui_sock,
             &self.state,
             &self.gui_log,
+            session,
         )
         .map_err(|error| format!("relaunch the gui: {error}"))?;
         wait_for_path(&self.gui_sock).map_err(|error| error.to_string())?;
@@ -5574,9 +5762,25 @@ fn lavapipe_icd() -> String {
 /// `SPRAG_LOG` is left unset on purpose: the default filter is already `warn`, which is the level
 /// that carries a diagnostic, and naming a directive here would silently decide what the next
 /// reader of this log is allowed to see.
-fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path, log: &Path) -> io::Result<Child> {
+///
+/// `session` names a session for a CLIENT to ATTACH to ([`SESSION_ENV`], the variable `sprag attach`
+/// sets). `None` leaves it unset, which is what the daemon and every creating launch want; the
+/// variable is set rather than always-present-and-empty because the client treats an empty value as
+/// absent and a check driving the attach route must not depend on that reading.
+fn spawn(
+    binary: &Path,
+    host: &Path,
+    gui: &Path,
+    state: &Path,
+    log: &Path,
+    session: Option<&str>,
+) -> io::Result<Child> {
     let log = std::fs::File::create(log)?;
-    Command::new(binary)
+    let mut command = Command::new(binary);
+    if let Some(session) = session {
+        command.env(SESSION_ENV, session);
+    }
+    command
         // The stand-in `notify-send` FIRST on the path — see [`install_notify_stand_in`]. It is set
         // for the whole run rather than for one check because the claim under test is partly a
         // NEGATIVE one ("nothing reached the desktop while the person was here"), and a recorder
