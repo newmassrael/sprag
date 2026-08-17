@@ -949,6 +949,38 @@
     <data id="context" expr="0"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ HOW MUCH THIS SESSION MAY HAVE READ BEFORE THE NEXT MILESTONE IS
+      TAKEN SOMEWHERE ELSE — the number `reviewing` decides on, and the reason
+      the decision is no longer a count of turns.
+
+      `context`'s own entry above argues at length that NO GUARD should be
+      written on it, and that argument was about a different question: whether
+      a restart is worth its cold start, which is economics, and a threshold
+      placed inside the band the workload sits in decides by rounding. **That
+      reasoning stands and this is not it.** This one is CAPACITY — a session's
+      reading is bounded, and a bound is not a coin toss: the argument against
+      a threshold in the middle of a band says nothing about one near the end.
+
+      ⚠⚠⚠⚠ AND THE WORKLOAD IS OUTSIDE THE BAND THAT REASONING WAS COMPUTED
+      FOR, which is exactly the condition it named as making a guard writable
+      (*"what would justify one is a re-measurement, not a preference"*).
+      Measured on a live loop, 2026-08-18: ONE turn reached `context - floor` of
+      **255,809** tokens across 293 billed requests, where the eight-turn figure
+      the conclusion rests on is **18,736**. A count of turns cannot bound that —
+      the same measurement puts one request's growth between 861 and 633,749.
+
+      ⚠⚠ ZERO MEANS NO CEILING WAS AUTHORED, and the loop then behaves exactly
+      as it did before this existed: every reflection replaces the session. A
+      caller who has not thought about capacity is not given a number somebody
+      guessed for them.
+
+      ⚠ It is the KIND's to author, like `max_turns` and `reflect_every` — what
+      a session may spend depends on the work, and this template decides nothing
+      for the next repository.
+    -->
+    <data id="context_ceiling" expr="0"/>
+
+    <!--
       ⚠⚠⚠ THE TWO NUMBERS THAT MAKE `context` LEGIBLE, written by the driver on
       the same `turn.done` and by nothing else. Alone, `context` says how big the
       session has become and nothing about what could be done with that.
@@ -2167,6 +2199,35 @@
       The review carried a line for the session that does not exist yet. ⚠ It is
       assigned rather than appended — see `carried`.
     -->
+    <!--
+      ⚠⚠⚠⚠⚠ WHETHER THE NEXT MILESTONE IS TAKEN HERE OR IN A NEW SESSION IS
+      DECIDED ON WHAT THE SESSION HAS READ, NOT ON HOW MANY TURNS IT HAS TAKEN.
+
+      Both of these edges went to `restarting` unconditionally, so EVERY
+      reflection cost a cold start whether or not the session had grown enough
+      to be worth replacing. The cadence that reached them was a turn count, and
+      a turn is not a unit of context: measured on this loop's own run, ONE turn
+      produced three commits and left `context - floor` at 255,809 tokens, while
+      the number the "no guard" reasoning was computed from was 18,736.
+
+      ⚠⚠⚠ SO THE ORDER IS: finish the turn, ask what is next, and then ask
+      WHETHER THERE IS ROOM TO DO IT HERE. Room means this session's reading has
+      not reached `context_ceiling`. With room, the next milestone is taken in
+      the session that already holds the work — which is the whole saving, since
+      a replacement re-pays `cold` and re-reads everything it discarded.
+
+      ⚠⚠ ZERO IS NOT A SMALL NUMBER on either side, and both fall back to the
+      old behaviour rather than deciding on a value nobody could read: an
+      unauthored ceiling (`0`) is a caller who has not said, and a `context` of
+      `0` is a session whose reading could not be taken at all. Replacing is the
+      conservative half — it is what this loop has always done.
+    -->
+    <transition event="review.done"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
+                target="working">
+      <assign location="carried" expr="_event.data.carried"/>
+      <assign location="turns_since_reflect" expr="0"/>
+    </transition>
     <transition event="review.done" target="restarting">
       <assign location="carried" expr="_event.data.carried"/>
     </transition>
@@ -2177,6 +2238,12 @@
       session about a habit that is over, and the loop would keep correcting
       something nobody was doing any more.
     -->
+    <transition event="review.none"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
+                target="working">
+      <assign location="carried" expr="''"/>
+      <assign location="turns_since_reflect" expr="0"/>
+    </transition>
     <transition event="review.none" target="restarting">
       <assign location="carried" expr="''"/>
     </transition>

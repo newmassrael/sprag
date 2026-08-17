@@ -5789,6 +5789,85 @@ mod tests {
             .close(pane);
     }
 
+    /// **THE GATE FOR WHERE A SESSION IS REPLACED** — register item 424, and the three claims are
+    /// one decision seen from its three failure modes.
+    ///
+    /// `reviewing` sent BOTH of its exits to `restarting`, so every reflection cost a session
+    /// replacement whether or not the session had grown enough to be worth one. The cadence that
+    /// reached it is a count of turns, and **a turn is not a unit of context**: measured on this
+    /// loop's own run, ONE turn produced three commits and left `context - floor` at 255,809 tokens
+    /// where the reasoning that concluded *no guard* was computed from 18,736.
+    ///
+    /// ⚠⚠ Read as TEXT for the neighbour's stated reason — the compiled machine cannot answer
+    /// *which transitions exist and what each is guarded on*, and what has to survive a future edit
+    /// is precisely the SHAPE: an author who deletes the fallback, or the zero guard, breaks a case
+    /// no run in this suite drives.
+    #[test]
+    fn reviewing_replaces_the_session_only_when_the_reading_says_there_is_no_room() {
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        // ⚠ A TRANSITION IS THE UNIT, NOT A LINE, and reading lines is how the first draft of this
+        // gate failed: an author may put `cond` and `target` on separate lines, and a line-wise
+        // filter then reports an unguarded edge that is plainly guarded two lines up.
+        let flat: String = DOCUMENT.split_whitespace().collect::<Vec<_>>().join(" ");
+        let staying: Vec<&str> = flat
+            .match_indices("<transition")
+            .filter_map(|(at, _)| {
+                let rest = &flat[at..];
+                let end = rest.find('>')? + 1;
+                Some(&rest[..end])
+            })
+            .filter(|edge| edge.contains("target=\"working\""))
+            .collect();
+        let guarded: Vec<&&str> = staying
+            .iter()
+            .filter(|edge| edge.contains("cond="))
+            .collect();
+
+        // 1. The session can be KEPT at all — the edge that makes the decision a decision.
+        assert!(
+            !staying.is_empty(),
+            "⚠⚠⚠⚠ ITEM 424: `reviewing` must be able to take the next milestone in the session \
+             that already holds the work. With both exits going to `restarting`, an improvement \
+             cadence and a session-replacement policy are the same number wearing one name — and \
+             five was chosen on the first axis while paying on the second",
+        );
+
+        // 2. And it is guarded on the READING rather than on a count.
+        let ceiling: Vec<&&str> = guarded
+            .iter()
+            .filter(|edge| edge.contains("context_ceiling"))
+            .copied()
+            .collect();
+        assert!(
+            !ceiling.is_empty(),
+            "⚠⚠⚠ the edge that keeps the session must ask what the session has READ. A turn count \
+             cannot bound it: the same measurement puts one request's growth between 861 tokens \
+             and 633,749",
+        );
+
+        // 3. ⚠⚠⚠⚠ AND ZERO IS NOT A SMALL NUMBER ON EITHER SIDE. An unauthored ceiling and an
+        // unreadable context are both *nobody could say*, and deciding to KEEP a session on either
+        // would be deciding on a value nobody read — the failure item 431 spent a round on, where a
+        // reader answered 0 for a session whose transcript held 466,013.
+        assert!(
+            ceiling.iter().all(|edge| {
+                edge.contains("context_ceiling &gt; 0") && edge.contains("context &gt; 0")
+            }),
+            "⚠⚠⚠⚠ every keeping edge must refuse a zero on BOTH sides — an unauthored ceiling is a \
+             caller who has not said, and a `context` of 0 is a reading that could not be taken. \
+             The fall-back is to REPLACE, which is what this loop has always done. Got {ceiling:?}",
+        );
+
+        // 4. And the fall-back still exists, or an unauthored ceiling would strand every loop in
+        //    one session for ever — the opposite defect, reached by deleting a line.
+        assert!(
+            flat.contains("<transition event=\"review.done\" target=\"restarting\">")
+                && flat.contains("<transition event=\"review.none\" target=\"restarting\">"),
+            "⚠⚠⚠ the UNGUARDED exits must remain: they are what a caller who authored no ceiling \
+             gets, and they are the behaviour this loop had before the guard existed",
+        );
+    }
+
     /// ⚠⚠⚠ **EVERY EDGE INTO `reflecting` SAYS WHY, IN A WORD THIS DRIVER HAS AN ARM FOR** —
     /// register item 261's other half, held against the document itself.
     ///

@@ -183,6 +183,44 @@
     <data id="reflect_every" expr="5"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ AND THE SENTENCE ABOVE — *"known to lose on cost"* — IS NO LONGER
+      TRUE OF THIS NUMBER, because the cost it named was a SESSION REPLACEMENT
+      and this number no longer buys one.
+
+      `reflecting` asks what to do next. It used to be followed by `restarting`
+      unconditionally, so an improvement cadence and a session-replacement
+      policy were the same number wearing one name — and five was chosen on the
+      first axis while paying on the second. The template now asks whether there
+      is ROOM before it replaces anything, so five is what it always claimed to
+      be: how often this loop stops to choose.
+
+      ⚠⚠⚠⚠ WHAT THE CEILING IS FOR, AND WHY IT IS A NUMBER AT ALL WHERE THE
+      TEMPLATE REFUSED ONE. The template's refusal is about ECONOMICS — is a
+      restart worth its cold start — and it is right that a threshold inside the
+      band decides by rounding. This is CAPACITY: a session's reading is
+      bounded, and a bound near the end of the range is not a coin toss.
+
+      ⚠⚠⚠ MEASURED HERE, 2026-08-18, on this loop's own inner session: ONE turn
+      reached **277,933** tokens of cache read across 293 billed requests, with
+      a floor of 22,124 — so `context - floor` was **255,809** after a single
+      turn that produced three commits. Five such turns are not a policy anybody
+      measured; they are whatever five turns happen to be.
+
+      ⚠⚠ 800,000 IS CHOSEN AGAINST A 1M WINDOW and is stated rather than
+      derived, because THE WINDOW IS NOT IN THIS DATAMODEL — the agent knows it
+      and the loop does not. The residue that follows is named rather than
+      hidden: against a SMALLER window this ceiling never fires and the loop
+      behaves exactly as it did before, replacing on every reflection. That is
+      the fail-safe direction — the old behaviour — and not a silent one.
+
+      ⚠ What would replace the guess is the agent stating its own window, the
+      same way it now states the prompt it was asked and the transcript it
+      writes. Until then this is a number with a reason, which is the most this
+      document can honestly hold.
+    -->
+    <data id="context_ceiling" expr="800000"/>
+
+    <!--
       ⚠⚠⚠⚠ WHAT A DEBT RUN OWES AT ITS ENDING, BEYOND THE ACCOUNT EVERY RUN GIVES.
       Appended to the template's closing question through `closing_rules`.
 
