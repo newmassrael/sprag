@@ -5536,6 +5536,170 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A LOOP WHOSE PEER FOLDED THE PROMPT AWAY IS DELIVERED ON THE AGENT'S OWN ACCOUNT** —
+    /// register item 421, driven from the LOOP's end rather than from `deliver`'s.
+    ///
+    /// # ⚠⚠⚠⚠ What this holds that [`crate::deliver`]'s own gate cannot
+    ///
+    /// That module's gate proves the new road exists. This one proves **the loop walks it** — three
+    /// facts of this driver, each of which was capable of leaving the fix unreachable:
+    ///
+    /// * [`OuterLoop::submit_lands_when`] escalates to [`SubmittedWhen::Took`] for a pane whose
+    ///   verdict is REPORTED, so the contract that unlocks the road is the one this loop asks;
+    /// * `say` treats the new answer as a delivery rather than falling into one of its two refusals;
+    /// * the prompt under delivery is the DOCUMENT's, composed in `priming`, which is the population
+    ///   item 421 died on — no caller's wording is involved.
+    ///
+    /// The register's rule for this is its own: *"if a doc claims it reaches, RUN IT"*, and four
+    /// such claims in a row had been false.
+    ///
+    /// # ⚠⚠⚠ THE CONTROL IS THE SAME PEER WITH THE HOOKS TAKEN AWAY, and it must still refuse
+    ///
+    /// A pane whose verdict is SCRAPED can never name the question it took, so it keeps the screen
+    /// predicate and dies exactly as the live runs did — `NeverTook`, before any submit. Same peer,
+    /// same prompt, opposite verdicts, and the only difference is who is able to answer. Without it
+    /// this gate would pass just as well over a delivery that pressed at every pane.
+    ///
+    /// ⚠⚠ **THE SEAM, NAMED**: the stand-in supervisor reports what the pty was WRITTEN, not what an
+    /// agent parsed, so it cannot catch a report that disagrees with the delivery — `deliver`'s own
+    /// gate holds that half against a double that reports somebody else's text. What is real here is
+    /// the ROAD: the authority, the contract, the arm, and this driver's reading of the answer.
+    #[test]
+    fn a_loop_delivers_a_prompt_its_peer_folded_away_when_the_agent_can_name_it() {
+        /// A peer that PRINTS A PLACEHOLDER for what it was given and never the text itself — an
+        /// agent's composer folding a long paste. `dd` blocks for the first byte and discards it,
+        /// the placeholder is printed once, and everything after it is swallowed in silence, so the
+        /// screen MOVES and no choice of needle can ever match it.
+        const FOLDS_THE_PASTE: &str = "stty raw -echo; printf 'GO'; \
+             dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '[Pasted text #2 +5 lines]'; \
+             exec cat > /dev/null";
+
+        let start = |hooked: bool| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(FOLDS_THE_PASTE);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            // ⚠⚠ THE STAND-IN FOR AN AGENT'S SUBMIT HOOK, keyed on a FACT OF THE PANE for the
+            // neighbouring fixture's reason: what stands in for *the agent says it was asked this* is
+            // the pty's own record of what was typed, with the submit's carriage return dropped. It
+            // is tied to that '\r' because a real hook fires on a SUBMIT and not before.
+            let published = Arc::new(Mutex::new(0_u64));
+            let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
+                let typed = reader
+                    .input_echo()
+                    .and_then(|echo| echo.pane_recent_input(id))
+                    .unwrap_or_default();
+                let submitted = typed.contains('\r');
+                let mut seq = published.lock().expect("the published verdict");
+                if submitted && *seq == 0 {
+                    *seq = 1;
+                }
+                Some(crate::access::AgentObservation {
+                    state: if submitted {
+                        sprag_detect::AgentState::Working
+                    } else {
+                        sprag_detect::AgentState::Idle
+                    },
+                    agent: Some("claude".to_owned()),
+                    // ⚠⚠⚠ THE FIELD THE ROAD IS CHOSEN BY. `Reported` is what
+                    // `submit_lands_when` reads to decide the peer can be asked what it took; the
+                    // control below publishes the same observation as SCRAPED and gets the screen.
+                    authority: if hooked {
+                        crate::access::Authority::Reported {
+                            source: "hook:claude".to_owned(),
+                        }
+                    } else {
+                        crate::access::Authority::Scraped {
+                            rule: Some("what the pane was sent".to_owned()),
+                        }
+                    },
+                    seq: *seq,
+                    asking: None,
+                    asked: submitted.then(|| typed.replace('\r', "")),
+                    transcript: None,
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                Duration::from_secs(1),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            // The peer has to be past its `stty` before anything is typed, or the line discipline
+            // echoes the prompt and this measures the kernel instead of the fold.
+            let up = Instant::now();
+            while !access
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pumped = loops.pump(&access, &RunContext::uncancellable());
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (pumped, screen)
+        };
+
+        let (delivered, screen) = start(true);
+        assert!(
+            screen.contains("[Pasted text"),
+            "⚠ THE FIXTURE'S OWN PREMISE: the peer must have painted its placeholder, or this gate \
+             is about a pane that printed nothing rather than one that folded the prompt. Screen: \
+             {screen:?}",
+        );
+        let moved = delivered.expect(
+            "⚠⚠⚠⚠⚠ ITEM 421: the loop must not refuse a prompt its peer took and folded — that \
+             refusal ended three live runs at 0 iterations, and the agent's own submit report is \
+             what settles it",
+        );
+        assert!(
+            matches!(moved, Pumped::Moved { .. }),
+            "and the loop walks on into the turn it just asked for. Got {moved:?}",
+        );
+
+        let (refused, control_screen) = start(false);
+        assert!(
+            control_screen.contains("[Pasted text"),
+            "the control's peer must fold it too, or the two runs differ in more than the \
+             authority: {control_screen:?}",
+        );
+        let said = refused
+            .expect_err(
+                "⚠⚠⚠ THE CONTROL: a SCRAPED pane cannot name the question it took, so it keeps the \
+                 screen predicate and must still refuse — a fix that pressed at every pane would \
+                 pass the assertion above and lose the guarantee this module was written for",
+            )
+            .to_string();
+        assert!(
+            said.contains("could not be read back off the pane") && said.contains("FOLDED"),
+            "⚠⚠ AND THE SENTENCE NAMES THE CAUSE IT MET. Two rounds were spent widening a pane \
+             this refusal had blamed: {said:?}",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A LOOP READS THE TRANSCRIPT ITS AGENT NAMED, NOT ONE DERIVED FROM THE NAME ITS PANE
     /// WAS LAUNCHED WITH** — register item 431, and the defect it pins was measured rather than
     /// imagined.

@@ -226,7 +226,13 @@ impl Prompted {
         let echo = match self {
             // A confirmed delivery is confirmed BECAUSE the echo was off — the program painted the
             // prompt itself, which is the whole distinction `Delivered::Confirmed` carries.
-            Self::Delivered(Delivered::Confirmed { .. }) => return false,
+            //
+            // ⚠ `Delivered::Reported` answers the same and for a stronger reason: the prompt was
+            // never on that screen at all — a composer folded it away and the AGENT is what said it
+            // arrived — so there is no echo of this run's own question for a capture to open with.
+            Self::Delivered(Delivered::Confirmed { .. } | Delivered::Reported { .. }) => {
+                return false;
+            }
             Self::Delivered(Delivered::OnScreenOnly { echo, .. }) | Self::Written { echo, .. } => {
                 *echo
             }
@@ -255,7 +261,12 @@ impl Prompted {
     /// caveat on every one rather than on the interesting ones.
     fn caveat(&self) -> Option<&'static str> {
         let echo = match self {
-            Self::Delivered(Delivered::Confirmed { .. }) => return None,
+            // ⚠ And `Reported` for the same reason read one step further: the peer NAMED the
+            // question it was asked, which is the evidence every caveat below is about the absence
+            // of. A caution attached to that would be a caution about the strongest answer there is.
+            Self::Delivered(Delivered::Confirmed { .. } | Delivered::Reported { .. }) => {
+                return None;
+            }
             Self::Delivered(Delivered::OnScreenOnly { echo, .. }) => *echo,
             Self::Written { echo, .. } => *echo,
             // None of these reaches here: the step returns before building a note for any of them.
@@ -637,8 +648,11 @@ impl Agent {
             // The prompt is in the pane, by whichever route, and something was submitted. What each
             // route established is carried into the note below.
             Prompted::Written { .. }
-            | Prompted::Delivered(Delivered::Confirmed { .. } | Delivered::OnScreenOnly { .. }) => {
-            }
+            | Prompted::Delivered(
+                Delivered::Confirmed { .. }
+                | Delivered::Reported { .. }
+                | Delivered::OnScreenOnly { .. },
+            ) => {}
             // Nothing was submitted (`deliver` withholds the press when the text is demonstrably
             // absent), so there is no turn to wait for and nothing on that screen is this run's.
             // A REFUSAL rather than a converged empty capture: the latter tells a caller the model

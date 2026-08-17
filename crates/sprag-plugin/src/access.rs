@@ -530,15 +530,26 @@ impl std::fmt::Display for PaneError {
                 }
                 Ok(())
             }
+            // ⚠⚠⚠⚠ THE CANDIDATES ARE THREE BECAUSE A LIVE RUN DIED ON THE THIRD AND THIS SENTENCE
+            // SENT ITS READER TO THE OTHER TWO — register item 421. It offered a narrow pane first,
+            // which cost two rounds of widening a pane that was never the cause; the cause was a
+            // composer that had FOLDED the paste away, so the text was in the pane and no needle
+            // could reach it. A refusal that lists causes owes the list.
             Self::NeverTook { attempts, written } => {
                 write!(
                     f,
                     "the prompt could not be read back off the pane: {attempts} injections put \
                      {written} bytes on its pseudoterminal and none of them CHANGED it into a \
                      screen carrying the confirmation, so nothing was submitted and no reply is \
-                     this run's. Two panes answer this with the text plainly arrived: one too \
-                     narrow to carry the confirmation on one row, and one whose screen never moved \
-                     at all — a peer that took the bytes and painted nothing"
+                     this run's. Three panes answer this with the text plainly arrived: one whose \
+                     COMPOSER FOLDED THE PASTE AWAY — showing something like \"[Pasted text +5 \
+                     lines]\" where the text should be, which no choice of needle can match — one \
+                     too narrow to carry the confirmation on one row, and one whose screen never \
+                     moved at all, a peer that took the bytes and painted nothing. Only the peer \
+                     itself can tell the first from the last: an agent whose hooks report the \
+                     prompt it received is confirmed by that account instead of by its screen, so a \
+                     pane that reaches this refusal either publishes no such report or never showed \
+                     any sign of taking the bytes"
                 )
             }
             Self::NeverSubmitted {
