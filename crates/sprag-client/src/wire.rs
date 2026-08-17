@@ -2441,13 +2441,18 @@ impl WireHost {
     /// A [`Successor::LastViewed`]'s fallback: the named session, or a DETACH when the policy named
     /// none. Both of [`follow`](Self::follow)'s error arms end here, so the two cannot come to treat
     /// "nowhere to go back to" differently.
+    /// ⚠⚠⚠⚠ **THE THIRD EXIT FOR ONE DECISION** — register item 359, found by running the product
+    /// after two fixes had been believed.
+    ///
+    /// A window that destroys its LAST session reaches the end of *every* route: the policy plans
+    /// `LastViewed`, nothing has been visited, the list neighbour is `None`, and this answered by
+    /// ending the app. Measured from the owner's own window: six kills survived and the seventh —
+    /// the last session — took it down. **Two of the three exits had already been repaired, and the
+    /// product still died, because a decision with three doors is a decision nobody can hold.**
     fn follow_fallback(&self, fallback: Option<String>) -> Option<String> {
         match fallback {
             Some(next) => self.switch_session_named(&next),
-            None => {
-                self.quit.request_quit();
-                None
-            }
+            None => self.detached(),
         }
     }
 
@@ -5525,6 +5530,50 @@ mod tests {
             "⚠⚠⚠ A PERSON WHO CHOSE THE DEFAULT VALUE STILL CHOSE IT. An implementation that \
              compared against the registry default would call this silence and overrule them — \
              which is the one case that separates *chosen* from *differs from default*",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **EVERY PLACE THIS CLIENT ENDS ITSELF, COUNTED** — register item 359, and the gate
+    /// that would have caught what three rounds of fixes did not.
+    ///
+    /// # What went wrong, and why a COUNT is the right shape
+    ///
+    /// *A window must not close when its session does* is ONE decision, and it had **three exits**.
+    /// A repair was made at the first and the product still died; at the second, and it still died;
+    /// the owner met the same defect three times, each after being told it was fixed. Nothing was
+    /// wrong with any of the three repairs — **the decision simply had more doors than anybody was
+    /// holding**, and no test could see that because each door looked correct on its own.
+    ///
+    /// ⚠⚠⚠ So this asserts the POPULATION rather than any behaviour: a new `request_quit` cannot
+    /// appear without this failing and its author saying which decision it belongs to. That is the
+    /// same instrument as `wake.rs`'s ratchet and the template purity gate — read the source, count
+    /// what may exist, make an addition announce itself.
+    ///
+    /// ⚠⚠ THE TWO ALLOWED HOMES, and they are different questions:
+    /// * **`detached()`** — *there is nowhere to be*. Two arms, one per frontend, plus the daemon
+    ///   refusing to open a session. Every session-destroy route funnels here.
+    /// * **`request_detach()`** — *the host is gone*. Not a policy at all: the poll thread's
+    ///   connection died and there is no daemon left to serve anybody.
+    ///
+    /// ⚠ `fall_back_to` is the residue this gate makes visible rather than hides: it ends a window
+    /// that cannot re-attach to a named session, which is arguably `detached()`'s question too. It
+    /// is counted here so that reading this gate is how somebody finds it.
+    #[test]
+    fn every_way_this_client_ends_itself_is_one_of_the_two_that_decide_it() {
+        let source = include_str!("wire.rs");
+        let body = source
+            .split_once("\n#[cfg(test)]")
+            .map_or(source, |(before, _)| before);
+        let exits = body.matches("request_quit()").count();
+        assert_eq!(
+            exits, 4,
+            "⚠⚠⚠⚠ THE NUMBER OF DOORS OUT OF THIS CLIENT CHANGED. Four are accounted for: TWO in \
+             `detached` (the terminal leaves; the daemon would not open a session), ONE in \
+             `request_detach` (the host is gone, which is not a policy), and ONE in `fall_back_to` \
+             (a named re-attach failed — registered residue, arguably `detached`'s question). \
+             ⚠⚠⚠ A FIFTH IS NOT NECESSARILY WRONG, BUT IT IS A NEW WAY FOR A WINDOW TO VANISH and \
+             it must be named here. Item 359 cost three rounds precisely because one decision had \
+             three exits and each looked right alone. Found {exits}",
         );
     }
 
