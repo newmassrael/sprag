@@ -952,10 +952,19 @@
       `reflecting` composed a paragraph of arithmetic out of it. The agent states
       where it writes on its own submit hook, and that is read first now.
 
-      ⚠ NOTHING GUARDS ON IT, and that is deliberate rather than unfinished.
-      What a guard would be for is deciding whether `restarting` is worth its
-      cold start, against the restart-cost curve above at 15,000-21,000 tokens of
-      discardable context.
+      ⚠ NO ECONOMIC GUARD IS WRITTEN ON IT, and that is deliberate rather than
+      unfinished. What such a guard would be for is deciding whether `restarting`
+      is worth its cold start, against the restart-cost curve above at
+      15,000-21,000 tokens of discardable context.
+
+      ⚠⚠⚠⚠ TWO CAPACITY GUARDS DO READ IT, AND THIS PARAGRAPH USED TO SAY
+      NOTHING DID — a sentence that outlived its own truth (register item 437's
+      class, met in this file). `reviewing` asks whether there is room to take
+      the next milestone HERE, and `judging` asks whether to hand over AT ALL
+      because the window is filling (register item 424(b)). **Neither is the
+      guard refused below**: that one is about whether a restart PAYS, and these
+      are about whether the session can go on at all. The refusal stands for the
+      question it was about.
 
       ⚠⚠⚠⚠ THIS ENTRY USED TO SAY THE DECIDING FIGURE WAS STILL UNMEASURED AND
       THAT ITS ARRIVAL WOULD SETTLE THE QUESTION. IT HAS ARRIVED, AND WHAT IT
@@ -965,13 +974,15 @@
       A threshold placed anywhere in a band the workload sits inside decides by
       rounding, and would read as a measured policy while being a coin toss.
 
-      ⚠⚠⚠ SO THE NUMBER IS CARRIED, NOT ACTED ON. `reflecting` composes it into
-      the prompt with the two quantities that make it legible — what a restart
-      could actually discard, and what one costs — and the agent that is being
-      asked what to do next is the party that weighs them. That is the same
-      division this document uses everywhere else: the driver measures, the
-      document decides what to say, and a judgement about somebody's work
-      belongs to whoever is doing it.
+      ⚠⚠⚠ SO THE ECONOMIC TRADE IS CARRIED, NOT ACTED ON. `reflecting` composes
+      the number into the prompt with the two quantities that make it legible —
+      what a restart could actually discard, and what one costs — and the agent
+      that is being asked what to do next is the party that weighs them. That is
+      the same division this document uses everywhere else: the driver measures,
+      the document decides what to say, and a judgement about somebody's work
+      belongs to whoever is doing it. ⚠ The CAPACITY question is not carried in
+      that sense and cannot be: an agent asked to weigh a full window has already
+      spent the window it would be weighing.
 
       ⚠⚠ A GUARD REMAINS WRITABLE the day a workload sits clearly outside the
       band, and what would justify one is a re-measurement, not a preference.
@@ -2037,6 +2048,55 @@
     -->
     <transition event="judge" cond="screened &gt; screened_carried" target="reflecting">
       <assign location="reflect_reason" expr="'instruction'"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THERE IS NO ROOM LEFT — register item 424(b), and the door the owner
+      asked for: *"컨텍스트가 너무 꽉 차기 전에 새 pane을 열 수 있어야 되는 거
+      아니야?"*
+
+      Every other entrance to `reflecting` is *something happened*: the agent
+      declared a milestone, a standing instruction fired, the count came round.
+      **None of them reads `context`**, so this loop could not decide to hand over
+      because it was filling up — it could only find out afterwards, at
+      `reviewing`, once something else had already brought it there.
+
+      ⚠⚠⚠ AND A CADENCE CANNOT STAND IN FOR THIS, measured: one request adds 861
+      tokens at the median and 633,749 at the maximum, and this loop's own run
+      reached `context - floor` of 255,809 in a SINGLE turn. No count of turns
+      bounds a quantity whose per-turn spread is three orders of magnitude.
+
+      ⚠⚠ THE «BAND» ARGUMENT IN `context`'s OWN ENTRY DOES NOT REACH THIS, and
+      that entry says so itself: it refuses a threshold placed INSIDE the band a
+      workload sits in, because such a threshold decides by rounding. This is not
+      inside the band — it is the end of it. The two axes point opposite ways:
+      economics says almost never restart (cache write is 20x read), capacity says
+      restart before the window fills, whatever it costs. An economic argument
+      followed alone drives the loop into a wall it is not modelling.
+
+      ⚠⚠⚠ IT IS BELOW THE INSTRUCTION EDGE AND ABOVE THE CADENCE, and both halves
+      are decisions. An instruction the prompts do not carry yet is a CORRECTNESS
+      matter and keeps its word. The cadence is a count nobody measured against
+      this workload, so where both are true the run should say the one a reader
+      can act on — the ceiling, which is a number they authored.
+
+      ⚠⚠⚠⚠ ZERO ON EITHER SIDE DECIDES NOTHING, and the direction is stated
+      rather than hidden: an unauthored ceiling (`0`) is a caller who has not
+      said, and a `context` of `0` is a session whose reading could not be taken.
+      **So this guard cannot fire exactly when the loop can see least — it fails
+      TOWARD the wall.** The alternative is reflecting on every turn of every run
+      whose transcript is unreadable, which replaces sessions that may be nearly
+      empty; the run says the record was unreadable on its own walk instead
+      (register item 431(a)).
+
+      ⚠ WHAT IS NOT MODELLED, DECLARED: an agent that COMPACTS ITSELF. `context`
+      would fall with no transition to explain it and this document would read the
+      fall as room. Nothing here measures compaction and no gate stages one — it
+      is registered rather than quietly assumed away.
+    -->
+    <transition event="judge"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &gt;= context_ceiling"
+                target="reflecting">
+      <assign location="reflect_reason" expr="'capacity'"/>
     </transition>
     <transition event="judge" cond="turns_since_reflect &gt;= reflect_every" target="reflecting">
       <assign location="reflect_reason" expr="'budget'"/>

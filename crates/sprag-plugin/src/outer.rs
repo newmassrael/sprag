@@ -320,6 +320,21 @@ const NORTH_STAR_MARKER: &str = "north_star_marker";
 /// `judge` transition reached `reflecting`. See the document, and register item 179.
 const REFLECT_REASON: &str = "reflect_reason";
 
+/// **HOW MUCH THIS SESSION MAY HAVE READ BEFORE THE RUN HANDS OVER** — the document's own capacity
+/// bound, `0` for a kind that has not authored one.
+///
+/// ⚠⚠ **BOTH ITS READERS ARE IN THE DOCUMENT**, which is why this is `cfg(test)` and not a driver
+/// constant: `reviewing` decides whether the next milestone is taken in this session or a new one,
+/// and `judging` decides whether to reflect AT ALL because the window is filling (register item
+/// 424(b)). No Rust reads it. What needs the spelling is a GATE that authors one the way a kind's
+/// document does — `debt_loop.scxml` overrides `reflect_every` in exactly that manner.
+///
+/// ⚠ So the document is the authority and this is a transcription. A gate that asserted behaviour
+/// off this name while the file said another would be measuring its own spelling; the ones here
+/// drive the machine, so a drifted name reaches them as a run that does not reflect.
+#[cfg(test)]
+const CONTEXT_CEILING: &str = "context_ceiling";
+
 /// The datamodel variable saying **WHICH CEILING ended the run** — written by whichever `judge`
 /// transition reached `stopping`, and read by two parties that must not disagree: the document's own
 /// `stopping` composes the sentence its agent is asked out of it, and [`OuterLoop::stopping_because`]
@@ -1002,11 +1017,39 @@ pub enum ReflectReason {
     /// **THE REFLECTION BUDGET CAME ROUND** — `turns_since_reflect` reached `reflect_every` and
     /// nothing in particular happened.
     Budget,
+    /// **THIS SESSION HAS READ PAST ITS CEILING** — `context` reached `context_ceiling`, so the run
+    /// is handing over BEFORE the window fills rather than finding out afterwards. Register item
+    /// 424(b).
+    ///
+    /// # ⚠⚠⚠⚠ Why a count of turns could not do this, and why the band argument does not reach it
+    ///
+    /// The three reasons above are all *something happened*; this one is *there is no room left*.
+    /// A cadence cannot stand in for it, measured: one request adds **861 tokens at the median and
+    /// 633,749 at the maximum**, and this loop's own run reached `context - floor` of **255,809 in a
+    /// single turn** — so no count of turns bounds the thing being bounded.
+    ///
+    /// ⚠⚠ `context`'s own entry argues at length that NO GUARD should be written on it, and that
+    /// argument stands: it is about ECONOMICS — whether a restart is worth its cold start — where a
+    /// threshold *placed inside the band the workload sits in* decides by rounding. **A ceiling is
+    /// not inside the band.** Being near the end of the window is not a coin toss, and the two axes
+    /// point opposite ways: economics says *almost never restart* (cache write is 20x read), capacity
+    /// says *restart before it fills, whatever it costs*.
+    ///
+    /// ⚠ **AND IT FAILS TOWARD THE WALL, WHICH IS STATED RATHER THAN FIXED**: `context` reads 0 when
+    /// the session's record cannot be read, and 0 means *do not decide on this* — so this reason
+    /// cannot fire exactly when the loop can see least. The alternative would reflect on every turn
+    /// of every run whose transcript is unreadable, replacing sessions that may be nearly empty.
+    Capacity,
 }
 
 impl ReflectReason {
     /// Every arm, so the document's words and the readers below are one list.
-    pub const ALL: [Self; 3] = [Self::Milestone, Self::Instruction, Self::Budget];
+    pub const ALL: [Self; 4] = [
+        Self::Milestone,
+        Self::Instruction,
+        Self::Budget,
+        Self::Capacity,
+    ];
 
     /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
     ///
@@ -1018,6 +1061,7 @@ impl ReflectReason {
             Self::Milestone => "milestone",
             Self::Instruction => "instruction",
             Self::Budget => "budget",
+            Self::Capacity => "capacity",
         }
     }
 
@@ -1045,6 +1089,12 @@ impl ReflectReason {
             Self::Budget => {
                 "the reflection budget came round (`turns_since_reflect` reached `reflect_every`) \
                  and nothing else made this happen — the loop's own housekeeping"
+            }
+            Self::Capacity => {
+                "this session has read past the ceiling the document authors (`context` reached \
+                 `context_ceiling`), so the run is handing over BEFORE the window fills rather than \
+                 finding out afterwards — nothing was wrong with the work, and if these handovers \
+                 are too frequent the number to change is the ceiling"
             }
         }
     }
@@ -8768,6 +8818,185 @@ mod tests {
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A SESSION THAT HAS READ PAST ITS CEILING HANDS OVER WITHOUT WAITING TO BE ASKED** —
+    /// register item 424(b), the half the owner named: *"컨텍스트가 너무 꽉 차기 전에 새 pane을 열 수
+    /// 있어야 되는 거 아니야?"*
+    ///
+    /// # ⚠⚠⚠ There was no door, and the two axes point opposite ways
+    ///
+    /// Everything reaching `restarting` comes through `reviewing`, everything reaching `reviewing`
+    /// comes through `reflecting`, and `reflecting`'s entrances were a claimed milestone, a standing
+    /// instruction, and a COUNT OF TURNS. **Not one reads `context`** — so a loop could not decide to
+    /// hand over because it was filling up; it could only find out afterwards, at `reviewing`, once
+    /// something else had already brought it there.
+    ///
+    /// ⚠⚠⚠⚠ **AND A CADENCE CANNOT STAND IN FOR IT.** Economics says *almost never restart* (cache
+    /// write is 20x read; splitting one job into three sessions measured +11.4%), and capacity says
+    /// *you must restart before the window fills, whatever it costs* — an economic argument followed
+    /// alone drives the loop into a wall it is not modelling. The numbers say a count cannot bound
+    /// it either: one request adds **861 tokens at the median and 633,749 at the maximum**, and this
+    /// loop's own run reached `context - floor` of **255,809 in ONE turn** where the reasoning behind
+    /// the cadence was computed at 18,736.
+    ///
+    /// # ⚠⚠ Three runs differing in ONE fact: what the session has read
+    ///
+    /// The same stand-in, the same brief, the same ceiling — and a record the agent states it is
+    /// writing, holding 466,013 tokens of cache read, or a record that cannot be read at all. The
+    /// budget is off (`reflect_every: 99`) and the peer says no marker, so **nothing but capacity can
+    /// move these runs**.
+    #[test]
+    fn a_session_past_its_ceiling_reflects_without_being_asked() {
+        /// A record whose last billed request read far past any ceiling this gate authors — the
+        /// shape and the number register item 431 measured on a live loop.
+        const WRITTEN: &str = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":0,"cache_creation_input_tokens":7000,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":38500,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
+        );
+        /// Far below what that record holds, so the run is unambiguously PAST it.
+        const CEILING: i64 = 100_000;
+
+        let home = std::env::temp_dir().join(format!("sprag-ceiling-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let record = home.join("what-the-agent-said.jsonl");
+        std::fs::write(&record, WRITTEN).expect("the agent's own record");
+        let missing = home.join("never-written.jsonl");
+
+        /// Drive a run to its first judgement and say where it went, why, **and what the document
+        /// actually held as `context` when it decided** — the instrument, without which a red here
+        /// could be a record nobody read rather than a door nobody opened.
+        fn judged(
+            record: &std::path::Path,
+            ceiling: i64,
+        ) -> (AiLoopState, Option<Because>, Option<i64>, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠ The peer never says the marker, so no claimed milestone can move this run.
+            let (workspace, pane) = standin_agent(9);
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            loops
+                .script
+                .set_variable(&loops.session, CONTEXT_CEILING, ScriptValue::Int(ceiling))
+                .expect("the document's own ceiling is writable");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "the stand-in answers nine prompts".to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    max_turns: Some(Counted::Of(40)),
+                    // ⚠ OFF, so the cadence cannot be what moves this run — which is the whole
+                    // point: capacity has to be able to act BEFORE the count comes round.
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut landed = None;
+            while walked.len() < 12 {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        because,
+                        ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if from == AiLoopState::Judging && raised == AiLoopEvent::Judge {
+                            landed = Some((to, because));
+                            break;
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            let held = loops.context();
+            access.lifecycle().expect("lifecycle").close(pane);
+            let Some((to, because)) = landed else {
+                panic!("no run reached a judgement in 12 passes: {walked:?}");
+            };
+            (to, because, held, walked)
+        }
+
+        let (full, why, held, full_walk) = judged(&record, CEILING);
+        let (no_ceiling, _, _, plain_walk) = judged(&record, 0);
+        let (unreadable, _, blind, blind_walk) = judged(&missing, CEILING);
+        let _ = std::fs::remove_dir_all(&home);
+
+        // ⚠⚠⚠⚠ THE INSTRUMENT FIRST. Every claim below is about a number the DOCUMENT holds, and a
+        // record nobody could read would send this run to exactly the same state a run under its
+        // ceiling should — which is the shape item 428's round learned the hard way.
+        assert_eq!(
+            (held, blind),
+            (Some(466_013), Some(0)),
+            "⚠⚠⚠ the session's own record must reach the document as `context`, and the unreadable \
+             one must read 0 — otherwise this gate is about a reader rather than about a door",
+        );
+
+        assert_eq!(
+            full,
+            AiLoopState::Reflecting,
+            "⚠⚠⚠⚠⚠ ITEM 424(b): this session has read 466,013 against a ceiling of {CEILING}, and \
+             nothing else in the run can move it — the agent said no marker and the budget is off. \
+             A loop that cannot hand over until a COUNT comes round finds out it is full only \
+             afterwards. Walked {full_walk:?}",
+        );
+        assert_eq!(
+            why,
+            Some(Because::Reflected(ReflectReason::Capacity)),
+            "⚠⚠⚠ and the walk must say CAPACITY rather than any of the other three reasons — a \
+             handover forced by the window is a different fact from one the cadence asked for, and \
+             a reader deciding whether the ceiling is right needs to know which fired",
+        );
+
+        // ⚠⚠⚠ THE CONTROL: no ceiling authored is the shipped document, and it must behave exactly
+        // as it always has. A caller who has not thought about capacity is not handed a number
+        // somebody guessed for them.
+        assert_eq!(
+            no_ceiling,
+            AiLoopState::Working,
+            "⚠⚠ an unauthored ceiling decides nothing: {plain_walk:?}",
+        );
+
+        // ⚠⚠⚠⚠ AND THE BLIND CASE, WHICH IS THE ONE WORTH SAYING OUT LOUD: `context` reads 0 when
+        // the session's record cannot be read at all, and 0 means *do not decide on this*. So the
+        // guard does NOT fire exactly when the loop can see least — it fails TOWARD the wall. That
+        // is the register's own warning about this item, and it is a stated residue rather than a
+        // fixed thing: the alternative is reflecting on every turn of every run whose transcript is
+        // unreadable, which would replace a session that may be nearly empty.
+        assert_eq!(
+            unreadable,
+            AiLoopState::Working,
+            "⚠⚠ a session whose reading could not be taken must not be handed over on a number \
+             nobody read — and the run's walk says the record was unreadable (item 431(a)), which \
+             is how a reader learns the ceiling is blind: {blind_walk:?}",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **A MILESTONE THE AGENT CLAIMS AND AN INDEPENDENT CHECK DENIES IS NOT A MILESTONE** —

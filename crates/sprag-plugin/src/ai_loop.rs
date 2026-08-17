@@ -5672,15 +5672,29 @@ mod tests {
             );
         }
 
-        // ── THE CONTROL ON THE VOCABULARY: these three are all of it ──
+        // ── THE CONTROL ON THE VOCABULARY: every reason a BRIEF can produce ──
+        //
+        // ⚠⚠⚠⚠ ONE REASON IS EXCEPTED BY NAME AND ONLY ONE, so a FIFTH word still breaks this gate:
+        // `ReflectReason::ALL` is the glob, and the exception is a list of one. `Capacity` is
+        // authored in the DOCUMENT (`context_ceiling`) rather than through a `Brief`, and this gate
+        // reaches its arms only through briefs — so the run that renders that word is
+        // `a_session_past_its_ceiling_reflects_without_being_asked` in `outer.rs`, which drives it
+        // through a real pump and asserts this same rendering. Register item 424(b).
+        //
+        // ⚠⚠ It is an EXCEPTION rather than a loosening: without it this assertion would have to
+        // become *"a subset of ALL"*, which is satisfied by a gate that arranges nothing.
+        const AUTHORED_IN_THE_DOCUMENT: [ReflectReason; 1] = [ReflectReason::Capacity];
         let covered: std::collections::BTreeSet<ReflectReason> =
             arms.iter().map(|(_, reason, _)| *reason).collect();
         assert_eq!(
             covered,
-            ReflectReason::ALL.into_iter().collect(),
-            "⚠⚠⚠ the control: this gate must arrange EVERY reason a reflection can have. An arm \
-             no run here reaches is a word nothing renders and a sentence nobody has read — and \
-             the document half of that is \
+            ReflectReason::ALL
+                .into_iter()
+                .filter(|reason| !AUTHORED_IN_THE_DOCUMENT.contains(reason))
+                .collect(),
+            "⚠⚠⚠ the control: this gate must arrange EVERY reason a reflection can have that a \
+             BRIEF can produce. An arm no run here reaches is a word nothing renders and a sentence \
+             nobody has read — and the document half of that is \
              `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows`",
         );
 
