@@ -168,6 +168,11 @@ fn main() -> ExitCode {
             // (Measured at this point: two panes in the current window.) It hands that on unchanged
             // — same client, same session, same panes — which the checks below depend on.
             check_a_client_that_attaches_paints_the_panes_it_joined(&mut smoke, &mut report);
+            // Straight after it, and it needs exactly what that one proves: attaching PAINTS. The
+            // order is the argument — a launch was only allowed to start adopting once a client
+            // that adopts had been shown to show something (items 368 then 284, in that sequence).
+            // It relaunches three times and puts the client back where it found it.
+            check_a_launch_that_names_nothing_joins_the_work(&mut smoke, &mut report);
             // AFTER it, and that ordering is load-bearing twice over: the check above needs
             // exactly ONE pane to make the daemon-to-client pane correspondence unambiguous, and
             // this one SPLITS until the pane set can attribute its own cost. It also leaves those
@@ -1971,6 +1976,98 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
         ),
         agreed.is_ok(),
     );
+}
+
+/// **THE GATE for what a LAUNCH means** — register item 284, and the pair of claims is the point.
+///
+/// A launch that names nothing must JOIN the work already there, not invent a session beside it.
+/// The old behaviour created unconditionally, and the cost was measured on the owner's own daemon
+/// after an afternoon of clicking: **seven sessions, two attached to live windows and the rest
+/// abandoned**. tmux and herdr both take the other reading — attaching is the default act and
+/// creating is the explicit one — and this asserts sprag now does too.
+///
+/// ⚠⚠ The second claim is what keeps the first honest. Making adoption the default costs a VERB:
+/// *make me a new one* has to stay sayable, or the only route to a fresh session would be a sidebar
+/// button on a window already sitting in somebody else's work. So this drives BOTH words and
+/// asserts they mean OPPOSITE things — a client that ignored the environment entirely would satisfy
+/// either claim alone, and can satisfy neither pair.
+///
+/// The count comes from the daemon (`sprag ls`), not from this client's sidebar: what is being
+/// asserted is that no session was CREATED, which is a fact about the registry rather than about
+/// what one window chose to draw.
+///
+/// It leaves the client back on the session it found, so the checks below inherit what they would
+/// have had.
+///
+/// REVERT-PROOF: set `fresh: true` in `spawn_or_attach` (the pre-284 default) — the bare launch
+/// creates, the session count grows, and the first claim goes red while the `-a` claim stays green.
+fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session it is attached to", false);
+        return;
+    };
+    let Ok(before) = smoke.cli(&["ls"]) else {
+        report.check("the daemon lists its sessions to count from", false);
+        return;
+    };
+    let had = before
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    // Non-vacuity: adoption can only be told from creation while there IS something to adopt, and
+    // on an empty daemon both readings create. The run has sessions by here; assert it.
+    report.check(
+        &format!("the daemon has work for a launch to join ({had} sessions)"),
+        had > 0,
+    );
+
+    // ── A launch that says NOTHING.
+    if let Err(error) = smoke.relaunch_gui_bare() {
+        report.check(
+            &format!("a client relaunches naming nothing ({error})"),
+            false,
+        );
+        return;
+    }
+    let joined = smoke.wait_for(|s| s.attached_session());
+    let after = smoke.cli(&["ls"]).unwrap_or_default();
+    let now = after.lines().filter(|line| !line.trim().is_empty()).count();
+    report.check(
+        &format!("a launch that names nothing INVENTS no session ({had} -> {now})"),
+        now == had,
+    );
+    report.check(
+        &format!("...and it lands on one that was already there ({joined:?})"),
+        joined
+            .as_ref()
+            .is_ok_and(|landed| before.lines().any(|line| line.starts_with(&**landed))),
+    );
+
+    // ── And the word that still means *new*, which is what makes the default affordable.
+    if let Err(error) = smoke.relaunch_gui() {
+        report.check(
+            &format!("a client relaunches asking for its own ({error})"),
+            false,
+        );
+        return;
+    }
+    let own = smoke.wait_for(|s| s.attached_session());
+    let grown = smoke
+        .cli(&["ls"])
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    report.check(
+        &format!("`sprag new -a`'s word still MAKES one ({now} -> {grown}, on {own:?})"),
+        grown == now + 1,
+    );
+
+    // Put the client back where the run had it, so nothing below inherits a session this check
+    // invented — the same courtesy the font gate above owes and pays.
+    if let Err(error) = smoke.relaunch_gui_attached(&session) {
+        report.check(&format!("the client returns to {session} ({error})"), false);
+    }
 }
 
 /// Relaunch the client and answer the columns its BOOT pane was sized to, or `None` after reporting.
@@ -5015,8 +5112,27 @@ const MAX_VISIBLE_ROWS: usize = 10;
 /// symbolically because a synthesised pointer coordinate never lands headless.
 const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
 /// The environment variable a client reads to learn WHICH session to attach to — the one
-/// `sprag attach` sets, and the only route by which a launch can be told to join existing work.
+/// `sprag attach` sets, and the only route by which a launch can be told to join a NAMED session.
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
+/// The variable that tells a client to make a session of its OWN — the one `sprag new -a` sets.
+const NEW_ENV: &str = "SPRAG_GUI_NEW";
+
+/// What a launch is told about its session: the product's two words, and their absence.
+///
+/// A closed set rather than an `Option<&str>` plus a bool, because the three are the WHOLE of what
+/// a launch can mean and the compiler should say so — the pair of variables is exhaustive by
+/// construction (register item 284), and a harness that could express *both words at once* would be
+/// able to drive a state no `sprag` command produces.
+#[derive(Clone, Copy)]
+enum Launch<'a> {
+    /// Neither word — *take me to my work*: adopt what is there, create only if there is nothing.
+    /// The launch a person performs from a desktop entry.
+    Bare,
+    /// [`SESSION_ENV`] — attach to this session (`sprag attach NAME`).
+    Attach(&'a str),
+    /// [`NEW_ENV`] — a session of this client's own (`sprag new -a`), born at the size IT measured.
+    Own,
+}
 
 // ─── The harness ─────────────────────────────────────────────────────────────────────────────────
 
@@ -5094,18 +5210,19 @@ impl Smoke {
             &gui_sock,
             &state,
             &daemon_log,
-            None,
+            Launch::Bare,
         )?;
         wait_for_path(&host_sock)?;
-        // The boot client names no session, which is the launch a person performs from a desktop
-        // entry. What that means is the product's own decision and this run does not pre-empt it.
+        // The boot client says NOTHING, which is the launch a person performs from a desktop entry
+        // — and against a daemon whose state directory this run owns, there is no session to adopt,
+        // so it creates. That is `adoptable`'s empty case driven for free on every run.
         let gui = spawn(
             &target.join("sprag-gui"),
             &host_sock,
             &gui_sock,
             &state,
             &gui_log,
-            None,
+            Launch::Bare,
         )?;
         wait_for_path(&gui_sock)?;
         let conn = HostConn::connect(&gui_sock, PATIENCE)?;
@@ -5569,21 +5686,30 @@ impl Smoke {
     ///
     /// Its log goes to a SECOND file, so a failure after this can still be read against the first
     /// launch's output — `spawn` creates the log, and reusing the path would truncate it.
+    /// ⚠ [`Launch::Own`], not a bare launch, and that is REQUIRED rather than incidental: this
+    /// exists for settings a window adopts at BIRTH, and the only pane born at the client's own
+    /// measured size is one in a session the client made. A bare relaunch would ADOPT (item 284)
+    /// and hand every such check a pane somebody else had sized — which is a green nobody can read.
     fn relaunch_gui(&mut self) -> Result<(), String> {
-        self.relaunch_gui_as(None)
+        self.relaunch_gui_as(Launch::Own)
     }
 
     /// Relaunch the client so that it ATTACHES to `session`, the route `sprag attach` takes.
     ///
     /// The same act as [`relaunch_gui`](Self::relaunch_gui) and deliberately so: the ONLY difference
-    /// between the two is the one environment variable the product branches on, so a check that
-    /// compares them is comparing the product's two answers and nothing of this harness's.
+    /// between the two is the word the product branches on, so a check that compares them is
+    /// comparing the product's two answers and nothing of this harness's.
     fn relaunch_gui_attached(&mut self, session: &str) -> Result<(), String> {
-        self.relaunch_gui_as(Some(session))
+        self.relaunch_gui_as(Launch::Attach(session))
     }
 
-    /// The body both relaunches share — `session` as [`spawn`] takes it.
-    fn relaunch_gui_as(&mut self, session: Option<&str>) -> Result<(), String> {
+    /// Relaunch the client saying NOTHING — the launch a person performs from a desktop entry.
+    fn relaunch_gui_bare(&mut self) -> Result<(), String> {
+        self.relaunch_gui_as(Launch::Bare)
+    }
+
+    /// The body every relaunch shares — `launch` as [`spawn`] takes it.
+    fn relaunch_gui_as(&mut self, launch: Launch<'_>) -> Result<(), String> {
         let _ = self.gui.kill();
         let _ = self.gui.wait();
         let _ = std::fs::remove_file(&self.gui_sock);
@@ -5597,7 +5723,7 @@ impl Smoke {
             &self.gui_sock,
             &self.state,
             &self.gui_log,
-            session,
+            launch,
         )
         .map_err(|error| format!("relaunch the gui: {error}"))?;
         wait_for_path(&self.gui_sock).map_err(|error| error.to_string())?;
@@ -5763,22 +5889,28 @@ fn lavapipe_icd() -> String {
 /// that carries a diagnostic, and naming a directive here would silently decide what the next
 /// reader of this log is allowed to see.
 ///
-/// `session` names a session for a CLIENT to ATTACH to ([`SESSION_ENV`], the variable `sprag attach`
-/// sets). `None` leaves it unset, which is what the daemon and every creating launch want; the
-/// variable is set rather than always-present-and-empty because the client treats an empty value as
-/// absent and a check driving the attach route must not depend on that reading.
+/// `launch` is what a CLIENT is told about its session — see [`Launch`]. Exactly ONE variable is
+/// ever set, never both and never an empty one: the client treats an empty value as absent, and a
+/// check driving these routes must exercise the product's reading rather than depend on it.
+/// (The daemon takes [`Launch::Bare`]; neither word means anything to it.)
 fn spawn(
     binary: &Path,
     host: &Path,
     gui: &Path,
     state: &Path,
     log: &Path,
-    session: Option<&str>,
+    launch: Launch<'_>,
 ) -> io::Result<Child> {
     let log = std::fs::File::create(log)?;
     let mut command = Command::new(binary);
-    if let Some(session) = session {
-        command.env(SESSION_ENV, session);
+    match launch {
+        Launch::Bare => {}
+        Launch::Attach(session) => {
+            command.env(SESSION_ENV, session);
+        }
+        Launch::Own => {
+            command.env(NEW_ENV, "1");
+        }
     }
     command
         // The stand-in `notify-send` FIRST on the path — see [`install_notify_stand_in`]. It is set

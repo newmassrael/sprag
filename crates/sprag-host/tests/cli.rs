@@ -1030,10 +1030,14 @@ fn the_cli_attach_preflights_then_launches_the_gui_scoped_to_the_session() {
 
     // A real session: the pre-flight passes and the GUI is launched with the session and THIS
     // socket in its env (the stand-in inherits the CLI's stdout, so its env dump is captured here).
+    // ⚠ `SPRAG_GUI_NEW` is EXPORTED here on purpose, and the assertion below is worthless without
+    // it: a check that the word is absent from the child's environment passes for free when the
+    // parent never had it, which is the vacuous shape a mutation caught in this very file. The run
+    // stands in for a person whose shell has been through `sprag new -a`.
     let ok = sprag_env(
         &sock,
         &["attach", "work"],
-        &[("SPRAG_GUI_BIN", "/usr/bin/env")],
+        &[("SPRAG_GUI_BIN", "/usr/bin/env"), ("SPRAG_GUI_NEW", "1")],
     );
     assert!(
         ok.ok,
@@ -1050,6 +1054,81 @@ fn the_cli_attach_preflights_then_launches_the_gui_scoped_to_the_session() {
             .contains(&format!("SPRAG_GUI_HOST_SOCK={}", sock.display())),
         "the gui is pinned to THIS daemon's socket, not a default: {}",
         ok.stdout,
+    );
+    // ⚠ THE COMPLEMENT, and it is not decoration: an inherited *new* word must be REMOVED, or
+    // `sprag attach work` run from a shell that `sprag new -a` exported into would create a session
+    // instead of joining the named one — an explicit instruction silently reversed by an
+    // inheritance. The two words are read by one client and only one of them may be present.
+    assert!(
+        !ok.stdout.contains("SPRAG_GUI_NEW="),
+        "an inherited `new` word does not survive an explicit attach: {}",
+        ok.stdout,
+    );
+}
+
+/// `new -a` launches a WINDOW told to make a session of its OWN — the explicit *new* that a bare
+/// launch stopped being when adoption became the default (register items 284 and 368).
+///
+/// Both halves are asserted because a client is on the other end of exactly two words, and the
+/// failure that matters is not the flag going missing — it is the flag arriving BESIDE an inherited
+/// `SPRAG_GUI_SESSION`, which the client reads first. So this run deliberately exports the attach
+/// word and demands the launcher clear it: a person who ran `sprag attach` in this shell an hour ago
+/// must still be able to type `sprag new -a` and get a new session.
+///
+/// `/usr/bin/env` stands in for the window (prints its env, exits 0) exactly as the attach gate
+/// above uses it. The command therefore FAILS — the stand-in never attaches, and `new -a` waits for
+/// the daemon to witness a window, which is the `--no-wait` discipline. What is under test is the
+/// environment the launch was handed, and that is on stdout either way.
+#[test]
+fn the_cli_new_attach_launches_a_window_told_to_make_its_own_session() {
+    let (_host, sock) = spawn_host();
+    // Something to adopt, so that "it was told to create" and "it would have adopted" are
+    // distinguishable facts rather than the same empty daemon.
+    assert!(sprag(&sock, &["new", "work"]).ok, "a session to adopt");
+
+    let run = sprag_env(
+        &sock,
+        &["new", "-a"],
+        &[
+            ("SPRAG_GUI_BIN", "/usr/bin/env"),
+            ("SPRAG_GUI_SESSION", "work"),
+        ],
+    );
+    assert!(
+        run.stdout.contains("SPRAG_GUI_NEW=1"),
+        "the window is told to make a session of its own: {}",
+        run.stdout,
+    );
+    assert!(
+        !run.stdout.contains("SPRAG_GUI_SESSION="),
+        "an inherited attach word does not survive an explicit `new -a`: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout
+            .contains(&format!("SPRAG_GUI_HOST_SOCK={}", sock.display())),
+        "the window is pinned to THIS daemon's socket, not a default: {}",
+        run.stdout,
+    );
+
+    // A NAME with `-a` is refused rather than accepted and dropped: the window creates the session,
+    // so this command has nowhere to put the name. The message must say what to run instead.
+    let named = sprag_env(
+        &sock,
+        &["new", "spare", "-a"],
+        &[("SPRAG_GUI_BIN", "/usr/bin/env")],
+    );
+    assert!(!named.ok, "a named `new -a` is refused");
+    assert!(
+        named.stderr.contains("sprag new spare") && named.stderr.contains("sprag attach spare"),
+        "the refusal names the two commands that do it: {}",
+        named.stderr,
+    );
+    // And the refusal came BEFORE anything was launched — no env dump on stdout at all.
+    assert!(
+        !named.stdout.contains("SPRAG_GUI_NEW"),
+        "nothing was launched for the refused form: {}",
+        named.stdout,
     );
 }
 

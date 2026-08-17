@@ -139,12 +139,25 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// Env override: the `sprag-term` binary to spawn (else the sibling of the GUI exe,
 /// else `sprag-term` on `PATH`).
 const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
-/// Env: the SESSION to attach to (adopt its live panes) — the reattach gesture. Absent, the
-/// client allocates a fresh session and spawns its own panes into it, so by DEFAULT each launch
-/// starts on its own session (the owner's several-windows workflow) — though a running client can
+/// Env: the SESSION to attach to (adopt its live panes) — the reattach gesture. Absent, the client
+/// ADOPTS whatever work is already there ([`adoptable`]) and creates only when there is none, so a
+/// launch means *take me to my work* — though a running client can
 /// [`switch_session`](WireHost::switch_session) to any other from the sidebar. `sprag attach` sets
 /// this env; it is the established GUI-config channel (`SPRAG_GUI_PANES`/`_HOST_SOCK`/…).
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
+/// Env: this launch wants a session of its OWN — the explicit *new*, set by `sprag new --attach`.
+///
+/// ⚠⚠⚠ **A LAUNCH HAS TWO MEANINGS AND ONLY ONE OF THEM CAN BE THE DEFAULT** (register items 284
+/// and 368). Naming nothing used to CREATE, which put seven abandoned sessions on the owner's
+/// daemon in one afternoon; naming nothing now ADOPTS, which is tmux's shape and herdr's. That
+/// leaves *make me a new one* needing a word of its own, and this is it — without it the verb would
+/// not merely be inconvenient, it would be **unreachable from a launch**, and the only route to a
+/// fresh session would be a sidebar button on a window already sitting in somebody else's work.
+///
+/// Read like [`SESSION_ENV`]: PRESENT AND NON-EMPTY means yes. An empty value is treated as absent
+/// so that a wrapper which exports the variable unconditionally cannot silently turn every launch
+/// back into a create — the failure that shape produces is the one this pair exists to end.
+const NEW_ENV: &str = "SPRAG_GUI_NEW";
 
 /// How this client reacts when its OWN attached session is DESTROYED — the tmux
 /// `detach-on-destroy` option, now the user's own
@@ -1851,34 +1864,28 @@ impl WireHost {
         let requested = std::env::var_os(SESSION_ENV)
             .filter(|name| !name.is_empty())
             .map(|name| name.to_string_lossy().into_owned());
+        let wants_own = std::env::var_os(NEW_ENV).is_some_and(|value| !value.is_empty());
         Self::boot(
             &BootSpec {
                 endpoint: &HostEndpoint::client(),
                 session: requested.as_deref(),
-                // ⚠⚠⚠⚠ THIS IS `true` AND ITEM 284 SAYS IT SHOULD BE `false` — the adoption is
-                // BLOCKED, not abandoned, and this line is where the block lives.
+                // ⚠⚠ A LAUNCH DOES NOT ASK FOR A NEW ONE — item 284. This is the entry point every
+                // window and every `sprag attach` comes through, and *take me to my work* is what
+                // naming nothing means here. Creating unconditionally is what put seven abandoned
+                // sessions on the owner's daemon in an afternoon. The explicit `new` belongs to a
+                // caller that SAYS so, and now one can: [`NEW_ENV`], which `sprag new --attach`
+                // sets.
                 //
-                // Adopting is right: naming no session means *take me to my work*, and creating
-                // unconditionally is what put seven abandoned sessions on the owner's daemon in an
-                // afternoon. `adoptable` implements it, its gates hold it, and `resolve_session`
-                // calls it — everything below this line is finished.
-                //
-                // ⚠⚠⚠ WHAT IS NOT FINISHED IS THE THING ADOPTION LANDS ON. **A client that attaches
-                // renders NOTHING** — sidebar, window tabs and chrome all paint, and the terminal
-                // area is blank over live PTYs. Measured 2026-08-17 by screenshotting both attach
-                // routes: the adopting default and the pre-existing `SPRAG_GUI_SESSION` path give
-                // byte-identical empty windows, while the daemon reports the panes, their sizes,
-                // their layout and their content correctly. **So attach has always been broken**;
-                // making it the default only moved it from an env var nobody set to every launch.
-                //
-                // ⚠⚠ Register item 243 half-recorded this as *"a new GUI cannot show an existing
-                // run"* and it was read as *there is no way to say attach*. There is a way; what it
-                // shows is nothing.
-                //
-                // **Flip this to `false` the day a client that attaches paints its panes** — and not
-                // before: a blank window over the person's work is worse than a session they can
-                // close.
-                fresh: true,
+                // ⚠⚠⚠ IT WAS HELD SHUT FOR A ROUND BY ITEM 368 — *a client that attaches renders
+                // nothing* — and that is why this line reads as it does rather than having been
+                // flipped quietly. 368 was re-measured before this changed: six launches on a real
+                // display across every route (create, `SPRAG_GUI_SESSION` at three sessions, this
+                // adopting default, and a second client onto an occupied session) all painted, and
+                // no product change separates the two measurements. What was genuinely missing was
+                // a GATE — no check had ever booted an ATTACHING client, because every client the
+                // pixel smoke boots creates its own session — and
+                // `check_a_client_that_attaches_paints_the_panes_it_joined` is now that check.
+                fresh: wants_own,
                 argv: argv.as_deref(),
                 cols,
                 rows,

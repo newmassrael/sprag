@@ -3,7 +3,9 @@
 //! ```text
 //! sprag ls                 list every session
 //! sprag list-clients [-t SESSION]  list attached clients and the session each views (tmux list-clients)
-//! sprag new [name]         create a session with a shell (absent name -> the lowest free), print its name
+//! sprag new [name] [-a]    create a session with a shell (absent name -> the lowest free), print its
+//!                          name; -a instead opens a WINDOW on a new session (the window creates it,
+//!                          so nothing is printed) — the explicit "new", since a bare launch adopts
 //! sprag ssh [user@]host [-p PORT] [-L FWD]... [--tmux[=NAME]] [-- cmd...]  create a session running
 //!                          ssh to a remote host (a first-classed remote workspace); -L forwards a
 //!                          local->remote port; --tmux attaches-or-creates a remote tmux session
@@ -266,7 +268,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
     match verb {
         Verb::Ls => ls(),
         Verb::ListClients => list_clients(args.collect()),
-        Verb::New => new(args.next()),
+        Verb::New => new(args.collect()),
         Verb::Ssh => ssh(args.collect()),
         Verb::Find => find(args.collect()),
         Verb::WaitForOutput => wait_for_output(args.collect()),
@@ -950,6 +952,19 @@ const GUI_BIN_ENV: &str = "SPRAG_GUI_BIN";
 /// must not silently redirect the other.
 const TUI_BIN_ENV: &str = "SPRAG_TUI_BIN";
 
+/// Env handed to a client naming WHICH session to adopt — [`attach`]'s whole mechanism.
+///
+/// Spelled here rather than imported from `sprag-client`: this CLI does not depend on that crate,
+/// and the two spellings agreeing is a fact worth a test rather than a fact hidden behind a `use`.
+const GUI_SESSION_ENV: &str = "SPRAG_GUI_SESSION";
+
+/// Env handed to a client that must create a session of its OWN rather than adopt — [`new`]'s `-a`.
+///
+/// The COMPLEMENT of [`GUI_SESSION_ENV`], and the pair is exhaustive over what a launch can mean:
+/// this one names no session and refuses to adopt, that one names exactly which to adopt, and
+/// neither present means *take me to my work* (register item 284).
+const GUI_NEW_ENV: &str = "SPRAG_GUI_NEW";
+
 /// Delete the durability state for the daemon on this socket — its snapshot AND every pane's saved
 /// scrollback — the EXPLICIT "start fresh", reached ONLY by `kill-server --purge`.
 ///
@@ -1436,10 +1451,49 @@ fn optional_target(args: Vec<String>, command: &str) -> io::Result<Option<String
     Ok(session)
 }
 
-/// `new [name]`: create a session — born with a shell, tmux's `new-session -d` (the registry
+/// `new [name] [-a]`: create a session — born with a shell, tmux's `new-session -d` (the registry
 /// allocates the lowest free name when none is given) — and print the name it got, the string to
 /// scope a client to. The CLI passes no `cmd`/size, so the birth pane runs the default `$SHELL`.
-fn new(name: Option<String>) -> io::Result<()> {
+///
+/// # `-a` opens a WINDOW on a new session, and it is the reason this flag exists at all
+///
+/// A launch that names no session ADOPTS the work already there (register item 284) — tmux's shape,
+/// and herdr's. That is right, and it costs a verb: *make me a new one* stops being what a bare
+/// launch means, so without a word for it the only route to a fresh session would be a sidebar
+/// button on a window already sitting in somebody else's work. `-a` is that word.
+///
+/// ⚠⚠ **The WINDOW creates the session, not this command**, and the difference is load-bearing:
+/// a client births its first pane at the size IT measured (its own glyph metric and area), which is
+/// what makes `gui-font` observable end to end. A session created HERE would be born at the
+/// daemon's default and merely resized afterwards. So `-a` hands the client [`GUI_NEW_ENV`] and
+/// gets out of the way, which is also why it prints no name: the window owns the session it made,
+/// and the person is looking at it.
+///
+/// ⚠ A NAME with `-a` is REFUSED rather than quietly ignored. Naming a session the client has not
+/// created yet would need a third meaning for [`GUI_SESSION_ENV`] (*create under this name*, beside
+/// *attach to this one*), and a flag that accepted the name and dropped it would be the worse
+/// answer. `sprag new NAME` then `sprag attach NAME` is the joined-up route today.
+fn new(args: Vec<String>) -> io::Result<()> {
+    let mut name = None;
+    let mut window = false;
+    for arg in args {
+        match arg.as_str() {
+            "-a" | "--attach" => window = true,
+            _ if name.is_none() => name = Some(arg),
+            other => {
+                return Err(bad_input(&format!("new: unexpected argument {other:?}")));
+            }
+        }
+    }
+    if window {
+        if let Some(named) = name {
+            return Err(bad_input(&format!(
+                "new -a opens a window on a session the window itself creates, so it cannot also \
+                 be named {named:?} here — run `sprag new {named}` then `sprag attach {named}`"
+            )));
+        }
+        return new_window_on_its_own_session();
+    }
     let mut conn = connect()?;
     let args = match &name {
         Some(name) => json!({ "name": name }),
@@ -1475,6 +1529,38 @@ fn new(name: Option<String>) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// Launch a window that makes a session of its own — the body of `new -a`.
+///
+/// Spawned exactly as [`attach`] spawns one, and through the same [`own_session`], for the same
+/// reason: a window must outlive the shell that opened it, so a hangup here cannot reach it.
+/// The one difference from `attach` is the env, and it is the whole point — [`GUI_NEW_ENV`]
+/// instead of [`GUI_SESSION_ENV`].
+///
+/// It returns as soon as the DAEMON has witnessed the window ([`await_window`]), not when the spawn
+/// succeeded, so a window that dies on startup — no display, a broken binary — is this command's
+/// failure rather than a silent exit 0 and a prompt that looks fine. That is `attach --no-wait`'s
+/// discipline, and it is the right default here because `new` has always returned to the shell.
+fn new_window_on_its_own_session() -> io::Result<()> {
+    let sock = socket_path(HOST_SOCKET);
+    // The pre-flight is the connection itself: a window is about to be launched against THIS
+    // daemon, and a daemon that cannot be reached is worth saying so before a process is spawned to
+    // find out. `attach` checks the session too; there is no session to check here.
+    let mut conn = connect()?;
+    let mut command = Command::new(client_bin(GUI_BIN_ENV, "sprag-gui"));
+    command
+        .env(GUI_NEW_ENV, "1")
+        .env("SPRAG_GUI_HOST_SOCK", &sock)
+        // ⚠ REMOVED, not merely left unset: this process's own environment is inherited, and a
+        // person running `sprag new -a` from a shell that `sprag attach` exported into would hand
+        // the window BOTH words. The client reads the session name first, so the launch would
+        // quietly attach — the exact opposite of what was typed.
+        .env_remove(GUI_SESSION_ENV);
+    let mut child = own_session(&mut command).spawn().map_err(|error| {
+        io::Error::new(error.kind(), format!("could not launch sprag-gui: {error}"))
+    })?;
+    await_window(&mut conn, &mut child)
 }
 
 /// `ssh [user@]host [-p PORT] [-- command…]`: create a session whose first pane runs `ssh` to a
@@ -1640,8 +1726,11 @@ fn attach(args: Vec<String>) -> io::Result<()> {
         if tui { "sprag-tui" } else { "sprag-gui" },
     ));
     command
-        .env("SPRAG_GUI_SESSION", &name)
-        .env("SPRAG_GUI_HOST_SOCK", &sock);
+        .env(GUI_SESSION_ENV, &name)
+        .env("SPRAG_GUI_HOST_SOCK", &sock)
+        // The complement of what `new -a` removes, and for the same reason: a shell that exported
+        // the *new* word must not turn an explicit `attach NAME` into a create.
+        .env_remove(GUI_NEW_ENV);
     if tui {
         // The pre-flight's connection belongs to a process that is about to stop existing. Close
         // it HERE rather than leave the daemon's client accounting resting on the descriptor's

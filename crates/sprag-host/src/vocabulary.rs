@@ -671,7 +671,7 @@ impl Verb {
             Self::New => (
                 "new",
                 Group::Session,
-                Shell::Runs("[name]"),
+                Shell::Runs("[name] [-a]"),
                 Keystroke::Means("new"),
                 Agent::Cannot(NotAnAgents::OutsideItsSession),
             ),
