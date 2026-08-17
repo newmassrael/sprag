@@ -425,6 +425,9 @@ mod tests {
                     next: 10,
                     lost: 3,
                     partial: String::new(),
+                    // ⚠ An ordinary read: this fixture stages eviction, not the address-space
+                    // restart of item 366.
+                    restarted: false,
                 })
             }
         }

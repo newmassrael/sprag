@@ -1579,6 +1579,27 @@ pub struct LinesSince {
     /// ⚠ A prompt (`> `) is the ordinary NON-terminal case: it sits here forever and relaying it
     /// would be relaying furniture. Waiting is the correct answer, and it costs nothing.
     pub partial: String,
+    /// **THE NUMBERING THIS CURSOR CAME FROM NO LONGER EXISTS, SO [`lines`](Self::lines) STARTS
+    /// OVER FROM WHAT THIS SCREEN RETAINS** — register item 366.
+    ///
+    /// # ⚠⚠⚠ What it is for, and why an answer this shape was owed
+    ///
+    /// Entering the alternate screen installs a fresh [`Screen`] counting from zero. A reader that
+    /// had been following the pane holds an address from the MAIN screen's sequence, which the new
+    /// one will not reach — so before this existed every read answered EMPTY, with
+    /// [`lost`](Self::lost) at zero, and **an agent saying its completion marker was invisible to
+    /// the loop watching for it, 23 times in one run.**
+    ///
+    /// ⚠⚠ It is a separate word from `lost` ON PURPOSE. `lost` means *the source outran the
+    /// retained history* — lines existed and are gone. This means *the addresses changed under
+    /// you*: nothing was necessarily lost, and what is handed back may be text this reader has
+    /// already seen. A consumer that treats them alike will either re-act on old output or ignore a
+    /// screen it has never read.
+    ///
+    /// ⚠ `false` for every ordinary read, including the steady state where a caller passes the
+    /// previous [`next`](Self::next) back and nothing new has arrived — that cursor equals this
+    /// screen's bound rather than exceeding it.
+    pub restarted: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1995,8 +2016,32 @@ impl Screen {
     pub fn lines_since(&self, cursor: u64) -> LinesSince {
         // The oldest line still retained: everything shed, minus what scrollback still holds.
         let oldest = self.logical_shed - self.scrollback_logical as u64;
+
+        // ⚠⚠⚠⚠ A CURSOR THIS SCREEN'S NUMBERING CANNOT ACCOUNT FOR — register item 366.
+        //
+        // Entering the alternate screen installs a FRESH `Screen` counting from zero, and a reader
+        // following the pane still holds an address from the main screen's sequence. Clamped with
+        // `cursor.max(oldest)` that address is never reached, so every read answered EMPTY with
+        // `lost` at zero — no lines, and nothing saying any were missing. Measured on a live run:
+        // an agent said its completion marker 23 times and the driver watching for it saw nothing.
+        //
+        // The highest address this screen could yield right now is everything it has shed plus the
+        // complete lines standing above the cursor. A `cursor` BEYOND that is not "nothing new" —
+        // `next` equals exactly that bound in the steady state — it is an address from a numbering
+        // that no longer exists. The only honest answer is this screen's whole retained output, and
+        // to SAY that is what happened; a reader that silently restarted would look identical to one
+        // that had been following all along.
+        let standing = (0..self.cursor.row.min(self.rows))
+            .filter(|row| self.continues(*row).is_none())
+            .count() as u64;
+        let restarted = cursor > self.logical_shed + standing;
+
         let lost = oldest.saturating_sub(cursor);
-        let from = cursor.max(oldest);
+        let from = if restarted {
+            oldest
+        } else {
+            cursor.max(oldest)
+        };
 
         let mut lines = Vec::new();
         // The scrollback half: logical lines rebuilt from their soft-wrapped rows, counted so the
@@ -2047,6 +2092,7 @@ impl Screen {
             next: at,
             lost,
             partial: joined.trim_end().to_string(),
+            restarted,
         }
     }
 
@@ -4001,25 +4047,47 @@ mod tests {
 
         let followed = e.screen().lines_since(carried);
         assert!(
-            followed.lines.is_empty(),
-            "⚠⚠⚠⚠ ITEM 366 — if this now yields the line, the defect is FIXED and this gate is to \
-             be repurposed into its opposite rather than deleted. Got {:?}",
+            followed
+                .lines
+                .iter()
+                .any(|line| line == "MILESTONE REACHED"),
+            "⚠⚠⚠⚠ ITEM 366: a reader that followed this pane across the swap MUST still be handed \
+             what the app printed. Before the fix this was empty — the cursor named an address the \
+             fresh screen could not reach — and a loop watching for exactly this line saw nothing \
+             23 times in one run. Got {:?}",
             followed.lines,
+        );
+        assert!(
+            followed.restarted,
+            "⚠⚠⚠⚠ AND IT MUST SAY SO. Handing the lines back silently would make a reader that has \
+             just been re-seeded indistinguishable from one that had been following all along, so \
+             it could not tell new output from text it has already acted on. The silence was half \
+             the defect: `lost` stays 0 here, correctly, because nothing was evicted",
         );
         assert_eq!(
             followed.lost, 0,
-            "⚠⚠⚠⚠ AND THE SILENCE IS THE HARM: nothing is reported lost, so no consumer can tell \
-             this apart from an agent that said nothing. A non-zero `lost` would at least have been \
-             a signal somebody could act on",
+            "⚠⚠⚠ `restarted` AND `lost` ARE DIFFERENT FACTS and this holds them apart. `lost` means \
+             the source outran the retained history; nothing was evicted here, the addresses simply \
+             changed. A fix that reported this as loss would send a consumer looking for output \
+             that was never missing",
         );
 
+        // ── THE CONTROLS: neither half may fire on an ordinary read ──
         let fresh = e.screen().lines_since(0);
         assert!(
-            fresh.lines.iter().any(|line| line == "MILESTONE REACHED"),
-            "⚠⚠⚠ THE CONTROL, AND WITHOUT IT THIS GATE CLAIMS THE WRONG THING. Read from zero the \
-             very same screen hands the line back — so the emptiness above is the CURSOR outliving \
-             a numbering that restarted, not the alt screen being unreadable. Got {:?}",
-            fresh.lines,
+            !fresh.restarted,
+            "⚠⚠⚠ A READER STARTING AT ZERO HAS NOT BEEN RESTARTED. If this fires, the detection is \
+             `cursor > 0` dressed up, and every first read on every pane would claim a discontinuity",
+        );
+        let steady = e.screen().lines_since(followed.next);
+        assert!(
+            !steady.restarted && steady.lines.is_empty(),
+            "⚠⚠⚠⚠ AND THE STEADY STATE IS NOT A RESTART. Passing the previous `next` back with \
+             nothing new must be silent — that cursor EQUALS this screen's bound rather than \
+             exceeding it, and a detection that got this wrong would re-deliver the whole screen on \
+             every poll, for ever. Got restarted={} lines={:?}",
+            steady.restarted,
+            steady.lines,
         );
     }
 

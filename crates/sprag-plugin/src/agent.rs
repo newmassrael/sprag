@@ -1336,6 +1336,9 @@ mod tests {
                     next: 10,
                     lost: 7,
                     partial: String::new(),
+                    // ⚠ `lost` is what this double stages; a restart is the OTHER discontinuity
+                    // (item 366) and staging both would blur which one the assertion is about.
+                    restarted: false,
                 })
             }
         }

@@ -6642,6 +6642,9 @@ mod tests {
                     next: 10,
                     lost: self.lost,
                     partial: String::new(),
+                    // ⚠ This double is about `lost` — see item 366 for the restart, which is a
+                    // different discontinuity and would need its own fixture to mean anything.
+                    restarted: false,
                 })
             }
         }
