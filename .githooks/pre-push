@@ -9,10 +9,20 @@
 # Checks:
 #   1. `mnemosyne-cli validate-workspace` (unconditional)
 #      - T1 cross-ref orphan delta + atomic ledger consistency (store-direct)
-#   2. `cargo clippy --workspace --all-targets`
+#   2. the format gate (`.githooks/content-gate.sh`) over the *.rs files the PUSHED
+#      RANGE carries, read from the commit rather than the working tree
+#      - ⚠⚠⚠⚠ ADDED 2026-08-17 (item 404), because driving this hook as a
+#        program showed the hole: format is the gate `pre-commit` owns ALONE,
+#        which makes it the one a `--no-verify` bypass most reliably steps
+#        over — and it was the one this second chance did not offer. The list
+#        above named the bypass as a reason this hook exists while leaving out
+#        the check that bypass defeats.
+#      - read from the COMMIT on purpose: what the remote receives is the
+#        commit, and a tidy working copy says nothing about it.
+#   3. `cargo clippy --workspace --all-targets`
 #      - only when a Cargo workspace exists (Cargo.toml present); dormant
 #        until sprag grows Rust crates.
-#   3. the rustdoc gate (`.githooks/doc-gate.sh`)
+#   4. the rustdoc gate (`.githooks/doc-gate.sh`)
 #      - same condition as clippy, and re-run here for the same reason clippy
 #        is: an amend or a `--no-verify` bypass can put a dead link into the
 #        history that pre-commit never saw.
@@ -30,6 +40,21 @@ cd "$repo_root"
 
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/doc-gate.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/content-gate.sh"
+
+# ⚠⚠⚠⚠ THE REFS ARE READ ONCE, HERE, BEFORE ANYTHING ELSE RUNS.
+#
+# Git feeds the refs being pushed on STDIN, and stdin is a ONE-SHOT stream: two consumers cannot
+# both read it. This hook now has two — the pixel-smoke decision and the format gate — so the
+# stream is drained into a variable at the top and both walk that.
+#
+# It also closes a fragility the single consumer had: every tool this hook shells out to inherits
+# stdin, so a `mnemosyne-cli` or a `cargo` that read even PART of it would have silently eaten the
+# refs, and a partly-eaten list means a paint change going unlooked-at. Measured 2026-08-17:
+# today's `mnemosyne-cli` leaves stdin alone. That is a fact about today's tool, not a property of
+# the design — reading first makes it one.
+pushed_refs="$(cat)"
 
 # ── The pixel smoke, when this push touches what it paints.
 #
@@ -50,13 +75,17 @@ PIXEL_PATHS="crates/sprag-gui crates/sprag-grid"
 
 # Does the pushed range carry a change under PIXEL_PATHS?
 #
-# Reads the refs git feeds a pre-push hook on stdin. Anything it cannot resolve into a comparison —
-# a brand-new remote branch, a remote commit this clone does not have, an empty stdin from a manual
-# invocation — answers YES: the failure this guards is a paint change going unlooked-at, so the
-# unknown case runs the gate rather than waiving it.
+# Walks the refs read above. Anything it cannot resolve into a comparison — a brand-new remote
+# branch, a remote commit this clone does not have, an empty stdin from a manual invocation —
+# answers YES: the failure this guards is a paint change going unlooked-at, so the unknown case
+# runs the gate rather than waiving it.
 pixel_smoke_is_owed() {
     local owed=1 saw_ref=1 local_ref local_sha remote_ref remote_sha
     while read -r local_ref local_sha remote_ref remote_sha; do
+        # ⚠ A here-string always yields one line, so an EMPTY ref list arrives as a blank one.
+        # Counting that as a ref seen would turn "I was told nothing" into "nothing changed",
+        # which inverts the stance stated just above.
+        [ -n "$local_sha" ] || continue
         saw_ref=0
         : "$local_ref" "$remote_ref"
         # A deletion pushes an all-zero local sha and carries no tree to look at.
@@ -64,7 +93,13 @@ pixel_smoke_is_owed() {
             *[!0]*) ;;
             *) continue ;;
         esac
-        if ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+        # ⚠⚠⚠ THE LOCAL SIDE IS CHECKED TOO, AND IT WAS NOT BEFORE. `set -e` is suppressed inside a
+        # function used as an `if` condition (see the note on the format walker below), so a
+        # `git diff` against an unresolvable local sha answered EMPTY rather than aborting — and
+        # empty reads as "nothing painted", waiving the smoke. That is the precise opposite of the
+        # stance stated above, arrived at by the failure mode the stance exists to prevent.
+        if ! git cat-file -e "${local_sha}^{commit}" 2>/dev/null ||
+            ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
             owed=0
             continue
         fi
@@ -72,9 +107,83 @@ pixel_smoke_is_owed() {
         if [ -n "$(git diff --name-only "$remote_sha" "$local_sha" -- $PIXEL_PATHS)" ]; then
             owed=0
         fi
-    done
+    done <<<"$pushed_refs"
     [ "$saw_ref" -eq 0 ] || owed=0
     return "$owed"
+}
+
+# ── The content gates over what this push actually publishes.
+#
+# Walks the same refs for the same reason and with the same stance: where there is nothing to
+# compare against, judge the whole tree rather than waive it. A brand-new branch is otherwise the
+# one push that is never checked, which is precisely the push most likely to carry work no gate has
+# seen.
+#
+# ⚠⚠⚠ BOTH GATES SHARE ONE WALK. The alternative — a second function shaped exactly like this one —
+# is the duplication register item 213 is about, and the ref walk is the fiddly part: the deletion
+# case, the unresolvable sha, the here-string's blank line. One traversal, two checkers.
+#
+# ⚠⚠⚠⚠ AND THE WORKFLOW GATE BELONGS HERE MORE THAN THE FORMAT ONE DOES. This hook's header names
+# the `--no-verify` bypass as a reason it exists, and a workflow is THE ONE THING CI CANNOT CATCH
+# AFTERWARDS: an invalid expression does not fail a step, the run never STARTS, so there is no job
+# and no log. The round that added the format gate here left this out and recorded a reason that did
+# not survive rereading — the header's promise covers whatever pre-commit missed, workflows included.
+#
+# ⚠⚠⚠⚠ EVERY FAILURE IN HERE IS HANDLED BY HAND, BECAUSE `set -e` IS NOT IN FORCE.
+#
+# A function invoked as the condition of an `if` runs with errexit SUPPRESSED — throughout its whole
+# body, not just at the top. Measured: `f() { false; echo REACHED; }; if ! f; then …` prints
+# REACHED. So inside this function a failing `git` does NOT abort the hook; it leaves its output
+# variable empty, `[ -n "$paths" ]` reads false, and the range is skipped. A gate that answers
+# "nothing to judge" because its query ERRORED is the exact silent pass this whole item is about, so
+# each git call below is tested rather than trusted.
+content_gates_over_pushed_range() {
+    local status=0 local_ref local_sha remote_ref remote_sha changed rust workflows
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -n "$local_sha" ] || continue
+        : "$local_ref" "$remote_ref"
+        # A deletion pushes an all-zero local sha and carries no tree to judge.
+        case "$local_sha" in
+            *[!0]*) ;;
+            *) continue ;;
+        esac
+        if ! git cat-file -e "${local_sha}^{commit}" 2>/dev/null; then
+            echo "pre-push: $local_ref is $local_sha, which this clone cannot resolve — a gate" >&2
+            echo "pre-push: cannot judge what it cannot read, so this push is refused" >&2
+            status=1
+            continue
+        fi
+        if git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+            if ! changed="$(git diff --name-only --diff-filter=ACMR "$remote_sha" "$local_sha")"; then
+                echo "pre-push: could not read the range $remote_sha..$local_sha" >&2
+                status=1
+                continue
+            fi
+        else
+            if ! changed="$(git ls-tree -r --name-only "$local_sha")"; then
+                echo "pre-push: could not list the tree at $local_sha" >&2
+                status=1
+                continue
+            fi
+        fi
+
+        # ⚠ Filtered HERE rather than by a git pathspec, and that is measured, not stylistic:
+        # `git ls-tree` takes no glob pathspec and fails QUIETLY when handed one — `-- '*.rs'`
+        # matched zero files and exited 0, which reads as "this push carries no Rust". Filtering
+        # the listing keeps both branches answering the same question the same way.
+        rust="$(printf '%s\n' "$changed" | grep -E '\.rs$' || true)"
+        workflows="$(printf '%s\n' "$changed" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)"
+
+        if [ -n "$rust" ]; then
+            # shellcheck disable=SC2086  # intentional word-split of the file list
+            fmt_gate "pre-push" "$local_sha" $rust || status=1
+        fi
+        if [ -n "$workflows" ]; then
+            # shellcheck disable=SC2086  # intentional word-split of the file list
+            workflow_gate "pre-push" "$local_sha" $workflows || status=1
+        fi
+    done <<<"$pushed_refs"
+    return "$status"
 }
 
 # Build the whole set in ONE release invocation and run the smoke under a fresh, isolated home.
@@ -132,7 +241,21 @@ if ! refs_report="$(mnemosyne-cli validate-code-refs 2>&1)"; then
         "$refs_report" >&2
     exit 1
 fi
-printf '%s\n' "$refs_report" | grep -E '^violations:' >&2 || true
+# ⚠⚠⚠⚠ AND THE FILTER CANNOT SWALLOW THE MISS — the same line, and the same reasoning, as in
+# `pre-commit`. Pinning item 213's fix to the word `violations:` in a tool this repository pins no
+# version of means a rename puts fifty-two findings back in /dev/null silently. Kept in step with
+# its sibling deliberately: the two copies drifting apart for twelve commits is what item 213 WAS.
+if ! printf '%s\n' "$refs_report" | grep -E '^violations:' >&2; then
+    printf 'pre-push: validate-code-refs printed no "violations:" summary; its report in full:\n%s\n' \
+        "$refs_report" >&2
+fi
+
+# The content gates, before the expensive ones: they are milliseconds, and a push that is going to
+# be refused should be refused before clippy spends minutes agreeing with it.
+if ! content_gates_over_pushed_range; then
+    echo "pre-push: the content this push publishes was refused — fix it, commit, and push again" >&2
+    exit 1
+fi
 
 if [ -f Cargo.toml ]; then
     # ⚠⚠⚠⚠ `-D warnings`, WHICH THIS HOOK WAS MISSING WHILE ITS SIBLING WAS FIXED — register item

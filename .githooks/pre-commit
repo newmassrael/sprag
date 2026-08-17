@@ -8,12 +8,19 @@
 #      - resolved ledger entries (entry stale, drift catch)
 #      - atomic-store consistency (entries / sections; store-direct)
 #
-#   2. `rustfmt --check` on the STAGED *.rs files (edition 2024)
+#   2. `rustfmt --check` on the STAGED CONTENT of the staged *.rs files
+#      (edition 2024, via `.githooks/content-gate.sh`)
 #      - checks exactly what is being committed, and nothing else: no
 #        untouched file can fail a commit that did not touch it.
-#      - ⚠ THE REASON THIS ONCE GAVE WAS FALSE, and it is corrected rather
-#        than deleted because a reader acted on it. It said `cargo fmt --all`
-#        "walks path-deps INTO pinion". Measured 2026-08-17 with
+#      - ⚠⚠⚠⚠ THAT SENTENCE WAS FALSE UNTIL 2026-08-17 and is kept only
+#        because it is now TRUE. This line used to take the staged NAMES and
+#        hand rustfmt the WORKING-TREE BYTES, which is a different thing: a
+#        commit carrying unformatted Rust passed if the file was tidied after
+#        staging, and a commit carrying formatted Rust was refused for an edit
+#        it was not carrying. Both measured by driving the hook (item 404).
+#      - ⚠ THE OTHER REASON THIS ONCE GAVE WAS ALSO FALSE, and it is corrected
+#        rather than deleted because a reader acted on it. It said `cargo fmt
+#        --all` "walks path-deps INTO pinion". Measured 2026-08-17 with
 #        `cargo fmt -v --all`: 60 targets, every one under
 #        `/home/coin/sprag/crates/`, not one pinion path. `--all` means
 #        WORKSPACE MEMBERS, and pinion is not one — it has been a pinned git
@@ -50,6 +57,8 @@ cd "$repo_root"
 
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/doc-gate.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/content-gate.sh"
 
 mnemosyne-cli validate-workspace
 
@@ -82,16 +91,41 @@ if ! refs_report="$(mnemosyne-cli validate-code-refs 2>&1)"; then
     printf 'pre-commit: validate-code-refs REFUSED:\n%s\n' "$refs_report" >&2
     exit 1
 fi
-printf '%s\n' "$refs_report" | grep -E '^violations:' >&2 || true
+# ⚠⚠⚠⚠ AND THE FILTER CANNOT SWALLOW THE MISS. Showing only lines that begin `violations:` pins
+# item 213's fix to a WORD, in a tool this repository pins no version of: rename that summary and
+# the filter matches nothing, `|| true` hides that it matched nothing, and fifty-two findings are
+# back in /dev/null with nobody the wiser. A summary line this hook does not recognise is still the
+# report, so it is shown whole rather than dropped.
+if ! printf '%s\n' "$refs_report" | grep -E '^violations:' >&2; then
+    printf 'pre-commit: validate-code-refs printed no "violations:" summary; its report in full:\n%s\n' \
+        "$refs_report" >&2
+fi
 
-# rustfmt gate — only the STAGED *.rs files, so a commit is judged on what it
-# actually carries. Blocks on any unformatted staged file. (The pinion claim
-# this used to give as its reason was measured false; see the header.)
-staged_rs="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.rs$' || true)"
+# rustfmt gate — the STAGED CONTENT of the staged *.rs files, so a commit is
+# judged on what it actually carries. See `.githooks/content-gate.sh` for why the
+# content is materialised rather than read off disk, and for the measurement
+# that showed reading off disk to be wrong in both directions.
+# ⚠⚠⚠⚠ THE INDEX IS READ ONCE, AND THE READ IS CHECKED — `|| true` ABSORBS THE TOOL FAILING, NOT
+# JUST THE PATTERN MISSING.
+#
+# This used to be two separate `git diff --cached … | grep -E … || true` pipelines. The `|| true` is
+# needed, because grep answers 1 when nothing matches — but it swallows GIT failing just as happily,
+# and an empty list is indistinguishable from "this commit carries no Rust". So an index the hook
+# could not read passed as a commit with nothing to check, and since every gate below is keyed off
+# these variables, ONE unreadable index waived rustfmt, clippy and the rustdoc gate together.
+# Measured by driving the hook against a git that fails `diff --cached` (item 404).
+if ! staged="$(git diff --cached --name-only --diff-filter=ACMR)"; then
+    echo "pre-commit: could not read the index — a gate cannot judge what it cannot read" >&2
+    exit 1
+fi
+staged_rs="$(printf '%s\n' "$staged" | grep -E '\.rs$' || true)"
+staged_workflows="$(printf '%s\n' "$staged" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)"
 if [ -n "$staged_rs" ]; then
-    echo "pre-commit: rustfmt --check (staged *.rs) ..." >&2
     # shellcheck disable=SC2086  # intentional word-split of the file list
-    rustfmt --edition 2024 --check $staged_rs
+    if ! fmt_gate "pre-commit" "" $staged_rs; then
+        echo "pre-commit: the STAGED content is unformatted — format it and stage the result" >&2
+        exit 1
+    fi
 fi
 
 # ⚠⚠⚠ `-D warnings`, AND ITS ABSENCE WAS MEASURED RATHER THAN SUSPECTED. Without it this line
@@ -103,34 +137,33 @@ fi
 #
 # ⚠ The toolchain is PINNED (`rust-toolchain.toml`), so this cannot go red under somebody's newer
 # clippy without the pin moving first — which is a decision somebody takes rather than a drift.
-if [ -f Cargo.toml ] && git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
+# ⚠⚠⚠⚠ THE CONDITION REUSES `$staged_rs` RATHER THAN ASKING GIT AGAIN, AND THAT IS A FIX, NOT TIDYING.
+# It used to re-run `git diff --cached --name-only … | grep -qE '\.rs$'`. Under `set -o pipefail`
+# that pipeline can FAIL FROM SUCCEEDING: `grep -q` exits the instant it matches — on the FIRST line
+# — so once the staged list is longer than a pipe buffer (~64K), git is still writing when the
+# reader goes away, takes EPIPE, and dies. `pipefail` makes the pipeline nonzero, the `if` reads
+# FALSE, and clippy and the rustdoc gate are SKIPPED IN SILENCE.
+# ⚠⚠⚠ MEASURED BOTH WAYS: a handful of staged files does not reproduce it (git finishes writing
+# first), and three thousand does — so the commits that escaped the lint were the LARGEST ones.
+# `$staged_rs` is built with `grep -E` and no `-q`, which reads its input to the end.
+if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
     echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
     cargo clippy --workspace --all-targets -- -D warnings
 
     doc_gate
 fi
 
-# ⚠⚠ A WORKFLOW FILE IS THE ONE THING CI CANNOT GATE.
+# The workflow gate — a workflow file is the one thing CI cannot gate, since an invalid expression
+# means the run never STARTS. See `.githooks/content-gate.sh` for that reasoning in full.
 #
-# Every other check here has a second chance on the runner. This one does not: a workflow whose
-# expression is invalid does not fail a step, it never STARTS — no jobs, no log, and a run that
-# ends in the same second it began. R343 shipped exactly that (`runner.temp` in a job-level `env:`,
-# where the `runner` context does not exist) and burned a push finding out.
-#
-# `yaml.safe_load` cannot see it: the file PARSES. `actionlint` knows the context-availability
-# table, and it was already installed on this box while nothing ran it. Measured on the broken
-# file: six errors naming the context and the line. Measured on the fixed one: exit 0.
-#
-# Skipped with a WORD rather than silently when the tool is absent, because a gate that vanishes
-# quietly is one people stop expecting.
-staged_workflows="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^\.github/workflows/.*\.ya?ml$' || true)"
+# ⚠⚠⚠⚠ AND THIS GATE HAD THE RUSTFMT GATE'S DEFECT TOO, found by the sweep that followed fixing it:
+# it took the staged NAMES and then handed actionlint the WORKING-TREE bytes, so a broken workflow
+# went out whenever the file was tidied after staging. Fixing one copy of a shape and leaving its
+# neighbour is register item 213 exactly, which is why both gates now share one mirror.
 if [ -n "$staged_workflows" ]; then
-    if command -v actionlint >/dev/null 2>&1; then
-        echo "pre-commit: actionlint (staged workflows) ..." >&2
-        # shellcheck disable=SC2086  # intentional word-split of the file list
-        actionlint $staged_workflows
-    else
-        echo "pre-commit: actionlint NOT INSTALLED — a workflow change is going out UNCHECKED." >&2
-        echo "pre-commit: install it (https://github.com/rhysd/actionlint) before touching CI again." >&2
+    # shellcheck disable=SC2086  # intentional word-split of the file list
+    if ! workflow_gate "pre-commit" "" $staged_workflows; then
+        echo "pre-commit: the STAGED workflow is invalid — fix it and stage the result" >&2
+        exit 1
     fi
 fi
