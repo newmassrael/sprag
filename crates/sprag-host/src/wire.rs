@@ -1409,7 +1409,18 @@ impl PluginGrammar {
         ArgGrammar::open("north_star", "string"),
         ArgGrammar::open("milestone", "string"),
         ArgGrammar::open("reference", "string"),
-        ArgGrammar::open("max_turns", "int"),
+        // ⚠⚠⚠⚠ DECLINABLE SINCE ITEM 312, AND IT WAS THE LAST REQUIRED JUDGEMENT ON THIS FORM.
+        // While it was mandatory, `ai_loop.scxml`'s own `<data id="max_turns" expr="40"/>` could not
+        // be reached by any caller — omitting the key was malformed rather than deferring — so a
+        // decision the owner's rule puts in the document was one the document was structurally
+        // forbidden from making. What is REQUIRED beside it now is `pane` + `agent` (the two
+        // bindings) and the brief's three strings, which is the register the rule allows.
+        //
+        // ⚠⚠ Relaxing required→optional does NOT earn a wire bump: it WIDENS what is well-formed,
+        // and every caller that has ever sent the key keeps working unchanged. The residue, stated
+        // rather than hidden: the form alone does not tell an old client which build it is talking
+        // to, so declining the key against an older daemon still answers `TypeMismatch`.
+        ArgGrammar::open("max_turns", "int").optional(),
         ArgGrammar::open("reflect_every", "int").optional(),
         // ⚠⚠⚠ REQUIRED, and the conformance sweep is what settled it. It was declared optional and
         // read with `require_str`, which is the exact defect `DONE_WHEN` beside it records from
@@ -8177,7 +8188,7 @@ mod tests {
                 // happen HERE while no released daemon serves `ai_loop` at all: the whole form is
                 // refused, key and all. ⚠ **THE RESIDUE, STATED: the day this form ships, an
                 // argument added to it earns the number by the ordinary rule.**
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

@@ -628,7 +628,10 @@ impl PluginsExternal {
             PluginName::AiLoop => {
                 let pane = require_pane_id(map, "pane")?;
                 self.require_pane(pane)?;
-                let max_turns = require_count(map, "max_turns")?;
+                // ⚠⚠⚠⚠ DECLINABLE SINCE ITEM 312 — see `AI_LOOP_FORM`. A caller who names no budget
+                // is deferring to `ai_loop.scxml`'s own, which is resolved where the document can be
+                // read (`OuterLoop::brief`) and not here, because this door has no datamodel.
+                let max_turns = opt_count(map, "max_turns")?;
                 // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
                 // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
                 // this crate; the manifest carries the argument. It is per RUN and not shared: a
@@ -673,6 +676,11 @@ impl PluginsExternal {
                     // tests `turns >= max_turns` BEFORE `turns_since_reflect >= reflect_every`, so
                     // an equal pair exhausts first.
                     //
+                    // ⚠⚠⚠⚠ BUT THE `unwrap_or(max_turns)` THAT SAID SO IS NO LONGER HERE — item 312.
+                    // The default IS the budget, and the budget may now be the document's, which
+                    // this door cannot read. So both resolve together in `OuterLoop::brief`, where
+                    // the datamodel is; carrying `None` through is what lets them.
+                    //
                     // ⚠⚠⚠ IT IS NO LONGER A REFUSAL TO NAME A SMALLER ONE — `reflecting` and the
                     // session-replace lifecycle behind it are built. The default is kept as it was
                     // ON PURPOSE rather than moved to the document's `8`: a restart closes a pane a
@@ -681,7 +689,7 @@ impl PluginsExternal {
                     // reflection when a standing instruction fires, which is the correctness edge
                     // (item 148) and not a budget — `screened > screened_carried` is not spelled
                     // here because no caller sets it.
-                    reflect_every: opt_count(map, "reflect_every")?.unwrap_or(max_turns),
+                    reflect_every: opt_count(map, "reflect_every")?,
                     // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
                     // The rules live in the loop template, so a caller who says nothing about
                     // screening is not overriding it — and the driver echoes the document's own
@@ -2181,32 +2189,27 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠ **THE DOCUMENT'S OWN BUDGET CANNOT BE REACHED, AND THIS GATE MEASURES THAT RATHER
-    /// THAN ASSERTING IT IS RIGHT** — register item 312.
+    /// ⚠⚠⚠⚠ **A CALLER CAN DECLINE THE BUDGET AND LET THE DOCUMENT DECIDE** — item 312, PAID, and
+    /// this gate is the one that measured the defect, turned around rather than deleted.
     ///
-    /// `ai_loop.scxml` authors `<data id="max_turns" expr="40"/>`, and that the number really
-    /// arrives in the datamodel is already established one crate over
-    /// (`ai_loop.rs`'s template gate reads `Int(40)` back through the script session). What nobody
-    /// had measured is whether a caller can ever LET it decide. They cannot: `max_turns` is
-    /// `required` on `AI_LOOP_FORM`, so omitting it is malformed rather than deferring, and the
-    /// author's 40 is unreachable from every caller there is.
+    /// # What it said the round before
     ///
-    /// ⚠⚠⚠ **HARDER THAN ITEM 300's TWO DURATIONS, WHICH IS WHY IT OUTLIVED THEM.** Those are
-    /// optional, so omitting one already means *the document decides* — the driver echoes the
-    /// authored number back through the brief. This key cannot be omitted at all, so **a required
-    /// judgement is a decision the document is structurally forbidden from making.**
+    /// `max_turns` was `required` on `AI_LOOP_FORM`, so `ai_loop.scxml`'s own
+    /// `<data id="max_turns" expr="40"/>` was unreachable from every caller there is: omitting the
+    /// key was malformed rather than deferring. **A required judgement is a decision the document
+    /// is structurally forbidden from making** — a harder case than item 300's two durations, which
+    /// were already optional and so already meant *the document decides* when left out.
     ///
-    /// ⚠⚠ **AND THE REFUSAL NAMES NOTHING**, which is the part a caller feels. `require_count`
-    /// answers a bare [`InvokeError::TypeMismatch`] with no sentence, so somebody who declined the
-    /// key learns neither that it is mandatory nor that a 40 was waiting for them — while every
-    /// neighbouring refusal on this surface names the knob or the file.
+    /// ⚠⚠ The refusal also named nothing: `require_count` answered a bare
+    /// [`InvokeError::TypeMismatch`], so somebody who declined the key learnt neither that it was
+    /// mandatory nor that a 40 was waiting — while every neighbouring refusal here names the knob
+    /// or the file. Both halves go together, because the key is declinable now.
     ///
-    /// ⚠⚠⚠⚠ **THIS GATE IS EXPECTED TO GO RED WHEN 312 IS PAID, AND IT IS TO BE REPURPOSED RATHER
-    /// THAN DELETED**: the same call must then START, and the run must be bounded by the
-    /// document's own 40. The half below that survives the fix is the control — a caller who names
-    /// a number is still obeyed.
+    /// ⚠⚠⚠ **WHAT THIS DOOR CAN AND CANNOT SAY.** It answers *the call is accepted*; it cannot see
+    /// the datamodel, so *the run is bounded by 40* is asserted where the document lives —
+    /// `sprag_plugin`'s `a_declined_budget_is_the_documents_own`. Neither gate is the whole claim.
     #[test]
-    fn a_caller_cannot_decline_max_turns_and_let_the_document_decide() {
+    fn a_caller_can_decline_max_turns_and_let_the_document_decide() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
         let pane = echoing_agent_pane(&workspace);
         let registry = Arc::new(Mutex::new(RunRegistry::default()));
@@ -2228,29 +2231,22 @@ mod tests {
             .remove("max_turns")
             .expect("the fixture supplies the key this gate declines");
 
-        let refused = external
+        external
             .invoke(RUN_ACTION, IntrospectValue::Json(declined))
-            .expect_err(
-                "⚠⚠⚠ ITEM 312, MEASURED: declining `max_turns` is malformed rather than \
-                 deferring, so `ai_loop.scxml`'s own `expr=\"40\"` is unreachable from every \
-                 caller there is. When this expectation stops holding, the item is paid and this \
-                 gate is to be turned around, not removed",
+            .expect(
+                "⚠⚠⚠⚠ ITEM 312: declining `max_turns` must DEFER to the document rather than be \
+                 malformed. This expectation is the inverse of the one that measured the defect, \
+                 and it is deliberately the same call",
             );
-        assert!(
-            refused.reason().is_none(),
-            "⚠⚠ AND IT IS REFUSED WITHOUT A WORD: `require_count` answers a bare TypeMismatch, so \
-             a caller learns neither that the key is mandatory nor that a number was waiting. \
-             Every neighbouring refusal here names the knob. Got {:?}",
-            refused.reason().map(ToString::to_string),
-        );
-        assert!(
-            lock(&registry).snapshot().is_empty(),
-            "a refusal must not have taken a run slot first",
+        assert_eq!(
+            lock(&registry).snapshot().len(),
+            1,
+            "⚠⚠ and a deferred budget starts a real run, not a nothing that reports success",
         );
 
-        // ⚠⚠⚠ THE CONTROL, AND IT IS THE HALF THAT SURVIVES THE FIX. Making the key declinable must
-        // not stop a caller who names a number from being obeyed — and without this, a product that
-        // ignored `max_turns` entirely would satisfy everything above.
+        // ⚠⚠⚠ THE CONTROL, AND IT IS THE HALF THAT SURVIVED THE FIX UNCHANGED. Making the key
+        // declinable must not stop a caller who names a number from being obeyed — and without
+        // this, a product that ignored `max_turns` entirely would satisfy everything above.
         external
             .invoke(
                 RUN_ACTION,
@@ -3375,10 +3371,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            69,
+            70,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠ THE NEWEST IS `screen_rules`, and declining it \
+             malformed rather than declined. ⚠⚠⚠⚠ THE NEWEST IS `max_turns`, and it is the one \
+             argument on this surface that has ever moved from REQUIRED to declinable (item 312): \
+             the document authors `expr=\"40\"` and, while the key was mandatory, no caller could \
+             let it decide — so a judgement the owner's rule puts in the `.scxml` was one the \
+             `.scxml` was structurally forbidden from making. ⚠⚠ Its arrival here is the point of \
+             this sweep rather than a detail of it: declining it now has to mean the same thing \
+             declining anything else here means, `null` included, and nothing but a per-argument \
+             probe would have said so. ⚠⚠⚠ THE ONE BEFORE IT IS `screen_rules`, and declining it \
              means something no other optional here means: NOT *screen nothing*, but *keep whatever \
              the loop document's author wrote*. The rules live in the template, so a caller who \
              says nothing about screening is not overriding one who did — and the driver echoes the \

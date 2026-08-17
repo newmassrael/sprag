@@ -136,23 +136,33 @@ impl AiLoop {
         brief: &Brief,
         spec: &AiLoopSpec,
     ) -> Result<Self, NotStarted> {
-        // ⚠⚠ ASKED BEFORE THE MACHINE IS BUILT, because the answer is arithmetic on the caller's
-        // own numbers and needs nothing else. A loop that may take no turn at all can only reach
-        // `exhausted`, which is a run nobody wanted rather than one this build cannot drive.
-        //
-        // ⚠⚠⚠ THE SECOND REFUSAL THAT USED TO BE HERE IS GONE, and its going is the round's headline:
+        // ⚠⚠⚠ THE SECOND REFUSAL THAT USED TO BE HERE IS GONE, and its going was a round's headline:
         // `reflect_every < max_turns` was refused because it reaches `reflecting`, and *"the
         // session-replace lifecycle behind it is registered debt"*. It is built. The gate that
         // measured the refusal's premise — that a run really does reach that state — is kept and
         // now measures the walk THROUGH it, which is the standing rule for a gate whose defect has
         // been paid.
-        if brief.max_turns < 1 {
-            return Err(NotStarted::Unbuilt(AiLoopState::Exhausted));
-        }
         let mut inner = OuterLoop::new(script, pane, spec).ok_or(NotStarted::Undrivable)?;
         match inner.brief(brief) {
             Briefed::Took => {}
             refused => return Err(NotStarted::Brief(refused)),
+        }
+        // ⚠⚠⚠⚠ ASKED AFTER THE BRIEF, AND IT USED TO BE ASKED BEFORE THE MACHINE EXISTED — register
+        // item 312. The old note gave the reason honestly: *"the answer is arithmetic on the
+        // caller's own numbers and needs nothing else"*. That stopped being true the moment
+        // `max_turns` became declinable, because a caller who declines it has no number of their
+        // own and the document's is only readable through a datamodel — which is to say, only after
+        // there is a machine and a brief has been taken.
+        //
+        // ⚠⚠⚠ AND ASKING IN ONE PLACE IS WHAT MAKES THE TWO CASES ONE. A caller's `0` and a
+        // document authoring `0` are the same run — one that can only judge itself `exhausted`
+        // before its agent has answered anything — and they now meet the same refusal, carrying the
+        // same sentence, instead of one being caught here and the other reaching a live agent.
+        //
+        // ⚠⚠ The cost of the move is a briefing round trip on a run that is about to be refused.
+        // Nothing has been spoken to at this point: the pane is untouched and no agent exists yet.
+        if inner.turn_budget().is_none_or(|turns| turns < 1) {
+            return Err(NotStarted::Unbuilt(AiLoopState::Exhausted));
         }
         // ⚠⚠ ASKED AFTER THE BRIEF, because the brief may REPLACE the rules — so validating first
         // would be validating a document the run is not going to use. A caller's own rules are
@@ -1052,10 +1062,14 @@ mod tests {
             north_star: "the stand-in answers prompts and then says the marker".to_string(),
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
-            max_turns,
+            max_turns: Some(max_turns),
             // ⚠ EQUAL, which is what makes `reflecting` unreachable — `judging` tests the turn
             // budget first. `AiLoop::new` refuses anything smaller, and the gate below drives that.
-            reflect_every: max_turns,
+            //
+            // ⚠⚠ WRITTEN OUT RATHER THAN LEFT `None`, though `None` now resolves to exactly this
+            // (item 312). These fixtures state the arrangement they are measuring; a gate that let
+            // the resolution supply it would be asserting about a default it never named.
+            reflect_every: Some(max_turns),
             // ⚠ The document's own placeholder rule, which claims nothing — so every gate below
             // that does NOT set this measures a loop with screening available and unarmed, which
             // is the shipped shape.
@@ -2356,7 +2370,7 @@ mod tests {
             engine(),
             pane,
             &Brief {
-                reflect_every: 8,
+                reflect_every: Some(8),
                 ..brief_for(40)
             },
             &standin_spec(),
@@ -2380,6 +2394,64 @@ mod tests {
             "⚠⚠⚠ NOTHING WAS TYPED. Neither the refusal nor the loop that started has spoken to the \
              pane — a door that prompted an agent before answering would have cost exactly what \
              answering early exists to save",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠ **A DECLINED BUDGET IS THE DOCUMENT'S OWN, AND THIS IS WHERE THE NUMBER IS VISIBLE** —
+    /// item 312, the half `sprag-host`'s door gate cannot make.
+    ///
+    /// That door answers *the call is accepted*; it holds no datamodel, so it cannot say WHICH
+    /// budget a declining caller got. Here the session exists, and the claim is arithmetic: send a
+    /// brief with `max_turns: None` and the run is bounded by `ai_loop.scxml`'s own `expr="40"` —
+    /// the number that was unreachable from every caller while the key was required.
+    ///
+    /// ⚠⚠⚠ **AND `reflect_every` FOLLOWS IT**, which is the coupling that made this item more than
+    /// a type change. Its default IS the budget (equal makes `reflecting` unreachable, since
+    /// `judging` tests the turn budget first), so it could be defaulted at the daemon's door only
+    /// while the budget was mandatory there. Both resolve together now, and a caller who declines
+    /// both must land on `40 / 40` rather than on `40` against a stale zero.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE POINT OF THE PAIR**: a caller who names a budget must still get
+    /// theirs, or *"the document decides"* would have quietly become *"the document overrides"*.
+    #[test]
+    fn a_declined_budget_is_the_documents_own() {
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+
+        let deferred = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                max_turns: None,
+                reflect_every: None,
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("⚠⚠⚠ ITEM 312: a caller may decline the budget and let the document decide");
+        assert_eq!(
+            deferred.inner.turn_budget(),
+            Some(40),
+            "⚠⚠⚠⚠ the declining caller must be bounded by the DOCUMENT's own `expr=\"40\"`. Any \
+             other number means the resolution invented one, which is the failure this item is \
+             about wearing a different face",
+        );
+        assert_eq!(
+            deferred.inner.authored_number("reflect_every"),
+            Some(40),
+            "⚠⚠⚠ and `reflect_every` must have followed the budget it defaults to, not been left \
+             at whatever the document ships — an unequal pair reflects when nobody asked",
+        );
+
+        // ⚠⚠⚠ THE CONTROL. Without it, a product that ignored `max_turns` outright and always used
+        // the document's would satisfy every assertion above.
+        let named = AiLoop::new(engine(), pane, &brief_for(3), &standin_spec())
+            .expect("a caller who names a budget is obeyed");
+        assert_eq!(
+            named.inner.turn_budget(),
+            Some(3),
+            "a caller's own number must still win over the document's",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
@@ -3143,7 +3215,7 @@ mod tests {
             engine(),
             pane,
             &Brief {
-                reflect_every: 1,
+                reflect_every: Some(1),
                 ..brief_for(40)
             },
             &standin_spec(),
@@ -3246,7 +3318,7 @@ mod tests {
                 // ⚠ The peer needs NINE prompts to say the marker and the budget reflects after
                 // TWO, so the reflection is reached by the turn budget alone — no screening, no
                 // standing instruction, which is exactly the run the defect was about.
-                reflect_every: 2,
+                reflect_every: Some(2),
                 ..brief_for(40)
             },
             &standin_spec(),
@@ -5208,7 +5280,7 @@ mod tests {
             engine(),
             pane,
             &Brief {
-                reflect_every: 2,
+                reflect_every: Some(2),
                 ..brief_for(40)
             },
             &standin_spec(),
@@ -5339,7 +5411,7 @@ mod tests {
             engine(),
             pane,
             &Brief {
-                reflect_every: 2,
+                reflect_every: Some(2),
                 ..brief_for(40)
             },
             &standin_spec(),

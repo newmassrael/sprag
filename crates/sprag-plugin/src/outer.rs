@@ -333,10 +333,24 @@ pub struct Brief {
     /// handover reading `debt-open.md의 208·212·213과 섹션 P 전체`. See `ai_loop.scxml`'s
     /// `reflect_prompt`, which carries the whole measurement.
     pub reference: String,
-    /// How many turns the run may take before the document calls it `exhausted`.
-    pub max_turns: i64,
-    /// How often the loop stops to improve its own setup.
-    pub reflect_every: i64,
+    /// How many turns the run may take before the document calls it `exhausted`, or [`None`] to
+    /// let the document's own `<data id="max_turns">` decide.
+    ///
+    /// ⚠⚠⚠⚠ **IT WAS A REQUIRED RUN ARGUMENT UNTIL ITEM 312, AND THAT MADE THE AUTHOR'S NUMBER
+    /// UNREACHABLE.** The document ships `expr="40"`, every caller had to send something, and
+    /// omitting the key was malformed rather than deferring — so **a required judgement is a
+    /// decision the document is structurally forbidden from making**, which is a harder case than
+    /// item 300's two durations (those were already optional). [`None`] now means what it means for
+    /// every other judgement here: the author decides.
+    pub max_turns: Option<i64>,
+    /// How often the loop stops to improve its own setup, or [`None`] for *never, on the budget* —
+    /// which is spelled as [`max_turns`](Self::max_turns) rather than as a magic zero.
+    ///
+    /// ⚠⚠ **RESOLVED WHERE `max_turns` IS**, not at the daemon's door where it used to be: the
+    /// default IS the budget, so it cannot be computed anywhere the budget might still be the
+    /// document's. ⚠ Deliberately not the document's own `reflect_every` — a reflection restarts a
+    /// session and closes a pane somebody may be reading, and silence has not asked for that.
+    pub reflect_every: Option<i64>,
     /// **STANDING INSTRUCTIONS FOR DIALOGS THIS CALLER HAS ALREADY DECIDED ABOUT** — the authored
     /// `screen_rules`, supplied by somebody who did not edit the file.
     ///
@@ -1825,10 +1839,10 @@ impl OuterLoop {
         let (Some(patience_ms), Some(still_ms)) = (
             brief
                 .await_person_ms
-                .or_else(|| self.authored_ms("await_person_ms")),
+                .or_else(|| self.authored_number("await_person_ms")),
             brief
                 .handback_still_ms
-                .or_else(|| self.authored_ms("handback_still_ms")),
+                .or_else(|| self.authored_number("handback_still_ms")),
         ) else {
             // A document that cannot say who it expects is one this driver cannot drive — the
             // treatment an unreadable rule list already gets, one field along.
@@ -1849,7 +1863,7 @@ impl OuterLoop {
         // what item 264 measured the cost of, one layer up.
         let Some(ready_ms) = brief
             .ready_timeout_ms
-            .or_else(|| self.authored_ms(crate::readiness::Readiness::WIRE_KEY))
+            .or_else(|| self.authored_number(crate::readiness::Readiness::WIRE_KEY))
         else {
             self.machine.process_event(AiLoopEvent::Fail);
             return Briefed::NotHeld {
@@ -1859,7 +1873,7 @@ impl OuterLoop {
         };
         let Some(turn_ms) = brief
             .turn_within_ms
-            .or_else(|| self.authored_ms(Turn::WIRE_KEY))
+            .or_else(|| self.authored_number(Turn::WIRE_KEY))
         else {
             self.machine.process_event(AiLoopEvent::Fail);
             return Briefed::NotHeld {
@@ -1881,6 +1895,36 @@ impl OuterLoop {
                 };
             }
         };
+        // ⚠⚠⚠⚠ THE RUN'S BUDGET, ON THE SAME TERMS AS THE FOUR DURATIONS ABOVE — register item 312,
+        // which is why it took until now. `max_turns` was a REQUIRED run argument, so the document's
+        // own `<data id="max_turns" expr="40"/>` was unreachable from every caller there is: omitting
+        // the key was malformed rather than deferring, and **a required judgement is a decision the
+        // document is structurally forbidden from making.** It is declinable now, and declining it
+        // means what it means everywhere else here — the author decides.
+        let Some(turns) = brief
+            .max_turns
+            .or_else(|| self.authored_number("max_turns"))
+        else {
+            // A document that cannot say how long its own run may be is one this driver cannot
+            // drive, and it is refused exactly like a document that cannot say who it expects.
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: "max_turns",
+                held: None,
+            };
+        };
+        // ⚠⚠⚠ AND ITS COMPANION RESOLVES HERE RATHER THAN AT THE DOOR, which is the one thing about
+        // item 312 that was more than mechanical. `reflect_every` defaults to `max_turns` — the
+        // number that makes the budget guard unreachable, since `judging` tests `turns >= max_turns`
+        // BEFORE `turns_since_reflect >= reflect_every`, so an equal pair exhausts first. That
+        // default could be computed at the daemon's door while `max_turns` was mandatory there; the
+        // moment the budget may come from the document, **both have to resolve in the same place**,
+        // and this is the only place that can read the document.
+        //
+        // ⚠⚠ THE DEFAULT IS STILL NOT THE DOCUMENT'S OWN `reflect_every`, deliberately: a
+        // reflection restarts a session, which closes a pane a person may be reading, and a caller
+        // who said nothing about reflection has not asked for that.
+        let reflect = brief.reflect_every.unwrap_or(turns);
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             crate::consent::Consents::WIRE_KEY: clauses.as_ref().map_or_else(Vec::new, |held| {
@@ -1900,8 +1944,8 @@ impl OuterLoop {
             crate::readiness::Handback::WIRE_KEY: still_ms,
             crate::readiness::Readiness::WIRE_KEY: ready_ms,
             Turn::WIRE_KEY: turn_ms,
-            "max_turns": brief.max_turns,
-            "reflect_every": brief.reflect_every,
+            "max_turns": turns,
+            "reflect_every": reflect,
             ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
                 rules
                     .rules()
@@ -1919,7 +1963,7 @@ impl OuterLoop {
             .raise_external(AiLoopEvent::Brief, &payload.to_string(), "");
         self.machine.step();
 
-        let held = self.held_as_briefed(brief, rules.as_ref());
+        let held = self.held_as_briefed(brief, rules.as_ref(), (turns, reflect));
         if held != Briefed::Took {
             // The mangled or missing part is already in the datamodel; there is no un-assigning it
             // from out here. `fail` is what the document says happens to a run that cannot go on,
@@ -1930,8 +1974,22 @@ impl OuterLoop {
     }
 
     /// Whether every part of `brief` came back out of the datamodel unchanged — with `rules` the
-    /// standing instructions actually sent, which are the caller's or the document's own echo.
-    fn held_as_briefed(&self, brief: &Brief, rules: Option<&ScreenRules>) -> Briefed {
+    /// standing instructions actually sent, which are the caller's or the document's own echo, and
+    /// `counts` the `(max_turns, reflect_every)` pair as RESOLVED and sent.
+    ///
+    /// ⚠⚠⚠ **THE PAIR IS PASSED IN RATHER THAN READ OFF `brief` BECAUSE EITHER MAY NOW BE THE
+    /// DOCUMENT'S** (item 312) — and it is still checked UNCONDITIONALLY, where the four durations
+    /// below are skipped when the caller sent nothing. That difference is deliberate: skipping is
+    /// right when the alternative is asserting about a number nobody sent, but here what is checked
+    /// is **what this driver actually put on the wire a moment ago**, whoever chose it. Weakening a
+    /// standing check while widening who may decide the value would have traded one of item 316's
+    /// answers for this one.
+    fn held_as_briefed(
+        &self,
+        brief: &Brief,
+        rules: Option<&ScreenRules>,
+        counts: (i64, i64),
+    ) -> Briefed {
         for (part, sent) in [
             ("north_star", &brief.north_star),
             (MILESTONE, &brief.milestone),
@@ -1948,10 +2006,7 @@ impl OuterLoop {
                 _ => return Briefed::NotHeld { part, held: None },
             }
         }
-        for (part, sent) in [
-            ("max_turns", brief.max_turns),
-            ("reflect_every", brief.reflect_every),
-        ] {
+        for (part, sent) in [("max_turns", counts.0), ("reflect_every", counts.1)] {
             match self.script.get_variable(&self.session, part) {
                 Ok(ScriptValue::Int(held)) if held == sent => {}
                 Ok(ScriptValue::Int(held)) => {
@@ -3713,17 +3768,37 @@ impl OuterLoop {
         )
     }
 
-    /// A whole number of milliseconds this document authored, or [`None`] where it holds none this
+    /// A whole non-negative number this document authored, or [`None`] where it holds none this
     /// can read.
     ///
     /// ⚠ A `<data>` spelled as a plain integer can still arrive as a double: the datamodel is
     /// ECMAScript-shaped and its numbers are not typed by how they were written.
-    fn authored_ms(&self, name: &str) -> Option<i64> {
+    ///
+    /// ⚠⚠ **IT WAS CALLED `authored_ms` UNTIL ITEM 312**, when `max_turns` — a COUNT — became a
+    /// number the document may decide and gained the fifth call. Nothing about the reading was ever
+    /// milliseconds; the name was, and a name that is true of four callers and false of the fifth
+    /// is the kind of small lie this tree has spent whole rounds unpicking.
+    ///
+    /// ⚠ Crate-visible rather than private: *what does this document now hold for this key* is a
+    /// question every module here is entitled to ask, and [`turn_budget`](Self::turn_budget) is
+    /// simply the one case the product itself needs by name.
+    pub(crate) fn authored_number(&self, name: &str) -> Option<i64> {
         match self.script.get_variable(&self.session, name) {
             Ok(ScriptValue::Int(held)) if held >= 0 => Some(held),
             Ok(ScriptValue::Double(held)) if held >= 0.0 => Some(held as i64),
             _ => None,
         }
+    }
+
+    /// **HOW MANY TURNS THIS RUN MAY TAKE, AS THE DATAMODEL NOW HOLDS IT** — the caller's number
+    /// once a brief has been taken, and the document's own before one has.
+    ///
+    /// ⚠⚠⚠ Asked AFTER the brief by [`AiLoop::new`](crate::AiLoop::new), and that ordering is the
+    /// whole point (item 312): while the budget was a required argument its *"at least 1"* could be
+    /// settled from the caller's own numbers before anything was built. Now the number may be the
+    /// document's, and **the only place both possibilities have become one value is the datamodel.**
+    pub(crate) fn turn_budget(&self) -> Option<i64> {
+        self.authored_number("max_turns")
     }
 
     /// **HOW LONG THIS DOCUMENT SAYS THE BARRIER MAY WAIT**, read at the moment of the look —
@@ -5561,8 +5636,8 @@ mod tests {
             north_star: "ship \"sprag\" 1.0 — don't break the wire {yet}".to_string(),
             milestone: "바깥 루프가\n혼자 돈다".to_string(),
             reference: "~/herdr, ~/ghostty, 그리고 DESIGN.md §5".to_string(),
-            max_turns: 3,
-            reflect_every: 99,
+            max_turns: Some(3),
+            reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
@@ -5676,8 +5751,8 @@ mod tests {
             north_star: "n".to_string(),
             milestone: "m".to_string(),
             reference: "r".to_string(),
-            max_turns: 3,
-            reflect_every: 99,
+            max_turns: Some(3),
+            reflect_every: Some(99),
             screen_rules: None,
             may_answer: None,
             await_person_ms,
@@ -5750,8 +5825,8 @@ mod tests {
             north_star: "what the caller asked for".to_string(),
             milestone: "m".to_string(),
             reference: "r".to_string(),
-            max_turns: 3,
-            reflect_every: 99,
+            max_turns: Some(3),
+            reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
@@ -5828,8 +5903,8 @@ mod tests {
                 north_star: "n".to_string(),
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
-                max_turns: 3,
-                reflect_every: 99,
+                max_turns: Some(3),
+                reflect_every: Some(99),
                 screen_rules: None,
                 may_answer: None,
                 await_person_ms: Some(0),
@@ -5953,8 +6028,8 @@ mod tests {
             north_star: "the one the run is actually for".to_string(),
             milestone: "step one".to_string(),
             reference: "none".to_string(),
-            max_turns: 3,
-            reflect_every: 99,
+            max_turns: Some(3),
+            reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,
@@ -6139,8 +6214,8 @@ mod tests {
                 north_star: "prove the bound is the document's".to_string(),
                 milestone: "wait exactly as long as the file says".to_string(),
                 reference: "register item 300".to_string(),
-                max_turns: 3,
-                reflect_every: 99,
+                max_turns: Some(3),
+                reflect_every: Some(99),
                 screen_rules: None,
                 may_answer: None,
                 await_person_ms: Some(0),
@@ -7029,8 +7104,8 @@ mod tests {
             north_star: "the stand-in answers two prompts and then says the marker".to_string(),
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
-            max_turns: 40,
-            reflect_every: 99,
+            max_turns: Some(40),
+            reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
             // caller that supplies none is the case the echo has to survive.
             screen_rules: None,

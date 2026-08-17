@@ -830,11 +830,11 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         north_star: "prove an outer loop can be driven to convergence by a real agent".to_string(),
         milestone: "state the product of 17 and 23 as a single number".to_string(),
         reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
-        max_turns: LIVE_MAX_TURNS,
+        max_turns: Some(LIVE_MAX_TURNS),
         // ⚠ EQUAL to the budget, which is what keeps `reflecting` — an unbuilt state — off the
         // path. `AiLoop::new` refuses anything smaller, so this is the door's own rule rather than
         // a number chosen here.
-        reflect_every: LIVE_MAX_TURNS,
+        reflect_every: Some(LIVE_MAX_TURNS),
         // ⚠ The document's own placeholder, which claims nothing: this gate is about arithmetic
         // that raises no dialog, so screening must not be armed or it would be a second variable.
         screen_rules: None,
@@ -1049,10 +1049,10 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         milestone: "count upward from 1, exactly ONE number per reply, until you have said 5"
             .to_string(),
         reference: "no tools and no files are needed; the numbers are the whole task".to_string(),
-        max_turns: LIVE_MAX_TURNS,
+        max_turns: Some(LIVE_MAX_TURNS),
         // ⚠ EQUAL to the budget, so `judging` takes the turn-budget edge rather than the reflect
         // one — the document tests them in that order, and this gate is about the budget's ending.
-        reflect_every: LIVE_MAX_TURNS,
+        reflect_every: Some(LIVE_MAX_TURNS),
         screen_rules: None,
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
@@ -1249,8 +1249,8 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         milestone: "count upward from 1, exactly ONE number per reply, until you have said 50"
             .to_string(),
         reference: "no tools and no files are needed; the numbers are the whole task".to_string(),
-        max_turns: UNSPENDABLE_TURNS,
-        reflect_every: UNSPENDABLE_TURNS,
+        max_turns: Some(UNSPENDABLE_TURNS),
+        reflect_every: Some(UNSPENDABLE_TURNS),
         screen_rules: None,
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
@@ -1488,8 +1488,8 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         ),
         reference: "you are in an empty scratch directory of your own; use your file tools"
             .to_string(),
-        max_turns: LIVE_MAX_TURNS,
-        reflect_every: LIVE_MAX_TURNS,
+        max_turns: Some(LIVE_MAX_TURNS),
+        reflect_every: Some(LIVE_MAX_TURNS),
         // ⚠ Unarmed: this gate's claim is about the CONSENT carrying the loop through the dialog,
         // so a standing rule that could also get past it would make the finding ambiguous.
         screen_rules: None,
@@ -1684,8 +1684,8 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         ),
         reference: "you are in an empty scratch directory of your own; use your file tools"
             .to_string(),
-        max_turns: LIVE_MAX_TURNS,
-        reflect_every: LIVE_MAX_TURNS,
+        max_turns: Some(LIVE_MAX_TURNS),
+        reflect_every: Some(LIVE_MAX_TURNS),
         // ⚠⚠⚠ THE WHOLE POINT: the caller supplies the AUTHOR's half of the contract, quoting the
         // agent's own words exactly as a consent's `asked` does — the needle R383 measured covering
         // every dialog three tool families raise.
@@ -1906,11 +1906,11 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         ),
         reference: "you are in an empty scratch directory of your own; use your file tools"
             .to_string(),
-        max_turns: LIVE_MAX_TURNS,
+        max_turns: Some(LIVE_MAX_TURNS),
         // ⚠⚠⚠ THE BUDGET TRIGGER IS OFF, so the reflection below is caused by the STANDING
         // INSTRUCTION and by nothing else. Equal is what makes `turns_since_reflect >= reflect_every`
         // unreachable — `judging` tests the turn budget first.
-        reflect_every: LIVE_MAX_TURNS,
+        reflect_every: Some(LIVE_MAX_TURNS),
         screen_rules: ScreenRules::of(vec![
             ScreenRule::parse("Do you want to".to_string(), INSTEAD.to_string())
                 .expect("both halves are non-empty"),
@@ -3221,8 +3221,8 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         north_star: "prove a loop can read what its own agent session is spending".to_string(),
         milestone: "state the product of 17 and 23 as a single number".to_string(),
         reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
-        max_turns: LIVE_MAX_TURNS,
-        reflect_every: LIVE_MAX_TURNS,
+        max_turns: Some(LIVE_MAX_TURNS),
+        reflect_every: Some(LIVE_MAX_TURNS),
         screen_rules: None,
         // ⚠ NOBODY IS WATCHING, said rather than inherited: the patience is the document's since
         // the round that moved it, and these gates were written against `Attended::NoOne` — a run
