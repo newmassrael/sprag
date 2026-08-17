@@ -668,6 +668,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 to,
                 found,
                 because,
+                unreadable,
                 spent: _,
             } => {
                 // ⚠⚠ THE REFUSAL A PASS ARRIVED AT GOES INTO THE LINE, and so does WHY IT TOOK THE
@@ -690,9 +691,21 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 let cause = because
                     .map(|reason| format!(" — {}", reason.noted()))
                     .unwrap_or_default();
+                // ⚠⚠⚠ AND A RECORD THIS RUN COULD NOT READ — register item 431(a), and THIS reader is
+                // the one it was written for: a person watching a live agent is who would otherwise
+                // read three zeros as a session that has spent nothing. It is a LIVE agent's own
+                // stated path, so a break here is a real deployment fact rather than a fixture's.
+                let unread = unreadable
+                    .map(|record| {
+                        format!(
+                            " — could not read the record it states: {}",
+                            record.display()
+                        )
+                    })
+                    .unwrap_or_default();
                 step(
                     began,
-                    &format!("{from:?} --{raised:?}--> {to:?}{cause}{arrived}"),
+                    &format!("{from:?} --{raised:?}--> {to:?}{cause}{arrived}{unread}"),
                 );
                 walked.push((from, raised, to));
 

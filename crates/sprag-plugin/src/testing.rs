@@ -2085,6 +2085,44 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
     WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
 }
 
+/// [`supervised`], and its agent STATES which record it is writing — the fact an agent's own submit
+/// hook carries, and the only kind of transcript path that cannot be a guess (register item 431).
+///
+/// ⚠⚠ The path is the caller's to choose and **may not exist**, which is the population item 431(a)
+/// is about: an agent in a container, on another host, or one whose hook reports a path relative to
+/// somewhere else all state a name this host cannot read. A fixture that could only state a READABLE
+/// path could not stage the fault at all.
+pub(crate) fn supervised_writing(
+    workspace: &Arc<Mutex<Workspace>>,
+    record: &std::path::Path,
+) -> WorkspacePaneAccess {
+    let said = record.display().to_string();
+    let source = {
+        let workspace = Arc::clone(workspace);
+        let high: SeqHighWater = Arc::default();
+        Arc::new(move |id: PaneId| {
+            let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_full_lines(id)
+                .unwrap_or_default();
+            let seq = latched(&high, id, &rows);
+            Some(crate::access::AgentObservation {
+                state: AgentState::Idle,
+                agent: has_painted(&rows).then(|| "claude".to_string()),
+                // ⚠ REPORTED, because a transcript path only ever arrives on a hook. A scraped
+                // observation could not carry one, and the loop's readers key on this authority.
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_string(),
+                },
+                seq,
+                asking: None,
+                asked: None,
+                transcript: Some(said.clone()),
+            })
+        })
+    };
+    WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
+}
+
 #[cfg(test)]
 mod tests {
     use super::refused_naming;

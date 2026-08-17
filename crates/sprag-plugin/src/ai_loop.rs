@@ -333,6 +333,7 @@ impl AiLoop {
         to: AiLoopState,
         found: Option<&crate::consent::Unanswered>,
         because: Option<crate::outer::Because>,
+        unreadable: Option<&std::path::Path>,
     ) -> String {
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
@@ -344,6 +345,21 @@ impl AiLoop {
         }
         if let Some(unanswered) = found {
             note = format!("{note} — {}", unanswered.noted());
+        }
+        // ⚠⚠⚠⚠ AND THE THIRD FACT — register item 431(a) — LAST, because it is about the run's own
+        // instruments rather than about the edge: everything above says what the loop did, and this
+        // says what it could not measure while doing it.
+        //
+        // ⚠⚠ IT IS SAID ONCE PER BROKEN RECORD, which is the caller's `take` and not this function's
+        // business — see [`OuterLoop::took_unaccountable`]. A sentence on every step would fill a
+        // bounded journal with one fact, which is measured (item 277) rather than feared.
+        if let Some(record) = unreadable {
+            note = format!(
+                "{note} — its agent states it is writing {} and nothing here could read that file, \
+                 so this run's context, cold and floor are zeros it could not measure rather than a \
+                 session that has spent nothing",
+                record.display(),
+            );
         }
         note
     }
@@ -625,6 +641,7 @@ impl Plugin for AiLoop {
                 spent,
                 found,
                 because,
+                unreadable,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
                 // is reported once. The barrier answered the peer's question inside this pump, on
@@ -663,7 +680,14 @@ impl Plugin for AiLoop {
                     )
                     .noting(note));
                 }
-                let note = Self::walked(from, raised, to, found.as_ref(), because);
+                let note = Self::walked(
+                    from,
+                    raised,
+                    to,
+                    found.as_ref(),
+                    because,
+                    unreadable.as_deref(),
+                );
                 if Self::is_final(to) {
                     self.ended(to, spent, note)
                 } else {
@@ -1193,6 +1217,102 @@ mod tests {
              interrupt whatever a person started in it next",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN WHOSE AGENT WRITES SOMEWHERE NOTHING CAN READ SAYS SO, ONCE** — register item
+    /// 431(a), the half its own done-when called *"nothing fails LOUDLY"*.
+    ///
+    /// # ⚠⚠⚠ What the silence was
+    ///
+    /// `context`/`cold`/`floor` degrade to `0` together, and `0` means *do not decide on this* — which
+    /// reads exactly like a healthy session that has not been billed yet. So a loop whose agent
+    /// states a path this host cannot read reported the same three numbers, every turn, for its whole
+    /// life, and the register's own sentence about the defect it already paid for applies again: **a
+    /// zero is a number that could not be read, not a small one.**
+    ///
+    /// ⚠⚠ The stated path is what makes it a FAULT rather than a guess having failed (431's paid
+    /// half): the agent said where it writes, so a read that fails is the deployment being wrong — a
+    /// container, another host, a hook reporting a path relative to somewhere else — and none of that
+    /// is diagnosable by anybody who is not told WHICH FILE.
+    ///
+    /// # ⚠⚠ ONCE, which is the other half of the claim
+    ///
+    /// The record is read every judged turn, so a sentence per turn would fill a bounded journal with
+    /// one fact — item 277 measured exactly that, where ~99,987 looks erased the transition that
+    /// explained a whole ending. The driver hands it over TAKEN, so the walk carries it on one step.
+    ///
+    /// ⚠ The control is the same run under a supervisor that states nothing: no record is named, so
+    /// nothing failed to be read, and a sentence there would be about a file nobody mentioned.
+    #[test]
+    fn a_record_the_run_could_not_read_is_named_in_the_walk_once() {
+        /// The one clause a reader is owed — asserted rather than the whole sentence, so a reword
+        /// does not fail this gate while a SILENCE does.
+        const SAYS: &str = "could read that file";
+
+        let walk_of = |record: Option<&std::path::Path>| {
+            let (workspace, pane) = standin_agent(2);
+            let access = match record {
+                Some(record) => crate::testing::supervised_writing(&workspace, record),
+                None => supervised(&workspace),
+            };
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            // ⚠ The OUTCOME is not this gate's subject — the walk is — but it is read rather than
+            // discarded, because a run that failed for some other reason would leave a walk this
+            // gate would then be reading as evidence about a record.
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 40,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Converged,
+                "this run must converge, or its walk is about something else: {outcome:?}",
+            );
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            access.lifecycle().expect("lifecycle").close(pane);
+            walk
+        };
+
+        // ⚠ NEVER CREATED, and under a directory that is not there either — so no ordering of this
+        // suite can accidentally make it readable.
+        let missing = std::env::temp_dir()
+            .join(format!("sprag-unread-{}", std::process::id()))
+            .join("never-written.jsonl");
+        let told = walk_of(Some(&missing));
+        let said: Vec<&String> = told.iter().filter(|note| note.contains(SAYS)).collect();
+
+        assert_eq!(
+            said.len(),
+            1,
+            "⚠⚠⚠⚠⚠ ITEM 431(a): a run that cannot read the record its agent NAMED must say so — \
+             exactly once, because it is one broken record and not one per turn. Walked {told:?}",
+        );
+        assert!(
+            said[0].contains(&missing.display().to_string()),
+            "⚠⚠⚠ AND IT MUST NAME THE FILE. The remedy is to go and look at it, and a reader who is \
+             not told where cannot: {:?}",
+            said[0],
+        );
+
+        // ⚠⚠⚠ THE CONTROL: the same run, the same peer, and a supervisor that states no record. Zeros
+        // here mean *nothing has been billed yet*, which is not a fault — a sentence would send a
+        // reader after a file nobody ever mentioned.
+        let untold = walk_of(None);
+        assert!(
+            !untold.iter().any(|note| note.contains(SAYS)),
+            "⚠⚠ nothing was named, so nothing failed to be read: {untold:?}",
+        );
     }
 
     /// ⚠⚠⚠ **THE RUN HANDS BACK THE ACCOUNT ITS AGENT WROTE** — register item 121, and the thing a
@@ -3906,6 +4026,7 @@ mod tests {
             AiLoopState::Working,
             None,
             None,
+            None,
         );
         assert!(
             !looked.contains("-->"),
@@ -3930,6 +4051,7 @@ mod tests {
             AiLoopState::Judging,
             AiLoopEvent::Judge,
             AiLoopState::Reflecting,
+            None,
             None,
             None,
         );

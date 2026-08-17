@@ -1338,6 +1338,22 @@ pub enum Pumped {
         /// assigns its variable and every transition into `stopping` assigns its own, and a gate
         /// over the document holds each of those true.
         because: Option<Because>,
+        /// **A RECORD THIS RUN'S AGENT NAMED AND THIS PASS COULD NOT READ** — [`None`] for every
+        /// pass that read one, named none, or is still holding a break it has already reported.
+        /// Register item 431(a).
+        ///
+        /// # ⚠⚠⚠ Why it travels here rather than being read off the loop
+        ///
+        /// It is [`found`](Self::Moved::found)'s question about a different fact, and it gets
+        /// [`found`](Self::Moved::found)'s answer: the driver holds a LEVEL — *what this run
+        /// currently cannot read* — and a journal wants the CHANGE. The two come apart the moment a
+        /// break outlives one step, which is always: the record is re-read every judged turn, so a
+        /// reader of the level writes the same sentence on every step of the run.
+        ///
+        /// ⚠⚠ **MEASURED ON THE FIRST BUILD OF THIS ITEM**: with the fact TAKEN from a slot instead
+        /// of diffed, a four-turn fixture reported it three times — because taking empties a slot
+        /// that the next turn's read refills. Item 277 priced that shape at a whole diagnosis.
+        unreadable: Option<std::path::PathBuf>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -1690,8 +1706,70 @@ impl Session {
 
     /// **WHAT THIS SESSION HAS BEEN CHARGED**, out of the record it is writing — see
     /// [`record`](Self::record) for which file that is and why.
-    fn spent(&mut self, panes: &dyn PaneAccess) -> Option<crate::spend::Spend> {
-        crate::spend::spend_at(&self.record(panes)?)
+    ///
+    /// ⚠⚠⚠⚠ **THREE ANSWERS AND NOT AN [`Option`], because a zero had two meanings** — register item
+    /// 431's remaining half. See [`Accounted`].
+    fn spent(&mut self, panes: &dyn PaneAccess) -> Accounted {
+        let Some(record) = self.record(panes) else {
+            return Accounted::Unnamed;
+        };
+        match crate::spend::spend_at(&record) {
+            Some(spend) => Accounted::Read(spend),
+            None => Accounted::Unreadable(record),
+        }
+    }
+}
+
+/// **WHAT A SESSION CAN SAY ABOUT ITS OWN SPEND** — three answers, because two of them look like
+/// zero and only one of them is a fault.
+///
+/// # ⚠⚠⚠⚠ Why this is a type and was an `Option` — register item 431(a)
+///
+/// [`crate::spend::spend_at`] has always distinguished *the record could not be read* (`None`) from
+/// *the record is there and holds no billed request* (`Some(default)`), and its own doc says why:
+/// *"a caller that flattened the two would report a session it cannot see as one that has spent
+/// nothing."* **`costs_now` was that caller** — it published `0` for both — so a loop whose agent was
+/// writing somewhere this host cannot reach reported the same three numbers as a healthy session on
+/// its first turn.
+///
+/// ⚠⚠⚠ **AND THE PAID HALF OF 431 IS WHAT MAKES THIS URGENT RATHER THAN TIDY.** A record is now
+/// resolved from the path the AGENT STATED, and never from a launch name, so an unreadable record is
+/// no longer somebody's guess having failed — it is the agent's own statement failing, which is a
+/// fact about the deployment (a container, another host, a hook reporting a path relative to
+/// somewhere else) and cannot be diagnosed by anyone who is not told.
+///
+/// ⚠ The third arm is deliberately NOT a fault: a peer whose supervisor states nothing and whose
+/// pane carries no launch name has no record to fail to read, and calling that unreadable would send
+/// a reader after a file nobody ever mentioned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Accounted {
+    /// The record was read. Its [`Spend`](crate::spend::Spend) may still be all zeros — a session
+    /// that has made no billed request yet — and that is an honest zero.
+    Read(crate::spend::Spend),
+    /// **A RECORD WAS NAMED AND COULD NOT BE READ**, and this is which file.
+    ///
+    /// ⚠ It carries the PATH rather than a flag, for [`Heard::Unheard`]'s reason one state over: the
+    /// remedy is to go and look, and a reader who is not told where cannot.
+    Unreadable(std::path::PathBuf),
+    /// Nothing names a record at all — no stated path, and no launch name to derive one from.
+    Unnamed,
+}
+
+impl Accounted {
+    /// The spend where there is one, else [`None`] — for a caller that only wants the numbers.
+    const fn spend(&self) -> Option<&crate::spend::Spend> {
+        match self {
+            Self::Read(spend) => Some(spend),
+            Self::Unreadable(_) | Self::Unnamed => None,
+        }
+    }
+
+    /// The record that could not be read, else [`None`].
+    const fn unreadable(&self) -> Option<&std::path::PathBuf> {
+        match self {
+            Self::Unreadable(record) => Some(record),
+            Self::Read(_) | Self::Unnamed => None,
+        }
     }
 }
 
@@ -1850,6 +1928,28 @@ pub struct OuterLoop {
     /// pass that entered `working` from anywhere else has judged nothing, and there is nothing here
     /// that would be true of it.
     saw: Option<Heard>,
+    /// ⚠⚠⚠ **A RECORD THIS RUN'S AGENT NAMED AND NOTHING COULD READ** — register item 431(a). See
+    /// [`Accounted::Unreadable`], and [`Pumped::Moved`]'s `unreadable`, which is how the CHANGE in
+    /// this level reaches a reader.
+    ///
+    /// ⚠⚠ **A FIELD OF ITS OWN RATHER THAN A [`Noticed`] ARM**, and that is not a style choice: the
+    /// notice is ONE SLOT, and this fact is discovered at the same moment a turn ends — where the
+    /// slot may already be holding an `Answered` or a `Screened` nobody has consumed yet. Writing
+    /// here would drop a decision taken on somebody's behalf, which is the one notice this crate
+    /// insists is reported exactly once.
+    ///
+    /// ⚠⚠⚠ **IT IS A LEVEL AND NOT AN EVENT**, which is exactly what [`Noticed`] is and why the
+    /// reporting is a DIFF at the funnel rather than a `take` here. Measured on the first build of
+    /// this: taken, the sentence still appeared on every judged turn — because the level is
+    /// recomputed each time the record is read, so *taking* it only empties a slot that is about to
+    /// be refilled. **A run whose agent writes somewhere unreachable would put one fact on every step
+    /// it ever takes**, which is R396's thirteen identical lines and item 277's measured cost, where
+    /// looks erased the transition that explained a whole ending.
+    ///
+    /// ⚠ Cleared by the same read that sets it, so a record that becomes readable stops being
+    /// reported — and one that breaks AGAIN, or a replacement session naming a different unreadable
+    /// file, is a new finding rather than a silence.
+    unaccountable: Option<std::path::PathBuf>,
 }
 
 impl OuterLoop {
@@ -1925,6 +2025,7 @@ impl OuterLoop {
             stopping_short: None,
             unasked: false,
             saw: None,
+            unaccountable: None,
         })
     }
 
@@ -2774,6 +2875,10 @@ impl OuterLoop {
                     spent: 0,
                     found: None,
                     because: None,
+                    // ⚠ This pass never reached a turn's end, so it read no record and discovered
+                    // nothing about one. A break the run was already holding stays held, and the
+                    // step that discovered it has already said so.
+                    unreadable: None,
                 })
             }
             otherwise => otherwise,
@@ -2813,6 +2918,10 @@ impl OuterLoop {
         // what it happens to be holding — see [`Pumped::Moved`]'s `found`, which is register item
         // 240's answer and the reason this snapshot is at the funnel rather than in any one state.
         let held = self.asking_now().cloned();
+        // ⚠⚠ AND THE SECOND LEVEL THIS FUNNEL DIFFS, snapshotted in the same breath and for the same
+        // reason — see [`Pumped::Moved`]'s `unreadable`. A record that cannot be read is re-read
+        // every judged turn, so what a journal wants is the moment it BECAME unreadable.
+        let unread = self.unaccountable.clone();
         let raised: Raise = match from {
             // Nothing has happened yet. Starting the loop is the caller's act — but the transition
             // it causes DELIVERS THE START PROMPT, so the pane has to be ready first.
@@ -3021,6 +3130,13 @@ impl OuterLoop {
             Some(now) if held.as_ref() != Some(now) => Some(now.clone()),
             _ => None,
         };
+        // ⚠⚠⚠ THE SAME DIFF FOR THE SAME REASON, one fact over: a break this pass DISCOVERED, and
+        // never one it was already holding. `costs_now` recomputes the level on every judged turn,
+        // so a reader of the level would write one sentence onto every step of the run.
+        let unreadable = match &self.unaccountable {
+            Some(now) if unread.as_ref() != Some(now) => Some(now.clone()),
+            _ => None,
+        };
         // ⚠⚠⚠ ON THE EDGE THAT ENTERS A MANY-DOORED STATE, AND ON NO OTHER PASS — see
         // [`Pumped::Moved`]'s `because` for why this is an entry test rather than the diff one
         // line above it. `from != to` is what keeps a `Null` look inside such a state (and the
@@ -3087,6 +3203,7 @@ impl OuterLoop {
             spent,
             found,
             because,
+            unreadable,
         })
     }
 
@@ -4521,11 +4638,31 @@ impl OuterLoop {
         // from the session's LAUNCH name, and register item 431 measured that reading nothing for a
         // session whose record held 466,013 tokens — the three numbers below were 0 while the file
         // was on disk. See [`Session::spent`], which holds the order and why it does not fall back.
-        let spend = self.driving.spent(panes);
+        let accounted = self.driving.spent(panes);
+        let spend = accounted.spend();
+        // ⚠⚠⚠⚠ AND WHETHER THOSE ZEROS ARE A MEASUREMENT — register item 431(a), which is the same
+        // shape as `unheard` one state over: a number the caller can act on, or `false`. `0` for
+        // `context` means *do not decide on this*, and that reads exactly like a healthy session on
+        // its first turn — so the ONE case that is a fault says which file it could not read.
+        //
+        // ⚠⚠ A PATH OR `false`, NEVER AN EMPTY STRING, for `stop_short`'s measured reason: this
+        // datamodel is Lua, where `''` is TRUE, so an empty spelling would make every turn of every
+        // run look unaccountable.
+        //
+        // ⚠ The three numbers stay as they were. Nothing is invented for a record that could not be
+        // read — what changed is that the zero now travels with the reason for it.
+        // ⚠⚠ ASSIGNED WHOLE, never merged: this is the LEVEL — what this run currently cannot read —
+        // and a record that has become readable must stop being reported. The DIFF that turns it
+        // into one finding is taken at the funnel, beside `found`'s.
+        self.unaccountable = accounted.unreadable().cloned();
         serde_json::json!({
-            "context": spend.as_ref().map_or(0, |spend| spend.context),
-            "cold": spend.as_ref().map_or(0, |spend| spend.cold),
-            "floor": spend.as_ref().map_or(0, |spend| spend.floor),
+            "context": spend.map_or(0, |spend| spend.context),
+            "cold": spend.map_or(0, |spend| spend.cold),
+            "floor": spend.map_or(0, |spend| spend.floor),
+            "unreadable": match accounted.unreadable() {
+                Some(record) => serde_json::Value::from(record.display().to_string()),
+                None => serde_json::Value::Bool(false),
+            },
         })
     }
 
@@ -5922,6 +6059,175 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A RECORD ITS AGENT NAMED AND NOTHING COULD READ IS SAID OUT LOUD** — register item
+    /// 431's remaining half, and the disease is that a zero has two meanings.
+    ///
+    /// # ⚠⚠⚠ What the two zeros are, and why one of them is a defect
+    ///
+    /// `context`/`cold`/`floor` are published as `0` for BOTH of these, and the whole of item 431's
+    /// argument for the stated path applies again one step later:
+    ///
+    /// * **the record is there and holds no billed request yet** — a fresh session, nothing wrong,
+    ///   and `0` is the honest answer;
+    /// * **a record was NAMED — by the agent's own submit hook — and could not be read**. Something
+    ///   is broken: the agent is writing somewhere this host cannot reach, or the path it stated is
+    ///   not the one it means. **A zero here is a number that could not be read, not a small one**,
+    ///   which is this register's own sentence about the live defect it already paid for.
+    ///
+    /// ⚠⚠ `spend_at`'s doc has said the difference matters since it was written (*"`None` means this
+    /// file could not be read … a caller that flattened the two would report a session it cannot see
+    /// as one that has spent nothing"*) — and `costs_now` was the caller that flattened them.
+    ///
+    /// # ⚠ What this gate holds
+    ///
+    /// Three roads through one reader, differing only in what the supervisor states: a readable
+    /// record, a stated path that does not exist, and a peer that states nothing. The middle one
+    /// must NAME the file it could not read, because a reader who is not told which file cannot go
+    /// and look — and the other two must not, or the answer means nothing.
+    #[test]
+    fn a_record_its_agent_named_and_nothing_could_read_is_said_out_loud() {
+        /// A record with no billed request in it at all — readable, and honestly worth zero.
+        const EMPTY: &str = "{\"type\":\"user\",\"message\":{\"content\":\"hello\"}}";
+
+        let home = std::env::temp_dir().join(format!("sprag-unread-record-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let readable = home.join("read-me.jsonl");
+        std::fs::write(&readable, EMPTY).expect("a readable record");
+        // ⚠ NEVER CREATED. The agent states a path and this host cannot read it — which is the whole
+        // case, and it is not hypothetical: an agent in a container, on another host, or one whose
+        // hook reports a path relative to somewhere else all arrive here.
+        let missing = home.join("this-file-was-never-written.jsonl");
+
+        let costs = |stated: Option<&std::path::Path>| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let said = stated.map(|path| path.display().to_string());
+            let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Working,
+                    agent: Some("claude".to_owned()),
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_owned(),
+                    },
+                    seq: 1,
+                    asking: None,
+                    asked: None,
+                    transcript: said.clone(),
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+                .expect("the document's datamodel must carry its four authored strings");
+            let costs = loops.costs_now(&access);
+            access.lifecycle().expect("lifecycle").close(pane);
+            costs
+        };
+
+        let read = costs(Some(&readable));
+        let unread = costs(Some(&missing));
+        let untold = costs(None);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            unread["unreadable"],
+            serde_json::json!(missing.display().to_string()),
+            "⚠⚠⚠⚠⚠ ITEM 431(a): the agent said where it writes, nothing could read it, and the run \
+             must say WHICH FILE. Got {unread}",
+        );
+        assert_eq!(
+            (&unread["context"], &unread["cold"], &unread["floor"]),
+            (
+                &serde_json::json!(0),
+                &serde_json::json!(0),
+                &serde_json::json!(0)
+            ),
+            "⚠⚠ and the numbers stay zero rather than being invented — what changed is that the \
+             zero now travels with the reason for it: {unread}",
+        );
+
+        // ⚠⚠⚠ THE CONTROL THAT MAKES IT MEAN SOMETHING: a record that IS readable and holds no
+        // billed request. Same zeros, and nothing is wrong — so a reader told *"unreadable"* here
+        // would be sent looking for a fault in a perfectly healthy fresh session.
+        assert_eq!(
+            (
+                &read["unreadable"],
+                &read["context"],
+                &read["cold"],
+                &read["floor"]
+            ),
+            (
+                &serde_json::json!(false),
+                &serde_json::json!(0),
+                &serde_json::json!(0),
+                &serde_json::json!(0)
+            ),
+            "⚠⚠⚠ a readable record with nothing billed yet is the OTHER zero, and it is not a \
+             fault: {read}",
+        );
+        // ⚠⚠ AND A PEER THAT STATES NOTHING NAMES NOTHING. There is no record to fail to read — this
+        // `/bin/sh` pane carries no session name for anything to derive either — so *"unreadable"*
+        // would be a claim about a file nobody ever mentioned.
+        assert_eq!(
+            untold["unreadable"],
+            serde_json::json!(false),
+            "⚠⚠ nothing was named, so nothing failed to be read: {untold}",
+        );
+
+        // ── AND A RECORD THAT HEALS STOPS BEING REPORTED ──
+        //
+        // ⚠⚠⚠⚠ **EVERY LOOK IS ITS OWN ANSWER, so a record that arrives late stops being named.** That
+        // is the ordinary case rather than a corner: the file is created by the agent's FIRST billed
+        // request, so a loop that looked before that has named a path it could not read YET, and the
+        // document would go on being told about it.
+        let healed = std::env::temp_dir().join(format!("sprag-heals-{}", std::process::id()));
+        std::fs::create_dir_all(&healed).expect("a directory to file the record in");
+        let late = healed.join("written-after-the-first-look.jsonl");
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let said = late.display().to_string();
+        let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
+            Some(crate::access::AgentObservation {
+                state: sprag_detect::AgentState::Working,
+                agent: Some("claude".to_owned()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_owned(),
+                },
+                seq: 1,
+                asking: None,
+                asked: None,
+                transcript: Some(said.clone()),
+            })
+        });
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+        let before = loops.costs_now(&access);
+        std::fs::write(&late, EMPTY).expect("the agent's record, written late");
+        let after = loops.costs_now(&access);
+        access.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&healed);
+
+        assert_eq!(
+            before["unreadable"],
+            serde_json::json!(late.display().to_string()),
+            "⚠ the first look must find nothing to read, or the pair below says nothing: {before}",
+        );
+        assert_eq!(
+            after["unreadable"],
+            serde_json::json!(false),
+            "⚠⚠⚠ AND THE SECOND LOOK MUST LET IT GO. The same file, now readable: an answer computed \
+             once and remembered would tell the document a healthy session was unreadable for the \
+             rest of its life: {after}",
+        );
+        // ⚠⚠⚠ **RESIDUE, STATED AND UNGATED**: the DRIVER's own level is assigned whole by the same
+        // read, so a record that breaks, heals and breaks AGAIN is two findings in the walk rather
+        // than one. Nothing here reaches that — the walk's diff needs a live pump, and this reader is
+        // called directly — so a mutation that only ever SET the level passes this gate. It is
+        // recorded in the register rather than left for somebody to discover as a silence.
+    }
+
     /// ⚠⚠⚠⚠⚠ **AN AGENT THAT SAYS IT IS WRITING SOMEWHERE ELSE IS BELIEVED, AND ONE THAT SAYS
     /// NOTHING IS REMEMBERED** — the two halves of [`Session::transcript`], which pull opposite
     /// ways.
@@ -7086,6 +7392,8 @@ mod tests {
                 found: None,
                 // ⚠ AND IT DID NOT ENTER `reflecting`, which is the only edge that carries one.
                 because: None,
+                // ⚠ AND NO TURN ENDED, so no record was read: this run failed at its first prompt.
+                unreadable: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
              own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
@@ -8617,8 +8925,18 @@ mod tests {
                     spent,
                     found,
                     because,
+                    unreadable,
                 } => {
                     spent_total += spent;
+                    // ⚠⚠ AND NOTHING IN THIS RUN IS UNREADABLE, which is a control rather than a
+                    // formality: this peer's supervisor states no record, so a pass that named one
+                    // would be naming a file this fixture never mentioned — and the three cost
+                    // numbers this walk carries would be zeros for a reason nobody had checked.
+                    assert_eq!(
+                        unreadable, None,
+                        "⚠⚠ {from:?} --{raised:?}--> {to:?} says it could not read a record, and \
+                         this run's supervisor states none. Walked {walked:?}",
+                    );
                     // ⚠ A HAPPY PATH ARRIVES AT NO REFUSAL, and this is where that stops being an
                     // assumption: a pass of this walk that found one would mean the peer had
                     // stopped to ask, which is a different run from the one converging below.
