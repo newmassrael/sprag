@@ -2181,6 +2181,89 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **THE DOCUMENT'S OWN BUDGET CANNOT BE REACHED, AND THIS GATE MEASURES THAT RATHER
+    /// THAN ASSERTING IT IS RIGHT** — register item 312.
+    ///
+    /// `ai_loop.scxml` authors `<data id="max_turns" expr="40"/>`, and that the number really
+    /// arrives in the datamodel is already established one crate over
+    /// (`ai_loop.rs`'s template gate reads `Int(40)` back through the script session). What nobody
+    /// had measured is whether a caller can ever LET it decide. They cannot: `max_turns` is
+    /// `required` on `AI_LOOP_FORM`, so omitting it is malformed rather than deferring, and the
+    /// author's 40 is unreachable from every caller there is.
+    ///
+    /// ⚠⚠⚠ **HARDER THAN ITEM 300's TWO DURATIONS, WHICH IS WHY IT OUTLIVED THEM.** Those are
+    /// optional, so omitting one already means *the document decides* — the driver echoes the
+    /// authored number back through the brief. This key cannot be omitted at all, so **a required
+    /// judgement is a decision the document is structurally forbidden from making.**
+    ///
+    /// ⚠⚠ **AND THE REFUSAL NAMES NOTHING**, which is the part a caller feels. `require_count`
+    /// answers a bare [`InvokeError::TypeMismatch`] with no sentence, so somebody who declined the
+    /// key learns neither that it is mandatory nor that a 40 was waiting for them — while every
+    /// neighbouring refusal on this surface names the knob or the file.
+    ///
+    /// ⚠⚠⚠⚠ **THIS GATE IS EXPECTED TO GO RED WHEN 312 IS PAID, AND IT IS TO BE REPURPOSED RATHER
+    /// THAN DELETED**: the same call must then START, and the run must be bounded by the
+    /// document's own 40. The half below that survives the fix is the control — a caller who names
+    /// a number is still obeyed.
+    #[test]
+    fn a_caller_cannot_decline_max_turns_and_let_the_document_decide() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // The well-formed request this whole module uses, with the one key taken back out — which
+        // is the only way to ask the question, since the fixture supplies it like every caller.
+        let mut declined = ai_loop_request(pane, json!({}));
+        declined
+            .as_object_mut()
+            .expect("an object")
+            .remove("max_turns")
+            .expect("the fixture supplies the key this gate declines");
+
+        let refused = external
+            .invoke(RUN_ACTION, IntrospectValue::Json(declined))
+            .expect_err(
+                "⚠⚠⚠ ITEM 312, MEASURED: declining `max_turns` is malformed rather than \
+                 deferring, so `ai_loop.scxml`'s own `expr=\"40\"` is unreachable from every \
+                 caller there is. When this expectation stops holding, the item is paid and this \
+                 gate is to be turned around, not removed",
+            );
+        assert!(
+            refused.reason().is_none(),
+            "⚠⚠ AND IT IS REFUSED WITHOUT A WORD: `require_count` answers a bare TypeMismatch, so \
+             a caller learns neither that the key is mandatory nor that a number was waiting. \
+             Every neighbouring refusal here names the knob. Got {:?}",
+            refused.reason().map(ToString::to_string),
+        );
+        assert!(
+            lock(&registry).snapshot().is_empty(),
+            "a refusal must not have taken a run slot first",
+        );
+
+        // ⚠⚠⚠ THE CONTROL, AND IT IS THE HALF THAT SURVIVES THE FIX. Making the key declinable must
+        // not stop a caller who names a number from being obeyed — and without this, a product that
+        // ignored `max_turns` entirely would satisfy everything above.
+        external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({ "max_turns": 3 }))),
+            )
+            .expect("a caller who names their own budget is obeyed");
+        lock(&registry).cancel_all();
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+    }
+
     /// ⚠⚠⚠ **HALF OF THE TURN CONTRACT IS MALFORMED, IN BOTH DIRECTIONS.**
     ///
     /// `done_when` says what makes the peer's turn over; `turn_within_ms` says how long it may
