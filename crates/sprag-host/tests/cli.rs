@@ -7000,6 +7000,131 @@ fn a_scoped_process_listing_answers_about_that_session_and_not_the_machine() {
     }
 }
 
+/// **`agent` AND `run` ANSWER ABOUT THE SESSION THEY WERE SCOPED TO** — the last two `-t` verbs a
+/// fixture can be built for, and the two nothing measured.
+///
+/// # Why these two, and why now
+///
+/// This closes the sweep item 425 started. Every other `-t` verb has been measured on three
+/// questions — an unknown scope is refused (425, 427), no verb ACTS on the wrong session (17 probed,
+/// all clean), and a pane address does not cross a session (18 probed, all clean). The third
+/// question, *does `-t` actually SELECT*, is the milestone's own defect, and for `agent` and `run`
+/// it was answered by nothing: **every existing test of both verbs uses ONE session and no `-t`
+/// at all.** A regression of exactly 425's shape — the flag validated and then dropped — would have
+/// been invisible here.
+///
+/// # The fixture, and why each half is built the way it is
+///
+/// A fact is placed in ONE session and the other must not report it. For `agent` that is a reported
+/// state, which is why `report-agent` names its pane. For `run` it is a PROJECT, which the daemon
+/// discovers from a pane's LIVE working directory — so the boot pane `cd`s into one and the second
+/// session's pane, born wherever the daemon runs, does not. Pointing the daemon's `HOME` at the
+/// project (the way the older `run` test does) would put BOTH sessions' panes inside it and
+/// discriminate nothing.
+///
+/// ⚠ The `run` assertions are about which project's command APPEARS, never about the second session
+/// failing: whether a pane outside the fixture has some other project is a fact about the machine
+/// this suite runs on, and an assertion resting on that would be a claim about the checkout.
+///
+/// The project directory is a [`TempDir`] — the ssh test's guard, reused rather than copied — so a
+/// panicking assertion leaves nothing under `/tmp`.
+#[test]
+fn agent_and_run_answer_about_the_session_they_were_scoped_to() {
+    let project = TempDir(
+        std::env::temp_dir().join(format!("sprag-cli-scoped-project-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&project.0).expect("create the temp project");
+    std::fs::write(
+        project.0.join(sprag_host::PROJECT_FILE),
+        "[[command]]\nname = \"only-in-zero\"\nrun = [\"true\"]\n",
+    )
+    .expect("write the project config");
+
+    // The boot pane sits INSIDE the project; `sprag new`'s pane will not.
+    let (_host, sock) =
+        spawn_host_running(&["sh", "-c", &format!("cd {}; exec cat", project.0.display())]);
+    assert!(sprag(&sock, &["new", "work"]).ok, "the second session");
+
+    let boot_pane = sprag(&sock, &["panes", "-t", "0"])
+        .stdout
+        .lines()
+        .next()
+        .and_then(|row| row.split(':').next().map(str::to_owned))
+        .expect("the boot pane");
+
+    // ── `agent`: a state reported into session 0's pane, and only there.
+    let reported = sprag(
+        &sock,
+        &["report-agent", "working", "--pane", &boot_pane, "-t", "0"],
+    );
+    assert!(reported.ok, "report-agent accepted: {}", reported.stderr);
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            sprag(&sock, &["agent", "-t", "0"])
+                .stdout
+                .contains("working")
+        }),
+        "the boot session reports the agent: {}",
+        sprag(&sock, &["agent", "-t", "0"]).stdout,
+    );
+    let elsewhere = sprag(&sock, &["agent", "-t", "work"]);
+    assert!(elsewhere.ok, "agent -t work answered: {}", elsewhere.stderr);
+    assert!(
+        !elsewhere.stdout.contains("working"),
+        "the OTHER session does not report a pane it does not hold — if this went red, `-t` \
+         stopped selecting and every session sees every agent: {}",
+        elsewhere.stdout,
+    );
+
+    // ── `run`: the project of the scoped session's pane.
+    let here = sprag(&sock, &["run", "-t", "0"]);
+    assert!(here.ok, "run -t 0 listed: {}", here.stderr);
+    assert!(
+        here.stdout.contains("only-in-zero"),
+        "the boot session's pane is in the fixture's project: {}",
+        here.stdout,
+    );
+    let there = sprag(&sock, &["run", "-t", "work"]);
+    assert!(
+        !there.stdout.contains("only-in-zero"),
+        "the OTHER session's pane is not, so its commands are not this project's: {} / {}",
+        there.stdout,
+        there.stderr,
+    );
+    // ⚠ AND IT MUST BE TALKING ABOUT A PANE OF `work`. The line above is NOT enough on its own, and
+    // a green mutation is what proved it: with the pane pick unscoped, `run -t work` chose the boot
+    // session's pane and the project query — still scoped to `work` — answered null, so it printed
+    // *"pane 0 is in no project"* and satisfied the assertion above for entirely the wrong reason.
+    // Naming the pane is what separates "answered about work" from "answered about 0 and missed".
+    let said = format!("{}{}", there.stdout, there.stderr);
+    assert!(
+        !said.contains(&format!("pane {boot_pane} ")),
+        "run -t work must not be answering about the BOOT session's pane {boot_pane}: {said}",
+    );
+
+    // And neither verb reaches ACROSS: the pane is session 0's, named while scoped to `work`.
+    for argv in [
+        vec!["agent", boot_pane.as_str(), "-t", "work"],
+        vec!["run", "--pane", boot_pane.as_str(), "-t", "work"],
+    ] {
+        let crossed = sprag(&sock, &argv);
+        assert!(
+            !crossed.ok,
+            "`sprag {}` does not reach a pane of another session: {}",
+            argv.join(" "),
+            crossed.stdout,
+        );
+        assert!(
+            crossed
+                .stderr
+                .contains(&format!("no pane {boot_pane} in work")),
+            "`sprag {}` says which session it looked in: {}",
+            argv.join(" "),
+            crossed.stderr,
+        );
+    }
+}
+
 /// `list-keys -N` is the same table in the form a PERSON reads — and the paste-back form is
 /// untouched, which is the contract this flag exists to protect.
 ///
