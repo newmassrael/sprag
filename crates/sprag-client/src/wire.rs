@@ -1855,12 +1855,30 @@ impl WireHost {
             &BootSpec {
                 endpoint: &HostEndpoint::client(),
                 session: requested.as_deref(),
-                // ⚠⚠ A LAUNCH DOES NOT ASK FOR A NEW ONE — item 284. This is the entry point every
-                // window and every `sprag attach` comes through, and *take me to my work* is what
-                // naming nothing means here. The explicit `new` belongs to a caller that says so;
-                // ⚠ TODAY THE ONLY ONE IS A TEST, so nothing a person can press reaches it yet, and
-                // the sidebar's "+" is a running client's `new_session` rather than a boot.
-                fresh: false,
+                // ⚠⚠⚠⚠ THIS IS `true` AND ITEM 284 SAYS IT SHOULD BE `false` — the adoption is
+                // BLOCKED, not abandoned, and this line is where the block lives.
+                //
+                // Adopting is right: naming no session means *take me to my work*, and creating
+                // unconditionally is what put seven abandoned sessions on the owner's daemon in an
+                // afternoon. `adoptable` implements it, its gates hold it, and `resolve_session`
+                // calls it — everything below this line is finished.
+                //
+                // ⚠⚠⚠ WHAT IS NOT FINISHED IS THE THING ADOPTION LANDS ON. **A client that attaches
+                // renders NOTHING** — sidebar, window tabs and chrome all paint, and the terminal
+                // area is blank over live PTYs. Measured 2026-08-17 by screenshotting both attach
+                // routes: the adopting default and the pre-existing `SPRAG_GUI_SESSION` path give
+                // byte-identical empty windows, while the daemon reports the panes, their sizes,
+                // their layout and their content correctly. **So attach has always been broken**;
+                // making it the default only moved it from an env var nobody set to every launch.
+                //
+                // ⚠⚠ Register item 243 half-recorded this as *"a new GUI cannot show an existing
+                // run"* and it was read as *there is no way to say attach*. There is a way; what it
+                // shows is nothing.
+                //
+                // **Flip this to `false` the day a client that attaches paints its panes** — and not
+                // before: a blank window over the person's work is worse than a session they can
+                // close.
+                fresh: true,
                 argv: argv.as_deref(),
                 cols,
                 rows,
