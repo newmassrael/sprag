@@ -1,0 +1,209 @@
+//! **THE THREE SHAPES IN WHICH A HOOK SAYS NOTHING** — register item 404, second payment.
+//!
+//! # ⚠⚠⚠ Why this file exists
+//!
+//! Both silent-pass defects this project has found in its own hooks were found by a PERSON READING
+//! the files. Nothing ran, nothing went red, and each had been sitting there for many commits:
+//!
+//!   * `cargo clippy` in `pre-push` with no `-D warnings`, so the push gate PRINTED lint findings
+//!     and exited 0 — the flag its sibling had gained twelve commits earlier (item 213), and
+//!   * `mnemosyne-cli validate-code-refs >/dev/null` in both hooks, discarding 52 violations so
+//!     that the one number showing them drift was visible to nobody (item 213 again).
+//!
+//! [`hooks_enforce_what_they_check`](../hooks_enforce_what_they_check.rs) drives one hook's
+//! BEHAVIOUR. This file is the other half: a ratchet over the SHAPES, so the next instance of the
+//! class is caught by a machine at the commit that writes it rather than by somebody's eye
+//! afterwards. It reads every file in `.githooks/` by directory walk and not from a list, because a
+//! list would silently exclude the hook somebody adds next.
+//!
+//! # ⚠⚠ What a scan cannot claim, said plainly so a green run is not misread
+//!
+//! This is a LINE SCAN. It does not understand bash: it cannot tell that a checker's exit status is
+//! consulted, that a variable holds a command, or that a branch is reachable. It answers three
+//! narrow questions about the text, and **a green run means those three shapes are absent — not
+//! that the hooks are correct.** The same caveat `ci_builds_what_it_drives` states about `ci.yml`,
+//! for the same reason: this crate takes no dependencies by charter, so there is no parser here.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+/// The tree this gate is part of.
+fn repo_root() -> PathBuf {
+    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+}
+
+/// Every file this repository installs as `core.hooksPath`, as `(name, text)`.
+///
+/// ⚠⚠ Found by WALKING the directory. A hardcoded list is the failure this whole item is about one
+/// level up: it decides alone which files are looked at, and the one it leaves out is exactly the
+/// one nobody is watching.
+fn hook_files() -> Vec<(String, String)> {
+    let dir = repo_root().join(".githooks");
+    let mut found: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|why| panic!("{} is this repo's hooks: {why}", dir.display()))
+        .map(|entry| entry.expect("read a hook directory entry").path())
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let name = path
+                .file_name()
+                .expect("a hook has a name")
+                .to_string_lossy()
+                .into_owned();
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|why| panic!("{} is a hook and must be text: {why}", name));
+            (name, text)
+        })
+        .collect();
+    assert!(
+        !found.is_empty(),
+        "{} held no hooks — this gate would then be asserting nothing",
+        dir.display(),
+    );
+    found.sort();
+    found
+}
+
+/// The lines of a hook that are CODE: comments carry the reasoning, and this crate's own hooks
+/// quote their commands in prose, so scanning them would be scanning documentation.
+fn code_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.trim()))
+        .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
+}
+
+/// ⚠⚠⚠⚠ **THE FLAG WITHOUT WHICH CLIPPY IS A PRINTER.** Without `-D warnings` the line reports its
+/// findings and exits 0, which is how two `type_complexity` and one `manual_contains` rode through
+/// several commits — and how `pre-push` went on doing it for twelve more after `pre-commit` was
+/// fixed, since nothing compared the two.
+#[test]
+fn every_hook_that_runs_clippy_makes_it_deny() {
+    let mut silent: Vec<String> = Vec::new();
+    for (name, text) in hook_files() {
+        for (number, line) in code_lines(&text) {
+            if line.contains("cargo clippy") && !line.contains("-D warnings") {
+                silent.push(format!(".githooks/{name}:{number}: {line}"));
+            }
+        }
+    }
+    assert!(
+        silent.is_empty(),
+        "clippy without `-D warnings` PRINTS its findings and exits 0, so the gate says \
+         something and then lets it through:\n{}",
+        silent.join("\n"),
+    );
+}
+
+/// The checks whose whole value is what they SAY. Named rather than inferred, because a scan cannot
+/// tell a checker from any other command.
+const CHECKERS: &[&str] = &[
+    "validate-code-refs",
+    "validate-workspace",
+    "cargo clippy",
+    "cargo test",
+    "rustfmt",
+    "actionlint",
+    "doc_gate",
+];
+
+/// ⚠⚠⚠⚠ **A CHECK NOTHING READS ACCUMULATES.** `validate-code-refs` was redirected to `/dev/null`
+/// in two hooks while it had 52 violations to report; the exit code was right, and the number that
+/// would have shown it drifting reached nobody. A hook may DECIDE on the status — that is a
+/// configuration question — but throwing away the report is not a decision, it is a loss.
+///
+/// ⚠⚠ **THE `command -v` EXCLUSION IS MEASURED, NOT ASSUMED.** Run without it, this gate reds
+/// `pre-commit`'s `command -v actionlint >/dev/null 2>&1` — an availability PROBE, whose output is
+/// noise by construction and whose absence is already reported in a word two lines below it. That
+/// is the one line in today's hooks that matches, and it is the reason the exclusion exists.
+#[test]
+fn no_hook_throws_away_what_a_checker_told_it() {
+    let mut discarded: Vec<String> = Vec::new();
+    for (name, text) in hook_files() {
+        for (number, line) in code_lines(&text) {
+            if line.contains("command -v") || !line.contains("/dev/null") {
+                continue;
+            }
+            if let Some(checker) = CHECKERS.iter().find(|checker| line.contains(**checker)) {
+                discarded.push(format!(".githooks/{name}:{number}: {checker} — {line}"));
+            }
+        }
+    }
+    assert!(
+        discarded.is_empty(),
+        "a checker's report is the one thing a person needs when it refuses, and \
+         `/dev/null` is where it went:\n{}",
+        discarded.join("\n"),
+    );
+}
+
+/// What a fresh clone would get, as git records it — not what this developer's filesystem happens
+/// to say. The two can differ, and it is the recorded bit that decides on everybody else's machine.
+fn recorded_modes() -> Vec<(String, String)> {
+    let listing = Command::new("git")
+        .args(["ls-files", "-s", ".githooks/"])
+        .current_dir(repo_root())
+        .output()
+        .expect("git on PATH — the recorded mode is the subject and only git knows it");
+    assert!(
+        listing.status.success(),
+        "git could not list this repo's hooks: {}",
+        String::from_utf8_lossy(&listing.stderr),
+    );
+    let text = String::from_utf8(listing.stdout).expect("git speaks utf-8 here");
+    let rows: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|line| {
+            let mode = line.split_whitespace().next()?;
+            let path = line.rsplit('\t').next()?;
+            let name = path.rsplit('/').next()?;
+            Some((name.to_owned(), mode.to_owned()))
+        })
+        .collect();
+    assert!(
+        !rows.is_empty(),
+        "git recorded no hooks, so this gate would be asserting nothing",
+    );
+    rows
+}
+
+/// ⚠⚠⚠⚠ **A HOOK WITHOUT ITS EXECUTABLE BIT IS SKIPPED BY GIT WITHOUT A WORD** — the same class as
+/// the two defects above, one layer down: not a gate that fails to enforce, but a gate that never
+/// runs at all, on every clone but the one where the file was written.
+///
+/// So each file is one of exactly two things, and this says which: EXECUTABLE (git invokes it), or
+/// SOURCED by one that is (a library, like `doc-gate.sh`). A file that is neither is either a hook
+/// nobody will run or a fragment nobody reads, and both are worth a red.
+#[test]
+fn every_hook_is_either_executable_or_sourced_by_one_that_is() {
+    let files = hook_files();
+    let modes = recorded_modes();
+    let mut orphaned: Vec<String> = Vec::new();
+
+    for (name, _) in &files {
+        let mode = modes
+            .iter()
+            .find(|(recorded, _)| recorded == name)
+            .map(|(_, mode)| mode.as_str())
+            .unwrap_or_else(|| panic!(".githooks/{name} is untracked — a clone would not have it"));
+        if mode.ends_with("755") {
+            continue;
+        }
+        let sourced = files.iter().any(|(other, text)| {
+            other != name
+                && code_lines(text).any(|(_, line)| {
+                    (line.starts_with(". ") || line.starts_with("source "))
+                        && line.contains(name.as_str())
+                })
+        });
+        if !sourced {
+            orphaned.push(format!(".githooks/{name} (mode {mode})"));
+        }
+    }
+
+    assert!(
+        orphaned.is_empty(),
+        "git SILENTLY SKIPS a hook without its executable bit, and nothing reads a library \
+         nobody sources — either way the file's checks do not happen:\n{}",
+        orphaned.join("\n"),
+    );
+}
