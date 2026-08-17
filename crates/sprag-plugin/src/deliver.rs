@@ -1523,6 +1523,91 @@ mod tests {
         }
     }
 
+    /// ⚠⚠⚠⚠ **A COMPOSER THAT WAS ALREADY DIRTY IS CONFIRMED AS IF IT WERE CLEAN** — register item
+    /// 223, MEASURED here rather than argued about, and this gate asserts today's behaviour so that
+    /// fixing it turns the gate around.
+    ///
+    /// # The defect, in one sentence
+    ///
+    /// The read-back asks *is my needle on a screen this delivery changed*, and a needle is a
+    /// SUBSTRING. So a composer holding an agent's own suggestion — `claude` 2.1.233 was measured
+    /// offering `what is 3 plus 3 in English?` back after two prompts differing only in a digit —
+    /// takes the delivered text onto the end of it, the read-back finds the needle inside the
+    /// concatenation, and the submit lands on **a prompt nobody wrote**.
+    ///
+    /// ⚠⚠⚠ **NOTHING ON THE SCREEN DISTINGUISHES THE TWO AUTHORS.** Text a run injected and text
+    /// the agent proposed are the same pixels, so `deliver` cannot tell *my text arrived* from *my
+    /// text arrived after somebody else's*.
+    ///
+    /// ⚠⚠⚠⚠ **AND TIGHTENING THE PREDICATE IS RULED OUT — MEASURED, NOT ASSUMED.** The obvious fix
+    /// is to stop accepting a substring, so it was tried: `contains` → `ends_with`. It does not
+    /// fix this at all (a concatenation ENDS WITH the delivered text, so this gate stayed green),
+    /// and it reds two neighbours — including
+    /// [`text_a_prompt_box_broke_in_half_is_confirmed_on_a_fragment`], which exists precisely
+    /// because a prompt box may split the text, so **a needle being a fragment is a documented
+    /// requirement, not an oversight**. Whatever pays this item, it is not a stricter read-back:
+    /// it is clearing the composer before typing, or evidence from the PROGRAM rather than the
+    /// screen — which item 224 records nothing on `PaneAccess` offers.
+    ///
+    /// ⚠⚠ **AND IT GETS COMMONER THE LONGER A RUN GOES**: a loop repeating one prompt is exactly
+    /// the input that trains the suggestion, so the population this fires on is the loop's own.
+    #[test]
+    fn a_prompt_typed_onto_a_dirty_composer_is_confirmed_and_submitted_anyway() {
+        // What the agent left sitting there, and what this delivery means to say.
+        const OFFERED: &str = "> what is 3 plus 3 in English?";
+        const SENT: &str = "what is 4 plus 4?";
+
+        let double = Recorder {
+            // ⚠ A REAL COMPOSER APPENDS. The screen after typing is the suggestion with the new
+            // text on the end of it — which is precisely what makes the substring read-back pass.
+            text: format!("{OFFERED}{SENT}"),
+            showing_before: OFFERED.to_owned(),
+            after_submit: None,
+            hidden_reads: Mutex::new(0),
+            injected: Mutex::new(Vec::new()),
+            cancel_on_read: None,
+            cancel_on_submit: None,
+        };
+        let spec = Delivery {
+            echo_timeout: Duration::from_millis(1),
+            attempts: 1,
+            ..Delivery::new()
+        };
+        let delivered = deliver(
+            &double,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            SENT,
+            &spec,
+        )
+        .expect("no error");
+
+        assert!(
+            delivered.is_confirmed(),
+            "⚠⚠⚠⚠ ITEM 223, MEASURED: the delivery reports CONFIRMED though the composer holds \
+             {OFFERED:?} in front of it. When this stops holding, the item is paid and this gate \
+             is to be turned around, not removed. Got {delivered:?}",
+        );
+        assert!(
+            double.submitted(),
+            "⚠⚠⚠ AND THE ENTER WENT, which is what makes it cost something: the peer is handed \
+             {:?} — a prompt nobody wrote — and the run spends a turn on the answer",
+            format!("{OFFERED}{SENT}"),
+        );
+
+        // ⚠⚠⚠ THE CONTROL, AND IT IS WHAT SAYS THE READ-BACK IS NOT SIMPLY BROKEN. The same
+        // delivery onto a CLEAN composer confirms for the right reason — so what is measured above
+        // is the substring match, not a predicate that says yes to everything.
+        let clean = Recorder::showing(SENT);
+        let on_clean = deliver(&clean, &RunContext::uncancellable(), PaneId(1), SENT, &spec)
+            .expect("no error");
+        assert!(
+            on_clean.is_confirmed(),
+            "a clean composer must still confirm, or this gate is measuring a broken read-back \
+             rather than a dirty composer: {on_clean:?}",
+        );
+    }
+
     /// The submit is sent ONCE, and only after the text is confirmed.
     ///
     /// Driven against a recording double rather than a pty, because the claim is about the ORDER of
