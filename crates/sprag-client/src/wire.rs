@@ -1231,6 +1231,30 @@ fn list_neighbour(
 /// [`destroy_successor`] now hands this the list as of NOW rather than the mirror. The MRU-preferred
 /// half of the policy never had the problem: it is answered inside the daemon, off the attachment
 /// map itself.
+/// **THE SESSION A LAUNCH SHOULD ADOPT**, or [`None`] when there is nothing to adopt and one must be
+/// created — register item 284.
+///
+/// # ⚠⚠⚠ The order, and what each preference is protecting
+///
+/// 1. **A session nobody is viewing.** This is the several-windows workflow the old create-always
+///    behaviour was protecting, kept — a second launch still gets a window of its own, it just stops
+///    inventing a session to put in it.
+/// 2. **Failing that, any session.** Every one is occupied, so piling on is the honest choice: the
+///    host serves multi-attach and the person plainly has work open. Creating here would be the
+///    original defect wearing a condition.
+/// 3. **[`None`] only when there are none at all**, which is the one case a launch should create.
+///
+/// ⚠⚠ EMPTY SESSIONS ARE NOT SKIPPED, and that is deliberate. A session with no panes is where the
+/// last one exited, which is exactly somewhere a person may be coming back to — and the alternative
+/// rule (*adopt only sessions with work in them*) would create a fresh one beside every session that
+/// had just been tidied, which is how seven of them accumulated.
+fn adoptable(list: &[SessionInfo]) -> Option<String> {
+    list.iter()
+        .find(|session| session.attached == 0)
+        .or_else(|| list.first())
+        .map(|session| session.name.clone())
+}
+
 fn first_free_other(list: &[SessionInfo], killed: &str) -> Option<String> {
     list.iter()
         .find(|session| session.name != killed && session.attached == 0)
@@ -4429,6 +4453,27 @@ fn resolve_session(
     if let Some(name) = requested {
         return Ok((name.to_owned(), false));
     }
+    // ⚠⚠⚠⚠ NAMING NONE MEANS *TAKE ME TO MY WORK*, NOT *MAKE ME A NEW ONE* — register item 284.
+    //
+    // This allocated unconditionally, and the prose beside it called that "the each-launch-is-its-own
+    // session model". Measured on the owner's own daemon after an afternoon of clicking: **seven
+    // sessions, two attached to live windows and the rest abandoned.** The verb was not merely
+    // missing; its absence manufactured garbage on every launch, and the only route back to a
+    // running session was a tab click that crashed the window (item 407).
+    //
+    // ⚠⚠⚠ THE REFERENCE IS herdr, READ AT `9a4ce5e1` (`src/app/mod.rs:398`): a non-empty snapshot
+    // restores its workspaces AND the one that was active; an empty one gives an empty app. **It
+    // creates nothing at launch.** tmux is the same shape — `attach` is the default act and `new` is
+    // the explicit one — and this client had only the explicit one and performed it implicitly.
+    //
+    // ⚠⚠ WHERE herdr CANNOT ADVISE, BECAUSE IT IS ONE PROCESS: what a SECOND window should do. The
+    // rule here prefers a session nobody is viewing, which keeps the several-windows workflow the
+    // old prose was protecting while still never manufacturing one. Only when every session is
+    // occupied does a launch pile onto one (the host serves multi-attach, tmux-style), and only when
+    // there are none at all does it create.
+    if let Some(free) = query_sessions(conn).ok().and_then(|live| adoptable(&live)) {
+        return Ok((free, false));
+    }
     let mut args = json!({ "cols": cols, "rows": rows });
     if let Some(argv) = argv {
         args["cmd"] = json!(argv);
@@ -5226,6 +5271,63 @@ mod tests {
 
     /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
     /// name matters to the neighbour pick, so the live fields are empty.
+    /// ⚠⚠⚠⚠ **A LAUNCH ADOPTS WHAT IS THERE AND CREATES ONLY WHEN NOTHING IS** — register item 284.
+    ///
+    /// # What this replaces, measured rather than argued
+    ///
+    /// Naming no session used to ALLOCATE one, unconditionally, and the code called that a model.
+    /// On the owner's own daemon it produced **seven sessions in one afternoon**, two attached to
+    /// live windows and the rest abandoned — and the only route back to a running one was a tab
+    /// click that crashed the window. The owner's comparison is the specification: *in herdr the
+    /// existing sessions are just there, and a new one appears only when I press new*, which reading
+    /// their source confirmed (`src/app/mod.rs:398` at `9a4ce5e1`: restore the snapshot's workspaces
+    /// and the active one; create nothing).
+    ///
+    /// # ⚠⚠⚠ Why the preference is UNOCCUPIED first, which herdr cannot advise on
+    ///
+    /// They are one process, so *what should a second window do* does not arise there. It does here,
+    /// and the old prose was protecting a real thing — two launches, two windows of work. Preferring
+    /// a session nobody is viewing keeps that and still never invents one. The arms below are three
+    /// separate claims and each has its own way of being wrong.
+    #[test]
+    fn a_launch_that_names_no_session_adopts_one_and_creates_only_when_there_are_none() {
+        assert_eq!(
+            adoptable(&[]),
+            None,
+            "⚠⚠⚠ THE ONE CASE THAT MAY CREATE: no sessions at all. If this ever answers a name, a \
+             first launch on a fresh daemon has nothing to attach to and the boot fails instead of \
+             opening a window",
+        );
+
+        let mut list = session_list(&["work", "notes"]);
+        assert_eq!(
+            adoptable(&list).as_deref(),
+            Some("work"),
+            "⚠⚠⚠⚠ THE DEFECT ITSELF: with sessions present a launch must take one. Answering `None` \
+             here is the create-always behaviour that manufactured seven abandoned sessions",
+        );
+
+        // The first is being watched by another window; the second is free.
+        list[0].attached = 1;
+        assert_eq!(
+            adoptable(&list).as_deref(),
+            Some("notes"),
+            "⚠⚠⚠ AND A SECOND WINDOW GETS A SESSION OF ITS OWN WHERE ONE IS FREE. This is the \
+             several-windows workflow the old create-always prose was protecting, kept — without \
+             it, two launches land on one session and the person's second window is a mirror",
+        );
+
+        // Every session is occupied: piling on beats inventing.
+        list[1].attached = 2;
+        assert_eq!(
+            adoptable(&list).as_deref(),
+            Some("work"),
+            "⚠⚠⚠⚠ AND WHEN NOTHING IS FREE IT STILL MUST NOT CREATE. The host serves multi-attach \
+             and the person plainly has work open; creating here would be the original defect \
+             wearing a condition, and it is how the seventh session appeared",
+        );
+    }
+
     fn session_list(names: &[&str]) -> Vec<SessionInfo> {
         names
             .iter()
@@ -7552,11 +7654,23 @@ mod tests {
         (conn, server, SockGuard(path), seen)
     }
 
-    /// The CREATE path of [`resolve_session`]: with no requested session it sends ONE
-    /// `new_session` carrying THIS client's first pane (`cmd`/`cols`/`rows` — tmux's
-    /// `new-session -x -y command`), so the birth pane matches and [`boot_panes`] tops up from it.
-    /// Proves the GUI actually EMITS the birth spec, which the host-side test can only prove it
-    /// accepts.
+    /// The CREATE path of [`resolve_session`]: carrying THIS client's first pane
+    /// (`cmd`/`cols`/`rows` — tmux's `new-session -x -y command`), so the birth pane matches and
+    /// [`boot_panes`] tops up from it. Proves the GUI actually EMITS the birth spec, which the
+    /// host-side test can only prove it accepts.
+    ///
+    /// # ⚠⚠⚠⚠ It asserted ONE request and now asserts TWO, and the change is the point
+    ///
+    /// Naming no session used to create unconditionally. Register item 284: that manufactured seven
+    /// abandoned sessions on the owner's daemon in an afternoon, because *name nothing* means *take
+    /// me to my work* and not *make me another one*. So the path now ASKS first and creates only
+    /// when the answer is empty — this fixture's recording host lists none, which is exactly the
+    /// case that still creates.
+    ///
+    /// ⚠⚠⚠ **THIS COUNT IS WHAT HOLDS THE WIRING.** `adoptable`'s own gate is a pure decision over a
+    /// list and would stay green if nobody ever called it; the request count here is the only thing
+    /// that says `resolve_session` actually looks before it creates. Measured: deleting the lookup
+    /// reds this assertion and no other in the crate.
     #[test]
     fn resolve_session_creates_with_the_clients_first_pane() {
         let (mut conn, server, _guard, seen) = a_recording_host_conn("create", "7");
@@ -7572,8 +7686,20 @@ mod tests {
             "it adopts the allocated name",
         );
         let seen = seen.lock().expect("record lock");
-        assert_eq!(seen.len(), 1, "exactly one request — the create — was sent");
-        let req = &seen[0];
+        assert_eq!(
+            seen.len(),
+            2,
+            "⚠⚠⚠⚠ TWO REQUESTS: the LOOK, then the create. One means the client created without \
+             asking what was already there, which is item 284 — and no other assertion in this \
+             crate can tell the difference. Sent: {seen:?}",
+        );
+        assert_eq!(
+            seen[0]["params"]["path"],
+            json!(mux_action_path(SESSIONS_SLOT)),
+            "⚠⚠⚠ and the look comes FIRST — a client that created and then listed would have made \
+             the garbage before reading the answer that says not to",
+        );
+        let req = &seen[1];
         assert_eq!(req["method"], "scene/invoke");
         assert_eq!(
             req["params"]["path"],
