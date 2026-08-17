@@ -2630,10 +2630,7 @@ impl OuterLoop {
                         if Owed::asked_for_an_account(from) {
                             self.reported = self.account(panes);
                         }
-                        Raise::carrying(
-                            AiLoopEvent::TurnDone,
-                            serde_json::json!({ "context": self.context_now(panes) }),
-                        )
+                        Raise::carrying(AiLoopEvent::TurnDone, self.costs_now(panes))
                     }
                     // ⚠⚠⚠ THE VERDICT IS TAKEN HERE, ONCE, and the document decides on it — see
                     // `working`'s `cond="_event.data.judged"`. A guard cannot do this: the pinned
@@ -3168,10 +3165,7 @@ impl OuterLoop {
             .done
             .wait(panes, self.driving.pane, self.patience(), run)
         {
-            Over::Yes => Raise::carrying(
-                AiLoopEvent::TurnDone,
-                serde_json::json!({ "context": self.context_now(panes) }),
-            ),
+            Over::Yes => Raise::carrying(AiLoopEvent::TurnDone, self.costs_now(panes)),
             // ⚠⚠ THE THIRD DOOR ONTO *the run ended underneath* — see
             // [`ended_underneath`](Self::ended_underneath), which holds the whole reason a clock
             // and a person's stop are not one answer.
@@ -4155,11 +4149,25 @@ impl OuterLoop {
     /// consumer must therefore treat `0` as *"do not decide on this"* rather than as *"nothing has
     /// accumulated"* — the two are indistinguishable here on purpose, because the alternative is
     /// refusing to drive an agent over a number that is only ever an optimisation.
-    fn context_now(&mut self, panes: &dyn PaneAccess) -> u64 {
-        self.driving
+    /// # ⚠⚠⚠ Why the three travel together and not one at a time
+    ///
+    /// A restart decision is a comparison, and each of these is meaningless without the others:
+    /// `context` alone cannot say how much of itself is discardable, and the discardable part
+    /// cannot say whether discarding it is worth the toll. Two call sites raise `turn.done`; a
+    /// second key added at one of them and not the other is the drift this shape forecloses.
+    ///
+    /// ⚠ Every one degrades to `0` together and for the same reason, so a consumer that already
+    /// treats `context: 0` as *"do not decide on this"* needs no second rule.
+    fn costs_now(&mut self, panes: &dyn PaneAccess) -> serde_json::Value {
+        let spend = self
+            .driving
             .identify(panes)
-            .and_then(crate::spend::spend_of)
-            .map_or(0, |spend| spend.context)
+            .and_then(crate::spend::spend_of);
+        serde_json::json!({
+            "context": spend.as_ref().map_or(0, |spend| spend.context),
+            "cold": spend.as_ref().map_or(0, |spend| spend.cold),
+            "floor": spend.as_ref().map_or(0, |spend| spend.floor),
+        })
     }
 
     /// Whether **THE AGENT SAID, IN THIS TURN,** what the document calls done — the one fact

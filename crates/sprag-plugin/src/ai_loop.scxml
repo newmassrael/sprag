@@ -646,10 +646,20 @@
       judged dialog costs a model call too — see its own comment.
 
       ⚠⚠⚠ BOTH ARE COUNTS OF TURNS, AND A TURN IS NOT A UNIT OF ANYTHING THE
-      BILL IS DENOMINATED IN. Measured over 39 local sessions: what one billed
-      request adds to the agent's context is 861 tokens at the median, 2,989 at
-      p90, 10,402 at p99 and 633,749 at the maximum. A `date` invocation and a
-      3,000-line file read are both one turn.
+      BILL IS DENOMINATED IN. Re-measured over 76 local sessions of 20 requests
+      or more (33,395 turn-to-turn samples): what one billed request adds to the
+      agent's context is 683 tokens at the median, 1,353 at p75, 2,542 at p90,
+      10,843 at p99 and 888,072 at the maximum. A `date` invocation and a
+      3,000-line file read are both one turn, and the two ends of that spread
+      are a factor of 1,300 apart.
+
+      ⚠ THESE ARE ONE MACHINE'S NUMBERS AND THE TEMPLATE SAYS SO. They are one
+      person's usage, not a team average, and an author adopting this file should
+      re-derive rather than inherit them: every billed request records
+      `cache_read_input_tokens`, and the per-turn growth is the difference
+      between consecutive ones. The numbers are here because a reader deciding a
+      cadence needs to know the SHAPE of the spread; the shape is what travels,
+      the values are not.
 
       * `max_turns` IS NOT A COST CEILING. It is honestly named — it bounds
         turns — and `Ceiling::Turns` says so. But two runs both ending
@@ -664,20 +674,61 @@
         that trade wins depends on how much there was to throw away: a
         restart-cost curve measured against this loop found a restart paying for
         itself only above roughly 15,000-21,000 tokens of discardable context,
-        and found this default losing by 11.4% on its workload.
+        and found this default losing by 11.4% on its workload. The same task in
+        one session and in three cost 0.5795 and 0.6456 dollars: the split saved
+        0.023 on cache reads and spent 0.073 rebuilding caches.
 
-        ⚠ THAT RESULT DOES NOT SETTLE THE DEFAULT, and the reason is worth
-        writing down rather than rounding off. The experiment's task accumulated
-        755 tokens per turn; real sessions in this repo accumulate 1,745. At the
-        real rate eight turns discard about 14,000 — ON the threshold, not far
-        under it. So the sign of the trade at `reflect_every = 8` is UNMEASURED
-        for real work, and 16 or 24 would clear the threshold outright.
+        ⚠⚠⚠⚠ WHY A RESTART IS SO HARD TO PAY FOR, WHICH IS THE PART A CADENCE
+        ARGUMENT KEEPS SKIPPING. Writing a cache costs TWENTY TIMES what reading
+        one does (6.00 against 0.30 per million), so a restart must save twenty
+        times what it rewrites merely to break even. Measured, it saved 38,550
+        tokens per restart and came up 3.2 to 4.4 times short.
+
+        ⚠⚠ AND MOST OF A SESSION'S CONTEXT CANNOT BE DISCARDED AT ALL. The
+        second request of every session already reads about 38,500 tokens; that
+        is the system prompt and the tool definitions, and a restart pays for it
+        again rather than escaping it. What a restart can actually drop is only
+        what sits ON TOP: 17,358 tokens at the end of the single session, about
+        5,400 at the end of each third. Even at its most expensive, the
+        discardable part was 31% of the floor beneath it.
+
+        ⚠ HOW MUCH IS REWRITTEN CAN BE COUNTED THREE WAYS AND THEY DISAGREE ON
+        THE MARGIN, not on the sign: the whole segment's cache writes (14,767,
+        7.7x short), the first request measured on its own (8,477, 4.4x short),
+        or the marginal increase the split added (6,089, 3.2x short). The 11.4%
+        above does not depend on the choice; it was measured per component.
+
+        ⚠⚠⚠ AND A NEW SESSION'S FIRST TURN COSTS 4.7 TIMES A LATER ONE, of which
+        cache writing is 88%. That is the toll on every restart, and it is
+        charged again each time. It also GROWS with the author's own base
+        context: the 4.7 was measured on a nearly empty project, so a repository
+        with a large standing instruction file pays more than this.
+
+        ⚠⚠⚠⚠ THE AWAITED FIGURE HAS ARRIVED, AND IT IS RECORDED HERE SO THE NEXT
+        READER DOES NOT DERIVE IT AGAIN. This entry used to say the sign was
+        UNMEASURED for real work, against an estimate of 1,745 tokens per turn.
+        Re-measured over the 76 sessions above, real work accumulates 2,342 per
+        turn, so eight turns discard 18,736 — INSIDE the 15,000-21,000 band
+        rather than under it. The experiment's own task grew at 755, which is
+        32% of the real rate, which is why it read as a clear loss.
+
+        So the settled reading at `reflect_every = 8` is *somewhere between a
+        small loss and break-even*: the direction is probably still a loss, and
+        there is no longer any basis for writing *by a wide margin*. Below eight
+        the margin worsens, because the discardable amount falls while the toll
+        does not.
 
       ⚠⚠ SO DO NOT TUNE EITHER NUMBER ON COST ALONE. What `reflect_every` is
       actually for is how often the loop gets to improve its own setup, and
       whether eight turns is the right cadence FOR THAT has never been measured
       at all. Changing it to save money would trade a measured axis against an
       unmeasured one.
+
+      ⚠⚠⚠⚠ AND THE SENTENCE THE WHOLE MEASUREMENT REDUCES TO: *"keep sessions
+      short"* and *"keep context small"* ARE NOT THE SAME INSTRUCTION, and only
+      the second one is right. Splitting a session is not a cost measure. The
+      quantity to reduce is not the number of sessions; it is how much each turn
+      is charged to re-read.
 
       ⚠⚠⚠ AND IF A RESTART POLICY IS EVER WRITTEN, IT MUST NOT READ THESE
       COUNTERS. Predicting context from turn count is off by 19% at the median,
@@ -689,6 +740,20 @@
       no structured JSON result envelope for `reply.rs` to read (that is print
       mode's `output-format json`, which this loop forbids). Nothing needs to be
       instrumented; the number is already being written down.
+
+      ⚠⚠ AND THE QUANTITY THAT POLICY WOULD WANT HAS A ONE-LINE FORM, so nobody
+      has to estimate it: the discardable amount is THIS request's cache read
+      minus the SECOND request's of the same session. The subtrahend is the
+      floor described above, which a restart cannot escape; what remains is the
+      only part a restart actually drops.
+
+      ⚠⚠⚠ WHAT THIS DOCUMENT DOES WITH ALL OF IT IS HAND IT OVER, NOT GUARD ON
+      IT. `reflecting` composes these quantities into the prompt it sends, so the
+      agent weighing what to do next can weigh its own cadence too. A THRESHOLD
+      is deliberately absent, for the reason the `context` entry below states at
+      length: the sign is close enough to break-even that a guard would be a
+      policy nobody can defend, and the party that can judge it is the one being
+      asked what comes next.
     -->
     <data id="max_turns" expr="40"/>
     <data id="reflect_every" expr="8"/>
@@ -828,14 +893,66 @@
       two are indistinguishable here on purpose: the alternative is refusing to
       drive a loop over a number that is only ever an optimisation.
 
-      ⚠ NOTHING GUARDS ON IT YET, and that is deliberate rather than unfinished.
-      What it would be for is deciding whether `restarting` is worth its cold
-      start, and the threshold that decides was measured by the restart-cost
-      curve above at 15,000-21,000 tokens of discardable context — a figure whose
-      own sign for real workloads is still unmeasured. A guard written before that settles would be a policy nobody
-      can defend; the number arriving is what makes settling it possible.
+      ⚠ NOTHING GUARDS ON IT, and that is deliberate rather than unfinished.
+      What a guard would be for is deciding whether `restarting` is worth its
+      cold start, against the restart-cost curve above at 15,000-21,000 tokens of
+      discardable context.
+
+      ⚠⚠⚠⚠ THIS ENTRY USED TO SAY THE DECIDING FIGURE WAS STILL UNMEASURED AND
+      THAT ITS ARRIVAL WOULD SETTLE THE QUESTION. IT HAS ARRIVED, AND WHAT IT
+      SETTLED IS THAT THERE MUST BE NO GUARD. At the re-measured real rate the
+      eight-turn cadence discards 18,736 tokens, which is INSIDE the band rather
+      than under it: the trade is somewhere between a small loss and break-even.
+      A threshold placed anywhere in a band the workload sits inside decides by
+      rounding, and would read as a measured policy while being a coin toss.
+
+      ⚠⚠⚠ SO THE NUMBER IS CARRIED, NOT ACTED ON. `reflecting` composes it into
+      the prompt with the two quantities that make it legible — what a restart
+      could actually discard, and what one costs — and the agent that is being
+      asked what to do next is the party that weighs them. That is the same
+      division this document uses everywhere else: the driver measures, the
+      document decides what to say, and a judgement about somebody's work
+      belongs to whoever is doing it.
+
+      ⚠⚠ A GUARD REMAINS WRITABLE the day a workload sits clearly outside the
+      band, and what would justify one is a re-measurement, not a preference.
     -->
     <data id="context" expr="0"/>
+
+    <!--
+      ⚠⚠⚠ THE TWO NUMBERS THAT MAKE `context` LEGIBLE, written by the driver on
+      the same `turn.done` and by nothing else. Alone, `context` says how big the
+      session has become and nothing about what could be done with that.
+
+      `cold` is WHAT A RESTART RE-PAYS: the cache this session had to write on
+      its first billed request, before there was anything to read back. It is a
+      toll and it is charged again on every replacement.
+
+      `floor` is WHAT A RESTART CANNOT ESCAPE: the cache read of the SECOND
+      request, which is the standing cost of a session — the system prompt and
+      the tool definitions, about 38,500 tokens where this was measured. The
+      first request cannot show it, having nothing to read back yet.
+
+      ⚠⚠ SO THE DISCARDABLE AMOUNT IS `context - floor`, and the trade is that
+      against `cold` at twenty to one. `reflecting` composes all of it into the
+      prompt; nothing here guards on any of it, for the reason `context` states.
+
+      ⚠ THEY DEGRADE TO 0 TOGETHER with `context` and for the same cause, so
+      *"do not decide on this"* stays one rule rather than three.
+    -->
+    <data id="cold" expr="0"/>
+    <data id="floor" expr="0"/>
+
+    <!--
+      ⚠⚠ HOW MANY TIMES THIS RUN HAS ALREADY REPLACED ITS SESSION. Counted where
+      the replacement happens, so it is the act rather than an intention.
+
+      It is in the reflection prompt because a toll paid once reads differently
+      from the same toll paid eight times: `cold` says what one restart costs and
+      this says how many have been bought. Without it the agent weighing its own
+      cadence can price a restart but not the policy that produces them.
+    -->
+    <data id="restarts" expr="0"/>
     <!-- ⚠⚠ How many calls a standing instruction TURNED DOWN. Counted so an
          auto-screened run does not read like a hand-answered one.
 
@@ -1307,6 +1424,10 @@
               expr="'North star: ' + north_star + '\n' +
                     'You have been working toward: ' + milestone + '\n' +
                     standing +
+                    'What this session has cost, in the tokens the bill is actually denominated in: ' + context +
+                    ' read on its last request, of which ' + floor + ' is a floor no restart escapes, leaving ' + (context - floor) +
+                    ' that replacing this session would discard. Replacing it wrote ' + cold + ' of cache to begin with and would write that again, and this run has already bought ' + restarts +
+                    ' replacements. Writing cache costs about twenty times reading it, so discarding has to beat that toll to be worth anything. A zero is a number that could not be read, not a small one.' + '\n' +
                     'Stop and decide what comes next, from what you have just done and what you now know. Answer from what you already have; do not use a tool.' + '\n' +
                     'Reply with exactly two lines and nothing else. Open the first with the label ' + milestone_marker +
                     ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
@@ -1569,6 +1690,8 @@
     -->
     <onentry>
       <assign location="context" expr="_event.data.context"/>
+      <assign location="cold" expr="_event.data.cold"/>
+      <assign location="floor" expr="_event.data.floor"/>
     </onentry>
     <!--
       ⚠⚠⚠ THE RUN'S BUDGET IS SPENT ON A CEILING THIS DOCUMENT CANNOT SEE, so ask
@@ -2015,6 +2138,13 @@
   -->
   <state id="restarting">
     <onentry>
+      <!--
+        ⚠⚠ COUNTED ON ENTRY, WHICH IS WHERE THE TOLL IS ACTUALLY PAID. Counting
+        it in `reflecting` would count intentions: that state is reached by a
+        judged milestone and by a standing instruction alike, and only the ones
+        arriving HERE cost a cold start. See `restarts`.
+      -->
+      <assign location="restarts" expr="restarts + 1"/>
       <send event="session.replace"/>
     </onentry>
     <!--

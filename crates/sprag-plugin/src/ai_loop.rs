@@ -3268,6 +3268,115 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **THE REFLECTION IS HANDED THE FOUR NUMBERS A SPLIT DECISION NEEDS** — and they are
+    /// numbers rather than a threshold, which is the whole design.
+    ///
+    /// # ⚠⚠⚠ Why this is carried and not guarded on
+    ///
+    /// A restart pays for itself only above roughly 15,000-21,000 tokens of discardable context,
+    /// and re-measurement put this loop's own eight-turn cadence at 18,736 — INSIDE the band. A
+    /// threshold placed anywhere in a band the workload sits inside decides by rounding while
+    /// reading as a measured policy. So the document composes the quantities into the prompt and
+    /// the agent being asked what to do next weighs them. `ai_loop.scxml`'s `context` entry argues
+    /// it at length; this gate is what holds the argument to a mechanism.
+    ///
+    /// # ⚠⚠⚠⚠ What is actually being measured here, which is NOT the wording
+    ///
+    /// The four values cross a Lua datamodel as NUMBERS into a string concatenation, and this
+    /// document had never done that before — every other composed prompt joins strings. The
+    /// generator emits `_scxml_add(<string>, context)`, which READS correct and proves nothing:
+    /// this repository has already paid twice for a generated expression that compiled, ran, and
+    /// silently did nothing. **A failed `<assign>` leaves the previous value**, so the sentence
+    /// simply would not be there and no other gate in this suite would notice.
+    ///
+    /// # ⚠⚠⚠⚠ WHAT THIS GATE DOES NOT HOLD, MEASURED BY MUTATING IT RATHER THAN ASSUMED
+    ///
+    /// The fixture's session has no transcript, so all four values read `0` — the degraded reading,
+    /// which the document names in the same sentence (*"a zero is a number that could not be
+    /// read"*). **At zero a live read and a literal are the same text**, and two mutations proved
+    /// it: replacing `+ floor +` with a literal `0` left this GREEN, and dividing one value to make
+    /// it a float left it green too. So this gate holds exactly one thing — **the `<assign>`
+    /// succeeds with a number in it, and the sentence reaches the prompt** — which is the failure
+    /// that would otherwise be silent, because a failed assign leaves the previous value and no
+    /// other gate here reads this string.
+    ///
+    /// ⚠⚠⚠ **THE FIXTURE MANUFACTURES ITS OWN AGREEMENT** and that is registered rather than
+    /// papered over: it is the same shape as the restore-argv fixture whose two readings agreed
+    /// because its pane ran a program that was not an agent. What would separate them is a session
+    /// with a real transcript, or a walk past ONE restart — `restarts` becomes 1 while the other
+    /// three stay 0, and a literal could no longer stand in for it. That the VALUES are the right
+    /// ones is `spend.rs`'s claim and is gated there, on records with distinct numbers.
+    #[test]
+    fn the_reflection_carries_what_a_restart_would_cost_and_what_it_would_discard() {
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(
+            9,
+            "the next checkpoint",
+            "what the next session must know",
+        );
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reflect_every: Some(2),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a briefed loop over a live pane starts");
+
+        // ⚠ The prompt is composed in `reflecting`'s `onentry`, so a loop that has only been
+        // briefed holds an EMPTY one — correct, and measured the hard way when this gate first read
+        // it before stepping. Walk until the composition has happened.
+        let run = RunContext::uncancellable();
+        let mut reached = false;
+        for _ in 0..60 {
+            loops
+                .step(&access, &run)
+                .expect("every step of a reflection must be readable");
+            if loops.state() == AiLoopState::Reflecting {
+                reached = true;
+                break;
+            }
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+        let authored = loops.authored().expect("the datamodel answers");
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        assert!(
+            reached,
+            "⚠⚠⚠ THE CONTROL: the run must actually reach `reflecting`, or the prompt read below \
+             is the empty one every un-stepped loop holds and this gate asserts nothing",
+        );
+
+        assert!(
+            authored.reflect.contains(
+                "in the tokens the bill is actually denominated in: 0 read on its last request, \
+                 of which 0 is a floor no restart escapes, leaving 0 that replacing this session \
+                 would discard. Replacing it wrote 0 of cache to begin with and would write that \
+                 again, and this run has already bought 0 replacements."
+            ),
+            "⚠⚠⚠⚠ THE SENTENCE CARRYING THE FOUR NUMBERS MUST REACH THE PROMPT. If it is missing \
+             the `<assign>` failed and left the previous value — a number reaching a Lua string \
+             concatenation is new in this document, and a generated expression that compiles and \
+             quietly does nothing has cost this repository two wrong conclusions already. ⚠ This \
+             does NOT hold that each number is READ rather than written literally: the fixture's \
+             four are all `0`, and the mutation proving that is recorded in this gate's own doc. \
+             Composed:\n{}",
+            authored.reflect,
+        );
+    }
+
     /// ⚠⚠⚠ **THE RUN OUTLIVES ITS AGENT'S CONTEXT: A REFLECTION ASKS THE AGENT WHAT COMES NEXT,
     /// AND THE REPLACEMENT SESSION IS BRIEFED ON THE ANSWER.**
     ///
@@ -3299,6 +3408,12 @@ mod tests {
     /// reader meets its own instruction on screen before the answer. The assertions name the peer's
     /// words rather than *"something was adopted"*, so a reader that took the first match would
     /// adopt a milestone made of the prompt and fail here.
+    ///
+    /// ⚠⚠⚠⚠ **ITS `#[test]` USED TO SIT ABOVE THIS DOC, AND A SUPERVISING SESSION INSERTED A WHOLE
+    /// TEST BETWEEN THE TWO** on 2026-08-17 — which put two `#[test]` on the inserted item, orphaned
+    /// this one, and cost the loop sharing this tree FOUR refused commits
+    /// (`duplicate_macro_attributes` under `-D warnings`) before anybody read the reason. The index
+    /// already carried the rule: a test goes ABOVE the attribute, never between one and its item.
     #[test]
     fn a_reflection_asks_the_agent_what_comes_next_and_the_replacement_is_told() {
         /// The milestone the CALLER wrote. ⚠ Distinctive, and it must not survive the reflection.

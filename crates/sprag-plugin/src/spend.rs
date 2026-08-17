@@ -109,6 +109,35 @@ pub struct Spend {
     /// **WHAT THIS SESSION HAD TO READ BEFORE IT CHANGED ANYTHING** — or [`None`] where it changed
     /// nothing at all. See [`Warmup`].
     pub warmup: Option<Warmup>,
+    /// **WHAT A RESTART RE-PAYS** — the cache this session had to WRITE on its very first billed
+    /// request, before there was anything to read back. Zero for a session with no request yet.
+    ///
+    /// # ⚠⚠⚠ Why the first request and not an average
+    ///
+    /// It is a toll, not a rate. Measured on a near-empty project, a session's first turn cost 4.7
+    /// times a later one and cache writing was 88% of that first turn — and it is charged again
+    /// every time a session is replaced. Averaging it over the session would hide exactly the thing
+    /// a restart decision needs to see.
+    ///
+    /// ⚠⚠ **AND IT GROWS WITH THE AUTHOR'S OWN BASE CONTEXT**, so the 4.7 is a floor rather than a
+    /// figure to reuse: a repository with a large standing instruction file pays more. That is
+    /// precisely why this is READ per session instead of being written down as a constant.
+    pub cold: u64,
+    /// **THE PART OF THE CONTEXT A RESTART CANNOT ESCAPE** — the cache read of this session's SECOND
+    /// billed request. Zero for a session that has not made two.
+    ///
+    /// # ⚠⚠⚠ Why the second request, which is the whole subtlety
+    ///
+    /// The first request has nothing to read back; the second is the earliest one that shows the
+    /// standing cost of the session — the system prompt and the tool definitions, about 38,500
+    /// tokens where this was measured. A restart pays that again rather than escaping it, so it is
+    /// the SUBTRAHEND: what a restart can actually discard is `context - floor`, and nothing below
+    /// that line is available however long the session runs.
+    ///
+    /// ⚠⚠ Measured, the discardable part was 31% of this floor even at the session's most expensive
+    /// turn, which is why a restart is so hard to pay for: writing a cache costs twenty times
+    /// reading one, so a restart must save twenty times what [`cold`](Self::cold) rewrites.
+    pub floor: u64,
 }
 
 /// **THE WARM-UP: what a session spent getting to the point where it could act.**
@@ -217,6 +246,17 @@ pub fn spend_in(text: &str) -> Spend {
         let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
         spend.requests += 1;
         spend.produced += field("output_tokens");
+        // ⚠⚠⚠ THE TOLL A RESTART RE-PAYS, taken on the FIRST billed request and never updated: what
+        // this session had to WRITE into cache before it could read anything back. See `cold`.
+        if spend.requests == 1 {
+            spend.cold = field("cache_creation_input_tokens");
+        }
+        // ⚠⚠⚠ THE FLOOR, taken on the SECOND and never updated — see `floor` for why the second and
+        // not the first. Cheap to keep and impossible to recover later: by the time a caller wants
+        // it the record has been read past.
+        if spend.requests == 2 {
+            spend.floor = cached;
+        }
         spend.cached = cached;
         // Everything the model was charged to READ on this request: what was sent, what was served
         // from cache, and what was written into cache on the way.
@@ -393,6 +433,11 @@ mod tests {
                 // `the_warm_up_is_what_was_read_before_the_first_change` for why that is `None`
                 // rather than zero.
                 warmup: None,
+                // The FIRST request's cache write and the SECOND's cache read: taken once each and
+                // never updated, which is what makes them a toll and a floor rather than a running
+                // total. The duplicated `msg_1` rows must not move either.
+                cold: 10,
+                floor: 200,
             },
         );
     }
@@ -414,6 +459,12 @@ mod tests {
                 cached: 50,
                 produced: 2,
                 warmup: None,
+                // ⚠ ONE billed request, so there is a toll and NO floor: `floor` is the SECOND
+                // request's read and this record never reaches one. Zero here is *not yet known*,
+                // which is why the discardable amount degrades to the whole context rather than to
+                // a negative number.
+                cold: 0,
+                floor: 0,
             },
             "a usage with no cache read is not a billed request, and a half-written last line is \
              the ordinary state of a file another process is appending to",
