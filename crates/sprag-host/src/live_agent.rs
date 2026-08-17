@@ -1011,6 +1011,198 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **ITEM 441's SECOND CONTROL: THE BUDGET EVERY DEAF RUN SHARED.**
+///
+/// # ⚠⚠⚠ What this is one thing away from
+///
+/// [`a_live_judge_hears_the_marker_whatever_the_milestone_asked_for`] is the FIRST control and it
+/// answered `heard = true`, `deaf judgements = 0` — so the deaf run's own brief is exonerated and
+/// the cause is in what still differs. Three things did: the budget pair, the door the run came
+/// through (the CLI's `orchestrate` rather than an in-process [`Brief`](sprag_plugin::Brief)), and
+/// how the pane was born (`split-window` on a daemon rather than `Live::start`). **This gate is
+/// that control with the FIRST of the three changed and nothing else**, which is the only shape
+/// that answers about one of them: a fixture differing in five things answers about none.
+///
+/// # ⚠⚠⚠⚠ The pair is MEASURED off the door the deaf run used, not copied from the register
+///
+/// Item 441 recorded the suspect as *"a `reflect_every` of 8 with an unbounded `max_turns`"*. Half
+/// of that is this workspace's `ai_loop.scxml` default and **is not what the deaf run ran under**.
+/// `sprag orchestrate --plugin ai_loop` resolves an absent budget through
+/// [`LoopKind::debt`](sprag_plugin::kind::LoopKind::debt) — `debt_loop.scxml`, which authors
+/// `max_turns = 'never'` and `reflect_every = 5` — and the skill that starts the owner's loop
+/// passes neither key on purpose. **So the deaf pair is [`Counted::Never`] and 5**, and that is
+/// what is set below. ⚠ The register is corrected rather than followed: a control that changed the
+/// variable to a value nobody ran would answer about a third configuration.
+///
+/// # ⚠⚠ Why this pair is the suspect at all, stated so a green result means something
+///
+/// The two prompts that carry the marker are composed in `priming` and neither names a turn count,
+/// so there is **no path from these numbers into the text the judge reads**. What they do change is
+/// the run's SHAPE: `max_turns = 'never'` makes `judging`'s budget guard unreachable, so the only
+/// road out of a judged turn other than the milestone is `reflect_every`, and at 5 the run reaches
+/// `reflecting` on turns 5 and 10 — which is exactly the twice-by-the-budget-road the deaf run
+/// reported over nine turns. The gate above sets the two EQUAL, which closes the budget road
+/// entirely. ⚠ So if the marker goes unheard here, what differs from a heard run is a session that
+/// gets replaced under it; if it is heard, the pair is out and the next control is the door.
+///
+/// # ⚠⚠ What it asserts, and what it will mean when it goes red
+///
+/// The same claim as the first control — *a live judge hears a live agent's marker* — because that
+/// is the property item 441 says is broken and a control that asserted something weaker could not
+/// reproduce it. **A red here is the reproduction**, and it localises item 441 to the budget pair;
+/// a green rules the pair out and the gate stays as the record of that, exactly as its neighbour
+/// stays as the record for the brief.
+///
+/// # ⚠⚠⚠⚠⚠ WHAT IT ANSWERED, FIRST RUN: heard = TRUE, deaf judgements = 0, budget road = 0
+///
+/// Run 2026-08-18 against `claude` 2.1.234, 61 seconds. The marker was heard on the FIRST
+/// judgement and on every judgement after it — `Judging --Judge--> Reflecting — milestone` **three
+/// times**, each followed by a real replacement (`Reflecting --ReflectApplied--> Reviewing`,
+/// `Reviewing --ReviewNone--> Restarting`, `Restarting --SessionReplaced--> Resuming`,
+/// `Resuming --SessionReady--> Priming`) — and `reflecting` was reached by the budget road **not
+/// once**, though the road was wide open. It ended `Exhausted(Iterations)` at the substrate's
+/// ceiling, which is the neighbour's ordinary ending for the same reason: a heard ladder gets
+/// climbed. ⇒ **The budget pair is OUT.** Item 441's cause is in the two differences left, and they
+/// are ENTANGLED: `orchestrate` only ever drives a pane a daemon owns, and an in-process
+/// [`Brief`](sprag_plugin::Brief) can only reach a pane this process built — so neither can be
+/// changed alone and the next control has to be both at once.
+///
+/// ⚠⚠⚠⚠ **AND A FOURTH DIFFERENCE THE REGISTER NEVER LISTED IS NOW THE MOST SUSPICIOUS**: what the
+/// agent DOES. Both controls' agents answer in one short line and touch no tool; the deaf run's
+/// agent reads files, runs builds and writes a long report before the marker — and its turn bound
+/// is the document's shipped half-hour where these two are cut off at 20 seconds. **A reply's SIZE
+/// and a turn's LENGTH are what neither control has varied.**
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::{AiLoopState, Brief};
+
+    /// How often `debt_loop.scxml` says a run of this repository's kind stops to improve itself,
+    /// and the number the deaf run reflected on — twice, both times by this road.
+    const DEAF_REFLECT_EVERY: i64 = 5;
+
+    let live = Live::start("unheard-budget");
+
+    let brief = Brief {
+        // ⚠ THE BRIEF IS THE FIRST CONTROL'S — the deaf run's own — and it is held FIXED here
+        // because that control proved it innocent. Changing it back would put two variables in one
+        // fixture again.
+        north_star: "count from one to four in English words, one number per milestone; say the \
+                     north star is reached only after you have said the word four"
+            .to_string(),
+        milestone: "say the word one".to_string(),
+        reference: "answer in one short line and use no tools".to_string(),
+        closing_rules: None,
+        // ⚠⚠ THE ONE THING CHANGED, AND IT IS A PAIR because the two are one decision: the
+        // template's default for reflection IS the budget, so a run that declines the budget must
+        // name a cadence or be refused at the door. This is the pair `orchestrate` composes for
+        // this repository when a caller names neither.
+        max_turns: Some(sprag_plugin::Counted::Never),
+        reflect_every: Some(DEAF_REFLECT_EVERY),
+        screen_rules: None,
+        may_answer: None,
+        await_person_ms: Some(0),
+        handback_still_ms: None,
+        ready_timeout_ms: None,
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
+    )
+    .expect("a loop that declines its budget and names a cadence starts");
+    let marker = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .done_marker;
+
+    // ⚠⚠⚠ THE SUBSTRATE'S BOUNDS ARE THE NEIGHBOUR'S, UNCHANGED, and here they are the only thing
+    // that ends an unheard run at all: with `max_turns` declined this document has no ending of its
+    // own short of the marker, so a judge that cannot hear one leaves the iteration ceiling to stop
+    // it. **That is the deaf run's shape, which is the point.**
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 24,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let walked: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    let screen = live.screen();
+    let marker_rows: Vec<&str> = screen
+        .lines()
+        .filter(|row| row.contains(marker.as_str()))
+        .collect();
+    let heard = walked
+        .iter()
+        .any(|note| note.contains("milestone: the agent said the milestone was reached"));
+    let deaf = walked
+        .iter()
+        .filter(|note| note.contains("the agent had not declared"))
+        .count();
+    // ⚠⚠ THE OTHER ROAD IS COUNTED TOO, because this control's whole subject is that it is now
+    // OPEN: the deaf run reached `reflecting` twice and both times by the budget. A run that is
+    // heard should reach it by the milestone FIRST, and the two counts side by side say which road
+    // this run took rather than leaving a reader to infer it from the ending.
+    let by_budget = walked
+        .iter()
+        .filter(|note| note.contains("the reflection budget came round"))
+        .count();
+    println!(
+        "\n== item 441, control 2: the budget pair every deaf run shared ==\n  agent: {}\n  budget: \
+         {:?} every {DEAF_REFLECT_EVERY}\n  heard the marker: {heard}\n  judgements that said NOT \
+         declared: {deaf}\n  reflections by the BUDGET road: {by_budget}\n  ended: {:?} after {} \
+         iterations\n  rows on the pane carrying the marker:\n{}\n  walk: {walked:?}\n  the \
+         pane:\n{}\n",
+        live.agent,
+        brief.max_turns,
+        outcome.state,
+        outcome.iterations,
+        marker_rows
+            .iter()
+            .map(|row| format!("    {row:?}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        live.tail(14),
+    );
+
+    // ⚠⚠⚠⚠ THE WALK IS THE PREMISE AND THE MEASUREMENT BOTH, for the neighbour's reason: a run that
+    // reflects REPLACES its session, so `live.pane` may not exist by the time this reads it and
+    // `live.screen()` answers the empty string. The rows above are diagnostic only.
+    assert!(
+        heard,
+        "⚠⚠⚠⚠⚠ ITEM 441 REPRODUCED, AND THE BUDGET PAIR IS THE CAUSE: the judge answered `not \
+         declared` on {deaf} judgement(s) and reached `reflecting` by the budget road {by_budget} \
+         time(s), which is the deaf run's own reading. This gate is \
+         `a_live_judge_hears_the_marker_whatever_the_milestone_asked_for` with ONLY `max_turns` and \
+         `reflect_every` changed — to `never` and {DEAF_REFLECT_EVERY}, the pair `orchestrate` \
+         composes for this repository — and that control is green, so nothing else differs. ⚠ {} \
+         row(s) of the CURRENT pane carry the marker — {marker_rows:?} — diagnostic only. Walk: \
+         {walked:?}",
+        marker_rows.len(),
+    );
+    // ⚠⚠⚠ AND IT DID NOT BREAK. `Failed` is a delivery or a datamodel giving out, which would make
+    // every reading above suspect; with the budget declined the ordinary ending is the substrate's
+    // iteration ceiling rather than `Converged`.
+    assert_ne!(
+        loops.state(),
+        AiLoopState::Failed,
+        "⚠⚠ a run that FAILED was not measuring what its judge can hear. Walk: {walked:?}",
+    );
+}
+
 #[test]
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_briefed_loop_converges_against_a_live_agent() {
