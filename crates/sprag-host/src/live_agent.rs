@@ -2396,20 +2396,43 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
     );
 
     // ── ⚠⚠⚠ 1. THE SESSION WAS REALLY REPLACED ──
+    //
+    // ⚠⚠⚠⚠⚠ **FOUR ACTS, AND FOR A ROUND THIS LIST ASKED FOR A FIFTH THAT NOTHING CAN PRODUCE** —
+    // register item 439's second defect, and the one its own diagnosis missed. The list opened with
+    // `Reflecting --ReflectApplied--> Restarting`, and the shipped document has no such edge:
+    // `reflect.applied` targets `reviewing` and `restarting` is reached only from THERE, by
+    // `review.done` or `review.none`. So this gate could not go green on any run whatever, and the
+    // register read its red as *the standing instruction never fired* — one cause found, one cause
+    // hidden underneath it.
+    //
+    // ⚠⚠⚠⚠ **MEASURED RATHER THAN READ OFF THE DOCUMENT**: item 441's second control
+    // (`a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared`) drove a live `claude`
+    // through THREE replacements in 61 seconds, and every one of them walked exactly these four
+    // lines and never the old first one. **A live walk is what says what the acts are.**
+    //
+    // ⚠⚠⚠ AND THE SECOND ACT IS NAMED BY ITS STATE AND NOT BY ITS WORD, deliberately. `reviewing`
+    // reaches `restarting` by `review.done` AND by `review.none` — *there were records to read* and
+    // *there were none* — and which one a run takes is a fact about what its closed sessions left
+    // behind, not about whether the replacement happened. The control above answered `ReviewNone`
+    // three times because its agent wrote nothing to review; the agent HERE does real work and may
+    // well answer the other. Pinning the word would make this gate red for a run that did
+    // everything it claims. ⚠ Only those two edges leave that state for `restarting` (the third is
+    // `cancel`), so the prefix is not loose about where the run went.
     for edge in [
-        "Reflecting --ReflectApplied--> Restarting",
+        "Reflecting --ReflectApplied--> Reviewing",
+        "Reviewing --Review",
         "Restarting --SessionReplaced--> Resuming",
         "Resuming --SessionReady--> Priming",
     ] {
         // ⚠⚠ THE ARROW IS THE CLAIM, AND THE CLAUSES AFTER IT ARE NOT. `==` was right while a walk
-        // line was only ever its arrow; the third of these edges DELIVERS a prompt, so register item
+        // line was only ever its arrow; the last of these edges DELIVERS a prompt, so register item
         // 434's evidence lands on it whenever the road it took differs from the last one a reader
-        // was told about — and this assertion is about *the replacement happened as three acts*,
+        // was told about — and this assertion is about *the replacement happened as four acts*,
         // which no sentence after the arrow can make more or less true. A gate that failed on it
         // would fail for something it does not claim, in the one live gate that proves item 433.
         assert!(
             walked.iter().any(|note| note.starts_with(edge)),
-            "⚠⚠⚠ the run must have gone through the replacement as three separate acts — `{edge}` is \
+            "⚠⚠⚠ the run must have gone through the replacement as four separate acts — `{edge}` is \
              missing. Walked {walked:?}",
         );
     }
