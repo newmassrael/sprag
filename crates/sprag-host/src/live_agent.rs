@@ -851,6 +851,166 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
 /// machine to `screening` — an unbuilt state — and the gate would be measuring debt 60 instead of
 /// this. Arithmetic is answerable in one turn from the model alone, which keeps the claim on the
 /// LOOP rather than on what an agent is allowed to do.
+/// ⚠⚠⚠⚠⚠ **THE MILESTONE'S WORDING IS NOT WHY A LIVE JUDGE WENT DEAF** — register item 441's first
+/// control, and it RULES A CAUSE OUT rather than reproducing one.
+///
+/// # ⚠⚠⚠⚠ The measurement this exists to explain
+///
+/// Item 433's own proof run (2026-08-18, HEAD daemon, `claude` 2.1.234) judged NINE turns and wrote
+/// *"the agent had not declared"* on every one of them — `Heard::NotSaid`, so `lost` was 0 and the
+/// driver believed it had read the whole turn — while the pane plainly showed `MILESTONE REACHED`
+/// on a row of its own. **Both of that run's reflections came by the BUDGET road; the `milestone`
+/// road was never taken.** The owner's own long-running loop reports the same thing on the same
+/// day, four judgements running, so it is not one run's luck.
+///
+/// ⚠⚠⚠ **AND ITS NEIGHBOUR CONVERGES, which is what makes this a fixture rather than a theory.**
+/// [`a_briefed_loop_converges_against_a_live_agent`] drives the same document against the same
+/// program and reaches `Judging --Judge--> Reflecting — milestone: the agent said the milestone was
+/// reached`. So the marker CAN be heard, the alternate screen is not the suspect, and the
+/// difference is in what the agent was asked. **This gate is that neighbour with ONE thing changed
+/// — the brief — so whatever it answers is about the brief and nothing else.**
+///
+/// # ⚠⚠⚠⚠⚠ WHAT IT ANSWERED, FIRST RUN: heard = TRUE, deaf judgements = 0
+///
+/// The live run's own trivial milestone (*"say the word one"*), driven here, is heard on the FIRST
+/// judgement and reaches `Judging --Judge--> Reflecting — milestone`. ⇒ **The brief is exonerated,
+/// and item 441's cause is somewhere in what still differs**: the live run passed no `max_turns` and
+/// no `reflect_every` (so the document's own defaults stood, where this sets 3 and 3), it went
+/// through the CLI's `orchestrate` rather than an in-process `Brief`, and its pane was born from
+/// `split-window` on a daemon rather than from `Live::start`. **Those three are the next controls,
+/// one at a time.**
+///
+/// ⚠⚠ **A GATE THAT RULES A CAUSE OUT IS WORTH KEEPING**, and this one is cheap to re-point: change
+/// the brief back and it becomes the reproduction if the brief ever turns out to matter after all.
+///
+/// # ⚠⚠ It asserts the READING, not the convergence
+///
+/// What is owed here is *did the judge hear it*, and a run can fail to converge for reasons that
+/// have nothing to do with hearing. Measured on the first run: the ladder works so well that the
+/// agent climbs it — one, two, three — until the SUBSTRATE's 24-iteration guardrail stops the run
+/// at `Exhausted(Iterations)`. That is the brief doing what it says, so the ending asserted here is
+/// *not a failure*, never *converged*.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
+    use sce_rust_runtime::IScriptEngine;
+    use sprag_plugin::{AiLoopState, Brief};
+
+    /// The same budget as the neighbour, and equal to `reflect_every` for its reason: with the two
+    /// equal the BUDGET road cannot open, so a run that reaches `reflecting` at all reached it
+    /// because the agent was HEARD.
+    const LIVE_MAX_TURNS: i64 = 3;
+
+    let live = Live::start("unheard");
+
+    let brief = Brief {
+        // ⚠ THE ONE THING CHANGED, and it is the brief item 433's proof run used. A trivial
+        // milestone is not a lesser test of the loop: it is the one an agent answers in a sentence,
+        // and every live run that went unheard had one.
+        north_star: "count from one to four in English words, one number per milestone; say the \
+                     north star is reached only after you have said the word four"
+            .to_string(),
+        milestone: "say the word one".to_string(),
+        reference: "answer in one short line and use no tools".to_string(),
+        closing_rules: None,
+        max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
+        reflect_every: Some(LIVE_MAX_TURNS),
+        screen_rules: None,
+        may_answer: None,
+        await_person_ms: Some(0),
+        handback_still_ms: None,
+        ready_timeout_ms: None,
+        turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
+    };
+    let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+    let mut loops = sprag_plugin::AiLoop::new(
+        lua,
+        live.pane,
+        &brief,
+        &sprag_plugin::AiLoopSpec::driving(&live.agent),
+    )
+    .expect("a well-briefed loop over a live agent's pane starts");
+    let marker = loops
+        .authored()
+        .expect("the document's datamodel must carry its authored strings")
+        .done_marker;
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
+        max_iterations: 24,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(300)),
+    })
+    .reporting_to(Arc::clone(&progress))
+    .run(&mut loops, &live.access, &RunContext::uncancellable());
+    let walked: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|entry| entry.note.clone())
+        .collect();
+
+    let screen = live.screen();
+    let marker_rows: Vec<&str> = screen
+        .lines()
+        .filter(|row| row.contains(marker.as_str()))
+        .collect();
+    let heard = walked
+        .iter()
+        .any(|note| note.contains("milestone: the agent said the milestone was reached"));
+    let deaf = walked
+        .iter()
+        .filter(|note| note.contains("the agent had not declared"))
+        .count();
+    println!(
+        "\n== item 441: what a live agent said and what the judge heard ==\n  agent: {}\n  \
+         milestone: {:?}\n  heard the marker: {heard}\n  judgements that said NOT declared: \
+         {deaf}\n  ended: {:?} after {} iterations\n  rows on the pane carrying the marker:\n{}\n  \
+         walk: {walked:?}\n  the pane:\n{}\n",
+        live.agent,
+        brief.milestone,
+        outcome.state,
+        outcome.iterations,
+        marker_rows
+            .iter()
+            .map(|row| format!("    {row:?}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        live.tail(14),
+    );
+
+    // ⚠⚠⚠⚠ **THE SCREEN IS NOT THE PREMISE HERE, AND THE FIRST BUILD OF THIS GATE LEARNED IT THE
+    // expensive way.** A run that HEARS its marker reflects, and a reflection REPLACES the session —
+    // so `live.pane` is a pane that no longer exists by the time this reads it, and `live.screen()`
+    // answers the empty string. The premise assertion written against it failed on a run whose
+    // measurement had already succeeded. `Live::drop` says the same thing about the pane it closes.
+    //
+    // ⚠⚠ So the walk is both the measurement AND the premise: `heard` can only be true if the agent
+    // put the marker somewhere the judge read, and if it is false the rows below say whether the
+    // model said it at all — diagnostically, from whichever pane is current.
+    assert!(
+        heard,
+        "⚠⚠⚠⚠⚠ ITEM 441 REPRODUCED: the judge answered `not declared` on {deaf} judgement(s) and \
+         the `milestone` road was never opened. Its neighbour \
+         `a_briefed_loop_converges_against_a_live_agent` reaches that road with the SAME document \
+         and the SAME program, so what differs is this brief. ⚠ {} row(s) of the CURRENT pane carry \
+         the marker — {marker_rows:?} — which is diagnostic only: a run that never reflected still \
+         has its original pane, so an empty list here means the model said nothing rather than that \
+         the pane was replaced. Walk: {walked:?}",
+        marker_rows.len(),
+    );
+    // ⚠⚠⚠ AND IT DID NOT BREAK, which is the only thing the ENDING is asked here. A heard marker
+    // sends this run up its own ladder — one, two, three — so the substrate's iteration guardrail
+    // is the ordinary ending and `Converged` is the unusual one. What may NOT happen is `Failed`:
+    // that is a delivery or a datamodel breaking, and it would make every reading above suspect.
+    assert_ne!(
+        loops.state(),
+        AiLoopState::Failed,
+        "⚠⚠ a run that FAILED was not measuring what its judge can hear. Walk: {walked:?}",
+    );
+}
+
 #[test]
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_briefed_loop_converges_against_a_live_agent() {
