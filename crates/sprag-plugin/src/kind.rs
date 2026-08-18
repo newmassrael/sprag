@@ -198,6 +198,51 @@ impl LoopKind {
             _ => None,
         }
     }
+
+    /// **WHAT THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, AND WHAT TO DO ABOUT IT** — or
+    /// [`None`] when this document declines, which is the template's shipped state.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a kind holds this and the template does not
+    ///
+    /// The sentence a peer prints when it is unwell is that peer's, at one version, in one
+    /// language. `screen_rules`' own reason applies unchanged: **a template does not know whose
+    /// agent it will be talking to**, and a needle written into one would quote words at
+    /// repositories whose runs talk to something else entirely.
+    ///
+    /// # ⚠⚠⚠ THE NEEDLE DECIDES, AND THE OTHER TWO ONLY SHAPE IT
+    ///
+    /// A document with no needle has declined however carefully it filled the other two, so this
+    /// answers [`None`] on that alone. The wait and the word then fall back to the template's own
+    /// values rather than to numbers invented here — a kind that names the failure and says nothing
+    /// about the remedy has asked for the default remedy, not for a broken one.
+    ///
+    /// ⚠⚠ A NEGATIVE OR UNREADABLE WAIT IS THE DEFAULT AND NOT AN ERROR, on
+    /// [`turn_budget`](Self::turn_budget)'s terms: this is a document a person edits, and the
+    /// failure mode worth preventing is a run that spins re-asking a service that is already
+    /// refusing. Falling back to ten minutes is the direction to be wrong in.
+    #[must_use]
+    pub fn service_outage(&self) -> Option<crate::outer::ServiceOutage> {
+        let needle = match self.script.get_variable(&self.session, "service_needle") {
+            Ok(ScriptValue::String(text)) if !text.trim().is_empty() => text,
+            _ => return None,
+        };
+        let every_ms = match self.script.get_variable(&self.session, "service_retry_ms") {
+            Ok(ScriptValue::Int(held)) if held > 0 => u64::try_from(held).ok(),
+            _ => None,
+        };
+        let text = match self
+            .script
+            .get_variable(&self.session, "service_retry_text")
+        {
+            Ok(ScriptValue::String(word)) if !word.is_empty() => Some(word),
+            _ => None,
+        };
+        Some(crate::outer::ServiceOutage {
+            needle,
+            every_ms: every_ms.unwrap_or(crate::outer::DEFAULT_SERVICE_RETRY_MS),
+            text: text.unwrap_or_else(|| crate::outer::DEFAULT_SERVICE_RETRY_TEXT.to_owned()),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -413,6 +458,63 @@ mod tests {
             clause.starts_with(' '),
             "⚠⚠ it is APPENDED to the template's own sentence, so it must not run into the last \
              word of it: {clause:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THIS KIND KNOWS WHAT ITS PEER SAYS WHEN ITS SERVICE FAILS, AND THE TEMPLATE DOES
+    /// NOT** — the split, asserted from the side that has to hold the words.
+    ///
+    /// The needle is quoted from a live run: 2026-08-19, pane 99, after 28m37s of work, `API
+    /// Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a
+    /// moment.` Before the state this feeds existed, that ended the run at `blocked`, which is
+    /// `<final>`.
+    ///
+    /// # ⚠⚠⚠ What each assertion is against
+    ///
+    /// * **THE NEEDLE IS NAMED AT ALL.** A kind that declines answers [`None`], and the whole
+    ///   behaviour is off — which is the template's shipped state and a perfectly good one for a
+    ///   repository that never measured its peer. This repository did measure, so a `None` here is
+    ///   the finding going back out of the product.
+    /// * ⚠⚠⚠⚠ **AND IT IS THE CODE, NOT THE PROSE.** The tail of that message (*"usually
+    ///   temporary…"*) is wording that has changed before; `529` is the status. A needle quoting
+    ///   the sentence would stop matching the day somebody rewrote the apology, and this gate is
+    ///   what says the short head was a decision rather than an accident.
+    /// * ⚠⚠ **AND IT IS NOT THE WHOLE FAMILY.** `API Error` alone would swallow a 400, which is
+    ///   this run's own fault and will still be its fault in ten minutes — waiting one out forever
+    ///   is a worse ending than stopping.
+    /// * **AND THE REMEDY IS THE OWNER'S**: ten minutes, and a word that means carry on rather
+    ///   than the milestone again — the session survived the outage holding everything it had.
+    #[test]
+    fn the_debt_kind_names_what_its_peer_prints_when_its_service_fails() {
+        let outage = debt().service_outage().expect(
+            "⚠⚠⚠ this repository measured its peer's 529 and must carry it, or the run \
+                     that paid 28 minutes to find it learns nothing",
+        );
+        assert!(
+            outage.needle.contains("529"),
+            "⚠⚠⚠⚠ THE CODE IS THE STABLE HALF and the apology around it is not: {:?}",
+            outage.needle,
+        );
+        assert!(
+            outage.needle.len() < "API Error: 529 Overloaded. This is a server-side issue".len(),
+            "⚠⚠⚠ IT MUST BE THE SHORT HEAD. The message arrives WRAPPED across rows, and a needle \
+             carrying the whole sentence depends on where the terminal broke it: {:?}",
+            outage.needle,
+        );
+        assert_ne!(
+            outage.needle.trim(),
+            "API Error",
+            "⚠⚠ NOT THE WHOLE FAMILY: a 400 is this run's own fault and waiting it out forever is \
+             a worse ending than stopping",
+        );
+        assert_eq!(
+            outage.every_ms, 600_000,
+            "ten minutes, the owner's number — asking again sooner is the load that caused it",
+        );
+        assert_eq!(
+            outage.text, "continue",
+            "⚠⚠ NOT THE MILESTONE AGAIN: the session still holds its brief and its half-finished \
+             turn, so re-asking the whole question spends the context the outage did not take",
         );
     }
 }

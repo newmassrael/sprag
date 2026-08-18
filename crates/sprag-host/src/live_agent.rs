@@ -937,6 +937,7 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
         reference: "answer in one short line and use no tools".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
         screen_rules: None,
@@ -1119,6 +1120,7 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
         reference: "answer in one short line and use no tools".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         // ⚠⚠ THE ONE THING CHANGED, AND IT IS A PAIR because the two are one decision: the
         // template's default for reflection IS the budget, so a run that declines the budget must
         // name a cadence or be refused at the door. This is the pair `orchestrate` composes for
@@ -1297,6 +1299,7 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
         reference: "answer in one short line and use no tools".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
         screen_rules: None,
@@ -1439,6 +1442,7 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         // ⚠ EQUAL to the budget, which is what keeps `reflecting` — an unbuilt state — off the
         // path. `AiLoop::new` refuses anything smaller, so this is the door's own rule rather than
@@ -1660,6 +1664,7 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         reference: "no tools and no files are needed; the numbers are the whole task".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         // ⚠ EQUAL to the budget, so `judging` takes the turn-budget edge rather than the reflect
         // one — the document tests them in that order, and this gate is about the budget's ending.
@@ -1862,6 +1867,7 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         reference: "no tools and no files are needed; the numbers are the whole task".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(UNSPENDABLE_TURNS)),
         reflect_every: Some(UNSPENDABLE_TURNS),
         screen_rules: None,
@@ -2103,6 +2109,7 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
             .to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
         // ⚠ Unarmed: this gate's claim is about the CONSENT carrying the loop through the dialog,
@@ -2301,6 +2308,7 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
             .to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
         // ⚠⚠⚠ THE WHOLE POINT: the caller supplies the AUTHOR's half of the contract, quoting the
@@ -2525,6 +2533,7 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
             .to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         // ⚠⚠⚠ THE BUDGET TRIGGER IS OFF, so the reflection below is caused by the STANDING
         // INSTRUCTION and by nothing else. Equal is what makes `turns_since_reflect >= reflect_every`
@@ -3880,6 +3889,7 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         reference: "no tools and no files are needed; answer from arithmetic alone".to_string(),
         closing_rules: None,
         milestone_check: None,
+        service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
         screen_rules: None,

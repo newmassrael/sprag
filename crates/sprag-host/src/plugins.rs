@@ -734,6 +734,12 @@ impl PluginsExternal {
                     // caller who could name the checker could delete it by naming nothing, which is
                     // the self-certification the whole item is about.
                     milestone_check: kind.milestone_check(),
+                    // ⚠⚠⚠ NO WIRE KEY EITHER, on the two lines above's terms. What this
+                    // repository's peer prints when its SERVICE fails is its document's business,
+                    // and a caller who could name the needle could delete the wait by naming
+                    // nothing — turning a ten-minute outage back into the dead run that paid for
+                    // this. See `ServiceOutage`, whose doc carries the measurement.
+                    service: kind.service_outage(),
                     north_star: require_str(map, "north_star")?.to_string(),
                     milestone: require_str(map, "milestone")?.to_string(),
                     reference: require_str(map, "reference")?.to_string(),

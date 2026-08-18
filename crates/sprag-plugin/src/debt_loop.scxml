@@ -241,6 +241,51 @@
     <data id="milestone_check" expr="'claude -p'"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ THE WORDS THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, and
+      the template ships this empty for exactly the reason this file can fill it:
+      the sentence is `claude`'s, and this document is the one that knows its
+      runs talk to `claude`.
+
+      ⚠⚠⚠⚠ QUOTED FROM A LIVE RUN, NOT INVENTED — the mistake this workspace has
+      made before with needles. Run 15, pane 99, 2026-08-19, after 28m37s of
+      work, verbatim on the screen:
+
+          API Error: 529 Overloaded. This is a server-side issue, usually
+          temporary — try again in a moment.
+
+      ⚠⚠⚠ AND THE NEEDLE IS THE SHORT HEAD OF IT, FOR TWO MEASURED REASONS. The
+      message WRAPS — it arrived across two rows — and the screen is read the way
+      `pane_collapsed` joins it, rows concatenated with no separator, so a needle
+      that spans the wrap still matches while one carrying the whole sentence
+      would depend on where the terminal happened to break it. And the tail is
+      prose that has changed before; the code has not.
+
+      ⚠⚠ IT DOES NOT QUOTE `API Error` ALONE, which was the widening considered
+      and turned down here for `screen_rules`' own measured reason: a 400 is this
+      run's fault and will still be its fault in ten minutes, and waiting one out
+      forever is a worse ending than stopping. **A wait is the treatment for a
+      SERVER's bad minute, and 529 is the code that means that one.** Another
+      code that earns it is another element for whoever measures it.
+    -->
+    <data id="service_needle" expr="'API Error: 529'"/>
+
+    <!--
+      TEN MINUTES, THE OWNER'S NUMBER (2026-08-19), and the same as the
+      template's default — written out rather than left implicit because a kind
+      that names the needle should be readable as having chosen the whole
+      behaviour, not two thirds of it.
+    -->
+    <data id="service_retry_ms" expr="600000"/>
+
+    <!--
+      ⚠⚠ WHAT A PERSON TYPES AT THAT SCREEN, which is the whole design: the
+      session survived the outage with its brief and its half-finished turn, so
+      the smallest thing that resumes it is the word that means carry on. Asking
+      the milestone again would spend the context the outage did not take.
+    -->
+    <data id="service_retry_text" expr="'continue'"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ WHY THE CADENCE ABOVE NO LONGER BUYS A SESSION REPLACEMENT, which is
       what let it go back to being only a cadence.
 

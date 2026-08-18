@@ -296,6 +296,32 @@ const DONE_MARKER: &str = "done_marker";
 /// *something checked this and was satisfied*.
 const MILESTONE_CHECK: &str = "milestone_check";
 
+/// **WHAT THE SCREEN SAYS WHEN THE PEER'S SERVICE FAILED**, as the document spells it.
+///
+/// ⚠ Empty is the template's shipped value and declines the whole behaviour; the adopting
+/// repository's kind document quotes the words its own peer prints. See `ai_loop.scxml`.
+const SERVICE_NEEDLE: &str = "service_needle";
+
+/// **HOW LONG TO LEAVE AN OUTAGE ALONE**, in milliseconds, as the document spells it.
+const SERVICE_RETRY_MS: &str = "service_retry_ms";
+
+/// **WHAT TO TYPE WHEN THE WAIT IS OVER**, as the document spells it.
+const SERVICE_RETRY_TEXT: &str = "service_retry_text";
+
+/// The wait [`OuterLoop::wait_out_service`] falls back to when the document holds no readable
+/// number — the same ten minutes `ai_loop.scxml` ships, so the fallback and the default agree.
+///
+/// ⚠⚠ A FALLBACK IS NOT A SECOND DECISION. It exists because a datamodel that stopped answering
+/// must not turn a wait into a spin, and it is deliberately the template's own number rather than a
+/// smaller "safe" one: a driver that waited less than the author wrote would be re-asking a
+/// service that is already refusing, which is the load the wait exists to take off.
+pub(crate) const DEFAULT_SERVICE_RETRY_MS: u64 = 600_000;
+
+/// The word [`OuterLoop::wait_out_service`] falls back to when the document holds no text — see
+/// [`DEFAULT_SERVICE_RETRY_MS`] for why a fallback exists at all, and note that this state's ONLY
+/// exit is something being said, so silence here would be the `blocked` it exists to prevent.
+pub(crate) const DEFAULT_SERVICE_RETRY_TEXT: &str = "continue";
+
 /// How long a milestone check may take before it is abandoned as [`Checked::Silent`].
 ///
 /// ⚠⚠ Sized like [`JudgeSpec`](crate::judge::JudgeSpec)'s and then some: a judged dialog asks about
@@ -405,6 +431,38 @@ const STANDING: &str = "standing";
 ///
 /// ⚠⚠ `screen_rules` USED TO BE IN THAT SENTENCE and is now a field, because the state it belongs
 /// to is built. `screen_permissions` is not here because it no longer exists — see the document.
+/// **A REPOSITORY'S ANSWER TO ITS PEER HAVING A BAD MINUTE** — what the failure looks like on the
+/// screen, how long to leave it alone, and what to say when the wait is over.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists
+///
+/// Measured 2026-08-19: a debt run worked 28m37s and its turn ended with `API Error: 529
+/// Overloaded. This is a server-side issue, usually temporary — try again in a moment.` The machine
+/// did every step right — `working` to `screening` on `turn.blocked`, `screening` to
+/// `awaiting_human` on `screen.none` because no rule claimed a dialog that was not a dialog, then
+/// `unattended` to `blocked`, which is `<final>` — and the sum was a run killed by a wait.
+/// **The screen said «try again in a moment» and the run was filed as «nobody could say».**
+///
+/// ⚠⚠⚠ `screen_rules` CANNOT CARRY THIS, checked in the source rather than assumed: a rule's first
+/// key is a REFUSAL ([`crate::screen::REFUSES`], Escape, which at a composer discards a draft) and
+/// it then requires its quoted text to LEAVE the screen. A printed error line does neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceOutage {
+    /// The text on the pane that means the peer's SERVICE failed — not that the peer is asking.
+    ///
+    /// ⚠⚠ Matched against the screen COLLAPSED (see
+    /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed)), because the message this was
+    /// built for arrives wrapped across rows.
+    pub needle: String,
+    /// How long to leave the outage alone before saying anything, in milliseconds.
+    pub every_ms: u64,
+    /// What to type when the wait is over.
+    ///
+    /// ⚠⚠ NOT the milestone again: the session survived with its brief and its half-finished turn,
+    /// so the smallest thing that resumes it is a word meaning carry on.
+    pub text: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Brief {
     /// **WHAT THIS REPOSITORY ADDS TO THE CLOSING QUESTION**, or [`None`] to leave the template's
@@ -425,6 +483,17 @@ pub struct Brief {
     /// measured live 2026-08-18, a debt run judging `NOTHING CHECKED THAT CLAIM` while the debt
     /// kind's document named a checker. **A decision no channel carries is a decision nobody made.**
     pub milestone_check: Option<String>,
+    /// **WHAT THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, AND WHAT TO DO ABOUT IT** — or
+    /// [`None`] to leave the template's empty needle standing, which declines the behaviour.
+    ///
+    /// ⚠⚠⚠ ONE FIELD FOR THREE VALUES BECAUSE THEY ARE MEANINGLESS APART. A needle with no text
+    /// names an outage the run can never leave; a wait with no needle is a number nothing reads.
+    /// Three `Option`s would let a caller construct all four broken combinations and would put the
+    /// arithmetic of which ones mean *declined* in every reader.
+    ///
+    /// ⚠⚠ It travels beside [`milestone_check`](Self::milestone_check) and for its reason: what a
+    /// repository's peer says when it is unwell is that repository's document's business.
+    pub service: Option<ServiceOutage>,
     /// Where this loop is ultimately going. Never rewritten by reflection.
     pub north_star: String,
     /// The step being worked on now. Reflection may rewrite this.
@@ -840,6 +909,12 @@ impl Owed {
                 | AiLoopEvent::ReflectDone
                 | AiLoopEvent::PromptReflect
                 | AiLoopEvent::ScreenBegin
+                // ⚠⚠⚠ THE DRIVER HAS ALREADY SPOKEN ON THIS EDGE, which is `screen.matched`'s
+                // arrangement one line up and the reason this belongs beside it rather than in a
+                // clause of its own. `wait_out_service` waits the outage out and types
+                // `service_retry_text` ITSELF, then raises this; a prompt owed here would type a
+                // second thing on top of the word that just went in.
+                | AiLoopEvent::ServiceRetry
                 | AiLoopEvent::ScreenNone
                 | AiLoopEvent::SessionReady
                 | AiLoopEvent::SessionReplace
@@ -869,6 +944,11 @@ impl Owed {
             AiLoopState::Idle
             | AiLoopState::Judging
             | AiLoopState::Screening
+            // ⚠⚠ ARRIVING AT AN OUTAGE OWES THE AGENT NOTHING, and a prompt here would be the
+            // exact mistake the state exists to prevent: the peer's service just refused a turn,
+            // so a question typed on arrival is one more request into a service saying no. What
+            // this state owes is TIME, and the driver spends it — see `wait_out_service`.
+            | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reviewing
@@ -922,6 +1002,9 @@ impl Owed {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            // ⚠ NOTHING IS ASKED ON THE WAY IN — the wait is the whole of what this state does,
+            // and the one thing it eventually types is `service_retry_text` on the way OUT.
+            | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
@@ -2264,6 +2347,15 @@ pub struct OuterLoop {
     /// through the pump — would put the phase in the driver, which is exactly what `restarting` and
     /// `resuming` are two states to avoid.
     awaiting: Option<Instant>,
+    /// **WHEN THIS RUN STARTED WAITING OUT ITS PEER'S SERVICE**, or [`None`] when it is not.
+    ///
+    /// ⚠⚠ Held on [`awaiting`](Self::awaiting)'s terms and for its reason:
+    /// [`wait_out_service`](Self::wait_out_service) is the only reader and the only writer, setting
+    /// it on the first look at an outage and clearing it on the way out. ⚠ SEPARATE from
+    /// `awaiting` deliberately, though no run can be in both states at once: sharing one anchor
+    /// would make a person's patience and a service's outage the same clock, and the day they
+    /// overlapped the second one to start would inherit the first one's elapsed time.
+    outage: Option<Instant>,
     /// This turn's evaluator, armed before the prompt goes in.
     done: Completion,
     /// What the last pump saw behind the event it raised — see [`Noticed`].
@@ -2556,6 +2648,7 @@ impl OuterLoop {
             judge: spec.judge.clone(),
             claimed: None,
             awaiting: None,
+            outage: None,
             reported: None,
             ended: Vec::new(),
             stopping_short: None,
@@ -2818,6 +2911,24 @@ impl OuterLoop {
             // nobody a run reads, and a live debt run judged `NOTHING CHECKED THAT CLAIM` while its
             // own kind document named one.
             MILESTONE_CHECK: brief.milestone_check.clone().unwrap_or_default(),
+            // ⚠⚠⚠⚠ AND WHAT TO DO WHEN THE PEER'S SERVICE FAILS — all three unconditional, on the
+            // terms the two lines above set. The template ships an empty needle (declines) and
+            // WORKING defaults for the other two, so a kind that names none must have its own
+            // values echoed back rather than nil assigned over them: the document's `brief`
+            // assigns all three, and an omitted key would delete a number `wait_out_service`
+            // divides time by. Register item 428, which is this exact chain breaking one link up.
+            SERVICE_NEEDLE: brief
+                .service
+                .as_ref()
+                .map_or("", |it| it.needle.as_str()),
+            SERVICE_RETRY_MS: brief
+                .service
+                .as_ref()
+                .map_or(DEFAULT_SERVICE_RETRY_MS, |it| it.every_ms),
+            SERVICE_RETRY_TEXT: brief
+                .service
+                .as_ref()
+                .map_or(DEFAULT_SERVICE_RETRY_TEXT, |it| it.text.as_str()),
             ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
                 rules
                     .rules()
@@ -3600,7 +3711,17 @@ impl OuterLoop {
                     // how often it evaluates one, so a judgement inside a `cond` would be a model
                     // call of unknown multiplicity inside a microstep.
                     AiLoopEvent::TurnBlocked => {
-                        let rule = self.judged(panes, run);
+                        // ⚠⚠⚠⚠⚠ ASKED FIRST, AND THE JUDGE IS NOT ASKED AT ALL WHEN IT ANSWERS
+                        // YES. A service failure is not a design decision, and judging one is a
+                        // model call — 4-6 seconds, measured — spent to arrive at the wrong state.
+                        // The document routes on this above `judged` for the same reason; doing it
+                        // in the other order here would pay for the judgement anyway.
+                        let service = self.service_failed(panes);
+                        let rule = if service {
+                            None
+                        } else {
+                            self.judged(panes, run)
+                        };
                         Raise::carrying(
                             AiLoopEvent::TurnBlocked,
                             // ⚠ A BOOLEAN BESIDE THE NAME, because this datamodel is Lua and the
@@ -3608,6 +3729,7 @@ impl OuterLoop {
                             // name alone would fire on the empty string, i.e. on every blocked turn
                             // of every run that matched nothing.
                             serde_json::json!({
+                                "service": service,
                                 "judged": rule.is_some(),
                                 "rule": rule.unwrap_or_default(),
                             }),
@@ -3692,6 +3814,10 @@ impl OuterLoop {
             // here; whether one of the document's own rules claims it — and what happens if one
             // does — is [`screen`](Self::screen).
             AiLoopState::Screening => self.screen(panes, run)?,
+
+            // ⚠⚠⚠ THE PEER'S SERVICE FAILED AND THE ONLY TREATMENT IS TIME — see
+            // [`wait_out_service`](Self::wait_out_service).
+            AiLoopState::ServiceDown => self.wait_out_service(panes, run)?,
 
             // ⚠⚠⚠ THE LOOP IMPROVES ITS OWN SETUP AND THEN REPLACES THE SESSION THAT READS IT —
             // three states, because the three things that happen are genuinely different acts and
@@ -3809,6 +3935,9 @@ impl OuterLoop {
                 | AiLoopState::Working
                 | AiLoopState::Judging
                 | AiLoopState::Screening
+                // ⚠ ONE DOOR, so the arrow already says everything a `Because` could: `working`
+                // is the only state that reaches it, and it reaches it for one reason.
+                | AiLoopState::ServiceDown
                 | AiLoopState::Redirecting
                 | AiLoopState::AwaitingHuman
                 | AiLoopState::Reviewing
@@ -4125,6 +4254,111 @@ impl OuterLoop {
         } else {
             AiLoopEvent::Null
         }
+    }
+
+    /// **DOES THE PANE SAY THE PEER'S SERVICE FAILED** — the fact the document routes `turn.blocked`
+    /// on, measured here because a `cond` cannot read a screen.
+    ///
+    /// ⚠⚠⚠ **THE NEEDLE IS THE DOCUMENT'S AND AN EMPTY ONE IS A NO.** A template ships it empty and
+    /// declines the whole behaviour; the adopting repository's kind document quotes the words its
+    /// own peer prints, which is `screen_rules`' arrangement and its reason — *a template does not
+    /// know whose agent it will be talking to*. ⚠ An empty needle is checked for explicitly rather
+    /// than left to `contains`, which answers TRUE for the empty string and would route every
+    /// blocked turn of every run into a ten-minute wait.
+    ///
+    /// ⚠⚠ **THE SCREEN IS READ COLLAPSED**, the way
+    /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed) joins it — rows trailing-
+    /// trimmed and concatenated with no separator. Measured 2026-08-19: the message this exists for
+    /// arrived WRAPPED across two rows, so a needle read against per-row text would depend on where
+    /// the terminal happened to break it.
+    ///
+    /// ⚠ A pane that cannot be read at all answers `false`, which is the pre-existing path: the
+    /// turn goes to `screening` exactly as it did before this existed.
+    fn service_failed(&self, panes: &dyn PaneAccess) -> bool {
+        let Some(needle) = self.text_of(SERVICE_NEEDLE).filter(|it| !it.is_empty()) else {
+            return false;
+        };
+        panes
+            .pane_collapsed(self.driving.pane)
+            .is_some_and(|screen| screen.contains(&needle))
+    }
+
+    /// **WAIT OUT THE PEER'S SERVICE** — `service_down`'s whole effect.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What this is for, measured
+    ///
+    /// A debt run worked 28m37s on 2026-08-19 and its turn ended with `API Error: 529 Overloaded.
+    /// This is a server-side issue, usually temporary — try again in a moment.` Every step after
+    /// that was correct and the sum was wrong: `working` took `turn.blocked` to `screening`, which
+    /// found no dialog and took `screen.none` to `awaiting_human`, which — the run having been told
+    /// nobody was watching — took `unattended` to `blocked`, and `blocked` is `<final>`. **The
+    /// screen said «try again in a moment» and the run was filed as «nobody could say».**
+    ///
+    /// The two endings need opposite handling and had been sharing one bucket: `awaiting_human`
+    /// means A PERSON IS EXPECTED, and this means NOBODY IS AND NOTHING IS WRONG WITH THE RUN.
+    ///
+    /// # ⚠⚠⚠ The whole treatment is time, and the only two ways to get it wrong
+    ///
+    /// Asking again too soon is the load that caused the outage; never asking again is what shipped
+    /// before this existed. So the wait is one number the document holds (`service_retry_ms`,
+    /// authored — ten minutes for the debt kind) and the act at the end of it is one word the
+    /// document holds (`service_retry_text`, `continue`).
+    ///
+    /// ⚠⚠ **NOT THE MILESTONE AGAIN.** The session survived the outage with its brief, its
+    /// half-finished turn and its open files; re-asking the whole question would spend the context
+    /// the outage did not take. See `restarting` for the case where starting over IS the answer,
+    /// and note that this is not it.
+    ///
+    /// ⚠⚠⚠ **AND THERE IS NO RETRY CEILING HERE, DELIBERATELY.** `max_seconds` and `max_iterations`
+    /// are the driver's own guardrails and a document cannot talk past them, so a service that
+    /// never returns costs a run its ceiling rather than forever. A second ceiling would be a number
+    /// nothing keeps in step with those two.
+    ///
+    /// # ⚠⚠ Why `Null` and not a self-loop
+    ///
+    /// [`attend`](Self::attend)'s rule, for its reason: a state machine with no input STAYS IN THE
+    /// STATE, and raising an event every poll would write a step into the journal saying something
+    /// changed when nothing did. The anchor is this function's alone — set on the first look and
+    /// cleared on the way out — so no other state can leave it stale.
+    ///
+    /// # Errors
+    ///
+    /// Whatever typing into the pane answers.
+    fn wait_out_service(
+        &mut self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) -> Result<Raise, PaneError> {
+        let since = *self.outage.get_or_insert_with(Instant::now);
+        // ⚠⚠ THE DOCUMENT'S NUMBER, READ AT THE MOMENT OF USE, which is `await_person_ms`'s own
+        // arrangement one function down. A copy taken at construction would be the value a kind
+        // held before its brief was applied.
+        let wait = Duration::from_millis(
+            self.authored_number(SERVICE_RETRY_MS)
+                .and_then(|held| u64::try_from(held).ok())
+                .unwrap_or(DEFAULT_SERVICE_RETRY_MS),
+        );
+        if since.elapsed() < wait {
+            return Ok(AiLoopEvent::Null.into());
+        }
+        // ⚠⚠⚠ THE WORD IS THE DOCUMENT'S AND AN EMPTY ONE IS NOT A REASON TO TYPE NOTHING FOREVER.
+        // A kind that named a needle and blanked the text has asked for a wait with no way out of
+        // it, and this state's only exit is something being said — so the template's own default
+        // stands in, and the run moves. ⚠ The alternative considered and turned down: staying put
+        // silently, which is the `blocked` this whole state exists to stop being.
+        let said = self
+            .text_of(SERVICE_RETRY_TEXT)
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| DEFAULT_SERVICE_RETRY_TEXT.to_owned());
+        // ⚠⚠ WHAT IT COST IS NOT CARRIED ON THE EVENT AND MUST NOT BE: `advance` reads the spend
+        // off the session, which `say` has already recorded, and a number on the event would be a
+        // second authority on one fact. The event itself has nothing to say — the document's
+        // `service.retry` reads no `_event.data`.
+        let _typed = self.say(panes, run, &said)?;
+        // ⚠ CLEARED ON THE WAY OUT, so the next outage starts its own clock rather than inheriting
+        // this one's elapsed time.
+        self.outage = None;
+        Ok(AiLoopEvent::ServiceRetry.into())
     }
 
     /// **WAIT FOR THE PERSON** — `awaiting_human`'s whole effect, and the last state of
@@ -8363,6 +8597,7 @@ mod tests {
             // clause crosses on the same route and has its own gate rather than riding this one.
             closing_rules: None,
             milestone_check: None,
+            service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -8480,6 +8715,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             milestone_check: None,
+            service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             screen_rules: None,
@@ -8556,6 +8792,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             milestone_check: None,
+            service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -8636,6 +8873,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: None,
                 milestone_check: None,
+                service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
                 screen_rules: None,
@@ -8770,6 +9008,7 @@ mod tests {
             reference: "none".to_string(),
             closing_rules: None,
             milestone_check: None,
+            service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -8958,6 +9197,7 @@ mod tests {
                 reference: "register item 300".to_string(),
                 closing_rules: None,
                 milestone_check: None,
+                service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
                 screen_rules: None,
@@ -9815,6 +10055,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: Some(" AND THEN SWEEP.".to_string()),
                 milestone_check: Some("/bin/echo YES".to_string()),
+                service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(3),
                 screen_rules: None,
@@ -10436,6 +10677,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     milestone_check: None,
+                    service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so the cadence cannot be what moves this run — which is the whole
                     // point: capacity has to be able to act BEFORE the count comes round.
@@ -10640,6 +10882,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     milestone_check: None,
+                    service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ ON, and it is the only thing that can start a reflection here: the peer
                     // never claims a milestone and nothing is screened, so one judged turn is what
@@ -10772,6 +11015,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     milestone_check: None,
+                    service: None,
                     max_turns: Some(Counted::Of(40)),
                     reflect_every: Some(99),
                     screen_rules: None,
@@ -10982,6 +11226,7 @@ mod tests {
                     // real path was dead while this gate was green, and a live run judged `NOTHING
                     // CHECKED THAT CLAIM` with every part of the mechanism built (item 428).
                     milestone_check: check.map(ToOwned::to_owned),
+                    service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so the budget cannot be what moves this run.
                     reflect_every: Some(99),
@@ -11267,6 +11512,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     milestone_check: None,
+                    service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so nothing but the judge's own reading can move this run: a budget that
                     // came round would take the edge into `reflecting` instead, and the pass below
@@ -11455,6 +11701,7 @@ mod tests {
             reference: "this gate".to_string(),
             closing_rules: None,
             milestone_check: None,
+            service: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -11789,6 +12036,182 @@ mod tests {
              one bare program name receives the artifact as its only argument — spell the flag that \
              makes it read one: {check:?}",
         );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE MESSAGE IS READ ACROSS THE ROW THE TERMINAL BROKE IT ON**, and an unbriefed
+    /// loop reads nothing at all — [`OuterLoop::service_failed`], both answers.
+    ///
+    /// # ⚠⚠⚠⚠ The wrap is the point, and it is checked for rather than assumed
+    ///
+    /// The message this exists for is long: `API Error: 529 Overloaded. This is a server-side
+    /// issue, usually temporary — try again in a moment.` It arrived on a live pane spread over two
+    /// rows. A driver reading per-row text would match it or not depending on where the terminal
+    /// happened to break the line — i.e. on the pane's width, which is nobody's decision.
+    ///
+    /// So this gate types the needle so that it STRADDLES the wrap and then asserts twice: that the
+    /// product says yes, and that **no single row carries the needle**. The second assertion is
+    /// what stops this becoming a gate that passes for the wrong reason — without it, a version
+    /// reading `pane_rows` would go green here and fail on the real screen.
+    ///
+    /// ⚠⚠⚠ **AND THE CONTROL IS THE UNBRIEFED LOOP, WHICH IS NOT A FORMALITY.** The template ships
+    /// the needle empty, and `str::contains` answers TRUE for the empty string — so a driver that
+    /// forgot to check for it would route every blocked turn of every run into a ten-minute wait,
+    /// while every state and every transition still existed. That is the failure that would be
+    /// hardest to see live: a run that answers no dialogs and merely looks slow.
+    #[test]
+    fn a_service_failure_is_read_across_the_row_the_terminal_wrapped_it_on() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let outage = crate::kind::LoopKind::debt(Arc::clone(&lua))
+            .expect("the debt kind's document must open a script session")
+            .service_outage()
+            .expect("this repository's kind must name what its peer prints");
+
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its authored strings");
+
+        // ⚠⚠ TYPED SO THE NEEDLE STRADDLES COLUMN 80 — the pane is 80 wide and echoes what goes
+        // in, so this is the real wrap rather than a string with a newline in it.
+        let padding = "x".repeat(72);
+        let line = format!("{padding}API Error: 529 Overloaded. Try again in a moment.\n");
+        let _echoed = access
+            .inject(pane, &crate::access::KeyStroke::text(&line))
+            .expect("the pane must take what is typed at it");
+        let screen = crate::testing::screen_showing(&access, pane, "moment");
+
+        // ⚠⚠⚠ THE CONTROL: nothing is briefed, so the template's empty needle stands.
+        assert!(
+            !loops.service_failed(&access),
+            "⚠⚠⚠⚠ AN EMPTY NEEDLE MUST MATCH NOTHING. `contains` answers true for the empty \
+             string, so a driver that did not check would send every blocked turn of every \
+             unbriefed run into the wait: {screen:?}",
+        );
+
+        let brief = Brief {
+            north_star: "n".to_string(),
+            milestone: "m".to_string(),
+            reference: "r".to_string(),
+            closing_rules: None,
+            milestone_check: None,
+            service: Some(outage.clone()),
+            max_turns: Some(Counted::Of(3)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        assert_eq!(
+            loops.brief(&brief),
+            Briefed::Took,
+            "the control: the brief lands"
+        );
+
+        assert!(
+            loops.service_failed(&access),
+            "⚠⚠⚠ the briefed loop must recognise its peer's own words on the screen: needle \
+             {:?} against {screen:?}",
+            outage.needle,
+        );
+
+        // ⚠⚠⚠⚠ AND THE GATE IS NOT VACUOUS: the message really is split, so the assertion above
+        // could not have been satisfied by a per-row read.
+        let rows = access.pane_rows(pane).expect("the pane must be readable");
+        assert!(
+            !rows.iter().any(|row| row.text.contains(&outage.needle)),
+            "⚠⚠⚠⚠⚠ THIS GATE PROVES NOTHING UNLESS THE NEEDLE IS ACTUALLY BROKEN ACROSS ROWS. \
+             Adjust the padding until it is — a version reading `pane_rows` must FAIL here, and \
+             it goes green the moment one row happens to carry the whole needle: {rows:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE KIND'S OUTAGE REACHES THE TEMPLATE THE RUN ACTUALLY READS** — the whole chain,
+    /// end to end, and it is register item 428's shape aimed at this round's own values.
+    ///
+    /// 428 was every link built and one missing: the kind authored a checker, an accessor returned
+    /// it, the driver held it, the template declared a slot — and the document's `brief` transition
+    /// did not `<assign>` it, so a live run judged `NOTHING CHECKED THAT CLAIM` while its own
+    /// document named one. **A decision no channel carries to the end is a decision nobody made.**
+    ///
+    /// # ⚠⚠⚠ Why this is driven rather than read
+    ///
+    /// Every cheaper version of this gate passes on a broken chain. Asserting that
+    /// `debt_loop.scxml` holds the needle tests the kind; asserting that `ai_loop.scxml` contains
+    /// the word `service_needle` tests a text file and would pass with the `<assign>` deleted, the
+    /// `<data>` alone being enough to match. So the brief is APPLIED and the value is read back out
+    /// of the running template's own datamodel — the same read `wait_out_service` does.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE UNBRIEFED TEMPLATE**, and it earns its line: it must answer the
+    /// EMPTY string, not the needle. Without it a template that shipped this repository's 529
+    /// baked in would pass every assertion below while having taken the decision away from every
+    /// repository that copies the file.
+    #[test]
+    fn the_kinds_outage_reaches_the_template_a_run_reads_from() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let outage = crate::kind::LoopKind::debt(Arc::clone(&lua))
+            .expect("the debt kind's document must open a script session")
+            .service_outage()
+            .expect("this repository's kind must name what its peer prints when its service fails");
+
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its authored strings");
+
+        // ⚠⚠ THE CONTROL — the template ships DECLINED, and must, or the file decides for every
+        // repository that copies it.
+        assert_eq!(
+            loops.text_of(SERVICE_NEEDLE).as_deref(),
+            Some(""),
+            "⚠⚠⚠ the TEMPLATE must ship an empty needle: the sentence is one peer's, at one \
+             version, in one language, and a template does not know whose agent it will drive",
+        );
+
+        let brief = Brief {
+            north_star: "n".to_string(),
+            milestone: "m".to_string(),
+            reference: "r".to_string(),
+            closing_rules: None,
+            milestone_check: None,
+            service: Some(outage.clone()),
+            max_turns: Some(Counted::Of(3)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        assert_eq!(
+            loops.brief(&brief),
+            Briefed::Took,
+            "the control: the brief itself must land, or nothing below is about the outage",
+        );
+
+        assert_eq!(
+            loops.text_of(SERVICE_NEEDLE).as_deref(),
+            Some(outage.needle.as_str()),
+            "⚠⚠⚠⚠⚠ ITEM 428's SHAPE: the kind names the failure, the driver carries it, and the \
+             document must ASSIGN it. Delete that one `<assign>` and every other link still \
+             passes while a live 529 goes back to killing the run",
+        );
+        assert_eq!(
+            loops.authored_number(SERVICE_RETRY_MS),
+            Some(600_000),
+            "⚠⚠ and the wait crosses too — this is the number `wait_out_service` divides time by, \
+             and an unassigned one reaches it as nil",
+        );
+        assert_eq!(
+            loops.text_of(SERVICE_RETRY_TEXT).as_deref(),
+            Some("continue"),
+            "⚠⚠ and the word, which is this state's ONLY way out: a run that reached the end of \
+             its wait with nothing to say would sit in the outage for ever",
+        );
+        drop(access);
     }
 
     #[test]

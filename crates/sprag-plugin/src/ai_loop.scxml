@@ -216,6 +216,94 @@
     <data id="milestone_check" expr="''"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ WHAT ON THE SCREEN MEANS *THE PEER'S SERVICE FAILED*, WHICH IS NOT
+      THE SAME AS THE PEER ASKING SOMETHING.
+
+      A blocked turn has always meant ONE thing here: the agent stopped and wants
+      an answer. `screening` looks for a dialog, and when no rule claims one the
+      person decides. That is right for a question and WRONG for a hiccup in the
+      service behind the agent — nobody can answer it, and a run told there is
+      nobody watching ends at `blocked`, which is `<final>`.
+
+      ⚠⚠⚠⚠ MEASURED 2026-08-19, WHICH IS WHY THIS EXISTS. A live run worked
+      **28m37s** and its turn ended with, verbatim:
+
+          API Error: 529 Overloaded. This is a server-side issue, usually
+          temporary — try again in a moment.
+
+      The machine then did every step correctly and the sum was wrong: `working`
+      took `turn.blocked` to `screening`, which took `screen.none` to
+      `awaiting_human`, which took `unattended` to `blocked` — and `blocked` is
+      `<final>`. **The screen said «try again in a moment» and the run was filed
+      as «nobody could say».** Twenty-eight minutes of paid work, discarded, over
+      a wait.
+
+      ⚠ The arrows are spelled out in words here because an XML comment may not
+      contain a double hyphen, which is what the usual notation is made of.
+
+      ⚠⚠⚠ AND `screen_rules` CANNOT CARRY THIS — measured in the source rather
+      than assumed. A rule's first key is a REFUSAL (`screen::REFUSES`, Escape)
+      and Escape at a composer discards whatever is being written; then the rule
+      requires its quoted text to LEAVE the screen within `DISMISSED_WITHIN`. A
+      printed error line does neither. A rule quoting this would press Escape at
+      nothing and then report `not_dismissed` — arriving at `awaiting_human` by a
+      longer road. **A rule answers a question; this is not one.**
+
+      So the routing is a THIRD branch on `turn.blocked`, above the design one,
+      and the driver measures the fact the same way it measures `judged`: it
+      reads the pane and publishes `_event.data.service`. The driver measures;
+      the document decides. ⚠ It is checked FIRST because a service failure is
+      not a design decision and must never be judged as one — a judge asked about
+      an error message is a model call spent to reach the wrong state.
+
+      ⚠⚠⚠ EMPTY IS THE SHIPPED VALUE AND DECLINES THIS ENTIRELY, for
+      `screen_rules`' reason one door down: the sentence above is `claude`'s, at
+      one version, in English, and **a template does not know whose agent it will
+      be talking to**. A repository that means to survive its peer's bad days
+      quotes the words its own peer prints, in its own kind document.
+    -->
+    <data id="service_needle" expr="''"/>
+
+    <!--
+      ⚠⚠⚠ HOW LONG TO LEAVE IT ALONE BEFORE SAYING ANYTHING, in milliseconds.
+
+      ⚠⚠ A WAIT IS THE WHOLE TREATMENT AND THE NUMBER IS THE DOSE. What is wrong
+      is upstream and nothing this run does makes it better; the only two ways to
+      get it wrong are to ask again too soon (which is the load that caused it)
+      and to never ask again (which is what shipped before this existed). Ten
+      minutes is the owner's number, chosen 2026-08-19 against a 529.
+
+      ⚠ THERE IS NO RETRY CEILING HERE, DELIBERATELY, and it is not an oversight:
+      the run's own guardrails already bound it. `max_seconds` and
+      `max_iterations` are the driver's and cannot be talked past by a document,
+      so a service that never comes back costs a run its ceiling rather than
+      forever. A second ceiling here would be a number nothing keeps in step with
+      those two.
+    -->
+    <data id="service_retry_ms" expr="600000"/>
+
+    <!--
+      ⚠⚠⚠ WHAT TO SAY WHEN THE WAIT IS OVER, and it is authored rather than
+      composed for `standing_label`'s reason: it is typed at somebody's agent, in
+      somebody's language, and the driver must never be the thing that writes
+      words into a prompt.
+
+      ⚠⚠ IT IS NOT THE MILESTONE AGAIN. The session still holds everything it had
+      — the brief, the turn it was mid-way through, the files it had open — so
+      re-asking the whole question would spend the context that survived the
+      outage. One word that means *carry on* is the smallest thing that resumes
+      it, and `continue` is what a person types at this screen.
+    -->
+    <data id="service_retry_text" expr="'continue'"/>
+
+    <!--
+      HOW MANY TIMES THIS RUN HAS WAITED OUT ITS PEER'S SERVICE — for the walk,
+      and for a reader asking whether a run took nine hours because the work was
+      hard or because the service was down.
+    -->
+    <data id="service_retried" expr="0"/>
+
+    <!--
       ⚠⚠⚠ AND WHAT THE AGENT SAYS WHEN THERE IS NOTHING LEFT TO DO AT ALL.
 
       `done_marker` ends a MILESTONE; this ends the RUN. Until both existed a
@@ -1488,6 +1576,21 @@
       <assign location="milestone_check" expr="_event.data.milestone_check"/>
       <assign location="closing_rules" expr="_event.data.closing_rules"/>
       <!--
+        ⚠⚠⚠ AND THE THREE THE PEER'S BAD DAY NEEDS, on the same unconditional
+        terms: the driver always sends all three, echoing this document's own
+        values back for a kind that names none, so a kind that declines cannot
+        assign nil over a number the driver later divides time by.
+
+        ⚠⚠ ALL THREE OR NONE IS A KIND'S BUSINESS AND NOT ENFORCED HERE, because
+        two of them already have working defaults. A kind that writes only the
+        needle gets ten minutes and the word `continue`, which is the whole
+        behaviour; one that writes only a wait has still declined, because an
+        empty needle matches nothing.
+      -->
+      <assign location="service_needle" expr="_event.data.service_needle"/>
+      <assign location="service_retry_ms" expr="_event.data.service_retry_ms"/>
+      <assign location="service_retry_text" expr="_event.data.service_retry_text"/>
+      <!--
         ⚠⚠⚠ AND THE CLOSING QUESTION IS COMPOSED AGAIN, because `end_prompt` was
         composed in the `<datamodel>` — before any brief existed — so assigning
         the clause alone changes a variable nothing reads again. The sentence is
@@ -1740,6 +1843,17 @@
       is not a yes: the alternative would refuse an agent's tool call on nobody's
       decision, which is the act `screen.rs` removed the `keys` field to prevent.
     -->
+    <!--
+      ⚠⚠⚠⚠⚠ FIRST, BECAUSE IT IS NOT A QUESTION AT ALL. The peer's SERVICE
+      failed — see `service_needle` — and there is nobody to ask and nothing to
+      decide. Above the design branch deliberately: a judge asked to read an
+      error message is a model call spent to arrive at the wrong state, and a
+      run whose judge is slow would pay 4-6 seconds of it per outage.
+
+      ⚠ A run whose kind declines this (the shipped empty needle) never sees the
+      key set, so both branches below are reached exactly as they were.
+    -->
+    <transition event="turn.blocked" cond="_event.data.service" target="service_down"/>
     <transition event="turn.blocked" cond="_event.data.judged" target="redirecting"/>
     <transition event="turn.blocked" target="screening"/>
 
@@ -1879,6 +1993,43 @@
       `Completion` is still armed from it.
     -->
     <transition event="screen.moot" target="working"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
+  </state>
+
+  <!--
+    ⚠⚠⚠ THE PEER'S SERVICE IS DOWN AND THE RUN IS WAITING IT OUT.
+
+    Nothing is sent on entry, which is the difference between this state and
+    every other one that leads back to `working`. The peer is not stuck and it is
+    not asking: the thing it depends on failed, and the only act that helps is to
+    let time pass. `service_retry_ms` is how much.
+
+    ⚠⚠⚠⚠ AND IT IS NOT `awaiting_human`, WHICH IS THE DECISION THIS STATE IS.
+    Both are *the run is not working right now*, and they send their reader to
+    opposite places: `awaiting_human` says **a person is expected**, and ends at
+    `blocked` when the run was told nobody is watching. This says **nobody is
+    expected and nothing is wrong with the run** — so an unattended run, which is
+    every run this loop was built for, survives it. Filing an outage under the
+    first is what cost a live run 28 minutes on 2026-08-19.
+
+    ⚠⚠ THE SESSION IS NOT REPLACED AND NOTHING IS RE-BRIEFED. The agent still
+    holds its brief, its turn and its open files; what the wait buys is exactly
+    the chance to carry on with all of it. That is why the way out types
+    `service_retry_text` rather than the milestone — see `restarting` for the
+    case where starting over IS the answer, and note that this is not it.
+
+    ⚠ ONE WAY OUT AND THREE WAYS TO DIE. `service.retry` is the driver saying the
+    wait is over and it has spoken; the other three are the endings every state
+    here carries. There is no edge for *the service came back on its own*,
+    because a run that says nothing learns nothing: the peer only tells us it is
+    healthy by answering, and it can only answer something asked.
+  -->
+  <state id="service_down">
+    <transition event="service.retry" target="working">
+      <assign location="service_retried" expr="service_retried + 1"/>
+    </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
     <transition event="peer.gone" target="peer_gone"/>

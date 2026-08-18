@@ -443,6 +443,10 @@ impl AiLoop {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            // ⚠⚠⚠ WAITING OUT AN OUTAGE IS NOT AN ENDING, WHICH IS THE WHOLE POINT OF THE STATE.
+            // It sits beside `screening` rather than beside `blocked` because the run is alive,
+            // its session is intact, and the only thing between it and `working` is time.
+            | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
@@ -624,6 +628,10 @@ impl AiLoop {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            // ⚠⚠ `Continue` IS THE WHOLE FIX RESTATED. A run waiting out its peer's service has
+            // not ended and must not be reported as having ended — the round that built this
+            // state exists because an outage was reaching a caller as `blocked`.
+            | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
@@ -859,6 +867,11 @@ impl Plugin for AiLoop {
             | AiLoopState::Working
             | AiLoopState::Judging
             | AiLoopState::Screening
+            // ⚠⚠ THE PANE IS ANSWERED HERE EVEN THOUGH NO MODEL IS SPENDING ANYTHING, and the
+            // question this method asks is why: not *is a model busy* but **which pane would a
+            // stop have to reach**. A run cancelled while waiting out an outage still owns its
+            // session, and the wait itself is this driver's — so there is a pane to stop.
+            | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
@@ -1037,6 +1050,19 @@ impl Plugin for AiLoop {
                 "the run is between sessions ({state:?}): the agent that did the work is being \
                  replaced, and its successor has done none of it"
             )),
+            // ⚠⚠⚠ THE PANE IS THIS RUN'S AND THE AGENT IS STILL UNREACHABLE, which is why this is
+            // its own arm rather than folded into either list around it. Typing here is allowed —
+            // unlike `awaiting_human`, nobody's hand is in the pane and no dialog would read the
+            // Enter — and it would still buy nothing: the account has to come back from the
+            // SERVICE that just refused a turn, so asking spends the ceiling's last seconds
+            // waiting for the same outage to answer. **What a reader needs is the outage, and
+            // saying so is more use than a blank report.**
+            AiLoopState::ServiceDown => Accounting::Cannot(format!(
+                "its agent's service was not answering when the {} ceiling fell due, so the run \
+                 was waiting the outage out rather than working; asking where it got to would \
+                 have to reach the same service",
+                ceiling.wire_str(),
+            )),
             AiLoopState::Converged
             | AiLoopState::Exhausted
             | AiLoopState::Failed
@@ -1176,6 +1202,10 @@ mod tests {
             // has its own gate rather than being folded in here.
             closing_rules: None,
             milestone_check: None,
+            // ⚠ DECLINED, like the two above it: a stand-in peer has no service to fail, so a
+            // needle here would be quoting words nothing in these fixtures ever prints. The
+            // outage path has its own gates, which arm it deliberately.
+            service: None,
             max_turns: Some(crate::outer::Counted::Of(max_turns)),
             // ⚠ EQUAL, which is what makes `reflecting` unreachable — `judging` tests the turn
             // budget first. `AiLoop::new` refuses anything smaller, and the gate below drives that.
@@ -6621,6 +6651,93 @@ mod tests {
                 "⚠⚠ {ending:?} is a fact about the RUN and not about the account's turn",
             );
         }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A BLOCKED TURN THAT IS THE PEER'S SERVICE FAILING WAITS, WHERE A QUESTION WOULD
+    /// HAVE STOPPED THE RUN** — the third branch on `turn.blocked`, asked of the MACHINE.
+    ///
+    /// # ⚠⚠⚠⚠ What this is a gate against, measured
+    ///
+    /// A live run worked 28m37s on 2026-08-19 and its turn ended with `API Error: 529 Overloaded.
+    /// This is a server-side issue, usually temporary — try again in a moment.` Every step after
+    /// that was correct: `working` to `screening`, `screening` to `awaiting_human` because no rule
+    /// claims a thing that is not a dialog, `awaiting_human` to `blocked` because the run was told
+    /// nobody is watching — and `blocked` is `<final>`. **The screen printed its own remedy and the
+    /// host filed it as «nobody could say».**
+    ///
+    /// # ⚠⚠⚠ The three halves, and why none alone would do
+    ///
+    /// * **THE CONTROL FIRST.** A blocked turn that is NOT a service failure must still reach
+    ///   `screening`. Without it this gate would pass on a document that routed EVERY blocked turn
+    ///   into a ten-minute wait, which is the failure that would be hardest to see live — a run
+    ///   that answers no dialogs and looks merely slow.
+    /// * ⚠⚠⚠⚠ **AND THE ORDER IS ASSERTED WITH BOTH KEYS TRUE**, which is the half a reader would
+    ///   skip. `service` sits ABOVE `judged` in the document, so an outage that a judge would also
+    ///   have called a design decision waits rather than being redirected. Written the other way
+    ///   round the machine still compiles, every state still exists, and a 529 gets a model asked
+    ///   about it and then a redirect typed at a service that is not answering.
+    /// * ⚠⚠ **AND THE COUNTER MOVES ON THE WAY BACK.** `service_retried` is what tells a reader
+    ///   afterwards whether a nine-hour run was hard work or a bad afternoon upstream; a state name
+    ///   cannot say it, and an edge that forgot the `<assign>` would look identical here.
+    ///
+    /// ⚠ Driven with `raise_external`, because the edge routes on `_event.data` — see [`reflected`]
+    /// for why a gate must reach its state by the door the product uses.
+    #[test]
+    fn a_turn_blocked_by_the_peers_service_waits_instead_of_asking_for_a_person() {
+        // ⚠ THE CONTROL, and it is first on purpose: an ordinary blocked turn must be untouched by
+        // everything this round added.
+        let (mut engine, _lua, _session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        engine.process_event(AiLoopEvent::PromptSent);
+        assert_eq!(engine.get_current_state(), AiLoopState::Working);
+        engine.raise_external(
+            AiLoopEvent::TurnBlocked,
+            &serde_json::json!({"service": false, "judged": false, "rule": ""}).to_string(),
+            "",
+        );
+        engine.step();
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Screening,
+            "⚠⚠⚠ THE CONTROL: a blocked turn that is not an outage still goes to the rules and \
+             then to a person. Without this, a document routing EVERY blocked turn into the wait \
+             would pass every other assertion here",
+        );
+
+        // ⚠⚠⚠⚠ AND NOW THE OUTAGE — with `judged` ALSO true, so this asserts the ORDER and not
+        // merely that a branch exists.
+        let (mut engine, lua, session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        engine.process_event(AiLoopEvent::PromptSent);
+        assert_eq!(engine.get_current_state(), AiLoopState::Working);
+        engine.raise_external(
+            AiLoopEvent::TurnBlocked,
+            &serde_json::json!({"service": true, "judged": true, "rule": "security"}).to_string(),
+            "",
+        );
+        engine.step();
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::ServiceDown,
+            "⚠⚠⚠⚠ AN OUTAGE OUTRANKS A DESIGN VERDICT. Both keys are true here, so a document \
+             that asked `judged` first would send a service failure to `redirecting` and type a \
+             reconsider-this at a service that is not answering",
+        );
+
+        engine.process_event(AiLoopEvent::ServiceRetry);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Working,
+            "the wait is over and the driver has spoken, so the run is working again — this state \
+             is not an ending, which is the whole of what it exists to say",
+        );
+        let retried = lua.get_variable(&session, "service_retried");
+        assert!(
+            matches!(retried, Ok(ScriptValue::Int(1))),
+            "⚠⚠ THE COUNTER MOVED. A reader asking afterwards why a run took all night has \
+             nothing else to tell a bad afternoon upstream from hard work, and an edge missing \
+             its `<assign>` would reach `working` looking exactly like this one: {retried:?}",
+        );
     }
 
     /// ⚠⚠⚠ **A STANDING INSTRUCTION IS REFLECTED ON AT THE NEXT JUDGEMENT, AND ONCE** — the
