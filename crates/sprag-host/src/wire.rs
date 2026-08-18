@@ -3322,8 +3322,9 @@ pub const WINDOW_SIZE_SLOT: &str = "window_size";
 /// (`{name?, cmd?, cols?, rows?, cwd?}`), returning its name.
 ///
 /// Creating one spawns its first pane, mirroring tmux's `new-session -x -y [command]`
-/// (`cmd`/`cols`/`rows`/`cwd` shape that pane; absent → `$SHELL` at the pool's default size in the
-/// daemon's own directory — `cwd` is [`SPAWN_ACTION`]'s, because a birth is a birth and the spec is
+/// (`cmd`/`cols`/`rows`/`cwd` shape that pane; absent → `$SHELL` at the pool's default size in
+/// **`$HOME`** — ⚠ not the daemon's own directory, which is what this line claimed until item 417
+/// measured it; `cwd` is [`SPAWN_ACTION`]'s, because a birth is a birth and the spec is
 /// one spec; it is NOT an opener, which only the two PANE births take), so on the
 /// happy path a session is not empty (only a runtime fork/exec failure leaves it so). A malformed
 /// birth spec is rejected before the session is created, the same as a bad `name`. An ACTION, not
@@ -3377,10 +3378,26 @@ pub const GRID_WORK_SLOT: &str = "grid_work";
 ///
 /// # `cwd` — where the child starts
 ///
-/// Absent is the DAEMON's own directory, which is where every pane started before this argument
-/// existed. A string that does not name an existing directory is `Rejected` before anything is
-/// built, rather than left to the exec: a spawn into a missing directory produces a pane whose
-/// child died, and on screen that is indistinguishable from a shell that exited for no reason.
+/// ⚠⚠⚠⚠⚠ **ABSENT IS `$HOME`, AND THIS DOC SAID THE OPPOSITE UNTIL 2026-08-18** (register item
+/// 417). It read *"Absent is the DAEMON's own directory, which is where every pane started before
+/// this argument existed"*, and `sprag_terminal`'s `start_dir` has always done the other thing —
+/// deliberately, with its reasoning written out: *"No cwd means HOME, not 'wherever the daemon
+/// happens to be.' … Inheriting the daemon's directory would put every pane wherever the daemon was
+/// started from — which for a daemon a client spawned is an implementation detail nobody chose."*
+///
+/// **MEASURED, control and claim in one daemon**: a daemon whose own cwd was `/home/coin/sprag`
+/// spawned a `cwd`-less pane into `/home/coin`. The implementation is right and this sentence was
+/// wrong — and this is the sentence a client author reads, which is why it counted as a defect
+/// rather than a typo. What it cost: a restored agent came back asking to trust `/home/coin`
+/// instead of the repository it had been working in, and nothing in the product could say why.
+///
+/// ⚠⚠ `start_dir` is the AUTHORITY for the default; this is its published statement, not a second
+/// rule. A cwd that no longer exists also falls back to `$HOME` there, so a restored pane comes back
+/// SOMEWHERE rather than not at all — see that function for the trade.
+///
+/// A string that does not name an existing directory is `Rejected` before anything is built, rather
+/// than left to the exec: a spawn into a missing directory produces a pane whose child died, and on
+/// screen that is indistinguishable from a shell that exited for no reason.
 ///
 /// # `opened_by` — who asked for the pane
 ///

@@ -636,6 +636,115 @@ fn the_cli_moves_a_window_and_says_which_nothing_happened() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **A CALLER CAN SAY WHERE A PANE STARTS, AND WITHOUT SAYING IT THE ANSWER IS `$HOME` —
+/// NOT THE DAEMON'S OWN DIRECTORY** (register item 417).
+///
+/// # Why this is a control PAIR and neither half means anything alone
+///
+/// The claim is a DIFFERENCE, so both arms run against one daemon in one test. The daemon is
+/// deliberately started from a directory that is neither `$HOME` nor the target, which is what makes
+/// the two answers distinguishable at all: a gate that spawned its daemon in `$HOME` could not tell
+/// *"absent means home"* from *"absent means the daemon's directory"*, and those were the two
+/// sentences this product held at the same time — `wire.rs` published one and `start_dir` did the
+/// other.
+///
+/// ⚠⚠⚠ **What the wrong sentence cost, measured on the owner's own machine 2026-08-18**: a daemon
+/// whose cwd was the repository spawned its panes into `/home/coin`, so a restored `claude` came
+/// back asking to trust the home directory instead of the project, and the run never started.
+/// Nothing in the product could state where an agent's pane ought to be, because no CLI verb could
+/// send the `cwd` the wire had taken all along.
+///
+/// ⚠ The directory is read from the pane's own child through `/proc`, not from anything the daemon
+/// reports about itself: what is under test is where the process ACTUALLY IS. Linux-gated for that
+/// reason, like its neighbours that read the process table.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_caller_can_say_where_a_pane_starts_and_silence_means_home() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-cwd-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+
+    // Where this test's daemon actually is — the third directory, and the reason the pair separates.
+    let daemon_dir = std::fs::read_link(format!(
+        "/proc/{}/cwd",
+        daemon_pid(&sock).expect("the daemon is findable")
+    ))
+    .expect("the daemon's own cwd is readable");
+    let home = std::env::var("HOME").expect("a home directory");
+    assert_ne!(
+        daemon_dir,
+        Path::new(&home),
+        "⚠ this gate is only meaningful when the daemon is NOT sitting in $HOME — otherwise the two \
+         candidate rules give the same answer and neither arm below decides anything",
+    );
+
+    let cwd_of = |pane: &str| -> PathBuf {
+        let listed = sprag(&sock, &["processes", pane]);
+        assert!(listed.ok, "processes {pane}: {}", listed.stderr);
+        // ⚠ The pid is taken from the word after `child`, not from the first number in the output —
+        // the listing opens with `sampled 0 ms ago`, so a bare "first integer" scan reads that `0`
+        // and asks about `/proc/0`. Found by running it.
+        let mut words = listed.stdout.split_whitespace();
+        let pid: u32 = words
+            .by_ref()
+            .find(|word| *word == "child")
+            .and_then(|_| words.next())
+            .and_then(|word| word.parse().ok())
+            .unwrap_or_else(|| panic!("the pane's child pid is in the listing: {}", listed.stdout));
+        std::fs::read_link(format!("/proc/{pid}/cwd")).expect("the child's cwd is readable")
+    };
+
+    // ── ARM 1: SILENCE. Not the daemon's directory — $HOME. ──
+    let bare = sprag(&sock, &["split-window"]);
+    assert!(bare.ok, "a bare split: {}", bare.stderr);
+    let bare_pane = bare.stdout.trim().to_owned();
+    assert_eq!(
+        cwd_of(&bare_pane),
+        Path::new(&home),
+        "⚠⚠⚠⚠⚠ ABSENT `cwd` IS `$HOME`. `wire.rs` published *the DAEMON's own directory* until item \
+         417 measured this, and `start_dir` had always done the other thing — deliberately, with \
+         its reasoning. This arm is what makes the published sentence answerable instead of \
+         plausible (the daemon is in {daemon_dir:?})",
+    );
+
+    // ── ARM 2: SAID. The caller's directory, which nothing could express before. ──
+    let named = sprag(&sock, &["split-window", "-c", "/tmp"]);
+    assert!(named.ok, "a split with -c: {}", named.stderr);
+    let named_pane = named.stdout.trim().to_owned();
+    assert_eq!(
+        cwd_of(&named_pane),
+        Path::new("/tmp"),
+        "⚠⚠⚠⚠ AND A CALLER CAN NAME IT. This is item 417's repair: `SPAWN_CWD_KEY` had existed on \
+         the wire the whole time and NO CLI verb sent it, so the debt loop's own skill carried a \
+         JSON-RPC helper for this single field. Deleting the `-c` arm in `split_window` reddens here",
+    );
+
+    // ⚠ A directory that does not exist is refused by the DAEMON before a pane is built — the pane
+    // that would otherwise be born already dead. Asserted here because it is the same argument's
+    // other edge, and because a client that silently opened $HOME instead would be the wrong answer
+    // that decodes cleanly.
+    let missing = sprag(&sock, &["split-window", "-c", "/nonexistent-sprag-417"]);
+    assert!(
+        !missing.ok,
+        "a cwd that names no directory must be refused, not quietly replaced: {:?}",
+        missing.stdout,
+    );
+    drop(guard);
+}
+
 /// `--version` answers off a socket with NO daemon behind it — R281.
 ///
 /// The point is what it does NOT do. Every other command connects first, so a version that needed

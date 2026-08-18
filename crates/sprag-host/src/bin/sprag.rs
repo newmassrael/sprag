@@ -1504,9 +1504,19 @@ fn optional_target(args: Vec<String>, command: &str) -> io::Result<Option<String
 fn new(args: Vec<String>) -> io::Result<()> {
     let mut name = None;
     let mut window = false;
-    for arg in args {
+    let mut cwd: Option<String> = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
         match arg.as_str() {
             "-a" | "--attach" => window = true,
+            // tmux's `new-session [-c start-directory]`, and item 417's half: the wire has taken a
+            // `cwd` since the key existed and no CLI verb sent one.
+            "-c" => {
+                cwd = Some(
+                    it.next()
+                        .ok_or_else(|| bad_input("new: -c needs a directory"))?,
+                );
+            }
             _ if name.is_none() => name = Some(arg),
             other => {
                 return Err(bad_input(&format!("new: unexpected argument {other:?}")));
@@ -1523,10 +1533,15 @@ fn new(args: Vec<String>) -> io::Result<()> {
         return new_window_on_its_own_session();
     }
     let mut conn = connect()?;
-    let args = match &name {
+    let mut args = match &name {
         Some(name) => json!({ "name": name }),
         None => json!({}),
     };
+    if let Some(dir) = &cwd {
+        args.as_object_mut()
+            .expect("json! built an object")
+            .insert(sprag_host::wire::SPAWN_CWD_KEY.to_owned(), json!(dir));
+    }
     let answer = invoke_action(
         &mut conn,
         json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": args }),
@@ -5843,6 +5858,20 @@ fn print_events(batch: &Value, cursor: u64) -> u64 {
 /// target into a placement, and the direction-less append is what naming NEITHER already asks for.
 ///
 /// `-b` puts the new pane BEFORE its target (left of, or above) — tmux `-b`.
+///
+/// # ⚠⚠⚠⚠⚠ `-c` — WHERE THE PANE STARTS, and why the CLI had no way to say it (item 417)
+///
+/// tmux's own spelling (`split-window [-c start-directory]`, asked of `tmux 3.4` rather than
+/// remembered), and it closes a gap that had pushed a decision out of this product entirely:
+/// [`sprag_host::wire::SPAWN_CWD_KEY`] has existed on the wire all along and **no CLI verb ever
+/// sent it**, so `cwd` appeared in this binary only as something it PRINTS. A caller who needed a
+/// pane to start anywhere but `$HOME` had to speak JSON-RPC directly — which the debt-loop skill
+/// does, carrying a helper script for exactly this one field.
+///
+/// ⚠⚠ **Absent is `$HOME`, and that is the daemon's rule rather than this flag's** — see
+/// `sprag_terminal`'s `start_dir`, which states the reasoning (*a pane is a place a person opens*)
+/// and is the authority. This flag does not change the default; it makes the other answer
+/// EXPRESSIBLE, which is what an agent's pane needs and a person's split does not.
 fn split_window(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "split-window")?;
@@ -5850,10 +5879,17 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
     let mut dir: Option<&'static str> = None;
     let mut before = false;
     let mut pane: Option<String> = None;
+    let mut cwd: Option<String> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--" => command = Some(it.by_ref().collect()),
+            "-c" => {
+                cwd = Some(
+                    it.next()
+                        .ok_or_else(|| bad("split-window: -c needs a directory".to_owned()))?,
+                );
+            }
             "-h" | "-v" => {
                 if dir.is_some() {
                     return Err(bad(
@@ -5906,6 +5942,16 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         Some(command) => json!({ "cmd": command }),
         None => json!({}),
     };
+    // Sent only when the caller named one, so the bare form stays byte-identical to the request it
+    // has always made and the DAEMON keeps owning the default. A `cwd` the daemon cannot use is
+    // refused there, before anything is built — this side does not second-guess it, because the
+    // directory has to exist on the machine the PANE runs on and that is not always this one.
+    if let Some(dir) = &cwd {
+        action_args
+            .as_object_mut()
+            .expect("json! built an object")
+            .insert(sprag_host::wire::SPAWN_CWD_KEY.to_owned(), json!(dir));
+    }
     let mut conn = connect_scoped(session.as_deref())?;
     // Resolved before the request so a NAME divides the pane it names, and so the window the split
     // must happen in is known: `split` resolves against the SCOPE's window at the daemon, which is
@@ -6623,9 +6669,21 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
     // -d` are the same command, which is what a person types.
     let mut detached = false;
     let mut name = None;
-    for arg in rest {
+    let mut cwd: Option<String> = None;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
         match arg.as_str() {
             "-d" | "--detached" => detached = true,
+            // tmux's `new-window [-c start-directory]` — item 417's half, and the same flag its two
+            // siblings take, so a caller does not have to remember which verb can say it.
+            "-c" => {
+                cwd = Some(it.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "new-window: -c needs a directory".to_owned(),
+                    )
+                })?);
+            }
             _ if name.is_none() => name = Some(arg),
             other => {
                 return Err(io::Error::new(
@@ -6656,6 +6714,9 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
     );
     if let Some(name) = &name {
         action_args["name"] = json!(name);
+    }
+    if let Some(dir) = &cwd {
+        action_args[sprag_host::wire::SPAWN_CWD_KEY] = json!(dir);
     }
     let answer = invoke_action(
         &mut conn,

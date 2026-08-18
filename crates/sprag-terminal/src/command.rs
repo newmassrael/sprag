@@ -136,6 +136,28 @@ impl CommandBuilder {
     /// Both came from `portable-pty` and both are load-bearing: dropping the first alone turned
     /// three project-discovery tests red, because a pane's project is found by walking up from its
     /// cwd. That is why they are written down here instead of being rediscovered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ AN AGENT'S PANE IS NOT A PERSON'S TERMINAL, AND THE DEFAULT IS NOT ITS ANSWER
+    ///
+    /// The rule above is right for the case it argues — *a pane is a place a person opens* — and
+    /// register item 417 is what happens when it is left to answer for the other case too. A pane
+    /// that exists to run an AGENT exists to work in a PROJECT, and `$HOME` is the one directory
+    /// that is certainly not it. Measured 2026-08-18: a restored `claude` came back asking to trust
+    /// `/home/coin` while the repository it had been working in sat one level down, and the run
+    /// never started.
+    ///
+    /// **The decision, taken rather than inherited: an agent's pane is opened in the project it was
+    /// pointed at, and the caller that points it says so.** This function is not where that is
+    /// enforced — it cannot be, because it is handed a `cwd` or not and has no idea who is asking —
+    /// which is exactly why the CALLER had to gain a way to say it. Until item 417 no CLI verb could
+    /// (`sprag_host::wire::SPAWN_CWD_KEY` existed on the wire and nothing sent it), so the loop's
+    /// own skill carried a JSON-RPC helper for this single field. `split-window -c`, `new -c` and
+    /// `new-window -c` are that repair, spelled as tmux spells it.
+    ///
+    /// ⚠⚠ **The default does NOT move, and that is deliberate.** Making it the daemon's directory
+    /// would trade a wrong answer for agents against a wrong answer for people, and the reasoning
+    /// above still holds for every pane a person opens. What was missing was never a better default
+    /// — it was the ability to state the other one.
     pub(crate) fn start_dir(&self) -> OsString {
         if let Some(dir) = self.cwd.as_ref()
             && std::path::Path::new(dir).is_dir()
