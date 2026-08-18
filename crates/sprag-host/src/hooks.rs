@@ -185,9 +185,11 @@ pub struct Target {
     ///   the entire point;
     /// * every server the user configured under **another** key survives untouched.
     ///
-    /// That second half is why [`mcp_only_flag`](Self::mcp_only_flag) is a refusal rather than
-    /// something sprag passes: `--strict-mcp-config` would delete a person's other servers, and a
-    /// pane is not permission to do that.
+    /// That second half is why this type's `mcp_only_flag` is a refusal rather than something sprag
+    /// passes, and **that too is measured rather than read off a help text**: the same launch with
+    /// `--strict-mcp-config` added answered with sprag's server ALONE — the other server, which the
+    /// arm above had just shown surviving, was gone. So the flag does not merely narrow what sprag
+    /// contributes; it deletes what a person configured, and **a pane is not permission to do that.**
     ///
     /// `None` says this agent has no such door, which is codex's answer today for
     /// [`session_flag`](Self::session_flag)'s reason exactly — its per-run overrides are `-c
@@ -199,9 +201,14 @@ pub struct Target {
     ///
     /// It is here because its presence is a decision sprag must not overrule. A launch carrying it
     /// has asked for an MCP environment holding exactly what its caller passed, and a launch
-    /// carrying it with no [`mcp_flag`](Self::mcp_flag) beside it has asked for NONE. Injecting
-    /// into either would answer a question its caller already answered — the rule
+    /// carrying it with no `mcp_flag` beside it has asked for NONE. Injecting into either would
+    /// answer a question its caller already answered — the rule
     /// [`session_args`](Self::session_args) follows about `--settings`, met one flag over.
+    ///
+    /// ⚠⚠⚠ **WHAT THE FLAG DOES IS MEASURED, and it is why sprag never sends it** — see `mcp_flag`'s
+    /// second arm: adding it to an otherwise identical launch left the agent holding sprag's server
+    /// and nothing else, the user's own server having vanished. Read as a refusal, it protects that
+    /// person; sent, it would be sprag doing the deleting.
     ///
     /// ⚠ Deliberately a field rather than a word inside [`mcp_args`](Self::mcp_args): this type's
     /// premise is that a further agent is a further `const` rather than further code, and a spelling
