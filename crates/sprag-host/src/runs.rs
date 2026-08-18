@@ -85,7 +85,34 @@ struct RunRecord {
     /// agent-facing mouth keeps an agent to its own runs, and it can only do that if the daemon
     /// remembers whose a run was. The daemon itself enforces nothing with it — see
     /// [`crate::wire::PluginGrammar`] on why this is provenance and not authorisation.
+    ///
+    /// ⚠⚠ **A PANE ID IS THIS DAEMON'S ANSWER AND NOT A DURABLE ONE** — see
+    /// [`opened_by_session`](Self::opened_by_session), which is what survives a restart, and
+    /// [`RunRegistry::restore`] for why the two are different questions.
     opened_by: Option<u64>,
+    /// **WHICH CONVERSATION ASKED** — the [`sprag_terminal::Pane::agent_session`] of the pane named
+    /// by [`opened_by`](Self::opened_by) at the moment it asked, or [`None`] when that pane held no
+    /// agent (a person at a shell).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Identity is the conversation, and the pane is only where it is sitting
+    ///
+    /// A pane id names a SEAT. It comes back exactly across a restart (`spawn_restored` is given
+    /// `pane.id`), so it is stable — but stability is not identity: the same seat can hold a
+    /// different agent, or a plain shell, and a run handed to whoever sits there next would be
+    /// answered to a stranger. That risk is the whole reason [`RunRegistry::restore`] used to drop
+    /// the provenance outright.
+    ///
+    /// A conversation is the thing that is actually the same thing. An allowlisted agent pane is
+    /// restored as `claude --resume <uuid>` ([`crate::durability::restore_command`]), so the agent
+    /// that asked comes back holding this exact string — which is what lets a successor daemon
+    /// answer *"this run is yours"* without ever having to guess.
+    ///
+    /// ⚠⚠⚠ **AND IT IS DELIBERATELY NOT WHAT A REPLACEMENT CARRIES.** `ai_loop`'s `restarting`
+    /// replaces a session precisely to throw the accumulated context away, so a replaced pane holds
+    /// a FRESH conversation and this string stops matching — which is the right answer, arrived at
+    /// by construction rather than by a rule. Restoring and replacing want opposite answers here,
+    /// exactly as they do one layer down where the host chooses between `argv` and `agent_session`.
+    opened_by_session: Option<String>,
     state: Arc<Mutex<RunState>>,
     handle: Option<JoinHandle<()>>,
     /// WHAT THE RUN HAS SPENT SO FAR, shared with the `Driver` that is spending it.
@@ -137,6 +164,9 @@ pub struct RunSummary {
     pub label: String,
     /// The pane whose occupant asked for it, or [`None`].
     pub opened_by: Option<u64>,
+    /// **WHICH CONVERSATION ASKED**, or [`None`] — `RunRecord::opened_by_session`, republished so a
+    /// reader can re-derive the seat when this daemon did not issue the run itself.
+    pub opened_by_session: Option<String>,
     /// Where it has got to.
     pub state: RunState,
     /// What it has spent so far — meaningful while [`state`](Self::state) is
@@ -160,6 +190,10 @@ pub struct NewRun {
     pub label: String,
     /// The pane whose occupant asked for it, or [`None`] for a run nobody claims.
     pub opened_by: Option<u64>,
+    /// **WHICH CONVERSATION ASKED** — the asking pane's `agent_session`, resolved by the caller
+    /// (which is the layer holding the workspace) rather than looked up here. See
+    /// `RunRecord::opened_by_session`.
+    pub opened_by_session: Option<String>,
     /// Where the worker writes its terminal state.
     pub state: Arc<Mutex<RunState>>,
     /// The worker itself.
@@ -216,6 +250,20 @@ pub struct PersistedRun {
     /// the same trade the wire's own *added answer key* rule declines.
     #[serde(default)]
     pub build: Option<String>,
+    /// **WHICH CONVERSATION ASKED FOR IT** — `RunRecord::opened_by_session`, and the ONE piece of
+    /// provenance that means anything to a successor daemon.
+    ///
+    /// ⚠⚠⚠⚠ **THE PANE ID IS DELIBERATELY NOT HERE.** It would decode cleanly and answer wrongly:
+    /// pane 3 comes back as pane 3, but the successor has no way to know whether the thing sitting
+    /// in it is the asker or a stranger who booted into the same seat. The conversation carries the
+    /// identity, so a successor can answer that question instead of guessing at it —
+    /// [`RunRegistry::restore`] states the decision this field re-takes.
+    ///
+    /// ⚠⚠⚠ **AND [`RUN_LOG_VERSION`] DOES NOT MOVE FOR IT**, on [`build`](Self::build)'s argument
+    /// verbatim: an optional field with a default is readable in both directions, and bumping would
+    /// throw away every run record the running daemon holds to gain a key nothing needs told twice.
+    #[serde(default)]
+    pub opened_by_session: Option<String>,
 }
 
 /// The versioned file a daemon leaves behind for its successor.
@@ -293,6 +341,7 @@ impl RunRegistry {
             id,
             label: run.label,
             opened_by: run.opened_by,
+            opened_by_session: run.opened_by_session,
             state: run.state,
             handle: Some(run.handle),
             progress: run.progress,
@@ -395,6 +444,7 @@ impl RunRegistry {
                         ceiling,
                         output,
                         build: run.build.clone(),
+                        opened_by_session: run.opened_by_session.clone(),
                     }
                 })
                 .collect(),
@@ -405,26 +455,37 @@ impl RunRegistry {
     ///
     /// # ⚠⚠ Two rules, and both are authority decisions rather than conveniences
     ///
-    /// 1. **`opened_by` IS DROPPED.** The agent-facing mouth filters `list_runs` by the caller's
-    ///    own pane id, so carrying the provenance across a restart risks handing whoever boots into
-    ///    restored pane 3 the previous occupant's runs as its own — a hole in the exact policy
-    ///    [`crate::wire::PluginGrammar`] describes. Dropping it is the conservative half: a run
-    ///    nobody claims is answered to nobody.
+    /// 1. **THE PANE ID IS DROPPED AND THE CONVERSATION IS KEPT** — the decision this round
+    ///    re-took, on what turned out to be true rather than on the sentence that used to justify
+    ///    it.
     ///
-    ///    ⚠⚠⚠⚠⚠ **THE REASON THIS USED TO GIVE IS FALSE, AND THE DECISION IS NOW OWED A ROUND.**
-    ///    It said *"a restored pane's OCCUPANT is a plain shell and never the agent that asked …
-    ///    A restored run is nobody's, which is what a run whose asker is gone actually is."*
-    ///    Measured 2026-08-18: `durability`'s default restore allowlist contains `claude`
-    ///    and [`crate::durability::restore_command`] appends `--resume <uuid>`, so a restored agent
+    ///    The old rule dropped provenance ENTIRELY, reasoning that *"a restored pane's OCCUPANT is
+    ///    a plain shell and never the agent that asked … A restored run is nobody's"*. Measured
+    ///    2026-08-18 and **false**: `durability`'s default restore allowlist contains `claude` and
+    ///    [`crate::durability::restore_command`] appends `--resume <uuid>`, so a restored agent
     ///    pane comes back holding **the same conversation** — pane 91 did, on this machine, from
     ///    the snapshot a `kill-server` had just written. The asker is not gone.
     ///
-    ///    ⚠⚠⚠ That does not flip the decision here, and it is important to say why rather than
-    ///    quietly keep it: what the false sentence hid is that the hole **changed shape**. It is no
-    ///    longer *a new agent inherits a stranger's runs*; it is *the same agent cannot see the
-    ///    runs it started*, which is a different question with a different right answer (identity
-    ///    is the conversation, not the pane). Re-taking it needs the run-restoration round, not a
-    ///    doc edit, so this stays conservative and says what it is standing on.
+    ///    ⚠⚠⚠⚠⚠ **WHAT THE FALSE SENTENCE HID IS THAT THE HOLE HAD CHANGED SHAPE.** It was never
+    ///    going to be *a new agent inherits a stranger's runs* once panes came back occupied; it
+    ///    is *the same agent cannot see the runs it started* — a different question, and its right
+    ///    answer is a different key. **Identity is the conversation, not the seat.** A pane id is
+    ///    stable across a restart (`spawn_restored` is handed `pane.id`) and that is exactly what
+    ///    made it seductive and wrong: stability is not identity, and the same seat can hold a
+    ///    stranger.
+    ///
+    ///    So: `opened_by` (a seat) is still dropped, because a successor genuinely cannot know who
+    ///    is sitting there; `opened_by_session` (a conversation) is KEPT, because it is the same
+    ///    thing on both sides of the restart. The seat is then RE-DERIVED at read time by
+    ///    `crate::plugins`, which is the layer that can see who is sitting where.
+    ///
+    ///    ⚠⚠⚠⚠ **RE-DERIVED PER READ, NEVER STAMPED ONCE.** Ownership is a LEVEL — *whoever is
+    ///    currently holding this conversation* — and not an event that happened at boot. Stamping
+    ///    it would be wrong the moment `ai_loop`'s `restarting` replaces a session, because that
+    ///    replacement mints a FRESH conversation on purpose; a level stops matching by itself,
+    ///    where a stamp would keep asserting a claim nobody could correct. It also cannot be done
+    ///    at boot even if one wanted to: runs are restored BEFORE panes are
+    ///    (`sprag-term`'s daemon arm), so at this point there is no pane to ask.
     /// 2. **THE ID COUNTER IS SEEDED ABOVE THEM.** Ids are monotonic and never reused
     ///    ([`reserve`](Self::reserve)); a successor that started from zero would mint ids that
     ///    already name a run in its own list.
@@ -478,7 +539,11 @@ impl RunRegistry {
             self.runs.push(RunRecord {
                 id: RunId(saved.id),
                 label: saved.label.clone(),
+                // ⚠ THE SEAT IS DROPPED AND THE CONVERSATION IS KEPT — rule 1 above. A successor
+                // cannot know who is sitting in pane 3; it can know which conversation asked, and
+                // `crate::plugins` re-derives the seat from that at read time.
                 opened_by: None,
+                opened_by_session: saved.opened_by_session.clone(),
                 state: Arc::new(Mutex::new(state)),
                 handle: None,
                 progress: Arc::new(Mutex::new(Progress {
@@ -522,6 +587,7 @@ impl RunRegistry {
                 id: record.id,
                 label: record.label.clone(),
                 opened_by: record.opened_by,
+                opened_by_session: record.opened_by_session.clone(),
                 state: lock(&record.state).clone(),
                 progress: lock(&record.progress).clone(),
                 build: record.build.clone(),
@@ -698,6 +764,7 @@ mod tests {
                 id,
                 label: "test".to_string(),
                 opened_by: Some(7),
+                opened_by_session: None,
                 state,
                 handle,
                 progress: ProgressCell::default(),
@@ -871,6 +938,7 @@ mod tests {
             id,
             label,
             opened_by: None,
+            opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             handle,
             progress: ProgressCell::default(),
@@ -992,9 +1060,13 @@ mod tests {
     /// persisted a FINISHED run, and the person who came back to a restarted daemon would be told
     /// their loop converged.
     ///
-    /// ⚠⚠ AND IT BELONGS TO NOBODY, which [`restore`](RunRegistry::restore) decides on purpose: the
-    /// pane the run drove came back as a plain shell, so carrying its opener would hand a new agent
-    /// booting into that pane somebody else's run as its own.
+    /// ⚠⚠⚠⚠⚠ **AND IT COMES BACK WITHOUT A SEAT BUT WITH ITS CONVERSATION**, which is
+    /// [`restore`](RunRegistry::restore)'s rule 1 and was re-taken on 2026-08-18. This used to
+    /// assert that the run belonged to NOBODY, justified by *"the pane the run drove came back as
+    /// a plain shell"* — measured false: an allowlisted agent is restored `--resume`d into the
+    /// same conversation. Dropping the pane id is still right (a successor cannot know who is
+    /// sitting in a seat); dropping everything was not, because it left the ASKER unable to find
+    /// its own runs. The conversation is what is the same on both sides of a restart.
     ///
     /// # ⚠⚠ What this adds over the daemon-death gate, checked rather than assumed
     ///
@@ -1011,12 +1083,16 @@ mod tests {
     ///   its own list* — is held here and nowhere else: deleting the seeding line reddens this and
     ///   leaves the other 855 lib gates green.
     #[test]
-    fn the_run_a_shutdown_left_behind_comes_back_interrupted_and_belongs_to_nobody() {
+    fn the_run_a_shutdown_left_behind_comes_back_interrupted_and_keeps_the_conversation_that_asked()
+    {
         let released = Arc::new(AtomicBool::new(false));
         let mut registry = RunRegistry::default();
         let id = registry.reserve();
         let mut run = a_worker_that_will_not_come_back(id, &released);
         run.opened_by = Some(3);
+        // The SEAT and the CONVERSATION, which a restart answers differently — the seat is dropped
+        // and this is kept. `PluginsExternal::session_in` is what fills this in the product.
+        run.opened_by_session = Some(A_CONVERSATION.to_owned());
         registry.submit(run);
 
         assert_eq!(
@@ -1044,16 +1120,85 @@ mod tests {
         );
         assert_eq!(
             restored[0].opened_by, None,
-            "⚠ and it belongs to nobody — NOT because the pane came back a plain shell (measured \
-             2026-08-18: an allowlisted agent comes back `--resume`d, holding the same \
-             conversation), but because a successor cannot tell whether whoever boots into a \
-             restored pane is the asker. Dropping the provenance is the conservative half; see \
-             `RunRegistry::restore`",
+            "⚠⚠ THE SEAT IS DROPPED — a successor cannot know who is sitting in pane 3, so it does \
+             not claim to. This half is unchanged; what changed is that it is no longer the WHOLE \
+             answer. See `RunRegistry::restore` rule 1",
+        );
+        assert_eq!(
+            restored[0].opened_by_session.as_deref(),
+            Some(A_CONVERSATION),
+            "⚠⚠⚠⚠⚠ AND THE CONVERSATION SURVIVES, WHICH IS THE WHOLE POINT OF THE ROUND THAT \
+             WROTE THIS LINE. The old rule dropped provenance entirely on a premise measured FALSE \
+             (that a restored pane holds a plain shell — an allowlisted agent comes back \
+             `--resume`d, in the same conversation). With the seat alone there was nothing a \
+             successor could match on, so the same agent could not see the runs it started; with \
+             the conversation there is. Deleting the carry in `restore` reddens exactly here",
         );
         assert_eq!(
             successor.reserve(),
             RunId(id.0 + 1),
             "and its id is never reissued",
+        );
+    }
+
+    /// The conversation the run in the gate above was started from — an opaque id, exactly as
+    /// `Pane::agent_session` carries one, because nothing in this layer parses it.
+    const A_CONVERSATION: &str = "13cac637-d86c-4fa3-8411-785d552cee16";
+
+    /// ⚠⚠⚠⚠⚠ **A RUN'S PROVENANCE IS NOT LOST BY A ROUND TRIP THROUGH THE DISK** — the durable
+    /// half of [`RunRegistry::restore`]'s rule 1, which the gate above cannot see.
+    ///
+    /// That gate calls `persistable` and `restore` in one process, so it would still pass if the
+    /// conversation travelled in a field `serde` never wrote. This drives the actual FILE: encode,
+    /// decode, restore. ⚠ It is the same distinction the run log's own version constant exists for
+    /// — a format that decodes cleanly and answers wrongly is the failure mode here, not a refusal.
+    ///
+    /// ⚠⚠⚠ **AND IT PINS THAT THE VERSION DID NOT MOVE.** `opened_by_session` is `#[serde(default)]`
+    /// on `build`'s argument, so a log written before the field existed must still LOAD rather than
+    /// be thrown away — the second half below. Bumping `RUN_LOG_VERSION` would discard every run
+    /// record a running daemon holds, which is a real cost paid for nothing.
+    #[test]
+    fn the_conversation_that_asked_survives_the_run_log_and_an_older_log_still_loads() {
+        let log = RunLog {
+            version: RUN_LOG_VERSION,
+            runs: vec![PersistedRun {
+                id: 4,
+                label: "agent pane=3".to_owned(),
+                iterations: 2,
+                cost: None,
+                unit: None,
+                finished: false,
+                outcome: None,
+                ceiling: None,
+                output: None,
+                build: None,
+                opened_by_session: Some(A_CONVERSATION.to_owned()),
+            }],
+        };
+        let on_disk = serde_json::to_string(&log).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+        assert_eq!(
+            successor.snapshot()[0].opened_by_session.as_deref(),
+            Some(A_CONVERSATION),
+            "the conversation must cross the FILE, not merely the struct: {on_disk}",
+        );
+
+        // ── A LOG FROM BEFORE THE FIELD EXISTED: it loads, and says it does not know. ──
+        let older = on_disk.replace(&format!(",\"opened_by_session\":\"{A_CONVERSATION}\""), "");
+        assert!(
+            !older.contains("opened_by_session"),
+            "the older-log arm must actually remove the key or it proves nothing: {older}",
+        );
+        let older: RunLog = serde_json::from_str(&older)
+            .expect("⚠ a log written before this field must LOAD, not be refused — see the field");
+        let mut reader = RunRegistry::default();
+        reader.restore(&older);
+        assert_eq!(
+            reader.snapshot()[0].opened_by_session,
+            None,
+            "and it answers `None` — nothing recorded which conversation asked, never a guess",
         );
     }
 

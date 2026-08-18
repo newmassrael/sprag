@@ -2577,12 +2577,18 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
         listed.stdout,
     );
 
-    // ⚠⚠ AND IT BELONGS TO NOBODY. The pane came back, but its OCCUPANT is a plain shell — never
-    // the agent that asked. Carrying `opened_by` across would hand whoever boots into that pane
-    // next the previous occupant's runs through `list_runs`'s own filter.
+    // ⚠⚠⚠⚠ AND IT BELONGS TO NOBODY — BECAUSE THIS RUN WAS ASKED FOR BY A SHELL, which is the
+    // reason after 2026-08-18 and not the one this comment used to give. It said the restored pane's
+    // occupant is "a plain shell — never the agent that asked", as though that were true of every
+    // restore; measured false, an allowlisted agent comes back `--resume`d in the same conversation.
+    // What is true is narrower and is what this fixture actually stages: the pane here runs
+    // `sh -c "stty -echo; exec cat"`, so `Pane::agent_session` is `None`, so the run recorded NO
+    // conversation, so a successor has nothing to re-derive a seat from. The conservative answer is
+    // kept for a real reason instead of a false one — see `RunRegistry::restore`'s rule 1.
     assert!(
         !listed.stdout.contains("asked for by pane"),
-        "a restored run must claim no opener, or the agent-facing filter inherits it: {:?}",
+        "a run a SHELL asked for must claim no opener after a restart — there is no conversation to \
+         match it to anybody, and inventing a seat would hand it to whoever boots in next: {:?}",
         listed.stdout,
     );
     drop(guard);
@@ -2603,9 +2609,16 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
 /// is on a timer.
 ///
 /// ⚠⚠ The second half is the authority one and is why this is not just serialization: `opened_by`
-/// must NOT come back. Panes survive a restart, but a restored pane's OCCUPANT is a plain shell and
-/// never the agent that asked, so carrying the provenance would hand whoever boots into that pane
-/// next the previous occupant's runs through `list_runs`'s own filter.
+/// must NOT come back for THIS run. Panes survive a restart and so do their ids, so the seat is not
+/// what identifies an asker — and the pane staged here runs a plain shell, which holds no
+/// conversation, so there is nothing a successor could honestly match the run to.
+///
+/// ⚠⚠⚠ **The sentence this used to give was false and is worth naming**: it said a restored pane's
+/// occupant *is* a plain shell and never the agent that asked. Measured 2026-08-18 — an allowlisted
+/// agent comes back `--resume`d, holding the same conversation. See `RunRegistry::restore`'s rule 1
+/// for the decision that was re-taken on the truth, and the lib gate
+/// `the_run_a_shutdown_left_behind_comes_back_interrupted_and_keeps_the_conversation_that_asked`
+/// for the arm where a conversation DOES survive.
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {

@@ -432,7 +432,11 @@ impl PluginsExternal {
         let (plugin, label) = self.build_plugin(map)?;
         let guardrails = parse_guardrails(map, plugin.default_cost())?;
         let opened_by = self.parse_opener(map)?;
-        let id = self.spawn_run(label, opened_by, plugin, guardrails);
+        // WHO is in that seat, asked of the daemon rather than taken from the request — see
+        // `session_in`. This is what survives the daemon, so it is resolved while the pane is still
+        // here to answer.
+        let opened_by_session = self.session_in(opened_by);
+        let id = self.spawn_run(label, opened_by, opened_by_session, plugin, guardrails);
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
         ))
@@ -456,6 +460,44 @@ impl PluginsExternal {
             ))
         })?;
         Ok(Some(opener))
+    }
+
+    /// **WHICH CONVERSATION IS SITTING IN `pane`**, or [`None`] when nothing agent-shaped is.
+    ///
+    /// Read HERE rather than sent by the caller, on `RunRecord::build`'s argument: it is a fact
+    /// about what the daemon is holding, so letting it travel with the request would let a caller
+    /// name a conversation it is not in and be answered that conversation's runs. The asker names
+    /// its SEAT (`opened_by`, which this daemon then validates); who is in that seat is the
+    /// daemon's to say.
+    fn session_in(&self, pane: Option<u64>) -> Option<String> {
+        let pane = pane?;
+        lock(&self.workspace)
+            .pane(PaneId(pane))
+            .and_then(sprag_terminal::Pane::agent_session)
+            .map(str::to_owned)
+    }
+
+    /// **WHICH SEAT IS CURRENTLY HOLDING `session`**, or [`None`] when nobody in this workspace is.
+    ///
+    /// The reverse of [`session_in`](Self::session_in), and the read side of
+    /// [`crate::runs::RunRegistry::restore`]'s first rule: a restored run kept the conversation
+    /// that asked for it and lost the seat, so the seat is found again here — from whoever is
+    /// holding that conversation NOW.
+    ///
+    /// ⚠⚠⚠⚠ **A LEVEL, RE-DERIVED ON EVERY READ, NEVER A STAMP.** The moment `ai_loop`'s
+    /// `restarting` replaces a session the pane holds a FRESH conversation, and this stops matching
+    /// on its own — where a value written once at boot would go on claiming an owner that no longer
+    /// exists, with nothing to correct it. The cost is a scan of one workspace's panes per read of
+    /// the `runs` slot, which is the same order as the slot's own rendering.
+    ///
+    /// ⚠ Scoped to THIS workspace, which is the conservative half and deliberate: a conversation
+    /// sitting in some other scope's pane is not something this reader can be answered about.
+    fn seat_of(&self, session: &str) -> Option<u64> {
+        lock(&self.workspace)
+            .panes()
+            .iter()
+            .find(|pane| pane.agent_session() == Some(session))
+            .map(|pane| pane.id().0)
     }
 
     /// `cancel` action: raise the cancel flag for run `id`. A synchronous
@@ -821,6 +863,7 @@ impl PluginsExternal {
         &self,
         label: String,
         opened_by: Option<u64>,
+        opened_by_session: Option<String>,
         mut plugin: PluginKind,
         guardrails: Guardrails,
     ) -> RunId {
@@ -886,6 +929,7 @@ impl PluginsExternal {
             id,
             label,
             opened_by,
+            opened_by_session,
             state,
             handle,
             progress,
@@ -985,9 +1029,28 @@ impl PluginsExternal {
     fn read(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             RUNS_SLOT => {
-                let mut registry = lock(&self.runs);
-                registry.sweep(); // reap finished threads before reporting
-                let entries = registry.snapshot().iter().map(run_to_json).collect();
+                // ⚠ The snapshot is taken and the registry lock RELEASED before any seat is
+                // re-derived: `seat_of` takes the workspace lock, and holding the run registry
+                // across it would invert the workspace-then-registry order the host keeps.
+                let runs = {
+                    let mut registry = lock(&self.runs);
+                    registry.sweep(); // reap finished threads before reporting
+                    registry.snapshot()
+                };
+                let entries = runs
+                    .iter()
+                    .map(|run| {
+                        // A run THIS daemon issued already names its seat. One it inherited kept
+                        // only the conversation, so the seat is found again from whoever holds that
+                        // conversation now — `seat_of`, and see `RunRegistry::restore`'s rule 1.
+                        let seat = run.opened_by.or_else(|| {
+                            run.opened_by_session
+                                .as_deref()
+                                .and_then(|session| self.seat_of(session))
+                        });
+                        run_to_json(run, seat)
+                    })
+                    .collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))
             }
             // The same array the `run` grammar publishes as its `plugin` vocabulary —
@@ -1576,7 +1639,33 @@ fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<C
 }
 
 /// Render one run as JSON for `query("runs")`.
-fn run_to_json(run: &RunSummary) -> Value {
+///
+/// `seat` is the pane to publish as `opened_by`, already resolved by the caller: `run.opened_by`
+/// for a run this daemon issued, and the pane currently holding `run.opened_by_session` for one it
+/// inherited from a predecessor. Taken as a parameter rather than read off `run` because the second
+/// answer needs the workspace, which this function has no business holding.
+///
+/// # ⚠⚠⚠ Why re-deriving `opened_by` earns no [`sprag_rpc::WIRE_PROTOCOL`] bump
+///
+/// Written down because NOT bumping is a judgement too, and this one is close enough to the line to
+/// deserve its reasoning rather than its conclusion.
+///
+/// Nothing about the key moved. `opened_by` still means exactly what it meant — *the pane whose
+/// occupant asked for this run* — it still carries a pane id, and it is still OMITTED rather than
+/// sent as `null` when nobody claims the run. What changed is that a restored run can now be
+/// answered at all, where before the daemon had thrown away the only thing that could have answered
+/// it. That is the daemon answering a question it already published MORE OFTEN, which is the
+/// widened-value-space case the bump rule explicitly declines.
+///
+/// ⚠⚠ **The rule it comes closest to is *"reading the absence of an answer key as a guarantee"***,
+/// and it is worth saying why that one does not fire: no reader treats a missing `opened_by` as
+/// *"this run is nobody's, for ever"*. The agent-facing filter (`sprag-mcp`'s `own_runs`) compares
+/// it to its own pane and a miss simply means *not mine* — which is the same sentence before and
+/// after. A reader that had encoded *absent ⇒ unclaimable* would be the one to break, and none does.
+///
+/// ⚠ Ask [`sprag_rpc::WIRE_PROTOCOL`]'s own doc rather than this paragraph if the question comes up
+/// again; this records the judgement taken for THIS change, not the rule.
+fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     // ⚠ THE SAME THREE KEYS THE OUTCOME USES (`iterations`, `cost`, `unit`), so a reader that polls
     // a running run and then reads its outcome meets ONE vocabulary rather than two. A run that has
     // not finished a step yet answers zero with a null unit, which is the same shape a run that was
@@ -1630,7 +1719,12 @@ fn run_to_json(run: &RunSummary) -> Value {
         // exactly the moment somebody wants to read it.
         RUN_JOURNAL_KEY: run.progress.journal.iter().map(step_to_json).collect::<Vec<_>>(),
     });
-    if let Some(opener) = run.opened_by {
+    // ⚠⚠ THE SEAT IS THE CALLER'S TO RESOLVE, NOT THIS FUNCTION'S, and that is the shape of the
+    // fix rather than an accident of plumbing: for a run this daemon issued it is `run.opened_by`,
+    // and for one it INHERITED it is whoever is currently holding the conversation that asked
+    // (`PluginsExternal::seat_of`). Only the caller can see the workspace, so only the caller can
+    // answer the second — see `crate::runs::RunRegistry::restore`'s rule 1.
+    if let Some(opener) = seat {
         entry[RUN_OPENED_BY_KEY] = json!(opener);
     }
     // ⚠⚠⚠ AND THE BUILD FOLLOWS THE SAME OMIT-RATHER-THAN-NULL RULE, for a reason of its own:
@@ -1919,6 +2013,124 @@ mod tests {
     /// ⚠ ECHO OFF, so what appears on the screen is what the PROGRAM printed rather than what the
     /// line discipline painted — the difference between measuring a delivery and measuring the
     /// kernel.
+    /// ⚠⚠⚠⚠⚠ **THE SAME AGENT FINDS THE RUNS IT STARTED AFTER A RESTART, AND A STRANGER IN ITS
+    /// SEAT DOES NOT** — [`crate::runs::RunRegistry::restore`]'s rule 1, driven end to end.
+    ///
+    /// This is the payoff of the round that re-took that rule, and neither of the `runs.rs` gates
+    /// can see it: they prove the conversation SURVIVES, and this proves it is USED — that a
+    /// successor turns a surviving conversation back into the seat the agent-facing filter reads.
+    /// ⚠ It goes through `PluginsExternal::read(RUNS_SLOT)`, the product's own door, because a gate
+    /// that called `seat_of` directly would be green whether or not anything in the product ever
+    /// asked it.
+    ///
+    /// The staging is the whole argument, so it is spelled out:
+    ///
+    /// * the predecessor's run recorded a CONVERSATION and pane 0 as its seat;
+    /// * the successor restores it — seat dropped, conversation kept;
+    /// * a pane is then born into the successor **holding that same conversation**, which is what
+    ///   `restore_command`'s `--resume <uuid>` does in the product;
+    /// * the run must now name THAT pane, whatever id it happens to have.
+    ///
+    /// ⚠⚠⚠⚠ **THE SEAT IS DELIBERATELY A DIFFERENT NUMBER FROM THE ORIGINAL.** The successor's
+    /// pane comes out of a fresh workspace counter, so if this passed by carrying the old id it
+    /// would pass for the wrong reason — the very confusion (a seat mistaken for an identity) the
+    /// rule exists to end. Asserting the NEW id is what makes it a re-derivation.
+    ///
+    /// ⚠⚠⚠ **AND THE CONTROL IS A STRANGER IN THE SAME SEAT**, without which "the conversation is
+    /// matched" and "any occupant inherits" are the same green — and the second is the hole the old
+    /// rule was conservatively guarding against. A pane holding a DIFFERENT conversation must leave
+    /// the run unclaimed.
+    #[test]
+    fn a_restored_run_finds_the_seat_its_own_conversation_is_sitting_in() {
+        const RESUMED: &str = "13cac637-d86c-4fa3-8411-785d552cee16";
+        const A_STRANGER: &str = "00000000-0000-0000-0000-000000000000";
+
+        // What a predecessor daemon left on disk: unfinished, and it remembers WHO asked.
+        let log = crate::runs::RunLog {
+            version: crate::runs::RUN_LOG_VERSION,
+            runs: vec![crate::runs::PersistedRun {
+                id: 0,
+                label: "agent pane=0".to_owned(),
+                iterations: 1,
+                cost: None,
+                unit: None,
+                finished: false,
+                outcome: None,
+                ceiling: None,
+                output: None,
+                build: None,
+                opened_by_session: Some(RESUMED.to_owned()),
+            }],
+        };
+
+        // A successor: its own registry, its own workspace, its own pane counter.
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        lock(&registry).restore(&log);
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+
+        // ── THE CONTROL FIRST, so a later pass cannot be the stranger's ──
+        let stranger = resumed_pane(&workspace, A_STRANGER);
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+        let listed = read_runs(&external);
+        assert!(
+            listed[0].get(RUN_OPENED_BY_KEY).is_none(),
+            "⚠⚠⚠ A STRANGER IN THE SEAT MUST NOT INHERIT THE RUN. This is the hole the old rule \
+             guarded by dropping provenance outright, and it stays shut: pane {} holds a different \
+             conversation, so nothing here is its. Entry: {:?}",
+            stranger.0,
+            listed[0],
+        );
+
+        // ── AND NOW THE ASKER ITSELF, resumed into the successor ──
+        let mine = resumed_pane(&workspace, RESUMED);
+        assert_ne!(
+            mine.0, 0,
+            "the re-derived seat must be a DIFFERENT id from the one the run was started under, or \
+             this gate could pass by carrying the old number",
+        );
+        let listed = read_runs(&external);
+        assert_eq!(
+            listed[0].get(RUN_OPENED_BY_KEY).and_then(Value::as_u64),
+            Some(mine.0),
+            "⚠⚠⚠⚠⚠ THE AGENT MUST FIND ITS OWN RUN. It came back `--resume`d into the same \
+             conversation, so the successor can say which seat that conversation is in — which is \
+             the whole of `RunRegistry::restore`'s rule 1. Entry: {:?}",
+            listed[0],
+        );
+    }
+
+    /// `query("runs")` as a client reads it — through the product's own door.
+    fn read_runs(external: &PluginsExternal) -> Vec<Value> {
+        let IntrospectValue::Json(Value::Array(entries)) =
+            external.read(RUNS_SLOT).expect("the runs slot answers")
+        else {
+            panic!("the runs slot answers a JSON array");
+        };
+        entries
+    }
+
+    /// A pane holding `session` as its conversation — what `restore_command`'s `--resume <uuid>`
+    /// produces, staged through the workspace's own identity source rather than by writing the
+    /// field, so the pane is named the way the product names one.
+    fn resumed_pane(workspace: &Arc<Mutex<Workspace>>, session: &str) -> PaneId {
+        let named = session.to_owned();
+        lock(workspace).set_pane_identity_source(Arc::new(move |_| Some(named.clone())));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("exec cat");
+        command.env("TERM", "dumb");
+        lock(workspace)
+            .spawn(command, "agent".to_string(), 80, 24)
+            .expect("spawn the resumed agent")
+    }
+
     fn echoing_agent_pane(workspace: &Arc<Mutex<Workspace>>) -> PaneId {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
@@ -2130,7 +2342,10 @@ mod tests {
              run: {:?}",
             // ⚠ The run's own record, because a screen that is missing the prompt cannot say WHY:
             // a refused barrier and a machine that never left `idle` look identical from here.
-            lock(&registry).snapshot().first().map(run_to_json),
+            lock(&registry)
+                .snapshot()
+                .first()
+                .map(|run| run_to_json(run, run.opened_by)),
         );
 
         assert!(
@@ -3735,7 +3950,9 @@ mod tests {
                 held.snapshot()
                     .iter()
                     .find(|run| run.id.0 == id)
-                    .map(run_to_json)
+                    // The seat as the record itself names it: this helper watches runs THIS
+                    // registry issued, so there is no inherited conversation to re-derive from.
+                    .map(|run| run_to_json(run, run.opened_by))
             };
             if let Some(entry) = &entry
                 && entry["state"]["status"] != json!("running")
