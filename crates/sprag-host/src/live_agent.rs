@@ -4896,6 +4896,322 @@ fn what_a_live_agents_report_looks_like_to_a_reader() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **THE SAME READER, ASKED ABOUT A REPLY THAT NEVER SCROLLED** — register item 441's
+/// control, and the neighbour above with ONE field changed.
+///
+/// # Why this had to be its own run
+///
+/// [`what_a_live_agents_report_looks_like_to_a_reader`] chose the address reader by measuring a
+/// reply **taller than the pane** — sixty lines on forty rows — because the question it was asked
+/// was whether a reader survives a SCROLL. It does. What that measurement cannot say is what the
+/// same reader answers when nothing scrolls, and **that is the population a loop's turns actually
+/// come from**: an ordinary answer is a handful of lines on a pane whose composer sits at the
+/// bottom of it.
+///
+/// Item 441 is nine judged turns in a row reading *"the judge read this whole turn — 0 complete
+/// line(s) of it"* while a person looking at the pane afterwards saw the agent's marker on every
+/// reply. Three live controls varied WHAT the agent says and one varied how LONG the turn takes;
+/// each converged, and every one of them asked for a reply of one short line. The one thing no
+/// control has varied is the only thing left: **whether the reply was big enough to move the
+/// pane's addresses.**
+///
+/// # What it does, and what each assertion is worth
+///
+/// One session, one turn, three labelled lines against forty rows — so the whole reply is
+/// guaranteed to still be ON the grid when it is read. Both readers are marked before the prompt
+/// goes in and read after the turn ends, exactly as the neighbour does.
+///
+/// ⚠⚠⚠ **THE PREMISE IS ASSERTED FIRST, because a control that can pass for free measures
+/// nothing** (the arm-reading rule item 441 paid for): the RENDERING must still hold the opening
+/// line. If it does not, this run scrolled after all and is a second copy of the neighbour rather
+/// than its control, and it says so instead of returning a verdict about a case it never reached.
+///
+/// ⚠⚠ Then the claim: the address must carry the reply. **A failure here is the finding** — it
+/// would mean the reader every judgement in the outer loop rests on is blind to any answer that
+/// fits on the screen, which is item 441's live symptom reproduced in a fixture for the first
+/// time, and no counter, clock or turn-identity fix could ever have addressed it.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_reply_that_never_scrolled_is_still_readable_since_the_mark() {
+    /// Few enough that the reply cannot reach the bottom of a forty-row pane, so nothing this
+    /// agent prints can push a line off the top of it.
+    const REPORT_LINES: usize = 3;
+    /// The same generous bound as the neighbour: what is being measured is a reader, not a speed.
+    const REPORT_WITHIN: Duration = Duration::from_secs(180);
+
+    let live = Live::start("short-report-reader");
+    let began = Instant::now();
+    let run = RunContext::uncancellable();
+    let reached = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    )
+    .reached(&live.access, live.pane, &run)
+    .expect("the pane must stay readable");
+    assert_eq!(
+        reached,
+        Reached::Yes,
+        "the agent must be up and at rest before it is spoken to: {}",
+        live.tail(3),
+    );
+
+    // ⚠⚠ BOTH MARKS BEFORE A BYTE GOES IN, for the neighbour's reason: a baseline taken after the
+    // injection cannot tell the reply from the prompt's own echo.
+    let trail = sprag_plugin::RowTrail::mark(&live.access, live.pane);
+    let address = live
+        .access
+        .output_lines()
+        .and_then(|stream| stream.pane_lines_since(live.pane, u64::MAX))
+        .map(|since| since.next);
+    step(began, &format!("marked: address={address:?}"));
+
+    let ask = format!(
+        "Print exactly {REPORT_LINES} lines and nothing else. Line n must be LINE-n, so the first \
+         is LINE-1 and the last is LINE-{REPORT_LINES}. Do not number them any other way and do \
+         not add commentary."
+    );
+    let mut done = Completion::new(DoneWhen::Settles);
+    done.begin(&live.access, live.pane);
+    let delivered = deliver(
+        &live.access,
+        &run,
+        live.pane,
+        &ask,
+        &Delivery {
+            confirm: Some(ask.chars().take(40).collect()),
+            then_press: vec![KeyStroke::named("Enter")],
+            ..Delivery::new()
+        },
+    )
+    .expect("the pane must take the prompt");
+    assert!(
+        !matches!(delivered, Delivered::Unconfirmed { .. }),
+        "a live agent PAINTS what is typed into its composer: {delivered:?}",
+    );
+    let over = done.wait(&live.access, live.pane, REPORT_WITHIN, &run);
+    step(began, &format!("the report turn ended {over:?}"));
+
+    let rendered = trail.fresh(&live.access, live.pane);
+    let since = live
+        .access
+        .output_lines()
+        .zip(address)
+        .and_then(|(stream, mark)| stream.pane_lines_since(live.pane, mark));
+    let addressed: Vec<String> = since
+        .as_ref()
+        .map(|since| since.lines.clone())
+        .unwrap_or_default();
+    let lost = since.as_ref().map_or(0, |since| since.lost);
+    let restarted = since.as_ref().is_some_and(|since| since.restarted);
+
+    println!(
+        "  the rendering  : {} row(s) changed, first={:?} last={:?}",
+        rendered.len(),
+        rendered.first(),
+        rendered.last(),
+    );
+    println!(
+        "  the address    : {} logical line(s), {lost} lost, restarted={restarted}, first={:?} \
+         last={:?}",
+        addressed.len(),
+        addressed.first(),
+        addressed.last(),
+    );
+    for (at, line) in addressed.iter().enumerate() {
+        println!("    [{at:>3}] {line:?}");
+    }
+
+    // ⚠⚠⚠ `contains` AND NOT `starts_with`: a live agent DECORATES the first line of its reply —
+    // the address reader hands back `"● LINE-1"`, measured, and the neighbour's own printed
+    // capture in `crate::report`'s module doc shows the same bullet. A leading-anchored predicate
+    // asks about the agent's rendering while claiming to ask about the reader.
+    // ⚠ `LINE-1` is a prefix of `LINE-10`… — harmless at three lines, and the closing assertion
+    // below is the one that says the whole reply arrived.
+    let opening = "LINE-1";
+    let carries = |lines: &[String]| lines.iter().any(|line| line.contains(opening));
+    assert!(
+        carries(&rendered),
+        "⚠⚠⚠ THE RENDERING HAS LOST {opening:?}, so this reply DID scroll a {} row pane and this \
+         run is a copy of the neighbour rather than its control. It measures nothing about a reply \
+         that stays on the grid: {rendered:?}",
+        PANE_SIZE.1,
+    );
+    let closing = format!("LINE-{REPORT_LINES}");
+    assert!(
+        addressed.iter().any(|line| line.contains(&closing)),
+        "⚠⚠⚠⚠⚠ THE ADDRESS DID NOT CARRY A REPLY THAT IS STILL ON THE SCREEN — {} logical \
+         line(s), {lost} lost, restarted={restarted}, turn {over:?}. The rendering holds it and the \
+         address does not, so every judgement in the outer loop — which reads this reader and only \
+         this reader — is deaf to any answer small enough to fit the pane. Addressed: \
+         {addressed:?}; rendered: {rendered:?}",
+        addressed.len(),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND THE SAME READER ON A PANE THAT IS ALREADY FULL** — item 441's last unvaried field.
+///
+/// # Why a second turn is a different measurement from a second run
+///
+/// The two gates above both read a turn taken on a FRESH pane: a few rows of the agent's banner,
+/// a composer near the top, and a mark taken while most of the grid is still empty. A loop's
+/// judgements are never in that world. By the time the deaf ones happened the pane had been
+/// running for turns, the transcript filled it, and the composer sat at the bottom of a screen
+/// where every new row costs an old one.
+///
+/// That matters because of how the address is derived ([`sprag_vt::Screen::lines_since`]): the
+/// count is *what the screen has SHED* plus *the complete lines standing above the cursor*. On a
+/// half-empty grid a reply moves the composer DOWN and the second term grows on its own. On a full
+/// one the composer cannot move, so the number can only advance if the terminal really scrolls —
+/// and whether a repainting TUI scrolls or redraws in place is a fact about the program that
+/// nothing in this tree had measured.
+///
+/// # What it does
+///
+/// One session, TWO turns. The first asks for a reply taller than the pane, so the grid ends up
+/// full and scrolling. **Only then** are the readers marked, and the second turn asks for three
+/// lines under labels the first turn cannot have printed.
+///
+/// ⚠⚠⚠ The premise is asserted from both sides: the mark must have EXCLUDED the first turn (its
+/// closing label must be absent) and the first turn must actually have filled the pane (its
+/// opening label must be gone from the rendering). A run where either fails is a fresh-pane
+/// measurement wearing this gate's name.
+///
+/// ⚠⚠ Then the claim: the address carries the second turn's reply. **A failure is item 441's live
+/// symptom reproduced** — a judge reading `0 complete line(s)` off a pane whose agent has just
+/// answered.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
+fn a_reply_read_off_a_pane_the_previous_turn_filled_is_still_there() {
+    /// Taller than [`PANE_SIZE`]'s forty rows, so the first turn leaves the grid full.
+    const FILL_LINES: usize = 60;
+    /// The second turn's reply, small enough that it cannot fill the pane by itself.
+    const REPLY_LINES: usize = 3;
+    const TURN_WITHIN: Duration = Duration::from_secs(180);
+
+    let live = Live::start("filled-pane-reader");
+    let began = Instant::now();
+    let run = RunContext::uncancellable();
+    let reached = Readiness::new(
+        Some(ReadyWhen::Settles(live.agent.clone())),
+        Some(STARTUP_BOUND),
+        None,
+        Attended::NoOne,
+    )
+    .reached(&live.access, live.pane, &run)
+    .expect("the pane must stay readable");
+    assert_eq!(
+        reached,
+        Reached::Yes,
+        "the agent must be up and at rest before it is spoken to: {}",
+        live.tail(3),
+    );
+
+    let ask_of = |what: &str, lines: usize| {
+        format!(
+            "Print exactly {lines} lines and nothing else. Line n must be {what}-n, so the first \
+             is {what}-1 and the last is {what}-{lines}. Do not number them any other way and do \
+             not add commentary."
+        )
+    };
+    let say = |ask: &str, done: &mut Completion| {
+        done.begin(&live.access, live.pane);
+        let delivered = deliver(
+            &live.access,
+            &run,
+            live.pane,
+            ask,
+            &Delivery {
+                confirm: Some(ask.chars().take(40).collect()),
+                then_press: vec![KeyStroke::named("Enter")],
+                ..Delivery::new()
+            },
+        )
+        .expect("the pane must take the prompt");
+        assert!(
+            !matches!(delivered, Delivered::Unconfirmed { .. }),
+            "a live agent PAINTS what is typed into its composer: {delivered:?}",
+        );
+        done.wait(&live.access, live.pane, TURN_WITHIN, &run)
+    };
+
+    // ── TURN ONE: fill the pane. Nothing is read off this turn; it is the STATE the measurement
+    //    needs, and the gates above have already measured what a reader says about it. ──
+    let mut first = Completion::new(DoneWhen::Settles);
+    let over = say(&ask_of("FILL", FILL_LINES), &mut first);
+    step(began, &format!("the filling turn ended {over:?}"));
+
+    // ── THE MARK, taken on a pane that is now full — which is the whole point of this gate. ──
+    let trail = sprag_plugin::RowTrail::mark(&live.access, live.pane);
+    let address = live
+        .access
+        .output_lines()
+        .and_then(|stream| stream.pane_lines_since(live.pane, u64::MAX))
+        .map(|since| since.next);
+    step(
+        began,
+        &format!("marked on a full pane: address={address:?}"),
+    );
+
+    let mut second = Completion::new(DoneWhen::Settles);
+    let over = say(&ask_of("REPLY", REPLY_LINES), &mut second);
+    step(began, &format!("the second turn ended {over:?}"));
+
+    let rendered = trail.fresh(&live.access, live.pane);
+    let since = live
+        .access
+        .output_lines()
+        .zip(address)
+        .and_then(|(stream, mark)| stream.pane_lines_since(live.pane, mark));
+    let addressed: Vec<String> = since
+        .as_ref()
+        .map(|since| since.lines.clone())
+        .unwrap_or_default();
+    let lost = since.as_ref().map_or(0, |since| since.lost);
+    let restarted = since.as_ref().is_some_and(|since| since.restarted);
+
+    println!(
+        "  the rendering  : {} row(s) changed, first={:?} last={:?}",
+        rendered.len(),
+        rendered.first(),
+        rendered.last(),
+    );
+    println!(
+        "  the address    : {} logical line(s), {lost} lost, restarted={restarted}, first={:?} \
+         last={:?}",
+        addressed.len(),
+        addressed.first(),
+        addressed.last(),
+    );
+    for (at, line) in addressed.iter().enumerate() {
+        println!("    [{at:>3}] {line:?}");
+    }
+
+    let holds = |lines: &[String], needle: &str| lines.iter().any(|line| line.contains(needle));
+    assert!(
+        !holds(&rendered, "FILL-1 ") && !holds(&rendered, "FILL-1\""),
+        "⚠⚠⚠ THE FIRST TURN DID NOT FILL THE PANE — {:?} is still rendered on a {} row pane, so \
+         this run measured a half-empty grid under this gate's name: {rendered:?}",
+        "FILL-1",
+        PANE_SIZE.1,
+    );
+    assert!(
+        !holds(&addressed, &format!("FILL-{FILL_LINES}")),
+        "⚠⚠⚠ THE MARK DID NOT EXCLUDE THE FIRST TURN — its closing line is inside a read that is \
+         supposed to begin after it, so nothing here is a claim about the SECOND turn: \
+         {addressed:?}",
+    );
+    assert!(
+        holds(&addressed, &format!("REPLY-{REPLY_LINES}")),
+        "⚠⚠⚠⚠⚠ THE ADDRESS DID NOT CARRY A REPLY WRITTEN INTO A PANE THAT WAS ALREADY FULL — {} \
+         logical line(s), {lost} lost, restarted={restarted}, turn {over:?}. This is the reading \
+         every deaf judgement in register item 441 got: `0 complete line(s)` off a pane whose \
+         agent had just answered. Addressed: {addressed:?}; rendered: {rendered:?}",
+        addressed.len(),
+    );
+}
+
 /// ⚠⚠⚠ **WHAT BECOMES OF A PROMPT WHOSE CONFIRMATION WAS ALREADY ON THE SCREEN** — register item
 /// 222, asked of a live agent rather than reasoned about.
 ///

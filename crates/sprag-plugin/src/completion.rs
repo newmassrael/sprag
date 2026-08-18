@@ -219,6 +219,24 @@ pub enum DoneWhen {
     /// MOVED past what it was when the turn started. Its own doc says it is for exactly this
     /// comparison.
     ///
+    /// # ⚠⚠⚠⚠ And why moving is not enough either — the rest must belong to THIS question
+    ///
+    /// A prompt typed at a peer that is still working on the last one is reported `working` into a
+    /// pane that is already `working`: same verdict, nothing published, `seq` unchanged. The
+    /// EARLIER work's rest then arrives with a fresh `seq` and satisfies every term above, so the
+    /// turn ends before the peer has written a word of its answer — measured live at thirty-three
+    /// turns and 6,604 bytes, deaf to a marker the agent printed every time (register item 441).
+    /// [`AgentObservation::asked_seq`](crate::access::AgentObservation::asked_seq) is the fact that
+    /// separates them, and this rule requires it to have MOVED.
+    ///
+    /// ⚠⚠⚠⚠⚠ **BUT ONLY OF A PANE THAT CAN STATE ONE.** That counter advances where the agent
+    /// REPORTS being asked; a pane recognised from its SCREEN reports nothing, so demanding it
+    /// there refuses that pane for ever — a live turn answered in one second was still `NotYet`
+    /// at its 183-second bound. So the pairing is asked only where the ending is the agent's own
+    /// statement ([`Authority::is_exact`](crate::access::Authority::is_exact)), and a scraped rest
+    /// is judged on the terms above. ⚠ Named as the degradation it is: a screen-read rest cannot
+    /// be told from one belonging to earlier work.
+    ///
     /// # ⚠ What it deliberately does NOT complete on
     ///
     /// * [`AgentState::Blocked`] — the peer stopped because it ASKED something. The turn did end,
@@ -562,10 +580,22 @@ impl Completion {
                     .is_some_and(|seen| {
                         // ⚠⚠ ALL FOUR, and the last one is what stops a peer's rest from reading as
                         // its answer to THIS question. See the variant's doc.
+                        //
+                        // ⚠⚠⚠⚠⚠ THE PAIRING IS ASKED ONLY OF A PANE THAT CAN ANSWER IT — register
+                        // item 441, and this condition is the SECOND half of that item's cost.
+                        // `asked_seq` advances where a REPORT states an `asked`; a pane read from
+                        // its SCREEN states nothing, so the term is false there for ever and the
+                        // turn never ends. Measured against a live agent: three lines, answered in
+                        // a second, `Over::NotYet` still at the 183-second bound. `is_exact` is the
+                        // published question for exactly this — *did this answer come from the pane
+                        // itself* — and a scraped rest is judged on the three terms a scraped rest
+                        // can support. ⚠ That is a DEGRADATION, named as one: a screen-read rest
+                        // cannot be told from one belonging to earlier work. The alternative is not
+                        // a stricter loop but one that never judges anything.
                         seen.state == AgentState::Idle
                             && seen.agent.as_deref() == Some(addressed.agent.as_str())
                             && seen.seq > addressed.seq
-                            && seen.asked_seq > addressed.asked_seq
+                            && (!seen.authority.is_exact() || seen.asked_seq > addressed.asked_seq)
                     })
             }
         }
@@ -643,6 +673,39 @@ mod tests {
             },
             seq,
             asked_seq: seq,
+            asking: None,
+            asked: None,
+            transcript: None,
+        }));
+        let source = {
+            let reported = Arc::clone(&reported);
+            Arc::new(move |_id: PaneId| Some(reported.lock().expect("the reported mutex").clone()))
+        };
+        (access.with_agent_state(Some(source)), pane, reported)
+    }
+
+    /// **THE SAME PANE, READ ONLY FROM ITS SCREEN** — no agent reports anything about it.
+    ///
+    /// ⚠⚠⚠⚠⚠ [`supervised`] hard-codes [`Authority::Reported`] AND an `asked_seq` that keeps step
+    /// with `seq`, so every gate written against it describes a hook-instrumented pane and nothing
+    /// else. That is the fixture trap [`moved`]'s own doc names — *a fixture that hard-codes a
+    /// field is a fixture that has decided the question nobody asked yet* — and register item 441
+    /// walked into it: a pane whose state is SCRAPED can never state a question, so a rule that
+    /// requires one refuses that pane for ever, and no double in this module could say so.
+    ///
+    /// ⚠ `asked_seq` is `0` and nothing here can move it. That is not a value chosen for the
+    /// fixture; it is the only value a scraped pane has, because the counter advances where a
+    /// REPORT states an `asked` and a screen states nothing.
+    fn scraped(state: AgentState, seq: u64) -> (WorkspacePaneAccess, PaneId, Reported) {
+        let (access, pane) = sh_access("exec cat", 20, 4);
+        let reported: Reported = Arc::new(Mutex::new(AgentObservation {
+            state,
+            agent: Some("claude".to_string()),
+            authority: Authority::Scraped {
+                rule: Some("idle-glyph".to_string()),
+            },
+            seq,
+            asked_seq: 0,
             asking: None,
             asked: None,
             transcript: None,
@@ -1004,6 +1067,97 @@ mod tests {
             "a peer that worked and came back to rest has finished its turn — and this is the \
              evidence the end of a turn never consulted, while the START of one has read it since \
              R359b",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A PEER NOBODY REPORTS STILL FINISHES ITS TURN** — the half the gate above cannot
+    /// see, and the one a live run found REGRESSED.
+    ///
+    /// # What went wrong, measured against a real agent
+    ///
+    /// The rest-pairing term the two gates above are about — *has this pane been asked something
+    /// since the turn armed?* — is answered by [`AgentObservation::asked_seq`], which advances only
+    /// where a REPORT states an `asked`. A hook states one. **A screen cannot state anything.** So
+    /// for every pane whose agent is recognised by its rendering — an agent with no hook installed,
+    /// an agent whose hook has gone mute (register item 344), and every live gate in this
+    /// workspace, none of which installs one — that term is false for ever and the turn NEVER ends.
+    ///
+    /// Measured before this gate was written: a live `claude` was asked for three lines, answered
+    /// in about a second, and `DoneWhen::Settles` was still saying `Over::NotYet` **183 seconds
+    /// later**, at the bound. The reply was on the pane the whole time.
+    ///
+    /// ⚠⚠⚠⚠ **AND EVERY FIXTURE IN THIS MODULE AGREED IT WAS FINE**, because [`supervised`] hands
+    /// out `Authority::Reported` with an `asked_seq` that keeps step with `seq`. The world where
+    /// the counter does not exist had no double, so the round that added the term gated both of its
+    /// halves and shipped a pane class that can never end a turn. **A term is only as measured as
+    /// the fixture's least-varied field.**
+    ///
+    /// # The rule this asserts
+    ///
+    /// A pane's ending is paired with its question only where the ending is the AGENT'S OWN
+    /// statement — [`Authority::is_exact`], whose doc has said since it was written that this is
+    /// *"the one question a supervisor must ask before treating a state as a turn BOUNDARY"*. A
+    /// scraped rest is judged on what a scraped rest can support, which is the three terms that
+    /// were there before.
+    ///
+    /// ⚠ That is a DEGRADATION and is named as one: a screen-read rest cannot be told from one
+    /// belonging to earlier work, exactly as this module's other fallbacks admit what they cannot
+    /// see. The alternative is not a stricter loop but a loop that never judges anything, and this
+    /// crate has already paid for that shape.
+    #[test]
+    fn a_peer_read_only_from_its_screen_still_ends_its_turn() {
+        let (access, pane, reported) = scraped(AgentState::Working, 7);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+
+        // The peer comes to rest. Nothing reports a question, because nothing on this pane can.
+        moved(&reported, AgentState::Idle, 8, Some("claude"));
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_secs(5),
+                &RunContext::uncancellable(),
+            ),
+            Over::Yes,
+            "⚠⚠⚠⚠⚠ A PANE READ FROM ITS SCREEN CAN NEVER STATE A QUESTION, so a rule that demands \
+             one refuses it for ever. Measured live at 183 s for a turn that took 1 s. Restore the \
+             unconditional `asked_seq` term in `satisfied` and this goes red while every live gate \
+             in the workspace waits out its bound",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE DEGRADATION IS NOT A LOOPHOLE — A REPORTED PANE IS STILL HELD TO THE
+    /// PAIRING**, which is what stops the gate above from being paid for by weakening the rule for
+    /// everybody.
+    ///
+    /// The distinction is the AUTHORITY of the ending and nothing else: same states, same `seq`
+    /// move, same absent question. One is the agent's own statement and is refused; the other is a
+    /// rendering and is accepted. A rule that read the counter alone would answer identically for
+    /// both, which is why the pair is written as a pair.
+    #[test]
+    fn a_reported_rest_is_still_paired_with_the_question_it_answers() {
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+
+        // Identical to the gate above in every term except where the answer came from.
+        moved(&reported, AgentState::Idle, 8, Some("claude"));
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(300),
+                &RunContext::uncancellable(),
+            ),
+            Over::NotYet,
+            "⚠⚠⚠⚠ AN AGENT THAT SPEAKS FOR ITSELF IS HELD TO WHAT IT SAID. Widen the scraped \
+             degradation to every pane and this goes green — and the loop is deaf again, because \
+             the rest it accepts belongs to the question before this one",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
