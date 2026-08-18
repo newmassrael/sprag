@@ -853,6 +853,11 @@ impl Owed {
                 // here — but it is spelled rather than left to a catch-all, which is the arm's own
                 // rule: this list is what makes an edge added into `working` fail to compile.
                 | AiLoopEvent::PeerGone
+                // ⚠⚠⚠ `prompt.unasked` REACHES `restarting` OR `failed` AND NEVER HERE — register
+                // item 446. It is raised where a delivery ended with the question never taken, and
+                // what it buys is a fresh SESSION, so a prompt owed on arrival would be a question
+                // asked of the peer that just refused one. Spelled for this arm's own rule.
+                | AiLoopEvent::PromptUnasked
                 // ⚠⚠⚠ AN ORDER NEVER REACHES `working`, AND THAT IS ITS DEFINING PROPERTY. It moves
                 // the ORDERS region and leaves the work region exactly where it was — which is the
                 // whole difference between *stand down* and `cancel`. Spelled rather than left to a
@@ -1357,11 +1362,34 @@ pub enum RestartReason {
     /// a reader learns the loop is handing over because nobody bounded it, instead of inferring
     /// from silence that something was measured.
     NobodyCouldSay,
+    /// **THE PEER WOULD NOT TAKE THE QUESTION**, so the session holding an unsendable draft was
+    /// replaced rather than the run being ended — register item 446.
+    ///
+    /// # ⚠⚠⚠⚠ Why this is a RESTART and not a failure, measured
+    ///
+    /// An unattended run paid two register items, committed and pushed both, replaced its session
+    /// once already — and then died on the next prompt: the text reached the pane and was read back
+    /// off it, and the submit that followed never became a question. By hand on that pane
+    /// afterwards, Enter did not submit the draft, `Ctrl-C` did not clear it, and an interrupt left
+    /// it standing, **while ordinary typed text in the same pane submitted at once** and a fresh
+    /// session took the identical prompt. So what is wedged is the SESSION, and this loop's answer
+    /// to a wedged session already exists.
+    ///
+    /// ⚠⚠ It is bounded by the document (`unasked_since_taken`): a peer that will not take a
+    /// question in the session opened to fix exactly that is a person's, and the run says `failed`.
+    /// ⚠ And it is raised only where the pane can REPORT being asked — at a scraped pane *nobody
+    /// reported it* is not evidence, and the delivery's old refusal stands.
+    Unasked,
 }
 
 impl RestartReason {
     /// Every arm, so the document's words and the readers below are one list.
-    pub const ALL: [Self; 3] = [Self::Economics, Self::Capacity, Self::NobodyCouldSay];
+    pub const ALL: [Self; 4] = [
+        Self::Economics,
+        Self::Capacity,
+        Self::NobodyCouldSay,
+        Self::Unasked,
+    ];
 
     /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
     ///
@@ -1373,6 +1401,7 @@ impl RestartReason {
             Self::Economics => "economics",
             Self::Capacity => "capacity",
             Self::NobodyCouldSay => "nobody_could_say",
+            Self::Unasked => "unasked",
         }
     }
 
@@ -1404,6 +1433,13 @@ impl RestartReason {
                  reading could not be taken at all — so the run replaced the session, which is \
                  what this loop has always done when it cannot see. Author a ceiling, or find out \
                  why the agent's record could not be read"
+            }
+            Self::Unasked => {
+                "the peer would not take the question: the prompt reached its pane and the submit \
+                 after it never became a question the agent reported. Nothing is wrong with the \
+                 work or the milestone — what is wedged is the SESSION's own composer, and this is \
+                 the run opening a fresh one rather than throwing away what it has already paid \
+                 for. If it happens again in the session opened for it, the run stops for a person"
             }
         }
     }
@@ -1733,6 +1769,20 @@ pub enum Noticed {
     /// they are OPPOSITE decisions. One takes an option the peer offered; this one turns the peer's
     /// call down. [`OuterLoop::took_screening`] consumes it.
     Screened(Screened),
+    /// **THE PEER WOULD NOT TAKE THE QUESTION, TWICE RUNNING** — register item 446, and it is here
+    /// on this enum's own terms: the FIRST refusal reaches `restarting`, which says why in
+    /// `restart_reason`, and the second reaches `failed`, which is entered from six transitions and
+    /// can name nothing.
+    ///
+    /// ⚠ It carries what the delivery carried, because *how many times it pressed* and *how much it
+    /// wrote* are the two numbers that separate a peer that ignored a submit from one that never saw
+    /// the text.
+    Unasked {
+        /// How many times the delivery pressed the submit before giving up.
+        attempts: u32,
+        /// Bytes the delivery put on the pane's pseudoterminal.
+        written: u64,
+    },
     // ⚠⚠⚠ AND THERE IS DELIBERATELY NO `PeerGone` ARM, though the first draft of that round wrote
     // one. Every notice here exists because the state it leads to CANNOT say the thing itself —
     // `failed` is reached from six transitions and cannot name the variable, `blocked` cannot
@@ -3368,6 +3418,63 @@ impl OuterLoop {
             // ⚠ NO NOTICE IS RECORDED, and that is deliberate — see [`Noticed`]'s own comment where
             // the arm would have been. The pane travels in the verdict and the walk names the
             // state; a third copy would be the one that goes stale.
+            // ⚠⚠⚠⚠⚠ **A QUESTION THE PEER NEVER TOOK IS A SESSION-LEVEL CONDITION, NOT A DEAD
+            // RUN** — register item 446, and this arm exists because a live run threw away work it
+            // had already paid for.
+            //
+            // MEASURED on the owner's own daemon: an unattended run paid two register items,
+            // committed and PUSHED both, replaced its session — and died on the next prompt. The
+            // text reached the pane and was read back off it; the submit never became a question,
+            // and the pane's own counter said so (`asked` did not move, for fifteen minutes). By
+            // hand afterwards: Enter did not submit that draft, `Ctrl-C` did not clear it, an
+            // interrupt left it standing — while ordinary typed text in the SAME pane submitted at
+            // once, and a FRESH session took the identical prompt. So the pane is fine and the
+            // session's draft cannot be sent.
+            //
+            // ⚠⚠⚠ THE DOCUMENT DECIDES WHAT THAT IS WORTH, not this line: it is told
+            // `prompt.unasked` and answers with a replacement (the one it already knows how to do)
+            // or with `failed` where a replacement has already been spent on the same refusal. The
+            // driver's whole part is refusing to lose the run over it.
+            //
+            // ⚠ `NeverTook` only — `Unconfirmed` (the text never appeared at all) stays a refusal,
+            // because a peer that painted nothing is not a peer holding an unsendable draft.
+            // ⚠⚠⚠⚠⚠ THE REFUSAL THIS READS IS `NeverSubmitted`, NOT `NeverTook`, and the two are
+            // opposite facts: `NeverTook` is text that never appeared — a peer that painted nothing
+            // is not a peer holding an unsendable draft — while this one is text that DID appear
+            // and a submit that never became a question. Run 14's own sentence was this variant's.
+            //
+            // ⚠⚠⚠ AND IT IS JUDGED BY THE CONTRACT THE DELIVERY ITSELF WAS HELD TO, which the
+            // error carries. `Took` is chosen only where the pane can REPORT being asked
+            // (`submit_lands_when`), and at a SCRAPED pane *nobody reported the question* is not
+            // evidence that nobody was asked — nothing there can report anything. An existing
+            // gate's control holds exactly that line
+            // (`a_loop_delivers_a_prompt_its_peer_folded_away_when_the_agent_can_name_it`), and
+            // reading `wanted` rather than asking supervision again keeps one authority on it.
+            Err(PaneError::NeverSubmitted {
+                attempts,
+                written,
+                wanted: crate::deliver::SubmittedWhen::Took { .. },
+            }) => {
+                self.noticed = Some(Noticed::Unasked { attempts, written });
+                self.machine.process_event(AiLoopEvent::PromptUnasked);
+                Ok(Pumped::Moved {
+                    from,
+                    raised: AiLoopEvent::PromptUnasked,
+                    to: self.state(),
+                    spent: written,
+                    witnessed: self.told.tell(self.witnessed),
+                    found: None,
+                    // ⚠⚠ THE REASON IS READ FROM THE DOCUMENT, through the same reader every other
+                    // edge into `restarting` uses — the document assigned `restart_reason` on the
+                    // transition this event just took, and a word written here instead would be a
+                    // second authority on one fact (register item 445's whole point). ⚠ It answers
+                    // `None` where this event reached `failed` instead, which is correct: that
+                    // ending names itself through the notice above.
+                    because: self.restarting_because().map(Because::Restarted),
+                    unreadable: None,
+                    checked: None,
+                })
+            }
             Err(PaneError::PeerGone(_)) => {
                 self.machine.process_event(AiLoopEvent::PeerGone);
                 Ok(Pumped::Moved {
@@ -10582,9 +10689,138 @@ mod tests {
             (to, because, walked)
         }
 
+        /// **A FOURTH RUN, AND THE ONLY ONE THAT DOES NOT COME THROUGH `reviewing`** — register
+        /// item 446. Its peer paints and settles exactly like the three above and never reports
+        /// being asked, so the FIRST prompt is never taken and the run replaces the session on that
+        /// evidence instead of ending. ⚠ It is here rather than in a gate of its own because the
+        /// coverage assertion below is this file's rule: an arm no run HERE reaches is a word
+        /// rendered by nobody.
+        fn never_asked(_record: &std::path::Path) -> (AiLoopState, Option<Because>, Vec<String>) {
+            /// A peer that ECHOES what is typed — so the text is unarguably on the screen and the
+            /// only thing missing is the submit. ⚠ `shows_the_prompt` must be true for this run or
+            /// `say` never reaches `deliver` at all (register item 228), which is how the first
+            /// draft of this staging sailed through `PromptSent` with its question counter at zero.
+            const ECHOES: &str = "stty raw -echo; printf 'GO'; exec cat";
+
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(ECHOES);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .expect("the workspace mutex")
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            // ⚠ The peer must be past its `stty` before anything is typed, or the line discipline
+            // echoes the prompt and this measures the kernel instead of the delivery.
+            let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let up = Instant::now();
+            while !reader
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // ⚠⚠⚠ REPORTED, NAMED, MOVING — and never naming a question. Those are the three
+            // things the submit contract reads, and only the last one is this fixture's subject.
+            let published = Arc::new(Mutex::new(0_u64));
+            let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
+                let mut seq = published.lock().expect("the published counter");
+                *seq += 1;
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Idle,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_string(),
+                    },
+                    seq: *seq,
+                    asked_seq: 0,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    transcript: None,
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                Duration::from_secs(1),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "prove a wedged session is replaced rather than fatal".to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    milestone_check: None,
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+            );
+            let run = RunContext::uncancellable();
+            let mut walked = Vec::new();
+            let mut landed = None;
+            while walked.len() < 40 {
+                match loops.pump(&access, &run) {
+                    Ok(Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        because,
+                        ..
+                    }) => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if to == AiLoopState::Restarting {
+                            landed = Some((to, because));
+                            break;
+                        }
+                    }
+                    // ⚠ The refusal this item removed. A red here is the driver ending the run over
+                    // a question nobody took, which is the whole defect.
+                    other => panic!(
+                        "a wedged session must be replaced, not fatal: {other:?}, walked {walked:?}"
+                    ),
+                }
+            }
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let Some((to, because)) = landed else {
+                panic!("no run reached `restarting` in 40 passes: {walked:?}");
+            };
+            (to, because, walked)
+        }
+
         let (paid_to, paid, paid_walk) = replaced(&record, ROOMY);
         let (full_to, full, full_walk) = replaced(&record, CRAMPED);
         let (blind_to, blind, blind_walk) = replaced(&record, 0);
+        let (wedged_to, wedged, wedged_walk) = never_asked(&record);
         let _ = std::fs::remove_dir_all(&home);
 
         // ── THE CONTROL: all three really did REPLACE, or the words below are about an edge no
@@ -10632,7 +10868,23 @@ mod tests {
         // ⚠⚠⚠ Naming the decision is worth nothing if two causes still render one string, which is
         // exactly what all three did before this gate existed. ⚠ The RENDERED line is compared and
         // not the arm, because a reader has the line.
-        let lines: Vec<String> = [paid, full, blind]
+        assert_eq!(
+            wedged_to,
+            AiLoopState::Restarting,
+            "⚠⚠⚠⚠⚠ ITEM 446: a peer that will not take the question must cost a SESSION, not the \
+             run. Measured live — a run that had paid two register items, committed and pushed \
+             both, died on the next prompt with its work banked and nothing to continue it. \
+             Walked {wedged_walk:?}",
+        );
+        assert_eq!(
+            wedged,
+            Some(Because::Restarted(RestartReason::Unasked)),
+            "⚠⚠⚠⚠ AND IT SAYS SO IN ITS OWN WORD, because a reader who finds a replacement here \
+             must not be sent looking at the economics or the ceiling — nothing was measured about \
+             either. Walked {wedged_walk:?}",
+        );
+
+        let lines: Vec<String> = [paid, full, blind, wedged]
             .into_iter()
             .map(|because| {
                 because.map_or_else(|| "(nothing said)".to_string(), |because| because.noted())
@@ -10649,7 +10901,7 @@ mod tests {
         //
         // ⚠⚠ An arm no run here reaches is a word rendered by nobody — `Pumped::Unbuilt`'s finding
         // (register item 260), which this workspace has now paid for twice.
-        let reached: std::collections::BTreeSet<RestartReason> = [paid, full, blind]
+        let reached: std::collections::BTreeSet<RestartReason> = [paid, full, blind, wedged]
             .into_iter()
             .filter_map(|because| match because {
                 Some(Because::Restarted(reason)) => Some(reason),

@@ -1332,6 +1332,25 @@
     -->
     <data id="restart_reason" expr="''"/>
 
+    <!--
+      ⚠⚠⚠⚠ HOW MANY SESSIONS HAVE BEEN REPLACED FOR REFUSING THE QUESTION SINCE
+      ONE LAST TOOK IT — the bound on register item 446's recovery, and the only
+      `cond` in this document that reads a number this file itself keeps.
+
+      ZERO means the last question asked of this run was TAKEN, so a peer that
+      now will not take one is a session-level condition a replacement fixes —
+      measured: the wedged draft could not be submitted by Enter, by `Ctrl-C` or
+      by an interrupt, while ordinary typed text in the same pane submitted at
+      once, and a fresh session took the identical prompt.
+
+      ONE means the session opened to fix exactly that will not take a question
+      either. Nothing another restart does reaches that, so the run says
+      `failed` and a person looks. ⚠ It is reset by `prompt.sent` — a question
+      that landed is what makes the next refusal a NEW fact rather than the same
+      one continuing.
+    -->
+    <data id="unasked_since_taken" expr="0"/>
+
   </datamodel>
 
   <!--
@@ -1635,7 +1654,48 @@
                     'If the north star itself is fully reached and nothing is left to do, ignore both labels and make the last line of your reply exactly: ' + north_star_marker"/>
       <send event="prompt.start"/>
     </onentry>
-    <transition event="prompt.sent" target="working"/>
+    <!--
+      ⚠⚠ A QUESTION THAT WAS TAKEN CLEARS THE ONE FREE REPLACEMENT BELOW. See
+      `unasked_since_taken`: what that number bounds is a peer that will not
+      take a question TWICE RUNNING, and a peer that took this one is not that.
+    -->
+    <transition event="prompt.sent" target="working">
+      <assign location="unasked_since_taken" expr="0"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE PEER WOULD NOT TAKE THE QUESTION — REPLACE THE SESSION RATHER
+      THAN END THE RUN. Register item 446, measured on the owner's own daemon.
+
+      What happened: an unattended run paid two register items, committed and
+      pushed both, replaced its session, primed the successor — and then died on
+      the next prompt. The text reached the pane and was read back off it; the
+      submit that followed never became a question, and the pane's own counter
+      said so (`asked` did not move, for fifteen minutes). The driver refused to
+      press again, correctly: a second submit onto a composer the first one
+      emptied asks an empty one.
+
+      ⚠⚠⚠ AND THE REMEDY IS NOT A SECOND KEYSTROKE. Measured by hand on the
+      wedged pane: Enter did not submit that draft, `Ctrl-C` did not clear it,
+      and an interrupt left it standing — while ordinary typed text in the SAME
+      pane submitted immediately (`asked` 2 → 3). So the pane works and the
+      SESSION's draft cannot be sent. A fresh session takes the identical prompt
+      (measured, twice, on a new pane).
+
+      That is a session-level condition, and this document already knows how to
+      replace a session. A run that dies here has paid for its work and thrown
+      away the only thing that could continue it.
+
+      ⚠⚠ ONE FREE REPLACEMENT, and the guard is what makes this a recovery
+      rather than a spin: a peer that will not take the question EITHER, in the
+      session opened to fix exactly that, is not something another restart will
+      reach. That is a person's, and `failed` is how this document says so.
+    -->
+    <transition event="prompt.unasked" cond="unasked_since_taken == 0"
+                target="restarting">
+      <assign location="restart_reason" expr="'unasked'"/>
+      <assign location="unasked_since_taken" expr="1"/>
+    </transition>
+    <transition event="prompt.unasked" target="failed"/>
     <transition event="fail" target="failed"/>
     <transition event="peer.gone" target="peer_gone"/>
   </state>

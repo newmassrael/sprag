@@ -576,6 +576,18 @@ impl AiLoop {
                     // typing in it — and it records the fact in the notice. Without these arms the
                     // run's only sentence said *"recorded no reason"* about a run that had recorded
                     // one, and the question the loop was holding was dropped on the floor.
+                    // ⚠⚠⚠⚠⚠ THE PEER WOULD NOT TAKE A QUESTION IN EITHER SESSION — register item
+                    // 446. The first refusal bought a replacement (the document says so in
+                    // `restart_reason`); this is the replacement refusing too, which no further
+                    // restart reaches. Measured on a live run: the text lands on the pane, the
+                    // submit never becomes a question, and Enter, `Ctrl-C` and an interrupt all
+                    // leave the draft standing while ordinary typed text in the same pane submits.
+                    Some(Noticed::Unasked { attempts, written }) => format!(
+                        "it put {written} bytes on the pane and pressed {attempts} time(s), and \
+                         neither the session it started with nor the one it opened to replace it \
+                         ever reported being asked — a peer that will not take a question is not \
+                         something another restart reaches, so this is a person's to look at"
+                    ),
                     Some(Noticed::Asking(unanswered)) => format!(
                         "the session it opened to replace the old one came up asking something \
                          nothing this run holds could answer ({unanswered:?}), so it was never \
