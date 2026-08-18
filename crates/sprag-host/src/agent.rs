@@ -130,6 +130,27 @@ pub struct AgentFacts {
     /// reported verdict carries no `rule` and a scraped one carries no `source`, so which authority
     /// answered is never a guess.
     pub source: Option<String>,
+    /// **WHICH BUILD THE REPORTER IS**, when it said — see [`crate::wire::AGENT_BUILD_KEY`] for the
+    /// hazard this exists to make visible.
+    ///
+    /// # ⚠⚠⚠⚠ Three cases, and a surface that renders two of them has re-introduced the defect
+    ///
+    /// The reporter is a SEPARATE PROCESS that any `cargo build` replaces under a running daemon, so
+    /// *"is this reporter my image?"* is a live question after every rebuild. This carries the raw
+    /// answer rather than a verdict, deliberately: the daemon's own [`crate::wire::BUILD`] is the
+    /// other half of the comparison and every reader already has it, so publishing the FACT lets a
+    /// reader judge — the same treatment [`source`](Self::source) gets, and the reason neither is a
+    /// bool.
+    ///
+    /// * `Some(b)` where `b == crate::wire::BUILD` — the reporter is this daemon's image.
+    /// * `Some(b)` otherwise — **it is not**, and `b` names what it is.
+    /// * `None` — **it did not say.** NOT agreement. Every reporter older than the key answers this,
+    ///   and so does a person typing `sprag report-agent`.
+    ///
+    /// ⚠ Additive on the pane row exactly as `source` is: absent for a pane whose verdict was
+    /// scraped, and absent for a reporter that says nothing, so a workspace of shells is
+    /// byte-identical to the shape before it existed.
+    pub reporter_build: Option<String>,
     /// WHAT THE PANE IS ASKING, for a pane this look found `blocked` and whose menu this build
     /// could read — `None` for every other pane.
     ///
@@ -394,6 +415,7 @@ impl AgentRegistry {
             rule,
             seq: tracker.seq(),
             source: tracker.reported_source().map(str::to_owned),
+            reporter_build: tracker.reported_build().map(str::to_owned),
             // ⚠ Taken from the TRACKER rather than from this look: they are stated by the agent on
             // its own hook and survive every screen the pane has painted since. A look cannot
             // produce them and must not clear them.
@@ -849,6 +871,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             Hysteresis::default,
         );
@@ -871,6 +894,83 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A DAEMON CAN SAY WHICH BUILD ITS REPORTER IS, AND A REPORTER THAT SAYS NOTHING IS
+    /// NOT ONE THAT MATCHES** — register item 412's product half, and the three cases
+    /// [`AgentFacts::reporter_build`] exists to keep apart.
+    ///
+    /// The hook is a SEPARATE PROCESS that any `cargo build` replaces under a running daemon, so
+    /// *"is this reporter my image?"* is live after every rebuild — and until this key nothing
+    /// anywhere could answer it. Item 344 is the loud version of the same skew (a bumped hook
+    /// refused at the protocol check, leaving the last `working` true for ever); this is the quiet
+    /// one, where the reports are accepted and the code producing them is not the daemon's.
+    ///
+    /// # ⚠⚠⚠⚠ The third arm is the one that would have re-introduced the defect
+    ///
+    /// A reporter that states no build must answer `None` **even when a previous reporter stated
+    /// one**. Its two neighbours in `Reported` (`asked`, `transcript`) are carried forward on
+    /// purpose — they are EVENTS, stated only on the report that opens a turn — and copying that
+    /// treatment here would have been the natural mistake: a hook replaced by a foreign one would go
+    /// on answering under the identity of the reporter it displaced, which is precisely the
+    /// substitution this key exists to expose. So this is a LEVEL about whoever is reporting now,
+    /// and it is REPLACED.
+    #[test]
+    fn a_reporter_says_which_build_it_is_and_silence_is_never_agreement() {
+        let mut reg = AgentRegistry::default();
+        let report = |reg: &mut AgentRegistry, source: &str, build: Option<&str>| {
+            reg.report(
+                PaneId(3),
+                Report {
+                    state: sprag_detect::AgentState::Working,
+                    agent: None,
+                    source: source.to_owned(),
+                    seq: None,
+                    owner: None,
+                    asked: None,
+                    transcript: None,
+                    build: build.map(str::to_owned),
+                },
+                Hysteresis::default,
+            );
+            reg.observe(
+                PaneId(3),
+                painted(CLAUDE_FOOTER).screen(),
+                Some("⠂ x"),
+                Instant::now(),
+                Hysteresis::default,
+            )
+            .expect("a reported pane is claimed")
+            .reporter_build
+        };
+
+        // ── 1. A reporter that STATES a build: the daemon can name it. ──
+        assert_eq!(
+            report(&mut reg, "hook:claude", Some("deadbeef1234")).as_deref(),
+            Some("deadbeef1234"),
+            "⚠⚠⚠ the daemon must be able to say which build reported, or `this reporter is not my \
+             image` is a sentence nothing can produce",
+        );
+
+        // ── 2. A DIFFERENT reporter that states NOTHING: `None`, not the one before it. ──
+        assert_eq!(
+            report(&mut reg, "cli", None),
+            None,
+            "⚠⚠⚠⚠⚠ SILENCE IS NOT INHERITANCE. `asked` and `transcript` are carried across reports \
+             because they are events about a turn; this is a level about the CURRENT reporter, and \
+             carrying it would let a hook that replaced another answer under the displaced one's \
+             identity — the exact substitution this key exists to expose. Deleting the plain \
+             `build` assignment in `Tracker::report` (making it `or_else` its neighbours' way) \
+             reddens here and nowhere else",
+        );
+
+        // ── 3. And it comes back when a reporter states one again, so this is a level and not a
+        //       one-way latch that a single silent report would have wedged shut. ──
+        assert_eq!(
+            report(&mut reg, "hook:claude", Some("cafe5678")).as_deref(),
+            Some("cafe5678"),
+            "a level tracks the current reporter in both directions",
+        );
+    }
+
     /// A report about a pane nobody has ever looked at BUILDS the memory, reading the settle window
     /// once to do it — because that window is what the pane will be released back into.
     #[test]
@@ -888,6 +988,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 },
                 || {
                     *reads += 1;
@@ -935,6 +1036,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             Hysteresis::default,
         );
@@ -1254,6 +1356,7 @@ mod clock_tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             Hysteresis::default,
         );

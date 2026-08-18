@@ -1281,6 +1281,14 @@ impl WorkspaceExternal {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
         };
+        // ⚠⚠⚠ WHICH BUILD THE REPORTER IS, refused when malformed rather than dropped — the same
+        // rule as its three neighbours above. Absent is *"it did not say"* and is NOT compared here:
+        // this verb records what a reporter stated, and the daemon's own build is the other half of
+        // a comparison every reader can make for itself. See `crate::wire::AGENT_BUILD_KEY`.
+        let build = match map.get(crate::wire::AGENT_BUILD_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
         let Some(agents) = self.agents.as_ref() else {
             // No detector on this host (a GUI's in-process host, a unit test): there is no memory to
             // report INTO, and inventing one here would publish a verdict the pane list cannot read.
@@ -1300,6 +1308,7 @@ impl WorkspaceExternal {
                 owner: owner.flatten().map(u64::from),
                 asked,
                 transcript,
+                build,
             },
             crate::config::agent_settle,
         );
@@ -2928,6 +2937,14 @@ impl WorkspaceExternal {
                             if let Some(source) = &facts.source {
                                 value["source"] = serde_json::json!(source);
                             }
+                            // WHICH BUILD that reporter is, when it said. Beside `source` because it
+                            // is the same kind of fact about the same authority — who answered, and
+                            // whether they are this daemon's own image. Additive on `source`'s
+                            // terms, and ABSENT means the reporter did not say rather than that it
+                            // matches (`crate::wire::AGENT_BUILD_KEY`).
+                            if let Some(build) = &facts.reporter_build {
+                                value[crate::wire::AGENT_BUILD_KEY] = serde_json::json!(build);
+                            }
                             // WHAT THE PANE IS ASKING — the question itself, its options, and which
                             // one a bare Enter would take. ADDITIVE on the same terms as every key
                             // beside it: present only on a pane this look found `blocked` AND whose
@@ -4310,6 +4327,54 @@ mod tests {
                 .flatten()
                 .any(|event| event["type"] == "pane_agent_state_changed" && event["pane"] == 0),
             "the report is readable as a typed change: {batch}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE REPORTER'S BUILD REACHES THE WIRE, AND A REPORTER THAT SAYS NOTHING LEAVES THE
+    /// ROW EXACTLY AS IT WAS** — register item 412's product half, at the surface a reader reads.
+    ///
+    /// # ⚠⚠⚠⚠ Why this exists when the tracker already has a gate
+    ///
+    /// `agent::tests::a_reporter_says_which_build_it_is_and_silence_is_never_agreement` holds the
+    /// MEMORY — that the fact is stored, replaced rather than carried, and never invented. It says
+    /// nothing about whether the fact is ever PUBLISHED, and that gap was measured rather than
+    /// guessed: deleting the publication line from the pane row left the whole `sprag-host` suite
+    /// green. A fact that reaches `AgentFacts` and stops there is invisible to every reader the item
+    /// exists to serve, which is the failure the item is about wearing a different hat.
+    ///
+    /// ⚠⚠ Its sibling above already pins the OTHER half by asserting the whole `agent` object: a
+    /// report with no build publishes byte-identically to the pre-412 shape. So the two together
+    /// are the additive claim and the useful one, and neither can pass for the other.
+    #[test]
+    fn a_reporters_build_reaches_the_pane_row() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        // A plain shell, exactly as its sibling stages one: the scrape has nothing to say, so every
+        // word of the answer below came from the report.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        assert!(
+            ext.invoke(
+                REPORT_AGENT_ACTION,
+                IntrospectValue::Json(json!({
+                    "id": 0,
+                    "source": "hook:claude",
+                    "state": "working",
+                    crate::wire::AGENT_BUILD_KEY: "deadbeef1234",
+                })),
+            )
+            .is_ok(),
+            "a report naming its build is well formed",
+        );
+        let entry = pane_entry(&mut ext, 0);
+        assert_eq!(
+            entry["agent"][crate::wire::AGENT_BUILD_KEY],
+            json!("deadbeef1234"),
+            "⚠⚠⚠⚠⚠ THE ROW MUST CARRY WHICH BUILD REPORTED. A daemon cannot say *this reporter is \
+             not my image* if the only place the answer exists is its own memory — and the reader \
+             that needs it (the one looking at a pane whose state has not moved) is looking here. \
+             Deleting the publication in the pane row reddens exactly this and nothing else: \
+             {entry:?}",
         );
     }
 
@@ -8898,10 +8963,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            32,
+            33,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
-             verb, a message's text and audience, a report's source and name, and a dropped path",
+             verb, a message's text and audience, a report's source, name and BUILD, and a dropped \
+             path",
         );
     }
 
@@ -8916,7 +8982,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            64,
+            65,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -8930,11 +8996,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            104,
+            105,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb: 31 across the seven ask-backed verbs and 64 across the \
+             per form rather than per verb: 31 across the seven ask-backed verbs and 65 across the \
              twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \
-             values and flat all along)",
+             values and flat all along; the 65th is `report_agent`'s `build`, item 412)",
         );
     }
 

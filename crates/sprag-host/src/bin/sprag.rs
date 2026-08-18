@@ -3158,6 +3158,19 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
         "id": pane,
         "state": state,
         "source": source.unwrap_or_else(|| "cli".to_owned()),
+        // ⚠⚠⚠ WHICH BUILD IS REPORTING, stated on every report and by THIS process about ITSELF.
+        //
+        // The reporter is the hook binary, which a `cargo build` replaces under a running daemon —
+        // under every running daemon at once — while the daemon goes on being whatever was started.
+        // Until this key the skew was unobservable from either end: the reports are accepted, the
+        // verdicts look right, and the code producing them is not the code the daemon is.
+        //
+        // ⚠ It is sent unconditionally rather than only when it might differ, because this side
+        // cannot know: `HostConn::daemon_build` is what the DAEMON said about itself, and a
+        // comparison made here would answer for one connection while the daemon has to answer for
+        // every reporter it has. Stating the fact and letting the holder of both compare is the same
+        // division `source` follows. See `sprag_host::wire::AGENT_BUILD_KEY`.
+        sprag_host::wire::AGENT_BUILD_KEY: sprag_host::wire::BUILD,
     });
     if let Some(name) = name {
         params["name"] = Value::String(name);

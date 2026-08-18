@@ -410,6 +410,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             sprag_detect::Hysteresis::default,
         );
@@ -489,6 +490,7 @@ mod tests {
                 owner: Some(u64::from(owner)),
                 asked: None,
                 transcript: None,
+                build: None,
             },
             sprag_detect::Hysteresis::default,
         );
@@ -545,6 +547,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             sprag_detect::Hysteresis::default,
         );

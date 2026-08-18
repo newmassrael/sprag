@@ -241,6 +241,13 @@ struct Reported {
     /// reason exactly: a transcript path is stated on the turn's first event and on no other, while
     /// the file goes on existing for the whole session.
     transcript: Option<String>,
+    /// **WHICH BUILD THE REPORTER IN FORCE SAID IT IS**, or `None` where it did not say.
+    ///
+    /// ⚠⚠ Unlike its two neighbours above this is NOT carried across reports — see the assignment in
+    /// [`Tracker::report`]. Those are events about a turn; this is a level about the current
+    /// reporter, and inheriting it would let a replaced reporter answer under its predecessor's
+    /// identity.
+    build: Option<String>,
 }
 
 /// What a reporter said about a pane, as one message.
@@ -283,6 +290,18 @@ pub struct Report {
     /// has cost. `None` where the reporter did not say, which is not a fault: an agent that reports
     /// its turn while writing no transcript is a working agent.
     pub transcript: Option<String>,
+    /// **WHICH BUILD THE REPORTER IS**, as it stated — `None` where it did not say.
+    ///
+    /// Stored and never interpreted, exactly like [`owner`](Self::owner): this crate has no build of
+    /// its own to compare against, and the comparison belongs to whoever holds the daemon's identity.
+    /// What it buys is that the comparison is POSSIBLE at all — a reporter is a separate process
+    /// that a rebuild replaces under a running daemon, so *"is this reporter my image?"* had no
+    /// answer anywhere.
+    ///
+    /// ⚠⚠⚠ `None` is *"it did not say"* and never *"it matches"*. Every reporter that predates the
+    /// key answers `None`, and so does a person typing `sprag report-agent` by hand — collapsing
+    /// that into agreement would make the commonest case look like the safe one.
+    pub build: Option<String>,
 }
 
 /// What a [`report`](Tracker::report) did.
@@ -460,6 +479,7 @@ impl Tracker {
             owner,
             asked,
             transcript,
+            build,
         } = report;
         if let Some(held) = &self.reported
             && held.source == source
@@ -503,6 +523,18 @@ impl Tracker {
             asked: asked.or_else(|| carried.as_ref().and_then(|held| held.asked.clone())),
             transcript: transcript
                 .or_else(|| carried.as_ref().and_then(|held| held.transcript.clone())),
+            // ⚠⚠⚠⚠⚠ REPLACED, NEVER CARRIED — the opposite of its two neighbours above, and the
+            // difference is what the field MEANS. Those two are EVENTS: only the report that opens a
+            // turn states them, so carrying is what keeps them readable afterwards. This is a LEVEL
+            // about whoever is reporting RIGHT NOW, stated on every report by the one reporter that
+            // has a build to state.
+            //
+            // Carrying it would be a false claim of exactly the kind the field exists to catch: a
+            // NEW reporter that says nothing would inherit the OLD one's identity, so a hook
+            // replaced by a foreign one — the whole hazard — would go on answering the build of the
+            // reporter it displaced. `None` here means *this reporter did not say*, which is the
+            // honest answer and the only one that stays true when the reporter changes.
+            build,
         });
         self.owes_look = false;
         let changed = verdict != self.published;
@@ -547,6 +579,21 @@ impl Tracker {
     #[must_use]
     pub fn reported_source(&self) -> Option<&str> {
         self.reported.as_ref().map(|held| held.source.as_str())
+    }
+
+    /// **WHICH BUILD THE REPORTER IN FORCE SAID IT IS**, or `None` when there is no report or the
+    /// reporter did not say.
+    ///
+    /// ⚠⚠⚠ The two `None`s are deliberately NOT distinguished here, on
+    /// [`reported_owner`](Self::reported_owner)'s argument: a caller that needs to tell *no report*
+    /// from *a report that said nothing* asks [`reported_source`](Self::reported_source), which is
+    /// `Some` exactly when a report is in force. What must never be collapsed is either `None` into
+    /// *"the reporter matches"* — see [`Report::build`].
+    #[must_use]
+    pub fn reported_build(&self) -> Option<&str> {
+        self.reported
+            .as_ref()
+            .and_then(|held| held.build.as_deref())
     }
 
     /// The token whose continued existence keeps the report in force, when there is a report and it
@@ -1317,6 +1364,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         });
         assert_eq!(
             outcome,
@@ -1369,6 +1417,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         });
         assert_eq!(
             tracker.verdict().agent.as_deref(),
@@ -1435,6 +1484,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         });
         assert!(!tracker.owes_look(), "a report is its own answer");
 
@@ -1470,6 +1520,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 })
                 .accepted,
         );
@@ -1482,6 +1533,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             }),
             ReportOutcome {
                 accepted: false,
@@ -1503,6 +1555,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             }),
             ReportOutcome {
                 accepted: false,
@@ -1520,6 +1573,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 })
                 .accepted,
             "forwards is heard",
@@ -1537,6 +1591,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 })
                 .accepted,
             "a new speaker is not judged by the old one's clock",
@@ -1553,6 +1608,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 })
                 .accepted,
         );
@@ -1566,6 +1622,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 })
                 .accepted,
             "with nothing to be stale against, nothing is refused",
@@ -1585,6 +1642,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         });
         let published = tracker.seq();
 
@@ -1596,6 +1654,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         });
         assert_eq!(
             outcome,
@@ -1620,6 +1679,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     transcript: None,
+                    build: None,
                 })
                 .accepted,
             "a duplicate still advances the source's sequence",
@@ -1647,6 +1707,7 @@ mod tests {
             owner: Some(4242),
             asked: None,
             transcript: None,
+            build: None,
         });
         assert_eq!(tracker.reported_owner(), Some(4242));
 
@@ -1659,6 +1720,7 @@ mod tests {
             owner: Some(99),
             asked: None,
             transcript: None,
+            build: None,
         });
         assert_eq!(tracker.reported_owner(), Some(99));
 
@@ -1672,6 +1734,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         });
         assert_eq!(tracker.reported_owner(), None);
         assert_eq!(
@@ -1688,6 +1751,7 @@ mod tests {
             owner: Some(7),
             asked: None,
             transcript: None,
+            build: None,
         });
         assert!(tracker.release_report(), "a report was in force");
         assert_eq!(

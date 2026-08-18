@@ -3157,6 +3157,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             instant_window,
         );
@@ -3210,6 +3211,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 transcript: None,
+                build: None,
             },
             instant_window,
         );
@@ -3258,6 +3260,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         };
         agents.report(id, hook(AgentState::Idle, 1), instant_window);
         let before = read(id).expect("an agent");
@@ -3378,6 +3381,7 @@ mod tests {
             owner: None,
             asked: None,
             transcript: None,
+            build: None,
         };
 
         wait_for_screen(&access, id, "GO");

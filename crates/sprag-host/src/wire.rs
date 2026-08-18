@@ -812,6 +812,7 @@ impl InlineGrammar {
         ArgGrammar::open(AGENT_BIND_KEY, "bool").optional(),
         ArgGrammar::open(AGENT_ASKED_KEY, "string").optional(),
         ArgGrammar::open(AGENT_TRANSCRIPT_KEY, "string").optional(),
+        ArgGrammar::open(AGENT_BUILD_KEY, "string").optional(),
     ])];
 }
 
@@ -1661,6 +1662,36 @@ pub const AGENT_ASKED_KEY: &str = "asked";
 /// held the very number it reports (register item 431) — while the agent was naming the file on
 /// every turn.
 pub const AGENT_TRANSCRIPT_KEY: &str = "transcript";
+/// [`REPORT_AGENT_ACTION`]'s key carrying **WHICH BUILD THE REPORTER IS** — [`BUILD`], sent by the
+/// hook binary about ITSELF, so a daemon can say *this reporter is not my image*.
+///
+/// # ⚠⚠⚠⚠⚠ What it is for, and it is a hazard this repository has already paid for twice
+///
+/// The hook is a SEPARATE PROCESS from the daemon and is resolved once, at daemon start, to the
+/// sibling of the running executable (`host.rs`'s `sprag_bin`). So a `cargo build` replaces the
+/// reporter under a running daemon — under EVERY running daemon at once, including one nobody meant
+/// to touch — while the daemon itself goes on being whatever was started. That skew is the ORDINARY
+/// state after any rebuild, not an exotic one.
+///
+/// Register item 344 is the loud version: after a [`WIRE_PROTOCOL`] bump the rebuilt hook is refused
+/// at the protocol check and the pane's last `working` stays true **for ever**, because the thing
+/// that would have said otherwise can no longer speak. Item 412 is the quiet version, and it is
+/// worse: the numbers agree, the reports are accepted, and the reporter is running code the daemon
+/// has never seen. Nothing anywhere said so.
+///
+/// ⚠⚠⚠ **ABSENT MEANS *"THIS REPORTER DID NOT SAY"*, NEVER *"IT MATCHES"*** — [`BUILD_FIELD`]'s
+/// rule, which this is the other direction of. A reader that took silence for agreement would make
+/// the commonest case (an old hook, or any reporter that is not the hook) look like the safe one,
+/// which is the exact inversion the whole item exists to end. It is why
+/// [`crate::AgentFacts::reporter_build`] is an `Option` a surface must handle in three cases rather
+/// than a bool.
+///
+/// ⚠⚠ It is NOT a refusal, and that is the same ruling [`build_report`](crate::wire) states for the
+/// other direction: [`WIRE_PROTOCOL`] owns refusal because a shape neither end can parse must stop,
+/// where a behaviour skew is a fact a reader acts on. Refusing a foreign reporter would turn every
+/// rebuild into a forced restart of a daemon holding somebody's panes — and would ALSO destroy the
+/// evidence, since a refused report is one that never says which build it was.
+pub const AGENT_BUILD_KEY: &str = "build";
 
 /// The key carrying WHAT A BLOCKED PEER IS ASKING — on a pane's `agent` object and on a run's
 /// outcome alike.
@@ -8119,6 +8150,29 @@ mod tests {
             // R370: born at 29, in the round whose own change proved the gap. Every entry below is
             // the shape as it stands at that number; a later round that moves one of them decides
             // about `sprag_rpc::WIRE_PROTOCOL` here.
+            // ⚠⚠⚠⚠⚠ **AN ADDED ARGUMENT WHERE THE NUMBER STANDS, AND THE FIRST OF ITS KIND ON THIS
+            // PIN**: `report_agent` gained `build:string?` (register item 412 — a reporter states
+            // WHICH IMAGE IT IS, so a daemon can say *this reporter is not mine*). Every other move
+            // above raised the number; this one does not, and the exemption is MEASURED in both
+            // directions rather than argued — R338's discipline, where the register had likewise
+            // priced a round as a bump and the pin turned that into a measurement.
+            //
+            // Two isolated daemons, one built before this key and one after, driven by clients from
+            // the other side of it (2026-08-18):
+            //   * NEW client -> OLD daemon: `pane 0: accepted (state changed) seq=1`. The old
+            //     surface never reads the key, so the report it always honoured is honoured
+            //     identically. Nothing is silently done DIFFERENTLY — which is the whole of R330's
+            //     bump test, and the reason versions 30 and 34 had to move (there an older daemon
+            //     ran a 500 ms timer, or refused to wait, while answering success).
+            //   * OLD client -> NEW daemon: `pane 0: accepted (state changed) seq=1`, and the
+            //     absent key reads as `reporter_build: None` = *it did not say* — which is TRUE of
+            //     that client. It is never rendered as agreement.
+            // The second half is load-bearing and is `sprag_rpc::BUILD_FIELD`'s own argument, one
+            // direction over: an added key needs no number **while nobody reads its absence as a
+            // promise**, and the moment a surface renders "no build reported" as "the reporter
+            // matches", this exemption dies and the number is owed.
+            // ⚠ The behaviour it enables is a DIAGNOSTIC, not an action. No request gets a
+            // different answer, no run does different work, no vocabulary widened.
             // ⚠⚠⚠ R371 IS THE FIRST MOVE, AND IT IS THE ONE THIS PIN WAS BORN FOR: three forms
             // gained `await_person_ms:int?`, and this went red for it. R370's own re-typing had
             // been caught by nothing but two hand-written counts, which is what the pin exists to
@@ -8189,7 +8243,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_pane[object]:pane:int name:string?",
                 "sprag_workspace/sprag_mux/rename_session[object]:name:string",
                 "sprag_workspace/sprag_mux/rename_window[object]:window:string? name:string",
-                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? transcript:string?",
+                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? transcript:string? build:string?",
                 "sprag_workspace/sprag_mux/resize[object]:id:int cols:int rows:int cell_width:int? cell_height:int?",
                 "sprag_workspace/sprag_mux/resize_pane[object]:dir:string pane:int? cells:int?",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",
