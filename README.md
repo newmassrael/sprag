@@ -115,14 +115,55 @@ pinion의 RPC(query/intervene/invoke/snapshot)와 External 계약이 이 인터�
 
 ## 상태
 
-walking-skeleton 수직 슬라이스 진행 중. **PTY → VT 에뮬레이터 → 셀 격자 → pinion `Scene::TextGrid` → `scene/snapshot`** 데이터 경로가 헤드리스(무-GPU)로 동작한다. 레이어별 크레이트:
+walking-skeleton은 지나갔다. **PTY → VT 에뮬레이터 → 셀 격자 → pinion `Scene::TextGrid` →
+`scene/snapshot`** 데이터 경로 위에 멀티플렉싱·입력 인코딩·플러그인 호스트·프런트엔드 둘이
+올라가 있다. `sprag split-window`/`select-pane`/`send-keys`/`capture-pane` 같은 tmux 계열
+명령이 도는 데몬에 붙고, GPU 창과 터미널 클라이언트가 같은 wire로 같은 세션에 붙는다.
+
+크레이트 목록의 권위 있는 출처는 워크스페이스 `Cargo.toml`의 `[workspace] members`이고, 각
+크레이트가 왜 있는지는 그 크레이트의 `//!` 문서가 답한다. 여기는 역할별 개요다.
+
+**프로듀서 (pinion 비의존)**
 
 - `sprag-vt` — termwiz 기반 에뮬레이터 (`VtPort` 뒤로 격리)
-- `sprag-grid` — Screen → pinion `GridBuffer` 투영 (pinion-core만 의존)
-- `sprag-terminal` — PTY 프로듀서 (에뮬레이터 소유, pinion 비의존)
-- `sprag-host` — scene 조립 + `scene/snapshot` JSON-RPC 서버 (`sprag-term` 바이너리, 현재 읽기 전용)
+- `sprag-terminal` — PTY 프로듀서 (에뮬레이터 소유)
+- `sprag-input` — W3C 키 + 수식자를 PTY 입력 바이트로 인코딩
+- `sprag-detect` — pane 속 에이전트가 무엇을 하는지 화면·제목에서 도출. 순수 — 캡처한 화면을
+  그대로 되돌려 판정을 검증할 수 있다
 
-멀티플렉싱·입력 인코딩·플러그인 호스트·GUI 렌더는 미착수.
+**투영 · 호스트**
+
+- `sprag-grid` — Screen → pinion `GridBuffer` 투영 (pinion-core만 의존)
+- `sprag-host` — scene 조립 + scene-as-data JSON-RPC 서버, 멀티플렉서, 세션·창·pane 생명주기.
+  `sprag-term` 데몬과 `sprag` CLI가 여기서 나온다
+- `sprag-rpc` — 전송 정책: 고정 경로 상시 Unix 소켓 + SIGUSR1/2 런타임 제어 (프런트엔드 무관)
+
+**플러그인**
+
+- `sprag-plugin` — 확장 API(`PaneAccess`) + SCE 스테이트차트 Driver + 번들 플러그인
+  (orchestrator, pipe, AI 루프)
+
+**프런트엔드 (둘 다 소켓 너머)**
+
+- `sprag-client` — 디스플레이 독립 절반: 호스트와의 관계와 wire 클라이언트. 두 프런트엔드가
+  공유하며, GPU-free는 습관이 아니라 게이트로 강제된다
+- `sprag-gui` — GPU 창. pinion-shell/Vello에 의존하는 **유일한** 크레이트
+- `sprag-tui` — 터미널 프런트엔드: 같은 세션을 픽셀 대신 이스케이프 시퀀스로 그린다
+  (ssh 부착용, GPU-free도 게이트)
+
+**에이전트 표면**
+
+- `sprag-mcp` — pane 안에서 도는 AI가 형제 pane을 읽고 몰 수 있게 하는 MCP stdio 서버
+
+**개발 전용 (어떤 바이너리도 의존하지 않는다)**
+
+- `sprag-peer` — 이 빌드보다 오래된 데몬. 핸드셰이크는 통과하고 주소나 액션이 없다 (스큐 테스트용)
+- `sprag-conformance` — 공표된 호출 문법에 대한 property 클레임을 한 번만 쓴 곳 (surface마다
+  베끼면 각자 통과하고 어긋나는 순간이 안 보인다)
+- `sprag-gate` — 테스트가 될 수 없는 게이트. 대상이 "스위트 자신이 무엇을 했는가"라 스위트 밖에 선다
+
+아직 없는 것: Windows(ConPTY). 막는 것은 pty가 아니라 wire가 Unix 도메인 소켓이라는 점이다
+(위 "비기능 요구사항").
 
 ## 설계 SSOT
 
