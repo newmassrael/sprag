@@ -636,6 +636,131 @@ fn the_cli_moves_a_window_and_says_which_nothing_happened() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **THE PANE LISTING SAYS WHEN A PANE'S CHILD IS GONE, AND IN THE WORDS THE OTHER SURFACE
+/// USES** — register item 418.
+///
+/// # What its absence cost, which is the reason this is a gate and not a nicety
+///
+/// A person pressed `Esc` at a dialog in a restored pane, saw nothing happen, pressed it again, and
+/// reported that **the key was broken**. It was not: the first `Esc` had been honoured and the
+/// program had EXITED, the screen kept the last frame it painted, and the second `Esc` reached a
+/// terminal with no program on it — so the tty echoed it as `^[`. Every piece of that was already
+/// knowable: `dead` rides the pane row (additive, one-way), `sprag processes` says `no child`, and
+/// the GUI's title has carried an `(exited)` suffix all along. **This listing — the one a person
+/// greps — printed a dead pane byte-identically to a live one.**
+///
+/// ⚠⚠⚠ **The three arms are the vocabulary, not the flag.** A gate that only checked "some marker
+/// appears" would let a signalled death read as `exited 1`, which is the specific wrong answer a
+/// second hand-written spelling produces — so each ending is driven for real and read back.
+///
+/// ⚠ Linux-gated with its neighbours: it reads the process table to know when the child is actually
+/// reaped, rather than sleeping and hoping.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_pane_listing_says_a_child_is_gone_and_how_it_went() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-dead-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+
+    // ⚠⚠⚠⚠ A LIVE PANE IS CREATED FIRST, AND IT IS LOAD-BEARING RATHER THAN TIDY. A session does
+    // not outlive its last pane and the last session ends the daemon (R309), so a fixture whose
+    // FIRST pane is one of the dying arms below kills the very daemon it is about to read — which
+    // is exactly what this gate did on its first run: `sprag panes` answered an empty listing
+    // because there was no longer a server. This pane holds the session open for all four arms and
+    // doubles as the live control at the end.
+    let anchor = sprag(&sock, &["split-window", "--", "sleep", "300"]);
+    assert!(anchor.ok, "the anchor pane: {}", anchor.stderr);
+    let anchor_pane = anchor.stdout.trim().to_owned();
+
+    // The row for `pane`, once the listing has admitted the child is gone. The wait is on the
+    // CONDITION rather than on a clock: `dead` is published when the output stream ends and
+    // `child_exit` lands later, so a sleep would race the second fact and read the first.
+    let row_when_dead = |pane: &str, expect: &str| -> String {
+        assert!(
+            wait_for(Duration::from_secs(10), || {
+                sprag(&sock, &["panes"])
+                    .stdout
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{pane}:")) && line.contains(expect))
+            }),
+            "pane {pane} never came to read {expect:?}: {}",
+            sprag(&sock, &["panes"]).stdout,
+        );
+        sprag(&sock, &["panes"])
+            .stdout
+            .lines()
+            .find(|line| line.starts_with(&format!("{pane}:")))
+            .expect("the pane is listed")
+            .to_owned()
+    };
+
+    // ── ARM 1: a CLEAN exit. The plain word, with no number attached. ──
+    let clean = sprag(&sock, &["split-window", "--", "sh", "-c", "exit 0"]);
+    assert!(clean.ok, "{}", clean.stderr);
+    let clean_row = row_when_dead(clean.stdout.trim(), "(exited)");
+    assert!(
+        !clean_row.contains("exited 0"),
+        "⚠⚠ A CLEAN EXIT SAYS `(exited)` AND NAMES NO CODE. `exited 0` reads as a fault report \
+         about a command that succeeded, which is the whole reason these words are not tmux's \
+         `dead`: {clean_row}",
+    );
+
+    // ── ARM 2: a FAILING exit. The code is the fact a person is looking for. ──
+    let failed = sprag(&sock, &["split-window", "--", "sh", "-c", "exit 3"]);
+    assert!(failed.ok, "{}", failed.stderr);
+    let failed_row = row_when_dead(failed.stdout.trim(), "(exited 3)");
+    assert!(
+        failed_row.contains("(exited 3)"),
+        "a non-zero exit carries its code: {failed_row}",
+    );
+
+    // ── ARM 3: a SIGNALLED death — the arm a second spelling gets wrong. ──
+    //
+    // ⚠ The child kills ITSELF rather than being killed from here: `kill-pane` removes the pane, so
+    // there would be no row left to read, and signalling the daemon's grandchild from a test is a
+    // race against the reaper. `PaneExit`'s own doc is why this arm exists at all — a signalled
+    // death carries the platform's stand-in code `1`, so a renderer that consulted the code first
+    // would print `(exited 1)` and lose the difference between a failed build and the OOM killer.
+    let killed = sprag(&sock, &["split-window", "--", "sh", "-c", "kill -TERM $$"]);
+    assert!(killed.ok, "{}", killed.stderr);
+    let killed_row = row_when_dead(killed.stdout.trim(), "killed");
+    assert!(
+        !killed_row.contains("exited 1"),
+        "⚠⚠⚠⚠ A SIGNALLED DEATH MUST NOT READ AS AN EXIT CODE. The signal is consulted first \
+         precisely because the `1` beside it is the platform's stand-in and not the process's \
+         choice — see `sprag_terminal::exit_phrase`: {killed_row}",
+    );
+
+    // ── AND THE CONTROL: the anchor's child is still running, so its row says nothing at all and
+    //    the listing a script parses is unchanged for every live pane. ──
+    let alive_row = sprag(&sock, &["panes"])
+        .stdout
+        .lines()
+        .find(|line| line.starts_with(&format!("{anchor_pane}:")))
+        .expect("the live pane is listed")
+        .to_owned();
+    assert!(
+        !alive_row.contains("exited") && !alive_row.contains("killed"),
+        "⚠⚠⚠ A LIVE PANE MUST BE BYTE-IDENTICAL TO THE PRE-418 SHAPE — the marker is additive, and \
+         a row that always carried it would be a second thing for every script here to parse: \
+         {alive_row}",
+    );
+    drop(guard);
+}
+
 /// ⚠⚠⚠⚠⚠ **A CALLER CAN SAY WHERE A PANE STARTS, AND WITHOUT SAYING IT THE ANSWER IS `$HOME` —
 /// NOT THE DAEMON'S OWN DIRECTORY** (register item 417).
 ///

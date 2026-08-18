@@ -435,7 +435,7 @@ mod tests {
             spoken
                 .name
                 .as_deref()
-                .is_some_and(|name| name.ends_with(crate::view::DEAD_MARKER)),
+                .is_some_and(|name| name.ends_with(&crate::view::dead_marker_plain())),
             "the accessible name ends with the very constant the title appends"
         );
     }

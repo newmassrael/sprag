@@ -497,6 +497,45 @@ pub struct PaneExit {
     pub signal: Option<String>,
 }
 
+/// **HOW A PANE'S CHILD ENDED, IN THE WORDS EVERY SURFACE SAYS IT IN** — `exited`, `exited 2`,
+/// `killed: Terminated`. `None` is a child that is gone but not yet reaped, which is a real state
+/// and not a missing value ([`PaneExit`]'s own doc: EOF holds before the status is known).
+///
+/// # ⚠⚠⚠⚠ One renderer because it is one vocabulary, and it was ALREADY two spellings away from
+/// being three
+///
+/// This started as `sprag-gui`'s private `dead_marker`, so the GUI's title could say it. Register
+/// item 418 is what the other surfaces cost: `sprag panes` printed a dead pane byte-identically to
+/// a live one, and a person reading it typed at a terminal with no program on it and concluded the
+/// KEY was broken — the daemon had known all along (`dead` is on the wire, additive and one-way).
+/// The fix is a row that says so, and a second hand-written spelling of these three cases is how
+/// one surface would come to call a signalled death `exited 1`.
+///
+/// ⚠⚠ It lives beside [`PaneExit`] rather than in a client crate because that is the LOWEST place
+/// every reader reaches: the CLI is in `sprag-host`, the titles are in `sprag-gui`, and neither
+/// depends on the other. A vocabulary held in one surface is one the others must copy.
+///
+/// ⚠⚠⚠ **The words are a decision, not a format.** `exited` rather than tmux's `dead`, in the plain
+/// past tense, because a `cargo test` that PASSED exits exactly like one that failed and "dead"
+/// reads as a fault — the same ruling `sprag_host`'s agent phrasing cites for rendering `blocked`
+/// as *needs an answer*. A screen reader reads these as-is, which is why they are words and not a
+/// glyph. ⚠ The SIGNAL is consulted before the code, because a signalled death carries the
+/// platform's stand-in `1` rather than anything the process chose.
+///
+/// No leading space and no brackets: WHERE it sits is each surface's own business — a title suffix,
+/// a listing column — and only the words are shared.
+#[must_use]
+pub fn exit_phrase(exit: Option<&PaneExit>) -> String {
+    match exit {
+        Some(PaneExit {
+            signal: Some(signal),
+            ..
+        }) => format!("killed: {signal}"),
+        Some(PaneExit { code, .. }) if *code != 0 => format!("exited {code}"),
+        _ => "exited".to_owned(),
+    }
+}
+
 /// The child's exit status, shared between the reader thread that reaps it and every reader of the
 /// [`PanePty`] that outlives its child. `None` until the reap publishes — see [`PaneExit`] for why
 /// that is a real state and not a transient to be papered over.

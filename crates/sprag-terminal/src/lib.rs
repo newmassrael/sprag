@@ -67,7 +67,7 @@ pub use layout::{
 pub use pane_name::{PaneName, PaneNameError};
 pub use pane_pty::{
     Attention, CommandBuilder, ECHO_TRAIL_CAP, Hand, Hands, PaneExit, PaneHooks, PanePty,
-    PanePtyError, PanePtyHandle, RawOutput, foreground_pgid_of,
+    PanePtyError, PanePtyHandle, RawOutput, exit_phrase, foreground_pgid_of,
 };
 pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,

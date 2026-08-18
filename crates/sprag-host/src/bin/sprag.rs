@@ -3742,7 +3742,42 @@ fn panes(args: Vec<String>) -> io::Result<()> {
             Some(opener) => format!("  opened by pane {opener}"),
             None => String::new(),
         };
-        println!("{id}: {cols}x{rows}  {command}{name}{title}{opened_by}{active}");
+        // ⚠⚠⚠⚠⚠ WHETHER THE PANE'S CHILD IS STILL THERE — register item 418, and the omission cost
+        // a person their model of the product. A dead pane printed byte-identically to a live one,
+        // so somebody typed `Esc` at a terminal with no program on it, watched nothing happen, and
+        // reported that the KEY was broken. The daemon had known all along: `dead` rides this very
+        // row (additive and one-way), the GUI's title has said it since the marker existed, and
+        // THIS listing — the one a person greps — dropped it on the floor.
+        //
+        // ⚠⚠ The words are `sprag_terminal::exit_phrase`'s, not spelled again here: the GUI and this
+        // are two placings of one vocabulary, and a second spelling is how a signalled death becomes
+        // `exited 1` on one surface and `killed: Terminated` on the other.
+        //
+        // ⚠ LAST on the row, after `(active)`, because it is the most final thing that can be said
+        // about a pane — the GUI's title orders the same three facts the same way, by increasing
+        // finality — and because a dead pane can still be the ACTIVE one, so the two do not compete
+        // for a position. Absent for a live pane, which keeps this listing byte-identical to the
+        // shape every script parsing it was written against.
+        //
+        // ⚠ `child_exit` is rebuilt from its two published fields rather than deserialised: the
+        // daemon writes `{code, signal?}` by hand there (`PaneExit` carries no serde derive, on
+        // purpose — it crosses the wire as a shape the host owns), and a pane can be `dead` with no
+        // `child_exit` at all, which is the not-yet-reaped state `exit_phrase` takes `None` for.
+        let exited = if pane["dead"] == json!(true) {
+            let how = pane["child_exit"]
+                .as_object()
+                .map(|exit| sprag_terminal::PaneExit {
+                    code: exit.get("code").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    signal: exit
+                        .get("signal")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            format!("  ({})", sprag_terminal::exit_phrase(how.as_ref()))
+        } else {
+            String::new()
+        };
+        println!("{id}: {cols}x{rows}  {command}{name}{title}{opened_by}{active}{exited}");
     }
     Ok(())
 }

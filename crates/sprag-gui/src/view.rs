@@ -185,15 +185,31 @@ pub(crate) fn agent_marker(agent: Option<&PaneAgent>, dead: bool) -> String {
     }
 }
 
-/// What a title says about a pane whose child has exited.
+/// What a title says about a pane whose child has exited, with no status known yet — the framed
+/// plain case of [`dead_marker`], for the gates that assert a title ENDS with it.
 ///
-/// Words, not a glyph, and the plain past tense: a screen reader reads it as-is (the attention
-/// marker needs a spoken translation precisely because it is a symbol), and "exited" describes what
-/// happened without claiming it went wrong — a `cargo test` that passed exits exactly like one that
-/// failed. tmux says "dead" here; that reads as a fault, and most of these are not.
-pub(crate) const DEAD_MARKER: &str = " (exited)";
+/// # ⚠⚠⚠⚠ It is a function and not a `const`, and that is item 418's whole point
+///
+/// It WAS `const DEAD_MARKER: &str = " (exited)"`, and the words in it were this surface's own —
+/// which was fine until `sprag panes` had to say the same three things and would have had to spell
+/// them a second time. The words moved down to [`sprag_terminal::exit_phrase`] so both surfaces
+/// read one vocabulary; a literal left behind here would have been exactly the copy that move
+/// existed to delete, kept alive by a gate watching it instead of by nothing existing to drift.
+///
+/// ⚠ So the gates call the RENDERER. A test that asserts against `dead_marker(None)` cannot pass
+/// while the product says something else, which a test comparing two literals can.
+///
+/// ⚠⚠ `#[cfg(test)]` because it is a GATE's convenience and nothing the product renders through —
+/// the paint path calls [`dead_marker`] with the exit it actually has. Compiling it into the
+/// shipped binary would put a second entry point to the same words back where one was just removed,
+/// and clippy said so (`never used`) before this attribute did.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn dead_marker_plain() -> String {
+    dead_marker(None)
+}
 
-/// [`DEAD_MARKER`], refined by HOW the child ended once the host has reaped it.
+/// The exit marker a title wears, refined by HOW the child ended once the host has reaped it.
 ///
 /// The SSOT both title surfaces render through — the sighted title and the a11y name — so the two
 /// cannot drift on wording the way two `format!` calls would.
@@ -206,19 +222,17 @@ pub(crate) const DEAD_MARKER: &str = " (exited)";
 /// * A NON-ZERO code is shown (`(exited 1)`). This is the whole point of reaping: a stopped screen
 ///   full of output cannot say whether the command it ran actually worked.
 /// * A CLEAN exit, and a death whose status is not known yet, both render as the bare
-///   [`DEAD_MARKER`]. Deliberately the same string, for two reinforcing reasons. `(exited 0)` is
-///   noise on the commonest ending there is — a shell the user typed `exit` into. And because they
-///   coincide, the gap between the pane dying and the host reaping it is INVISIBLE for a clean
-///   exit; only a failing command flickers, briefly, from `(exited)` to `(exited 1)`.
+///   `(exited)`. Deliberately the same string, for two reinforcing reasons.
+///   `(exited 0)` is noise on the commonest ending there is — a shell the user typed `exit` into.
+///   And because they coincide, the gap between the pane dying and the host reaping it is INVISIBLE
+///   for a clean exit; only a failing command flickers, briefly, from `(exited)` to `(exited 1)`.
+///
+/// ⚠⚠⚠ The WORDS come from [`sprag_terminal::exit_phrase`] and only the PLACING is this surface's
+/// — register item 418. They were spelled here, privately, until `sprag panes` had to say the same
+/// three things and would have had to spell them a second time; a vocabulary held in one surface is
+/// one the others copy, and the copy is where `killed: Terminated` becomes `exited 1`.
 pub(crate) fn dead_marker(exit: Option<&PaneExit>) -> String {
-    match exit {
-        Some(PaneExit {
-            signal: Some(signal),
-            ..
-        }) => format!(" (killed: {signal})"),
-        Some(PaneExit { code, .. }) if *code != 0 => format!(" (exited {code})"),
-        _ => DEAD_MARKER.to_owned(),
-    }
+    format!(" ({})", sprag_terminal::exit_phrase(exit))
 }
 
 /// view-fn (pinion §6.3): per-window paint. The **main** window tiles the DOCKED panes
@@ -994,6 +1008,49 @@ pub(crate) fn fill_size() -> Size {
 mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
+
+    /// ⚠⚠⚠⚠ **THIS SURFACE FRAMES THE SHARED PHRASE AND DOES NOT RE-WORD IT** — item 418's tie.
+    ///
+    /// The three words live in [`sprag_terminal::exit_phrase`] so that `sprag panes` and this title
+    /// describe one pane the same way. What is left here is the FRAMING (a leading space and
+    /// brackets, because a title is a suffix and a listing column is not), and this is what holds
+    /// the two apart: re-word any case here and the assertion fails naming it, rather than the two
+    /// surfaces quietly disagreeing about a dead pane.
+    ///
+    /// ⚠ Asserted against the shared FUNCTION's output rather than against a literal — the shape
+    /// `the_marker_frames_the_shared_phrase_…` uses one test over, and the reason a literal would
+    /// have been the very copy item 418 deleted.
+    #[test]
+    fn the_exit_marker_frames_the_shared_phrase_for_every_ending() {
+        for exit in [
+            None,
+            Some(PaneExit {
+                code: 0,
+                signal: None,
+            }),
+            Some(PaneExit {
+                code: 3,
+                signal: None,
+            }),
+            Some(PaneExit {
+                code: 1,
+                signal: Some("Terminated".to_owned()),
+            }),
+        ] {
+            assert_eq!(
+                dead_marker(exit.as_ref()),
+                format!(" ({})", sprag_terminal::exit_phrase(exit.as_ref())),
+                "⚠⚠⚠ every ending must be the shared vocabulary in this surface's frame — item 418 \
+                 moved the words precisely so this title and `sprag panes` could not drift: \
+                 {exit:?}",
+            );
+        }
+        assert_eq!(
+            dead_marker_plain(),
+            " (exited)",
+            "and the plain case reads as words a screen reader can speak, not a glyph",
+        );
+    }
 
     /// ⚠⚠⚠⚠⚠ **A WINDOW THAT CANNOT SHOW THE WHOLE PANE SAYS HOW MUCH IS MISSING** — item 411, and
     /// the two silences it must keep apart.

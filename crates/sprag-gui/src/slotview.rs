@@ -1441,7 +1441,7 @@ mod tests {
     #[test]
     fn an_exited_pane_wears_the_marker_and_a_live_one_does_not() {
         use crate::attention::{ATTENTION_MARKER, ack_focused};
-        use crate::view::DEAD_MARKER;
+        use crate::view::dead_marker_plain;
 
         let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
         let view = SlotView::new(Box::new(FakeHost {
@@ -1458,7 +1458,7 @@ mod tests {
         Owner::new().run(|| {
             let title = |i| crate::view::pane_display_title(&view, i, None);
             assert!(
-                title(0).ends_with(DEAD_MARKER),
+                title(0).ends_with(&dead_marker_plain()),
                 "the exited pane says so: {:?}",
                 title(0)
             );
@@ -1473,7 +1473,7 @@ mod tests {
                 title(0)
             );
             assert!(
-                !title(1).ends_with(DEAD_MARKER),
+                !title(1).ends_with(&dead_marker_plain()),
                 "a live sibling wears nothing: {:?}",
                 title(1)
             );
@@ -1505,7 +1505,7 @@ mod tests {
                 title(0)
             );
             assert!(
-                title(0).ends_with(DEAD_MARKER),
+                title(0).ends_with(&dead_marker_plain()),
                 "but looking at a dead pane does not bring it back: {:?}",
                 title(0)
             );
@@ -1583,7 +1583,7 @@ mod tests {
             );
             assert_eq!(
                 title(3),
-                format!("claude{}", crate::view::DEAD_MARKER),
+                format!("claude{}", crate::view::dead_marker_plain()),
                 "a dead pane's final screen may still show an agent; the pane is not running one",
             );
         });
@@ -1602,7 +1602,7 @@ mod tests {
     /// which is the whole reason to reap at all.
     #[test]
     fn an_exited_panes_title_names_its_code_or_the_signal_that_killed_it() {
-        use crate::view::DEAD_MARKER;
+        use crate::view::dead_marker_plain;
 
         let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11), pid(12)]));
         let view = SlotView::new(Box::new(FakeHost {
@@ -1647,7 +1647,7 @@ mod tests {
                 title(1)
             );
             assert!(
-                title(2).ends_with(DEAD_MARKER),
+                title(2).ends_with(&dead_marker_plain()),
                 "and one not yet reaped still says it is finished: {:?}",
                 title(2)
             );
@@ -1681,7 +1681,8 @@ mod tests {
 
         Owner::new().run(|| {
             assert!(
-                crate::view::pane_display_title(&view, 0, None).ends_with(crate::view::DEAD_MARKER),
+                crate::view::pane_display_title(&view, 0, None)
+                    .ends_with(&crate::view::dead_marker_plain()),
                 "a clean exit is reported as finished, with no number to read",
             );
         });
