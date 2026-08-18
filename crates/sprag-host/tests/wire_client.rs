@@ -19,12 +19,13 @@ use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
-    CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, FULL_TEXT_SLOT,
-    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, MOVE_WINDOW_ACTION,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
-    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, project_slot_for,
+    CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, FULL_LINES_SLOT,
+    FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
+    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
+    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    pane_processes_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -4150,6 +4151,156 @@ fn an_agent_this_daemon_launched_reports_the_turn_boundaries_it_alone_knows() {
     assert_eq!(
         entry["agent"]["seq"], 2,
         "both edges of the turn were published, though the state ends where it began: {entry}",
+    );
+}
+
+/// **AN AGENT THIS DAEMON LAUNCHED TALKS TO THE MCP SERVER OF THE IMAGE THAT MADE ITS PANE** —
+/// register item 444, end to end, with no step faked and no install anywhere.
+///
+/// A real `sprag-term`, a real pane birth, the real per-launch decision, the real `sprag-mcp`
+/// sitting beside that daemon, and a program that actually SPAWNS what the document names and
+/// speaks JSON-RPC to it. The item's whole complaint was a server nobody could date: the machine it
+/// was measured on served an agent-facing roster three weeks behind the tree, from user scope, with
+/// nothing anywhere able to say so.
+///
+/// # ⚠⚠⚠⚠ Two readers, marked in the same breath, because either alone is a complete and wrong story
+///
+/// * **The OPERATING SYSTEM's answer** — the pane's foreground job argv, straight out of
+///   `/proc/<pid>/cmdline`. It says what the daemon actually put on that command line, which is the
+///   only reading that can say the injected server is the SIBLING BY ABSOLUTE PATH rather than a
+///   name `PATH` would resolve to whatever is installed. A screen cannot tell those apart.
+/// * **The PANE's own screen** — what came back when the agent started that server and asked it
+///   what it was. It says the document names something an agent can actually run, which an argv
+///   cannot: a path to a file that does not exist, or a document nested one level wrong, produces
+///   exactly the same command line.
+///
+/// The build is what ties the two together. [`sprag_rpc::BUILD`] is stamped into an image when it
+/// is compiled, so a server whose `serverInfo` carries THIS test's build is the one built from this
+/// tree — and the stale copy on the machine this was written on (which is still installed, and
+/// still first on nobody's `PATH` by accident) carries another.
+///
+/// ⚠ [`sprag_gate::sibling_bin`] rather than joining the name onto a directory: `cargo test -p
+/// sprag-host` does not build another package's binaries, and a gate that drove whatever an earlier
+/// build had left there would pass while saying nothing. It refuses when it cannot tell.
+#[test]
+fn an_agent_this_daemon_launched_talks_to_the_mcp_server_of_the_image_that_made_its_pane() {
+    let server = sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag-term"), "sprag-mcp");
+    let agent = AgentBox::new("mcp");
+    let env = agent.env();
+    let (_host, sock) = spawn_host_with(
+        &["claude"],
+        &env.iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // ⚠ THE LOGICAL LINES THE CHILD WROTE, not the rows a 40-column pane broke them into — see
+    // `FULL_LINES_SLOT`. The width belongs to whoever attached, and a `contains` over wrapped rows
+    // would be a gate about this harness's pane size.
+    let lines = |conn: &mut HostConn| -> Vec<String> {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(0, FULL_LINES_SLOT) }),
+        )
+        .ok()
+        .and_then(|value: Value| serde_json::from_value::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+    };
+
+    // ── READER ONE: the pane's screen. The agent started the server it was handed and asked it
+    // what it is. A daemon that injected nothing gets `agent-peer mcp: no --mcp-config on this
+    // launch` here, which is the diagnosis rather than a silence.
+    let mut said = Vec::new();
+    let answered = wait_until(Duration::from_secs(30), || {
+        said = lines(&mut conn);
+        said.iter().any(|line| line.starts_with("agent-peer mcp"))
+    });
+    assert!(
+        answered,
+        "the launched agent never reported on an MCP server; the pane said: {said:?}",
+    );
+    let report = said
+        .iter()
+        .find(|line| line.starts_with("agent-peer mcp"))
+        .expect("the line the wait above found");
+    // The package version is this workspace's one version, so the test's own is the server's.
+    let expected = format!(
+        "agent-peer mcp {} version={}+{} tools=",
+        sprag_host::hooks::MCP_SERVER,
+        env!("CARGO_PKG_VERSION"),
+        sprag_rpc::BUILD,
+    );
+    assert!(
+        report.starts_with(&expected),
+        "⚠⚠⚠ the agent reached a server that is not this image. Wanted a line opening {expected:?}, \
+         the pane said {report:?}",
+    );
+    // ⚠ A LOWER BOUND, never a count: what the roster holds is the product's to say (and there is a
+    // gate in `sprag-mcp` holding it against the vocabulary). What this asserts is that the server
+    // answered `tools/list` with a roster at all — without it, a server that completed the handshake
+    // and then went silent would read as a working one.
+    let tools: usize = report[expected.len()..]
+        .parse()
+        .unwrap_or_else(|why| panic!("the roster size is a number ({why}): {report:?}"));
+    assert!(tools > 0, "the server served a roster: {report:?}");
+
+    // ── READER TWO: the operating system. What the daemon actually put on that command line.
+    let id = pane_entry(&mut conn, 0)["id"]
+        .as_u64()
+        .expect("the boot pane is listed with an id");
+    let reading: PaneProcessesWire = serde_json::from_value(
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(&pane_processes_at(0)) }),
+        )
+        .expect("the processes reading"),
+    )
+    .expect("the processes reading parses");
+    let argv = reading
+        .panes
+        .iter()
+        .find(|row| row.id == id)
+        .and_then(|row| row.foreground.as_ref())
+        .map(|job| {
+            job.processes
+                .iter()
+                .flat_map(|process| process.argv.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let at = argv
+        .iter()
+        .position(|arg| arg == "--mcp-config")
+        .unwrap_or_else(|| panic!("the pane's own job carries the flag: {argv:?}"));
+    let document: Value = serde_json::from_str(&argv[at + 1])
+        .unwrap_or_else(|why| panic!("the value beside the flag is JSON ({why}): {argv:?}"));
+    let named = document["mcpServers"][sprag_host::hooks::MCP_SERVER]["command"]
+        .as_str()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("the entry names a command: {document}"));
+    // ⚠⚠⚠ ABSOLUTE is the half a `PATH` lookup fails, and it is asserted on the STRING the daemon
+    // wrote — before any resolution, because canonicalising would make a bare name absolute and
+    // hide exactly the defect this exists to catch.
+    assert!(
+        named.is_absolute(),
+        "⚠⚠⚠⚠ the server is named by absolute path — a bare name is resolved on PATH, which is how \
+         an agent came to be talking to an image three weeks behind the tree: {document}",
+    );
+    // ⚠⚠ And THE SAME FILE, compared as a file rather than as a string: this repository's `target`
+    // is a symlink to a build cache, so the daemon's own `/proc/self/exe` spells the sibling
+    // resolved while cargo hands this test the link. Two spellings, one inode — a string comparison
+    // here was red on a correctly injected launch.
+    assert_eq!(
+        std::fs::canonicalize(&named).ok(),
+        std::fs::canonicalize(&server).ok(),
+        "⚠⚠⚠⚠ the server named on the launch is the SIBLING OF THIS DAEMON: {document}",
+    );
+    assert!(
+        !argv.iter().any(|arg| arg == "--strict-mcp-config"),
+        "⚠⚠⚠ sprag ADDS a server; it never says «only mine», which would delete every server this \
+         agent's user configured: {argv:?}",
     );
 }
 

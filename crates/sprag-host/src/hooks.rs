@@ -160,6 +160,53 @@ pub struct Target {
     /// codex session. An unverified `Some` would be worse than an honest `None`: it would append a
     /// flag to somebody's editor session and find out at their expense.
     session_flag: Option<&'static str>,
+    /// The flag this agent takes ONE launch's MCP servers on, when it has one.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a daemon hands its agent an MCP server at all (register item 444)
+    ///
+    /// [`session_flag`](Self::session_flag) is the same idea one surface over, and the argument
+    /// there is the whole argument here: **an image should hand its agent ITS OWN sibling rather
+    /// than trust whatever somebody installed.** A pane's hook is never stale because there is no
+    /// second copy to keep in step — it is `sprag_bin()`, the sibling of the running daemon,
+    /// written into the launch. sprag's agent-facing MCP server had no such treatment: it came from
+    /// the user's own scope (`~/.claude.json`), so it was whatever was installed, whenever it was
+    /// installed. Measured 2026-08-18 by asking the two binaries for their rosters — the installed
+    /// one answered a fraction of what the tree serves, and **nothing anywhere could say so**: a
+    /// verb the product HAS reads to an agent as *no such tool*, which reads as *the product cannot
+    /// do this*.
+    ///
+    /// # ⚠⚠ It ADDS, and that is measured rather than assumed
+    ///
+    /// Measured against the real `claude` (2.1.234) on the box that wrote this, with stub servers
+    /// so the answer could not be guessed from a roster:
+    ///
+    /// * a server this flag names under a key the user's own config also uses **wins** — a launch
+    ///   inside a pane therefore reaches this image's server and not the installed one, which is
+    ///   the entire point;
+    /// * every server the user configured under **another** key survives untouched.
+    ///
+    /// That second half is why [`mcp_only_flag`](Self::mcp_only_flag) is a refusal rather than
+    /// something sprag passes: `--strict-mcp-config` would delete a person's other servers, and a
+    /// pane is not permission to do that.
+    ///
+    /// `None` says this agent has no such door, which is codex's answer today for
+    /// [`session_flag`](Self::session_flag)'s reason exactly — its per-run overrides are `-c
+    /// key=value` over TOML, nobody has established that an MCP server can be spelled that way, and
+    /// an unverified `Some` would find out at somebody's expense.
+    mcp_flag: Option<&'static str>,
+    /// The flag by which this agent's user says *use ONLY the MCP servers I named*, when it has one
+    /// — read as a REFUSAL and never written.
+    ///
+    /// It is here because its presence is a decision sprag must not overrule. A launch carrying it
+    /// has asked for an MCP environment holding exactly what its caller passed, and a launch
+    /// carrying it with no [`mcp_flag`](Self::mcp_flag) beside it has asked for NONE. Injecting
+    /// into either would answer a question its caller already answered — the rule
+    /// [`session_args`](Self::session_args) follows about `--settings`, met one flag over.
+    ///
+    /// ⚠ Deliberately a field rather than a word inside [`mcp_args`](Self::mcp_args): this type's
+    /// premise is that a further agent is a further `const` rather than further code, and a spelling
+    /// baked into the method would be claude's spelling imposed on every agent that came later.
+    mcp_only_flag: Option<&'static str>,
     /// The flag this agent takes a caller-chosen SESSION IDENTITY on, when it has one.
     ///
     /// # ⚠⚠⚠ Why sprag names the session rather than finding out what it was called
@@ -238,6 +285,14 @@ pub const CLAUDE: Target = Target {
     // form is what makes this a launch and not a file: nothing is written, so nothing is left
     // behind to version, clean up, or point at a daemon that has since gone.
     session_flag: Some("--settings"),
+    // Verified against `claude --help` on the box that wrote this: "--mcp-config <configs...> —
+    // Load MCP servers from JSON files or strings", and then against the agent itself: a stub
+    // server passed this way under the key the machine's own config already used was the one the
+    // agent got, and a differently-named server from that config was still there beside it.
+    mcp_flag: Some("--mcp-config"),
+    // Read from the same `--help`: "--strict-mcp-config — Only use MCP servers from --mcp-config".
+    // Named here so a launch that carries it is left alone; sprag never passes it.
+    mcp_only_flag: Some("--strict-mcp-config"),
     // Verified against `claude --help` and then against a live session: "--session-id <uuid> — Use
     // a specific session ID for the conversation (must be a valid UUID)". The record it writes is
     // named for it — `~/.claude/projects/<dir>/<uuid>.jsonl` — which is the whole reason this field
@@ -285,6 +340,14 @@ pub const CODEX: Target = Target {
     // See `session_flag`: codex's per-run overrides are `-c key=value` over TOML, and no one has
     // run whether a hooks table can be spelled that way. Its users go through `install-hooks`.
     session_flag: None,
+    // `None` for `session_flag`'s reason, one surface over: codex's per-run override is `-c
+    // key=value` parsed as TOML, and whether an MCP server handed to it that way is one codex
+    // actually starts has not been run. A `Some` nobody measured would put a flag on somebody's
+    // editing session in exchange for a server that may never be spawned.
+    mcp_flag: None,
+    // `None` wherever `mcp_flag` is, and not by coincidence: this field exists to refuse an
+    // injection, and an agent that is never injected into has nothing to refuse.
+    mcp_only_flag: None,
     // See `identity_flag`. A flag that names a session is not enough on its own — what sprag needs
     // is the RECORD that name reaches, and nobody has established where codex files one or whether
     // it can be named from outside. An unverified `Some` here would put a flag on somebody's
@@ -320,6 +383,22 @@ pub const TARGETS: &[Target] = &[CLAUDE, CODEX];
 pub fn target(name: &str) -> Option<&'static Target> {
     TARGETS.iter().find(|target| target.name == name)
 }
+
+/// The key sprag's own MCP server takes in the roster of an agent this daemon launched — see
+/// [`Target::mcp_args`].
+///
+/// ⚠⚠⚠ **It is the same word a person's own installed entry uses, and that is the point rather
+/// than a collision to be avoided.** Measured against the real agent: a server passed on the launch
+/// under a key the user's config also holds is the one the agent gets. So a pane's agent reaches
+/// the server of the image that made its pane even on the machine that HAS a stale install — which
+/// is the only machine the injection matters on. A distinct key would leave both in the roster,
+/// with two spellings of every verb and nothing to say which one answers about this daemon.
+///
+/// ⚠ The residue, stated rather than hidden: a person who deliberately pointed their own `sprag`
+/// entry somewhere else does not get it inside a sprag pane. Everywhere else they do — the
+/// injection is per-launch, so it reaches exactly the agents this daemon starts — and inside a pane
+/// the daemon's own sibling is the answer their entry was trying to be.
+pub const MCP_SERVER: &str = "sprag";
 
 impl Target {
     /// The file an install edits.
@@ -470,6 +549,56 @@ impl Target {
         Some(vec![
             flag.to_owned(),
             serde_json::json!({ "hooks": Value::Object(hooks) }).to_string(),
+        ])
+    }
+
+    /// The arguments that hand ONE launch of this agent the MCP server at `server` — sprag's own
+    /// agent-facing surface, taken from the image that is making this pane.
+    ///
+    /// `None` when the launch must be left exactly as its caller wrote it, and the refusals are the
+    /// substance:
+    ///
+    /// * this agent has no per-launch MCP door — this type's `mcp_flag` is `None`;
+    /// * the argv already carries that flag, in either of the two spellings a command line has for
+    ///   one. The caller has said what MCP servers this launch has; a second copy is a precedence
+    ///   question no agent's manual answers the same way twice — [`session_args`](Self::session_args)'
+    ///   rule, and it is one rule because it is one mistake;
+    /// * the argv carries this type's `mcp_only_flag`. That flag says *only what I named*, so a
+    ///   launch carrying it has asked for a stated MCP environment — and one carrying it alone has
+    ///   asked for an empty one. Adding to either overrules a decision somebody made;
+    /// * `server` is not UTF-8. It travels as a JSON string, and a lossy conversion would name a
+    ///   DIFFERENT file — the one failure mode worse than not injecting at all.
+    ///
+    /// # What the document says, and what it deliberately does not
+    ///
+    /// One server, under [`MCP_SERVER`], naming an absolute program and nothing else. It does not
+    /// pass an environment: a pane's child already carries [`crate::PANE_ENV_VAR`] and the daemon's
+    /// address ([`crate::pane_env_source`]), the agent inherits them, and the server the agent
+    /// spawns inherits them in turn — so the server reaches the daemon that made the pane by the
+    /// same route everything else in that pane does. Naming them here would be a second copy of
+    /// that publication, free to drift.
+    ///
+    /// ⚠ It is a JSON STRING rather than a file for `session_args`' reason: a launch leaves nothing
+    /// on disk to outlive the agent, be cleaned up after a killed daemon, or be readable by whoever
+    /// the agent runs as.
+    #[must_use]
+    pub fn mcp_args(&self, argv: &[String], server: &Path) -> Option<Vec<String>> {
+        let flag = self.mcp_flag?;
+        let settled = |name: &str| {
+            let joined = format!("{name}=");
+            argv.iter()
+                .any(|arg| arg == name || arg.starts_with(&joined))
+        };
+        if settled(flag) || self.mcp_only_flag.is_some_and(settled) {
+            return None;
+        }
+        let command = server.to_str()?;
+        Some(vec![
+            flag.to_owned(),
+            serde_json::json!({
+                "mcpServers": { MCP_SERVER: { "type": "stdio", "command": command } },
+            })
+            .to_string(),
         ])
     }
 
@@ -946,10 +1075,11 @@ impl Status {
 /// An install that cannot RUN does not count as reporting — see [`Status::reporting`], which is
 /// where that conjunction lives and is tested.
 #[must_use]
-pub fn launch_args(argv: &[String], exe: &Path) -> Vec<String> {
+pub fn launch_args(argv: &[String], exe: &Path, mcp: Option<&Path>) -> Vec<String> {
     launch_args_from(
         argv,
         exe,
+        mcp,
         |target| already_reports(status(target)),
         mint_session_id,
     )
@@ -990,6 +1120,7 @@ fn already_reports(read: Result<Status, HookError>) -> bool {
 fn launch_args_from(
     argv: &[String],
     exe: &Path,
+    mcp: Option<&Path>,
     already_reports: impl Fn(&'static Target) -> bool,
     mint: impl Fn() -> String,
 ) -> Vec<String> {
@@ -999,16 +1130,23 @@ fn launch_args_from(
     let Some(target) = agent_of(argv) else {
         return Vec::new();
     };
-    // ⚠⚠ TWO DECISIONS, ASKED SEPARATELY. Instrumentation says *report your turns through this
-    // daemon*; identity says *and this is what this session is called*. They refuse for unrelated
-    // reasons — see `Target::identity_args` — so a launch may take one, both, or neither, and the
-    // one that is refused must not take the other down with it.
+    // ⚠⚠ THREE DECISIONS, ASKED SEPARATELY. Instrumentation says *report your turns through this
+    // daemon*; identity says *and this is what this session is called*; the server says *and these
+    // are the verbs of the image you are running inside*. They refuse for unrelated reasons — see
+    // `Target::identity_args` and `Target::mcp_args` — so a launch may take any of them, all, or
+    // none, and the one that is refused must not take the others down with it.
     let mut extra = if already_reports(target) {
         Vec::new()
     } else {
         target.session_args(argv, exe).unwrap_or_default()
     };
     extra.extend(target.identity_args(argv, mint).unwrap_or_default());
+    // ⚠ `None` is THIS IMAGE HAS NO SIBLING TO HAND OVER, and it is silence rather than a fallback
+    // on purpose — see `crate::mcp_beside`, which is where that decision is made and argued.
+    extra.extend(
+        mcp.and_then(|server| target.mcp_args(argv, server))
+            .unwrap_or_default(),
+    );
     extra
 }
 
@@ -1739,6 +1877,11 @@ mod tests {
     /// Where the installed binary is pretended to live. Absolute, because that is what an install
     /// resolves and what the recognition rule reads back.
     const EXE: &str = "/usr/local/bin/sprag";
+
+    /// Where the MCP server beside it is pretended to live — a SIBLING of [`EXE`], because that is
+    /// the only relationship [`Target::mcp_args`] is ever handed, and a fixture that put it
+    /// somewhere else would gate the rule against a case the daemon cannot produce.
+    const MCP: &str = "/usr/local/bin/sprag-mcp";
 
     /// **THE PAYLOAD A REAL AGENT SENT**, captured 2026-08-17 from `claude` 2.1.233 by installing a
     /// hook whose whole body was `cat > payload.json` and asking it one question.
@@ -2761,7 +2904,7 @@ mod tests {
             // ⚠ The launch still gets NAMED. The two decisions are independent — a caller who said
             // what configures this run has not said what it is called — so this asserts the
             // absence of the flag it refused rather than the absence of everything.
-            let carried = launch_args_from(&argv, Path::new(EXE), |_| false, fixed);
+            let carried = launch_args_from(&argv, Path::new(EXE), None, |_| false, fixed);
             assert!(
                 !carried.iter().any(|arg| arg == "--settings"),
                 "{argv:?} already says what configures it, so sprag adds no second copy: {carried:?}",
@@ -2774,17 +2917,165 @@ mod tests {
         }
     }
 
+    /// **AN AGENT THIS DAEMON LAUNCHES TALKS TO THE MCP SERVER OF THE IMAGE THAT MADE ITS PANE** —
+    /// register item 444, at the decision that produces it.
+    ///
+    /// The whole claim is the PATH: not *an* sprag server, but the sibling of the binary doing the
+    /// launching, so there is no second image on the machine to keep in step and nothing to install.
+    /// A document naming a bare program name would satisfy every other assertion here and reopen the
+    /// item — it is `PATH` that decided which server an agent got, and `PATH` on this machine held
+    /// one three weeks behind the tree.
+    ///
+    /// ⚠ It asserts the SHAPE around that path as well, because each part is separately capable of
+    /// producing a launch that starts nothing: the flag immediately before its value, one server
+    /// rather than a roster, the key [`MCP_SERVER`] publishes, and the transport spelled out.
+    ///
+    /// ⚠⚠⚠ **AND IT ASSERTS AN ABSENCE THAT IS THE ITEM'S OWN «MUST NOT BREAK»**: sprag never adds
+    /// [`Target::mcp_only_flag`]. That flag would make this the ONLY server the agent has, deleting
+    /// every other one its user configured — mnemosyne among them on the machine this was written
+    /// on. Injection ADDS; it does not take the roster over.
+    #[test]
+    fn a_launch_is_handed_the_mcp_server_beside_the_image_that_makes_its_pane() {
+        let carried = launch_args_from(
+            &["claude".to_owned()],
+            Path::new(EXE),
+            Some(Path::new(MCP)),
+            |_| false,
+            fixed,
+        );
+        let at = carried
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .unwrap_or_else(|| panic!("the launch carries the MCP flag: {carried:?}"));
+        let document: Value = serde_json::from_str(&carried[at + 1])
+            .unwrap_or_else(|why| panic!("the value beside the flag is JSON ({why}): {carried:?}"));
+
+        assert_eq!(
+            document["mcpServers"][MCP_SERVER]["command"], MCP,
+            "⚠⚠⚠ the server is the SIBLING OF THIS IMAGE, by absolute path — a bare name would be \
+             resolved on PATH, which is what handed agents a three-week-old roster: {document}",
+        );
+        assert_eq!(
+            document["mcpServers"][MCP_SERVER]["type"], "stdio",
+            "the transport is stated rather than left to a default: {document}",
+        );
+        assert_eq!(
+            document["mcpServers"]
+                .as_object()
+                .expect("an object of servers")
+                .keys()
+                .collect::<Vec<_>>(),
+            vec![MCP_SERVER],
+            "⚠⚠ exactly one server, under the key this module publishes: {document}",
+        );
+        assert!(
+            !carried.iter().any(|arg| arg == "--strict-mcp-config"),
+            "⚠⚠⚠⚠ sprag ADDS a server; it never says «only mine», which would delete every server \
+             this agent's user configured: {carried:?}",
+        );
+    }
+
+    /// **A LAUNCH THAT HAS ALREADY SETTLED ITS MCP SERVERS IS LEFT EXACTLY AS ITS CALLER WROTE IT**
+    /// — three spellings, one rule, and the third is the one that is easy to miss.
+    ///
+    /// `--mcp-config` in either spelling says *these are my servers*, and a second copy is the
+    /// precedence question [`Target::session_args`] refuses for `--settings`. `--strict-mcp-config`
+    /// ALONE says something stronger and stranger: *only what I named*, having named nothing — an
+    /// agent asked for an empty MCP environment, and a daemon that filled it would be overruling the
+    /// one instruction on that command line.
+    ///
+    /// ⚠ Each case also asserts that the OTHER two decisions still fire. Folding the refusals
+    /// together is a bug shaped exactly like a missing feature: a caller who said which servers this
+    /// launch has has not said how it reports or what it is called.
+    #[test]
+    fn a_launch_that_says_which_mcp_servers_it_has_keeps_them() {
+        for argv in [
+            vec!["claude", "--mcp-config", "/home/me/servers.json"],
+            // The joined spelling, for `session_args`' measured reason: a reader that knew only the
+            // separated form would append the second flag this refusal exists to prevent.
+            vec!["claude", "--mcp-config={\"mcpServers\":{}}"],
+            // ⚠ NOT a spelling of the flag above — a different flag, whose meaning is a refusal.
+            vec!["claude", "--strict-mcp-config"],
+        ] {
+            let argv = argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+            assert_eq!(
+                CLAUDE.mcp_args(&argv, Path::new(MCP)),
+                None,
+                "{argv:?} already says which MCP servers it has",
+            );
+            let carried = launch_args_from(
+                &argv,
+                Path::new(EXE),
+                Some(Path::new(MCP)),
+                |_| false,
+                fixed,
+            );
+            assert!(
+                !carried.iter().any(|arg| arg == "--mcp-config"),
+                "{argv:?} settles the question, so sprag adds no second answer: {carried:?}",
+            );
+            assert_eq!(
+                carried,
+                vec![
+                    "--settings".to_owned(),
+                    CLAUDE
+                        .session_args(&argv, Path::new(EXE))
+                        .expect("claude takes a per-launch document")[1]
+                        .clone(),
+                    "--session-id".to_owned(),
+                    MINTED.to_owned(),
+                ],
+                "and what it does carry is the reporting and the name, which this refusal has \
+                 nothing to do with",
+            );
+        }
+    }
+
+    /// **AN IMAGE WITH NO SERVER BESIDE IT HANDS OVER NOTHING, AND INSTRUMENTS THE LAUNCH ANYWAY.**
+    ///
+    /// `None` reaches here from [`crate::mcp_beside`], which refuses to fall back to `PATH` — see
+    /// its doc for why an unknown-vintage server is worse than none. What this fixes in place is the
+    /// consequence: such a launch is EXACTLY what it was before item 444, user scope and all, rather
+    /// than an agent that also lost its hooks or its name because one arm answered `None`.
+    #[test]
+    fn an_image_with_no_server_beside_it_still_instruments_and_names_the_launch() {
+        let carried = launch_args_from(
+            &["claude".to_owned()],
+            Path::new(EXE),
+            None,
+            |_| false,
+            fixed,
+        );
+        assert!(
+            !carried.iter().any(|arg| arg == "--mcp-config"),
+            "there is no sibling to name, so nothing is named: {carried:?}",
+        );
+        assert!(
+            carried.iter().any(|arg| arg == "--settings"),
+            "⚠⚠ and the launch is still instrumented: {carried:?}",
+        );
+        assert!(
+            carried.iter().any(|arg| arg == "--session-id"),
+            "⚠⚠ and still named: {carried:?}",
+        );
+    }
+
     /// What a launch carries is decided by the program, by its BASENAME, and by nothing else.
     ///
     /// The three answers in one place because they are one rule: an absolute path to an agent is
     /// that agent, an agent with no per-launch door is left to `install-hooks`, and everything else
     /// — which is nearly every pane ever opened — is launched untouched.
+    ///
+    /// ⚠ An MCP server IS offered here, so the emptiness assertions below are about every door at
+    /// once: a `codex` that grew an injection it has no measured flag for, or a shell handed a
+    /// `--mcp-config` meant for its child, fails here rather than at somebody's keyboard.
     #[test]
     fn only_a_recognised_agent_with_a_per_launch_door_carries_anything() {
         let carried = |argv: &[&str]| {
             launch_args_from(
                 &argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(),
                 Path::new(EXE),
+                Some(Path::new(MCP)),
                 |_| false,
                 fixed,
             )
@@ -2816,6 +3107,7 @@ mod tests {
         let reporting = launch_args_from(
             &argv,
             Path::new(EXE),
+            None,
             |target| target.name == "claude",
             fixed,
         );
@@ -2833,7 +3125,7 @@ mod tests {
             "an agent that already reports is still named",
         );
         assert!(
-            launch_args_from(&argv, Path::new(EXE), |_| false, fixed)
+            launch_args_from(&argv, Path::new(EXE), None, |_| false, fixed)
                 .iter()
                 .any(|arg| arg == "--settings"),
             "and the control: with nothing installed the launch is instrumented",
@@ -2935,12 +3227,26 @@ mod tests {
             "--resume".to_owned(),
             RESUMED.to_owned(),
         ];
-        let carried = launch_args_from(&argv, Path::new(EXE), |_| false, || MINTED.to_owned());
+        let carried = launch_args_from(
+            &argv,
+            Path::new(EXE),
+            Some(Path::new(MCP)),
+            |_| false,
+            || MINTED.to_owned(),
+        );
 
         assert!(
             carried.iter().any(|arg| arg == "--settings"),
             "⚠⚠⚠ a restored agent must be instrumented by the daemon doing the restoring — the \
              recorded instrumentation names a socket that is gone. Got {carried:?}",
+        );
+        // ⚠ AND THE SERVER, for the same reason one flag up: what a restore re-runs is a recorded
+        // argv, and the daemon that records it can be replaced by one built from other code. The
+        // server an agent talks to has to be the image that is driving it NOW, not the one that
+        // opened the pane before the machine was rebooted.
+        assert!(
+            carried.iter().any(|arg| arg == "--mcp-config"),
+            "⚠⚠⚠ a restored agent talks to the MCP server of the daemon restoring it: {carried:?}",
         );
         assert!(
             !carried.iter().any(|arg| arg == "--session-id"),

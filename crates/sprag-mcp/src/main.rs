@@ -264,6 +264,35 @@ fn respond_error(
 
 // ---- Handshake + tool catalog --------------------------------------------------
 
+/// WHICH IMAGE this server is, as the `version` an MCP client shows for it.
+///
+/// # ⚠⚠⚠⚠⚠ Why the package version alone was a lie of omission (register item 444)
+///
+/// This value used to be `CARGO_PKG_VERSION` and nothing else, which is `0.0.1` for every build
+/// this workspace has ever produced. So a server three weeks behind the tree and one built a minute
+/// ago published the *same* identity, and an agent told *no such tool* for a verb the product has
+/// could not tell a missing feature from a stale binary. Measured on 2026-08-18: the installed
+/// server answered a fraction of the tree's roster, and nothing anywhere said so.
+///
+/// [`sprag_rpc::BUILD`] is the answer that same item's other half already put on the wire — a
+/// commit stamped INTO the image when it was compiled, so it says what built THIS binary rather
+/// than what the tree is now.
+///
+/// # Why it goes in `version` rather than beside it
+///
+/// `version` is the field every MCP client already renders. A key of our own would be dropped by
+/// any client that models `serverInfo` strictly, and the reader this is for is a PERSON looking at
+/// a server their own configuration named — the case the launch-time injection deliberately does
+/// not reach. Semver's build metadata (`0.0.1+<commit>`) carries it in the field they are already
+/// looking at.
+///
+/// ⚠ A build with no git to ask stamps the word `unknown`, and it travels here unchanged: *this
+/// image cannot say* is a different answer from a blank, and the whole point is that an image which
+/// cannot say so is what caused the item.
+fn image_version() -> String {
+    format!("{}+{}", env!("CARGO_PKG_VERSION"), sprag_rpc::BUILD)
+}
+
 /// `initialize` result — echo the client's `protocolVersion`, advertise a tools-only
 /// server, and hand the agent an `instructions` primer so it grasps the surface at once.
 fn handle_initialize(message: &Value) -> Value {
@@ -274,7 +303,7 @@ fn handle_initialize(message: &Value) -> Value {
     json!({
         "protocolVersion": protocol_version,
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "sprag-mcp", "version": env!("CARGO_PKG_VERSION") },
+        "serverInfo": { "name": "sprag-mcp", "version": image_version() },
         "instructions": "You are running inside a pane of a sprag terminal. These tools let \
             you observe and drive the terminal as data. \
             Call `list_panes` FIRST to see the pane numbers (1 = the first pane); \"pane 2\" \
@@ -9036,6 +9065,39 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("pane of a sprag terminal")
+        );
+    }
+
+    /// **`serverInfo` SAYS WHICH IMAGE THIS IS** — register item 444's smaller half, and the only
+    /// answer available to the case the launch-time injection cannot reach: a `claude` a person
+    /// opened outside a sprag pane, whose MCP server is whatever their own configuration names.
+    ///
+    /// ⚠⚠⚠ The assertion is against [`sprag_rpc::BUILD`] rather than a literal, because a literal
+    /// would be a copy of the stamp that goes stale the moment it is written — the disease itself.
+    /// What it fixes is that the value MOVES with the image: a package version alone is `0.0.1` for
+    /// every build this workspace has ever produced, so a server three weeks behind the tree and one
+    /// built a minute ago published the same identity and nothing could tell them apart.
+    ///
+    /// ⚠ The package version is asserted to still be there, in front, because that is what makes it
+    /// a version rather than a commit in a version's clothing: `0.0.1+<commit>` is semver's own
+    /// spelling for build metadata, and a client that compares versions must still be able to.
+    #[test]
+    fn initialize_says_which_build_of_the_server_this_is() {
+        let result = handle_initialize(&json!({ "params": {} }));
+        let version = result["serverInfo"]["version"]
+            .as_str()
+            .expect("a version string")
+            .to_owned();
+        assert_eq!(
+            version,
+            format!("{}+{}", env!("CARGO_PKG_VERSION"), sprag_rpc::BUILD),
+            "⚠⚠⚠ the version names the package AND the commit this image was built from",
+        );
+        let (package, build) = version.split_once('+').expect("build metadata is present");
+        assert_eq!(package, env!("CARGO_PKG_VERSION"));
+        assert!(
+            !build.is_empty(),
+            "an image that cannot say answers the word its stamp reserves for that, never a blank",
         );
     }
 

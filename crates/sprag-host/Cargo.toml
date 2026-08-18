@@ -116,3 +116,9 @@ base64 = { workspace = true }
 # The durability e2e SIGKILLs the forked daemon (the reboot analogue). An integration test links
 # the crate's dev-dependencies, not its own, so libc is declared again here.
 libc = { workspace = true }
+# The freshness check for a sibling binary this suite SPAWNS. Item 444's end-to-end drives the real
+# `sprag-mcp`, which belongs to another package — so `cargo test -p sprag-host` does not build it,
+# and a gate that merely joined the name onto a directory would pass against whatever was left there
+# by an earlier build (measured three times: R241, R284, R367). `sibling_bin` asks cargo's own
+# depfile and REFUSES when it cannot tell. DEV-ONLY, and it takes no dependencies of its own.
+sprag-gate = { workspace = true }

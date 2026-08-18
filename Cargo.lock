@@ -3727,6 +3727,7 @@ dependencies = [
  "signal-hook",
  "sprag-conformance",
  "sprag-detect",
+ "sprag-gate",
  "sprag-grid",
  "sprag-input",
  "sprag-peer",

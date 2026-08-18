@@ -1794,7 +1794,8 @@ pub fn pane_args_source() -> PaneArgsSource {
     // sibling is cannot change while the daemon runs, and asking per birth would make every pane pay
     // a filesystem probe for an answer that is fixed.
     let sprag = sprag_bin();
-    Arc::new(move |argv: &[String]| crate::hooks::launch_args(argv, &sprag))
+    let mcp = mcp_bin();
+    Arc::new(move |argv: &[String]| crate::hooks::launch_args(argv, &sprag, mcp.as_deref()))
 }
 
 /// The [`PaneIdentitySource`] this daemon's pools consult — which part of a LAUNCHED argv names a
@@ -1826,14 +1827,62 @@ fn sprag_bin() -> std::path::PathBuf {
 /// no sibling of that name, which is every installed layout that separates the two — is a branch no
 /// developer's build tree ever takes.
 fn sprag_beside(exe: Option<&std::path::Path>) -> std::path::PathBuf {
-    if let Some(sibling) = exe
-        .and_then(std::path::Path::parent)
-        .map(|dir| dir.join("sprag"))
-        && sibling.exists()
-    {
-        return sibling;
-    }
-    std::path::PathBuf::from("sprag")
+    beside(exe, "sprag").unwrap_or_else(|| std::path::PathBuf::from("sprag"))
+}
+
+/// The agent-facing MCP server this daemon's agents TALK TO: the sibling of the running executable,
+/// and **nothing at all when there is no sibling** — see [`mcp_beside`].
+fn mcp_bin() -> Option<std::path::PathBuf> {
+    mcp_beside(std::env::current_exe().ok().as_deref())
+}
+
+/// [`mcp_bin`]'s DECISION, separated from the process it reads — [`sprag_beside`]'s split, for
+/// [`sprag_beside`]'s reason.
+///
+/// # ⚠⚠⚠⚠⚠ Why this one has NO `PATH` fallback, where the hook binary does
+///
+/// The two look like the same question and are not, and getting it wrong here would rebuild the
+/// defect the injection exists to remove (register item 444).
+///
+/// [`sprag_beside`] falls back to bare `sprag` because that binary is a CLIENT of a socket the pane
+/// already names: any `sprag` on `PATH` reports through the address it is given, so a copy of
+/// another vintage still reaches the right daemon and reports the right pane. Its version is not
+/// what the answer depends on.
+///
+/// An MCP server's whole value IS its vintage. What it hands the agent is a ROSTER — the verbs this
+/// product serves — and a copy on `PATH` is exactly the unknown-age image measured on 2026-08-18,
+/// three weeks behind the tree with nothing anywhere able to say so. Injecting one would replace *an
+/// agent reaching an old server* with *an agent reaching an old server sprag chose for it*, and it
+/// would do so silently, under the name a person's own configuration uses.
+///
+/// So the answer is `None`, the launch carries no `--mcp-config`, and the agent keeps user scope —
+/// **which is exactly today's behaviour, unchanged, for the case this cannot improve**. That case is
+/// visible rather than silent because the server publishes which build it is in its `serverInfo`,
+/// which is the other half of the same item.
+///
+/// ⚠ In both layouts this product actually ships, the sibling is there: a cargo build tree puts
+/// every binary in one directory, and `cargo install` puts them in one `bin`. The `None` arm is a
+/// deployment that copied SOME of the binaries — which this repository's own promotion did, and is
+/// the reason the arm is written down rather than assumed away.
+fn mcp_beside(exe: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    beside(exe, MCP_BIN)
+}
+
+/// The MCP server binary's own name — one spelling, so [`mcp_beside`] and anything that reports on
+/// it cannot come to disagree about which file is meant.
+const MCP_BIN: &str = "sprag-mcp";
+
+/// The sibling of `exe` called `name`, or `None` when there is no such file — the machine question
+/// [`sprag_beside`] and [`mcp_beside`] both ask, differing only in what they do with the absence.
+///
+/// The existence check is the substance: an executable with no sibling of that name is every
+/// installed layout that separates the two, and a path returned without checking would name a file
+/// that is not there — which each caller must answer for in its own way rather than discover at a
+/// pane's birth.
+fn beside(exe: Option<&std::path::Path>, name: &str) -> Option<std::path::PathBuf> {
+    exe.and_then(std::path::Path::parent)
+        .map(|dir| dir.join(name))
+        .filter(|sibling| sibling.exists())
 }
 
 impl Host {
@@ -3963,6 +4012,48 @@ mod tests {
         );
 
         assert_eq!(sprag_beside(None), std::path::PathBuf::from("sprag"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **THE MCP SERVER AN AGENT TALKS TO IS THE SIBLING OF THIS IMAGE, OR NOTHING** — and the
+    /// second half is the assertion, because it is where this rule differs from the one above.
+    ///
+    /// Register item 444's fix is *inject the sibling, do not install a copy*. A `PATH` fallback
+    /// would look like the same generosity `sprag_beside` shows and would quietly restore the
+    /// defect: the roster an agent sees would again be whichever image somebody installed, only now
+    /// chosen by sprag and named under the key a person's own configuration uses. So the absence
+    /// answers `None` and the launch carries no server at all — see [`mcp_beside`], and
+    /// `hooks::tests::an_image_with_no_server_beside_it_still_instruments_and_names_the_launch` for
+    /// what a launch does with that answer.
+    ///
+    /// Read three times with the input changed, the same directory with and without the sibling —
+    /// the shape the gate above uses, because the fallback branch is the one no build tree takes.
+    #[test]
+    fn the_agent_is_handed_the_mcp_server_beside_this_binary_or_none_at_all() {
+        let dir = std::env::temp_dir().join(format!("sprag-mcp-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let exe = dir.join("sprag-term");
+
+        assert_eq!(
+            mcp_beside(Some(&exe)),
+            None,
+            "⚠⚠⚠ with no sibling there is NOTHING to hand over — never a name PATH resolves, which \
+             is how an agent came to be talking to a three-week-old server",
+        );
+
+        std::fs::write(dir.join(MCP_BIN), "").expect("a sibling");
+        assert_eq!(
+            mcp_beside(Some(&exe)),
+            Some(dir.join(MCP_BIN)),
+            "the server of the image that is making the pane",
+        );
+
+        assert_eq!(
+            mcp_beside(None),
+            None,
+            "and a process that cannot say where it is has no sibling to name",
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
