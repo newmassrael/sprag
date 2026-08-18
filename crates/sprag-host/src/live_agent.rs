@@ -205,6 +205,29 @@ impl Live {
         // sessions this spawns still authenticate exactly as before.
         command.arg("--setting-sources");
         command.arg("project");
+        // ⚠⚠⚠⚠⚠ **AND THE PERMISSION MODE, FOR THE SAME REASON ONE ARGUMENT UP — MEASURED, AND THE
+        // MEASUREMENT IS TWO GATES IN THIS FILE DISAGREEING MINUTES APART.**
+        //
+        // `--setting-sources project` stops a fixture inheriting the developer's ALLOWLIST, and it
+        // was written after a gate reported `dialogs answered: 0` because of one. The MODE is the
+        // same class of variable and was left unnamed, so it came from wherever the agent remembers
+        // it. On 2026-08-18, on one machine, in one minute:
+        //
+        //   `a_live_loop_is_carried_past_a_dialog…`  ended `⏸ manual mode on`, `calls refused: 1`
+        //   `a_live_loop_replaces_its_session…`      ran   `⏵⏵ auto mode on`,  `calls refused: 0`
+        //
+        // — the second wrote the forbidden file without asking, and register item 439 read that as
+        // *the agent stopped raising dialogs*. It had not. **A gate that needs a dialog must name
+        // the mode that produces one**, or it is asserting a preference nobody in the measurement
+        // chose and is green or red by history.
+        //
+        // ⚠ `default` is the mode a person meets on a machine they have not configured — the same
+        // choice `project` makes about settings — and it is what makes a REFUSAL reachable: an
+        // agent that asks nothing can never exercise `screening`, which is what two of these gates
+        // are entirely about. ⚠⚠ A gate that wants another mode passes it through
+        // [`Live::start_args`]; what must not happen again is a gate getting one by accident.
+        command.arg("--permission-mode");
+        command.arg("default");
         // A real terminal, because the agent renders a TUI and the detector reads what it renders.
         command.env("TERM", "xterm-256color");
         // ⚠ THE CHILD MUST BE THE THING A PERSON GETS FROM A TERMINAL. This process is itself an
