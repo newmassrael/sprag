@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, JOIN_PANE_ACTION, KEY_ACTION,
+    BREAK_PANE_ACTION, BUILD, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, JOIN_PANE_ACTION, KEY_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
@@ -643,16 +643,30 @@ fn the_cli_moves_a_window_and_says_which_nothing_happened() {
 /// The socket here is a path nothing is listening on, which is why the assertion is about the exit
 /// code and stdout rather than about the string alone — a command that failed to reach a daemon
 /// also prints nothing on stdout, and the two look identical if only stderr is read.
+///
+/// ⚠⚠⚠⚠ **AND IT NAMES THE COMMIT, WHICH THIS GATE HELD THE ABSENCE OF FOR A WHILE.** Item 438
+/// made `print_version` say `sprag <version> (<commit>)` precisely because `CARGO_PKG_VERSION` is
+/// `0.0.1` and has never moved — the bare string was the same sentence for every build this
+/// repository has ever produced, so it could not answer the question the command exists for. This
+/// gate was not updated with it and pinned the pre-438 answer; nothing went red because the
+/// pre-push hook does not run this suite. Found 2026-08-18 by a workspace sweep taken for an
+/// unrelated pin bump.
+///
+/// ⚠⚠⚠ **The expected string is ASKED OF THE PRODUCT, never written down here.** A commit hash
+/// copied into a fixture is stale the moment the next commit lands, and this register has paid for
+/// written-down numbers before. `wire::BUILD` is the same constant the binary printed, so the pair
+/// cannot drift — while dropping the clause entirely (the mutation that matters) still reddens.
 #[test]
 fn version_answers_without_a_daemon() {
     let sock = socket_path();
+    let expected = format!("sprag {} ({})", env!("CARGO_PKG_VERSION"), BUILD);
     for flag in ["--version", "-V", "version"] {
         let run = sprag(&sock, &[flag]);
         assert!(run.ok, "{flag} succeeded with no server: {}", run.stderr);
         assert_eq!(
             run.stdout.trim(),
-            concat!("sprag ", env!("CARGO_PKG_VERSION")),
-            "{flag} prints the build on stdout",
+            expected,
+            "{flag} prints the build on stdout — the VERSION alone cannot distinguish two images",
         );
     }
     // The control: the same absent daemon refuses a command that needs one, so the success above

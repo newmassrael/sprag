@@ -2503,22 +2503,30 @@ mod tests {
     /// ⚠⚠ The pane is made to track FIRST, or this gate would run down the ordinary
     /// click-to-focus path that already worked and prove nothing.
     ///
-    /// # ⚠⚠⚠⚠⚠ WHY THIS ASSERTS A REQUEST AND NOT `focused()` — THE OTHER HALF IS UPSTREAM
+    /// # ⚠⚠⚠⚠ THIS ASSERTS THE RING, AND IT DID NOT ALWAYS — THE OTHER HALF WAS UPSTREAM
     ///
-    /// Measured 2026-08-18 with the fix in place: the request IS made, for the right pane
-    /// (`drain() == Some(pane_tag(1))`), and the ring does not move. The cause is in pinion's
-    /// `pointer_button_for_window` (`pinion-shell/src/substrate.rs`, the `raw_pointer_button_for_window`
-    /// arm): a raw sink that consumes the edge bumps the revision, asks for a redraw and **returns
-    /// early**, so it never reaches the dispatch tail's `drain_focus_mailboxes()` that every other
-    /// pointer arm goes through. A focus request written from inside a raw-pointer External
-    /// therefore waits for some later dispatch — item 409's failure exactly, one layer down and in
-    /// somebody else's crate.
+    /// Until pinion R1715 this held the REQUEST (`focus_request::drain()`) instead, because the
+    /// request was all sprag could make true: `pointer_button_for_window`'s raw arm bumped the
+    /// revision, asked for a redraw and **returned early**, so a consumed raw edge never reached
+    /// the dispatch tail's `drain_focus_mailboxes()` that every other pointer arm goes through.
+    /// A focus request written from inside a raw-pointer `External` therefore waited for whatever
+    /// dispatch came next — item 409's failure exactly, one layer down and in somebody else's
+    /// crate. It was filed as PINION-PR89 rather than worked around; a sprag-side forced drain
+    /// would have erased the defect from the crate that owned it.
     ///
-    /// ⚠⚠⚠ **So it is filed, not worked around.** This workspace's standing rule is that a pinion
-    /// defect is reported and PR'd, never edited from here, and a sprag-side hack to force a drain
-    /// would be a workaround over a root cause. What sprag owes is the request, and that is what
-    /// this holds — mutation-provable: delete the `focus_request` in `HyperlinkOracle::raw_pointer_button`
-    /// and this goes red. Tighten it to `core.focus().focused()` the day the upstream arm drains.
+    /// Delivered as pinion R1715 (`dd562b8d`), which went further than the report asked: the
+    /// resolution moved to ONE exit on the seam (so a future arm inherits it instead of having to
+    /// remember it), it repeats to a FIXED POINT (user code inside the resolution can request
+    /// again — a container handing focus to its child), and both backends carry it.
+    ///
+    /// ⚠⚠⚠ **So `drain()` is now the WRONG assertion, not merely a weak one** — the shell drains
+    /// and applies the mailbox before this test can look, so asserting on the leftover would hold
+    /// the ABSENCE of the fix. That is why this reads the ring, and reads it through the same
+    /// `focus()` a keystroke would.
+    ///
+    /// Mutation-provable both ways: delete the `focus_request` in
+    /// `HyperlinkOracle::raw_pointer_button` and this goes red (sprag's half), and rolling the pin
+    /// back before R1715 reddens it too (upstream's half).
     #[test]
     fn a_click_in_a_tracking_pane_still_gives_it_the_keyboard() {
         use pinion_core::{PointerButton, PointerEdge};
@@ -2567,12 +2575,13 @@ mod tests {
         );
 
         assert_eq!(
-            owner.run(pinion_core::focus_request::drain).as_deref(),
+            core.focus().focused(),
             Some(pane_tag(1)),
-            "⚠⚠⚠⚠⚠ A CLICK IN A TRACKING PANE MUST ASK FOR THAT PANE'S RING. This is sprag's whole \
-             half of item 410 and it is asserted as a REQUEST rather than as `focused()` for a \
-             measured reason — see this test's own doc: pinion's raw-button arm returns before the \
-             dispatch tail that would apply it",
+            "⚠⚠⚠⚠⚠ A CLICK IN A TRACKING PANE MUST GIVE IT THE KEYBOARD — not merely ask for it. \
+             The ring is read in the SAME dispatch as the click, because a ring that arrives one \
+             input later also swallows that input, and the two are indistinguishable by eye. If \
+             this reddens, ask which half broke: sprag's request \
+             (`HyperlinkOracle::raw_pointer_button`) or the pin's resolution (pinion R1715)",
         );
 
         // ── AND THE CHILD STILL GOT ITS REPORT: focusing must ADD to the raw path, not replace it ──

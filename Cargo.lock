@@ -2737,7 +2737,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pinion-a11y"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "accesskit",
  "pinion-core",
@@ -2746,7 +2746,7 @@ dependencies = [
 [[package]]
 name = "pinion-asset"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "image",
 ]
@@ -2754,7 +2754,7 @@ dependencies = [
 [[package]]
 name = "pinion-core"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "lru",
  "pinion-derive",
@@ -2767,7 +2767,7 @@ dependencies = [
 [[package]]
 name = "pinion-derive"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2777,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "pinion-forge"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "quick-xml 0.36.2",
  "sce-build",
@@ -2789,7 +2789,7 @@ dependencies = [
 [[package]]
 name = "pinion-gpu"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "wgpu",
 ]
@@ -2797,7 +2797,7 @@ dependencies = [
 [[package]]
 name = "pinion-overlay"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "pinion-core",
  "pinion-rpc",
@@ -2807,7 +2807,7 @@ dependencies = [
 [[package]]
 name = "pinion-pdf"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "pinion-core",
 ]
@@ -2815,7 +2815,7 @@ dependencies = [
 [[package]]
 name = "pinion-platform-clipboard"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "arboard",
  "pinion-core",
@@ -2824,17 +2824,17 @@ dependencies = [
 [[package]]
 name = "pinion-platform-fonts"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 
 [[package]]
 name = "pinion-platform-memory"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 
 [[package]]
 name = "pinion-rpc"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "pinion-a11y",
  "pinion-core",
@@ -2851,7 +2851,7 @@ dependencies = [
 [[package]]
 name = "pinion-rpc-transport"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "pinion-rpc",
  "rustix 1.1.4",
@@ -2860,7 +2860,7 @@ dependencies = [
 [[package]]
 name = "pinion-runtime"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "futures-executor",
  "lru",
@@ -2876,7 +2876,7 @@ dependencies = [
 [[package]]
 name = "pinion-shell"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2903,7 +2903,7 @@ dependencies = [
 [[package]]
 name = "pinion-text"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "lru",
  "parley",
@@ -2916,7 +2916,7 @@ dependencies = [
 [[package]]
 name = "pinion-text-font"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "pinion-text-unicode",
 ]
@@ -2924,12 +2924,12 @@ dependencies = [
 [[package]]
 name = "pinion-text-unicode"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 
 [[package]]
 name = "pinion-widget-paint"
 version = "0.0.1"
-source = "git+https://github.com/newmassrael/pinion.git?rev=3db229ecd0fe8eca65bf175c44cdebf1c6e27d44#3db229ecd0fe8eca65bf175c44cdebf1c6e27d44"
+source = "git+https://github.com/newmassrael/pinion.git?rev=17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee#17c0ccd5950cdae206bfd95e51a793c5e8d0a2ee"
 dependencies = [
  "pinion-a11y",
  "pinion-core",
