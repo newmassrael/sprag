@@ -41,7 +41,7 @@
 
 use std::sync::Arc;
 
-use sce_rust_runtime::{Engine, IScriptEngine};
+use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
 
 use crate::consent::Consents;
 use crate::outer::{Counted, NotScreenable, OuterLoop};
@@ -167,6 +167,34 @@ impl LoopKind {
     pub fn reflect_every(&self) -> Option<i64> {
         match OuterLoop::authored_count_in(&self.script, &self.session, "reflect_every") {
             Some(Counted::Of(cadence)) => Some(cadence),
+            _ => None,
+        }
+    }
+
+    /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this
+    /// kind says nothing and the working agent's own word stands.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a kind must be able to say this, and could not until now
+    ///
+    /// Register item 428's mechanism shipped with the slot on the TEMPLATE, empty, and empty means
+    /// nobody checks — the right default for a document other repositories copy. The item's own
+    /// residue said *"no caller can declare one"*, and driving a live debt run found the sharper
+    /// version: **no KIND could declare one either**. The template's `''` stood on every run this
+    /// repository has ever driven, so every `converged (declared)` meant only *the agent said so* —
+    /// measured 2026-08-18, the walk reading *"NOTHING CHECKED THAT CLAIM"* while the kind's own
+    /// document authored a checker.
+    ///
+    /// ⚠⚠ It travels like [`closing_rules`](Self::closing_rules) and NOT like a wire argument, which
+    /// keeps 428's own decision: what certifies a repository's work is its document's business, and
+    /// a caller that could override it could delete the check by naming nothing.
+    ///
+    /// ⚠ Whitespace is what the driver splits on, so a check whose argument contains a space cannot
+    /// be spelled here. Registered rather than hidden — the question the driver appends is the last
+    /// argument, and everything before it is a program and its flags.
+    #[must_use]
+    pub fn milestone_check(&self) -> Option<String> {
+        match self.script.get_variable(&self.session, "milestone_check") {
+            Ok(ScriptValue::String(argv)) if !argv.trim().is_empty() => Some(argv),
             _ => None,
         }
     }

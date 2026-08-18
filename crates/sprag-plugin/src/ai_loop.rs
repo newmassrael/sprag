@@ -1163,6 +1163,7 @@ mod tests {
             // ⚠ These fixtures measure a BOUNDED run; the declined budget is a kind's decision and
             // has its own gate rather than being folded in here.
             closing_rules: None,
+            milestone_check: None,
             max_turns: Some(crate::outer::Counted::Of(max_turns)),
             // ⚠ EQUAL, which is what makes `reflecting` unreachable — `judging` tests the turn
             // budget first. `AiLoop::new` refuses anything smaller, and the gate below drives that.

@@ -729,6 +729,11 @@ impl PluginsExternal {
                     // is its document's business; a caller that could override it could delete the
                     // sweep this repository's record says it pays for twice over when it is missing.
                     closing_rules: kind.closing_rules(),
+                    // ⚠⚠⚠ NO WIRE KEY EITHER, and for the same reason one line up — register item
+                    // 428. What certifies this repository's work is its document's business; a
+                    // caller who could name the checker could delete it by naming nothing, which is
+                    // the self-certification the whole item is about.
+                    milestone_check: kind.milestone_check(),
                     north_star: require_str(map, "north_star")?.to_string(),
                     milestone: require_str(map, "milestone")?.to_string(),
                     reference: require_str(map, "reference")?.to_string(),

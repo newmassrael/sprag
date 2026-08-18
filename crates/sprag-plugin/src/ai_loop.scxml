@@ -1380,6 +1380,36 @@
         and delete an author's approvals.
       -->
       <assign location="may_answer" expr="_event.data.may_answer"/>
+    <!--
+      ⚠⚠⚠⚠⚠ AND THE TWO A KIND DECIDES, WHICH REACHED THIS DOOR AND FOUND IT
+      SHUT — register items 428 and 441.
+
+      Both are decisions this file deliberately leaves EMPTY for a repository to
+      make: what certifies a milestone, and what a repository adds to the
+      question every ending is asked. A kind document authored both, the driver
+      read both, the brief payload carried both — and neither was assigned here,
+      so a live run judged `NOTHING CHECKED THAT CLAIM` while the kind document
+      driving it named a checker. Measured 2026-08-18, on the run, not read off
+      a file. **A decision no channel carries to the end is a decision nobody
+      made**, and the missing link was one line in this transition.
+
+      ⚠⚠ UNCONDITIONAL, on the same terms as every assignment above it: the
+      driver always sends both keys, echoing this document's own empty values
+      back for a kind that names none, so omitting one cannot assign nil and
+      delete an author's decision.
+    -->
+      <assign location="milestone_check" expr="_event.data.milestone_check"/>
+      <assign location="closing_rules" expr="_event.data.closing_rules"/>
+      <!--
+        ⚠⚠⚠ AND THE CLOSING QUESTION IS COMPOSED AGAIN, because `end_prompt` was
+        composed in the `<datamodel>` — before any brief existed — so assigning
+        the clause alone changes a variable nothing reads again. The sentence is
+        the SAME one the datamodel holds; it is repeated here rather than moved
+        because `closing` must have a prompt even for a run that is never
+        briefed, and a prompt composed only here would leave that run silent.
+      -->
+      <assign location="end_prompt"
+              expr="'Summarise what changed, what was verified, and what is left open.' + closing_rules"/>
     </transition>
     <transition event="start" target="priming"/>
     <!--

@@ -183,6 +183,42 @@
     <data id="reflect_every" expr="5"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ AND WHO DECIDES A CHECKPOINT WAS REACHED — NOT THE AGENT THAT WORKED
+      ON IT. Register item 428, whose mechanism the template shipped and whose
+      second half is this line: the slot exists, EMPTY is the template's default,
+      and empty means nobody checks. A loop that runs unattended for hours on the
+      strength of its own agent writing `MILESTONE REACHED` is the exact failure
+      the measured literature it cites priced — 92 of 100 runs recorded
+      `succeeded`, 18 of them repairs of runs already recorded that way.
+
+      A FRESH `claude`, given the checkpoint and what the turn produced and
+      NOTHING about what the agent said of its own work, answering one word. That
+      is the *"different agent, new session, shown only the artifact"* shape the
+      item names, spelled in the two arguments this slot can carry: the driver
+      appends the rendered question as the third.
+
+      ⚠⚠⚠ MEASURED BEFORE IT WAS AUTHORED (2026-08-18), all three poles against a
+      real `claude` 2.1.234, because a check that cannot refuse and a check that
+      cannot agree are both worthless:
+
+        an artifact that MEETS a five-sentence checkpoint  -> YES
+        an artifact that misses it (one sentence)          -> NO
+        an EMPTY artifact                                  -> NO
+
+      ⚠⚠ THAT THIRD LINE IS WHY THIS COULD NOT BE AUTHORED UNTIL TODAY. The
+      artifact used to be read off the PANE, and a full-screen agent's pane was
+      measured unable to advance its line addresses at all (item 441) — so the
+      checker would have been shown nothing, refused every milestone for ever,
+      and bought one more turn each time until the run ran out. The driver asks
+      the agent what it said now, and only falls back to the pane.
+
+      ⚠ WHAT IT COSTS: one short `-p` session per CLAIMED milestone — not per
+      turn. A checkpoint is claimed once, and a refusal buys one more turn rather
+      than ending anything.
+    -->
+    <data id="milestone_check" expr="'claude -p'"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ AND THE SENTENCE ABOVE — *"known to lose on cost"* — IS NO LONGER
       TRUE OF THIS NUMBER, because the cost it named was a SESSION REPLACEMENT
       and this number no longer buys one.

@@ -409,6 +409,17 @@ pub struct Brief {
     /// extend that, not replace it — so a repository can demand its own sweep without any kind being
     /// able to drop the report the document needs from every run.
     pub closing_rules: Option<String>,
+    /// **WHO CERTIFIES THIS RUN'S MILESTONES**, as an argv — or [`None`] to leave the template's
+    /// empty slot standing, which means the working agent's own word.
+    ///
+    /// ⚠⚠⚠⚠ It travels beside [`closing_rules`](Self::closing_rules) and for the same reason: what
+    /// certifies a repository's work is its own document's business, and no wire key can override
+    /// it (register item 428, which chose that deliberately and shipped without a bump).
+    ///
+    /// ⚠⚠ Until this field existed the slot could be authored by nobody a run actually reads —
+    /// measured live 2026-08-18, a debt run judging `NOTHING CHECKED THAT CLAIM` while the debt
+    /// kind's document named a checker. **A decision no channel carries is a decision nobody made.**
+    pub milestone_check: Option<String>,
     /// Where this loop is ultimately going. Never rewritten by reflection.
     pub north_star: String,
     /// The step being worked on now. Reflection may rewrite this.
@@ -2607,6 +2618,12 @@ impl OuterLoop {
             // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
             // ships `''` and a caller who adds nothing must not delete what the document composes.
             "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
+            // ⚠⚠⚠ AND WHO CERTIFIES A MILESTONE — unconditional on the same terms: the template
+            // ships `''` (nobody checks), and a run whose kind names a checker must arrive holding
+            // it. Register item 428's second half: until this line the slot could be authored by
+            // nobody a run reads, and a live debt run judged `NOTHING CHECKED THAT CLAIM` while its
+            // own kind document named one.
+            MILESTONE_CHECK: brief.milestone_check.clone().unwrap_or_default(),
             ScreenRules::WIRE_KEY: rules.as_ref().map(|rules| {
                 rules
                     .rules()
@@ -5028,15 +5045,7 @@ impl OuterLoop {
         if argv.is_empty() {
             return Checked::NotAsked;
         }
-        let milestone = self.text_of(MILESTONE).unwrap_or_default();
-        let produced = self.driving.since.taken(panes, self.driving.pane);
-        let question = format!(
-            "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\nBelow is what it \
-             produced while working on it. Decide whether the checkpoint was actually reached — \
-             judge the work, not the claim.\n\nReply with exactly one word: YES or NO. Do not \
-             explain.\n\nWhat it produced:\n{}\n",
-            produced.lines.join("\n"),
-        );
+        let question = self.check_question(panes);
         match crate::judge::asked_of_another(panes, run, &argv, &question, CHECK_WITHIN) {
             Some(judged) if judged.holds => Checked::Passed,
             Some(_) => Checked::Failed,
@@ -5044,6 +5053,43 @@ impl OuterLoop {
             // and this crate's standing direction: silence is never a yes.
             None => Checked::Silent,
         }
+    }
+
+    /// **WHAT THE INDEPENDENT CHECK IS SHOWN** — the checkpoint, and what the turn actually
+    /// produced.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Its own function because the ARTIFACT is the whole of what makes a check worth
+    /// anything
+    ///
+    /// This used to be composed inline against the PANE, and register item 441 measured a pane that
+    /// cannot answer: a full-screen agent repaints, so its logical-line addresses freeze and every
+    /// read since the mark is empty. Shown that, a real checker was measured answering (2026-08-18,
+    /// `claude` 2.1.234, all three poles):
+    ///
+    /// | what it was shown | it answered |
+    /// |---|---|
+    /// | an artifact that meets a five-sentence checkpoint | **YES** |
+    /// | an artifact that misses it | **NO** |
+    /// | an EMPTY artifact | **NO** |
+    ///
+    /// So an authored check reading the frozen pane would have refused every milestone for ever, on
+    /// evidence it never saw — a run that can never converge, and a refusal indistinguishable from a
+    /// considered verdict against the work. The artifact comes through
+    /// [`turn_produced`](Self::turn_produced) now, which asks the agent first.
+    ///
+    /// ⚠⚠ **IT SAYS NOTHING ABOUT WHAT THE AGENT CLAIMED.** The marker, the word `done`, and the
+    /// agent's own account of its success are all absent by construction: what is handed over is the
+    /// checkpoint and the work. That is item 428's *"a DIFFERENT agent, in a NEW session, shown only
+    /// the artifact"*, and it is why this composes the text rather than forwarding a judgement.
+    fn check_question(&self, panes: &dyn PaneAccess) -> String {
+        let milestone = self.text_of(MILESTONE).unwrap_or_default();
+        format!(
+            "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\nBelow is what it \
+             produced while working on it. Decide whether the checkpoint was actually reached — \
+             judge the work, not the claim.\n\nReply with exactly one word: YES or NO. Do not \
+             explain.\n\nWhat it produced:\n{}\n",
+            self.turn_produced(panes).text(),
+        )
     }
 
     /// **WHAT THE INNER SESSION HAS BEEN CHARGED TO READ**, as of its most recent billed request —
@@ -5242,6 +5288,35 @@ impl OuterLoop {
             .map_or(0, |seen| seen.said_seq)
     }
 
+    /// **WHAT THIS TURN PRODUCED, AND WHERE IT WAS READ FROM** — one text, for every reader of it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a seam rather than three call sites
+    ///
+    /// Three questions in this driver are the same question wearing three names: *did the agent say
+    /// the marker* ([`said_marker`](Self::said_marker)), *what shall the independent check be shown*
+    /// ([`checked`](Self::checked)), and *what is the run's account* ([`account`](Self::account)).
+    /// All three read what the turn produced, and all three read it off the PANE — which register
+    /// item 441 measured unable to answer: a full-screen agent repaints instead of scrolling, so its
+    /// pane's logical-line count freezes (`whole=Some(37)`, unmoving, for a whole run) and every read
+    /// since any mark is empty.
+    ///
+    /// One of the three was fixed and the other two were not, which is how a defect survives its own
+    /// repair: the milestone check would have been shown an EMPTY artifact and asked to judge
+    /// whether the work was done, and the run's closing account — *the one record that outlives the
+    /// sessions it was written in* — would have been blank. **Fixing the reader in one place is what
+    /// stops the next reader inheriting the disease.**
+    ///
+    /// ⚠ The two roads are not interchangeable and the caller is told which it got: a STATEMENT is
+    /// the agent's own words with no terminal in between, and the PANE is complete logical lines
+    /// with this run's echo and the TUI's furniture still in them — which is why the pane road keeps
+    /// the discounting the statement road does not need.
+    fn turn_produced(&self, panes: &dyn PaneAccess) -> Produced {
+        self.stated_this_turn(panes).map_or_else(
+            || Produced::Painted(self.driving.since.taken(panes, self.driving.pane)),
+            Produced::Stated,
+        )
+    }
+
     /// **WHAT THE PEER SAYS IT ANSWERED IN THIS TURN**, or [`None`] where it has not said.
     ///
     /// The pairing register item 441 needed and had no way to make: a statement counts as this
@@ -5299,26 +5374,28 @@ impl OuterLoop {
         // ⚠ The fallback below is not dead code and must not be deleted: a peer with no hook
         // installed, a host with no supervisor, and a reporter that has gone mute all reach it, and
         // for them the pane is the only evidence there is.
-        if let Some(stated) = self.stated_this_turn(panes) {
-            let lines: Vec<&str> = stated.lines().collect();
-            let said = lines.iter().enumerate().any(|(at, line)| {
-                stands_alone(line, &marker)
-                    && !wraps_onto(
-                        &self.driving.asked,
-                        at.checked_sub(1).map_or("", |above| lines[above]),
-                        &marker,
-                    )
-            });
-            return if said {
-                Heard::Said(Evidence::Statement)
-            } else {
-                Heard::NotSaid {
-                    read: lines.len() as u64,
-                    from: Evidence::Statement,
-                }
-            };
-        }
-        let produced = self.driving.since.taken(panes, self.driving.pane);
+        let produced = match self.turn_produced(panes) {
+            Produced::Stated(stated) => {
+                let lines: Vec<&str> = stated.lines().collect();
+                let said = lines.iter().enumerate().any(|(at, line)| {
+                    stands_alone(line, &marker)
+                        && !wraps_onto(
+                            &self.driving.asked,
+                            at.checked_sub(1).map_or("", |above| lines[above]),
+                            &marker,
+                        )
+                });
+                return if said {
+                    Heard::Said(Evidence::Statement)
+                } else {
+                    Heard::NotSaid {
+                        read: lines.len() as u64,
+                        from: Evidence::Statement,
+                    }
+                };
+            }
+            Produced::Painted(produced) => produced,
+        };
         // ⚠⚠⚠⚠ **AND THE UNFINISHED LAST LINE COUNTS WHEN — AND ONLY WHEN — THE CHILD HAS EXITED.**
         // [`sprag_vt::LinesSince::partial`] sanctions exactly one reading of it: *an unfinished line
         // at EOF is unfinished for ever*, and the caller must establish the EOF itself. This caller
@@ -5402,10 +5479,22 @@ impl OuterLoop {
     /// ⚠ `asked` therefore says only WHETHER this ending has an account to collect — see
     /// [`Owed::asked_for_an_account`].
     fn account(&self, panes: &dyn PaneAccess) -> Option<String> {
-        crate::report::account(
-            &self.driving.since.taken(panes, self.driving.pane),
-            &self.driving.asked,
-        )
+        match self.turn_produced(panes) {
+            // ⚠⚠⚠⚠⚠ THE AGENT'S OWN WORDS NEED NO DISCOUNTING, and that is the whole difference
+            // between the two roads here — register item 441. `crate::report::account` exists to
+            // take this run's echo off the front and the TUI's furniture off the edges, because a
+            // PANE holds both; a statement holds neither. Running it over a statement would trim
+            // an agent's own opening line whenever the prompt happened to contain it.
+            //
+            // ⚠⚠ An empty statement is `None` on the same terms the pane road uses: *the agent
+            // wrote nothing a person would read as an account* is the same answer whichever road
+            // said so, and `Owed::asked_for_an_account` routes on it.
+            Produced::Stated(said) => {
+                let said = said.trim();
+                (!said.is_empty()).then(|| said.to_owned())
+            }
+            Produced::Painted(produced) => crate::report::account(&produced, &self.driving.asked),
+        }
     }
 
     /// **WHAT THE AGENT WROTE WHEN IT WAS ASKED TO ACCOUNT FOR THE RUN** — `closing`'s turn or
@@ -5581,6 +5670,35 @@ pub enum Evidence {
     /// is bounded by whether that agent's output ever moves the pane's addresses, and one was
     /// measured never moving them again.
     Pane,
+}
+
+/// **WHAT A TURN PRODUCED**, as the road it was read by — see [`OuterLoop::turn_produced`].
+///
+/// ⚠ Not an `Option<String>` beside a `Produced`: the two roads carry different amounts of doubt
+/// (a pane read can be short by an eviction or unaccountable after a restart, and a statement can
+/// be neither), and a caller that flattened them would have to invent one of those answers for the
+/// road that cannot have it.
+enum Produced {
+    /// The agent's own account of this turn, off the hook that ended it.
+    Stated(String),
+    /// The pane's complete logical lines since this turn's mark, with everything
+    /// [`crate::report::Produced`] admits it cannot see.
+    Painted(crate::report::Produced),
+}
+
+impl Produced {
+    /// **THE TEXT ITSELF**, for a reader that wants what the turn produced and not how sure of it
+    /// this run is — the check and the account, both of which hand it to somebody else to read.
+    ///
+    /// ⚠ The pane road joins the COMPLETE lines only. Its unfinished last line is a live agent's
+    /// prompt box, which is furniture; [`said_marker`](OuterLoop::said_marker) is the one reader
+    /// that may take it, and only at a pane whose child has exited.
+    fn text(&self) -> String {
+        match self {
+            Self::Stated(said) => said.clone(),
+            Self::Painted(produced) => produced.lines.join("\n"),
+        }
+    }
 }
 
 impl Evidence {
@@ -7777,6 +7895,7 @@ mod tests {
             // ⚠ This gate is about the BRIEF's parts crossing the datamodel; the kind's closing
             // clause crosses on the same route and has its own gate rather than riding this one.
             closing_rules: None,
+            milestone_check: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -7893,6 +8012,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            milestone_check: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             screen_rules: None,
@@ -7968,6 +8088,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            milestone_check: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -8047,6 +8168,7 @@ mod tests {
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
                 closing_rules: None,
+                milestone_check: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
                 screen_rules: None,
@@ -8180,6 +8302,7 @@ mod tests {
             milestone: "step one".to_string(),
             reference: "none".to_string(),
             closing_rules: None,
+            milestone_check: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -8367,6 +8490,7 @@ mod tests {
                 milestone: "wait exactly as long as the file says".to_string(),
                 reference: "register item 300".to_string(),
                 closing_rules: None,
+                milestone_check: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
                 screen_rules: None,
@@ -9029,6 +9153,85 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// **A PANE FROZEN AS THE LIVE ONE WAS, WITH A PEER THAT STATES ITS OWN ANSWER.**
+    ///
+    /// The pane half is verbatim what a probe inside the running daemon printed at every judgement
+    /// of a live run: no lines, nothing evicted, nothing restarted, an unfinished `❯` — the reading
+    /// a repainting agent's pane gives for ever once its composer settles (register item 441).
+    ///
+    /// ⚠ `said_seq` is the whole variable: the loop arms on it at the prompt, so `1` is *the peer
+    /// has answered since* and `0` is *this statement predates the question*.
+    struct Stating {
+        said: Option<String>,
+        said_seq: u64,
+    }
+
+    impl PaneAccess for Stating {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            vec![PaneId(1)]
+        }
+        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            Some(String::new())
+        }
+        fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+            Some(Vec::new())
+        }
+        fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+            Some(String::new())
+        }
+        // ⚠ ALIVE: a peer this double called gone would let the unfinished `❯` count as its last
+        // word, which is the one reading `partial` is sanctioned for and is not this case.
+        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            Some(false)
+        }
+        fn inject(
+            &self,
+            _id: PaneId,
+            _keys: &[crate::access::KeyStroke],
+        ) -> Result<crate::access::Written, PaneError> {
+            Ok(crate::access::Written::of(1))
+        }
+        fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+            Some(self)
+        }
+        fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+            Some(self)
+        }
+    }
+
+    impl crate::access::PaneOutputLines for Stating {
+        fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+            // ⚠⚠⚠ THE FROZEN PANE, VERBATIM AS MEASURED: no lines, nothing evicted, no restart —
+            // the reading a repainting agent's pane gives for ever once its composer settles.
+            Some(sprag_vt::LinesSince {
+                lines: Vec::new(),
+                next: 37,
+                lost: 0,
+                partial: "❯".to_string(),
+                restarted: false,
+            })
+        }
+    }
+
+    impl crate::access::PaneSupervision for Stating {
+        fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+            Some(crate::access::AgentObservation {
+                state: sprag_detect::AgentState::Idle,
+                agent: Some("claude".to_string()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_string(),
+                },
+                seq: 2,
+                asked_seq: 1,
+                asking: None,
+                asked: None,
+                said: self.said.clone(),
+                said_seq: self.said_seq,
+                transcript: None,
+            })
+        }
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE AGENT'S OWN ACCOUNT IS HEARD WHERE THE PANE CANNOT BE READ AT ALL** — register
     /// item 441, and the fix for what nine judged turns could not see.
     ///
@@ -9049,80 +9252,12 @@ mod tests {
     /// difference is whether the peer's answer COUNT moved since the question went in. One is this
     /// turn's answer and the other is the previous turn's still standing in the tracker — the
     /// distinction that makes reading a statement safe at all.
+    ///
+    /// ⚠ The double is [`Stating`], shared with the two gates below it: the same frozen pane feeds
+    /// the JUDGE, the independent CHECK and the run's ACCOUNT, because it is one seam under all
+    /// three and a second double would let two of them drift.
     #[test]
     fn the_agents_own_account_is_heard_when_the_pane_cannot_be_read() {
-        /// A pane frozen exactly as the live one was, with a peer that states its own answer.
-        ///
-        /// ⚠ `said_seq` is the whole variable: the loop arms on it at the prompt, so `1` is *the
-        /// peer has answered since* and `0` is *this statement predates the question*.
-        struct Stating {
-            said: Option<String>,
-            said_seq: u64,
-        }
-        impl PaneAccess for Stating {
-            fn pane_ids(&self) -> Vec<PaneId> {
-                vec![PaneId(1)]
-            }
-            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
-                Some(String::new())
-            }
-            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
-                Some(Vec::new())
-            }
-            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
-                Some(String::new())
-            }
-            // ⚠ ALIVE: a peer this double called gone would let the unfinished `❯` count as its
-            // last word, which is the one reading `partial` is sanctioned for and is not this case.
-            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
-                Some(false)
-            }
-            fn inject(
-                &self,
-                _id: PaneId,
-                _keys: &[crate::access::KeyStroke],
-            ) -> Result<crate::access::Written, PaneError> {
-                Ok(crate::access::Written::of(1))
-            }
-            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
-                Some(self)
-            }
-            fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
-                Some(self)
-            }
-        }
-        impl crate::access::PaneOutputLines for Stating {
-            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
-                // ⚠⚠⚠ THE FROZEN PANE, VERBATIM AS MEASURED: no lines, nothing evicted, no restart
-                // — the reading a repainting agent's pane gives for ever once its composer settles.
-                Some(sprag_vt::LinesSince {
-                    lines: Vec::new(),
-                    next: 37,
-                    lost: 0,
-                    partial: "❯".to_string(),
-                    restarted: false,
-                })
-            }
-        }
-        impl crate::access::PaneSupervision for Stating {
-            fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
-                Some(crate::access::AgentObservation {
-                    state: sprag_detect::AgentState::Idle,
-                    agent: Some("claude".to_string()),
-                    authority: crate::access::Authority::Reported {
-                        source: "hook:claude".to_string(),
-                    },
-                    seq: 2,
-                    asked_seq: 1,
-                    asking: None,
-                    asked: None,
-                    said: self.said.clone(),
-                    said_seq: self.said_seq,
-                    transcript: None,
-                })
-            }
-        }
-
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
         let pane = {
@@ -9169,6 +9304,203 @@ mod tests {
             "⚠⚠⚠⚠ A STATEMENT THE PEER MADE BEFORE THIS QUESTION IS NOT THIS TURN'S ANSWER — the \
              tracker carries the last one forward, so without the count this reading would converge \
              a run on the PREVIOUS turn's marker. It must fall back to the pane, and say it did",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **WHAT A KIND DECIDES REACHES THE RUN THAT IS DRIVEN** — the channel, gated at the
+    /// only place it can be observed.
+    ///
+    /// # The defect this was written against, found by driving the loop for real
+    ///
+    /// A kind document authored a milestone check; the driver read it; the payload carried it; and
+    /// a live debt run still judged **`NOTHING CHECKED THAT CLAIM: this document authors no
+    /// milestone_check`** (2026-08-18). Every link existed except the last: the document's `brief`
+    /// transition never assigned the key, so the value arrived at a door that does not open.
+    /// **A decision no channel carries to the end is a decision nobody made** — and the same held
+    /// for `closing_rules`, the debt kind's own demand that every ending sweep for what it found.
+    ///
+    /// ⚠⚠ It asserts what the RUN holds rather than what the kind says, which is the whole point:
+    /// the kind's own gates were green throughout, because they read the document that authors the
+    /// value and never the one that has to receive it.
+    #[test]
+    fn what_a_kind_authors_reaches_the_run_it_briefs() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "exec cat"]);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "n".to_string(),
+                milestone: "m".to_string(),
+                reference: "r".to_string(),
+                closing_rules: Some(" AND THEN SWEEP.".to_string()),
+                milestone_check: Some("/bin/echo YES".to_string()),
+                max_turns: Some(Counted::Of(3)),
+                reflect_every: Some(3),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: None,
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+        );
+
+        assert_eq!(
+            loops.text_of(MILESTONE_CHECK).as_deref(),
+            Some("/bin/echo YES"),
+            "⚠⚠⚠⚠⚠ THE CHECK MUST REACH THE RUN. A kind that names a checker and a run that judges \
+             `NOTHING CHECKED THAT CLAIM` is item 428 unpaid with every part of it built — measured \
+             live before this gate existed",
+        );
+        assert!(
+            loops
+                .authored()
+                .expect("a briefed machine holds its strings")
+                .end
+                .contains("AND THEN SWEEP."),
+            "⚠⚠⚠⚠ AND SO MUST THE CLOSING DEMAND. `end_prompt` is composed in the `<datamodel>`, so \
+             a value assigned afterwards changes nothing unless the prompt is composed again — and \
+             this repository's own record says a run that neither fixed nor registered what it found \
+             has SPENT the finding: {:?}",
+            loops.authored().map(|authored| authored.end),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE INDEPENDENT CHECK IS SHOWN THE WORK, AND ON A FROZEN PANE THE WORK IS WHAT THE
+    /// AGENT SAID** — register item 428's artifact, read through item 441's seam.
+    ///
+    /// # Why this gate had to exist before the check could be authored anywhere
+    ///
+    /// The artifact was composed off the PANE, and a live pane was measured unable to advance its
+    /// line addresses at all. What a real checker does when shown that was measured rather than
+    /// assumed (2026-08-18, `claude` 2.1.234): an artifact meeting a five-sentence checkpoint
+    /// answers **YES**, one that misses it **NO**, and an **EMPTY** one **NO**. So an authored check
+    /// reading a frozen pane refuses every milestone for ever, on evidence it never saw — and the
+    /// refusal is indistinguishable from a considered verdict against the work.
+    ///
+    /// ⚠⚠ The claim here is about the QUESTION rather than the verdict: what a model answers is not
+    /// this crate's to assert, and what it is SHOWN is. ⚠ And the check must not be shown the
+    /// agent's claim — item 428's whole shape is *shown only the artifact* — so the marker's absence
+    /// from the milestone half is asserted too.
+    #[test]
+    fn the_check_is_shown_the_agents_own_words_when_the_pane_is_frozen() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "printf 'PARROT-READY\\n'; exec cat"]);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        let run = RunContext::uncancellable();
+        loops.pump(&access, &run).expect("idle to priming");
+
+        let worked = "I read the file and rewrote the stale section.\nMILESTONE REACHED";
+        let question = loops.check_question(&Stating {
+            said: Some(worked.to_string()),
+            said_seq: 1,
+        });
+        assert!(
+            question.contains("I read the file and rewrote the stale section."),
+            "⚠⚠⚠⚠⚠ THE CHECKER MUST BE SHOWN THE WORK. Off a frozen pane this artifact is EMPTY, and \
+             a real checker shown an empty artifact was measured answering NO — so an authored \
+             check would refuse every milestone for ever, on evidence it never saw. The question \
+             was: {question:?}",
+        );
+
+        // ── THE CONTROL: nothing stated this turn, and the pane is the only road there is. ──
+        let painted = loops.check_question(&Stating {
+            said: Some(worked.to_string()),
+            said_seq: 0,
+        });
+        assert!(
+            !painted.contains("I read the file and rewrote the stale section."),
+            "⚠⚠⚠ A STATEMENT FROM BEFORE THIS QUESTION IS NOT THIS TURN'S WORK, and handing it to a \
+             checker would certify a checkpoint against the PREVIOUS turn's artifact: {painted:?}",
+        );
+        assert!(
+            painted.contains("What it produced:"),
+            "⚠ and the pane road still composes a question rather than nothing: {painted:?}",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠ **THE RUN'S ACCOUNT IS THE AGENT'S OWN WORDS TOO** — the third reader of one seam, and
+    /// the one whose loss is permanent.
+    ///
+    /// A closing account is *the one record of a run that outlives the sessions it was written in*
+    /// ([`crate::report`]). It was read off the same pane the judge and the check read, so on a
+    /// full-screen agent it would have been BLANK — a run that did the work and banked nothing.
+    ///
+    /// ⚠⚠ **AND THE TWO ROADS ARE NOT THE SAME FUNCTION.** `crate::report::account` takes this
+    /// run's own echo off the front and the terminal's furniture off the edges, because a PANE
+    /// carries both; a statement carries neither, so running it over one would trim an agent's
+    /// opening line whenever the prompt happened to contain it. The statement is banked verbatim.
+    #[test]
+    fn the_account_is_what_the_agent_said_when_the_pane_is_frozen() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "printf 'PARROT-READY\\n'; exec cat"]);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        let run = RunContext::uncancellable();
+        loops.pump(&access, &run).expect("idle to priming");
+
+        let banked = "Paid item 442: the CLI exits quietly when its reader goes away.";
+        assert_eq!(
+            loops
+                .account(&Stating {
+                    said: Some(banked.to_string()),
+                    said_seq: 1,
+                })
+                .as_deref(),
+            Some(banked),
+            "⚠⚠⚠⚠⚠ A RUN THAT BANKED NOTHING DID THE WORK FOR NOBODY. Off a frozen pane this is \
+             `None`, and the account is the only part of a run that outlives its sessions",
+        );
+        assert_eq!(
+            loops.account(&Stating {
+                said: Some(String::new()),
+                said_seq: 1,
+            }),
+            None,
+            "⚠⚠ AND AN EMPTY STATEMENT IS NOT AN ACCOUNT — the same answer the pane road gives for \
+             a turn that produced nothing a person would read as one",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
@@ -9635,6 +9967,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    milestone_check: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so the cadence cannot be what moves this run — which is the whole
                     // point: capacity has to be able to act BEFORE the count comes round.
@@ -9788,18 +10121,6 @@ mod tests {
                 Duration::from_secs(5),
             )
             .expect("the document's datamodel must carry its four authored strings");
-            if let Some(check) = check {
-                // ⚠⚠ AUTHORED INTO THE DOCUMENT, which is where the item put it and what makes this
-                // a gate about the product rather than about a caller argument that does not exist.
-                loops
-                    .script
-                    .set_variable(
-                        &loops.session,
-                        MILESTONE_CHECK,
-                        ScriptValue::String(check.to_string()),
-                    )
-                    .expect("the document's own check is writable");
-            }
             assert_eq!(
                 loops.brief(&Brief {
                     north_star: "the stand-in answers one prompt and then says the marker"
@@ -9807,6 +10128,13 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
+                    // This used to `set_variable` the slot behind the brief's back, on the reading
+                    // that no caller could name one — true of the WIRE and never of a kind. What
+                    // that hid: the document's `brief` transition assigned nothing here, so the
+                    // real path was dead while this gate was green, and a live run judged `NOTHING
+                    // CHECKED THAT CLAIM` with every part of the mechanism built (item 428).
+                    milestone_check: check.map(ToOwned::to_owned),
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so the budget cannot be what moves this run.
                     reflect_every: Some(99),
@@ -10091,6 +10419,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    milestone_check: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so nothing but the judge's own reading can move this run: a budget that
                     // came round would take the edge into `reflecting` instead, and the pass below
@@ -10278,6 +10607,7 @@ mod tests {
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
             closing_rules: None,
+            milestone_check: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
             // ⚠ The document's own rules, kept: these gates are about the PARTS crossing, and a
@@ -10559,6 +10889,61 @@ mod tests {
     /// objects, initialised by `<data expr>`, read back through a script session. Pointing it at the
     /// document that ships one keeps the measurement; deleting it would have retired PR-86's and
     /// PR-87's evidence along with the file that happened to hold it.
+    /// ⚠⚠⚠⚠⚠ **THE UNATTENDED LOOP DOES NOT CERTIFY ITS OWN WORK** — register item 428's second
+    /// half, and a ratchet rather than a description.
+    ///
+    /// The template ships `milestone_check` EMPTY, and empty means nobody checks — which is the
+    /// right default for a document somebody else's caller drives, and the wrong one for the loop
+    /// that runs for hours with no person in front of it. The literature item 428 cites measured
+    /// what self-certification costs: 92 of 100 runs recorded `succeeded`, 18 of them repairs of
+    /// runs already recorded that way, and *"부족한 것은 데이터가 아니라 성공의 정의입니다"*.
+    ///
+    /// ⚠⚠ It asserts the SHAPE and not the command: what an author may name here is theirs, but a
+    /// document that names NOTHING has silently gone back to *the party that did the work is the
+    /// party that certifies it*, and that is a decision nobody would see in a diff of one word.
+    ///
+    /// ⚠ Its two arguments are asserted as two, because the slot is split on whitespace and the
+    /// driver appends the rendered question as the last: a command that already carried its own
+    /// trailing argument would receive the artifact somewhere it does not read.
+    #[test]
+    fn the_debt_loop_does_not_let_its_agent_certify_its_own_milestone() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut machine = Engine::new(crate::sm::debt_loop::DebtLoopPolicy::new(Arc::clone(&lua)));
+        machine.initialize();
+        let session = machine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+
+        // ⚠⚠⚠ READ THROUGH THE ACCESSOR A RUN USES, not off the document directly. The two are the
+        // same string today and the gate is about the CHANNEL: a kind whose value no accessor
+        // returns is authored for nobody, which is exactly how this item stayed unpaid with its
+        // whole mechanism built.
+        let kind = crate::kind::LoopKind::debt(Arc::clone(&lua))
+            .expect("the debt kind's document must open a script session");
+        let check = kind.milestone_check().unwrap_or_else(|| {
+            panic!(
+                "⚠⚠⚠ the debt loop's own document must author a milestone check the driver can \
+                 read: {:?}",
+                lua.get_variable(&session, MILESTONE_CHECK),
+            )
+        });
+        let argv: Vec<&str> = check.split_whitespace().collect();
+        assert!(
+            !argv.is_empty(),
+            "⚠⚠⚠⚠⚠ AN EMPTY CHECK IS THE AGENT CERTIFYING ITSELF. This loop runs unattended, so \
+             every `converged (declared)` it reports would mean only *the agent said so* — item \
+             428's whole subject. Authoring one is a decision; losing it must not be an accident",
+        );
+        assert!(
+            argv.len() >= 2,
+            "⚠⚠ the driver appends the rendered question as the LAST argument, so a check that is \
+             one bare program name receives the artifact as its only argument — spell the flag that \
+             makes it read one: {check:?}",
+        );
+    }
+
     #[test]
     fn the_authored_screen_rules_cross_the_datamodel_as_a_readable_list() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
