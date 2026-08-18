@@ -861,6 +861,19 @@ pub fn report_for(target: &Target, payload: &Value) -> Option<Outcome> {
     {
         return None;
     }
+    // ⚠⚠⚠⚠⚠ AN IDLE NAG IS NOT A STATE CHANGE — see [`IDLE_NOTICE`], captured live twice on
+    // 2026-08-19. The table answers `blocked` for every notice because the event name is all it
+    // reads; the payload says which KIND of notice it is, and this one arrives after the turn's own
+    // `Stop`, about a pane that is at rest. Reporting it would overwrite a true `idle` with a false
+    // `blocked` — and a false `blocked` is what sends an unattended run to `screening`,
+    // `awaiting_human` and the `<final>` `blocked`.
+    //
+    // ⚠⚠ `None` here means THIS EVENT CHANGES NOTHING, which is the same effect as the subagent
+    // exclusion above and deliberately reached by the same door: both are *do not report a state*,
+    // and inventing a second spelling for one answer is how two readers come to disagree.
+    if is_idle_notice(payload) {
+        return None;
+    }
     let event = payload.get("hook_event_name")?.as_str()?;
     target
         .events
@@ -996,6 +1009,87 @@ pub fn said_in(payload: &Value) -> Option<String> {
 /// [`crate::wire::AGENT_SAID_KEY`], and the two are deliberately not the same word: one is a
 /// schema this crate reads and the other is a name it publishes.
 const REST_STATEMENT: &str = "last_assistant_message";
+
+/// The event an agent raises when it wants a person's attention — see [`NOTICE_KIND`] for why the
+/// event NAME alone is not enough to say what it wants them for.
+const NOTICE_EVENT: &str = "Notification";
+
+/// **THE AGENT'S OWN CLASSIFICATION OF WHY IT RAISED A NOTICE**, inside a [`NOTICE_EVENT`] payload.
+///
+/// # ⚠⚠⚠⚠⚠ The field this product was throwing away, and what that cost
+///
+/// [`report_for`] read the event NAME and answered [`AgentState::Blocked`] for every notice, on the
+/// reasoning — written in `CLAUDE`'s own table — that *"the agent has asked the human something …
+/// the agent already tells us"*. It does tell us, and it tells us MORE than that word carries.
+///
+/// **Captured live 2026-08-19**, twice, with a logging wrapper at the path the agent's own
+/// configuration names:
+///
+/// ```text
+/// {"hook_event_name":"Notification",
+///  "message":"Claude is waiting for your input",
+///  "notification_type":"idle_prompt", …}
+/// ```
+///
+/// Both captures arrived AFTER that turn's `Stop`, with the agent's answer already stated
+/// (`said` had moved). **So the pane was at rest and this product reported it as blocked on a
+/// question nobody could read** — which is the exact sentence a run then carries into `screening`,
+/// `awaiting_human` and, for a run told nobody is watching, the `<final>` `blocked`.
+///
+/// ⚠⚠⚠ **ONLY [`IDLE_NOTICE`] IS SPECIAL-CASED, AND THAT IS A MEASUREMENT BOUNDARY RATHER THAN A
+/// DESIGN.** A permission dialog surely carries some other value here, and this round did not
+/// manage to raise one — the probe's agent answered in prose instead of reaching for a tool. So
+/// every other value, and an absent field, keep the meaning they have always had. **Naming a word
+/// nobody has seen is the mistake this module's own history records paying for.**
+const NOTICE_KIND: &str = "notification_type";
+
+/// What the agent calls the notice's prose, inside a [`NOTICE_EVENT`] payload.
+const NOTICE_TEXT: &str = "message";
+
+/// The one [`NOTICE_KIND`] this crate has SEEN: the agent has nothing in flight and would like
+/// another prompt.
+///
+/// ⚠⚠ It is not a state change and must not be reported as one. The turn's own `Stop` already said
+/// where the pane stands; an idle nag arriving later says the same thing again, and turning it into
+/// `blocked` overwrites a true report with a false one.
+const IDLE_NOTICE: &str = "idle_prompt";
+
+/// **WHAT AN AGENT SAID WHEN IT ASKED FOR ATTENTION** — the notice's own words, or [`None`] for a
+/// payload that is not one.
+///
+/// It travels the way [`said_in`] and [`asked_in`] do, and for the same reason: the alternative is
+/// a host that knows a peer wants something and cannot say what. `awaiting_human`'s report reads
+/// *"the peer is blocked on something this host cannot read as a numbered menu"* — true, and the
+/// peer had said what it was in a field one layer up.
+///
+/// ⚠ A subagent's notice is not the pane's, the exclusion [`report_for`] and [`said_in`] both open
+/// with.
+#[must_use]
+pub fn noticed_in(payload: &Value) -> Option<String> {
+    if payload.get("hook_event_name")?.as_str()? != NOTICE_EVENT {
+        return None;
+    }
+    if payload
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return None;
+    }
+    Some(payload.get(NOTICE_TEXT)?.as_str()?.to_owned())
+}
+
+/// Whether this payload is the agent saying it is merely IDLE — see [`IDLE_NOTICE`].
+fn is_idle_notice(payload: &Value) -> bool {
+    payload
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .is_some_and(|event| event == NOTICE_EVENT)
+        && payload
+            .get(NOTICE_KIND)
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == IDLE_NOTICE)
+}
 
 /// Where a target stands: whether the agent is on this machine at all, and how much of the
 /// integration is in place.
@@ -2000,6 +2094,114 @@ mod tests {
             "background_tasks": [],
             "session_crons": [],
         })
+    }
+
+    /// **THE NOTICE A REAL AGENT RAISED WHEN IT HAD NOTHING IN FLIGHT**, captured 2026-08-19 from a
+    /// live pane by the same logging-wrapper recipe as [`captured_rest`]. Recorded TWICE, in two
+    /// separate turns, with the same two values.
+    ///
+    /// ⚠⚠⚠ The two keys this product was dropping are both here: `notification_type` says WHICH
+    /// kind of notice it is, and `message` says it in words. Verbatim but for the ids.
+    fn captured_idle_notice() -> Value {
+        serde_json::json!({
+            "session_id": "9fa9e858-9f06-48b3-b209-7719596c1eb6",
+            "transcript_path": "/home/coin/.claude/projects/-home-coin-sprag/9fa9e858.jsonl",
+            "cwd": "/home/coin/sprag",
+            "prompt_id": "1ede3513-323e-48d5-905e-4be58e0a3dec",
+            "hook_event_name": "Notification",
+            "message": "Claude is waiting for your input",
+            "notification_type": "idle_prompt",
+        })
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AN IDLE NAG DOES NOT MAKE A RESTING PANE BLOCKED** — the state half of the fix.
+    ///
+    /// Measured live, twice: the notice arrives AFTER the turn's own `Stop`, with the agent's
+    /// answer already stated, and [`report_for`] answered `blocked` because the event NAME is all
+    /// it read. A false `blocked` is not a cosmetic error — it is the reading that sends an
+    /// unattended run through `screening` to `awaiting_human` and then to the `<final>` `blocked`.
+    ///
+    /// ⚠⚠ **THE CONTROL IS A NOTICE OF ANOTHER KIND, AND IT MUST STILL BLOCK.** Only `idle_prompt`
+    /// was measured; a permission dialog carries some other value that this round did not manage to
+    /// raise. Every other kind — and a notice with no kind at all — keeps the meaning it has always
+    /// had, and this gate is what says that boundary was a decision.
+    #[test]
+    fn an_idle_notice_leaves_a_resting_pane_alone_and_every_other_notice_still_blocks() {
+        assert_eq!(
+            report_for(&CLAUDE, &captured_idle_notice()),
+            None,
+            "⚠⚠⚠⚠ THE PANE IS AT REST AND SAYS SO. Reporting a state here overwrites the `idle` \
+             this turn's own `Stop` reported with a `blocked` nobody can answer",
+        );
+
+        // ⚠⚠⚠ THE CONTROL, one field changed. A notice this crate has NOT measured keeps today's
+        // meaning — the boundary is what was seen, not what was guessed.
+        let mut permission = captured_idle_notice();
+        permission[NOTICE_KIND] = serde_json::json!("some_kind_nobody_here_has_seen");
+        assert_eq!(
+            report_for(&CLAUDE, &permission),
+            Some(Outcome::Report(AgentState::Blocked)),
+            "⚠⚠⚠ a notice of an UNMEASURED kind must still mean the agent wants somebody — \
+             narrowing this to the one word that was captured is how a real permission dialog \
+             would stop being seen",
+        );
+
+        // ⚠⚠ AND A NOTICE WITH NO KIND AT ALL, which is what an older agent sends.
+        let mut kindless = captured_idle_notice();
+        kindless
+            .as_object_mut()
+            .expect("an object")
+            .remove(NOTICE_KIND);
+        assert_eq!(
+            report_for(&CLAUDE, &kindless),
+            Some(Outcome::Report(AgentState::Blocked)),
+            "⚠⚠ an absent classification is not a claim to be idle; the event's own meaning stands",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE NOTICE'S WORDS SURVIVE** — the half that answers *what does the peer want*.
+    ///
+    /// `awaiting_human` reports *"the peer is blocked on something this host cannot read as a
+    /// numbered menu"*. True of the screen, and the peer had said it in a field one layer up.
+    #[test]
+    fn a_notice_states_in_words_what_the_agent_wants() {
+        assert_eq!(
+            noticed_in(&captured_idle_notice()).as_deref(),
+            Some("Claude is waiting for your input"),
+            "⚠⚠⚠ the peer's own words, taken before a terminal has drawn a cell of them",
+        );
+
+        // ⚠⚠⚠⚠⚠ THE EVENT CONTROL IS THE NOTICE WITH ITS EVENT CHANGED AND NOTHING ELSE — the
+        // vacuity `a_rest_payload_states_the_answer_the_agent_gave` records paying for. A control
+        // built from a payload that lacks `message` would return `None` at the wrong `?`.
+        let mut wrong_event = captured_idle_notice();
+        wrong_event["hook_event_name"] = serde_json::json!(REST_EVENT);
+        assert_eq!(
+            noticed_in(&wrong_event),
+            None,
+            "⚠ only a notice states what the agent wants attention FOR",
+        );
+
+        // A subagent's notice is not the pane's.
+        let mut subagent = captured_idle_notice();
+        subagent["agent_id"] = serde_json::json!("sub-1");
+        assert_eq!(
+            noticed_in(&subagent),
+            None,
+            "⚠⚠ the exclusion `report_for` and `said_in` both open with",
+        );
+
+        // ⚠ A notice that carries no words has not said any.
+        let mut wordless = captured_idle_notice();
+        wordless
+            .as_object_mut()
+            .expect("an object")
+            .remove(NOTICE_TEXT);
+        assert_eq!(
+            noticed_in(&wordless),
+            None,
+            "⚠ absent is not empty — an empty statement is a claim this payload did not make",
+        );
     }
 
     /// **THE GATE FOR THE OTHER END OF THE TURN** — the agent states what it ANSWERED, and until now
