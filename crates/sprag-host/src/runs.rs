@@ -53,8 +53,25 @@ pub enum RunState {
     /// to a restarted daemon could not tell *it finished and the record is gone* from *it never
     /// ran*. The counters it reached are kept, so what it managed before it died is still readable.
     ///
-    /// ⚠ It is NOT resumable and does not pretend to be. The pane it drove came back as a plain
-    /// shell (see the restore allowlist) and the agent that asked for it is gone with its process.
+    /// ⚠ It is NOT resumable and does not pretend to be: the thread that was driving it died with
+    /// its daemon, and nothing here re-enters a statechart from a summary.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THIS ENTRY USED TO GIVE A REASON THAT IS FALSE, AND IT CITED ITS OWN REFUTATION
+    ///
+    /// It said *"The pane it drove came back as a plain shell **(see the restore allowlist)** and
+    /// the agent that asked for it is gone with its process."* Measured 2026-08-18 on this
+    /// repository's own state file: the allowlist it points at
+    /// (`durability`'s default restore allowlist) **contains `claude`**, and
+    /// [`crate::durability::restore_command`] appends `--resume <uuid>` from the pane's recorded
+    /// conversation. A daemon restarted at 08:29 brought pane 91 back as
+    /// `claude --resume 13cac637-…`, holding the same conversation — not a shell.
+    ///
+    /// ⚠⚠⚠ **So what makes a run unresumable is the DRIVER, not the peer.** That is a much smaller
+    /// claim than the one this doc was making, and it is the one worth writing down: a run's
+    /// statechart state was never persisted, so there is nothing to re-enter. The peer being gone
+    /// was doing none of the work in that argument, and while it stood it also justified
+    /// [`RunRegistry::restore`]'s two authority decisions — see the ⚠ paragraph there for what is
+    /// now owed.
     Interrupted,
 }
 
@@ -388,12 +405,26 @@ impl RunRegistry {
     ///
     /// # ⚠⚠ Two rules, and both are authority decisions rather than conveniences
     ///
-    /// 1. **`opened_by` IS DROPPED.** Panes come back across a restart, but a restored pane's
-    ///    OCCUPANT is a plain shell and never the agent that asked. The agent-facing mouth filters
-    ///    `list_runs` by the caller's own pane id, so carrying the provenance would hand a NEW
-    ///    agent booting into restored pane 3 the previous occupant's runs as its own — a hole in
-    ///    the exact policy [`crate::wire::PluginGrammar`] describes. A restored run is nobody's,
-    ///    which is what a run whose asker is gone actually is.
+    /// 1. **`opened_by` IS DROPPED.** The agent-facing mouth filters `list_runs` by the caller's
+    ///    own pane id, so carrying the provenance across a restart risks handing whoever boots into
+    ///    restored pane 3 the previous occupant's runs as its own — a hole in the exact policy
+    ///    [`crate::wire::PluginGrammar`] describes. Dropping it is the conservative half: a run
+    ///    nobody claims is answered to nobody.
+    ///
+    ///    ⚠⚠⚠⚠⚠ **THE REASON THIS USED TO GIVE IS FALSE, AND THE DECISION IS NOW OWED A ROUND.**
+    ///    It said *"a restored pane's OCCUPANT is a plain shell and never the agent that asked …
+    ///    A restored run is nobody's, which is what a run whose asker is gone actually is."*
+    ///    Measured 2026-08-18: `durability`'s default restore allowlist contains `claude`
+    ///    and [`crate::durability::restore_command`] appends `--resume <uuid>`, so a restored agent
+    ///    pane comes back holding **the same conversation** — pane 91 did, on this machine, from
+    ///    the snapshot a `kill-server` had just written. The asker is not gone.
+    ///
+    ///    ⚠⚠⚠ That does not flip the decision here, and it is important to say why rather than
+    ///    quietly keep it: what the false sentence hid is that the hole **changed shape**. It is no
+    ///    longer *a new agent inherits a stranger's runs*; it is *the same agent cannot see the
+    ///    runs it started*, which is a different question with a different right answer (identity
+    ///    is the conversation, not the pane). Re-taking it needs the run-restoration round, not a
+    ///    doc edit, so this stays conservative and says what it is standing on.
     /// 2. **THE ID COUNTER IS SEEDED ABOVE THEM.** Ids are monotonic and never reused
     ///    ([`reserve`](Self::reserve)); a successor that started from zero would mint ids that
     ///    already name a run in its own list.
@@ -1013,7 +1044,11 @@ mod tests {
         );
         assert_eq!(
             restored[0].opened_by, None,
-            "and it belongs to nobody: the pane it drove came back a plain shell",
+            "⚠ and it belongs to nobody — NOT because the pane came back a plain shell (measured \
+             2026-08-18: an allowlisted agent comes back `--resume`d, holding the same \
+             conversation), but because a successor cannot tell whether whoever boots into a \
+             restored pane is the asker. Dropping the provenance is the conservative half; see \
+             `RunRegistry::restore`",
         );
         assert_eq!(
             successor.reserve(),

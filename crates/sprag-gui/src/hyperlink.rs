@@ -172,6 +172,13 @@ pub(crate) struct HoverState {
     /// calls it so a queued report always gets a drain frame, even when the pointer event repainted
     /// nothing on its own.
     repaint: RepaintHandle,
+    /// WHICH TILE this state belongs to — the slot its oracle is registered at.
+    ///
+    /// ⚠⚠⚠⚠ Carried for ONE reason (item 410): a press that reaches this oracle must also give the
+    /// pane the keyboard, and an oracle that does not know which pane it is cannot ask. Everything
+    /// else here is about the pointer's position INSIDE a pane and needs no such identity, which is
+    /// why the field did not exist until a click had to mean "and I am working here now".
+    slot: usize,
 }
 
 impl Default for HoverState {
@@ -191,6 +198,7 @@ impl Default for HoverState {
             // Null until `HoverState::new` overrides it with the in-scope sink; a bare `default()`
             // (never used to build a live oracle) simply no-ops its repaint requests.
             repaint: RepaintHandle(Arc::new(NullRepaintSink)),
+            slot: 0,
         }
     }
 }
@@ -198,9 +206,10 @@ impl Default for HoverState {
 impl HoverState {
     /// Build a [`HoverState`] carrying the current scope's [`RepaintSink`] — called by
     /// [`use_pane_hover`] inside the binding Owner, the ONE place the sink resolves.
-    fn new(repaint: Arc<dyn RepaintSink>) -> Self {
+    fn new(repaint: Arc<dyn RepaintSink>, slot: usize) -> Self {
         Self {
             repaint: RepaintHandle(repaint),
+            slot,
             ..Self::default()
         }
     }
@@ -266,7 +275,7 @@ pub(crate) fn use_pane_hover(i: usize) -> Rc<HoverState> {
     let sink = use_repaint_sink();
     owner
         .cache(pane_cache_key("hyperlink_hover", i), || {
-            Rc::new(HoverState::new(sink))
+            Rc::new(HoverState::new(sink, i))
         })
         .as_ref()
         .clone()
@@ -581,6 +590,37 @@ impl External for HyperlinkOracle {
             PointerEdge::Down => MouseEventKind::Press,
             PointerEdge::Up => MouseEventKind::Release,
         };
+        // ⚠⚠⚠⚠⚠ THE PANE TAKES THE KEYBOARD FIRST, AND THEN THE CHILD GETS ITS REPORT (item 410).
+        //
+        // Suppressing this pane's GUI pointer defaults is what the raw stream is FOR — no context
+        // menu, no PRIMARY paste, no legacy wire — and click-to-focus was suppressed with them,
+        // silently. Measured: with `claude` (a tracking app) in the right pane and `bash` in the
+        // left, clicking the left pane focused it and clicking the right one could not, so a person
+        // could reach that pane by keyboard alone and had no way to know why.
+        //
+        // ⚠⚠⚠ THE RIVAL DOES BOTH, and its own default binding is the argument — `tmux 3.4`,
+        // measured through `list-keys`:
+        //
+        //     bind-key -T root MouseDown1Pane   select-pane -t = \; send-keys -M
+        //
+        // Select, THEN forward. So a tracking app receiving the click was never a reason for the
+        // multiplexer not to answer it, and this is a parity gap rather than a design choice.
+        //
+        // ⚠⚠ LEFT AND DOWN ONLY, which is the same edge tmux binds. A release would re-focus after
+        // a drag that left the pane, and the other buttons carry their own meanings.
+        //
+        // ⚠⚠⚠⚠ AND THE SLOT IS CHECKED AGAINST THE TILE TABLE RATHER THAN INDEXED. `pane_tag`
+        // PANICS past `MAX_PANES`, and a neighbouring fixture keys an oracle at slot 10 to get a
+        // distinct cache entry — which is legitimate, because `use_pane_hover` keys on a STRING and
+        // does not care. So the honest rule is the one this states: a state that is not a tile's
+        // has no ring to ask for. Indexing blindly here made eight panes the difference between
+        // working and a panic, which is not a distance to leave a keystroke standing on.
+        if event.button == PointerButton::Left
+            && event.edge == PointerEdge::Down
+            && self.state.slot < crate::terminal::MAX_PANES
+        {
+            pinion_core::focus_request::request(crate::terminal::pane_tag(self.state.slot));
+        }
         self.state
             .record_report(button, kind, to_input_mods(event.modifiers));
         self.state.held.set(primary_held(event.buttons));

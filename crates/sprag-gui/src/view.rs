@@ -60,7 +60,23 @@ const THEME_TAG: &str = "app";
 /// the DAEMON's surfaces (it resolves to a pane id there), and this client's panel identity is its
 /// own; deriving one from the other would let a rename move a widget's address (R70's rule, which
 /// was written about the title and holds for anything a caller can change).
-pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
+/// # ⚠⚠⚠⚠⚠ `clipped`: HOW MANY OF THE PANE'S ROWS THIS CLIENT CANNOT DRAW (item 411)
+///
+/// A pane's grid is the DAEMON's, and a client draws as much of it as its window has room for. When
+/// the window has room for fewer rows, the rest are simply not there — no mark, no message, no
+/// count. Measured 2026-08-18 on the owner's window: a `gui-font` of 20 in a 1048px window offered
+/// **31 rows** while the panes held **40**, so the bottom NINE rows of both panes were unreachable
+/// and the owner had to ask another program why. Nothing in this product could answer.
+///
+/// That is this register's oldest disease at the display layer — **a wrong reading that looks like
+/// a right one**: the last visible line reads exactly like the last line. A person cannot tell "the
+/// command printed nothing more" from "the window ends here", and every other layer of this product
+/// pays to keep those apart.
+///
+/// ⚠⚠ It rides the DISPLAY TITLE for this function's own stated reason: one string reaches the dock
+/// header, the tab, the floater and the OS title at once, so the fact cannot be true on one surface
+/// and absent on another. `None` is *nothing is hidden* — which is the ordinary case, and silent.
+pub(crate) fn pane_display_title(slots: &SlotView, i: usize, clipped: Option<u16>) -> String {
     let title = slots
         .pane_name(i)
         .or_else(|| slots.pane_title(i))
@@ -92,11 +108,55 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
     // Without it a finished command and a hung one are the same picture: a screen that stopped
     // changing. That is the whole of what remain-on-exit costs a user who cannot see it, and sprag
     // keeps every dead PANE (only its child is reaped), so every one of them needs to say so.
-    if slots.pane_is_dead(i) {
+    let title = if slots.pane_is_dead(i) {
         format!("{title}{}", dead_marker(slots.pane_child_exit(i).as_ref()))
     } else {
         title
+    };
+    // ...and LAST, what this client cannot show. It goes outside the exit marker deliberately: the
+    // two markers above are statements about the PANE — what its child called itself, what it is
+    // doing, whether it is still there — and this one is a statement about THIS WINDOW. A reader
+    // who moves the same pane to a bigger window keeps every other part of the title and loses
+    // only this, which is exactly what it means.
+    format!("{title}{}", clip_marker(clipped))
+}
+
+/// WHAT A TITLE SAYS ABOUT ROWS THIS CLIENT CANNOT DRAW — `""` when it can draw them all.
+///
+/// Words rather than a glyph, for [`agent_marker`]'s reason: this rides the a11y name too, and a
+/// screen-reader user must not be the only one who cannot tell that a pane runs off the window.
+///
+/// ⚠ **A count and not a flag.** *"Something is hidden"* leaves a reader unable to decide whether
+/// to resize, scroll or ignore it; the number is what makes the next move obvious — and it is the
+/// number the owner actually asked for when they asked why the bottom was missing.
+pub(crate) fn clip_marker(clipped: Option<u16>) -> String {
+    match clipped {
+        // ⚠ ZERO IS NOT "a little bit hidden" and must read as the ordinary case. It arrives when a
+        // window is exactly as tall as its pane, which is the common state under `window-size
+        // latest`, and a title reading "0 rows below this window" would be noise on every pane.
+        None | Some(0) => String::new(),
+        Some(1) => "  (1 row below this window)".to_owned(),
+        Some(rows) => format!("  ({rows} rows below this window)"),
     }
+}
+
+/// HOW MANY OF PANE `i`'s ROWS THIS CLIENT CANNOT DRAW, from the pane's grid and the rect pinion
+/// laid out for it — `None` when it can draw them all, or while the rect is still unmeasured.
+///
+/// ⚠⚠ The comparison is against the DAEMON's grid, never against another client's: `window-size`
+/// arbitrates one grid for every viewer, so a pane can be exactly right for one window and cut off
+/// in another, and each client must answer for its own.
+///
+/// ⚠ A TRACKED read of the pane's viewport, so the marker re-derives when the window is resized —
+/// the moment the answer changes is exactly the moment somebody is looking at it.
+pub(crate) fn pane_rows_out_of_view(tv: &crate::terminal::TerminalView, i: usize) -> Option<u16> {
+    let rect = pinion_core::use_pane_viewport_size(crate::terminal::pane_tag(i));
+    if rect.0 == 0 || rect.1 == 0 {
+        return None;
+    }
+    let (_, drawable) = crate::terminal::grid_dims(rect, tv.metric);
+    let (_, held) = tv.slots.pane_grid_size(i);
+    held.checked_sub(drawable).filter(|hidden| *hidden > 0)
 }
 
 /// What a title says about the AGENT running in a pane — H3's verdict as a phrase, or `""` for a pane
@@ -345,7 +405,7 @@ pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame)
                 },
             );
             view_dock_panel_with_actions(
-                &pane_display_title(&tv.slots, i),
+                &pane_display_title(&tv.slots, i, pane_rows_out_of_view(&tv, i)),
                 fill_definite_shrinkable(build_pane_scene(&tv, i, &theme)),
                 &theme,
                 &style,
@@ -425,9 +485,11 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     let chrome =
         DockPanelChrome::default().with_title(|panel_id: &str| {
             match pane_index_of_panel(panel_id) {
-                Some(i) if tv.slots.is_pane_occupied(i) => {
-                    Cow::Owned(pane_display_title(&tv.slots, i))
-                }
+                Some(i) if tv.slots.is_pane_occupied(i) => Cow::Owned(pane_display_title(
+                    &tv.slots,
+                    i,
+                    pane_rows_out_of_view(tv, i),
+                )),
                 _ => Cow::Borrowed(panel_id),
             }
         });
@@ -933,6 +995,51 @@ mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
 
+    /// ⚠⚠⚠⚠⚠ **A WINDOW THAT CANNOT SHOW THE WHOLE PANE SAYS HOW MUCH IS MISSING** — item 411, and
+    /// the two silences it must keep apart.
+    ///
+    /// Measured 2026-08-18 on the owner's own window: `gui-font 20` in a 1048px window offered 31
+    /// rows while both panes held 40, so nine rows of each were unreachable — with no mark, no
+    /// count, and no way to find out from inside this product. The owner had to ask another program
+    /// why the bottom was missing. **The last visible line reads exactly like the last line**, which
+    /// is this register's oldest disease wearing a display costume.
+    ///
+    /// # ⚠⚠⚠⚠ Why `Some(0)` is silent and that is not a shortcut
+    ///
+    /// A window exactly as tall as its pane is the ORDINARY state under `window-size latest`, and it
+    /// arrives here as a genuine zero rather than as [`None`]. A marker there would ride every title
+    /// surface of every pane — dock header, tab, floater, OS title — saying nothing. The mutation
+    /// this catches is the tidy-looking one: folding `Some(0)` in with the counted arm, which reads
+    /// as consistency and turns the fact into noise nobody can then see the real case through.
+    ///
+    /// ⚠ The singular is not politeness: `1 rows` in a header is the kind of thing a reader stops
+    /// trusting the rest of the sentence over.
+    #[test]
+    fn a_window_that_cannot_show_the_whole_pane_says_how_much_is_missing() {
+        assert_eq!(clip_marker(None), "", "nothing hidden, nothing said");
+        assert_eq!(
+            clip_marker(Some(0)),
+            "",
+            "⚠⚠⚠ ZERO IS THE ORDINARY CASE, not a small amount of hidden. A window the same height \
+             as its pane must not wear a marker, or every pane wears one and the real case is \
+             invisible inside the noise",
+        );
+        assert!(
+            clip_marker(Some(9)).contains('9'),
+            "⚠⚠ the COUNT is the point — «something is hidden» leaves a reader unable to decide \
+             between resizing, scrolling and ignoring it: {:?}",
+            clip_marker(Some(9)),
+        );
+        assert!(
+            clip_marker(Some(1)).contains("1 row") && !clip_marker(Some(1)).contains("1 rows"),
+            "one row is singular: {:?}",
+            clip_marker(Some(1)),
+        );
+        // ⚠ THAT IT REACHES THE TITLE is held one module over, beside the other title gates and the
+        // fixture they already have — `a_clipped_pane_wears_the_count_on_its_display_title`. The
+        // rule and its delivery are two claims and they fail for different reasons.
+    }
+
     /// What [`agent_marker`] itself decides — the FRAMING and the two silences — as distinct from the
     /// wording, which is [`sprag_client::agent_phrase`]'s and is tested there.
     ///
@@ -1138,16 +1245,16 @@ mod tests {
             // Wait on the CONDITION, not a timer: the child's OSC reaches the emulator async, and
             // the TWIN is what is waited on — its header is the one the title has to reach.
             let deadline = Instant::now() + Duration::from_secs(5);
-            while pane_display_title(&terminal.slots, 1) != "vim README" {
+            while pane_display_title(&terminal.slots, 1, None) != "vim README" {
                 assert!(
                     Instant::now() < deadline,
                     "the child's own title never reached the header: {:?}",
-                    pane_display_title(&terminal.slots, 1),
+                    pane_display_title(&terminal.slots, 1, None),
                 );
                 std::thread::sleep(Duration::from_millis(20));
             }
             assert_eq!(
-                pane_display_title(&terminal.slots, 0),
+                pane_display_title(&terminal.slots, 0, None),
                 "build",
                 "once somebody has said what the pane is FOR, the shell's own title must not talk \
                  over them — and its child sets exactly the title the twin's does",

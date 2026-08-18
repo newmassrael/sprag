@@ -2480,6 +2480,113 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A CLICK IN A TRACKING PANE STILL GIVES IT THE KEYBOARD** — item 410, and the rival's
+    /// own default binding is the argument rather than a preference of ours.
+    ///
+    /// Suppressing a tracking pane's GUI pointer defaults is what the raw stream exists for — no
+    /// context menu, no PRIMARY paste, no legacy wire — and click-to-focus went with them, silently.
+    /// Measured on the owner's window 2026-08-18: `bash` in the left pane took clicks and `claude`
+    /// (which enables DECSET 1000) in the right one could not be clicked into focus at all, so the
+    /// only way into that pane was a chord the owner had no reason to know.
+    ///
+    /// `tmux 3.4`, asked through `list-keys` rather than remembered:
+    ///
+    /// ```text
+    /// bind-key -T root MouseDown1Pane   select-pane -t = \; send-keys -M
+    /// ```
+    ///
+    /// **Select, then forward.** So a child receiving the click was never a reason for the
+    /// multiplexer to decline it, and `SlotView::reseed_pane_focus_if_idle`'s stated invariant —
+    /// *"tmux always has an active pane; so must this"* — is what the suppression was quietly
+    /// breaking.
+    ///
+    /// ⚠⚠ The pane is made to track FIRST, or this gate would run down the ordinary
+    /// click-to-focus path that already worked and prove nothing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ WHY THIS ASSERTS A REQUEST AND NOT `focused()` — THE OTHER HALF IS UPSTREAM
+    ///
+    /// Measured 2026-08-18 with the fix in place: the request IS made, for the right pane
+    /// (`drain() == Some(pane_tag(1))`), and the ring does not move. The cause is in pinion's
+    /// `pointer_button_for_window` (`pinion-shell/src/substrate.rs`, the `raw_pointer_button_for_window`
+    /// arm): a raw sink that consumes the edge bumps the revision, asks for a redraw and **returns
+    /// early**, so it never reaches the dispatch tail's `drain_focus_mailboxes()` that every other
+    /// pointer arm goes through. A focus request written from inside a raw-pointer External
+    /// therefore waits for some later dispatch — item 409's failure exactly, one layer down and in
+    /// somebody else's crate.
+    ///
+    /// ⚠⚠⚠ **So it is filed, not worked around.** This workspace's standing rule is that a pinion
+    /// defect is reported and PR'd, never edited from here, and a sprag-side hack to force a drain
+    /// would be a workaround over a root cause. What sprag owes is the request, and that is what
+    /// this holds — mutation-provable: delete the `focus_request` in `HyperlinkOracle::raw_pointer_button`
+    /// and this goes red. Tighten it to `core.focus().focused()` the day the upstream arm drains.
+    #[test]
+    fn a_click_in_a_tracking_pane_still_gives_it_the_keyboard() {
+        use pinion_core::{PointerButton, PointerEdge};
+        use pinion_runtime::PointerId;
+
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        assert_eq!(core.focus().focused(), Some(pane_tag(0)), "boots on pane 0");
+
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        let (cx, cy) = {
+            let r = scene
+                .rect_for_tag_absolute(pane_tag(1))
+                .expect("pane 1 painted");
+            (
+                f64::from(r.x) + f64::from(r.w) / 2.0,
+                f64::from(r.y) + f64::from(r.h) / 2.0,
+            )
+        };
+
+        // Pane 1 starts tracking, exactly as a child enabling DECSET 1000 makes it — the same feed
+        // the per-frame reconcile uses, so this is the real condition and not a flag set by hand.
+        let owner = core.root_owner().clone();
+        owner.run(|| {
+            let mut em = sprag_vt::Emulator::new(8, 3);
+            sprag_vt::VtPort::advance(&mut em, b"........");
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&em),
+                sprag_vt::VtPort::palette(&em),
+            );
+            crate::hyperlink::reconcile_pane_hyperlinks(
+                1,
+                &buffer,
+                sprag_vt::MouseProtocol::Click,
+                pinion_core::use_pane_viewport_size(terminal::pane_tag(1)),
+                terminal::use_terminal().metric,
+            );
+        });
+
+        core.cursor_moved_for_window(dock::MAIN_WINDOW_ID, PointerId::MOUSE, cx, cy);
+        core.pointer_button_for_window(
+            dock::MAIN_WINDOW_ID,
+            PointerButton::Left,
+            PointerEdge::Down,
+        );
+
+        assert_eq!(
+            owner.run(pinion_core::focus_request::drain).as_deref(),
+            Some(pane_tag(1)),
+            "⚠⚠⚠⚠⚠ A CLICK IN A TRACKING PANE MUST ASK FOR THAT PANE'S RING. This is sprag's whole \
+             half of item 410 and it is asserted as a REQUEST rather than as `focused()` for a \
+             measured reason — see this test's own doc: pinion's raw-button arm returns before the \
+             dispatch tail that would apply it",
+        );
+
+        // ── AND THE CHILD STILL GOT ITS REPORT: focusing must ADD to the raw path, not replace it ──
+        let reports = owner.run(|| crate::hyperlink::take_pane_mouse_reports(1));
+        assert!(
+            reports
+                .iter()
+                .any(|r| r.button == sprag_input::MouseButton::Left
+                    && r.kind == sprag_input::MouseEventKind::Press),
+            "⚠⚠⚠ the press must reach the tracking child as well — a fix that stole the click to \
+             focus with would break every mouse-driven TUI in a pane: {reports:?}",
+        );
+    }
+
     /// End-to-end dock/undock through the REAL `TerminalViewer` + the shell's
     /// per-window paint dispatch: undock pane 1 and assert the main window drops
     /// it while the `pane-1` undock window paints exactly it — the docked/floating

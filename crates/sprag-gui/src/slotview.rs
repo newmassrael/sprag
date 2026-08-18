@@ -1410,13 +1410,25 @@ mod tests {
         // scope (as every paint / reconcile caller does); no notification ⇒ no marker prefix.
         Owner::new().run(|| {
             // Slot 0's child set a title -> it is displayed.
-            assert_eq!(crate::view::pane_display_title(&view, 0), "vim README");
+            assert_eq!(
+                crate::view::pane_display_title(&view, 0, None),
+                "vim README"
+            );
             // Slot 1's child set a blank one -> fall back, never an empty header.
-            assert_eq!(crate::view::pane_display_title(&view, 1), "terminal-1");
+            assert_eq!(
+                crate::view::pane_display_title(&view, 1, None),
+                "terminal-1"
+            );
             // Slot 2's child set none -> the stable panel id.
-            assert_eq!(crate::view::pane_display_title(&view, 2), "terminal-2");
+            assert_eq!(
+                crate::view::pane_display_title(&view, 2, None),
+                "terminal-2"
+            );
             // A hole (no pane) still yields its stable panel id, never a panic.
-            assert_eq!(crate::view::pane_display_title(&view, 7), "terminal-7");
+            assert_eq!(
+                crate::view::pane_display_title(&view, 7, None),
+                "terminal-7"
+            );
         });
     }
 
@@ -1444,7 +1456,7 @@ mod tests {
         }));
 
         Owner::new().run(|| {
-            let title = |i| crate::view::pane_display_title(&view, i);
+            let title = |i| crate::view::pane_display_title(&view, i, None);
             assert!(
                 title(0).ends_with(DEAD_MARKER),
                 "the exited pane says so: {:?}",
@@ -1464,6 +1476,25 @@ mod tests {
                 !title(1).ends_with(DEAD_MARKER),
                 "a live sibling wears nothing: {:?}",
                 title(1)
+            );
+
+            // ⚠⚠⚠⚠ AND THE CLIP COUNT RIDES THE SAME ONE STRING (item 411). The composer is the
+            // single home every title surface reads — dock header, tab, floater, OS title — so a
+            // count that stopped at `clip_marker` would be a fact no viewer could ever see. It
+            // sits OUTSIDE the exit marker on purpose: the markers before it are statements about
+            // the PANE, and this one is about THIS WINDOW, so the same pane in a bigger window
+            // keeps every other part of its title and loses only this.
+            let clipped = crate::view::pane_display_title(&view, 0, Some(9));
+            assert_eq!(
+                clipped,
+                format!("{}{}", title(0), crate::view::clip_marker(Some(9))),
+                "the count is a suffix on the whole composed title: {clipped:?}",
+            );
+            assert!(
+                clipped.contains('9') && clipped.ends_with("window)"),
+                "⚠⚠⚠ and it is READABLE at the end of the title a person actually sees, which is \
+                 the whole of what the owner could not find out from inside this product: \
+                 {clipped:?}",
             );
 
             // Viewing the pane clears the ATTENTION marker; the exited one is not a flag to clear.
@@ -1534,7 +1565,7 @@ mod tests {
         }));
 
         Owner::new().run(|| {
-            let title = |i| crate::view::pane_display_title(&view, i);
+            let title = |i| crate::view::pane_display_title(&view, i, None);
             assert_eq!(
                 title(0),
                 "claude (claude working)",
@@ -1604,7 +1635,7 @@ mod tests {
         }));
 
         Owner::new().run(|| {
-            let title = |i| crate::view::pane_display_title(&view, i);
+            let title = |i| crate::view::pane_display_title(&view, i, None);
             assert!(
                 title(0).ends_with(" (exited 101)"),
                 "a failing command reports its code: {:?}",
@@ -1650,7 +1681,7 @@ mod tests {
 
         Owner::new().run(|| {
             assert!(
-                crate::view::pane_display_title(&view, 0).ends_with(crate::view::DEAD_MARKER),
+                crate::view::pane_display_title(&view, 0, None).ends_with(crate::view::DEAD_MARKER),
                 "a clean exit is reported as finished, with no number to read",
             );
         });
@@ -1684,7 +1715,7 @@ mod tests {
         }));
 
         Owner::new().run(|| {
-            let title = |i| crate::view::pane_display_title(&view, i);
+            let title = |i| crate::view::pane_display_title(&view, i, None);
             // Slot 0 raised a notification (seq 1), unviewed ⇒ the marker leads its title.
             assert!(
                 title(0).starts_with(ATTENTION_MARKER),
@@ -1746,7 +1777,7 @@ mod tests {
         }));
 
         Owner::new().run(|| {
-            let title = |i| crate::view::pane_display_title(&view, i);
+            let title = |i| crate::view::pane_display_title(&view, i, None);
             // Slot 0 rang a bell (no notification), unviewed ⇒ the marker leads its title.
             assert!(
                 title(0).starts_with(ATTENTION_MARKER),

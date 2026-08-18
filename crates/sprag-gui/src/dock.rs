@@ -234,7 +234,7 @@ fn window_title_for_pane(i: usize) -> String {
     let tv = use_terminal();
     format!(
         "{APP_NAME} — {}",
-        crate::view::pane_display_title(&tv.slots, i)
+        crate::view::pane_display_title(&tv.slots, i, crate::view::pane_rows_out_of_view(&tv, i))
     )
 }
 
