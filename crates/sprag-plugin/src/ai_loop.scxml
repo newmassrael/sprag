@@ -796,13 +796,21 @@
       floor described above, which a restart cannot escape; what remains is the
       only part a restart actually drops.
 
-      ⚠⚠⚠ WHAT THIS DOCUMENT DOES WITH ALL OF IT IS HAND IT OVER, NOT GUARD ON
-      IT. `reflecting` composes these quantities into the prompt it sends, so the
-      agent weighing what to do next can weigh its own cadence too. A THRESHOLD
-      is deliberately absent, for the reason the `context` entry below states at
-      length: the sign is close enough to break-even that a guard would be a
-      policy nobody can defend, and the party that can judge it is the one being
-      asked what comes next.
+      ⚠⚠⚠ WHAT THIS DOCUMENT DOES WITH ALL OF IT IS HAND IT OVER. `reflecting`
+      composes these quantities into the prompt it sends, so the agent weighing
+      what to do next can weigh its own cadence too, and NOTHING GUARDS ON A
+      COUNT OF TURNS — that is what this whole entry is about and it has not
+      changed.
+
+      ⚠⚠ WHAT DID CHANGE IS THAT A GUARD ON THE QUANTITY ITSELF NOW EXISTS, and
+      the difference is the point rather than a detail: `reviewing` replaces a
+      session once `context - floor` has reached twenty times `cold`, which is a
+      break-even computed from what the run measured about itself. The paragraph
+      that used to stand here called a threshold *"a policy nobody can defend"*,
+      and it was defending the count against a threshold placed inside a band —
+      see `context`, which records both the refusal and the re-measurement that
+      ended it. ⚠ The CADENCE is still not a cost knob and still must not be
+      tuned as one.
     -->
     <data id="max_turns" expr="40"/>
     <data id="reflect_every" expr="8"/>
@@ -952,40 +960,44 @@
       `reflecting` composed a paragraph of arithmetic out of it. The agent states
       where it writes on its own submit hook, and that is read first now.
 
-      ⚠ NO ECONOMIC GUARD IS WRITTEN ON IT, and that is deliberate rather than
-      unfinished. What such a guard would be for is deciding whether `restarting`
-      is worth its cold start, against the restart-cost curve above at
-      15,000-21,000 tokens of discardable context.
+      ⚠⚠⚠⚠ THREE GUARDS READ IT, AND THIS PARAGRAPH HAS NOW SAID *none* AND
+      *two* IN ITS TIME — register item 437's class, met twice in this one entry,
+      which is why the count is spelled out rather than implied. `reviewing` asks
+      whether there is room to take the next milestone HERE and `judging` asks
+      whether to hand over AT ALL because the window is filling, both of which are
+      CAPACITY (register item 424(b)); `reviewing` also asks whether replacing
+      this session has already paid for itself, which is the ECONOMIC one this
+      entry spent two rounds refusing (register item 424(a)).
 
-      ⚠⚠⚠⚠ TWO CAPACITY GUARDS DO READ IT, AND THIS PARAGRAPH USED TO SAY
-      NOTHING DID — a sentence that outlived its own truth (register item 437's
-      class, met in this file). `reviewing` asks whether there is room to take
-      the next milestone HERE, and `judging` asks whether to hand over AT ALL
-      because the window is filling (register item 424(b)). **Neither is the
-      guard refused below**: that one is about whether a restart PAYS, and these
-      are about whether the session can go on at all. The refusal stands for the
-      question it was about.
+      ⚠⚠⚠⚠⚠ THE REFUSAL AND WHAT ENDED IT, KEPT IN THAT ORDER BECAUSE THE REASON
+      MATTERS MORE THAN THE VERDICT. This entry said the deciding figure was
+      unmeasured; it arrived, and at the re-measured rate the eight-turn cadence
+      discarded 18,736 tokens — INSIDE the 15,000-21,000 band. So the entry
+      concluded THERE MUST BE NO GUARD, because *"a threshold placed anywhere in a
+      band the workload sits inside decides by rounding, and would read as a
+      measured policy while being a coin toss"*. **That was right about a band and
+      wrong about this workload**, and the entry named its own release: *"a guard
+      remains writable the day a workload sits clearly outside the band, and what
+      would justify one is a RE-MEASUREMENT, not a preference."*
 
-      ⚠⚠⚠⚠ THIS ENTRY USED TO SAY THE DECIDING FIGURE WAS STILL UNMEASURED AND
-      THAT ITS ARRIVAL WOULD SETTLE THE QUESTION. IT HAS ARRIVED, AND WHAT IT
-      SETTLED IS THAT THERE MUST BE NO GUARD. At the re-measured real rate the
-      eight-turn cadence discards 18,736 tokens, which is INSIDE the band rather
-      than under it: the trade is somewhere between a small loss and break-even.
-      A threshold placed anywhere in a band the workload sits inside decides by
-      rounding, and would read as a measured policy while being a coin toss.
+      ⚠⚠⚠⚠ THE RE-MEASUREMENT SAYS OUTSIDE, BY A FACTOR OF THIRTY-ONE. Over 214
+      local agent sessions of 20 billed requests or more, the discardable part
+      grows 72,212 tokens per TURN at the median where the settled conclusion was
+      computed at 2,342 — and of those 214 sessions, 211 are ABOVE the band after
+      five turns and NOT ONE is inside it, at five turns or at eight. A guard is
+      therefore not a coin toss here, and `reviewing` carries it: see the edge
+      itself for the break-even it is written on and for what that trade does not
+      price.
 
-      ⚠⚠⚠ SO THE ECONOMIC TRADE IS CARRIED, NOT ACTED ON. `reflecting` composes
-      the number into the prompt with the two quantities that make it legible —
-      what a restart could actually discard, and what one costs — and the agent
-      that is being asked what to do next is the party that weighs them. That is
-      the same division this document uses everywhere else: the driver measures,
-      the document decides what to say, and a judgement about somebody's work
-      belongs to whoever is doing it. ⚠ The CAPACITY question is not carried in
-      that sense and cannot be: an agent asked to weigh a full window has already
-      spent the window it would be weighing.
-
-      ⚠⚠ A GUARD REMAINS WRITABLE the day a workload sits clearly outside the
-      band, and what would justify one is a re-measurement, not a preference.
+      ⚠⚠⚠ WHAT SURVIVES THE CHANGE IS THE DIVISION, NOT THE REFUSAL. `reflecting`
+      still composes all three numbers into the prompt — what a restart could
+      discard and what one costs — and the agent being asked what to do next is
+      still the party that weighs its own cadence. What moved is only the case
+      where the arithmetic has already answered: the driver measures, the document
+      holds the trade, and a judgement about somebody's work belongs to whoever is
+      doing it. ⚠ The CAPACITY question is not carried in that sense and cannot
+      be: an agent asked to weigh a full window has already spent the window it
+      would be weighing.
     -->
     <data id="context" expr="0"/>
 
@@ -994,13 +1006,16 @@
       TAKEN SOMEWHERE ELSE — the number `reviewing` decides on, and the reason
       the decision is no longer a count of turns.
 
-      `context`'s own entry above argues at length that NO GUARD should be
-      written on it, and that argument was about a different question: whether
-      a restart is worth its cold start, which is economics, and a threshold
-      placed inside the band the workload sits in decides by rounding. **That
-      reasoning stands and this is not it.** This one is CAPACITY — a session's
-      reading is bounded, and a bound is not a coin toss: the argument against
-      a threshold in the middle of a band says nothing about one near the end.
+      `context`'s own entry above spent two rounds refusing a guard, and the
+      argument was about a different question: whether a restart is worth its
+      cold start, which is economics, and a threshold placed inside the band the
+      workload sits in decides by rounding. **This is not that question**, and it
+      never depended on the answer to it: this one is CAPACITY — a session's
+      reading is bounded, and a bound is not a coin toss, because the argument
+      against a threshold in the MIDDLE of a band says nothing about one near the
+      end. ⚠ That entry's refusal has since been ended by a re-measurement, so
+      `reviewing` now carries an economic guard as well; this ceiling was correct
+      before it and is unchanged by it.
 
       ⚠⚠⚠⚠ AND THE WORKLOAD IS OUTSIDE THE BAND THAT REASONING WAS COMPUTED
       FOR, which is exactly the condition it named as making a guard writable
@@ -1037,7 +1052,11 @@
 
       ⚠⚠ SO THE DISCARDABLE AMOUNT IS `context - floor`, and the trade is that
       against `cold` at twenty to one. `reflecting` composes all of it into the
-      prompt; nothing here guards on any of it, for the reason `context` states.
+      prompt AND `reviewing` decides on it: the edge that replaces a session with
+      room left is written on exactly this comparison (register item 424(a)).
+      ⚠ This paragraph used to end *"nothing here guards on any of it"*, which was
+      true for as long as the workload was inside the band and stopped being true
+      when it was re-measured outside — see `context`.
 
       ⚠ THEY DEGRADE TO 0 TOGETHER with `context` and for the same cause, so
       *"do not decide on this"* stays one rule rather than three.
@@ -2367,8 +2386,16 @@
       ⚠⚠⚠ SO THE ORDER IS: finish the turn, ask what is next, and then ask
       WHETHER THERE IS ROOM TO DO IT HERE. Room means this session's reading has
       not reached `context_ceiling`. With room, the next milestone is taken in
-      the session that already holds the work — which is the whole saving, since
-      a replacement re-pays `cold` and re-reads everything it discarded.
+      the session that already holds the work — a replacement re-pays `cold` and
+      re-reads everything it discarded.
+
+      ⚠⚠⚠⚠ AND THAT LAST CLAUSE USED TO END *"which is the whole saving"*, WHICH
+      IS THE SENTENCE THE ECONOMIC HALF OF REGISTER ITEM 424 CORRECTS. Keeping a
+      session saves one `cold`; it also charges every later request the whole
+      accumulated reading, and past a point that is the larger number. So room is
+      necessary and not sufficient, and the edge below asks the second question:
+      has what this session could DISCARD already reached twenty times what its
+      replacement would re-write? Above that the keeping is what costs.
 
       ⚠⚠ ZERO IS NOT A SMALL NUMBER on either side, and both fall back to the
       old behaviour rather than deciding on a value nobody could read: an
@@ -2376,6 +2403,71 @@
       `0` is a session whose reading could not be taken at all. Replacing is the
       conservative half — it is what this loop has always done.
     -->
+    <!--
+      ⚠⚠⚠⚠⚠ AND THE SECOND REASON TO HAND OVER, WHICH IS NOT CAPACITY: THE
+      SESSION HAS GROWN ENOUGH THAT REPLACING IT HAS ALREADY PAID FOR ITSELF.
+      Register item 424(a), the ECONOMIC half of the same question the ceiling
+      answers on the capacity one.
+
+      `context`'s own entry refused an economic guard for two rounds, and its
+      stated reason was that the workload sits INSIDE the 15,000-21,000 band where
+      a restart begins to pay — *"a threshold placed anywhere in a band the
+      workload sits inside decides by rounding, and would read as a measured
+      policy while being a coin toss."* It also named the one thing that would
+      make a guard writable: *"A GUARD REMAINS WRITABLE the day a workload sits
+      clearly outside the band, and what would justify one is a RE-MEASUREMENT,
+      not a preference."*
+
+      ⚠⚠⚠⚠ THE RE-MEASUREMENT HAS BEEN TAKEN AND THE WORKLOAD IS NOWHERE NEAR
+      THAT BAND. Over 214 local agent sessions of 20 billed requests or more,
+      read exactly as the driver reads one — first request's cache WRITE is
+      `cold`, second request's cache READ is `floor`, last request's total is
+      `context` — the discardable part grows by 72,212 tokens per TURN at the
+      median and 120,928 at p75, against the 2,342 per turn the *inside the band*
+      conclusion was computed from. That is a factor of thirty-one. Five turns
+      discard 361,061 at the median: **211 of those 214 sessions are ABOVE the
+      band at five turns and NOT ONE is inside it, and at eight turns not one is
+      inside it either.** The band argument was true about the workload it was
+      measured on, and this is a different one.
+
+      ⚠ ONE MACHINE'S NUMBERS AGAIN, on the same terms as the budget note above:
+      what travels is that a workload can sit far outside that band, not the
+      particular multiple. An author adopting this file re-derives it the same
+      way — every billed request records its own cache read.
+
+      ⚠⚠⚠ SO THE THRESHOLD IS NOT A NUMBER SOMEBODY PICKED INSIDE A BAND. It is
+      the break-even the same measurement names: writing cache costs TWENTY TIMES
+      reading it, so a replacement has to be able to shed twenty times what it
+      re-writes before it is worth anything at all. Both sides are measured by the
+      run about ITSELF — `context - floor` is what this session could actually
+      drop, `cold` is what its replacement re-pays — so no author is asked for a
+      number here and nothing is being rounded.
+
+      ⚠⚠ IT IS ORDERED AFTER CAPACITY AND CANNOT OVERRULE IT. This edge asks its
+      question only where there IS room; a session past its ceiling takes the
+      fall-back below whatever the economics say, because the two axes point
+      opposite ways and only one of them can lose the session. ⚠ And it is inert
+      in the shipped document for the same reason the ceiling is: with no ceiling
+      authored there is no *room* to have, and every reflection replaces.
+
+      ⚠⚠⚠ ZERO IS NOT A SMALL NUMBER HERE EITHER, and now on all three. `cold` and
+      `floor` degrade to 0 with `context` and for the same cause, and an unreadable
+      number must not be able to BUY a replacement — so all three have to have been
+      read, and a run that cannot see itself keeps the session it has.
+
+      ⚠ WHAT THIS TRADE DOES NOT PRICE, stated rather than hidden: a replacement
+      also costs whatever the session was holding, and that side has never been
+      measured. On the numbers above this edge moves the handover from the ceiling
+      down to about `floor + 20 * cold`, which buys roughly a seventh of the read
+      bill for roughly a fifth more handovers. The saving is measured and the cost
+      to the WORK is not, so if these replacements ever read as too frequent the
+      honest repair is to measure that side — not to widen this one.
+    -->
+    <transition event="review.done"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
+                target="restarting">
+      <assign location="carried" expr="_event.data.carried"/>
+    </transition>
     <transition event="review.done"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
                 target="working">
@@ -2392,6 +2484,18 @@
       session about a habit that is over, and the loop would keep correcting
       something nobody was doing any more.
     -->
+    <!--
+      ⚠⚠ THE SAME ECONOMIC QUESTION, ASKED THE SAME WAY. A review that found
+      nothing to carry says nothing about how big the session got, so the two
+      events differ in what they assign and in nothing else — and a guard written
+      on only one of them would make *did the reviewer find a habit* decide the
+      handover, which is not what either number is about.
+    -->
+    <transition event="review.none"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
+                target="restarting">
+      <assign location="carried" expr="''"/>
+    </transition>
     <transition event="review.none"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
                 target="working">

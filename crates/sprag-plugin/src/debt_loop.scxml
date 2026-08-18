@@ -172,13 +172,35 @@
       here would ask for a loop that runs for ever and never once improves itself.
       The driver refuses that pairing rather than guessing; this is the answer.
 
-      ⚠⚠⚠ FIVE IS AN IMPROVEMENT CADENCE AND KNOWN TO LOSE ON COST, which the
-      template's own budget note argues at length: the restart-cost curve pays
-      above roughly 15,000-21,000 tokens of discardable context, real work here
-      accumulates about 2,342 per turn, so five turns discard about 11,700 —
-      BELOW the band. It is chosen on the axis `reflect_every` is actually for,
-      and the numbers now travel in the reflection prompt so the loop can weigh
-      its own cadence rather than obey it blindly.
+      ⚠⚠⚠ FIVE IS AN IMPROVEMENT CADENCE. It is chosen on the axis
+      `reflect_every` is actually for, and the numbers travel in the reflection
+      prompt so the loop can weigh its own cadence rather than obey it blindly.
+
+      ⚠⚠⚠⚠⚠ THIS PARAGRAPH USED TO OPEN *"AND KNOWN TO LOSE ON COST"* AND THE
+      ARITHMETIC BEHIND THAT WAS SOMEBODY ELSE'S WORKLOAD — register item 424(a),
+      which is exactly this defect: an override that carried no arithmetic of its
+      own. It read *"real work here accumulates about 2,342 per turn, so five
+      turns discard about 11,700 — BELOW the band"*, and the 2,342 is the
+      TEMPLATE's figure, measured across a mixed population and inherited here
+      without being re-run against the runs this file actually starts.
+
+      ⚠⚠⚠⚠ RE-RUN, 2026-08-18, over 214 sessions of this repository's own agent
+      with 20 billed requests or more: the discardable part grows **72,212 tokens
+      per TURN at the median** and 120,928 at p75 — thirty-one times the rate the
+      sentence assumed. Five turns discard about **361,000**, so this workload is
+      not below the 15,000-21,000 band, it is more than an order of magnitude
+      ABOVE it: 211 of those 214 sessions are above the band after five turns and
+      not one is inside it. **The old sentence was wrong in both directions at
+      once** — wrong that the arithmetic had been done here, and wrong about which
+      side of the band the answer falls on.
+
+      ⚠⚠ WHAT THAT CHANGES ABOUT THIS NUMBER IS NOTHING, AND SAYING SO IS THE
+      POINT. A cadence is still not a cost knob, and the cost the old sentence
+      named is now decided where it belongs: the template's `reviewing` replaces a
+      session once `context - floor` reaches twenty times `cold`, on quantities
+      each run measures about itself. Five is what it always claimed to be —
+      how often this loop stops to choose — and no longer stands on an inherited
+      sum that was never about it.
     -->
     <data id="reflect_every" expr="5"/>
 
@@ -219,9 +241,8 @@
     <data id="milestone_check" expr="'claude -p'"/>
 
     <!--
-      ⚠⚠⚠⚠⚠ AND THE SENTENCE ABOVE — *"known to lose on cost"* — IS NO LONGER
-      TRUE OF THIS NUMBER, because the cost it named was a SESSION REPLACEMENT
-      and this number no longer buys one.
+      ⚠⚠⚠⚠⚠ WHY THE CADENCE ABOVE NO LONGER BUYS A SESSION REPLACEMENT, which is
+      what let it go back to being only a cadence.
 
       `reflecting` asks what to do next. It used to be followed by `restarting`
       unconditionally, so an improvement cadence and a session-replacement
@@ -231,8 +252,8 @@
       be: how often this loop stops to choose.
 
       ⚠⚠⚠⚠ WHAT THE CEILING IS FOR, AND WHY IT IS A NUMBER AT ALL WHERE THE
-      TEMPLATE REFUSED ONE. The template's refusal is about ECONOMICS — is a
-      restart worth its cold start — and it is right that a threshold inside the
+      TEMPLATE REFUSED ONE. The template's refusal was about ECONOMICS — is a
+      restart worth its cold start — and it was right that a threshold inside the
       band decides by rounding. This is CAPACITY: a session's reading is
       bounded, and a bound near the end of the range is not a coin toss.
 

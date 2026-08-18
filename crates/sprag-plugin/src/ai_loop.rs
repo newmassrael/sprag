@@ -6112,6 +6112,221 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A SESSION WITH ROOM LEFT IS STILL REPLACED ONCE REPLACING IT HAS PAID FOR
+    /// ITSELF** — register item 424(a), the ECONOMIC half of the owner's question *"왜 고정이야?
+    /// 컨텍스트 넘길 타이밍이 계산되어야 하는 거 아니야?"*
+    ///
+    /// # ⚠⚠⚠⚠ The measurement that made this writable, because the document refused it twice
+    ///
+    /// `context`'s entry refused an economic guard on a stated ground — the workload sits INSIDE
+    /// the 15,000-21,000 band where a restart begins to pay, and *"a threshold placed anywhere in a
+    /// band the workload sits inside decides by rounding"* — and named its own release: *"a guard
+    /// remains writable the day a workload sits clearly outside the band, and what would justify
+    /// one is a RE-MEASUREMENT, not a preference."*
+    ///
+    /// **Re-measured over 214 local agent sessions of 20 billed requests or more**, read exactly as
+    /// [`crate::spend::spend_in`] reads one: the discardable part grows **72,212 tokens per TURN at
+    /// the median** (120,928 at p75) against the **2,342** the settled conclusion was computed from.
+    /// Five turns discard 361,061 at the median, and **211 of the 214 sessions are ABOVE the band
+    /// after five turns while NOT ONE is inside it** — at five turns or at eight. The band argument
+    /// was true about the workload it was measured on and this is a different one.
+    ///
+    /// # ⚠⚠⚠ What is asserted, and why each case is here
+    ///
+    /// Six runs differing in the numbers `reviewing` reads and in nothing else. The threshold is
+    /// not authored: it is the break-even between a cache WRITE and a cache READ (twenty to one),
+    /// with both sides measured by the run about itself.
+    ///
+    /// ⚠⚠ **THE ZERO CASES ARE THE ONES THAT MATTER MOST.** `cold` and `floor` degrade to 0 with
+    /// `context` and for the same cause, and an unreadable number that could BUY a replacement
+    /// would make the loop hand over exactly when it can see least — item 431's disease, arriving
+    /// through a new door.
+    #[test]
+    fn a_session_worth_replacing_is_replaced_before_its_ceiling() {
+        use sce_rust_runtime::ScriptValue;
+
+        /// What one `reviewing` decision was given, in the document's own four names.
+        struct Read {
+            ceiling: i64,
+            context: i64,
+            floor: i64,
+            cold: i64,
+        }
+
+        /// Walk a fresh machine to `reviewing`, hand it `read` as the session's own numbers, raise
+        /// `event`, and say where it landed.
+        ///
+        /// ⚠⚠ REACHED BY THE DOOR THE PRODUCT USES — a judged milestone, then an applied
+        /// reflection — rather than by dropping the machine into the state, because a fixture that
+        /// bypasses the way in keeps passing after the way in is nailed shut (item 428's lesson).
+        fn reviewed(read: &Read, event: AiLoopEvent) -> AiLoopState {
+            let (mut engine, lua, session) = started();
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            engine.process_event(AiLoopEvent::TurnDone);
+            engine.raise_external(AiLoopEvent::Judge, "{\"done\": true}", "");
+            engine.step();
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Reflecting,
+                "the control: a claimed milestone asks what the next one is",
+            );
+            reflected(&mut engine, AiLoopEvent::ReflectApplied, "");
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Reviewing,
+                "the control: an applied reflection reaches the state that decides where the next \
+                 milestone is taken",
+            );
+
+            // ⚠⚠⚠ WRITTEN HERE RATHER THAN CARRIED ON `judge`, and that is what makes this gate
+            // about the DECISION rather than about the driver's reader: `judging`'s onentry copies
+            // these three out of the event, so a run driven by hand would be asserting whatever
+            // `_event.data` happened to hold. These are the values the document holds when it
+            // decides.
+            for (name, value) in [
+                ("context_ceiling", read.ceiling),
+                ("context", read.context),
+                ("floor", read.floor),
+                ("cold", read.cold),
+            ] {
+                lua.set_variable(&session, name, ScriptValue::Int(value))
+                    .expect("the document's own numbers are writable");
+            }
+
+            engine.raise_external(event, "{\"carried\": \"\"}", "");
+            engine.step();
+            engine.get_current_state()
+        }
+
+        // The median session this was measured on: a floor of ~52,000 and a cold start of ~31,000,
+        // so the break-even sits at `context` of about 671,000 — under a ceiling of 800,000.
+        const FLOOR: i64 = 52_000;
+        const COLD: i64 = 31_000;
+        const CEILING: i64 = 800_000;
+        /// `context - floor` is 348,000 against a toll of 620,000: nothing like worth it yet.
+        const SMALL: i64 = 400_000;
+        /// `context - floor` is 648,000 against the same toll: past the break-even, ceiling to
+        /// spare.
+        const GROWN: i64 = 700_000;
+
+        for event in [AiLoopEvent::ReviewDone, AiLoopEvent::ReviewNone] {
+            // ── THE CLAIM ── room left, and replacing has already paid for itself.
+            assert_eq!(
+                reviewed(
+                    &Read {
+                        ceiling: CEILING,
+                        context: GROWN,
+                        floor: FLOOR,
+                        cold: COLD,
+                    },
+                    event,
+                ),
+                AiLoopState::Restarting,
+                "⚠⚠⚠⚠⚠ ITEM 424(a) ({event:?}): this session can discard {} tokens where its \
+                 replacement re-writes {COLD}, and a cache write costs twenty times a cache read — \
+                 so the replacement has already paid for itself and every later request in this \
+                 session is charged the whole {GROWN} again. A loop that hands over only at its \
+                 CEILING keeps paying that for another {} tokens of growth",
+                GROWN - FLOOR,
+                CEILING - GROWN,
+            );
+
+            // ── THE CONTROL THE CLAIM STANDS ON ── the same run, one number smaller, must KEEP the
+            // session. Without this the assertion above is satisfied by a guard that replaces
+            // always, which is the behaviour item 424(b) was paid to end.
+            assert_eq!(
+                reviewed(
+                    &Read {
+                        ceiling: CEILING,
+                        context: SMALL,
+                        floor: FLOOR,
+                        cold: COLD,
+                    },
+                    event,
+                ),
+                AiLoopState::Working,
+                "⚠⚠⚠⚠ THE CONTROL ({event:?}): {} of discardable context against a toll of {} is \
+                 not worth a replacement, and the next milestone belongs in the session that \
+                 already holds the work. A gate whose two cases both replace is measuring nothing",
+                SMALL - FLOOR,
+                20 * COLD,
+            );
+
+            // ── AND CAPACITY STILL OUTRANKS IT ── past the ceiling, the fall-back replaces
+            // whatever the economics say. The two axes point opposite ways and only one of them
+            // can lose the session.
+            assert_eq!(
+                reviewed(
+                    &Read {
+                        ceiling: SMALL,
+                        context: GROWN,
+                        floor: FLOOR,
+                        cold: COLD,
+                    },
+                    event,
+                ),
+                AiLoopState::Restarting,
+                "⚠⚠ ({event:?}) a session past its ceiling is replaced, and this economic edge \
+                 must not be able to keep one that capacity has already condemned",
+            );
+
+            // ── ⚠⚠⚠⚠ AND THE TWO ZEROES, WHICH ARE THE SHARP END ──
+            //
+            // An unreadable `cold` or `floor` reads 0, and 0 means *do not decide on this*. If
+            // either could take the economic edge, the loop would hand over precisely when it can
+            // see least: with `cold` at 0 the toll is 0 and everything clears it, and with `floor`
+            // at 0 the whole reading looks discardable.
+            assert_eq!(
+                reviewed(
+                    &Read {
+                        ceiling: CEILING,
+                        context: GROWN,
+                        floor: FLOOR,
+                        cold: 0,
+                    },
+                    event,
+                ),
+                AiLoopState::Working,
+                "⚠⚠⚠⚠ ({event:?}) AN UNREADABLE `cold` IS NOT A FREE RESTART. Twenty times nothing \
+                 is nothing, so a guard that did not refuse the zero would replace every session \
+                 whose record it could not read — item 431's disease arriving through a new door",
+            );
+            assert_eq!(
+                reviewed(
+                    &Read {
+                        ceiling: CEILING,
+                        context: GROWN,
+                        floor: 0,
+                        cold: COLD,
+                    },
+                    event,
+                ),
+                AiLoopState::Working,
+                "⚠⚠⚠ ({event:?}) AND AN UNREADABLE `floor` IS NOT A SESSION MADE ENTIRELY OF \
+                 DISCARDABLE CONTEXT. {GROWN} would clear the toll of {} on its own, and the part \
+                 no restart escapes would have been counted as the part it drops",
+                20 * COLD,
+            );
+
+            // ── AND AN UNAUTHORED CEILING CHANGES NOTHING, which is the shipped document ──
+            assert_eq!(
+                reviewed(
+                    &Read {
+                        ceiling: 0,
+                        context: GROWN,
+                        floor: FLOOR,
+                        cold: COLD,
+                    },
+                    event,
+                ),
+                AiLoopState::Restarting,
+                "⚠⚠ ({event:?}) with no ceiling authored there is no *room* to have, so every \
+                 reflection replaces exactly as it did before either guard existed",
+            );
+        }
+    }
+
     /// ⚠⚠⚠ **THE OUTER LOOP IS A MACHINE NOW, AND THIS IS WHAT THAT BUYS.**
     ///
     /// The topology the document draws is the topology the compiler enforces. This

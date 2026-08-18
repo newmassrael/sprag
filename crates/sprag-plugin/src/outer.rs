@@ -1039,12 +1039,14 @@ pub enum ReflectReason {
     /// 633,749 at the maximum**, and this loop's own run reached `context - floor` of **255,809 in a
     /// single turn** — so no count of turns bounds the thing being bounded.
     ///
-    /// ⚠⚠ `context`'s own entry argues at length that NO GUARD should be written on it, and that
-    /// argument stands: it is about ECONOMICS — whether a restart is worth its cold start — where a
-    /// threshold *placed inside the band the workload sits in* decides by rounding. **A ceiling is
-    /// not inside the band.** Being near the end of the window is not a coin toss, and the two axes
-    /// point opposite ways: economics says *almost never restart* (cache write is 20x read), capacity
-    /// says *restart before it fills, whatever it costs*.
+    /// ⚠⚠ `context`'s own entry spent two rounds refusing a guard on it, and that refusal was about
+    /// ECONOMICS — whether a restart is worth its cold start — where a threshold *placed inside the
+    /// band the workload sits in* decides by rounding. **A ceiling is not inside the band**, so this
+    /// reason never depended on that argument either way: being near the end of the window is not a
+    /// coin toss. ⚠ The refusal has since been ended by a re-measurement (register item 424(a)) and
+    /// `reviewing` carries an economic guard now, so the two axes are both written and they still
+    /// point opposite ways: economics asks whether replacing PAYS, capacity says *restart before it
+    /// fills, whatever it costs*, and capacity is the one that outranks.
     ///
     /// ⚠ **AND IT FAILS TOWARD THE WALL, WHICH IS STATED RATHER THAN FIXED**: `context` reads 0 when
     /// the session's record cannot be read, and 0 means *do not decide on this* — so this reason
@@ -7214,8 +7216,8 @@ mod tests {
             .close(pane);
     }
 
-    /// **THE GATE FOR WHERE A SESSION IS REPLACED** — register item 424, and the three claims are
-    /// one decision seen from its three failure modes.
+    /// **THE GATE FOR WHERE A SESSION IS REPLACED** — register item 424, and the four claims are
+    /// one decision seen from its failure modes.
     ///
     /// `reviewing` sent BOTH of its exits to `restarting`, so every reflection cost a session
     /// replacement whether or not the session had grown enough to be worth one. The cadence that
@@ -7223,12 +7225,19 @@ mod tests {
     /// loop's own run, ONE turn produced three commits and left `context - floor` at 255,809 tokens
     /// where the reasoning that concluded *no guard* was computed from 18,736.
     ///
+    /// ⚠⚠⚠ **THIS GATE WAS NAMED `…only_when_the_reading_says_there_is_no_room` AND THAT BECAME
+    /// FALSE ONE ROUND LATER** — register item 424(a) gave `reviewing` a second reason to replace,
+    /// and a session with room to spare is now handed over once replacing it has paid for itself.
+    /// The name is corrected rather than left to age, because a gate whose title states a claim the
+    /// product no longer makes is a sentence no red can reach (items 437, 440).
+    ///
     /// ⚠⚠ Read as TEXT for the neighbour's stated reason — the compiled machine cannot answer
     /// *which transitions exist and what each is guarded on*, and what has to survive a future edit
     /// is precisely the SHAPE: an author who deletes the fallback, or the zero guard, breaks a case
-    /// no run in this suite drives.
+    /// no run in this suite drives. ⚠ What each guard DOES is driven instead, one state over, by
+    /// `crate::ai_loop::tests::a_session_worth_replacing_is_replaced_before_its_ceiling`.
     #[test]
-    fn reviewing_replaces_the_session_only_when_the_reading_says_there_is_no_room() {
+    fn reviewing_decides_where_the_next_milestone_is_taken_on_the_reading_and_not_on_a_count() {
         const DOCUMENT: &str = include_str!("ai_loop.scxml");
         // ⚠ A TRANSITION IS THE UNIT, NOT A LINE, and reading lines is how the first draft of this
         // gate failed: an author may put `cond` and `target` on separate lines, and a line-wise
@@ -7290,6 +7299,44 @@ mod tests {
                 && flat.contains("<transition event=\"review.none\" target=\"restarting\">"),
             "⚠⚠⚠ the UNGUARDED exits must remain: they are what a caller who authored no ceiling \
              gets, and they are the behaviour this loop had before the guard existed",
+        );
+
+        // 5. ⚠⚠⚠⚠ AND ROOM IS NECESSARY WITHOUT BEING SUFFICIENT — register item 424(a). Keeping a
+        //    session saves one `cold`; it also charges every later request the whole accumulated
+        //    reading, and past a point that is the larger number. So there must be a GUARDED way to
+        //    `restarting` as well, reading the two quantities that price the trade — and it is a
+        //    separate claim from the ones above because a document could hold every keeping edge
+        //    they describe and still never replace a session it had room for.
+        let paying: Vec<&str> = flat
+            .match_indices("<transition")
+            .filter_map(|(at, _)| {
+                let rest = &flat[at..];
+                let end = rest.find('>')? + 1;
+                Some(&rest[..end])
+            })
+            .filter(|edge| edge.contains("target=\"restarting\"") && edge.contains("cond="))
+            .collect();
+        assert_eq!(
+            paying.len(),
+            2,
+            "⚠⚠⚠⚠ ITEM 424(a): `review.done` and `review.none` must BOTH ask whether replacing has \
+             paid for itself. A guard on only one of them makes *did the reviewer find a habit* \
+             decide the handover, which is not what either number is about. Got {paying:?}",
+        );
+        assert!(
+            paying.iter().all(|edge| {
+                edge.contains("cold &gt; 0")
+                    && edge.contains("floor &gt; 0")
+                    && edge.contains("context - floor &gt;= 20 * cold")
+                    && edge.contains("context &lt; context_ceiling")
+            }),
+            "⚠⚠⚠⚠ each must be written on the BREAK-EVEN and on nothing invented: `context - floor` \
+             is what this session could actually drop, `cold` is what its replacement re-writes, and \
+             a cache write costs twenty times a cache read — so no author is asked for a number. \
+             ⚠ Both zeroes refused, because `cold` and `floor` degrade to 0 with `context` and an \
+             unreadable number that could BUY a replacement would hand over exactly when the loop \
+             sees least. ⚠⚠ And `context &lt; context_ceiling`, because capacity outranks this: a \
+             session past its ceiling takes the fall-back whatever the economics say. Got {paying:?}",
         );
     }
 
@@ -9902,10 +9949,11 @@ mod tests {
     /// hand over because it was filling up; it could only find out afterwards, at `reviewing`, once
     /// something else had already brought it there.
     ///
-    /// ⚠⚠⚠⚠ **AND A CADENCE CANNOT STAND IN FOR IT.** Economics says *almost never restart* (cache
-    /// write is 20x read; splitting one job into three sessions measured +11.4%), and capacity says
-    /// *you must restart before the window fills, whatever it costs* — an economic argument followed
-    /// alone drives the loop into a wall it is not modelling. The numbers say a count cannot bound
+    /// ⚠⚠⚠⚠ **AND A CADENCE CANNOT STAND IN FOR IT.** Economics asks whether replacing a session
+    /// pays for the cache it re-writes (20x a read), and capacity says *you must restart before the
+    /// window fills, whatever it costs* — an economic argument followed alone drives the loop into a
+    /// wall it is not modelling, which is why this edge outranks the economic one register item
+    /// 424(a) later put on `reviewing`. The numbers say a count cannot bound
     /// it either: one request adds **861 tokens at the median and 633,749 at the maximum**, and this
     /// loop's own run reached `context - floor` of **255,809 in ONE turn** where the reasoning behind
     /// the cadence was computed at 18,736.
