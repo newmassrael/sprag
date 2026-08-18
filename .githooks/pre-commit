@@ -151,6 +151,47 @@ if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
     cargo clippy --workspace --all-targets -- -D warnings
 
     doc_gate
+
+    # ⚠⚠⚠⚠⚠ RECORD WHICH TREE THESE TWO GATES CLEARED, so `pre-push` need not run them again on the
+    # same content — register item 443, raised by the owner asking why a push takes minutes.
+    #
+    # MEASURED: the rustdoc gate is **250 s** on a change to a crate the workspace depends on (a
+    # separate `CARGO_TARGET_DIR` means it re-documents every dependent), and it ran TWICE per
+    # change — here, and again at push. Clippy by then is cached at 0.2 s, so the doubling is
+    # entirely this one gate. The push half is what this removes; the safety property it must not
+    # remove is `pre-push`'s own reason for existing — *whatever an amend or a `--no-verify` slipped
+    # past pre-commit* — which is why what is recorded is the TREE and not a flag.
+    #
+    # ⚠⚠⚠ `git write-tree` IS THE TREE THIS COMMIT WILL CARRY: the index, written as an object.
+    # A push whose tip names that exact tree is a push of content these gates read; anything else —
+    # an amend, a rebase, a second commit, a `--no-verify`, a stamp this clone cannot read — will
+    # not match, and the push runs them.
+    #
+    # ⚠⚠⚠⚠ AND THE STAMP IS WITHHELD UNLESS THE WORKING TREE IS THE INDEX for everything these
+    # gates compile. Clippy and rustdoc read the WORKING TREE, not the index, so an unstaged edit or
+    # an untracked module means what they judged is not what the commit carries — and skipping on
+    # that basis would publish a tree nothing had ever compiled. Both are checked; either one
+    # withholds the stamp, which costs a push its gates and nothing else.
+    #
+    # ⚠⚠ EVERY QUERY THAT FAILS READS AS *not clean*, spelled as a word rather than left empty: an
+    # unreadable index is exactly the case item 404 measured passing as *nothing to check*, one gate
+    # over, and here it would hand a push permission to skip on evidence nobody has.
+    gate_paths='*.rs *.scxml Cargo.toml Cargo.lock build.rs rust-toolchain.toml'
+    # shellcheck disable=SC2086  # intentional word-split of the pathspec list
+    unstaged="$(git diff --name-only -- $gate_paths)" || unstaged="unreadable"
+    # shellcheck disable=SC2086  # intentional word-split of the pathspec list
+    untracked="$(git ls-files --others --exclude-standard -- $gate_paths)" || untracked="unreadable"
+    staged_tree="$(git write-tree)" || staged_tree=""
+    git_dir="$(git rev-parse --git-dir)" || git_dir=""
+    if [ -z "$unstaged" ] && [ -z "$untracked" ] && [ -n "$staged_tree" ] && [ -n "$git_dir" ]; then
+        printf '%s\n' "$staged_tree" >"$git_dir/sprag-rust-gates-passed"
+    else
+        if [ -n "$git_dir" ]; then
+            rm -f "$git_dir/sprag-rust-gates-passed"
+        fi
+        echo "pre-commit: the working tree is not what this commit carries, so the push will run \
+clippy and the rustdoc gate again" >&2
+    fi
 fi
 
 # The workflow gate — a workflow file is the one thing CI cannot gate, since an invalid expression

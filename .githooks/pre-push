@@ -222,6 +222,47 @@ run_pixel_smoke() {
     return 0
 }
 
+# ── Were clippy and the rustdoc gate already run, by `pre-commit`, on exactly what this push
+# publishes?
+#
+# ⚠⚠⚠⚠⚠ WHY THIS EXISTS: the rustdoc gate is **250 s** on a change to a crate the workspace depends
+# on, and it ran twice per change — at commit and again here (register item 443, raised by the owner
+# asking why a push takes minutes). Clippy by then is cached at 0.2 s, so the doubling is one gate.
+#
+# ⚠⚠⚠ WHAT IT MUST NOT GIVE UP is this hook's whole reason for existing: *whatever an amend or a
+# `--no-verify` slipped past pre-commit*. So the question asked is not "did a gate run recently" but
+# **"was THIS TREE the one it cleared"** — `pre-commit` writes the index's tree hash after both gates
+# pass, and only when the working tree it compiled IS that index. Anything else fails to match: an
+# amend, a rebase, a second commit, a commit made with `--no-verify`, a stamp this clone cannot read.
+#
+# ⚠⚠⚠⚠ EVERY UNKNOWN ANSWERS NO, which is the direction that costs minutes rather than correctness —
+# the same stance the pixel walk above takes, inverted because the risk here is skipping rather than
+# running. A ref this clone cannot resolve, an empty stdin, a deletion-only push, a missing stamp:
+# all of them run the gates. ⚠ And EVERY pushed tip must match, not one of them: a push carrying two
+# branches has two trees, and only the last commit made here can have been stamped.
+rust_gates_cleared_every_pushed_tip() {
+    local stamp cleared saw_ref=0 local_ref local_sha remote_ref remote_sha tip_tree git_dir
+    git_dir="$(git rev-parse --git-dir)" || return 1
+    stamp="$git_dir/sprag-rust-gates-passed"
+    [ -f "$stamp" ] || return 1
+    cleared="$(cat "$stamp")" || return 1
+    [ -n "$cleared" ] || return 1
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -n "$local_sha" ] || continue
+        : "$local_ref" "$remote_ref" "$remote_sha"
+        # A deletion pushes an all-zero sha and carries no tree — nothing to compile, and nothing
+        # this stamp can be about either.
+        case "$local_sha" in
+            *[!0]*) ;;
+            *) return 1 ;;
+        esac
+        saw_ref=1
+        tip_tree="$(git rev-parse --verify --quiet "${local_sha}^{tree}")" || return 1
+        [ "$tip_tree" = "$cleared" ] || return 1
+    done <<<"$pushed_refs"
+    [ "$saw_ref" -eq 1 ]
+}
+
 echo "pre-push: mnemosyne-cli validate-workspace ..." >&2
 if ! mnemosyne-cli validate-workspace; then
     echo "pre-push: validate-workspace failed — fix violations before push" >&2
@@ -263,15 +304,19 @@ if [ -f Cargo.toml ]; then
     # three lints rode through several commits; **this line never did**, so the push gate went on
     # printing findings and exiting 0 for everything an amend or a `--no-verify` slipped past
     # pre-commit — which is precisely the hole this second run exists to close.
-    echo "pre-push: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
-    if ! cargo clippy --workspace --all-targets -- -D warnings; then
-        echo "pre-push: clippy failed — fix violations before push" >&2
-        exit 1
-    fi
+    if rust_gates_cleared_every_pushed_tip; then
+        echo "pre-push: clippy and the rustdoc gate already passed on this exact tree — skipping" >&2
+    else
+        echo "pre-push: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
+        if ! cargo clippy --workspace --all-targets -- -D warnings; then
+            echo "pre-push: clippy failed — fix violations before push" >&2
+            exit 1
+        fi
 
-    if ! doc_gate; then
-        echo "pre-push: rustdoc gate failed — fix the dead link before push" >&2
-        exit 1
+        if ! doc_gate; then
+            echo "pre-push: rustdoc gate failed — fix the dead link before push" >&2
+            exit 1
+        fi
     fi
 
     if pixel_smoke_is_owed; then
