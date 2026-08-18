@@ -1282,6 +1282,55 @@
       datamodel is unverified (see `judged_rules`).
     -->
     <data id="done_reason" expr="''"/>
+    <!--
+      ⚠⚠⚠ WHY THIS SESSION WAS REPLACED — `reflect_reason`'s fourth, one state
+      further on again, and the same finding a fourth time.
+
+      SIX transitions reach `restarting` (three per review ending) and THREE
+      different decisions take them:
+
+        economics       there was room to spare and replacing has already paid
+                        for itself — what this session could discard has passed
+                        twenty times what its replacement re-writes. Nothing is
+                        wrong; this is the trade working
+        capacity        the session has read past `context_ceiling`, so there
+                        was no room to take the next milestone here. The number
+                        to change, if these are too frequent, is the CEILING
+        nobody_could_say
+                        the fall-back. Either no ceiling is authored (`0`, a
+                        caller who has not said) or the session's reading could
+                        not be taken at all (`context` of `0`) — so the two
+                        questions above could not be asked, and replacing is
+                        what this loop has always done when it cannot see
+
+      Before this existed all three wrote the one `reviewing` to `restarting`
+      arrow byte for byte, and they disagree about the remedy: one says change the
+      ceiling, one says nothing is wrong, and one says go and find out why the
+      record is unreadable. A reader watching handovers get more frequent could
+      not tell which they were looking at. Register item 445.
+
+      ⚠⚠ THE FALL-BACK SAYS SO IN A WORD RATHER THAN IN SILENCE. An edge that
+      assigned nothing would leave the PREVIOUS replacement's word standing —
+      naming the wrong cause, confidently — and *nobody could say* is a fact a
+      reader can act on, where an absent clause is one they have to guess at.
+      That is register item 423's whole lesson, arriving before the fact.
+
+      ⚠ WHAT THAT ONE WORD STILL MERGES, stated rather than hidden: an
+      unauthored ceiling and an unreadable record are both *nobody could say*,
+      and their remedies differ — author a ceiling, or find out why the file
+      cannot be read. The run's own walk already says the second out loud when
+      it happens (register item 431(a)), which is why this is registered here
+      rather than split into a fourth word nothing else distinguishes.
+
+      ⚠ The words are THIS document's, like `reflect_reason`'s and unlike
+      `stop_reason`'s: all three facts are visible from here, and the driver
+      transcribes them into `RestartReason`. A gate reads this file and holds
+      the two lists together.
+
+      ⚠ Read by the driver, in Rust, and never by a `cond` here — `==` over this
+      datamodel is unverified (see `judged_rules`).
+    -->
+    <data id="restart_reason" expr="''"/>
 
   </datamodel>
 
@@ -2348,13 +2397,21 @@
 
     # ⚠⚠⚠ A REVIEW MUST NEVER BE ABLE TO STOP THE RUN
 
-    Every ending leads to `restarting`. The review is ADVICE about work already
-    finished, and the run was going to restart whether or not anybody looked — so
-    a review that finds nothing, cannot read the records, or breaks outright must
+    Every ending CARRIES ON — to `restarting` or, once there is room and the
+    economics say keep it, to `working`. The review is ADVICE about work already
+    finished, and the run was going on whether or not anybody looked — so a
+    review that finds nothing, cannot read the records, or breaks outright must
     cost the run exactly one transition and no more. That is why there is no edge
     from here to `failed`: a `fail` raised by a reviewer is not a failure of the
     loop, and giving it that power would let a file nobody was waiting on end a
     run that was working.
+
+    ⚠⚠⚠ THIS PARAGRAPH READ *"every ending leads to `restarting`"* UNTIL REGISTER
+    ITEM 445 SWEPT IT, and it had been false since 424 gave `reviewing` a way to
+    keep the session. The claim it is actually about is *a review cannot stop the
+    run*, which never depended on where the endings went — a sentence that states
+    a shape the document no longer has is item 437's class, and no red can reach
+    one.
 
     ⚠ `cancel` is the one exception, and it is not the review's doing: a person
     or a ceiling ending the run is answered here as it is answered everywhere.
@@ -2463,10 +2520,19 @@
       to the WORK is not, so if these replacements ever read as too frequent the
       honest repair is to measure that side — not to widen this one.
     -->
+    <!--
+      ⚠⚠⚠⚠⚠ AND EACH OF THESE THREE DOORS SAYS WHICH ONE IT WAS — register item
+      445. All three replace the session and they disagree about the remedy:
+      *economics* says nothing is wrong, *capacity* says the ceiling is the
+      number to change, and *nobody could say* says go and find out why the
+      record cannot be read. One arrow for three findings is the shape items 261,
+      265, 267 and 423 have each cost a round; see `restart_reason`.
+    -->
     <transition event="review.done"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
                 target="restarting">
       <assign location="carried" expr="_event.data.carried"/>
+      <assign location="restart_reason" expr="'economics'"/>
     </transition>
     <transition event="review.done"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
@@ -2474,8 +2540,24 @@
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="turns_since_reflect" expr="0"/>
     </transition>
+    <!--
+      ⚠⚠⚠ THE CAPACITY DOOR IS WRITTEN OUT rather than left to the fall-back it
+      used to share, and the guard is spelled WHOLE rather than relying on the
+      two edges above having declined. Document order would make
+      `context &gt;= context_ceiling` redundant here; a reader deciding whether
+      this edge is the one they are looking at should not have to derive it from
+      the absence of two others, and an author who reorders these edges should
+      not silently change what this one means.
+    -->
+    <transition event="review.done"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &gt;= context_ceiling"
+                target="restarting">
+      <assign location="carried" expr="_event.data.carried"/>
+      <assign location="restart_reason" expr="'capacity'"/>
+    </transition>
     <transition event="review.done" target="restarting">
       <assign location="carried" expr="_event.data.carried"/>
+      <assign location="restart_reason" expr="'nobody_could_say'"/>
     </transition>
     <!--
       ⚠⚠⚠ NOTHING TO CARRY IS THE HEALTHY ANSWER, AND IT MUST CLEAR THE SLOT.
@@ -2491,10 +2573,17 @@
       on only one of them would make *did the reviewer find a habit* decide the
       handover, which is not what either number is about.
     -->
+    <!--
+      ⚠⚠ AND THE SAME THREE WORDS ON THE SAME THREE DOORS. A vocabulary written
+      on only one of the two endings would make *did the reviewer find a habit*
+      decide what a reader is told about the handover, which is the mistake the
+      guards themselves are written to avoid one paragraph up.
+    -->
     <transition event="review.none"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
                 target="restarting">
       <assign location="carried" expr="''"/>
+      <assign location="restart_reason" expr="'economics'"/>
     </transition>
     <transition event="review.none"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
@@ -2502,8 +2591,15 @@
       <assign location="carried" expr="''"/>
       <assign location="turns_since_reflect" expr="0"/>
     </transition>
+    <transition event="review.none"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &gt;= context_ceiling"
+                target="restarting">
+      <assign location="carried" expr="''"/>
+      <assign location="restart_reason" expr="'capacity'"/>
+    </transition>
     <transition event="review.none" target="restarting">
       <assign location="carried" expr="''"/>
+      <assign location="restart_reason" expr="'nobody_could_say'"/>
     </transition>
     <transition event="cancel" target="cancelled"/>
   </state>

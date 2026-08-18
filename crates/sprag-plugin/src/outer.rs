@@ -346,6 +346,11 @@ const STOP_REASON: &str = "stop_reason";
 /// by [`OuterLoop::closing_because`]. See the document, and register item 267.
 const DONE_REASON: &str = "done_reason";
 
+/// The datamodel variable saying **WHY THIS SESSION WAS REPLACED** — written by whichever of
+/// `reviewing`'s six exits reached `restarting`, and read back by
+/// [`OuterLoop::restarting_because`]. See the document, and register item 445.
+const RESTART_REASON: &str = "restart_reason";
+
 /// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
 /// the prompt that asks for it — see [`OuterLoop::proposed`].
 ///
@@ -1288,16 +1293,141 @@ impl DoneReason {
     }
 }
 
+/// **WHY THIS SESSION WAS REPLACED** — the word the document assigns on whichever of `reviewing`'s
+/// exits reached `restarting`.
+///
+/// # ⚠⚠⚠ Three decisions, one arrow, and they disagree about the remedy
+///
+/// Since register item 424 `reviewing` replaces a session for three different reasons, and all
+/// three rendered `Reviewing --ReviewDone--> Restarting` byte for byte:
+///
+/// | what happened | what a reader should do |
+/// |---|---|
+/// | there was room and replacing had already paid for itself | nothing — this is the trade working |
+/// | the session had read past its ceiling | the CEILING is the number to change |
+/// | none of those questions could be asked | find out why the record could not be read, or author a ceiling |
+///
+/// That is exactly the reading [`Because`]'s own doc exists for, and item 423 priced it one state
+/// over: **32 judgements and 0 declarations looked precisely like ordinary work.** It matters more
+/// here than it did at the two-door version, because a reader watching handovers get more frequent
+/// has three different things they might be looking at and one arrow to look at them with.
+///
+/// # ⚠⚠ Why the fall-back has a word rather than a silence
+///
+/// [`NobodyCouldSay`](Self::NobodyCouldSay) is the unguarded exit, and *nobody could say* is a fact
+/// a reader can act on where an absent clause is one they must guess at. An edge assigning nothing
+/// would be worse than quiet: `restart_reason` is not cleared on entry, so the run would report the
+/// PREVIOUS replacement's cause on this one — confidently, and wrongly.
+///
+/// ⚠ The vocabulary is the DOCUMENT's for all three, unlike [`DoneReason`]'s and unlike
+/// [`Ceiling`](crate::driver::Ceiling)'s: every fact behind these words is a number `reviewing`
+/// reads out of its own datamodel, so this type is the transcription and `ai_loop.scxml` is the
+/// authority. See `every_edge_into_restarting_says_why_in_a_word_this_driver_knows`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RestartReason {
+    /// **THERE WAS ROOM AND REPLACING HAD ALREADY PAID FOR ITSELF** — what this session could
+    /// discard (`context - floor`) has passed twenty times what its replacement re-writes (`cold`),
+    /// which is the break-even between a cache write and a cache read. Register item 424(a).
+    ///
+    /// ⚠ **NOTHING IS WRONG WITH THE RUN THAT TOOK THIS DOOR**, which is what separates it from
+    /// both its siblings and is the whole reason it needs its own word: a reader who found the
+    /// handovers too frequent would go looking for a fault, and the honest answer here is that the
+    /// only unmeasured side is what the replacement COSTS the work — see the document.
+    Economics,
+    /// **THE SESSION HAD READ PAST `context_ceiling`**, so there was no room to take the next
+    /// milestone here whatever the economics said. Register item 424(b).
+    ///
+    /// ⚠⚠ It is [`ReflectReason::Capacity`]'s axis one state on, and the two outrank the economic
+    /// question for the same stated reason: being near the end of the window is not a coin toss.
+    /// **The number to change is the ceiling**, and that is the remedy a reader cannot reach when
+    /// this door and the one above render one arrow.
+    Capacity,
+    /// **NEITHER QUESTION COULD BE ASKED** — the unguarded fall-back, and the behaviour this loop
+    /// had before either guard existed.
+    ///
+    /// ⚠⚠ Two readings arrive here and both are honestly *nobody could say*: no ceiling authored
+    /// (`context_ceiling` of 0, a caller who has not said) and a session whose reading could not be
+    /// taken at all (`context` of 0). ⚠ Their remedies differ — author a ceiling, or find out why
+    /// the record cannot be read — and the walk already says the second out loud when it happens
+    /// (register item 431(a)), which is why the merge is registered in the document rather than
+    /// split into a fourth word nothing else distinguishes.
+    ///
+    /// ⚠ **IT IS THE SHIPPED DOCUMENT'S ANSWER.** With no ceiling authored every reflection
+    /// replaces, so this is the word most runs of the template will carry — and that is the point:
+    /// a reader learns the loop is handing over because nobody bounded it, instead of inferring
+    /// from silence that something was measured.
+    NobodyCouldSay,
+}
+
+impl RestartReason {
+    /// Every arm, so the document's words and the readers below are one list.
+    pub const ALL: [Self; 3] = [Self::Economics, Self::Capacity, Self::NobodyCouldSay];
+
+    /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
+    ///
+    /// ⚠ `ai_loop.scxml` is the authority and this is the transcription; the two are held together
+    /// by a gate that reads the document rather than by anybody remembering.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Economics => "economics",
+            Self::Capacity => "capacity",
+            Self::NobodyCouldSay => "nobody_could_say",
+        }
+    }
+
+    /// The reason named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.word() == word)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// word, for [`ReflectReason::describe`]'s reason.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Economics => {
+                "there was room left and replacing had already paid for itself — this session \
+                 could discard more than twenty times what its replacement re-writes, and every \
+                 later request here would be charged the whole of it. NOTHING IS WRONG: if these \
+                 handovers read as too frequent, what is unmeasured is the cost to the WORK of \
+                 losing what the session was holding, not this side of the trade"
+            }
+            Self::Capacity => {
+                "this session had read past the ceiling the document authors, so there was no room \
+                 to take the next milestone here whatever the economics said — the number to \
+                 change, if these handovers are too frequent, is `context_ceiling`"
+            }
+            Self::NobodyCouldSay => {
+                "neither question could be asked: no ceiling is authored, or this session's \
+                 reading could not be taken at all — so the run replaced the session, which is \
+                 what this loop has always done when it cannot see. Author a ceiling, or find out \
+                 why the agent's record could not be read"
+            }
+        }
+    }
+
+    /// **THE DOCUMENT'S WORD AND THE WHOLE SENTENCE**, for a reader who has only this one line —
+    /// see [`ReflectReason::noted`].
+    #[must_use]
+    pub fn noted(self) -> String {
+        format!("{}: {}", self.word(), self.describe())
+    }
+}
+
 /// **WHY THIS PASS'S EDGE WAS TAKEN**, for a state that several edges reach with several different
 /// meanings — [`Pumped::Moved`]'s `because`.
 ///
 /// # ⚠⚠⚠ Why one slot rather than one field per state
 ///
-/// `ai_loop.scxml` has THREE such states and they were found one round apart each. `reflecting` is
+/// `ai_loop.scxml` has FOUR such states and they were found one round apart each. `reflecting` is
 /// reached three ways and every one of them wrote the same arrow (register item 261); `stopping` is
 /// reached by two transitions carrying FOUR ceilings and every one of them wrote the same arrow too
 /// (register item 265); `closing` is reached by ONE transition that this driver raises for two
-/// different runs, and it wrote the same arrow for both (register item 267). A second field beside
+/// different runs, and it wrote the same arrow for both (register item 267); `restarting` is
+/// reached by six transitions making THREE different decisions, and they wrote one arrow between
+/// them (register item 445). A second field beside
 /// the first would have made the third such state a third field, and the walk that composes them a
 /// longer and longer list of *did this one happen* — the flat driver this crate already owes for.
 /// **The question is one question**: *this pass took an edge into a many-doored state; which door
@@ -1309,7 +1439,9 @@ impl DoneReason {
 /// [`Ceiling`](crate::driver::Ceiling) is the
 /// driver's own type, three of whose four values the document only ever echoes back; [`DoneReason`]
 /// is this driver's for BOTH its values, because neither of the two facts behind it is visible from
-/// the document at all. Which half owns the fact is exactly what each arm records, and flattening
+/// the document at all; [`RestartReason`] is the document's for all three, because every fact
+/// behind those words is a number `reviewing` reads out of its own datamodel. Which half owns the
+/// fact is exactly what each arm records, and flattening
 /// them into one word list would lose it — see `stop_reason` and `done_reason` in the document,
 /// which say the same thing from the other side.
 ///
@@ -1333,6 +1465,15 @@ pub enum Because {
     /// declaring the north star reached, or a reached milestone with no successor named. See
     /// [`DoneReason`].
     Closed(DoneReason),
+    /// The pass ENTERED `restarting`, and this is WHICH OF THE THREE DECISIONS replaced the session
+    /// — see [`RestartReason`].
+    ///
+    /// ⚠⚠ **THE ONE WHOSE DOORS DISAGREE ABOUT THE REMEDY.** `stopping`'s four ceilings all say
+    /// *this run is over and here is the bound that ended it*; these three say, in turn, *nothing
+    /// is wrong*, *change the ceiling* and *find out why the record cannot be read*. So a reader
+    /// handed one arrow for all three is not merely told less — they are pointed at no repair at
+    /// all. Register item 445.
+    Restarted(RestartReason),
     /// The pass LEFT `judging` for another turn, and this is **WHAT THE JUDGE SAW** — see [`Heard`].
     ///
     /// # ⚠⚠⚠⚠ The two edges this separates are the ones that decide whether a run can converge
@@ -1364,6 +1505,7 @@ impl Because {
             Self::Reflected(reason) => reason.noted(),
             Self::Stopped(ceiling) => ceiling.noted(),
             Self::Closed(ending) => ending.noted(),
+            Self::Restarted(reason) => reason.noted(),
             Self::Judged(heard) => heard.noted(),
         }
     }
@@ -3542,6 +3684,11 @@ impl OuterLoop {
                 // `<transition>`s but `return`s in [`Self::reflect`], which is why counting the
                 // document's edges would not have found it. Register item 267.
                 AiLoopState::Closing => self.closing_because().map(Because::Closed),
+                // ⚠⚠⚠ SIX TRANSITIONS AND THREE DECISIONS — *replacing has paid for itself*, *there
+                // was no room*, and *neither question could be asked* — which disagree about the
+                // remedy and rendered one arrow between them. Register item 445; the document
+                // assigns the word on all six doors.
+                AiLoopState::Restarting => self.restarting_because().map(Because::Restarted),
                 // ⚠⚠⚠⚠ TWO DOORS ONTO `working` AND THEY MEAN OPPOSITE THINGS — an unreadable turn
                 // and an ordinary one — and this is the ONE arm keyed on where the pass came FROM.
                 // `working` is entered from four states and only a judgement has a reading behind
@@ -3558,7 +3705,6 @@ impl OuterLoop {
                 | AiLoopState::Redirecting
                 | AiLoopState::AwaitingHuman
                 | AiLoopState::Reviewing
-                | AiLoopState::Restarting
                 | AiLoopState::Resuming
                 | AiLoopState::Converged
                 | AiLoopState::Exhausted
@@ -3642,6 +3788,23 @@ impl OuterLoop {
     /// failure either way, for [`reflecting_because`](Self::reflecting_because)'s reason.
     fn closing_because(&self) -> Option<DoneReason> {
         DoneReason::named(&self.text_of(DONE_REASON)?)
+    }
+
+    /// **WHICH OF `reviewing`'s THREE DECISIONS REPLACED THE SESSION** — the word its incoming
+    /// transition assigned, read back through the closed vocabulary that renders it.
+    ///
+    /// ⚠⚠ Read from the DOCUMENT rather than recomputed out here from the same four numbers, and
+    /// that is the difference this reader exists for: a driver that re-derived *did the economics
+    /// pay* would be a SECOND authority on a decision `reviewing` had already made, free to
+    /// disagree with the edge the machine actually took — and it would have to keep six guards in
+    /// step with a file it does not parse. One variable, one authority; the same argument
+    /// [`stopping_because`](Self::stopping_because) makes one state back.
+    ///
+    /// [`None`] for a datamodel that has stopped answering, and — unreachably, by the document
+    /// gate — for a word this driver has no arm for. ⚠ Not a failure either way, for
+    /// [`reflecting_because`](Self::reflecting_because)'s reason.
+    fn restarting_because(&self) -> Option<RestartReason> {
+        RestartReason::named(&self.text_of(RESTART_REASON)?)
     }
 
     /// **THE REFUSAL THIS LOOP IS HOLDING**, or [`None`] when its notice is anything else — the one
@@ -7307,7 +7470,7 @@ mod tests {
         //    `restarting` as well, reading the two quantities that price the trade — and it is a
         //    separate claim from the ones above because a document could hold every keeping edge
         //    they describe and still never replace a session it had room for.
-        let paying: Vec<&str> = flat
+        let replacing: Vec<&str> = flat
             .match_indices("<transition")
             .filter_map(|(at, _)| {
                 let rest = &flat[at..];
@@ -7315,6 +7478,15 @@ mod tests {
                 Some(&rest[..end])
             })
             .filter(|edge| edge.contains("target=\"restarting\"") && edge.contains("cond="))
+            .collect();
+        // ⚠ THE ECONOMIC ONES, PICKED BY THE QUANTITY ONLY THEY READ. `reviewing` grew a second
+        // guarded way to `restarting` when register item 445 wrote the CAPACITY door out of the
+        // fall-back it used to share, so a bare count of guarded exits stopped being this claim's
+        // instrument — it would now pass for a document with two capacity edges and no break-even
+        // at all.
+        let paying: Vec<&&str> = replacing
+            .iter()
+            .filter(|edge| edge.contains("cold"))
             .collect();
         assert_eq!(
             paying.len(),
@@ -7337,6 +7509,37 @@ mod tests {
              unreadable number that could BUY a replacement would hand over exactly when the loop \
              sees least. ⚠⚠ And `context &lt; context_ceiling`, because capacity outranks this: a \
              session past its ceiling takes the fall-back whatever the economics say. Got {paying:?}",
+        );
+
+        // 6. ⚠⚠⚠⚠ AND THE CAPACITY DOOR IS ITS OWN EDGE — register item 445. It used to be a case
+        //    of the unguarded fall-back, so *there was no room* and *nobody could say whether
+        //    there was* replaced the session through one door and rendered one arrow. They want
+        //    opposite things from a reader: one says change the ceiling, the other says find out
+        //    why the record cannot be read.
+        //
+        //    ⚠ Asserted on the GUARD and not merely on the count, because document order would let
+        //    an author write `cond="true"` here and get the same behaviour with none of the
+        //    meaning — the edge has to be the one that fires when the reading says the session is
+        //    full.
+        let full: Vec<&&str> = replacing
+            .iter()
+            .filter(|edge| edge.contains("context &gt;= context_ceiling"))
+            .collect();
+        assert_eq!(
+            full.len(),
+            2,
+            "⚠⚠⚠⚠ ITEM 445: `review.done` and `review.none` must BOTH have a capacity door of \
+             their own, guarded on the session having read PAST its ceiling. Sharing the fall-back \
+             with the unreadable case is what made three decisions render one arrow. Got {full:?}",
+        );
+        assert!(
+            full.iter().all(|edge| {
+                edge.contains("context_ceiling &gt; 0") && edge.contains("context &gt; 0")
+            }),
+            "⚠⚠⚠ and it must refuse a zero on BOTH sides exactly as its siblings do, or a session \
+             whose reading could not be taken would be reported as one that had filled up — a \
+             remedy pointing at the ceiling for a run whose real complaint is an unreadable \
+             record. Got {full:?}",
         );
     }
 
@@ -7572,6 +7775,116 @@ mod tests {
              of those words. Anything else loses the ceiling in the walk AND leaves the agent's \
              question composing `nil`",
             crate::driver::Ceiling::ALL.map(crate::driver::Ceiling::wire_str),
+        );
+    }
+
+    /// ⚠⚠⚠ **EVERY EDGE INTO `restarting` SAYS WHICH DECISION REPLACED THE SESSION, IN A WORD THIS
+    /// DRIVER HAS AN ARM FOR** — register item 445's other half, held against the document itself.
+    ///
+    /// # ⚠⚠⚠ Why this reads the `.scxml` rather than driving the machine
+    ///
+    /// `the_walk_says_which_decision_replaced_the_session` drives three runs and proves every arm
+    /// of [`RestartReason`] is REACHABLE. What no run can prove is the other direction: that the
+    /// document has not grown a SEVENTH way into `restarting` whose word this driver has no arm
+    /// for, or one that assigns nothing at all. Such an edge is silent by construction —
+    /// `restart_reason` is not cleared on entry, so the run reports the PREVIOUS replacement's
+    /// cause on this one — and every existing gate stays green because none of them takes it.
+    ///
+    /// ⚠⚠ **AND THIS STATE IS THE ONE MOST LIKELY TO GROW ANOTHER DOOR**, which is why the gate is
+    /// worth its own copy rather than an argument that the two next door already cover it. Both of
+    /// `reviewing`'s decisions arrived one round apart (register items 424(b) and 424(a)), each as
+    /// a new guarded edge on both review endings — **two edges per decision**, so an author adding a
+    /// third reason has four chances to forget the word and one arrow to hide it behind.
+    ///
+    /// ⚠ The three assertions are `reflecting`'s, for its stated reasons: every edge says why, in a
+    /// word this driver knows, and every word this driver knows is one the document assigns.
+    #[test]
+    fn every_edge_into_restarting_says_why_in_a_word_this_driver_knows() {
+        /// The authority. ⚠ Read as TEXT, for the neighbours' reason: the compiled machine cannot
+        /// answer *which transitions exist and what each one assigns*.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The attribute that names an edge arriving at the state in question.
+        const INTO: &str = "target=\"restarting\"";
+        /// And the one that publishes its cause.
+        const ASSIGNS: &str = "location=\"restart_reason\"";
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        // Each edge into `restarting`, as (the line an author would open, what it assigns).
+        let mut edges: Vec<(usize, Option<&str>)> = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            if !line.contains(INTO) {
+                continue;
+            }
+            // ⚠ The transition's own body, ending at its close tag — tolerant of the assignment
+            // moving or gaining siblings, and deliberately NOT of a self-closing element, which can
+            // hold no assignment at all and is the defect this looks for.
+            let body = lines[at + 1..]
+                .iter()
+                .take_while(|body| !body.contains("</transition>"));
+            let assigned = if line.trim_end().ends_with("/>") {
+                None
+            } else {
+                body.filter_map(|body| body.split_once(ASSIGNS))
+                    .find_map(|(_, rest)| rest.split_once("expr=\"'"))
+                    .and_then(|(_, word)| word.split_once("'\""))
+                    .map(|(word, _)| word)
+            };
+            edges.push((at + 1, assigned));
+        }
+
+        // ── THE CONTROL: the document really does have several edges into that state ──
+        assert!(
+            edges.len() > 1,
+            "⚠⚠⚠ the control: `ai_loop.scxml` must have SEVERAL transitions carrying {INTO}, or \
+             this gate is holding a document that no longer has the ambiguity register item 445 is \
+             about — and the answer then is to delete it and say so, not to leave it passing. \
+             Found {edges:?}",
+        );
+
+        // ── 1. EVERY ONE OF THEM SAYS WHY ──
+        let silent: Vec<usize> = edges
+            .iter()
+            .filter(|(_, assigned)| assigned.is_none())
+            .map(|(line, _)| *line)
+            .collect();
+        assert!(
+            silent.is_empty(),
+            "⚠⚠⚠ REGISTER ITEM 445: `ai_loop.scxml` line(s) {silent:?} take an edge into \
+             `restarting` and assign no {ASSIGNS}. `restart_reason` is not cleared on entry, so \
+             such an edge does not merely leave the walk silent — the run reports the PREVIOUS \
+             replacement's cause on this one, confidently. ⚠ The fall-back is included and that is \
+             deliberate: *nobody could say* is a word, not a silence (register item 423). Add the \
+             assignment, and an arm to `RestartReason` if the decision is a new one",
+        );
+
+        // ── 2. AND IN A WORD THIS DRIVER HAS AN ARM FOR ──
+        let unknown: Vec<(usize, Option<&str>)> = edges
+            .iter()
+            .filter(|(_, assigned)| {
+                assigned.is_none_or(|word| RestartReason::named(word).is_none())
+            })
+            .copied()
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "⚠⚠⚠ the document assigns a `restart_reason` this driver cannot read back: \
+             {unknown:?}. `RestartReason::named` answers `None` for it, so the run's journal loses \
+             the one clause that separates *nothing is wrong* from *change the ceiling* from *find \
+             out why the record cannot be read*. Known words: {:?}",
+            RestartReason::ALL.map(RestartReason::word),
+        );
+
+        // ── 3. AND EVERY WORD THIS DRIVER KNOWS IS ONE THE DOCUMENT ASSIGNS ──
+        let authored: std::collections::BTreeSet<&str> =
+            edges.iter().filter_map(|(_, assigned)| *assigned).collect();
+        let known: std::collections::BTreeSet<&str> =
+            RestartReason::ALL.iter().map(|it| it.word()).collect();
+        assert_eq!(
+            authored, known,
+            "⚠⚠⚠ AND THE OTHER DIRECTION: an arm of `RestartReason` that no transition in \
+             `ai_loop.scxml` assigns is an arm nothing can ever produce — prose, a `describe` \
+             nobody renders, and a reader who goes looking for a cause that cannot happen \
+             (register item 260). Decide whether the arm should exist, and say so where the type is",
         );
     }
 
@@ -10115,6 +10428,240 @@ mod tests {
             "⚠⚠ a session whose reading could not be taken must not be handed over on a number \
              nobody read — and the run's walk says the record was unreadable (item 431(a)), which \
              is how a reader learns the ceiling is blind: {blind_walk:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHICH OF THREE DECISIONS REPLACED THE SESSION** — register item 445,
+    /// which is items 261, 265 and 267's finding at the fourth many-doored state.
+    ///
+    /// # ⚠⚠⚠ What was measured, and why one arrow is not enough here
+    ///
+    /// Since register item 424 `reviewing` replaces a session for three reasons and all six of its
+    /// exits to `restarting` wrote one line:
+    ///
+    /// | what happened | what a reader should do |
+    /// |---|---|
+    /// | replacing had already paid for itself | nothing — the trade is working |
+    /// | the session had read past its ceiling | change `context_ceiling` |
+    /// | neither question could be asked | author a ceiling, or find out why the record is unreadable |
+    ///
+    /// **The three remedies are different and the arrow named none of them**, so a person watching
+    /// handovers get more frequent could not tell which they were looking at — item 423's reading
+    /// exactly, one state on.
+    ///
+    /// # ⚠⚠ Three runs differing in ONE authored number
+    ///
+    /// The same peer, the same record, the same brief: only `context_ceiling` moves. That is what
+    /// makes this a gate about the DECISION rather than about three fixtures — the record holds a
+    /// cold start of 7,000, a floor of 38,500 and a last reading of 466,013, so
+    ///
+    /// * a **high** ceiling leaves room and the break-even is long past (427,513 discardable
+    ///   against a toll of 140,000) — `economics`;
+    /// * a **low** ceiling puts the session past it — `capacity`, which outranks;
+    /// * **no** ceiling is the shipped document, where neither question can be asked at all —
+    ///   `nobody_could_say`.
+    ///
+    /// ⚠⚠⚠ AND THE THREE COVER THE WHOLE VOCABULARY, asserted rather than assumed, with
+    /// `every_edge_into_restarting_says_why_in_a_word_this_driver_knows` holding the other end of
+    /// it against the document. ⚠ The three LINES must also differ from one another: naming the
+    /// decision is worth nothing if two of them still render one string, which is what all three
+    /// did before this existed.
+    #[test]
+    fn the_walk_says_which_decision_replaced_the_session() {
+        /// The record all three runs read, and the same shape register item 431 measured live: a
+        /// first request that WRITES cache (`cold`), a second that reads (`floor`), and a last
+        /// whose reading is what the session now carries (`context`).
+        const WRITTEN: &str = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":0,"cache_creation_input_tokens":7000,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":38500,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":0,"#,
+            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
+        );
+        /// Room to spare over what that record holds — 466,013 against it, and a break-even at
+        /// about 178,500.
+        const ROOMY: i64 = 800_000;
+        /// And far below it, so the same session is unambiguously PAST its ceiling.
+        const CRAMPED: i64 = 100_000;
+        /// What the reflecting stand-in proposes when it is asked.
+        const NEXT: &str = "the debt this run picked after the last one";
+        /// And where it says the replacement should start reading.
+        const READ_NEXT: &str = "the register entry for it";
+
+        let home = std::env::temp_dir().join(format!("sprag-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let record = home.join("what-the-agent-said.jsonl");
+        std::fs::write(&record, WRITTEN).expect("the agent's own record");
+
+        /// Drive a run until it takes the edge OUT of `reviewing` and INTO `restarting`, and hand
+        /// back what that pass said — with the whole walk, because *which line* is the first
+        /// question of any red here.
+        fn replaced(
+            record: &std::path::Path,
+            ceiling: i64,
+        ) -> (AiLoopState, Option<Because>, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠ IT NAMES A NEXT MILESTONE, which is what carries a reflection through
+            // `reflect.applied` to `reviewing`. A peer that named none would answer `reflect.none`
+            // and go back to work, and no run here would ever reach the state under test.
+            let (workspace, pane) = crate::testing::standin_agent_reflecting(
+                // ⚠ NEVER says the done marker: a claimed milestone would reach `reflecting` by a
+                // different door, and this gate is about what happens one state later.
+                u32::MAX,
+                NEXT,
+                READ_NEXT,
+            );
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            loops
+                .script
+                .set_variable(&loops.session, CONTEXT_CEILING, ScriptValue::Int(ceiling))
+                .expect("the document's own ceiling is writable");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "the stand-in keeps answering".to_string(),
+                    milestone: "reach the first checkpoint".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    milestone_check: None,
+                    max_turns: Some(Counted::Of(40)),
+                    // ⚠ ON, and it is the only thing that can start a reflection here: the peer
+                    // never claims a milestone and nothing is screened, so one judged turn is what
+                    // brings every one of these runs to the state under test.
+                    reflect_every: Some(1),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut landed = None;
+            while walked.len() < 40 {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        because,
+                        ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if from == AiLoopState::Reviewing {
+                            landed = Some((to, because));
+                            break;
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let Some((to, because)) = landed else {
+                panic!("no run left `reviewing` in 40 passes: {walked:?}");
+            };
+            (to, because, walked)
+        }
+
+        let (paid_to, paid, paid_walk) = replaced(&record, ROOMY);
+        let (full_to, full, full_walk) = replaced(&record, CRAMPED);
+        let (blind_to, blind, blind_walk) = replaced(&record, 0);
+        let _ = std::fs::remove_dir_all(&home);
+
+        // ── THE CONTROL: all three really did REPLACE, or the words below are about an edge no
+        //    run took. ⚠ It is asserted before the causes for `a_session_past_its_ceiling`'s
+        //    reason: a run that kept its session would carry no `restart_reason` at all, and a
+        //    `None` would then read as *the driver could not name the door* rather than as *there
+        //    was no door*.
+        assert_eq!(
+            (paid_to, full_to, blind_to),
+            (
+                AiLoopState::Restarting,
+                AiLoopState::Restarting,
+                AiLoopState::Restarting,
+            ),
+            "⚠⚠⚠ the control: every one of these runs must leave `reviewing` for `restarting`. \
+             Walked {paid_walk:?} / {full_walk:?} / {blind_walk:?}",
+        );
+
+        assert_eq!(
+            paid,
+            Some(Because::Restarted(RestartReason::Economics)),
+            "⚠⚠⚠⚠⚠ ITEM 445: this session can discard 427,513 tokens where its replacement \
+             re-writes 7,000, with {ROOMY} of ceiling it never came near — so the handover is the \
+             ECONOMIC one, and a reader who found it too frequent should be told that nothing is \
+             wrong rather than sent looking for a fault. Walked {paid_walk:?}",
+        );
+        assert_eq!(
+            full,
+            Some(Because::Restarted(RestartReason::Capacity)),
+            "⚠⚠⚠⚠ AND THE SAME SESSION UNDER A CEILING OF {CRAMPED} IS A DIFFERENT FINDING: there \
+             was no room, whatever the economics said, and the number a reader should change is \
+             the CEILING. One arrow for both is register item 445 itself. Walked {full_walk:?}",
+        );
+        assert_eq!(
+            blind,
+            Some(Because::Restarted(RestartReason::NobodyCouldSay)),
+            "⚠⚠⚠⚠ AND THE FALL-BACK SAYS SO IN A WORD. With no ceiling authored neither question \
+             can be asked, and that is the SHIPPED document — so this is the word most runs carry, \
+             and a silence here would leave every one of them looking like a measured decision. \
+             Register item 423's lesson, arriving before the fact. Walked {blind_walk:?}",
+        );
+
+        // ── AND THE THREE LINES MUST DIFFER FROM ONE ANOTHER ──
+        //
+        // ⚠⚠⚠ Naming the decision is worth nothing if two causes still render one string, which is
+        // exactly what all three did before this gate existed. ⚠ The RENDERED line is compared and
+        // not the arm, because a reader has the line.
+        let lines: Vec<String> = [paid, full, blind]
+            .into_iter()
+            .map(|because| {
+                because.map_or_else(|| "(nothing said)".to_string(), |because| because.noted())
+            })
+            .collect();
+        let distinct: std::collections::BTreeSet<&String> = lines.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            lines.len(),
+            "⚠⚠⚠ THE THREE MUST READ DIFFERENTLY: {lines:?}",
+        );
+
+        // ── AND THEY COVER THE WHOLE VOCABULARY ──
+        //
+        // ⚠⚠ An arm no run here reaches is a word rendered by nobody — `Pumped::Unbuilt`'s finding
+        // (register item 260), which this workspace has now paid for twice.
+        let reached: std::collections::BTreeSet<RestartReason> = [paid, full, blind]
+            .into_iter()
+            .filter_map(|because| match because {
+                Some(Because::Restarted(reason)) => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reached,
+            RestartReason::ALL.into_iter().collect(),
+            "⚠⚠⚠ every arm of `RestartReason` must be REACHED by a run here, or this gate is \
+             proving three of an unknown number of doors and the register's claim that there are \
+             three is folklore",
         );
     }
 

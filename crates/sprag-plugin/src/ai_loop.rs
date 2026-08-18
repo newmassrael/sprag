@@ -3389,7 +3389,15 @@ mod tests {
                 crate::outer::ReflectReason::Instruction.noted()
             ),
             "Reflecting --ReflectApplied--> Reviewing".to_owned(),
-            "Reviewing --ReviewNone--> Restarting".to_owned(),
+            // ⚠⚠ AND THE REPLACEMENT NAMES ITS OWN DOOR, exactly, because this fixture arranged
+            // one: no `context_ceiling` is authored, so neither of `reviewing`'s two questions can
+            // be asked and the run takes the fall-back — register item 445, held here as well as in
+            // its own gate, since a run replaced for either of the other two reasons would satisfy
+            // every other assertion in this test.
+            format!(
+                "Reviewing --ReviewNone--> Restarting — {}",
+                crate::outer::RestartReason::NobodyCouldSay.noted()
+            ),
             "Restarting --SessionReplaced--> Resuming".to_owned(),
             "Resuming --SessionReady--> Priming".to_owned(),
         ] {
@@ -3748,13 +3756,18 @@ mod tests {
         assert!(
             walked
                 .iter()
-                .any(|note| note.starts_with("Reviewing --Review") && note.ends_with("Restarting")),
+                .any(|note| note.starts_with("Reviewing --Review")
+                    && note.contains("--> Restarting")),
             "⚠⚠⚠ AND THE REVIEW MUST NOT BE ABLE TO STOP THE RUN. `reviewing` sits between the \
-             reflection and the replacement, and EVERY ending it has leads to `restarting`: a \
+             reflection and the replacement, and EVERY ending it has CARRIES ON — to `restarting`, \
+             or back to `working` where there is room and the economics say keep the session: a \
              review is advice about work already finished, so a reviewer that found nothing, could \
              open no record, or broke outright must cost this run one transition and no more. This \
              holds the property `reviewing` has no edge to `failed` for — and it is deliberately \
              loose about WHICH review ending, because which one it was is not this gate's claim. \
+             ⚠ The line is matched by CONTAINS and no longer by `ends_with`, because a replacement \
+             now names the decision that caused it (register item 445) — a suffix match here would \
+             have gone red for a product that got better at saying why. \
              Walked {walked:?}",
         );
         assert!(
