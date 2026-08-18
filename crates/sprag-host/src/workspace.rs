@@ -1277,6 +1277,13 @@ impl WorkspaceExternal {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
         };
+        // ⚠⚠⚠ AND WHAT IT ANSWERED, on the same terms as `asked` above: absent and `null` both mean
+        // *this event said nothing about an answer*, which is true of every event but the one that
+        // ends a turn. See `crate::wire::AGENT_SAID_KEY` for why a driver cannot read it off a pane.
+        let said = match map.get(crate::wire::AGENT_SAID_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
         let transcript = match map.get(crate::wire::AGENT_TRANSCRIPT_KEY) {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
@@ -1307,6 +1314,7 @@ impl WorkspaceExternal {
                 seq,
                 owner: owner.flatten().map(u64::from),
                 asked,
+                said,
                 transcript,
                 build,
             },
@@ -2933,6 +2941,11 @@ impl WorkspaceExternal {
                                 // ever been asked here*) and an absent key would be read as the
                                 // pre-441 wire rather than as that.
                                 "asked_seq": facts.asked_seq,
+                                // ⚠⚠⚠ AND HOW MANY ANSWERS IT HAS STATED — the other end of the
+                                // same turn, always present for the same reason: zero is the real
+                                // answer *this pane's agent has never stated one*, and a reader
+                                // that met an absent key could not tell that from an old daemon.
+                                "said_seq": facts.said_seq,
                             });
                             if let Some(name) = &facts.agent {
                                 value["name"] = serde_json::json!(name);
@@ -4321,6 +4334,10 @@ mod tests {
                 "name": "claude",
                 "seq": 1,
                 "asked_seq": 0,
+                // ⚠ AND HOW MANY IT HAS ANSWERED — always present on `asked_seq`'s terms (item
+                // 441): a zero is *this pane's agent has stated no answer*, and an absent key
+                // would be indistinguishable from a daemon too old to count.
+                "said_seq": 0,
                 "source": "herdr:claude",
             }),
             "a pane no rule claims is published because a process inside it said so, and the answer \
@@ -4602,6 +4619,10 @@ mod tests {
                 // *this build cannot say* — `BUILD_FIELD`'s rule, and the reason a zero is written
                 // out rather than omitted.
                 "asked_seq": 0,
+                // ⚠⚠ AND HOW MANY IT HAS ANSWERED, on exactly the same terms and for the same
+                // reason — the two ends of a turn, and a supervisor needs both to say where one
+                // stands: asked moved and said did not is a peer still working (item 441).
+                "said_seq": 0,
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.
@@ -8981,11 +9002,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            33,
+            34,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
-             verb, a message's text and audience, a report's source, name and BUILD, and a dropped \
-             path",
+             verb, a message's text and audience, a report's source, name, BUILD and what the \
+             agent SAID (item 441), and a dropped path",
         );
     }
 
@@ -9000,7 +9021,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            65,
+            66,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -9014,11 +9035,12 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            105,
+            106,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb: 31 across the seven ask-backed verbs and 65 across the \
+             per form rather than per verb: 31 across the seven ask-backed verbs and 66 across the \
              twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \
-             values and flat all along; the 65th is `report_agent`'s `build`, item 412)",
+             values and flat all along; the 65th is `report_agent`'s `build`, item 412, and the \
+             66th is its `said` — what the agent answered, item 441)",
         );
     }
 

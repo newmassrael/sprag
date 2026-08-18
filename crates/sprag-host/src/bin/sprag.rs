@@ -3566,6 +3566,12 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
     // decision about a state, the other is the agent's own account of its turn, and only the second
     // can settle whether a prompt arrived.
     let asked = hooks::asked_in(&payload);
+    // ⚠⚠⚠⚠ AND WHAT IT ANSWERED, off the event that ends the turn — see [`hooks::said_in`]. Read
+    // beside `asked` and for the same reason: the two ends of one turn are the agent's own account
+    // of it, and neither is a state this crate decides. Register item 441 is what the answering
+    // half costs when nobody reads it: the pane it would otherwise be scraped off was measured
+    // unable to advance its line addresses at all.
+    let said = hooks::said_in(&payload);
     let pane = std::env::var(sprag_host::PANE_ENV_VAR)
         .ok()?
         .parse::<u64>()
@@ -3597,6 +3603,7 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                 // otherwise — `null` would be a claim that it said nothing, and most events say
                 // nothing about a prompt because they are not the event that opens a turn.
                 sprag_host::wire::AGENT_ASKED_KEY: asked.as_ref().map(|a| a.prompt.clone()),
+                sprag_host::wire::AGENT_SAID_KEY: said.clone(),
                 sprag_host::wire::AGENT_TRANSCRIPT_KEY: asked
                     .as_ref()
                     .and_then(|a| a.transcript.as_ref())
@@ -5592,7 +5599,12 @@ fn agent(args: Vec<String>) -> io::Result<()> {
         // until this was printed the second could only be inferred from the first, which is exactly
         // the inference that was wrong.
         let asked_seq = agent["asked_seq"].as_u64().unwrap_or(0);
-        println!("{id}: {state}  {name}  {origin}  seq={seq}  asked={asked_seq}");
+        // ⚠⚠⚠ AND THE ANSWER COUNT BESIDE IT, because the two together are what say where a turn
+        // stands: `asked` moved and `said` did not is a peer still working on the question, and
+        // both moved is a turn that ended. Reading the first alone is what made a whole round's
+        // live measurement ambiguous.
+        let said_seq = agent["said_seq"].as_u64().unwrap_or(0);
+        println!("{id}: {state}  {name}  {origin}  seq={seq}  asked={asked_seq}  said={said_seq}");
         if wanted.is_some() {
             // The advice has to follow the evidence. Telling somebody to redefine a manifest rule
             // for a verdict a HOOK reported names a rule that never fired, and the edit would do

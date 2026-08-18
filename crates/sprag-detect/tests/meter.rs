@@ -257,6 +257,7 @@ fn a_reported_pane_costs_no_evaluation() {
         seq: None,
         owner: None,
         asked: None,
+        said: None,
         transcript: None,
         build: None,
     });

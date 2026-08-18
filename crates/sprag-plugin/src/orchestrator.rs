@@ -716,6 +716,8 @@ mod tests {
                     seq: u64::from(prompted) + 1,
                     asked_seq: u64::from(prompted) + 1,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {
@@ -909,6 +911,8 @@ mod tests {
                     asked_seq: if asking { 2 } else { 1 },
                     asking: None,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                 })
             })

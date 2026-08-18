@@ -1811,6 +1811,8 @@ mod tests {
                     asked_seq: 1,
                     asking: None,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                 })
             })
@@ -2757,6 +2759,8 @@ mod tests {
                     asked_seq: 1,
                     asking: None,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                 })
             }
@@ -3458,6 +3462,8 @@ mod tests {
                 asked_seq: 3,
                 asking: None,
                 asked: None,
+                said: None,
+                said_seq: 0,
                 transcript: None,
             })
         }) as crate::access::AgentStateSource;

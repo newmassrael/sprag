@@ -1115,6 +1115,8 @@ mod tests {
                     // This double stands in for a SCRAPED pane: it reads a screen and reports no
                     // prompt of its own, which is what an agent with no hooks installed looks like.
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {

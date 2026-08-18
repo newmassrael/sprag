@@ -210,6 +210,16 @@ pub struct Tracker {
     /// reader comparing the strings could not tell a re-prompt from an echo, which is exactly the
     /// case that defeats every text-matching rule.
     asked_seq: u64,
+    /// **HOW MANY ANSWERS THIS PANE'S AGENT HAS STATED** — one per report that STATES a
+    /// [`Report::said`], on the same terms as [`asked_seq`](Self::asked_seq) and for the same
+    /// reason it could not be folded into [`seq`](Self::seq).
+    ///
+    /// ⚠⚠⚠ **IT IS WHAT MAKES A STATEMENT BELONG TO A TURN.** The text alone cannot: an agent that
+    /// answers the same words twice states two answers, and a reader comparing strings would call
+    /// the second one stale. A supervisor arms on this number when it asks its question and
+    /// requires it to have MOVED before reading what came back — the same discipline
+    /// [`Verdict`]-arming already uses at both ends of a turn.
+    said_seq: u64,
     pending: Option<Pending>,
     seen: Option<Seen>,
     /// Which agent this pane was last IDENTIFIED as, independent of what it is doing.
@@ -264,6 +274,10 @@ struct Reported {
     /// replaced wholesale would therefore be erased by the very next report — `Stop` arrives seconds
     /// after `UserPromptSubmit` — and the fact would be gone before any reader could use it.
     asked: Option<String>,
+    /// **THE LAST ANSWER THIS PANE'S AGENT SAID IT GAVE**, carried forward for
+    /// [`asked`](Self::asked)'s reason one end over: only the event that ENDS a turn carries one,
+    /// and the events that follow it carry none.
+    said: Option<String>,
     /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, carried forward for [`asked`](Self::asked)'s
     /// reason exactly: a transcript path is stated on the turn's first event and on no other, while
     /// the file goes on existing for the whole session.
@@ -299,6 +313,19 @@ pub struct Report {
     /// An opaque token for the thing whose existence keeps this report standing, or `None` for one
     /// that stands until it is released. The tracker stores it and never interprets it.
     pub owner: Option<u64>,
+    /// **WHAT THE AGENT SAYS IT ANSWERED**, on the one event that ends a turn, and `None` on every
+    /// other.
+    ///
+    /// ⚠⚠⚠⚠ [`asked`](Self::asked)'s other end, and it exists because the alternative was measured
+    /// impossible rather than merely awkward: a full-screen agent's pane was read at every
+    /// judgement of a live run with its whole logical-line count frozen at 37, so *what did this
+    /// turn print* answered `0` for ever while the agent wrote reply after reply (register item
+    /// 441). What the peer SAID is a fact only the peer has.
+    ///
+    /// ⚠ Carried forward exactly as `asked` is, and for the same reason: a turn's ending states it
+    /// and the events that follow state nothing, so a field replaced wholesale would be erased by
+    /// the next `working`.
+    pub said: Option<String>,
     /// **THE PROMPT THE AGENT SAYS IT WAS ASKED**, on the one event that opens a turn, and `None`
     /// on every other — which is most of them.
     ///
@@ -361,6 +388,7 @@ impl Tracker {
             published: Verdict::default(),
             seq: 0,
             asked_seq: 0,
+            said_seq: 0,
             pending: None,
             seen: None,
             identity: None,
@@ -390,6 +418,17 @@ impl Tracker {
     #[must_use]
     pub const fn asked_seq(&self) -> u64 {
         self.asked_seq
+    }
+
+    /// **HOW MANY ANSWERS THIS PANE'S AGENT HAS STATED** — see [`said_seq`](Self::said_seq)'s field.
+    ///
+    /// The other end of [`asked_seq`](Self::asked_seq): a supervisor snapshots this when it asks and
+    /// requires it to have MOVED before it reads [`reported_said`](Self::reported_said) as an answer
+    /// to that question, so a statement left over from an earlier turn cannot be judged as this
+    /// one's.
+    #[must_use]
+    pub const fn said_seq(&self) -> u64 {
+        self.said_seq
     }
 
     /// When a pending candidate would be published, or `None` when nothing is pending.
@@ -517,6 +556,7 @@ impl Tracker {
             seq,
             owner,
             asked,
+            said,
             transcript,
             build,
         } = report;
@@ -538,6 +578,13 @@ impl Tracker {
         // any reader could find — which is register item 441's whole defect.
         if asked.is_some() {
             self.asked_seq += 1;
+        }
+        // ⚠⚠⚠⚠ AND THE ANSWER IS COUNTED IN THE SAME BREATH, for the same reason one line up: a
+        // rest that states an answer may leave the verdict exactly where it was (a pane already
+        // read as `idle` by its screen, a second `Stop` in a settle window), and a statement no
+        // reader can date is one a supervisor cannot tell from the PREVIOUS turn's. See `said_seq`.
+        if said.is_some() {
+            self.said_seq += 1;
         }
         // A reporter that names itself SETS the pane's identity; one that does not leaves it, and the
         // published verdict falls back to whatever the pane already was. That asymmetry is the same
@@ -569,6 +616,7 @@ impl Tracker {
             seq,
             owner,
             asked: asked.or_else(|| carried.as_ref().and_then(|held| held.asked.clone())),
+            said: said.or_else(|| carried.as_ref().and_then(|held| held.said.clone())),
             transcript: transcript
                 .or_else(|| carried.as_ref().and_then(|held| held.transcript.clone())),
             // ⚠⚠⚠⚠⚠ REPLACED, NEVER CARRIED — the opposite of its two neighbours above, and the
@@ -666,6 +714,21 @@ impl Tracker {
         self.reported
             .as_ref()
             .and_then(|held| held.asked.as_deref())
+    }
+
+    /// **THE LAST ANSWER THIS PANE'S AGENT SAID IT GAVE**, or `None` if none ever has.
+    ///
+    /// ⚠⚠⚠⚠ The answer to *what did the peer just say*, from the only party that can give one —
+    /// measured, not assumed: a full-screen agent repaints, so its pane's logical-line addresses
+    /// stop advancing and *what did this turn print* answers `0` for the rest of the session while
+    /// the agent goes on replying (register item 441). The screen holds the words and cannot be
+    /// asked for them.
+    ///
+    /// ⚠ It says nothing about WHEN — pair it with [`said_seq`](Self::said_seq), which is what dates
+    /// a statement to a turn.
+    #[must_use]
+    pub fn reported_said(&self) -> Option<&str> {
+        self.reported.as_ref().and_then(|held| held.said.as_deref())
     }
 
     /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, or `None` if none ever has.
@@ -1402,6 +1465,7 @@ mod tests {
             seq: Some(seq),
             owner: None,
             asked: asked.map(str::to_owned),
+            said: None,
             transcript: None,
             build: None,
         };
@@ -1477,6 +1541,7 @@ mod tests {
             seq: Some(1),
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1530,6 +1595,7 @@ mod tests {
             seq: Some(1),
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1597,6 +1663,7 @@ mod tests {
             seq: None,
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1633,6 +1700,7 @@ mod tests {
                     seq: Some(5),
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 })
@@ -1646,6 +1714,7 @@ mod tests {
                 seq: Some(5),
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             }),
@@ -1668,6 +1737,7 @@ mod tests {
                 seq: Some(4),
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             }),
@@ -1686,6 +1756,7 @@ mod tests {
                     seq: Some(6),
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 })
@@ -1704,6 +1775,7 @@ mod tests {
                     seq: Some(1),
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 })
@@ -1721,6 +1793,7 @@ mod tests {
                     seq: None,
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 })
@@ -1735,6 +1808,7 @@ mod tests {
                     seq: None,
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 })
@@ -1755,6 +1829,7 @@ mod tests {
             seq: Some(1),
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1767,6 +1842,7 @@ mod tests {
             seq: Some(2),
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1792,6 +1868,7 @@ mod tests {
                     seq: Some(2),
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 })
@@ -1820,6 +1897,7 @@ mod tests {
             seq: None,
             owner: Some(4242),
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1833,6 +1911,7 @@ mod tests {
             seq: None,
             owner: Some(99),
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1847,6 +1926,7 @@ mod tests {
             seq: None,
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });
@@ -1864,6 +1944,7 @@ mod tests {
             seq: None,
             owner: Some(7),
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         });

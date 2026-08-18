@@ -131,6 +131,14 @@ pub struct AgentFacts {
     /// silence it was typed into — register item 441, where that cost a live loop thirty-three
     /// turns against an agent that was working the whole time.
     pub asked_seq: u64,
+    /// **HOW MANY ANSWERS THIS PANE'S AGENT HAS STATED** — [`asked_seq`](Self::asked_seq)'s other
+    /// end, counted the same way and needed for the same kind of reason.
+    ///
+    /// ⚠⚠⚠ It is what DATES a statement to a turn. A supervisor snapshots it when it asks and reads
+    /// [`said`](Self::said) as this turn's answer only once it has moved — without which the text
+    /// standing in the tracker could be the previous turn's, which is precisely the confusion
+    /// register item 441 is made of at the other end.
+    pub said_seq: u64,
     /// WHO said so, when a process inside the pane reported it rather than a rule inferring it —
     /// `None` for a scraped verdict.
     ///
@@ -188,6 +196,16 @@ pub struct AgentFacts {
     /// question arrived can only use the second — a screen renders text a run delivered and text a
     /// composer already held as the same pixels.
     pub asked: Option<String>,
+    /// **THE LAST ANSWER THE AGENT ITSELF SAID IT GAVE**, carried from the hook that ends a turn.
+    ///
+    /// ⚠⚠⚠⚠ The reason this exists is a measurement rather than a preference (register item 441):
+    /// a full-screen agent repaints in place, so its pane's logical-line addresses stop advancing
+    /// and *what did this turn print* answers `0` for the rest of the session — while the agent
+    /// goes on answering, and a person reading the pane sees every reply. The words are on the
+    /// screen and cannot be read OFF it; the program has them.
+    ///
+    /// ⚠ Undated on its own — pair it with [`said_seq`](Self::said_seq).
+    pub said: Option<String>,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT** — stated, never derived from an id.
     pub transcript: Option<String>,
 }
@@ -424,12 +442,14 @@ impl AgentRegistry {
             rule,
             seq: tracker.seq(),
             asked_seq: tracker.asked_seq(),
+            said_seq: tracker.said_seq(),
             source: tracker.reported_source().map(str::to_owned),
             reporter_build: tracker.reported_build().map(str::to_owned),
             // ⚠ Taken from the TRACKER rather than from this look: they are stated by the agent on
             // its own hook and survive every screen the pane has painted since. A look cannot
             // produce them and must not clear them.
             asked: tracker.reported_asked().map(str::to_owned),
+            said: tracker.reported_said().map(str::to_owned),
             transcript: tracker.reported_transcript().map(str::to_owned),
         })
     }
@@ -880,6 +900,7 @@ mod tests {
                 seq: Some(7),
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             },
@@ -936,6 +957,7 @@ mod tests {
                     seq: None,
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: build.map(str::to_owned),
                 },
@@ -997,6 +1019,7 @@ mod tests {
                     seq: None,
                     owner: None,
                     asked: None,
+                    said: None,
                     transcript: None,
                     build: None,
                 },
@@ -1045,6 +1068,7 @@ mod tests {
                 seq: None,
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             },
@@ -1365,6 +1389,7 @@ mod clock_tests {
                 seq: None,
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             },

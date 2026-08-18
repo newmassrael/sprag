@@ -1489,6 +1489,8 @@ mod tests {
                 asked_seq: last.1,
                 asking: None,
                 asked: None,
+                said: None,
+                said_seq: 0,
                 transcript: None,
             })
         });
@@ -2050,6 +2052,8 @@ mod tests {
                 asked_seq: u64::from(submitted),
                 asking: None,
                 asked: submitted.then(|| self.said.clone()).flatten(),
+                said: None,
+                said_seq: 0,
                 transcript: None,
             })
         }

@@ -811,6 +811,7 @@ impl InlineGrammar {
         ArgGrammar::open(AGENT_SEQ_KEY, "int").optional(),
         ArgGrammar::open(AGENT_BIND_KEY, "bool").optional(),
         ArgGrammar::open(AGENT_ASKED_KEY, "string").optional(),
+        ArgGrammar::open(AGENT_SAID_KEY, "string").optional(),
         ArgGrammar::open(AGENT_TRANSCRIPT_KEY, "string").optional(),
         ArgGrammar::open(AGENT_BUILD_KEY, "string").optional(),
     ])];
@@ -1655,6 +1656,57 @@ pub const AGENT_BIND_KEY: &str = "bind";
 /// appended the delivery to somebody else's text reports a prompt that is not the one sent — which
 /// no screen predicate can distinguish, because both are the same pixels.
 pub const AGENT_ASKED_KEY: &str = "asked";
+/// [`REPORT_AGENT_ACTION`]'s key carrying **WHAT THE AGENT SAYS IT ANSWERED**, on the one event
+/// that ends a turn — [`AGENT_ASKED_KEY`]'s other end, and the answer to register item 441.
+///
+/// # ⚠⚠⚠⚠⚠ The pane cannot be read for this, and that is measured rather than argued
+///
+/// A driver's judgement is *did the peer say the word it was asked to say?*, and it has always been
+/// answered by reading the pane since a mark. On 2026-08-18 both readers were printed at one instant
+/// from inside the running daemon, at every judgement of a live run:
+///
+/// > `mark=Line(37) read=0 lost=0 restarted=false  whole=Some(37)  rendered=33`
+///
+/// The pane's WHOLE logical-line count stood at 37 and never moved, all run, while the agent wrote
+/// reply after reply and the marker stood alone on a row. An address is *lines shed* plus *complete
+/// rows above the cursor*; a full-screen agent holds the alternate screen and REPAINTS, so nothing
+/// is ever shed, and once its composer settles at its row the second term stops growing too. The
+/// count saturates and every read since any mark answers **0 complete lines** — with `lost` at 0 and
+/// no restart, which is the honest output of a frozen address space and is INDISTINGUISHABLE from a
+/// peer that said nothing. Nine judged turns in a row heard nothing that way.
+///
+/// So the fact travels the way [`AGENT_ASKED_KEY`]'s does: the program states it. `claude`'s `Stop`
+/// payload carries `last_assistant_message` — the turn's final message, as the agent has it, before
+/// a terminal has drawn a cell of it.
+///
+/// ⚠⚠ WHOLE, never truncated. *"A truncated report is worse than a missing one, because nothing in
+/// it says it is truncated"* is this workspace's own rule about the same text
+/// ([`sprag_plugin`]'s report module), and a bound put here would be a silent one.
+///
+/// # ⚠⚠⚠⚠⚠ Why this earned NO [`WIRE_PROTOCOL`] bump, measured rather than argued
+///
+/// The pin `a_published_argument_shape_cannot_move_under_the_protocol_number` goes red by name for
+/// any added argument and demands *"raise `WIRE_PROTOCOL` unless you can say why an older client is
+/// unaffected"* — the same demand [`AGENT_BUILD_KEY`] answered one round earlier (register item
+/// 412), and the standard is *does an older peer silently do something DIFFERENT*, not *did an
+/// argument appear*.
+///
+/// **NEW hook → OLD daemon.** An older daemon's grammar does not declare this key. Measured against
+/// a live daemon on 2026-08-18: a `report_agent` carrying an UNDECLARED key answers
+/// `{accepted: true, changed: false, seq: 7}` — byte-identical to the same report without it. An
+/// undeclared key is IGNORED at this surface, not refused, so the old daemon honours the report
+/// exactly as it did before and simply never reads the answer.
+///
+/// **OLD hook → NEW daemon.** The key is absent, which is `None` — *this reporter did not say*.
+/// `said_seq` then never moves, and the driver's reader falls back to the pane, which is precisely
+/// the behaviour that shipped before this key existed. ⚠ It is never rendered as agreement:
+/// `said_seq: 0` on the pane row means *no answer has been stated here*, exactly as
+/// [`AGENT_BUILD_KEY`]'s `None` means *it did not say* rather than *it matches*.
+///
+/// ⚠⚠ THE EXEMPTION IS CONDITIONAL, on [`AGENT_BUILD_KEY`]'s own terms: the moment a surface reads
+/// an absent `said` as evidence ABOUT the agent — *it answered nothing* rather than *it did not
+/// say* — an older reporter starts meaning something it never meant, and the number is owed.
+pub const AGENT_SAID_KEY: &str = "said";
 /// [`REPORT_AGENT_ACTION`]'s key carrying **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT**.
 ///
 /// ⚠⚠⚠ Stated rather than resolved. The spend reader finds a transcript by deriving a path from a
@@ -8260,7 +8312,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_pane[object]:pane:int name:string?",
                 "sprag_workspace/sprag_mux/rename_session[object]:name:string",
                 "sprag_workspace/sprag_mux/rename_window[object]:window:string? name:string",
-                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? transcript:string? build:string?",
+                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? said:string? transcript:string? build:string?",
                 "sprag_workspace/sprag_mux/resize[object]:id:int cols:int rows:int cell_width:int? cell_height:int?",
                 "sprag_workspace/sprag_mux/resize_pane[object]:dir:string pane:int? cells:int?",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",

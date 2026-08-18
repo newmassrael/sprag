@@ -1070,6 +1070,37 @@ pub struct AgentObservation {
     /// reports nothing at all, and a supervisor that read this as an empty prompt would conclude
     /// every unhooked peer had been asked nothing.
     pub asked: Option<String>,
+    /// **THE LAST ANSWER THE AGENT SAID IT GAVE**, and `None` where none has said so.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a driver cannot read this off the pane, measured (register item 441)
+    ///
+    /// A judgement is *did the peer say the word it was asked to say*, and it was answered by
+    /// reading the pane's logical lines since a mark. On 2026-08-18 both readers were printed from
+    /// inside the running daemon at every judgement of a live run:
+    ///
+    /// > `mark=Line(37) read=0 lost=0 restarted=false  whole=Some(37)  rendered=33`
+    ///
+    /// The pane's WHOLE line count stood at 37 and never moved while the agent wrote reply after
+    /// reply with the marker alone on a row. A full-screen agent holds the alternate screen and
+    /// REPAINTS, so nothing is shed and — once its composer settles at its row — nothing stands
+    /// above the cursor that did not already. The count saturates, and from then on every read
+    /// since any mark is empty, with `lost` at 0 and no restart: **the honest output of a frozen
+    /// address space, and identical to a peer that said nothing.**
+    ///
+    /// So the answer travels the way [`asked`](Self::asked) does. It is the agent's own statement,
+    /// taken before a terminal has drawn a cell of it.
+    ///
+    /// ⚠⚠ It is undated on its own. A supervisor pairs it with [`said_seq`](Self::said_seq) —
+    /// otherwise the text standing here may be the PREVIOUS turn's, which is the same confusion
+    /// this item is made of at the other end.
+    pub said: Option<String>,
+    /// **HOW MANY ANSWERS THIS PANE'S AGENT HAS STATED** — [`asked_seq`](Self::asked_seq)'s other
+    /// end, counted on the statement rather than on the verdict for the same reason.
+    ///
+    /// ⚠⚠⚠ A rest that states an answer often moves no verdict at all: the pane's screen may
+    /// already read `idle`, and a second `Stop` inside a settle window publishes nothing. So `seq`
+    /// cannot date a statement and this can.
+    pub said_seq: u64,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT**, and `None` where none has said so.
     ///
     /// Stated rather than derived. The spend reader resolves this path from a session id and was

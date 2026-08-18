@@ -1007,6 +1007,10 @@ pub(crate) fn agent_state_source(
                 // The agent's own account, carried through untouched — see `AgentObservation::asked`
                 // for what a supervisor can do with it that no screen read can.
                 asked: facts.asked,
+                // ⚠⚠⚠⚠ AND WHAT IT ANSWERED — the half a driver was reading off a pane that cannot
+                // be read for it (register item 441). Carried through untouched, exactly like the
+                // question above: this layer states, and the plugin judges.
+                said: facts.said,
                 transcript: facts.transcript,
                 state,
                 agent: facts.agent,
@@ -1017,6 +1021,9 @@ pub(crate) fn agent_state_source(
                 // `seq` cannot say whether the peer took the prompt just typed at it, because a
                 // submit into an already-`working` pane publishes nothing.
                 asked_seq: facts.asked_seq,
+                // ⚠⚠ AND THE COUNT THAT DATES THE ANSWER, without which the text above cannot be
+                // told from the previous turn's — see `AgentObservation::said_seq`.
+                said_seq: facts.said_seq,
             })
         })
     })
@@ -3161,6 +3168,7 @@ mod tests {
                 seq: Some(1),
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             },
@@ -3215,6 +3223,7 @@ mod tests {
                 seq: Some(1),
                 owner: None,
                 asked: None,
+                said: None,
                 transcript: None,
                 build: None,
             },
@@ -3264,6 +3273,7 @@ mod tests {
             seq: Some(seq),
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         };
@@ -3385,6 +3395,7 @@ mod tests {
             seq: Some(seq),
             owner: None,
             asked: None,
+            said: None,
             transcript: None,
             build: None,
         };

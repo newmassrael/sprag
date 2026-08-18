@@ -1662,6 +1662,31 @@ struct Session {
     /// argued: a sixty-line reply on a forty-row pane came back through the rendering opening at
     /// `LINE-29`, and through this opening at `LINE-1`. See [`crate::report`].
     since: crate::report::Since,
+    /// **HOW MANY ANSWERS THE PEER HAD STATED WHEN THIS TURN'S PROMPT WENT IN** — the arming that
+    /// dates the agent's own account of what it said.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the address above cannot be the only reader, measured
+    ///
+    /// [`since`](Self::since) is an ADDRESS into the pane's logical lines, and on 2026-08-18 a probe
+    /// inside the running daemon printed it at every judgement of a live run:
+    ///
+    /// > `mark=Line(37) read=0 lost=0 restarted=false  whole=Some(37)  rendered=33`
+    ///
+    /// The pane's whole line count stood at **37 and never moved** while the agent wrote reply after
+    /// reply with the marker alone on a row. A full-screen agent holds the alternate screen and
+    /// repaints, so nothing is shed, and once its composer settles nothing new stands above the
+    /// cursor either — **the address saturates and every read since any mark is empty for the rest
+    /// of the session**, with `lost` at 0 and no restart to report. Register item 441: nine judged
+    /// turns heard nothing that way, and the reading is identical to a peer that said nothing.
+    ///
+    /// So the peer is ASKED instead ([`AgentObservation::said`](crate::access::AgentObservation)),
+    /// and this number is what makes the answer THIS turn's: a statement is read only once the
+    /// count has moved past what it was when the question went in. Without it the text standing in
+    /// the tracker could be the previous turn's — the same confusion, one end over.
+    ///
+    /// ⚠ `0` before anything is armed, which is what a pane whose agent has never stated an answer
+    /// reads anyway; the comparison is `>`, so an unmoved counter is never mistaken for an answer.
+    said_at: u64,
     /// **WHAT THIS PEER WAS LAST TOLD, VERBATIM** — the bytes [`OuterLoop::say`] put on its
     /// pseudoterminal, kept because everything the pane prints next is read against them.
     ///
@@ -1758,6 +1783,10 @@ impl Session {
             // ⚠ A LINE ADDRESS IS A FACT ABOUT ONE PANE. The replacement numbers its own lines from
             // the beginning, so the predecessor's cursor would point into the middle of it.
             since: crate::report::Since::default(),
+            // ⚠⚠ AND SO IS A STATEMENT COUNT: it belongs to the tracker of the pane that is being
+            // replaced, and the fresh pane's agent has stated nothing. Carried over, a number from
+            // a busy predecessor would make the successor's first real answer read as stale.
+            said_at: 0,
             // ⚠ AND A FRESH SESSION HAS BEEN TOLD NOTHING. Carried over, the replacement's first
             // reply would be read against a question asked of the agent it replaced — and `priming`
             // runs immediately after this, so the value is only ever unset for the moment between.
@@ -2300,6 +2329,10 @@ impl OuterLoop {
                 ),
                 judged: crate::access::RowTrail::default(),
                 since: crate::report::Since::default(),
+                // Nothing has been asked, so nothing can have been answered — and the reader
+                // compares with `>`, so a peer that stated an answer before this run existed is
+                // still not read as having answered THIS turn.
+                said_at: 0,
                 // Nothing has been typed at this pane yet — `priming` is the first thing that does.
                 asked: String::new(),
                 // Learned on the first look at a pane whose agent is up, not here: at construction
@@ -4803,6 +4836,13 @@ impl OuterLoop {
         // produce* is the same question whichever turn asks it, and a mark taken only in `closing`
         // would be a fourth thing to keep in step with the other three.
         self.driving.since = crate::report::Since::mark(panes, self.driving.pane);
+        // ⚠⚠⚠⚠⚠ AND THE FOURTH MARK, WHICH IS THE ONLY ONE THAT DOES NOT READ THE PANE — register
+        // item 441. The three above all ask the TERMINAL what happened, and a full-screen agent's
+        // pane was measured unable to answer: its whole logical-line count stood at 37 for a whole
+        // run while the agent replied every turn, because it repaints instead of scrolling. This
+        // one arms on what the AGENT has stated, so the judgement can ask the peer what it said
+        // rather than reading what it painted. See [`Session::said_at`].
+        self.driving.said_at = Self::said_seq_at(panes, self.driving.pane);
         // ⚠⚠⚠ AND THE FOURTH: WHAT THIS PEER IS ABOUT TO BE TOLD, kept because the readers above
         // have to be able to tell the peer's answer from this run's own question coming back — and
         // the question NAMES the answer, since a marker nobody asks for is one nobody ever says.
@@ -5190,6 +5230,37 @@ impl OuterLoop {
     /// above it and the discount has nothing to work with. It is not read here, and the alternative
     /// — refusing to converge any turn that outran the scrollback — would end a long run on its
     /// most productive turn. **Registered rather than guessed at.**
+    /// How many answers `pane`'s agent has stated, or `0` where nothing supervises it.
+    ///
+    /// ⚠ A host with no supervisor answers the same as a peer that has never spoken, and both are
+    /// right for the caller: neither can produce a statement, so the reader falls through to the
+    /// pane. See [`Self::stated_this_turn`].
+    fn said_seq_at(panes: &dyn PaneAccess, pane: PaneId) -> u64 {
+        panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(pane))
+            .map_or(0, |seen| seen.said_seq)
+    }
+
+    /// **WHAT THE PEER SAYS IT ANSWERED IN THIS TURN**, or [`None`] where it has not said.
+    ///
+    /// The pairing register item 441 needed and had no way to make: a statement counts as this
+    /// turn's only once [`AgentObservation::said_seq`](crate::access::AgentObservation) has moved
+    /// past what [`say`](Self::say) armed. An unmoved counter is the previous turn's answer still
+    /// standing in the tracker, and reading it would be the same defect one end over.
+    ///
+    /// ⚠ `None` covers three worlds a caller treats identically — no supervisor, no agent, and an
+    /// agent that has stated nothing since the question — because all three mean *this run must
+    /// read the pane instead*.
+    fn stated_this_turn(&self, panes: &dyn PaneAccess) -> Option<String> {
+        let seen = panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane))?;
+        (seen.said_seq > self.driving.said_at)
+            .then_some(seen.said)
+            .flatten()
+    }
+
     fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> Heard {
         let Some(marker) = self.text_of(variable) else {
             // ⚠⚠⚠⚠⚠ **THE FOURTH WORLD, AND IT LOOKS AT NO PANE AT ALL** — register item 441. A
@@ -5201,8 +5272,52 @@ impl OuterLoop {
             // printed nothing leaves, so this world is narrowed rather than separated. Giving it a
             // reading of its own changes what the DOCUMENT does with it, and that is a decision
             // with its own measurement rather than a rider on this one. **Registered.**
-            return Heard::NotSaid { read: 0 };
+            return Heard::NotSaid {
+                read: 0,
+                from: Evidence::Pane,
+            };
         };
+        // ⚠⚠⚠⚠⚠ **THE PEER IS ASKED BEFORE THE PANE IS READ** — register item 441, and the whole of
+        // what that item cost. Everything below this block reads the TERMINAL, and a terminal was
+        // measured unable to answer: on 2026-08-18, at every judgement of a live run, the pane's
+        // whole logical-line count stood at `37` and never moved while the agent wrote reply after
+        // reply with the marker alone on a row — because a full-screen agent repaints instead of
+        // scrolling, so nothing is shed and, once its composer settles, nothing new stands above
+        // the cursor. The read is empty, `lost` is 0, nothing restarted, and the reading is
+        // identical to a peer that said nothing. Nine judged turns went that way.
+        //
+        // The agent states its own answer on the hook that ends the turn, and
+        // [`Self::stated_this_turn`] hands it back only once the peer's statement COUNT has moved
+        // past this turn's arming — so a statement left over from the previous turn is not read as
+        // this one's, which is the same pairing discipline the turn's end already uses.
+        //
+        // ⚠⚠ The PREDICATES are the same ones, deliberately: `stands_alone` and the echo discount
+        // are what *the agent declared* means in this crate, and a second spelling for a second
+        // reader is how two readers come to disagree about one word. What differs is only where the
+        // lines came from.
+        //
+        // ⚠ The fallback below is not dead code and must not be deleted: a peer with no hook
+        // installed, a host with no supervisor, and a reporter that has gone mute all reach it, and
+        // for them the pane is the only evidence there is.
+        if let Some(stated) = self.stated_this_turn(panes) {
+            let lines: Vec<&str> = stated.lines().collect();
+            let said = lines.iter().enumerate().any(|(at, line)| {
+                stands_alone(line, &marker)
+                    && !wraps_onto(
+                        &self.driving.asked,
+                        at.checked_sub(1).map_or("", |above| lines[above]),
+                        &marker,
+                    )
+            });
+            return if said {
+                Heard::Said(Evidence::Statement)
+            } else {
+                Heard::NotSaid {
+                    read: lines.len() as u64,
+                    from: Evidence::Statement,
+                }
+            };
+        }
         let produced = self.driving.since.taken(panes, self.driving.pane);
         // ⚠⚠⚠⚠ **AND THE UNFINISHED LAST LINE COUNTS WHEN — AND ONLY WHEN — THE CHILD HAS EXITED.**
         // [`sprag_vt::LinesSince::partial`] sanctions exactly one reading of it: *an unfinished line
@@ -5244,7 +5359,7 @@ impl OuterLoop {
             };
         }
         match (said, produced.lost) {
-            (true, _) => Heard::Said,
+            (true, _) => Heard::Said(Evidence::Pane),
             // ⚠⚠⚠ THE ORDER IS THE CLAIM: a marker FOUND is `Said` whatever was evicted, because a
             // line that is there was not lost. Only an absence has to be qualified, and this is the
             // qualification the answer could not carry before.
@@ -5255,6 +5370,7 @@ impl OuterLoop {
             // one told sixty knows the marker was REJECTED rather than missing.
             (false, 0) => Heard::NotSaid {
                 read: lines.len() as u64,
+                from: Evidence::Pane,
             },
             (false, lost) => Heard::Unheard { lost },
         }
@@ -5438,10 +5554,53 @@ fn wraps_onto(asked: &str, above: &str, marker: &str) -> bool {
 /// and the document decides. The shipped document keeps `said_marker`'s own doctrine — an unheard
 /// marker costs ONE MORE TURN, never a convergence nobody earned — and now it keeps it in writing
 /// instead of by accident.
+/// **WHICH EVIDENCE A JUDGEMENT WAS MADE ON** — the agent's own words, or the pane's.
+///
+/// # ⚠⚠⚠⚠⚠ Why a reading has to say this, measured (register item 441)
+///
+/// Both answers are called *the agent did not declare*, and until 2026-08-18 nothing said which
+/// reader produced one. That mattered because the pane reader can go PERMANENTLY blind: a probe
+/// inside the running daemon printed, at every judgement of a live run, `mark=Line(37) read=0
+/// lost=0 restarted=false whole=Some(37)` — the pane's whole logical-line count frozen at 37 while
+/// the agent wrote reply after reply. A full-screen agent repaints instead of scrolling, so nothing
+/// is shed and, once its composer settles, nothing new stands above the cursor; the address
+/// saturates and every read since any mark is empty for the rest of the session. **`0` off the
+/// pane is not evidence about the peer.** `0` off the peer's own statement is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Evidence {
+    /// **THE AGENT'S OWN STATEMENT** of what it answered this turn, off the hook that ends a turn —
+    /// [`AgentObservation::said`](crate::access::AgentObservation), dated by `said_seq`.
+    ///
+    /// The reading to prefer wherever it exists: it is what the program has, before a terminal has
+    /// drawn a cell of it, so no repaint, scroll, width or eviction can take it away.
+    Statement,
+    /// **THE PANE**, read as complete logical lines since this turn's mark — the fallback for a peer
+    /// nothing supervises, an agent with no hook installed, and a reporter that has gone mute.
+    ///
+    /// ⚠ Named as a degradation rather than an equivalent: what it can say about a repainting agent
+    /// is bounded by whether that agent's output ever moves the pane's addresses, and one was
+    /// measured never moving them again.
+    Pane,
+}
+
+impl Evidence {
+    /// How a walk names this reader, in the sentence a person reads.
+    const fn named(self) -> &'static str {
+        match self {
+            Self::Statement => "the agent's own account of this turn",
+            Self::Pane => "the pane, since this turn's prompt",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Heard {
     /// The marker is on a line this turn produced, and no echo discount claimed it.
-    Said,
+    ///
+    /// ⚠ Carries WHICH evidence it was found in, for [`Evidence`]'s reason: a convergence off the
+    /// peer's own statement and one off a screen are two different strengths of proof, and a walk
+    /// that cannot tell them apart cannot say which one a live run took.
+    Said(Evidence),
     /// It is not there, and nothing this turn produced was thrown away — so it was not said.
     ///
     /// ⚠⚠⚠⚠⚠ **AND IT CARRIES WHAT IT READ, BECAUSE THIS ONE WORD COVERED FOUR WORLDS AND A LIVE
@@ -5467,6 +5626,10 @@ pub enum Heard {
     NotSaid {
         /// Complete lines the judge read since this turn's prompt was delivered.
         read: u64,
+        /// ⚠⚠⚠⚠ WHICH READER PRODUCED THAT NUMBER — see [`Evidence`]. Without it a `0` is two
+        /// completely different facts wearing one word: *the peer answered nothing* and *this pane
+        /// can no longer report anything*, the second of which was measured lasting a whole run.
+        from: Evidence,
     },
     /// ⚠⚠⚠ **IT IS NOT THERE AND LINES WERE LOST**, so this run cannot tell the two apart. Carries
     /// how many complete lines the history evicted, because *"some"* is not something a reader can
@@ -5484,7 +5647,7 @@ impl Heard {
     /// become a yes at one of them. `A LIST WITH NO GLOB DECIDES ALONE`, and this is the glob.
     #[must_use]
     pub const fn said(self) -> bool {
-        matches!(self, Self::Said)
+        matches!(self, Self::Said(_))
     }
 
     /// How many lines were lost when the answer is [`Unheard`](Self::Unheard), else `None`.
@@ -5495,7 +5658,7 @@ impl Heard {
     pub const fn unheard(self) -> Option<u64> {
         match self {
             Self::Unheard { lost } => Some(lost),
-            Self::Said | Self::NotSaid { .. } => None,
+            Self::Said(_) | Self::NotSaid { .. } => None,
         }
     }
 
@@ -5517,17 +5680,32 @@ impl Heard {
             // ⚠ Unreachable on the edge this is written for — a judgement that HEARD the marker
             // goes to `reflecting`, never back to work — and answered rather than left to a panic,
             // because the type is public and a caller printing a reading is a reader too.
-            Self::Said => "the agent said the marker".to_string(),
+            Self::Said(from) => format!("the agent said the marker, in {}", from.named()),
             // ⚠⚠⚠⚠ THE COUNT IS IN THE SENTENCE FOR `Unheard`'s REASON, one arm down: it is the
             // whole of what a reader acts on. A judgement that read NOTHING and one that read a
             // sixty-line reply and rejected the marker in it are the same word and completely
             // different problems — register item 441, where nine of these in a row said nothing
             // about which.
-            Self::NotSaid { read } => format!(
-                "the judge read this whole turn — {read} complete line(s) of it — and the agent had \
-                 not declared, which is what an ordinary turn looks like; nothing here needs acting \
-                 on. ⚠ A 0 here is a turn that printed nothing since its prompt, which an agent \
-                 that answered is not"
+            Self::NotSaid { read, from } => format!(
+                "the judge read {} — {read} line(s) of it — and the agent had not declared, which \
+                 is what an ordinary turn looks like; nothing here needs acting on.{}",
+                from.named(),
+                match from {
+                    // ⚠⚠⚠⚠⚠ THE SENTENCE THAT USED TO STAND HERE WAS FALSE, AND IT SENT A WHOLE
+                    // ROUND AFTER THE WRONG MECHANISM — register item 441. It read *"A 0 here is a
+                    // turn that printed nothing since its prompt, which an agent that answered is
+                    // not"*, which is exactly what a repainting agent's pane produces for ever:
+                    // measured at `whole=37`, unmoving, while the agent replied every turn.
+                    Evidence::Pane =>
+                        " ⚠ A 0 off the PANE is not evidence about the peer: a full-screen agent \
+                         repaints rather than scrolls, so once its composer settles the pane's \
+                         line addresses stop advancing and every read since any mark is empty. \
+                         Install the agent's hook and this judgement reads what it SAID instead",
+                    // Nothing to qualify: the peer stated its own answer and the marker is not in
+                    // it. A 0 here is the agent stating an empty answer, which is a fact about the
+                    // agent rather than about a reader.
+                    Evidence::Statement => "",
+                },
             ),
             Self::Unheard { lost } => format!(
                 "THE JUDGE COULD NOT READ THE WHOLE TURN: {lost} complete lines were evicted from \
@@ -6162,6 +6340,8 @@ mod tests {
                     asked_seq: *seq,
                     asking: None,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                 })
             });
@@ -6385,6 +6565,8 @@ mod tests {
                     asked_seq: *seq,
                     asking: None,
                     asked: submitted.then(|| typed.replace('\r', "")),
+                    said: None,
+                    said_seq: 0,
                     transcript: None,
                 })
             });
@@ -6555,6 +6737,8 @@ mod tests {
                     asked_seq: 1,
                     asking: None,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: said.clone(),
                 })
             });
@@ -6655,6 +6839,8 @@ mod tests {
                     asked_seq: 1,
                     asking: None,
                     asked: None,
+                    said: None,
+                    said_seq: 0,
                     transcript: said.clone(),
                 })
             });
@@ -6740,6 +6926,8 @@ mod tests {
                 asked_seq: 1,
                 asking: None,
                 asked: None,
+                said: None,
+                said_seq: 0,
                 transcript: Some(said.clone()),
             })
         });
@@ -6811,6 +6999,8 @@ mod tests {
                 asked_seq: 1,
                 asking: None,
                 asked: None,
+                said: None,
+                said_seq: 0,
                 transcript: stated.lock().expect("what the agent says").clone(),
             })
         });
@@ -8631,7 +8821,10 @@ mod tests {
             // register item 441. It says the judge REACHED the pane and read what was there, which
             // is what separates *the agent said nothing* from *nobody looked*; a `0` here would be
             // the same word about a completely different failure.
-            Heard::NotSaid { read: 1 },
+            Heard::NotSaid {
+                read: 1,
+                from: Evidence::Pane,
+            },
             "⚠⚠ THE CONTROL: with nothing evicted, a marker that is not there was NOT SAID, and the \
              run may act on that absence. If this arm is ever `Unheard` the type says every turn is \
              unreadable and the distinction is worth nothing",
@@ -8808,7 +9001,10 @@ mod tests {
 
         assert_eq!(
             loops.said_done(&Printed(Vec::new())),
-            Heard::NotSaid { read: 0 },
+            Heard::NotSaid {
+                read: 0,
+                from: Evidence::Pane,
+            },
             "⚠⚠⚠ A TURN THAT PRINTED NOTHING MUST SAY SO. This is the world where the peer never \
              answered — the run's own question did not even come back — and it is the one a reader \
              must act on differently: prompting again is right here and useless when the agent DID \
@@ -8820,11 +9016,159 @@ mod tests {
                 String::new(),
                 "Nothing further is required.".to_string(),
             ])),
-            Heard::NotSaid { read: 3 },
+            Heard::NotSaid {
+                read: 3,
+                from: Evidence::Pane,
+            },
             "⚠⚠⚠⚠ AND A TURN THE JUDGE READ THREE LINES OF MUST SAY THREE — the same word as the \
              arm above and a completely different problem. ⚠ The number is `lines`' own length, so \
              a reading that answered `0` here would be claiming the judge never reached a pane it \
              plainly did, which is register item 441's nine judgements exactly",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE AGENT'S OWN ACCOUNT IS HEARD WHERE THE PANE CANNOT BE READ AT ALL** — register
+    /// item 441, and the fix for what nine judged turns could not see.
+    ///
+    /// # The world this stages, and it is the measured one rather than an invented one
+    ///
+    /// A probe inside the running daemon printed, at every judgement of a live run:
+    /// `mark=Line(37) read=0 lost=0 restarted=false whole=Some(37)` — the pane's whole logical-line
+    /// count frozen while the agent wrote reply after reply with the marker alone on a row. A
+    /// full-screen agent repaints instead of scrolling, so nothing is shed, and once its composer
+    /// settles nothing new stands above the cursor either. **The pane reader answers `0` for the
+    /// rest of the session, honestly, and that reading is identical to a peer that said nothing.**
+    ///
+    /// So the double here is exactly that pane — zero lines, nothing lost, nothing restarted — and
+    /// beside it the peer STATES what it answered, which is what a real `claude` puts in its
+    /// `Stop` payload (`last_assistant_message`) and what nothing in this workspace read until now.
+    ///
+    /// ⚠⚠ The pair below is the discriminator: the same statement, the same deaf pane, and the only
+    /// difference is whether the peer's answer COUNT moved since the question went in. One is this
+    /// turn's answer and the other is the previous turn's still standing in the tracker — the
+    /// distinction that makes reading a statement safe at all.
+    #[test]
+    fn the_agents_own_account_is_heard_when_the_pane_cannot_be_read() {
+        /// A pane frozen exactly as the live one was, with a peer that states its own answer.
+        ///
+        /// ⚠ `said_seq` is the whole variable: the loop arms on it at the prompt, so `1` is *the
+        /// peer has answered since* and `0` is *this statement predates the question*.
+        struct Stating {
+            said: Option<String>,
+            said_seq: u64,
+        }
+        impl PaneAccess for Stating {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            // ⚠ ALIVE: a peer this double called gone would let the unfinished `❯` count as its
+            // last word, which is the one reading `partial` is sanctioned for and is not this case.
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+            fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Stating {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                // ⚠⚠⚠ THE FROZEN PANE, VERBATIM AS MEASURED: no lines, nothing evicted, no restart
+                // — the reading a repainting agent's pane gives for ever once its composer settles.
+                Some(sprag_vt::LinesSince {
+                    lines: Vec::new(),
+                    next: 37,
+                    lost: 0,
+                    partial: "❯".to_string(),
+                    restarted: false,
+                })
+            }
+        }
+        impl crate::access::PaneSupervision for Stating {
+            fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Idle,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_string(),
+                    },
+                    seq: 2,
+                    asked_seq: 1,
+                    asking: None,
+                    asked: None,
+                    said: self.said.clone(),
+                    said_seq: self.said_seq,
+                    transcript: None,
+                })
+            }
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("sh");
+            command.args(["-c", "printf 'PARROT-READY\\n'; exec cat"]);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        let run = RunContext::uncancellable();
+        // The prompt goes in, which is what arms the turn — this host has no supervisor, so the
+        // peer's answer count arms at zero, exactly as it does at a pane nothing has reported yet.
+        loops.pump(&access, &run).expect("idle to priming");
+
+        let answered = "I read the file and it is unchanged.\nMILESTONE REACHED".to_string();
+        assert_eq!(
+            loops.said_done(&Stating {
+                said: Some(answered.clone()),
+                said_seq: 1,
+            }),
+            Heard::Said(Evidence::Statement),
+            "⚠⚠⚠⚠⚠ THE AGENT DECLARED AND THE PANE COULD NOT SAY SO. This is the live case: a \
+             judge reading only the pane gets `0 complete lines` here and calls it an ordinary \
+             quiet turn, for ever, because the addresses of a repainting agent's pane never move \
+             again. The peer's own statement is the evidence, and the reading must name it",
+        );
+
+        // ── THE CONTROL: the same statement, the same pane, and a count that has NOT moved. ──
+        assert_eq!(
+            loops.said_done(&Stating {
+                said: Some(answered),
+                said_seq: 0,
+            }),
+            Heard::NotSaid {
+                read: 0,
+                from: Evidence::Pane,
+            },
+            "⚠⚠⚠⚠ A STATEMENT THE PEER MADE BEFORE THIS QUESTION IS NOT THIS TURN'S ANSWER — the \
+             tracker carries the last one forward, so without the count this reading would converge \
+             a run on the PREVIOUS turn's marker. It must fall back to the pane, and say it did",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
@@ -9527,7 +9871,7 @@ mod tests {
                         ScriptValue::String(check.to_string()),
                     )
                     .expect("the document's own check is writable");
-                loops.checked(&access, &run, Heard::Said)
+                loops.checked(&access, &run, Heard::Said(Evidence::Pane))
             };
             assert_eq!(
                 (ask(&mut loops, DENIES), ask(&mut loops, AGREES)),
@@ -9549,7 +9893,14 @@ mod tests {
             assert_eq!(
                 // ⚠ The count is immaterial to THIS claim — nothing is asked whatever the judge
                 // read — so it is spelled `0` rather than dressed up as a measurement.
-                loops.checked(&access, &run, Heard::NotSaid { read: 0 }),
+                loops.checked(
+                    &access,
+                    &run,
+                    Heard::NotSaid {
+                        read: 0,
+                        from: Evidence::Pane,
+                    },
+                ),
                 Checked::NotAsked,
                 "⚠⚠⚠ AND NOTHING IS ASKED WHERE NOTHING WAS CLAIMED: a check answers *was that \
                  claim true*, so it has no meaning before there is a claim — and a process spawned \

@@ -804,6 +804,63 @@ pub fn asked_in(payload: &Value) -> Option<Asked> {
 /// [`Target::events`] table below.
 const SUBMIT_EVENT: &str = "UserPromptSubmit";
 
+/// The event that ENDS a turn, named once — [`said_in`]'s subject, and a row in both
+/// [`Target::events`] tables where it means *the agent is at rest*.
+const REST_EVENT: &str = "Stop";
+
+/// **WHAT THE AGENT SAYS IT ANSWERED**, off the one event that ends a turn — or [`None`] anywhere
+/// else.
+///
+/// # ⚠⚠⚠⚠⚠ Why a driver needs this and cannot get it from the pane
+///
+/// [`asked_in`] is the other end of the same turn, and this is the half register item 441 spent six
+/// rounds failing to read off a screen. What was measured (2026-08-18, on the running daemon, both
+/// readers at one instant): a `claude` pane's whole logical-line count stood at **37 and never
+/// moved** while the agent wrote reply after reply, so every read since any mark answered **0
+/// complete lines** — honestly, with nothing lost and no restart to report. A full-screen agent
+/// holds the alternate screen and REPAINTS, so nothing is shed; once its composer settles, the
+/// address cannot advance again. The judge went deaf for the rest of the run, and the reading it
+/// got — *nothing was produced* — is the same reading a peer that truly said nothing produces.
+///
+/// **The agent states it outright.** `Stop` carries `last_assistant_message`: the final message of
+/// the turn, as the program itself has it, before any terminal has drawn a cell of it.
+///
+/// ⚠⚠ CAPTURED, not inferred — the fixture is `captured_rest` in this module's tests (⚠ NAMED
+/// rather than linked: a `#[cfg(test)]` item is not in scope for rustdoc, and the doc gate refuses
+/// the link). A real `claude` 2.1.234, recorded by
+/// putting a logging wrapper at the path the agent's own configuration names, so every payload was
+/// written down and still handed on. The same capture is what settled that `Stop` fires **once per
+/// TURN and not once per message** (fifteen tool calls in one turn raised exactly one), which is
+/// the premise this reader's *the turn ended* meaning rests on.
+///
+/// ⚠ A `Stop` with no `last_assistant_message` is [`None`] rather than an empty statement, for
+/// [`asked_in`]'s reason one end over: *the agent answered nothing* is a claim, and a payload that
+/// omits the key has not made it.
+#[must_use]
+pub fn said_in(payload: &Value) -> Option<String> {
+    if payload.get("hook_event_name")?.as_str()? != REST_EVENT {
+        return None;
+    }
+    // A subagent's answer is not the pane's answer — the same exclusion `report_for` and `asked_in`
+    // open with. `SubagentStop` is excluded by being absent from `Target::events`; this excludes a
+    // `Stop` that a sub-agent raised.
+    if payload
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return None;
+    }
+    Some(payload.get(REST_STATEMENT)?.as_str()?.to_owned())
+}
+
+/// What the agent calls its own closing message inside a [`REST_EVENT`] payload.
+///
+/// ⚠ Its spelling is the AGENT's, not ours — the wire key this ends up under is
+/// [`crate::wire::AGENT_SAID_KEY`], and the two are deliberately not the same word: one is a
+/// schema this crate reads and the other is a name it publishes.
+const REST_STATEMENT: &str = "last_assistant_message";
+
 /// Where a target stands: whether the agent is on this machine at all, and how much of the
 /// integration is in place.
 ///
@@ -1765,6 +1822,92 @@ mod tests {
             "⚠⚠ but a MISSING transcript is not a missing turn: this is a fact to use when offered \
              and never one to demand, or an agent writing no transcript would stop being able to \
              report the prompt it took",
+        );
+    }
+
+    /// **THE PAYLOAD A REAL AGENT SENT AT THE END OF A TURN**, captured 2026-08-18 from `claude`
+    /// 2.1.234 by putting a logging wrapper at the path the agent's own configuration names, so
+    /// every payload was recorded verbatim and still handed on to the client behind it.
+    ///
+    /// ⚠⚠⚠ A CAPTURE, for [`captured_submit`]'s reason: what this reader must survive is the
+    /// agent's schema. Two of these keys are the answer to register item 441 —
+    /// `last_assistant_message` is the reply a repainting pane could not be read for, and
+    /// `prompt_id` is the same id the submit above carries, which is what makes the two ends of one
+    /// turn nameable at all.
+    ///
+    /// Verbatim but for the values, which are shortened; the KEYS and their shapes are as captured.
+    fn captured_rest() -> Value {
+        serde_json::json!({
+            "session_id": "3a9c8559-735c-43ab-ba65-498684aa97da",
+            "transcript_path": "/home/coin/.claude/projects/-home-coin-sprag/3a9c8559.jsonl",
+            "cwd": "/home/coin/sprag",
+            "prompt_id": "8ee4c9d6-00d6-4ec4-a46f-fb2eb4306818",
+            "permission_mode": "auto",
+            "effort": { "level": "xhigh" },
+            "hook_event_name": "Stop",
+            "stop_hook_active": false,
+            "last_assistant_message": "the five sentences\nMILESTONE REACHED",
+            "background_tasks": [],
+            "session_crons": [],
+        })
+    }
+
+    /// **THE GATE FOR THE OTHER END OF THE TURN** — the agent states what it ANSWERED, and until now
+    /// that arrived on every turn and was dropped on the floor.
+    ///
+    /// See [`said_in`] for what it is worth: a full-screen agent's pane was measured with its whole
+    /// logical-line count frozen at 37 while the agent wrote reply after reply, so the reader the
+    /// judge uses answered `0 complete lines` for ever. This is the same fact, stated by the
+    /// program instead of scraped off what it painted.
+    #[test]
+    fn a_rest_payload_states_the_answer_the_agent_gave() {
+        assert_eq!(
+            said_in(&captured_rest()).as_deref(),
+            Some("the five sentences\nMILESTONE REACHED"),
+            "⚠⚠⚠⚠ THE ANSWER IS THE AGENT'S OWN STATEMENT OF WHAT IT SAID — the evidence register \
+             item 441 measured a pane being unable to give: 37 logical lines, never moving, while \
+             the marker stood alone on the screen",
+        );
+
+        // ⚠⚠ THE CONTROLS. Each says this reader is not simply answering yes.
+        //
+        // ⚠⚠⚠⚠⚠ THE EVENT CONTROL IS THE REST PAYLOAD WITH ITS EVENT CHANGED AND NOTHING ELSE, and
+        // the first draft of it was VACUOUS: it used the real submit capture, which carries no
+        // statement at all, so this reader answered `None` on the missing key and the event check
+        // was never exercised. The mutation proved it — reading EVERY event kept this gate green.
+        // A control has to differ from the passing case in the ONE field it is about.
+        let mut wrong_event = captured_rest();
+        wrong_event["hook_event_name"] = serde_json::json!(SUBMIT_EVENT);
+        assert_eq!(
+            said_in(&wrong_event),
+            None,
+            "⚠ only the event that ENDS a turn states an answer; a submit read as one would judge \
+             a turn on the answer to the turn before it",
+        );
+        assert_eq!(
+            said_in(&captured_submit()),
+            None,
+            "⚠ and the REAL submit, which states no answer at all — the world where a turn's \
+             opening is asked what it answered",
+        );
+        let mut subagent = captured_rest();
+        subagent["agent_id"] = serde_json::json!("sub-1");
+        assert_eq!(
+            said_in(&subagent),
+            None,
+            "⚠⚠ and a SUBAGENT's answer is not the pane's — the same exclusion `report_for` and \
+             `asked_in` open with",
+        );
+        let mut silent = captured_rest();
+        silent
+            .as_object_mut()
+            .expect("an object")
+            .remove("last_assistant_message");
+        assert_eq!(
+            said_in(&silent),
+            None,
+            "⚠ a rest with no statement states NOTHING rather than states an empty answer: a \
+             consumer told `Some(\"\")` would judge a turn against a claim the agent never made",
         );
     }
 
