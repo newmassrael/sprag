@@ -488,6 +488,7 @@ pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
                         rule: Some("dialog-choice-list".to_string()),
                     },
                     seq: 1,
+                    asked_seq: 1,
                     asking,
                     asked: None,
                     transcript: None,
@@ -1943,6 +1944,7 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                         rule: Some("dialog-choice-list".to_string()),
                     },
                     seq,
+                    asked_seq: seq,
                     asking,
                     asked: None,
                     transcript: None,
@@ -2011,6 +2013,7 @@ impl DialogBetweenTheReads {
                     // *this peer has moved since the turn began* — is satisfied by the same read
                     // that reports the dialog, which is what a working agent that stops to ask is.
                     seq: peer_seq(&rows) + u64::from(blocked),
+                    asked_seq: peer_seq(&rows) + u64::from(blocked),
                     asked: None,
                     transcript: None,
                     // ⚠ `None` even while blocked: what this fixture stages is the ARM, and the
@@ -2076,6 +2079,7 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                     source: "test".to_string(),
                 },
                 seq,
+                asked_seq: seq,
                 asking: None,
                 asked: None,
                 transcript: None,
@@ -2114,6 +2118,7 @@ pub(crate) fn supervised_writing(
                     source: "hook:claude".to_string(),
                 },
                 seq,
+                asked_seq: seq,
                 asking: None,
                 asked: None,
                 transcript: Some(said.clone()),

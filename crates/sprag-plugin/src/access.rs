@@ -1024,6 +1024,24 @@ pub struct AgentObservation {
     /// How many published CHANGES this pane's state has been through. Never decreases while the
     /// pane lives; compare it across two pulls to learn that something happened between them.
     pub seq: u64,
+    /// **HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED**, on the agent's own statement — the fact a
+    /// supervisor needs and the one [`seq`](Self::seq) cannot supply.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a second counter, measured (register item 441)
+    ///
+    /// `seq` moves when the published VERDICT moves. A prompt typed at a pane that is already
+    /// `working` is reported `working` again — same verdict, nothing published, `seq` unchanged.
+    /// So *"did the peer take what I just typed?"* had **no observable answer**, and a contract
+    /// waiting on `seq` could be satisfied by an ending that belonged to earlier work.
+    ///
+    /// What that cost, live: a loop typed into a busy agent, read that agent's `idle` from the
+    /// PREVIOUS question as its own turn ending, judged a window the peer had not written in, and
+    /// prompted again — thirty-three times, 6,604 bytes, deaf to a marker the agent printed.
+    ///
+    /// ⚠⚠ Counted on the STATEMENT, so two identical prompts are two questions. That is what makes
+    /// it work where comparing the TEXT does not: a loop re-prompting the same words is exactly the
+    /// case a text match cannot tell from an echo.
+    pub asked_seq: u64,
     /// What the pane is blocked ON, when it is blocked and the question is on its screen.
     ///
     /// Populated only for [`AgentState::Blocked`], because that is the only state in which the

@@ -122,6 +122,15 @@ pub struct AgentFacts {
     /// Increments on a published CHANGE, so a client tells "still blocked" from "blocked again"
     /// without diffing strings — `notification_seq`'s treatment.
     pub seq: u64,
+    /// **HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED**, counted on the agent's own statement — see
+    /// [`sprag_detect::Tracker::asked_seq`] for why [`seq`](Self::seq) cannot answer it.
+    ///
+    /// ⚠⚠⚠ It is the fact a SUPERVISOR needs and no other reader does: *did the peer take the
+    /// question I just typed?* A submit that arrives while the pane is already `working` moves no
+    /// verdict, so `seq` stands still and the supervisor has no way to tell its own prompt from the
+    /// silence it was typed into — register item 441, where that cost a live loop thirty-three
+    /// turns against an agent that was working the whole time.
+    pub asked_seq: u64,
     /// WHO said so, when a process inside the pane reported it rather than a rule inferring it —
     /// `None` for a scraped verdict.
     ///
@@ -414,6 +423,7 @@ impl AgentRegistry {
             agent,
             rule,
             seq: tracker.seq(),
+            asked_seq: tracker.asked_seq(),
             source: tracker.reported_source().map(str::to_owned),
             reporter_build: tracker.reported_build().map(str::to_owned),
             // ⚠ Taken from the TRACKER rather than from this look: they are stated by the agent on

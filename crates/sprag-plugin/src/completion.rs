@@ -389,7 +389,28 @@ pub struct Completion {
     ///
     /// ⚠ The NAME is armed, not taken from the caller: see [`DoneWhen::Settles`]. It is what makes
     /// *"the agent came back to rest"* a claim about the peer this turn was actually given to.
-    addressed: Option<(String, u64)>,
+    ///
+    /// ⚠⚠ The two numbers are the pane's [`seq`](crate::access::AgentObservation::seq) and
+    /// [`asked_seq`](crate::access::AgentObservation::asked_seq) at arming time —
+    /// see [`DoneWhen::Settles`] for why the second one had to be added and what the first alone
+    /// let through.
+    addressed: Option<Addressed>,
+}
+
+/// WHO this turn was given to, and what the pane's two counters read when it was.
+///
+/// A named struct rather than a widening tuple: the third field is a SECOND counter beside the
+/// first, and a reader at the comparison site has no way to tell two adjacent `u64`s apart by
+/// position — which is exactly the confusion the one this fixes was made of.
+#[derive(Debug, Clone)]
+struct Addressed {
+    /// The agent the prompt was typed at, by the name the pane published.
+    agent: String,
+    /// The pane's published-verdict counter when the turn was armed.
+    seq: u64,
+    /// The pane's QUESTION counter when the turn was armed — see
+    /// [`AgentObservation::asked_seq`](crate::access::AgentObservation::asked_seq).
+    asked_seq: u64,
 }
 
 impl Completion {
@@ -411,7 +432,13 @@ impl Completion {
         self.addressed = panes
             .supervision()
             .and_then(|supervisor| supervisor.pane_agent_state(pane))
-            .and_then(|seen| seen.agent.map(|agent| (agent, seen.seq)));
+            .and_then(|seen| {
+                seen.agent.map(|agent| Addressed {
+                    agent,
+                    seq: seen.seq,
+                    asked_seq: seen.asked_seq,
+                })
+            });
     }
 
     /// **HOW THIS TURN STANDS RIGHT NOW** — [`None`] while it is still running.
@@ -496,12 +523,22 @@ impl Completion {
     /// which evidence the caller chose to end on.
     ///
     /// [`Arrival`]: crate::consent
+    /// ⚠⚠⚠⚠ **AND IT DELIBERATELY DOES NOT REQUIRE THE QUESTION COUNTER**, where
+    /// [`satisfied`](Self::satisfied)'s settle arm does — register item 441, and the asymmetry is a
+    /// decision rather than an oversight.
+    ///
+    /// A peer that is BLOCKED may be blocked on something it was asked BEFORE this turn — indeed a
+    /// peer sitting at a dialog cannot take the prompt just typed at it, so its question counter
+    /// will never move. Demanding that it move would mean a blocked peer is never noticed, and the
+    /// run would wait out its whole patience on a pane whose screen is asking a person something.
+    /// **That is the fail-DANGEROUS direction**: the settle arm's guard exists to stop a rest being
+    /// mistaken for an answer, and there is no equivalent harm in noticing a block early.
     fn asked(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Option<Question>> {
-        let (addressed, began_at) = self.addressed.as_ref()?;
+        let addressed = self.addressed.as_ref()?;
         let seen = panes.supervision()?.pane_agent_state(pane)?;
         (seen.state == AgentState::Blocked
-            && seen.agent.as_deref() == Some(addressed.as_str())
-            && seen.seq > *began_at)
+            && seen.agent.as_deref() == Some(addressed.agent.as_str())
+            && seen.seq > addressed.seq)
             .then_some(seen.asking)
     }
 
@@ -516,18 +553,19 @@ impl Completion {
             DoneWhen::Settles => {
                 // Never armed, no supervisor to arm from, or no agent identified in the pane the
                 // prompt went to — see `begin`. None of those is evidence that a turn ended.
-                let Some((addressed, began_at)) = &self.addressed else {
+                let Some(addressed) = &self.addressed else {
                     return false;
                 };
                 panes
                     .supervision()
                     .and_then(|supervisor| supervisor.pane_agent_state(pane))
                     .is_some_and(|seen| {
-                        // ⚠⚠ ALL THREE, and the last one is what stops a peer's PRE-TURN rest from
-                        // reading as its answer. See the variant's doc.
+                        // ⚠⚠ ALL FOUR, and the last one is what stops a peer's rest from reading as
+                        // its answer to THIS question. See the variant's doc.
                         seen.state == AgentState::Idle
-                            && seen.agent.as_deref() == Some(addressed.as_str())
-                            && seen.seq > *began_at
+                            && seen.agent.as_deref() == Some(addressed.agent.as_str())
+                            && seen.seq > addressed.seq
+                            && seen.asked_seq > addressed.asked_seq
                     })
             }
         }
@@ -604,6 +642,7 @@ mod tests {
                 source: "test".to_string(),
             },
             seq,
+            asked_seq: seq,
             asking: None,
             asked: None,
             transcript: None,
@@ -623,7 +662,23 @@ mod tests {
     /// that hard-codes a field is a fixture that has decided the question nobody asked yet.**
     type Reported = Arc<Mutex<AgentObservation>>;
 
+    /// **THE PEER TOOK A QUESTION** — the fact `moved` cannot express and the one
+    /// [`DoneWhen::Settles`] now requires before a rest counts as an answer (register item 441).
+    ///
+    /// ⚠⚠⚠ It is SEPARATE from [`moved`] because the two move for two reasons, and the gap between
+    /// them is the whole defect: a prompt typed at a pane that is already `working` is reported
+    /// `working` again, so the verdict does not change, `seq` stands still, and only this counter
+    /// records that anything was asked. A helper that advanced both together could not stage the
+    /// case that mattered — a rest belonging to the PREVIOUS question — which is the one a live loop
+    /// spent thirty-three turns inside.
+    fn took(reported: &Reported) {
+        let mut seen = reported.lock().expect("the reported mutex");
+        seen.asked_seq += 1;
+    }
+
     /// Move the supervised pane to `state` at `seq`, reported as `agent`, asking nothing.
+    ///
+    /// ⚠ It moves the VERDICT only. Whether the peer was asked anything is [`took`]'s to say.
     fn moved(reported: &Reported, state: AgentState, seq: u64, agent: Option<&str>) {
         let mut seen = reported.lock().expect("the reported mutex");
         seen.state = state;
@@ -722,6 +777,9 @@ mod tests {
         let (access, pane, reported) = supervised(AgentState::Working, 7);
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
+        // ⚠ The peer TOOK the question before answering it — item 441's half of what "answered"
+        // means. A control that skipped it would be staging the defect and calling it the control.
+        took(&reported);
         moved(&reported, AgentState::Idle, 8, Some("claude"));
         let started = Instant::now();
         let settled = done.wait(&access, pane, BOUND, &RunContext::uncancellable());
@@ -851,18 +909,88 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠⚠⚠ **A REST THAT BELONGS TO THE PREVIOUS QUESTION DOES NOT END THIS TURN** — register
+    /// item 441, and the defect that cost a live loop thirty-three turns.
+    ///
+    /// # What it looked like, and why nothing here could see it before
+    ///
+    /// A loop typed a prompt at an agent that was still working on the last one. The agent's `Stop`
+    /// from that EARLIER work arrived, the pane went `idle` with a fresh `seq`, and the contract —
+    /// which asked only *is it idle, is it my agent, has `seq` moved?* — called the new turn over.
+    /// The judge then read a window the peer had not written a word in, found no marker, and the
+    /// loop prompted again. **Nine judged turns heard nothing while the pane plainly showed the
+    /// marker**, because every judgement happened before the reply it was judging.
+    ///
+    /// ⚠⚠⚠⚠ **AND `seq` COULD NOT HAVE FIXED IT, WHICH IS WHY A SECOND COUNTER EXISTS.** The
+    /// prompt that would have distinguished the two turns was reported `working` into a pane that
+    /// was already `working` — an identical verdict, so nothing published and `seq` never moved.
+    /// The submission was invisible. `asked_seq` is that submission, counted where the report
+    /// arrives rather than where the verdict changes.
+    ///
+    /// ⚠⚠ The staging is one line different from its neighbour below — `took` is not called — which
+    /// is what makes the pair a measurement of THAT fact rather than of the fixture.
+    #[test]
+    fn a_rest_left_over_from_the_previous_question_does_not_end_this_turn() {
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+
+        // The peer comes to rest — but it never took THIS question. This is the agent finishing
+        // what it was already doing when the prompt landed in its composer.
+        moved(&reported, AgentState::Idle, 8, Some("claude"));
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(300),
+                &RunContext::uncancellable(),
+            ),
+            Over::NotYet,
+            "⚠⚠⚠⚠⚠ AN IDLE THE PEER OWES TO AN EARLIER QUESTION IS NOT AN ANSWER TO THIS ONE. \
+             Every other term is satisfied — it is idle, it is the addressed agent, and `seq` has \
+             moved — which is exactly why this went unnoticed: the contract had no way to ask the \
+             only question that separates them. Delete the `asked_seq` term in `satisfied` and this \
+             goes green while the loop goes deaf again",
+        );
+
+        // ── AND IT ENDS THE MOMENT THE PEER DOES TAKE IT, so the rule refuses a stale rest rather
+        //    than refusing everything. ──
+        took(&reported);
+        moved(&reported, AgentState::Idle, 9, Some("claude"));
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_secs(5),
+                &RunContext::uncancellable(),
+            ),
+            Over::Yes,
+            "the same pane, one question later — a contract that refused here would have replaced \
+             a loop that judges too early with one that never judges at all",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠ **AND IT DOES COMPLETE WHEN THE PEER ACTUALLY ANSWERS** — the other half, without which
     /// the gate above is satisfied by a rule that refuses everything.
     ///
-    /// The peer is working when the turn arms, then goes to rest with a fresh `seq`, which is what
-    /// a real agent's turn looks like from the supervisor's side.
+    /// The peer is working when the turn arms, then TAKES the question and goes to rest with a
+    /// fresh `seq`, which is what a real agent's turn looks like from the supervisor's side.
+    ///
+    /// ⚠⚠⚠ **THE `took` LINE IS NOT CEREMONY, AND ITS ABSENCE IS WHAT THIS GATE USED TO MISS**
+    /// (register item 441). Without it the double says *the peer came back to rest* while saying
+    /// nothing about whether it was ever asked — which is exactly the live case where a loop read an
+    /// `idle` belonging to earlier work as its own turn ending. The fixture now models both halves,
+    /// so the neighbour below can stage the half that is missing and mean something.
     #[test]
     fn a_turn_is_over_when_the_peer_it_addressed_comes_back_to_rest() {
         let (access, pane, reported) = supervised(AgentState::Working, 7);
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
 
-        // The peer answers and goes quiet — a published change, which is what `seq` counts.
+        // The peer takes THIS question, answers it, and goes quiet.
+        took(&reported);
         moved(&reported, AgentState::Idle, 8, Some("claude"));
 
         assert_eq!(
@@ -1125,6 +1253,7 @@ mod tests {
                     source: "test".to_string(),
                 },
                 seq: 7,
+                asked_seq: 7,
                 asking: None,
                 asked: None,
                 transcript: None,
@@ -1207,6 +1336,7 @@ mod tests {
                 source: "test".to_string(),
             },
             seq: 8,
+            asked_seq: 8,
             asking: None,
             asked: None,
             transcript: None,

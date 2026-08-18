@@ -714,6 +714,7 @@ mod tests {
                         source: "test".to_string(),
                     },
                     seq: u64::from(prompted) + 1,
+                    asked_seq: u64::from(prompted) + 1,
                     asked: None,
                     transcript: None,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
@@ -905,6 +906,7 @@ mod tests {
                         source: "test".to_string(),
                     },
                     seq: if asking { 2 } else { 1 },
+                    asked_seq: if asking { 2 } else { 1 },
                     asking: None,
                     asked: None,
                     transcript: None,

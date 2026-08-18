@@ -1012,6 +1012,11 @@ pub(crate) fn agent_state_source(
                 agent: facts.agent,
                 authority,
                 seq: facts.seq,
+                // ⚠⚠⚠ AND THE COUNT OF QUESTIONS BESIDE THE COUNT OF STATE CHANGES — register item
+                // 441. They move for two different reasons and a supervisor needs the second one:
+                // `seq` cannot say whether the peer took the prompt just typed at it, because a
+                // submit into an already-`working` pane publishes nothing.
+                asked_seq: facts.asked_seq,
             })
         })
     })

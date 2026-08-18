@@ -2923,6 +2923,16 @@ impl WorkspaceExternal {
                             let mut value = serde_json::json!({
                                 "state": facts.state,
                                 "seq": facts.seq,
+                                // ⚠⚠⚠ HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED, beside how many
+                                // times its verdict moved — register item 441. They are two facts
+                                // that move for two reasons, and a supervisor needs the second:
+                                // `seq` cannot say whether a peer took the prompt just typed at it,
+                                // because a submit into an already-`working` pane publishes nothing.
+                                // ⚠ NOT additive-by-absence like its neighbours below: it is always
+                                // present, because ZERO is a real and useful answer (*nothing has
+                                // ever been asked here*) and an absent key would be read as the
+                                // pre-441 wire rather than as that.
+                                "asked_seq": facts.asked_seq,
                             });
                             if let Some(name) = &facts.agent {
                                 value["name"] = serde_json::json!(name);
@@ -4310,6 +4320,7 @@ mod tests {
                 "state": "working",
                 "name": "claude",
                 "seq": 1,
+                "asked_seq": 0,
                 "source": "herdr:claude",
             }),
             "a pane no rule claims is published because a process inside it said so, and the answer \
@@ -4584,6 +4595,13 @@ mod tests {
                 "name": "claude",
                 "rule": "dialog-choice-list",
                 "seq": 1,
+                // ⚠⚠⚠ HOW MANY QUESTIONS THIS PANE HAS TAKEN, and it is ALWAYS PRESENT where its
+                // neighbours are additive-by-absence — register item 441, and the asymmetry is the
+                // decision. An absent key cannot be told from a daemon too old to count, so a
+                // supervisor reading silence would see *never asked anything* where the truth is
+                // *this build cannot say* — `BUILD_FIELD`'s rule, and the reason a zero is written
+                // out rather than omitted.
+                "asked_seq": 0,
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.

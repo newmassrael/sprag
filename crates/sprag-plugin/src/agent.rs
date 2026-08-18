@@ -1111,6 +1111,7 @@ mod tests {
                         source: "test".to_string(),
                     },
                     seq,
+                    asked_seq: seq,
                     // This double stands in for a SCRAPED pane: it reads a screen and reports no
                     // prompt of its own, which is what an agent with no hooks installed looks like.
                     asked: None,

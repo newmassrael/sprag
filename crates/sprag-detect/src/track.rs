@@ -183,6 +183,33 @@ pub struct Tracker {
     /// Increments on every PUBLISHED change, so a client can tell "still blocked" from "blocked
     /// again" without diffing strings — the treatment `notification_seq` already gets.
     seq: u64,
+    /// **HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED** — one per report that STATES an
+    /// [`Report::asked`], whether or not the published verdict moved.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why [`seq`](Self::seq) could not answer this, measured (register item 441)
+    ///
+    /// A supervisor's whole question is *did the peer take the question I just asked?*, and until
+    /// this counter existed there was **nothing observable to answer it with**. `seq` advances only
+    /// inside [`publish`](Self::publish), which runs only when the verdict CHANGES — and a submit
+    /// arriving at a pane that is already `working` reports `working` again, so the verdict is
+    /// identical, nothing publishes, and `seq` stands still. The peer took a new question and every
+    /// reader saw an unchanged pane.
+    ///
+    /// What that cost, live: a loop typed a prompt at an agent that was still busy, saw an `idle`
+    /// belonging to the EARLIER work, called its own turn over, judged an empty window and prompted
+    /// again — thirty-three times, 6,604 bytes, while the agent worked throughout and the marker it
+    /// printed was never heard.
+    ///
+    /// ⚠⚠⚠ **A SECOND COUNTER RATHER THAN A RICHER `seq`**, and that is the decision. Folding
+    /// `asked` into [`Verdict`] would make every new question a "published change" — waking every
+    /// client and conflating *what this pane is doing* with *what it was last asked*, which is one
+    /// word covering two worlds and the shape this crate has already paid for. These are two facts
+    /// and they move for two reasons.
+    ///
+    /// ⚠⚠ Counted on the STATEMENT, not on the text: two identical prompts are two questions. A
+    /// reader comparing the strings could not tell a re-prompt from an echo, which is exactly the
+    /// case that defeats every text-matching rule.
+    asked_seq: u64,
     pending: Option<Pending>,
     seen: Option<Seen>,
     /// Which agent this pane was last IDENTIFIED as, independent of what it is doing.
@@ -333,6 +360,7 @@ impl Tracker {
             policy,
             published: Verdict::default(),
             seq: 0,
+            asked_seq: 0,
             pending: None,
             seen: None,
             identity: None,
@@ -351,6 +379,17 @@ impl Tracker {
     #[must_use]
     pub const fn seq(&self) -> u64 {
         self.seq
+    }
+
+    /// **HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED** — see [`asked_seq`](Self::asked_seq)'s field
+    /// for why [`seq`](Self::seq) cannot answer it.
+    ///
+    /// A supervisor snapshots this before it types and compares afterwards: a value that has MOVED
+    /// is the peer confirming, in its own words, that it took a new question — the one fact a
+    /// screen cannot supply and a state counter cannot either.
+    #[must_use]
+    pub const fn asked_seq(&self) -> u64 {
+        self.asked_seq
     }
 
     /// When a pending candidate would be published, or `None` when nothing is pending.
@@ -490,6 +529,15 @@ impl Tracker {
                 accepted: false,
                 changed: false,
             };
+        }
+        // ⚠⚠⚠⚠⚠ THE QUESTION IS COUNTED HERE, AND THIS PLACE IS THE WHOLE POINT — see `asked_seq`.
+        // It is AFTER the staleness refusal (a replayed report is not a new question) and BEFORE
+        // everything that decides whether the VERDICT moves, because whether the pane's state
+        // changed has nothing to do with whether it was asked something. A submit arriving at an
+        // already-`working` pane publishes nothing, and until this line that submit left no trace
+        // any reader could find — which is register item 441's whole defect.
+        if asked.is_some() {
+            self.asked_seq += 1;
         }
         // A reporter that names itself SETS the pane's identity; one that does not leaves it, and the
         // published verdict falls back to whatever the pane already was. That asymmetry is the same
@@ -1327,6 +1375,72 @@ mod tests {
     /// same candidate on every tick, and a window restarted by each of those never expires at all:
     /// the pane would be stuck in its previous state for as long as it stayed busy, which is the
     /// same freeze the pending exception exists to prevent, arriving by the other door.
+    /// ⚠⚠⚠⚠⚠ **A QUESTION IS COUNTED EVEN WHEN THE VERDICT DOES NOT MOVE** — register item 441,
+    /// and the arm the whole counter exists for.
+    ///
+    /// # Why `seq` could not have carried this, staged rather than argued
+    ///
+    /// A supervisor's question is *did the peer take what I just typed?* The submit that would
+    /// answer it arrives at a pane that is ALREADY `working` — an agent mid-turn — and reports
+    /// `working` again. The verdict is identical, so nothing publishes and [`seq`](Tracker::seq)
+    /// stands still. Every reader saw an unchanged pane while a new question had just been asked.
+    ///
+    /// What that cost, live: a loop typed into a busy agent, read the `idle` it owed to the PREVIOUS
+    /// question as this turn's ending, judged a window the peer had not written in, and prompted
+    /// again — thirty-three times, deaf to a marker the agent had printed.
+    ///
+    /// ⚠⚠⚠ **THE THIRD ARM IS THE ONE THAT KEEPS THEM TWO FACTS**: a report that states NO prompt
+    /// must not advance it, or the counter becomes a second spelling of *something happened* and
+    /// stops answering the only question it was added for.
+    #[test]
+    fn a_question_is_counted_even_when_the_pane_looks_unchanged() {
+        let mut tracker = Tracker::new(Hysteresis::default());
+        let asking = |asked: Option<&str>, seq: u64| Report {
+            state: AgentState::Working,
+            agent: Some("claude".to_owned()),
+            source: "hook:claude".to_owned(),
+            seq: Some(seq),
+            owner: None,
+            asked: asked.map(str::to_owned),
+            transcript: None,
+            build: None,
+        };
+
+        tracker.report(asking(Some("the first question"), 1));
+        let (after_first, published) = (tracker.asked_seq(), tracker.seq());
+        assert_eq!(after_first, 1, "the first question is counted");
+
+        // ── THE ARM THAT MATTERS: the pane is already `working`, so this changes no verdict. ──
+        let outcome = tracker.report(asking(Some("the second question"), 2));
+        assert!(
+            !outcome.changed,
+            "⚠ THE STAGING: this report must NOT move the published verdict, or the gate is about \
+             an easier case than the live one",
+        );
+        assert_eq!(
+            tracker.seq(),
+            published,
+            "and `seq` must stand still with it — that standing still IS the defect",
+        );
+        assert_eq!(
+            tracker.asked_seq(),
+            after_first + 1,
+            "⚠⚠⚠⚠⚠ BUT THE QUESTION IS COUNTED. This is the only observable difference between a \
+             peer that took a new question and one that is still chewing the last, and without it a \
+             contract waiting on the peer's rest cannot tell whose rest it is looking at. Deleting \
+             the count in `report` leaves every other gate in this workspace green",
+        );
+
+        // ── AND A REPORT THAT STATES NOTHING DOES NOT COUNT, or the two facts collapse into one ──
+        tracker.report(asking(None, 3));
+        assert_eq!(
+            tracker.asked_seq(),
+            after_first + 1,
+            "a report with no prompt in it is not a question — only the turn's opening event states \
+             one, and every other report of that turn would otherwise inflate the count",
+        );
+    }
+
     /// A REPORT publishes the moment it arrives, where the same answer from the screen has to hold
     /// for the settle window first.
     ///

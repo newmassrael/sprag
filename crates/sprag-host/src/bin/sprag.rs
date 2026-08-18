@@ -5587,7 +5587,12 @@ fn agent(args: Vec<String>) -> io::Result<()> {
         let origin = source
             .map(|source| format!("source={source}"))
             .unwrap_or_else(|| format!("rule={}", rule.unwrap_or("(none)")));
-        println!("{id}: {state}  {name}  {origin}  seq={seq}");
+        // ⚠⚠ AND THE QUESTION COUNT BESIDE THE STATE COUNT — register item 441. A reader watching a
+        // supervised pane needs to tell *the verdict moved* from *the peer took a new question*, and
+        // until this was printed the second could only be inferred from the first, which is exactly
+        // the inference that was wrong.
+        let asked_seq = agent["asked_seq"].as_u64().unwrap_or(0);
+        println!("{id}: {state}  {name}  {origin}  seq={seq}  asked={asked_seq}");
         if wanted.is_some() {
             // The advice has to follow the evidence. Telling somebody to redefine a manifest rule
             // for a verdict a HOOK reported names a rule that never fired, and the edit would do
