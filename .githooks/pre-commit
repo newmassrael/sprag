@@ -166,31 +166,29 @@ if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
     # account is named in this tree; a checkout without it runs both here,
     # unchanged.
     #
-    # ⚠⚠ AND IT FAILS OPEN. Setting `$BX` is not a promise that a build machine
-    # answers — the fleet goes away mid-session — and a hook that turned that
-    # into a blocked commit would be reporting a network as a code defect. The
-    # wrapper's own failure to RUN the pair is therefore not a verdict; only the
-    # pair's exit status is. The two are told apart by the wrapper's own
-    # contract: it prints `bx: exit=<N>` only once the wrapped command has
-    # actually produced a status.
+    # ⚠⚠ AND THE WRAPPER'S OWN VERDICT IS FINAL — THERE IS NO SECOND FALLBACK
+    # HERE, and an earlier version of this block had one that did real harm.
+    #
+    # It read "the wrapper printed no `bx: exit=` line" as "infrastructure went
+    # away" and re-ran the pair locally. But that line is absent for EVERY
+    # reason the wrapper declines to start: an untracked file it does not carry,
+    # a working tree the far side does not match, a floor no machine meets. All
+    # of those are the author's to fix, and all of them were being answered by
+    # quietly running the heaviest gate in this repository on the workstation
+    # instead. Measured 2026-08-20: six consecutive commits took that path while
+    # the box sat at load 13-25 with 11GB in swap, and the log said only that
+    # the tree differed.
+    #
+    # THE WRAPPER ALREADY FAILS OPEN BY ITSELF, which is what made the second
+    # fallback both redundant and blind: when no build machine is a candidate
+    # and this one can hold the work, it runs it here and reports `where=local`.
+    # It refuses only when it cannot proceed safely — and a refusal is a
+    # verdict, not an outage. Papering over it is how a hook reports "green"
+    # about a tree nobody checked.
     lint_and_doc='cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items'
     echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings && doc gate ..." >&2
     if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
-        bx_err="$(mktemp)"
-        if "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc" 2>"$bx_err"; then
-            bx_rc=0
-        else
-            bx_rc=$?
-        fi
-        cat "$bx_err" >&2
-        if grep -q '^bx: exit=' "$bx_err"; then
-            rm -f "$bx_err"
-            [ "$bx_rc" -eq 0 ] || exit "$bx_rc"
-        else
-            rm -f "$bx_err"
-            echo "pre-commit: the build machine could not RUN the gate (infrastructure, not a gate failure) — running it here instead" >&2
-            bash -c "$lint_and_doc"
-        fi
+        "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc"
     else
         bash -c "$lint_and_doc"
     fi
