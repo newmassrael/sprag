@@ -27,7 +27,7 @@
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 /// The tree this gate is part of — `crates/sprag-gate/` is two levels down from it.
@@ -48,45 +48,48 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// The real `grep`, found the way a shell finds it.
-///
-/// Resolved rather than hardcoded because the double below has to DELEGATE: `commit-msg` calls grep
-/// four more times for rules that have nothing to do with PCRE, and a double that broke those would
-/// be staging a different failure than the one under test.
-fn real_grep() -> PathBuf {
-    let path = std::env::var_os("PATH").expect("a PATH to find grep on");
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("grep"))
-        .find(|candidate| candidate.is_file())
-        .expect("grep on PATH — every rule in the hook under test is implemented with it")
-}
-
 /// A PATH directory holding a `grep` that answers `-P` the way BSD grep does: a complaint on
 /// stderr and exit 2. Everything else is handed to the real one.
 ///
 /// ⚠⚠ This is the macOS default grep, standing in for a machine this suite does not run on. The
 /// alternative — believing the manual page — is the assumption item 403 was hiding behind.
-fn grep_without_pcre(dir: &Path) -> PathBuf {
+///
+/// # ⚠⚠⚠⚠⚠ It is a TRACKED file, and that is a fix rather than a tidy-up
+///
+/// This function used to WRITE the double and the tests then EXECUTED it, which is `ETXTBSY`
+/// waiting to happen: the kernel refuses to execute a file any process holds open for writing, and
+/// this harness runs its cases on THREADS of one process — so a case forking to spawn a program
+/// inherits another case's open write handle and holds it until its own exec. `O_CLOEXEC` does not
+/// close that window, it ends it one exec too late.
+///
+/// **Measured before the change: 10 failures in 30 runs of this suite**, every one `Text file busy`
+/// at the same line, and every one green again under `--test-threads=1` — which is how it survived
+/// as *a flake* rather than being read as what it is. A file nobody writes cannot be busy.
+///
+/// ⚠⚠⚠ AND THE FIXTURE ASSERTS ITS OWN STAGING, this file's stated rule: a tracked file can arrive
+/// without its mode (a checkout that dropped it, an archive that flattened it), and a double that
+/// cannot be executed would make every case below refuse for the wrong reason.
+fn grep_without_pcre() -> PathBuf {
+    let dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "doubles"]
+        .iter()
+        .collect();
     let bin = dir.join("grep");
-    let mut file = std::fs::File::create(&bin).expect("write the grep double");
-    writeln!(
-        file,
-        "#!/usr/bin/env bash\n\
-         # A grep with no PCRE, as BSD grep and busybox answer.\n\
-         for arg in \"$@\"; do\n\
-         \x20   case \"$arg\" in\n\
-         \x20       --) break ;;\n\
-         \x20       -*P*) echo \"grep: invalid option -- P\" >&2; exit 2 ;;\n\
-         \x20   esac\n\
-         done\n\
-         exec {} \"$@\"",
-        real_grep().display(),
-    )
-    .expect("write the grep double");
-    drop(file);
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-        .expect("make the grep double executable");
-    dir.to_path_buf()
+    let mode = std::fs::metadata(&bin)
+        .unwrap_or_else(|why| {
+            panic!(
+                "the tracked double must be there: {} — {why}",
+                bin.display()
+            )
+        })
+        .permissions()
+        .mode();
+    assert!(
+        mode & 0o111 != 0,
+        "⚠⚠⚠ THE DOUBLE MUST BE EXECUTABLE ({mode:o}). Without the bit every case below would \
+         report the hook refusing, which is what they assert — for the wrong reason entirely: {}",
+        bin.display(),
+    );
+    dir
 }
 
 /// How this run's grep is chosen.
@@ -106,7 +109,7 @@ fn judge(tag: &str, message: &str, grep: Grep) -> Output {
     let mut command = Command::new(hook());
     command.arg(&msg_file);
     if let Grep::WithoutPcre = grep {
-        let shim = grep_without_pcre(&dir);
+        let shim = grep_without_pcre();
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let mut dirs = vec![shim];
         dirs.extend(std::env::split_paths(&inherited));
@@ -212,9 +215,7 @@ fn a_message_carrying_a_non_english_line_is_refused_and_the_line_is_shown() {
 /// that only reads the status. This case is what went red, and it is the reason it exists.
 #[test]
 fn the_double_removes_pcre_and_nothing_else() {
-    let dir = scratch("double");
-    let shim = grep_without_pcre(&dir);
-    let grep = shim.join("grep");
+    let grep = grep_without_pcre().join("grep");
 
     let ere = Command::new(&grep)
         .args(["-q", "-E", "x"])
@@ -247,8 +248,6 @@ fn the_double_removes_pcre_and_nothing_else() {
         "and it must refuse -P the way BSD grep does: {}",
         String::from_utf8_lossy(&pcre.stderr),
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// ⚠⚠⚠⚠ **ITEM 403's GATE.** Before the fix this returned **exit 0, silently**: the `2>/dev/null`

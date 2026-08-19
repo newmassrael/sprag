@@ -4120,6 +4120,20 @@ fn an_agent_breaks_its_own_pane_out_without_moving_the_person() {
         "write_pane",
         json!({ "pane": "buildout", "text": "echo brokenoutproof" }),
     );
+    // ⚠⚠⚠⚠⚠ AND THE FIXTURE WAITS FOR THE ECHO THROUGH THE PRODUCT'S OWN DOOR, rather than reading
+    // once and hoping. `write_pane` returns when the keystrokes are IN; the pane's echo is the
+    // shell's own work and arrives on the shell's schedule, so a `read_pane` on the next line is a
+    // race — measured, as a whole-workspace run where this exact assertion fired with `before`
+    // EMPTY while nothing was wrong with the product at all.
+    //
+    // ⚠⚠⚠ IT IS `wait_for_output` AND NOT A SLEEP OR A POLL WRITTEN HERE, for this suite's own
+    // reason: the tool exists because *read the pane now* cannot answer *has it printed yet*, and a
+    // fixture that solved the same problem privately would be a second answer to it — one no
+    // product change can keep in step, and one that hides the door being broken.
+    server.call_tool(
+        "wait_for_output",
+        json!({ "pane": "buildout", "needle": "brokenoutproof", "timeout_seconds": 20 }),
+    );
     let before = server.call_tool("read_pane", json!({ "pane": "buildout" }));
     assert!(
         before.contains("brokenoutproof"),

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# A grep with no PCRE, as BSD grep and busybox answer: `-P` is a complaint on
+# stderr and exit 2, and every other invocation is handed to the real one.
+#
+# This is the macOS default grep, standing in for a machine this suite does not
+# run on. The alternative -- believing the manual page -- is the assumption
+# register item 403 was hiding behind.
+#
+# ## Why this file is TRACKED rather than written by the test that uses it
+#
+# The suite used to create it and then execute it, and that is `ETXTBSY` waiting
+# to happen. A file cannot be executed while any process holds it open for
+# writing, and Rust's test harness runs cases on THREADS of one process: another
+# case forking to spawn a program inherits the write handle this one has open,
+# and holds it until its own exec. Close-on-exec does not close that window --
+# it ends it, one exec too late.
+#
+# Measured before this file existed: 10 failures in 30 runs of this suite, every
+# one of them `Text file busy` at the same line, and every one of them green
+# again under `--test-threads=1`. That is not a flaky test, it is a test that
+# manufactures its own executable in a process that also forks. A file nobody
+# writes cannot be busy.
+#
+# ## Why it finds the real grep itself
+#
+# The hook under test calls grep four more times, for rules that have nothing to
+# do with PCRE, so a double that broke those would stage a different failure
+# than the one under test. Its own directory is skipped, or this would exec
+# itself for ever.
+set -u
+
+for arg in "$@"; do
+    case "$arg" in
+        --) break ;;
+        -*P*) echo "grep: invalid option -- P" >&2; exit 2 ;;
+    esac
+done
+
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+IFS=':' read -r -a path_dirs <<<"${PATH:-}"
+for dir in "${path_dirs[@]}"; do
+    [ -n "$dir" ] || continue
+    [ -x "$dir/grep" ] || continue
+    here=$(cd -- "$dir" 2>/dev/null && pwd) || continue
+    if [ "$here" != "$self_dir" ]; then
+        exec "$dir/grep" "$@"
+    fi
+done
+
+echo "grep: no real grep on PATH to delegate to" >&2
+exit 127
