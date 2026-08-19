@@ -694,6 +694,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 unreadable,
                 checked,
                 explained,
+                shown,
                 witnessed,
                 spent: _,
             } => {
@@ -744,13 +745,22 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 // ⚠⚠ QUOTED AND ATTRIBUTED, exactly as the plugin's own walk does it: every other
                 // clause on this line is this product speaking, and this one is a model's prose
                 // arriving in front of a person who will act on it.
+                // ⚠⚠⚠⚠⚠ AND WHICH READER THE CHECK WAS SHOWN — register item 448, and this harness
+                // is where it is worth the most: the eight identical refusals that item is made of
+                // were watched HERE, by a person, and the question they could not answer was not
+                // *what did it decide* but *was it shown anything at all*. `turn_produced` falls
+                // back to the pane, and item 441 measured that reader frozen against exactly the
+                // agent this harness drives.
                 let verdict = checked
                     .map(|verdict| {
                         let why = explained
                             .as_deref()
                             .map(|words| format!(" — it said: {words:?}"))
                             .unwrap_or_default();
-                        format!(" — {}{why}", verdict.describe())
+                        let saw = shown
+                            .map(|reader| format!(" — it was shown {}", reader.named()))
+                            .unwrap_or_default();
+                        format!(" — {}{why}{saw}", verdict.describe())
                     })
                     .unwrap_or_default();
                 // ⚠⚠⚠⚠⚠ AND WHAT PROVED THE PROMPT ARRIVED — register item 434, and **this harness

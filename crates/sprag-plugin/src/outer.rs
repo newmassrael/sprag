@@ -1891,6 +1891,24 @@ pub enum Pumped {
         /// times published one fixed sentence and no reason at all, so nobody could tell nine
         /// disagreements from one repeated.
         explained: Option<String>,
+        /// ⚠⚠⚠⚠⚠ **WHICH READER THAT CHECK WAS SHOWN**, and [`None`] where nothing was checked —
+        /// register item 448, and the third fact of one judgement.
+        ///
+        /// # ⚠⚠⚠⚠ Why the two above it are not enough, measured
+        ///
+        /// A live run was refused EIGHT times with an identical walk line. The verdict said
+        /// `failed` and — once item 461 shipped — a reason could have travelled beside it, and
+        /// neither answers the question that actually settles such a run: **was the check shown
+        /// anything at all?** `turn_produced` falls back to the pane when the agent's own account
+        /// is unavailable, item 441 measured that reader going permanently blind against a
+        /// full-screen agent, and a real checker handed an empty artifact was measured answering a
+        /// clean `NO`. So *considered refusal* and *refusal about nothing* published the same word,
+        /// the same sentence, and nothing else.
+        ///
+        /// ⚠⚠ It could only be answered by an `eprintln!` in a running daemon before this, and **a
+        /// loop cannot instrument the driver that is driving it** — the restart ends the run under
+        /// investigation. That is what makes publishing it worth a field rather than a debug line.
+        shown: Option<Evidence>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -2666,6 +2684,22 @@ pub struct OuterLoop {
     /// ⚠⚠ Written fresh beside [`verdict`](Self::verdict) on the same condition and never latched:
     /// a reason belongs to ONE claim, and a stale one would explain a refusal that never happened.
     explained: Option<String>,
+    /// ⚠⚠⚠⚠⚠ **AND WHICH READER THAT CHECK WAS SHOWN** — register item 448, and [`None`] where
+    /// nothing was checked.
+    ///
+    /// # ⚠⚠⚠⚠ Why a verdict without this is unappealable, measured
+    ///
+    /// A live run was refused **eight times with one identical walk line**, and settling why needed
+    /// to know whether the check had been handed the agent's own account or a pane that had gone
+    /// blind — a distinction [`Produced::evidence`] can make and the WORD cannot. Nothing published
+    /// it, so the only instrument left was an `eprintln!` inside the running daemon; and **a loop
+    /// cannot instrument the driver that is driving it**, because the restart ends the run under
+    /// investigation. This field is that probe, published rather than printed.
+    ///
+    /// ⚠⚠ Beside [`explained`](Self::explained) rather than folded into [`Checked`], on that
+    /// field's own argument: `Checked` is what the DOCUMENT routes on, and a reader it could match
+    /// on would put the choice of instrument into a guard.
+    shown: Option<Evidence>,
     /// ⚠⚠⚠ **A RECORD THIS RUN'S AGENT NAMED AND NOTHING COULD READ** — register item 431(a). See
     /// [`Accounted::Unreadable`], and [`Pumped::Moved`]'s `unreadable`, which is how the CHANGE in
     /// this level reaches a reader.
@@ -2853,6 +2887,7 @@ impl OuterLoop {
             saw: None,
             verdict: None,
             explained: None,
+            shown: None,
             unaccountable: None,
             witnessed: None,
             told: Told::default(),
@@ -3792,8 +3827,10 @@ impl OuterLoop {
                     unreadable: None,
                     checked: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
-                    // said beside — see `Pumped::Moved`'s `explained`.
+                    // said beside, and no artifact for anything to have been shown — see
+                    // `Pumped::Moved`'s `explained` and `shown`.
                     explained: None,
+                    shown: None,
                 })
             }
             Err(PaneError::PeerGone(_)) => {
@@ -3817,8 +3854,10 @@ impl OuterLoop {
                     // check: this pass is a pane whose program has gone.
                     checked: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
-                    // said beside — see `Pumped::Moved`'s `explained`.
+                    // said beside, and no artifact for anything to have been shown — see
+                    // `Pumped::Moved`'s `explained` and `shown`.
                     explained: None,
+                    shown: None,
                 })
             }
             otherwise => otherwise,
@@ -3984,7 +4023,7 @@ impl OuterLoop {
                 // ⚠⚠⚠⚠⚠ AND THE THIRD FACT: **DID ANYBODY WHO DID NOT DO THE WORK AGREE** — register
                 // item 428. Asked only where the agent has claimed the milestone, and answered by a
                 // process in a pane of its own. See [`Self::checked`] and [`Checked`].
-                let (checked, explained) = self.checked(panes, run, heard);
+                let (checked, explained, shown) = self.checked(panes, run, heard);
                 // ⚠⚠ KEPT BESIDE THE READING IT ANSWERS ABOUT, and for the same reason: it belongs
                 // to THIS judgement and is gone the instant the payload is built. It travels on
                 // [`Pumped::Moved`]'s `checked` — BESIDE the edge's own cause and never instead of
@@ -3996,6 +4035,13 @@ impl OuterLoop {
                 // NOT reach the datamodel: the document routes on the WORD, and a reason it could
                 // match on would be a second authority on a decision `checked` already makes.
                 self.explained = heard.said().then_some(explained).flatten();
+                // ⚠⚠⚠⚠⚠ AND WHICH READER THE CHECK WAS SHOWN — register item 448. Beside the other
+                // two and on the same condition, for their reason: it belongs to THIS judgement and
+                // is gone the instant the payload is built. It does NOT reach the datamodel either,
+                // and for `explained`'s reason exactly — the document routes on the WORD, and a
+                // reader it could match on would be a second authority on a decision `checked` has
+                // already made.
+                self.shown = heard.said().then_some(shown).flatten();
                 Raise::carrying(
                     AiLoopEvent::Judge,
                     serde_json::json!({
@@ -4203,6 +4249,12 @@ impl OuterLoop {
             // never made.
             explained: (from == AiLoopState::Judging)
                 .then(|| self.explained.clone())
+                .flatten(),
+            // ⚠ THE THIRD FACT OF ONE JUDGEMENT, on the same edges and the same condition as the
+            // two above — see the field. A reader that had the verdict and the reason but not the
+            // instrument still cannot tell a refusal from a refusal about nothing.
+            shown: (from == AiLoopState::Judging)
+                .then_some(self.shown)
                 .flatten(),
         })
     }
@@ -5868,14 +5920,20 @@ impl OuterLoop {
     /// the shape this repays is exactly one of them being kept: a run refused nine times left one
     /// fixed sentence and no reason anywhere, so the round told to measure why could not.
     /// [`None`] where the judge said only its verdict, or where nothing was asked.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND WHICH READER IT WAS SHOWN** — register item 448, and the third fact because a
+    /// verdict is unappealable without it. [`Produced::evidence`] holds the argument; what matters
+    /// here is that it travels with the verdict rather than being derivable from it: `Failed` off
+    /// the agent's own statement and `Failed` off a pane that has gone blind are the same word and
+    /// opposite findings, and a reader who has only the word cannot get back to which.
     fn checked(
         &mut self,
         panes: &dyn PaneAccess,
         run: &RunContext,
         said: Heard,
-    ) -> (Checked, Option<String>) {
+    ) -> (Checked, Option<String>, Option<Evidence>) {
         if !said.said() {
-            return (Checked::NotAsked, None);
+            return (Checked::NotAsked, None, None);
         }
         let argv: Vec<String> = self
             .text_of(MILESTONE_CHECK)
@@ -5884,21 +5942,32 @@ impl OuterLoop {
             .map(ToOwned::to_owned)
             .collect();
         if argv.is_empty() {
-            return (Checked::NotAsked, None);
+            return (Checked::NotAsked, None, None);
         }
-        let question = self.check_question(panes);
+        // ⚠⚠⚠ READ BESIDE THE QUESTION AND NOT INSIDE IT, so what is REPORTED is what was SHOWN.
+        // `check_question` composes the text out of this same reader; asking it twice would be two
+        // readers of one turn, free to disagree — this crate's oldest class, and the reason
+        // `barrier_says` exists as one function.
+        let produced = self.turn_produced(panes);
+        let shown = produced.evidence();
+        let question = self.check_question(&produced);
         match crate::judge::asked_of_another(panes, run, &argv, &question, CHECK_WITHIN) {
             // ⚠⚠ THE WORDS TRAVEL WITH BOTH VERDICTS, not only the refusal. A reader deciding what
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
             // verdict at all — and publishing them on one arm would tell the two apart by the
             // absence of a sentence, which is the reading this crate has burned wire numbers over.
-            Some(judged) if judged.holds => (Checked::Passed, judged.explained),
-            Some(judged) => (Checked::Failed, judged.explained),
+            Some(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown)),
+            Some(judged) => (Checked::Failed, judged.explained, Some(shown)),
             // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
             // and this crate's standing direction: silence is never a yes. ⚠ It explains nothing by
             // construction: a judge whose first word was not a verdict answered `None` above, so
             // there is no verdict for anything to be said beside.
-            None => (Checked::Silent, None),
+            //
+            // ⚠⚠ IT STILL SAYS WHAT IT WAS SHOWN, and that is deliberate rather than incidental: a
+            // check that would not start and a check handed nothing are both `Silent` here, and
+            // knowing which reader was in play is the one thing that separates *the judge failed*
+            // from *the judge was given a blind pane*.
+            None => (Checked::Silent, None, Some(shown)),
         }
     }
 
@@ -5928,14 +5997,49 @@ impl OuterLoop {
     /// agent's own account of its success are all absent by construction: what is handed over is the
     /// checkpoint and the work. That is item 428's *"a DIFFERENT agent, in a NEW session, shown only
     /// the artifact"*, and it is why this composes the text rather than forwarding a judgement.
-    fn check_question(&self, panes: &dyn PaneAccess) -> String {
+    ///
+    /// # ⚠⚠⚠⚠⚠ It used to end *"Reply with exactly one word: YES or NO. Do not explain."*
+    ///
+    /// Register item 448, and that sentence is what made a live run's refusal undiagnosable. The run
+    /// was refused **eight times running with the identical walk line**, and the round sent to find
+    /// out why could not: [`Judgement::explained`](crate::judge::Judgement) had been built to carry
+    /// the reason (item 461) and **there was never a reason to carry, because this prompt forbade
+    /// one.** A field plumbed end to end, fed by a question that asks for nothing, is a fix that
+    /// looks shipped and is not — and it took two rounds of elimination to find that out from the
+    /// outside.
+    ///
+    /// ⚠⚠⚠ **THE VERDICT RULE IS UNCHANGED AND THAT IS THE POINT.** `asked_of_another` decides on
+    /// the FIRST WORD and keeps the first line of the rest, which is measured behaviour: the same
+    /// model answers some questions with a bare verdict and others with a paragraph. Asking for a
+    /// sentence does not widen what counts as the verdict; it stops throwing away the half that was
+    /// already being read.
+    ///
+    /// ⚠⚠⚠⚠ **AND IT NAMES THE ONE ANSWER NOBODY COULD SEE**: *if what you were shown is empty …
+    /// say that*. A checker handed an empty artifact was measured answering a clean `NO` — correct
+    /// about what it was given, and indistinguishable from a considered verdict against the work.
+    /// That is the single most likely cause of the eight refusals, and the prompt now asks the one
+    /// party who can tell to say so out loud. ⚠ It is not a fix for the emptiness — see
+    /// [`Produced::evidence`], which says which reader was used, and which is the other half.
+    /// ⚠⚠⚠⚠ **IT TAKES THE ARTIFACT AND NOT THE PANE, AND THAT IS REGISTER ITEM 448's SECOND
+    /// HALF MADE STRUCTURAL.** While it read the pane itself, [`checked`](Self::checked) had to read
+    /// it a SECOND time to say what had been shown — two readers of one turn, free to disagree,
+    /// which is this crate's oldest class. Handed the artifact, the thing reported and the thing
+    /// shown are the same value by construction.
+    ///
+    /// ⚠⚠ **AND THERE IS NO PANE-TAKING WRAPPER, DELIBERATELY.** One was written for the gates and
+    /// clippy caught it as dead code the moment the product stopped using it — a door only fixtures
+    /// go through, which is item 428's shape exactly (*"a fixture that bypasses the product's own
+    /// door passes even when the door is nailed shut"*). The gates take the same two steps the
+    /// product takes.
+    fn check_question(&self, produced: &Produced) -> String {
         let milestone = self.text_of(MILESTONE).unwrap_or_default();
         format!(
             "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\nBelow is what it \
              produced while working on it. Decide whether the checkpoint was actually reached — \
-             judge the work, not the claim.\n\nReply with exactly one word: YES or NO. Do not \
-             explain.\n\nWhat it produced:\n{}\n",
-            self.turn_produced(panes).text(),
+             judge the work, not the claim.\n\nAnswer YES or NO as your FIRST WORD. Then give ONE \
+             short sentence saying why. If what you were shown is empty or does not let you judge, \
+             say that in the sentence rather than guessing.\n\nWhat it produced:\n{}\n",
+            produced.text(),
         )
     }
 
@@ -6546,11 +6650,44 @@ impl Produced {
             Self::Painted(produced) => produced.lines.join("\n"),
         }
     }
+
+    /// **WHICH READER THIS CAME OFF** — register item 448, and the fact the check's verdict was
+    /// unappealable without.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the check needs the same sentence the MARKER already gets
+    ///
+    /// [`Heard::Said`] carries an [`Evidence`] for exactly this reason and the check carried none,
+    /// so a refusal could not be told from a refusal ABOUT NOTHING. `turn_produced` falls back to
+    /// the pane when the agent's own account is unavailable, and item 441 measured that reader going
+    /// permanently blind against a full-screen agent — every read since any mark empty, for the rest
+    /// of the session. A real checker shown an empty artifact was measured answering **NO**.
+    ///
+    /// So *the check refused* and *the check was handed nothing and said so* are the same word
+    /// today, and telling them apart needed a probe inside a running daemon — which a loop cannot
+    /// take of the driver driving it. **This is that probe, published instead of printed.**
+    ///
+    /// ⚠⚠ It says which READER, never whether what it read was any good: `Statement` can be an
+    /// empty statement, and that is a different finding this does not claim to make.
+    const fn evidence(&self) -> Evidence {
+        match self {
+            Self::Stated(_) => Evidence::Statement,
+            Self::Painted(_) => Evidence::Pane,
+        }
+    }
 }
 
 impl Evidence {
     /// How a walk names this reader, in the sentence a person reads.
-    const fn named(self) -> &'static str {
+    ///
+    /// ⚠⚠ **`pub` FOR THE READERS THIS SENTENCE IS FOR, and every one of them is outside the type.**
+    /// It was private while the only composer was [`Heard::noted`] beside it; register item 448 gave
+    /// the milestone CHECK the same sentence, and its three composers are the plugin's walk one
+    /// module over and `sprag-host`'s live harness one CRATE over — the harness being the reader the
+    /// eight identical refusals were actually watched by. **One spelling, three composers**: a
+    /// second `match` in either of them is the shape this crate keeps finding defects in, and
+    /// item 263 already registers that harness as a second composer kept in step by nobody.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
         match self {
             Self::Statement => "the agent's own account of this turn",
             Self::Pane => "the pane, since this turn's prompt",
@@ -9398,6 +9535,7 @@ mod tests {
                 // verdict there is nothing for a checker's words to be said beside (item 461).
                 checked: None,
                 explained: None,
+                shown: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
              own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
@@ -10529,6 +10667,112 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠⚠⚠ **A CHECK IS ASKED FOR A REASON, AND THE RUN SAYS WHICH READER IT WAS SHOWN** —
+    /// register item 448's two prerequisites, which that entry says must come FIRST.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A field plumbed end to end, fed by a question that asked for nothing
+    ///
+    /// [`Judgement::explained`](crate::judge::Judgement) was built at register item 461 to carry
+    /// the checker's reason, and every layer between it and the walk was written to pass it along.
+    /// **It was always `None` for the milestone check, because this prompt ended `"Reply with
+    /// exactly one word: YES or NO. Do not explain."`** A live run was refused eight times running
+    /// with one identical sentence, and the round told to measure WHY before changing anything
+    /// could not — against the shipped product, that instruction was uncarryable.
+    ///
+    /// That is a class worth naming: **plumbing is not a feature.** A reader auditing item 461
+    /// would have found the field, the walk line, the gates, and no way to tell that nothing ever
+    /// travelled through them.
+    ///
+    /// # ⚠⚠⚠⚠ And the second half, which is what makes a verdict appealable
+    ///
+    /// Even with a reason, *the check refused the work* and *the check was handed nothing and said
+    /// so* are the same verdict. [`Produced::evidence`] is the fact that separates them, and it
+    /// exists because `turn_produced` FALLS BACK to the pane — a reader item 441 measured going
+    /// permanently blind against a repainting agent, and one a real checker answers `NO` to.
+    ///
+    /// ⚠⚠ **THE VERDICT RULE IS UNCHANGED, AND THAT IS ASSERTED.** `asked_of_another` decides on
+    /// the first word and keeps the first line of the rest; asking for a sentence must not widen
+    /// what counts as a verdict, or a judge that begins *"Yes, but…"* changes meaning.
+    #[test]
+    fn a_check_is_asked_for_a_reason_and_the_run_says_which_reader_it_was_shown() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+
+        let stated = Stating {
+            said: Some("I rewrote the stale section.".to_string()),
+            said_seq: 1,
+        };
+        // ⚠ THE PRODUCT'S OWN TWO STEPS, in its own order — `checked` reads the artifact and then
+        // composes the question out of THAT value. A helper that took the pane and did both would
+        // be a door only this gate goes through, which is item 428's shape; clippy caught one being
+        // written and it is gone.
+        let artifact = loops.turn_produced(&stated);
+        let question = loops.check_question(&artifact);
+
+        // ── THE PROMPT NO LONGER FORBIDS THE THING THE PRODUCT KEEPS ──
+        assert!(
+            !question.to_lowercase().contains("do not explain"),
+            "⚠⚠⚠⚠⚠ THIS SENTENCE IS THE DEFECT. `Judgement::explained` and every layer to the walk \
+             were built to carry the checker's reason, and the reason was never produced because \
+             this question forbade one — so eight identical refusals were undiagnosable from \
+             outside the daemon. The question was: {question:?}",
+        );
+        assert!(
+            question.contains("one short sentence") || question.contains("ONE short sentence"),
+            "⚠⚠⚠⚠ AND REMOVING THE BAN IS NOT THE SAME AS ASKING. A model told nothing about \
+             explaining answers with its verdict alone most of the time, which leaves `explained` \
+             exactly as empty as before: {question:?}",
+        );
+        assert!(
+            question.contains("empty"),
+            "⚠⚠⚠⚠⚠ AND IT NAMES THE ONE ANSWER NOBODY COULD SEE. A checker handed an empty \
+             artifact was MEASURED answering a clean `NO` — correct about what it was given, and \
+             indistinguishable from a verdict against the work. The only party who can tell is the \
+             checker, and it has to be asked: {question:?}",
+        );
+
+        // ── AND THE VERDICT RULE IS UNTOUCHED ──
+        assert!(
+            question.contains("FIRST WORD") && question.contains("YES") && question.contains("NO"),
+            "⚠⚠⚠ THE VERDICT IS STILL THE FIRST WORD. `asked_of_another` decides on it and keeps \
+             the first line of the rest; a prompt that stopped saying so would let a judge open \
+             with `Yes, but…` and be read as agreement: {question:?}",
+        );
+
+        // ── THE SECOND HALF: which reader, and the two must not read alike ──
+        assert_eq!(
+            artifact.evidence(),
+            Evidence::Statement,
+            "⚠⚠⚠ the agent stated its work this turn, so that is what the check was shown — and it \
+             is the SAME value the question above was composed from, which is what stops the \
+             reported reader and the used one being two readings",
+        );
+        let painted = Stating {
+            said: Some("I rewrote the stale section.".to_string()),
+            said_seq: 0,
+        };
+        assert_eq!(
+            loops.turn_produced(&painted).evidence(),
+            Evidence::Pane,
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS THE WHOLE FINDING. Nothing was stated for THIS turn, so \
+             `turn_produced` silently falls back to the pane — the reader item 441 measured frozen \
+             for a full-screen agent, where every read since any mark is empty. A run that could \
+             not say which of these two it used could not tell a considered refusal from a refusal \
+             about nothing, and that is exactly the state eight live refusals were left in",
+        );
+        assert_ne!(
+            Evidence::Statement.named(),
+            Evidence::Pane.named(),
+            "⚠⚠ and the two must render differently, or publishing the reader tells a reader \
+             nothing",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE INDEPENDENT CHECK IS SHOWN THE WORK, AND ON A FROZEN PANE THE WORK IS WHAT THE
     /// AGENT SAID** — register item 428's artifact, read through item 441's seam.
     ///
@@ -10566,10 +10810,10 @@ mod tests {
         loops.pump(&access, &run).expect("idle to priming");
 
         let worked = "I read the file and rewrote the stale section.\nMILESTONE REACHED";
-        let question = loops.check_question(&Stating {
+        let question = loops.check_question(&loops.turn_produced(&Stating {
             said: Some(worked.to_string()),
             said_seq: 1,
-        });
+        }));
         assert!(
             question.contains("I read the file and rewrote the stale section."),
             "⚠⚠⚠⚠⚠ THE CHECKER MUST BE SHOWN THE WORK. Off a frozen pane this artifact is EMPTY, and \
@@ -10579,10 +10823,10 @@ mod tests {
         );
 
         // ── THE CONTROL: nothing stated this turn, and the pane is the only road there is. ──
-        let painted = loops.check_question(&Stating {
+        let painted = loops.check_question(&loops.turn_produced(&Stating {
             said: Some(worked.to_string()),
             said_seq: 0,
-        });
+        }));
         assert!(
             !painted.contains("I read the file and rewrote the stale section."),
             "⚠⚠⚠ A STATEMENT FROM BEFORE THIS QUESTION IS NOT THIS TURN'S WORK, and handing it to a \
@@ -11968,7 +12212,10 @@ mod tests {
                         from: Evidence::Pane,
                     },
                 ),
-                (Checked::NotAsked, None),
+                // ⚠⚠⚠ AND IT NAMES NO READER EITHER — register item 448. A check that was never
+                // asked was shown nothing, so an `Evidence` here would describe a reading that did
+                // not happen, which is exactly what that item exists to stop.
+                (Checked::NotAsked, None, None),
                 "⚠⚠⚠ AND NOTHING IS ASKED WHERE NOTHING WAS CLAIMED: a check answers *was that \
                  claim true*, so it has no meaning before there is a claim — and a process spawned \
                  on every ordinary turn would price every turn at the cost of one nobody made",
@@ -12423,6 +12670,7 @@ mod tests {
                     unreadable,
                     checked,
                     explained: _,
+                    shown: _,
                 } => {
                     spent_total += spent;
                     // ⚠⚠⚠⚠ **NO PASS REPORTS EVIDENCE ABOUT A DELIVERY IT DID NOT MAKE** — register

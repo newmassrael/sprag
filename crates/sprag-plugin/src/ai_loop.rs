@@ -149,6 +149,9 @@ struct Learned<'a> {
     /// struct is `Copy` so a caller cannot half-fill it, and an owned string here would take that
     /// away for a value the renderer only reads.
     explained: Option<&'a str>,
+    /// WHICH READER that check was shown — register item 448, and the fact that makes its verdict
+    /// appealable.
+    shown: Option<crate::outer::Evidence>,
     /// What proved this pass's delivery arrived, when that is not what the run was already told —
     /// register item 434.
     witnessed: Option<crate::deliver::Witnessed>,
@@ -395,6 +398,7 @@ impl AiLoop {
             unreadable,
             checked,
             explained,
+            shown,
             witnessed,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
@@ -420,6 +424,20 @@ impl AiLoop {
             // it would be a sentence about a judgement this line never says was made.
             if let Some(words) = explained {
                 note = format!("{note} — it said: {words:?}");
+            }
+            // ⚠⚠⚠⚠⚠ AND WHAT IT WAS LOOKING AT — register item 448, and the line that makes the two
+            // above worth reading. A live run was refused EIGHT times with an identical sentence,
+            // and the question nobody could answer from the outside was not *what did it decide*
+            // or *why did it say so* but **was it shown anything at all**: `turn_produced` falls
+            // back to the pane, item 441 measured that reader going permanently blind against a
+            // repainting agent, and a real checker handed an empty artifact answers a clean `NO`.
+            //
+            // ⚠⚠⚠ INSIDE the verdict's arm, on `explained`'s rule exactly: an instrument named
+            // where no judgement is claimed would describe a reading that never happened. ⚠ It is
+            // said on BOTH verdicts, never only on the refusal — telling two facts apart by the
+            // absence of a sentence is the reading this workspace has burned wire numbers over.
+            if let Some(reader) = shown {
+                note = format!("{note} — it was shown {}", reader.named());
             }
         }
         // ⚠⚠⚠⚠ **WHAT PROVED THE PROMPT THIS EDGE DELIVERED ACTUALLY ARRIVED** — register item 434,
@@ -785,6 +803,7 @@ impl Plugin for AiLoop {
                 unreadable,
                 checked,
                 explained,
+                shown,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
                 // is reported once. The barrier answered the peer's question inside this pump, on
@@ -833,6 +852,7 @@ impl Plugin for AiLoop {
                         unreadable: unreadable.as_deref(),
                         checked,
                         explained: explained.as_deref(),
+                        shown,
                         witnessed,
                     },
                 );
@@ -1157,7 +1177,7 @@ mod tests {
     // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
     // them drove the layer UNDER the door in order to reach a state the door refused. The door no
     // longer refuses it, so the PLUGIN reaches it, which is the only height a caller has.
-    use crate::outer::{AiLoopSpec, Brief, INNER_SESSION_ENDS};
+    use crate::outer::{AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS};
     use crate::plugin::{Accounting, Cost, Plugin, Verdict};
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
@@ -4185,6 +4205,83 @@ mod tests {
              `_event.data` is the whole reason to prefer a child MACHINE over a function: a child \
              that ran and answered nothing looks identical from outside until somebody needs what \
              it worked out. Got {carried:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A REFUSAL AND A REFUSAL ABOUT NOTHING ARE THE SAME WORD, SO THE WALK HAS TO SAY
+    /// WHICH READER THE CHECK WAS SHOWN** — register item 448.
+    ///
+    /// # ⚠⚠⚠⚠ What could not be answered from outside a running daemon, measured
+    ///
+    /// A live run was refused **eight times with an identical walk line**. The rounds sent to
+    /// diagnose it eliminated a stale milestone and a thin account by hand, and the surviving
+    /// hypothesis was that the check had been handed NOTHING — `turn_produced` falls back to the
+    /// pane when the agent's own account is unavailable, item 441 measured that reader going
+    /// permanently blind against a repainting agent, and a real checker shown an empty artifact was
+    /// measured answering a clean `NO`.
+    ///
+    /// **Settling it needed one `eprintln!` inside the daemon, and that could not be run**: the
+    /// daemon owns the run under investigation, so instrumenting it ends the thing being
+    /// investigated. *A loop cannot instrument the driver that is driving it.* This line is that
+    /// probe, published.
+    ///
+    /// # ⚠⚠⚠ The three arms
+    ///
+    /// * The refusal says which reader — the whole point.
+    /// * ⚠⚠⚠⚠ **AND SO DOES THE AGREEMENT.** Saying it only on the refusal would tell the two
+    ///   apart by the ABSENCE of a sentence, which is the reading this workspace has burned wire
+    ///   numbers over — and an agreement reached off a blind pane is a milestone certified on
+    ///   nothing, which is worse than a refusal.
+    /// * ⚠⚠⚠ **AND A PASS THAT CHECKED NOTHING NAMES NO READER**, because an instrument named where
+    ///   no judgement was made describes a reading that did not happen.
+    #[test]
+    fn a_walk_says_which_reader_the_check_was_shown_and_not_only_what_it_decided() {
+        /// One judgement's line, for a check that answered `verdict` off `shown`.
+        fn line(verdict: Option<crate::outer::Checked>, shown: Option<Evidence>) -> String {
+            AiLoop::walked(
+                AiLoopState::Judging,
+                AiLoopEvent::Judge,
+                AiLoopState::Working,
+                Learned {
+                    checked: verdict,
+                    shown,
+                    ..Learned::default()
+                },
+            )
+        }
+
+        let blind = line(Some(Checked::Failed), Some(Evidence::Pane));
+        assert!(
+            blind.contains(Evidence::Pane.named()),
+            "⚠⚠⚠⚠⚠ THE REFUSAL MUST SAY WHAT IT WAS LOOKING AT. Eight identical refusals were \
+             read by three rounds and none could say whether the check had been shown the agent's \
+             work or a pane whose addresses had frozen — and those are opposite findings wearing \
+             one word. Got {blind:?}",
+        );
+        let stated = line(Some(Checked::Failed), Some(Evidence::Statement));
+        assert_ne!(
+            blind, stated,
+            "⚠⚠⚠⚠ AND THE TWO READERS MUST NOT RENDER THE SAME, or the line is decoration: a \
+             refusal off the agent's own account is a verdict about the WORK, and one off a blind \
+             pane is a verdict about nothing",
+        );
+
+        // ── AND ON THE AGREEMENT TOO ──
+        let agreed = line(Some(Checked::Passed), Some(Evidence::Pane));
+        assert!(
+            agreed.contains(Evidence::Pane.named()),
+            "⚠⚠⚠⚠ AN AGREEMENT REACHED OFF A BLIND PANE IS A MILESTONE CERTIFIED ON NOTHING, and \
+             it is the more dangerous of the two — it ENDS runs. Publishing the reader only beside \
+             a refusal would tell the two apart by the absence of a sentence: {agreed:?}",
+        );
+
+        // ── THE CONTROL: nothing was checked, so nothing was shown ──
+        let unchecked = line(None, None);
+        assert!(
+            !unchecked.contains("was shown"),
+            "⚠⚠⚠ THE CONTROL FAILED. A pass that made no judgement has no reading to describe, and \
+             a line claiming one would send a reader looking for a check that never ran — which is \
+             the class this whole item is inside: {unchecked:?}",
         );
     }
 
