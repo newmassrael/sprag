@@ -5574,6 +5574,75 @@ fn weight(share: Counted) -> String {
     }
 }
 
+/// WHETHER THE REPORTER THAT PRODUCED A VERDICT IS THIS DAEMON'S OWN IMAGE — the sentence
+/// [`agent`] prints under a REPORTED state, beside the one that says whether that reporter can
+/// still speak (register item 473).
+///
+/// # ⚠⚠⚠⚠⚠ The quiet half of the hazard is the one that had no voice
+///
+/// Two things can be wrong with a reporter. The LOUD one — it has stopped being able to deliver —
+/// already has its sentence on this surface (*"⚠ THAT REPORTER IS MUTE"*, register item 344). The
+/// QUIET one is the worse of the pair and is register item 412: **the numbers agree, the reports
+/// are accepted, and the reporter is running code the daemon has never seen.** A `cargo build`
+/// replaces the hook binary under every running daemon at once, so that skew is the ORDINARY state
+/// after a rebuild rather than an exotic one — and until this it was legible to a wire client alone,
+/// because the fact reached the pane row and no surface a person reads rendered it.
+///
+/// # Why the comparison is made HERE and not by the reporter
+///
+/// [`sprag_host::wire::AGENT_BUILD_KEY`] divides the work the way `source` divides it: the reporter
+/// STATES what it is, and the holder of both halves compares. The reporter cannot — it knows one
+/// connection's answer where the daemon has to answer for every reporter it holds — so it sends the
+/// raw fact and this renders the judgement.
+///
+/// ⚠⚠ **`daemon` is the DAEMON's build, never this client's.** The client is rebuilt every round and
+/// the daemon is not, so comparing the reporter against the tree that just built `sprag` would
+/// answer a question nobody asked and call it this one. [`doctor`] owns the client/daemon pair
+/// ([`build_report`]); this owns the reporter/daemon pair.
+///
+/// # ⚠⚠⚠ Four answers, and a surface that renders three has re-introduced the defect
+///
+/// The reporter's three are the key's own: it is this image, it is NOT, or it did not say. `None`
+/// is *it did not say* and never *it matches* — the rule [`sprag_rpc::BUILD_FIELD`]'s no-bump
+/// argument rests on, and the exact inversion the key exists to end.
+///
+/// The fourth belongs to the OTHER half of the comparison: a daemon predating that field answers no
+/// build of its own, which makes the comparison IMPOSSIBLE rather than successful. It gets words
+/// for the same reason — an absence that renders as agreement is this client inventing an answer
+/// nobody gave it.
+///
+/// Pure, and takes both builds rather than a connection, so every answer is gateable — including
+/// the two a live daemon on this machine cannot be made to produce.
+fn reporter_build_report(reporter: Option<&str>, daemon: Option<&str>) -> String {
+    match (reporter, daemon) {
+        (Some(reporter), Some(daemon)) if reporter == daemon => format!(
+            "    that reporter is this daemon's own image (build {reporter}), so the state above \
+             was produced by the code this daemon is running."
+        ),
+        // ⚠ THE ONE A READER MUST ACT ON: the verdict above outranks the screen and was produced by
+        // code this daemon has never run. Both builds are named — a skew that names one tells a
+        // reader nothing about which is which.
+        (Some(reporter), Some(daemon)) => format!(
+            "    ⚠ THAT REPORTER IS NOT THIS DAEMON'S IMAGE: it is build {reporter} and this \
+             daemon is build {daemon}. The state above was produced by code this daemon has never \
+             run — the ordinary state after a `cargo build` replaced the hook under it. Restart \
+             the daemon (`sprag kill-server`, then start it again) to make the two one image."
+        ),
+        // ⚠ Not a match and not a mismatch: nobody can compare. A daemon predating the hello's
+        // build key is the only way here, and printing agreement would be this client inventing an
+        // answer that daemon could not give.
+        (Some(reporter), None) => format!(
+            "    that reporter is build {reporter}, and this daemon does not say which build IT \
+             is, so the two cannot be compared — an absent build is not a matching one."
+        ),
+        // ⚠⚠ AND THE ARM THAT MUST NOT COLLAPSE INTO THE FIRST. Every reporter older than
+        // `AGENT_BUILD_KEY` answers exactly this, and silence here would read as agreement.
+        (None, _) => "    that reporter did not say which build it is, which is not the same as \
+                      saying it matches — whether it is this daemon's image is unknown."
+            .to_owned(),
+    }
+}
+
 /// `agent [-t SESSION] [PANE]`: what the AI agent in each pane is doing — H3's verdict, from the
 /// same pane list every other surface reads.
 ///
@@ -5634,6 +5703,11 @@ fn agent(args: Vec<String>) -> io::Result<()> {
              that file"
         );
     }
+    // WHICH BUILD THE DAEMON ANSWERING THIS IS, taken once and before the rows it qualifies — the
+    // other half of every reporter's `build` below ([`reporter_build_report`]). Read off the
+    // CONNECTION rather than from `sprag_host::wire::BUILD`, because this binary is not the daemon:
+    // the client is rebuilt every round and the daemon is whatever was started.
+    let daemon_build = conn.daemon_build().map(str::to_owned);
     // The listing is read in the RESOLVED pane's window, so `sprag agent buildout` answers about a
     // pane one window over — where a sibling agent most often is, since an agent's work pane and a
     // person's reading pane are why a session has more than one window.
@@ -5711,6 +5785,22 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                             said.trim(),
                         );
                     }
+                    // ⚠⚠⚠⚠⚠ AND WHETHER THAT REPORTER IS THIS DAEMON'S IMAGE — register item 473,
+                    // the QUIET half of the same hazard the sentence above covers loudly. A hook
+                    // that can still speak perfectly may be speaking for code the daemon has never
+                    // run, which is item 412: the numbers agree, the reports are accepted, and the
+                    // verdict is evidence about another build. The fact reached the pane row one
+                    // round ago and only a wire client could see it.
+                    //
+                    // ⚠ Asked of the DAEMON, unlike the mute check above — this comparison is
+                    // exactly about the daemon, and the daemon is the party that can answer.
+                    println!(
+                        "{}",
+                        reporter_build_report(
+                            agent[sprag_host::wire::AGENT_BUILD_KEY].as_str(),
+                            daemon_build.as_deref(),
+                        ),
+                    );
                 }
                 None => println!(
                     "    `{}` is the rule that fired. If this verdict is wrong, redefine or \
@@ -8288,6 +8378,71 @@ mod tests {
             "the client still knows its own half, and a reader needs it to compare by hand: \
              {silent:?}",
         );
+    }
+
+    /// ⚠⚠⚠⚠ **FOUR ANSWERS ABOUT A REPORTER, AND NO TWO OF THEM READ ALIKE** — register item 473's
+    /// renderings, pinned where the live gate cannot reach.
+    ///
+    /// `wire_client::a_person_is_told_whether_the_reporter_that_answered_is_this_daemons_image`
+    /// drives three of these through real processes — a real hook, a real daemon, and a daemon whose
+    /// stated build was made to differ. The fourth cannot be driven that way and is the one this
+    /// exists for: a daemon so old it does not answer `sprag_rpc::BUILD_FIELD` at all. That is not a
+    /// match and not a skew — it is nobody being able to compare, and rendering it as either would
+    /// be this client inventing an answer that daemon could not give.
+    ///
+    /// ⚠⚠⚠ The mutation this catches is the tidy one: collapsing an arm because the sentence "reads
+    /// about the same". Four distinct answers rendered as three is the defect the whole key exists
+    /// to end, and it leaves every other gate in this tree green.
+    #[test]
+    fn four_answers_about_a_reporter_and_no_two_of_them_read_alike() {
+        let mine = sprag_host::wire::BUILD;
+
+        let same = reporter_build_report(Some(mine), Some(mine));
+        assert!(
+            same.contains(mine) && same.contains("own image"),
+            "the ordinary case says the reporter is the code this daemon runs: {same:?}",
+        );
+
+        // ── A SKEW IS A FINDING: both builds, and something a reader can DO ──
+        let skew = reporter_build_report(Some("0000deadbeef"), Some(mine));
+        assert!(
+            skew.contains("0000deadbeef") && skew.contains(mine),
+            "⚠⚠⚠ a skew that names one build tells a reader nothing about which is which: {skew:?}",
+        );
+        assert!(
+            skew.contains("Restart"),
+            "⚠⚠ a finding a reader cannot act on is a footnote — the remedy is a restart and the \
+             sentence must say so: {skew:?}",
+        );
+
+        // ── THE REPORTER SAID NOTHING, which is never agreement ──
+        let unsaid = reporter_build_report(None, Some(mine));
+        assert!(
+            !unsaid.contains("own image"),
+            "⚠⚠⚠⚠⚠ ABSENT MEANS *IT DID NOT SAY*. Every reporter older than `AGENT_BUILD_KEY` \
+             answers exactly this, and reading it as a match is the inversion the key exists to \
+             end: {unsaid:?}",
+        );
+
+        // ── AND THE DAEMON THAT CANNOT SAY ITS OWN — no comparison is possible at all ──
+        let neither = reporter_build_report(Some(mine), None);
+        assert!(
+            !neither.contains("own image") && neither.contains(mine),
+            "⚠⚠⚠⚠ a daemon predating the hello's build key cannot be compared against, and \
+             claiming a match here would break the no-bump argument `BUILD_FIELD` rests on: \
+             {neither:?}",
+        );
+
+        let all = [&same, &skew, &unsaid, &neither];
+        for (i, one) in all.iter().enumerate() {
+            for other in &all[i + 1..] {
+                assert_ne!(
+                    one, other,
+                    "⚠⚠⚠⚠⚠ FOUR ANSWERS STAY FOUR. Two that render identically are one answer \
+                     wearing two names, and the reader cannot tell which they were given",
+                );
+            }
+        }
     }
 
     /// ⚠⚠⚠⚠ **A RUN WITH NO RECORDED BUILD SAYS SO, WHERE ONE THAT MATCHES SAYS NOTHING** — the

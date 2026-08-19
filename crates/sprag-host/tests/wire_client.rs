@@ -4163,6 +4163,20 @@ fn an_agent_this_daemon_launched_reports_the_turn_boundaries_it_alone_knows() {
 /// its payload, and a fixture that treated the resulting `EPIPE` as fatal would report a write
 /// failure where the exit status it came for is the answer.
 fn sprag_cli(sock: &std::path::Path, args: &[&str], envs: &[(&str, &str)], input: &str) -> bool {
+    sprag_cli_output(sock, args, envs, input).0
+}
+
+/// [`sprag_cli`] plus WHAT IT PRINTED — for the gates whose subject is the answer a person reads,
+/// not the exit status.
+///
+/// Separate rather than folded in because the two ask different questions of the same run, and a
+/// caller that only wants the status must not have to name a variable for prose it will not read.
+fn sprag_cli_output(
+    sock: &std::path::Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    input: &str,
+) -> (bool, String) {
     let state = sock.with_extension("state");
     std::fs::create_dir_all(&state).expect("a state home of this test's own");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sprag"))
@@ -4181,11 +4195,11 @@ fn sprag_cli(sock: &std::path::Path, args: &[&str], envs: &[(&str, &str)], input
         .spawn()
         .expect("run the sprag CLI");
     sprag_gate::feeding::feed(&mut child, input.as_bytes());
-    child
-        .wait_with_output()
-        .expect("wait for the sprag CLI")
-        .status
-        .success()
+    let out = child.wait_with_output().expect("wait for the sprag CLI");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
 }
 
 /// ⚠⚠⚠⚠⚠ **THE HOOK SAYS WHICH BUILD IT IS, ON THE SAME TERMS A PERSON'S `report-agent` DOES** —
@@ -4294,6 +4308,260 @@ fn the_hook_states_which_build_reported_on_the_same_terms_a_person_does() {
         by_hand["agent"][sprag_host::wire::AGENT_BUILD_KEY],
         "and the two reporters of one image agree, which is what makes a DISAGREEMENT mean \
          something: {hooked} / {by_hand}",
+    );
+}
+
+/// A DAEMON WHOSE BUILD IS NOT THE ONE IT WAS BUILT FROM — a real `sprag-term` reached through a
+/// relay that changes exactly one fact about it.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists at all: one `cargo build` cannot produce the skew it is built to gate
+///
+/// [`sprag_rpc::BUILD`] is stamped INTO each image at compile time from `HEAD`, and every binary
+/// linking that crate gets the SAME stamp — which is the property that makes the field mean
+/// anything, and the property that makes *"a hook that is not this daemon's image"* impossible to
+/// stage inside one build. The two honest-looking ways out are both worse: compiling a second image
+/// inside the suite is the defect register item 467 spent a round removing (a test that writes the
+/// program it runs), and an env override on the stamp would hand every process a way to claim a
+/// build it is not — the exact lie `crates/sprag-rpc/build.rs` refuses a dirty-tree flag over.
+///
+/// So the DAEMON is made to differ instead, and by the one means that leaves every other byte
+/// alone: this relay passes the whole conversation through untouched except for the daemon's answer
+/// to [`CLIENT_HELLO_METHOD`], where it substitutes `build`. The daemon is real, its panes are real,
+/// the reporter is the real hook binary stating its real stamp — the only invention is the fact a
+/// second compile would otherwise have to supply.
+///
+/// ⚠ It rewrites the DAEMON's half deliberately, never the reporter's. The reporter's words are the
+/// subject of the gate above and must arrive as that process wrote them.
+struct SkewedDaemon {
+    /// Where a client connects: the relay's own socket, in front of the real one.
+    sock: PathBuf,
+    /// Set on drop so the accept loop stops after the wake-up connection below.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SkewedDaemon {
+    /// Serve `real`'s daemon on a fresh socket that answers `build` to the hello instead.
+    fn in_front_of(real: &std::path::Path, build: &str) -> Self {
+        use std::os::unix::net::UnixListener;
+
+        let sock = socket_path();
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).expect("bind the relay socket");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (halt, real, build) = (
+            std::sync::Arc::clone(&stop),
+            real.to_path_buf(),
+            build.to_owned(),
+        );
+        std::thread::spawn(move || {
+            for client in listener.incoming() {
+                if halt.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                let Ok(client) = client else { return };
+                let (real, build) = (real.clone(), build.clone());
+                std::thread::spawn(move || relay(client, &real, &build));
+            }
+        });
+        Self { sock, stop }
+    }
+
+    /// The socket a client should be pointed at.
+    fn socket(&self) -> &std::path::Path {
+        &self.sock
+    }
+}
+
+impl Drop for SkewedDaemon {
+    fn drop(&mut self) {
+        // The accept loop is parked in `accept()`, which no flag can interrupt — so the flag is set
+        // FIRST and then one connection is made to wake it, which is the order that terminates.
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = std::os::unix::net::UnixStream::connect(&self.sock);
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+/// Pump one relayed connection: client to daemon verbatim, daemon to client with the hello reply's
+/// `build` replaced by `build`.
+///
+/// Both directions are parsed as the line-delimited JSON the wire is, so the reply can be found by
+/// the REQUEST ID the client minted rather than by guessing which line carries a `build` — the pane
+/// rows carry one too, and rewriting those would forge the reporter's word instead of the daemon's.
+/// A line that does not parse, or parses as anything else, is forwarded byte for byte.
+fn relay(client: std::os::unix::net::UnixStream, real: &std::path::Path, build: &str) {
+    use std::io::{BufRead, BufReader, Write};
+
+    let Ok(daemon) = std::os::unix::net::UnixStream::connect(real) else {
+        return;
+    };
+    let hello: std::sync::Arc<std::sync::Mutex<Option<Value>>> = Default::default();
+    // Named rather than `_`, so the pump lives as long as this connection does.
+    let _upstream = {
+        let (mut out, seen) = (
+            daemon.try_clone().expect("clone the daemon stream"),
+            std::sync::Arc::clone(&hello),
+        );
+        let reader = BufReader::new(client.try_clone().expect("clone the client stream"));
+        std::thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(Value::Object(request)) = serde_json::from_str::<Value>(&line)
+                    && request.get("method").and_then(Value::as_str) == Some(CLIENT_HELLO_METHOD)
+                {
+                    // Recorded BEFORE the request is forwarded, so the reply can never win the
+                    // race against the id it will be matched by.
+                    *seen.lock().expect("the hello id") = request.get("id").cloned();
+                }
+                if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+                    return;
+                }
+            }
+        })
+    };
+    let mut out = client;
+    for line in BufReader::new(daemon).lines().map_while(Result::ok) {
+        let mut answer = line.clone();
+        if let Ok(Value::Object(mut reply)) = serde_json::from_str::<Value>(&line) {
+            let wanted = hello.lock().expect("the hello id").clone();
+            let matches = wanted.is_some() && reply.get("id").cloned() == wanted;
+            if matches && reply.get("result").is_some_and(Value::is_object) {
+                reply["result"][sprag_rpc::BUILD_FIELD] = json!(build);
+                answer = Value::Object(reply).to_string();
+            }
+        }
+        if writeln!(out, "{answer}").is_err() || out.flush().is_err() {
+            break;
+        }
+    }
+}
+
+/// ⚠⚠⚠⚠⚠ **A PERSON IS TOLD WHETHER THE REPORTER THAT ANSWERED IS THIS DAEMON'S IMAGE** — register
+/// item 473, the QUIET half of the hazard whose loud half has had a sentence here since item 344.
+///
+/// # What was wrong, and why a passing wire made it invisible
+///
+/// One round earlier the hook began stating its build ([`sprag_host::wire::AGENT_BUILD_KEY`], the
+/// gate above), so the fact reached the pane row. **No surface a person reads rendered it.** `sprag
+/// agent <pane>` printed `state / name / origin / seq / asked / said` and stopped, so item 412's
+/// skew — *the numbers agree, the reports are accepted, and the reporter is running code the daemon
+/// has never seen* — was legible to a wire client and to nobody else. Its loud sibling (a reporter
+/// that can no longer deliver) prints *"⚠ THAT REPORTER IS MUTE"* three lines up; this one printed
+/// nothing at all, which is the asymmetry the item was filed for.
+///
+/// # Three answers, and each one is staged by a different party
+///
+/// * **IS this image** — put there by the REAL `sprag hook claude` against the real daemon, so the
+///   build in the row is one process's true stamp compared against another's.
+/// * **is NOT** — the SAME report, read back through a daemon whose stated build differs
+///   ([`SkewedDaemon`], whose doc argues why no cheaper fixture is honest). Nothing about the
+///   reporter changes between this arm and the one above; only the daemon does, which is what makes
+///   the two sentences attributable to the comparison rather than to the report.
+/// * **DID NOT SAY** — a report that OMITS the key, which is the exact wire every hook older than
+///   the round above sends. An omission is not a hand-set field: there is no value here to get
+///   wrong, and `None` must never render as agreement.
+///
+/// ⚠ The control is the same one the gate above uses and for the same reason: before any reporter
+/// speaks, a `cat` pane carries no agent key whatever, so every word read afterwards is attributable
+/// to a process this test ran.
+#[test]
+fn a_person_is_told_whether_the_reporter_that_answered_is_this_daemons_image() {
+    /// A build no image in this tree can be. Twelve hex digits, the shape `build.rs` stamps, so it
+    /// is refused for what it SAYS and not for how it is spelled.
+    const NOT_THIS_IMAGE: &str = "0000deadbeef";
+
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    let before = pane_entry(&mut conn, 0);
+    assert!(
+        before.get("agent").is_none(),
+        "nothing on this screen is an agent to any rule, which is what makes the rest \
+         attributable: {before}",
+    );
+
+    // ── The reporter the whole key was written for, running for real. ──
+    assert!(
+        sprag_cli(
+            &sock,
+            &["hook", "claude"],
+            &[(sprag_host::PANE_ENV_VAR, "0")],
+            r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#,
+        ),
+        "the hook binary succeeded",
+    );
+    let reported = wait_until(Duration::from_secs(5), || {
+        pane_entry(&mut conn, 0)["agent"]["source"].as_str() == Some("hook:claude")
+    });
+    let hooked = pane_entry(&mut conn, 0);
+    assert!(reported, "the hook never reached the daemon: {hooked}");
+
+    // ── ARM 1: the reporter IS this daemon's image, and the surface says so. ──
+    let (ok, own) = sprag_cli_output(&sock, &["agent", "0"], &[], "");
+    assert!(ok, "`sprag agent 0` succeeded: {own:?}");
+    assert!(
+        own.contains("this daemon's own image") && own.contains(sprag_rpc::BUILD),
+        "⚠⚠⚠⚠⚠ A PERSON MUST BE ABLE TO READ THIS. The hook stated its build and the daemon holds \
+         both halves, so the surface that already says whether a reporter can SPEAK must say \
+         whether it is this daemon's CODE — until it did, item 412's quiet skew was visible to a \
+         wire client and to no one else: {own:?}",
+    );
+
+    // ── ARM 2: the same report, read against a daemon built from other code. ──
+    let skewed = SkewedDaemon::in_front_of(&sock, NOT_THIS_IMAGE);
+    let (ok, skew) = sprag_cli_output(skewed.socket(), &["agent", "0"], &[], "");
+    assert!(ok, "`sprag agent 0` succeeded through the relay: {skew:?}");
+    assert!(
+        skew.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠⚠⚠ THIS IS THE WHOLE HAZARD: a verdict that outranks the screen, produced by code this \
+         daemon has never run. A rebuild replaces the hook under every live daemon at once, so \
+         this is the ORDINARY state after one — and a surface that stays quiet here leaves the \
+         reader believing the report: {skew:?}",
+    );
+    assert!(
+        skew.contains(sprag_rpc::BUILD) && skew.contains(NOT_THIS_IMAGE),
+        "⚠⚠⚠ and it names BOTH builds — one of them alone tells a reader nothing about which is \
+         which: {skew:?}",
+    );
+    assert!(
+        !skew.contains("own image"),
+        "a reporter that is not this daemon's image must not also be called one: {skew:?}",
+    );
+
+    // ── ARM 3: a reporter older than the key, which says nothing at all. ──
+    let silent = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a 2nd pane over the wire")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(REPORT_AGENT_ACTION),
+            "args": { "id": silent, "state": "working", "source": "hook:claude" },
+        }),
+    )
+    .expect("a report with no build at all — every hook older than this key");
+    let quiet = pane_entry(&mut conn, silent);
+    assert!(
+        quiet["agent"][sprag_host::wire::AGENT_BUILD_KEY].is_null(),
+        "the fixture's premise: this reporter said nothing about its build: {quiet}",
+    );
+    let (ok, unsaid) = sprag_cli_output(&sock, &["agent", &silent.to_string()], &[], "");
+    assert!(ok, "`sprag agent {silent}` succeeded: {unsaid:?}");
+    assert!(
+        unsaid.contains("did not say"),
+        "⚠⚠⚠⚠⚠ AN ABSENT BUILD IS NOT A MATCHING ONE, and this is the arm a tidy-looking edit \
+         folds into the first. Silence here would convert *nobody knows* into *nothing is wrong* — \
+         the exact inversion `AGENT_BUILD_KEY` exists to end: {unsaid:?}",
+    );
+    assert!(
+        !unsaid.contains("own image") && !unsaid.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠⚠ three answers stay three: a reporter that did not say is neither of the other two: \
+         {unsaid:?}",
     );
 }
 
