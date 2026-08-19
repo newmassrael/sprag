@@ -2558,6 +2558,65 @@ mod tests {
         (once(PaneCells::Projected), once(PaneCells::Omitted))
     }
 
+    /// Block (bounded) until pane 0's answer to a keystroke has SETTLED — the premise the mutating
+    /// comparison below rests on, and which used to live only in a doc comment.
+    ///
+    /// # ⚠⚠⚠⚠⚠ `wait_for_pane0_eof` FREEZES THE READ SIDE AND SAYS NOTHING ABOUT THE WRITE SIDE
+    ///
+    /// It waits on `pty().is_eof()`: the child is gone and no more output can land, which is what
+    /// makes the pane's screen, revision and scroll facts comparable between two dispatches.
+    /// **A write is a different descriptor's question**, and nothing ordered it against that EOF.
+    ///
+    /// ⚠⚠ MEASURED IN CI 2026-08-19, macOS only: the first dispatch answered `{"result": Null}`
+    /// and the second `the pane's terminal would not take the keystroke`. The two differed on
+    /// **when the kernel got round to tearing the descriptor down**, not on `PaneCells` — the
+    /// gate's own doc claimed *"on an EOF'd PTY both runs take the identical branch"*, and that
+    /// was precisely the half nothing waited for. **A premise stated in prose is a premise nothing
+    /// enforces.**
+    ///
+    /// # ⚠⚠⚠⚠ Why SETTLED and not «refuses», which is what this barrier first tried
+    ///
+    /// Measured here rather than assumed, and it refuted the obvious version: **on Linux the
+    /// master never refuses at all.** A write to a master whose slave has no reader simply
+    /// succeeds, so a barrier waiting for a refusal sat for its whole bound and failed a gate that
+    /// had been green — the two platforms have different FINAL states, not a shared one that
+    /// Darwin reaches late. What is portable is only that the answer stops changing: Linux is
+    /// settled from the first read, Darwin once teardown has happened.
+    ///
+    /// ⚠⚠⚠ **THIS IS NOT «RETRY UNTIL GREEN», AND THE DIFFERENCE IS THAT IT NEVER RE-TAKES THE
+    /// ASSERTION.** It polls ONE policy, so nothing it observes can be evidence about the two; a
+    /// genuine `PaneCells` difference is deterministic, survives any settling, and still reds
+    /// below. What it removes is a reading taken while the kernel was mid-answer.
+    fn wait_until_pane0_has_settled_on_a_keystroke(state: &HostState) {
+        /// The same keystroke the comparison makes, so the barrier settles the exact question the
+        /// assertion asks rather than a neighbouring one.
+        const KEY: &str = r#"{"jsonrpc":"2.0","id":0,"method":"scene/invoke","params":{"path":"/pane_0/sprag_input/external/key","args":{"key":"a"}}}"#;
+        /// Identical consecutive answers that count as settled. One is no evidence at all, and the
+        /// window this exists to step over is a single monotonic transition.
+        const STEADY: usize = 5;
+
+        let once = || serve_both_policies(state, KEY).0;
+        let start = Instant::now();
+        let mut last = once();
+        let mut same = 1;
+        while start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+            let now = once();
+            same = if now == last { same + 1 } else { 1 };
+            last = now;
+            if same >= STEADY {
+                return;
+            }
+        }
+        panic!(
+            "⚠⚠⚠⚠ pane 0 never gave {STEADY} identical answers to the same keystroke within 5s, \
+             so anything compared below would be about this platform's descriptor teardown rather \
+             than about `PaneCells`. A dead child whose master is still changing its mind is the \
+             state this barrier exists to step over; if it never stops, the fixture is not the \
+             frozen pane the comparison assumes",
+        );
+    }
+
     /// THE guard on the projection gate: omitting the panes' cells changes what
     /// `scene/snapshot` reports, and changes NOTHING else.
     ///
@@ -2604,6 +2663,13 @@ mod tests {
         // The mutating method, kept separate because its outcome is a rejection on a dead PTY
         // rather than a result — identical either way, which is the claim, but no evidence
         // that any path resolved.
+        //
+        // ⚠⚠⚠ AND THE PANE'S ANSWER IS WAITED FOR RATHER THAN ASSUMED. "A dead PTY refuses writes"
+        // is a Darwin fact that arrives late and a Linux fact that never arrives at all — see the
+        // barrier, which carries both measurements and CI's macOS-only red for this gate. Without
+        // it the two dispatches straddle the descriptor teardown and differ for a reason that has
+        // nothing to do with the policy under test.
+        wait_until_pane0_has_settled_on_a_keystroke(&state);
         let (with, without) = serve_both_policies(
             &state,
             r#"{"jsonrpc":"2.0","id":5,"method":"scene/invoke","params":{"path":"/pane_0/sprag_input/external/key","args":{"key":"a"}}}"#,
