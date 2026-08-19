@@ -281,14 +281,26 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
          refusal here would make that sentence false as well as this gate meaningless",
     );
     let partial = [b'x'; CHUNK];
+    // ⚠⚠⚠⚠⚠ THE ENDING IS NAMED WHEN THIS FAILS, and that is not cosmetic — the two ways it can
+    // fail are opposite findings and `matches!` reported neither. `Refused` is a KERNEL difference:
+    // this arm rests on Linux's line discipline DROPPING unterminated input past its canonical
+    // limit, so a writer never blocks, and a platform that BLOCKS instead would refuse here with
+    // nothing wrong in this product. `StillInsideTheDevice` is the opposite: a caller stuck inside
+    // `write(2)`, which is **the 43-hour wedge this whole file exists to prevent**.
+    //
+    // ⚠⚠⚠⚠ MEASURED ON macOS 2026-08-19, AND THE LOG COULD NOT SAY WHICH: the hosted runner has
+    // failed here on every run since 2026-08-14 with only *"THE CONTROL FAILED"* to show for it, so
+    // the one question that decides whether this is a kernel fact or a shipped defect had no answer
+    // in the artifact. Register items 460 and 151. **The next macOS run is what this line is for.**
+    let took = offer_until_it_stops(&hole, partial);
     assert!(
-        matches!(
-            offer_until_it_stops(&hole, partial),
-            HowTheWriterEnded::TookEverything
-        ),
+        matches!(took, HowTheWriterEnded::TookEverything),
         "⚠⚠⚠ THE CONTROL FAILED, so the refusal below is not about a STOPPED DEVICE: a dead pane \
-         must take {GIVE_UP_AFTER} bytes of unterminated input without ever pushing back. If it \
-         refused, the backlog is being reached by input the kernel was draining all along",
+         must take {GIVE_UP_AFTER} bytes of unterminated input without ever pushing back. It ended \
+         {took:?} instead. ⚠⚠⚠⚠ WHICH ENDING THAT IS DECIDES WHAT THIS MEANS: `Refused` is this \
+         platform's line discipline pushing back where Linux's drops, and nothing in this product \
+         is wrong; `StillInsideTheDevice` is a caller stuck inside `write(2)`, which is the wedge \
+         this file was written for and is a defect on this platform",
     );
 
     // ── THE ARM THAT COST 43 HOURS, and what it must do now ──
