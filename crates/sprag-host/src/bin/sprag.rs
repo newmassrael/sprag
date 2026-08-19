@@ -4524,6 +4524,47 @@ fn attached_build_report(daemon: Option<&str>, clients: &[(String, Option<String
     report
 }
 
+/// **WHICH WINDOWS FOLLOW NOBODY** — register item 482, and the sentence that was missing when a
+/// terminal stopped resizing and its owner concluded the code had been hardcoded.
+///
+/// # ⚠⚠⚠⚠⚠ A pin is a moment; it is recorded as a policy and announced by nothing
+///
+/// `resize-window` pins a window to a size and flips `window-size` to `manual`, a policy that **does
+/// not read the attached clients at all**. The value is written to the config file, so one act
+/// outlives the window, the daemon and every later session — and until this report, no surface
+/// anywhere said a window was pinned. It simply stopped following, which is indistinguishable from
+/// breakage: moving the terminal to another monitor, resizing the OS window and dragging a splitter
+/// all change nothing, because the window is doing exactly what it was told.
+///
+/// ⚠⚠⚠ **THE REMEDY IS NAMED, WHICH IS WHY THIS IS A REPORT AND NOT A REFUSAL.** Pinning is a real
+/// thing an operator asks for and `latest` is already the default, so nothing here second-guesses
+/// the act — item 463 settled this shape for the sibling fact: *impossible by construction where it
+/// can be, visible by REPORT where it cannot.*
+///
+/// ⚠⚠ Pure, and takes the rows rather than a connection, so every answer is gateable — including
+/// the pinned one, which needs a daemon somebody has pinned a window on.
+fn pinned_window_report(sessions: &[(String, usize, usize)]) -> String {
+    let pinned: Vec<&(String, usize, usize)> = sessions
+        .iter()
+        .filter(|(_, _, pinned)| *pinned > 0)
+        .collect();
+    if pinned.is_empty() {
+        // ⚠ SAID OUT LOUD rather than left silent, `attached_build_report`'s rule: a reader must be
+        // able to tell *every window follows its clients* from *nobody looked at this*.
+        return "no window is pinned, so every window follows the clients attached to it\n"
+            .to_owned();
+    }
+    let mut report = String::new();
+    for (name, windows, count) in pinned {
+        report.push_str(&format!(
+            "⚠ {count} of session {name:?}'s {windows} window(s) FOLLOW NO CLIENT: somebody pinned \
+             a size, so resizing the terminal, moving it to another monitor and dragging a splitter \
+             all change nothing — `sprag resize-window -u -t {name}` hands the window back\n"
+        ));
+    }
+    report
+}
+
 /// `doctor`: what is WRONG with the machine the panes run on.
 ///
 /// # Why it prints the healthy rows too, and why every row carries a number
@@ -4578,6 +4619,28 @@ fn doctor(args: Vec<String>) -> io::Result<()> {
         "{}",
         attached_build_report(daemon_build.as_deref(), &attached)
     );
+    // ⚠⚠⚠⚠⚠ AND WHICH WINDOWS FOLLOW NOBODY — register item 482. Read BESIDE the build comparison
+    // and for its reason: both are facts about the window a person is looking at that the machine
+    // checks below cannot reach, and a pinned window explains a terminal that looks broken more
+    // often than anything printed after it. ⚠ Registry-WIDE like `clients` above, so this stays
+    // `doctor`'s own contract — *a machine is not divided by session*.
+    let sessions = query_slot(&mut conn, json!({ "path": mux_action_path(SESSIONS_SLOT) }))?;
+    let sessions: Vec<(String, usize, usize)> = sessions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|session| {
+            (
+                session["name"].as_str().unwrap_or("?").to_owned(),
+                session["windows"].as_u64().unwrap_or(0) as usize,
+                // ⚠ ABSENT IS ZERO and that is the honest reading, not a fabricated one: the key is
+                // skipped for every unpinned session, and a daemon too old to publish it is one
+                // where the fact could not have been established either.
+                session["pinned"].as_u64().unwrap_or(0) as usize,
+            )
+        })
+        .collect();
+    print!("{}", pinned_window_report(&sessions));
     let answer = query_slot(
         &mut conn,
         json!({ "path": mux_action_path(&doctor_over(DOCTOR_WINDOW_MS)) }),
@@ -8774,6 +8837,72 @@ mod tests {
         assert!(
             none.contains("no client is attached"),
             "⚠⚠⚠ zero windows compared must not render as zero problems found: {none:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A WINDOW THAT FOLLOWS NOBODY IS NAMED, AND ONE THAT FOLLOWS ITS CLIENTS SAYS SO** —
+    /// register item 482, the gate on the sentence whose ABSENCE made a working terminal read as a
+    /// broken one.
+    ///
+    /// # What it cost to have no such sentence, measured
+    ///
+    /// `resize-window` pins a window and flips `window-size` to `manual`, which does not read the
+    /// attached clients at all — and the value is written to the config file, so the act outlives
+    /// the window, the daemon and every later session. Measured 2026-08-20: a pinned window's client
+    /// reported `203x25` while its panes sat at `41x40` and `78x40`, following nobody exactly as
+    /// that policy promises. **The owner read it as the product being broken and asked whether the
+    /// code had been hardcoded** — a reasonable reading, because nothing anywhere said otherwise.
+    ///
+    /// # ⚠⚠⚠ The two mutations this exists to catch, and both look like tidying
+    ///
+    /// * **Printing only the findings.** A surface silent when nothing is pinned cannot be told from
+    ///   one that did not look — and this is read exactly when somebody already suspects the answer.
+    ///   `attached_build_report`'s earned-silence rule, one fact over.
+    /// * **Naming the state without the remedy.** *"pinned"* sends a reader to search for the verb;
+    ///   the un-pin is one flag and it belongs in the sentence that reports the state.
+    #[test]
+    fn a_pinned_window_is_named_with_its_remedy_and_an_unpinned_set_says_it_looked() {
+        // ── THE ORDINARY CASE, and it must still SAY that it looked ──
+        let following =
+            pinned_window_report(&[("work".to_owned(), 2, 0), ("loop".to_owned(), 1, 0)]);
+        assert!(
+            following.contains("no window is pinned"),
+            "⚠⚠⚠ ZERO PINS MUST NOT RENDER AS ZERO OUTPUT. A reader consults this because a \
+             terminal is behaving oddly; silence here reads as *nobody checked* and sends them back \
+             to guessing, which is the state this whole item is about: {following:?}",
+        );
+
+        // ── THE ONE A READER MUST ACT ON ──
+        let pinned = pinned_window_report(&[("work".to_owned(), 3, 1)]);
+        assert!(
+            pinned.contains("FOLLOW NO CLIENT") && pinned.contains("\"work\""),
+            "⚠⚠⚠⚠⚠ THE SESSION IS NAMED AND THE STATE IS SPELLED OUT. Until this key existed the \
+             window simply stopped following and no surface could say why: {pinned:?}",
+        );
+        assert!(
+            pinned.contains("resize-window -u -t work"),
+            "⚠⚠⚠⚠ AND THE REMEDY TRAVELS WITH IT, naming the session so it can be typed rather than \
+             assembled. A report that states a condition and leaves the reader to find the verb is \
+             a diagnostic, not a report — this workspace's own rule for `Refusal::describe`: \
+             {pinned:?}",
+        );
+        assert!(
+            pinned.contains('1') && pinned.contains('3'),
+            "⚠⚠ and it says how MANY of how many — a session can hold several windows and only one \
+             may be pinned, which is why the field is a count: {pinned:?}",
+        );
+
+        // ── A MIXED MACHINE ANSWERS PER SESSION, not per machine ──
+        let mixed = pinned_window_report(&[("quiet".to_owned(), 1, 0), ("stuck".to_owned(), 2, 2)]);
+        assert!(
+            mixed.contains("\"stuck\"") && !mixed.contains("\"quiet\""),
+            "⚠⚠⚠ the session a reader must act on is named and the healthy one is not — a finding \
+             per healthy row is how a report stops being read: {mixed:?}",
+        );
+        assert!(
+            !mixed.contains("no window is pinned"),
+            "⚠⚠ and the all-clear must not be printed beside a finding that contradicts it: \
+             {mixed:?}",
         );
     }
 

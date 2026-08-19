@@ -7214,9 +7214,32 @@ mod tests {
                 panes: 2,
                 default: true,
                 attached: 1,
+                // ⚠⚠⚠ ZERO IS THE ORDINARY SESSION, and the expected bytes below are UNCHANGED by
+                // this field existing — which is the whole additive claim (register item 482) and
+                // is asserted here rather than argued: every session under a client-following
+                // policy stays byte-identical to the shape older clients read.
+                pinned: 0,
             })
             .expect("a session serialises"),
             r#"{"name":"0","windows":1,"panes":2,"default":true,"attached":1}"#,
+            "{}",
+            BUMP,
+        );
+
+        // ⚠⚠⚠⚠ AND IT IS ON THE WIRE WHEN IT MATTERS — the other half, without which the assertion
+        // above is equally satisfied by a field nothing ever serialises. A window somebody PINNED
+        // follows no client (register item 482), and until this key existed no surface could say so.
+        assert_eq!(
+            serde_json::to_string(&SessionInfo {
+                name: "0".to_owned(),
+                windows: 1,
+                panes: 2,
+                default: true,
+                attached: 1,
+                pinned: 1,
+            })
+            .expect("a session serialises"),
+            r#"{"name":"0","windows":1,"panes":2,"default":true,"attached":1,"pinned":1}"#,
             "{}",
             BUMP,
         );

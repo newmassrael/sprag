@@ -2364,6 +2364,22 @@ pub(crate) fn listable_sessions(
             info.attached = attachments.attached_count(&info.name);
         }
     }
+    // ⚠⚠⚠⚠⚠ A STORED PIN IS NOT A WINDOW THAT FOLLOWS NOBODY — register item 482, and this line is
+    // here because DRIVING the fix refuted the first version of it. `resize-window` stores a size
+    // and says so out loud: *"100x40 stored, but window-size is latest so the panes still follow
+    // the clients"*. The pin and the POLICY are two decisions, and only their conjunction makes a
+    // window stop following. A report built on the pin alone tells a person their terminal is
+    // ignoring them while it is doing exactly what they asked.
+    //
+    // ⚠⚠ ZEROED HOST-SIDE for `attached`'s reason one field over: the registry counts what is
+    // STRUCTURAL — a size stored on a window — and has no idea which policy is in force, because
+    // that is a configuration this layer reads. The count therefore means *windows that follow
+    // nobody*, which is the only form a caller can act on.
+    if crate::config::window_size() != crate::window::WindowSize::Manual {
+        for info in &mut infos {
+            info.pinned = 0;
+        }
+    }
     infos.retain(SessionInfo::is_listable);
     infos
 }
@@ -2399,6 +2415,10 @@ pub(crate) fn listable_tree(
                 .sum(),
             default: session.default,
             attached: session.attached,
+            // ⚠ Not read by `is_listable` and deliberately not derived here: this row exists ONLY
+            // to ask that one question, and a tree carries no pin. Filling it with a guess would
+            // put a number on the wire that nothing measured.
+            pinned: 0,
         }
         .is_listable()
     });

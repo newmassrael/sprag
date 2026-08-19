@@ -4790,6 +4790,31 @@ fn the_cli_pins_a_window_size_and_reports_when_the_policy_ignores_it() {
         sprag(&sock, &["panes"]).stdout,
     );
 
+    // ⚠⚠⚠⚠⚠ AND `doctor` MUST BE QUIET ABOUT AN INERT PIN — register item 482, and THE arm its
+    // first draft got wrong. A size is stored on this window right now and the policy does not read
+    // it, so the window still follows its clients — a report keyed on the pin alone would tell a
+    // person their terminal is ignoring them while it is doing exactly what they asked. **That is
+    // worse than silence: it is a surface actively saying the wrong thing.**
+    //
+    // ⚠⚠⚠ THIS ASSERTION IS WHY THE GATE IS HERE AND NOT ONLY BELOW. The arms after the policy goes
+    // back to `manual` pass with the conjunction removed — measured: deleting the policy half left
+    // them green — because there the pin and the policy agree. Only this state tells them apart.
+    let inert = sprag_env(&sock, &["doctor"], &env);
+    assert!(inert.ok, "doctor answers: {}", inert.stderr);
+    assert!(
+        !inert.stdout.contains("FOLLOW NO CLIENT"),
+        "⚠⚠⚠⚠⚠ A STORED PIN IS NOT A WINDOW THAT FOLLOWS NOBODY. The product says so itself when \
+         the pin is made — *stored, but window-size is largest so the panes still follow the \
+         clients* — and a report that disagrees with the verb that produced the state is the one a \
+         reader will believe: {:?}",
+        inert.stdout,
+    );
+    assert!(
+        inert.stdout.contains("no window is pinned"),
+        "⚠⚠ and it still says it LOOKED, rather than falling silent and reading as unchecked: {:?}",
+        inert.stdout,
+    );
+
     // ...and the SAME stored size becomes live the moment the policy names it. Nothing is re-sent.
     let back = sprag_env(&sock, &["set-option", "window-size", "manual"], &env);
     assert!(back.ok, "set-option succeeded: {}", back.stderr);
@@ -4798,6 +4823,50 @@ fn the_cli_pins_a_window_size_and_reports_when_the_policy_ignores_it() {
         sprag(&sock, &["panes"]).stdout.contains("100x30"),
         "a size stored under `largest` is what `manual` then uses: {:?}",
         sprag(&sock, &["panes"]).stdout,
+    );
+
+    // ⚠⚠⚠⚠⚠ AND `doctor` SAYS WHICH WINDOWS FOLLOW NOBODY — register item 482, driven here rather
+    // than in a unit because the fact is a CONJUNCTION of two authorities: a size pinned on a
+    // window, and a policy that reads pins. Only a real daemon holds both.
+    //
+    // ⚠⚠⚠⚠ THE FIRST VERSION OF THIS REPORT WAS BUILT ON THE PIN ALONE, and driving it is what
+    // refuted it — under `largest` above the same pin is INERT and the product says so itself
+    // (*"stored, but window-size is largest so the panes still follow the clients"*), so a report
+    // keyed on the pin tells a person their terminal is ignoring them while it is doing exactly
+    // what they asked. **A surface that says the wrong thing is worse than one that says nothing.**
+    //
+    // The policy is `manual` and the pin is in force at this point, which is the arm a reader acts
+    // on; the inert arm is driven immediately after by handing the window back.
+    let named = sprag_env(&sock, &["doctor"], &env);
+    assert!(
+        named.ok,
+        "doctor answers on a live daemon: {}",
+        named.stderr
+    );
+    assert!(
+        named.stdout.contains("FOLLOW NO CLIENT") && named.stdout.contains("resize-window -u"),
+        "⚠⚠⚠⚠⚠ A WINDOW THAT FOLLOWS NOBODY MUST BE NAMED WITH ITS REMEDY. Until this, the window \
+         simply stopped following and no surface anywhere said why — the owner read a working \
+         product as a broken one and asked whether the code had been hardcoded, which was a \
+         reasonable reading of total silence: {:?}",
+        named.stdout,
+    );
+
+    // ── AND THE INERT ARM IS SILENT, which is the half the first draft got wrong ──
+    let freed = sprag_env(&sock, &["resize-window", "-t", "0", "-u"], &env);
+    assert!(freed.ok, "-u succeeded: {}", freed.stderr);
+    let quiet = sprag_env(&sock, &["doctor"], &env);
+    assert!(
+        quiet.stdout.contains("no window is pinned"),
+        "⚠⚠⚠ AND IT MUST STILL SAY THAT IT LOOKED. Silence here reads as *nobody checked* to the \
+         one reader who consults this — somebody whose terminal is already behaving oddly: {:?}",
+        quiet.stdout,
+    );
+    assert!(
+        !quiet.stdout.contains("FOLLOW NO CLIENT"),
+        "⚠⚠⚠⚠ and a window that was handed back must stop being reported, or the sentence becomes \
+         one a reader learns to skip: {:?}",
+        quiet.stdout,
     );
 }
 

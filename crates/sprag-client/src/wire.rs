@@ -5461,6 +5461,7 @@ mod tests {
                 panes: 1,
                 default: false,
                 attached: 0,
+                pinned: 0,
             })
             .collect()
     }
@@ -5736,6 +5737,7 @@ mod tests {
                 panes: 1,
                 default: false,
                 attached: *attached,
+                pinned: 0,
             })
             .collect()
     }
@@ -6335,6 +6337,7 @@ mod tests {
                 panes: 1,
                 default: false,
                 attached: 1,
+                pinned: 0,
             })
             .collect();
         let server = std::thread::spawn(move || {

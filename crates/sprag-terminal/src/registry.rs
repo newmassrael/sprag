@@ -1587,6 +1587,28 @@ pub struct SessionInfo {
     /// its prior wire shape, and `#[serde(default)]` reads a peer that omits it back as `0`.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub attached: usize,
+    /// **HOW MANY OF THIS SESSION'S WINDOWS FOLLOW NO CLIENT** — the windows somebody PINNED, and
+    /// the fact register item 482 says no surface could state.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A pin is a moment; it is recorded as a policy and announced by nothing
+    ///
+    /// `resize-window` pins a window to a size and flips `window-size` to `manual`, which **does
+    /// not read the attached clients at all**. That value is then written to the config file, so
+    /// one act outlives the window, the daemon and every later session. Measured 2026-08-20: a
+    /// pinned window sat at panes of `41x40` and `78x40` while its client reported `203x25` — the
+    /// window following nobody, exactly as that policy promises — and the owner read it as a broken
+    /// terminal, because **nothing anywhere said the window was pinned.**
+    ///
+    /// ⚠⚠ A COUNT, not a flag, because a session holds several windows and only some may be
+    /// pinned. Zero is the ordinary state and is what every session under a client-following policy
+    /// reports.
+    ///
+    /// ⚠ TRULY ADDITIVE on its neighbours' terms: `skip_serializing_if` keeps every unpinned
+    /// session byte-identical to the prior wire shape, and `#[serde(default)]` reads a peer that
+    /// omits it as `0` — *nobody said*, which for this field is also *nothing is pinned*, because a
+    /// daemon that does not publish it is one where the pin could not have been made either.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pinned: usize,
 }
 
 impl SessionInfo {
@@ -2984,6 +3006,14 @@ impl SessionRegistry {
                 // The registry has no idea who is watching a session; the daemon fills this in
                 // host-side ([`SessionInfo::attached`]). A registry-only list carries 0.
                 attached: 0,
+                // ⚠ FILLED HERE AND NOT HOST-SIDE, unlike the two above: a pin is STRUCTURAL — it
+                // lives on the window this lock already holds — so counting it needs no pool lock
+                // and no dispatch-layer state. See the field for what it is for.
+                pinned: session
+                    .windows()
+                    .iter()
+                    .filter(|window| window.manual_size().is_some())
+                    .count(),
             })
             .collect()
     }
@@ -4062,6 +4092,74 @@ mod tests {
     /// client is attached — so the resting empty anchor (neither) is hidden while an empty session a
     /// client is viewing still lists. Deterministic + revert-proof: flipping the rule's `||` to `&&`
     /// would drop the attached-empty case, and dropping the pane check would drop a working session.
+    /// ⚠⚠⚠⚠⚠ **A PINNED WINDOW IS COUNTED, SO A SURFACE CAN SAY THE WINDOW FOLLOWS NOBODY** —
+    /// register item 482, and the half a pure renderer's gate cannot reach.
+    ///
+    /// # What the absence of this number cost
+    ///
+    /// `resize-window` pins a window and flips `window-size` to `manual`, a policy that does not
+    /// read the attached clients at all, and the value is written to the config file — so one act
+    /// outlives the window, the daemon and every later session. Measured 2026-08-20: a pinned
+    /// window's client reported `203x25` while its panes sat at `41x40` and `78x40`, and **the owner
+    /// read a working product as a broken one** because no surface anywhere carried the fact.
+    ///
+    /// ⚠⚠⚠ **THE FIELD IS A COUNT AND THAT IS WHAT THIS GATE HOLDS**: a session holds several
+    /// windows and only some may be pinned, so a boolean would answer *something here is pinned*
+    /// about a session whose other windows are fine. Two windows, one pinned, is the arrangement
+    /// that tells a count from a flag.
+    ///
+    /// ⚠⚠ And the ORDINARY session must report `0` — a number that was always non-zero would make
+    /// every reader print the warning for every session, which is how a report stops being read.
+    #[test]
+    fn a_window_somebody_pinned_is_counted_and_an_ordinary_one_is_not() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, None, WindowBirth::default())
+            .unwrap();
+
+        // ── THE CONTROL: nothing is pinned, so nothing is counted ──
+        let before = reg.session_infos();
+        let row = before
+            .iter()
+            .find(|info| info.name == default)
+            .expect("the default session is listed");
+        assert_eq!(row.windows, 2, "the fixture must hold two windows");
+        assert_eq!(
+            row.pinned, 0,
+            "⚠⚠⚠ AN ORDINARY SESSION FOLLOWS ITS CLIENTS AND MUST COUNT ZERO. A number that is \
+             never zero makes every reader print the warning about every session, which is how a \
+             report stops being read: {row:?}",
+        );
+
+        // ── ONE OF THE TWO IS PINNED ──
+        let first = reg
+            .session(&default)
+            .expect("the default session is there")
+            .windows()[0]
+            .name()
+            .to_owned();
+        reg.window_mut(&default, &first)
+            .expect("the window is there to be pinned")
+            .set_manual_size(Some((100, 40)));
+
+        let after = reg.session_infos();
+        let row = after
+            .iter()
+            .find(|info| info.name == default)
+            .expect("the default session is still listed");
+        assert_eq!(
+            row.pinned, 1,
+            "⚠⚠⚠⚠⚠ THE PIN MUST REACH THE ROW. Without it `sprag doctor` prints *no window is \
+             pinned* about a machine holding one that follows nobody — which is worse than silence, \
+             because it is a surface actively saying the thing is fine: {row:?}",
+        );
+        assert_eq!(
+            row.windows, 2,
+            "⚠⚠ and it is a COUNT of the pinned ones, not a claim about the session's window count \
+             — one of these two windows still follows its clients: {row:?}",
+        );
+    }
+
     #[test]
     fn is_listable_shows_working_or_attached_and_hides_the_resting_anchor() {
         let si = |panes: usize, attached: usize| SessionInfo {
@@ -4070,6 +4168,9 @@ mod tests {
             panes,
             default: false,
             attached,
+            // Not what this gate is about: listability is *is there work or a watcher here*, and a
+            // pin says nothing either way — a pinned session with no panes still rests.
+            pinned: 0,
         };
         assert!(si(1, 0).is_listable(), "a working session lists");
         assert!(si(3, 2).is_listable(), "a working, watched session lists");

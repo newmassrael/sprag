@@ -5818,6 +5818,7 @@ mod tests {
             panes: 1,
             default: false,
             attached: 0,
+            pinned: 0,
         }
     }
 
