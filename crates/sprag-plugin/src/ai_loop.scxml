@@ -2032,21 +2032,14 @@
       SESSION's draft cannot be sent. A fresh session takes the identical prompt
       (measured, twice, on a new pane).
 
-      That is a session-level condition, and this document already knows how to
-      replace a session. A run that dies here has paid for its work and thrown
-      away the only thing that could continue it.
-
-      ⚠⚠ ONE FREE REPLACEMENT, and the guard is what makes this a recovery
-      rather than a spin: a peer that will not take the question EITHER, in the
-      session opened to fix exactly that, is not something another restart will
-      reach. That is a person's, and `failed` is how this document says so.
+      ⚠⚠⚠⚠⚠ THE EDGES THAT SAY SO USED TO BE HERE AND ARE NOW THE REGION'S, at
+      the foot of `work` — because the condition was never `priming`'s. Every
+      state that owes the peer a prompt can meet it, and five of the six had no
+      edge at all: the event was raised, nothing took it, the machine stayed put,
+      and the driver watched a pane for a turn nobody had been asked to take.
+      This state's own behaviour is unchanged; what changed is that it is no
+      longer the only state with it.
     -->
-    <transition event="prompt.unasked" cond="unasked_since_taken == 0"
-                target="restarting">
-      <assign location="restart_reason" expr="'unasked'"/>
-      <assign location="unasked_since_taken" expr="1"/>
-    </transition>
-    <transition event="prompt.unasked" target="failed"/>
     <transition event="fail" target="failed"/>
     <transition event="peer.gone" target="peer_gone"/>
   </state>
@@ -3360,6 +3353,26 @@
     <transition event="turn.done" target="converged"/>
     <transition event="turn.blocked" target="screening"/>
     <transition event="turn.interrupted" target="awaiting_human"/>
+    <!--
+      ⚠⚠⚠⚠ THE REPORT COULD NOT BE ASKED, AND THE RUN STILL GOT THERE. This is
+      the region's rule (below) declined, for `stopping`'s reason and one of its
+      own: the agent that did the work is the only party who can account for it,
+      so replacing the session here would open a fresh one and ask IT to
+      summarise work it never did — a report worse than none, on the ending a
+      reader trusts most.
+
+      ⚠⚠ WHAT IT COSTS, STATED: a converged run with no account, where the walk
+      says why. `Verdict::Converged` is a fact about the RUN — the north star was
+      reached and `reflecting` said so — and it does not depend on the courtesy
+      turn that follows it.
+
+      ⚠⚠⚠⚠⚠ AND IT IS LOAD-BEARING, MEASURED: deleting this one line makes
+      `closing` fall through to the region's rule and REPLACE THE SESSION — the
+      gate reds with `Restarting` where `Converged` was expected, which is both
+      halves of the arrangement proved at once (a child with no answer inherits
+      one, and a child with an answer wins by depth).
+    -->
+    <transition event="prompt.unasked" target="converged"/>
     <transition event="fail" target="failed"/>
     <!--
       ⚠⚠ AND THE CLOSING REPORT IS NOT WORTH A WEDGE. An agent that has left
@@ -3443,6 +3456,15 @@
     <transition event="turn.done" target="exhausted"/>
     <transition event="turn.blocked" target="exhausted"/>
     <transition event="turn.interrupted" target="exhausted"/>
+    <!--
+      ⚠⚠⚠⚠ AND A QUESTION THAT NEVER WENT IN IS A FOURTH WAY THIS TURN CAN END,
+      answered here rather than by the region's rule below — because the rule
+      below REPLACES THE SESSION, and this run is already over. The ending was
+      decided by the guard that reached this state; the account is a courtesy on
+      top of a verdict, and a fresh agent cannot write one about work it never
+      did. So the run ends as it was always going to, with no account.
+    -->
+    <transition event="prompt.unasked" target="exhausted"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
     <!--
@@ -3454,6 +3476,58 @@
     -->
     <transition event="peer.gone" target="peer_gone"/>
   </state>
+
+  <!--
+    ⚠⚠⚠⚠⚠ **A QUESTION THE PEER NEVER TOOK IS ANSWERED ONCE, FOR THE WHOLE
+    REGION** — register item 446's remedy, made total.
+
+    446 measured the condition and built the remedy in `priming`, where the
+    FIRST prompt is refused: the text reaches the pane and is read back off it,
+    the submit never becomes a question, and the pane's own counter says so. By
+    hand on the wedged pane afterwards: Enter did not submit that draft, `Ctrl-C`
+    did not clear it, an interrupt left it standing — while ordinary typed text
+    in the SAME pane submitted at once, and a FRESH SESSION took the identical
+    prompt. So the condition is the SESSION's, and replacing it is the remedy.
+
+    ⚠⚠⚠⚠⚠ AND THE REMEDY WAS ON ONE STATE WHILE THE CONDITION IS ON SIX. Every
+    state that OWES the peer a prompt can meet it — `priming`, `working` (the
+    turn prompt, carried by four transitions into it), `disputing`, `reflecting`,
+    `closing` and `stopping` — and five of them had no edge at all. What that
+    cost, stated exactly: the event is raised at the state the delivery landed
+    in, nothing takes it, the machine STAYS PUT, and the driver goes on watching
+    a pane for a turn nobody was asked to take. **A run that would have been
+    saved by a session replacement waits out its wall clock instead**, and every
+    line of the walk while it does says the machine went from `working` to
+    `working` on `prompt.unasked`.
+
+    ⚠⚠⚠⚠ SO IT IS THE REGION'S RULE AND NOT SIX COPIES, which is this file's own
+    warning one screen up: a transition repeated on every working state is *two
+    copies of one rule, and the failure of letting them drift is silent*. A child
+    that needs a different answer says so on itself and wins by depth — which is
+    exactly what `closing` and `stopping` do above, because a run that is already
+    ending must not buy a session.
+
+    ⚠⚠ ONE FREE REPLACEMENT, AND THE GUARD IS WHAT MAKES THIS A RECOVERY RATHER
+    THAN A SPIN. A peer that will not take the question EITHER, in the session
+    opened to fix exactly that, is not something another restart reaches. That is
+    a person's, and `failed` is how this document says so. The counter is cleared
+    the moment any prompt IS taken (`priming`'s `prompt.sent`), so the budget is
+    one replacement per question that landed rather than one per run.
+
+    ⚠ IT IS NOT `awaiting_human`: a condition this document can fix by itself
+    must not wake anybody, which is the rule everywhere else here.
+
+    ⚠⚠⚠⚠⚠ MEASURED, BY DELETING THESE TWO LINES: the gate reds with the machine
+    reporting the state it was already in — `Priming` where `Restarting` was
+    expected. **Staying put IS the defect**, and it is what five of the six
+    states did before this rule existed.
+  -->
+  <transition event="prompt.unasked" cond="unasked_since_taken == 0"
+              target="restarting">
+    <assign location="restart_reason" expr="'unasked'"/>
+    <assign location="unasked_since_taken" expr="1"/>
+  </transition>
+  <transition event="prompt.unasked" target="failed"/>
 
   </state>
 

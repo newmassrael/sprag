@@ -234,6 +234,23 @@ pub struct Authored {
     /// ⚠ A consumer previewing a loop reads this to see what its agent will be asked to decide,
     /// which is the one prompt whose ANSWER changes what the run is about.
     pub reflect: String,
+    /// **WHAT AN AGENT WHOSE MILESTONE A CHECK REFUSED IS TOLD** — `disputing`'s prompt, register
+    /// item 448.
+    ///
+    /// # ⚠⚠⚠ Why a preview needs this one, of all of them
+    ///
+    /// It is the only prompt a caller can author a run into WITHOUT KNOWING: `milestone_check` is a
+    /// command in a kind document, and the moment one is authored every claimed milestone can come
+    /// back refused — with a sentence this file writes, into somebody's agent, in somebody's
+    /// language. A caller who could read the other five and not this one could see every question
+    /// their loop asks except the one it asks when it disagrees.
+    ///
+    /// ⚠⚠ **BEFORE A CLAIM IS REFUSED THIS CARRIES NO CHECK'S WORDS, AND THAT IS THE HONEST
+    /// PREVIEW** — exactly [`stop`](Self::stop)'s arrangement, for exactly its reason. `disputing`
+    /// composes the check's own line in when one exists, and WHICH words a check will use is not
+    /// knowable until one refuses. What is shipped is the frame around them, which is true of every
+    /// refusal this document can deliver.
+    pub dispute: String,
     /// What the agent says when it has reached the milestone.
     pub done_marker: String,
 }
@@ -261,6 +278,10 @@ impl Authored {
             end: text(Owed::End.variable())?,
             stop: text(Owed::Stop.variable())?,
             reflect: text(Owed::Reflect.variable())?,
+            // ⚠ READABLE FROM THE MOMENT THE ENGINE IS BUILT, like the two ending prompts and
+            // unlike the three `priming` composes: the `<datamodel>` composes it out of the two
+            // parts that do not depend on a refusal having happened. See [`Self::dispute`].
+            dispute: text(Owed::Dispute.variable())?,
             done_marker: text(DONE_MARKER)?,
         })
     }
@@ -12562,6 +12583,46 @@ mod tests {
                 Ok(ScriptValue::String(text)) => text,
                 other => panic!("the document must compose a turn prompt: {other:?}"),
             }
+        }
+
+        // ── THE PREVIEW: A CALLER CAN SEE WHAT A REFUSED AGENT WILL BE TOLD, BEFORE ONE IS ──
+        //
+        // ⚠⚠⚠⚠⚠ THIS IS THE ARM THAT STOPS THE FIELD BEING PLUMBING, which is item 448's OWN named
+        // class: 461 built `Judgement::explained` through every layer and nothing ever travelled it,
+        // and nothing anywhere said so. A `dispute` on [`Authored`] that no gate reads would be the
+        // same shape, one round later.
+        //
+        // ⚠⚠⚠ IT IS READ BEFORE ANY RUN, and that is the claim: `disputing`'s entry composes the
+        // check's words in, but a caller deciding whether to author a `milestone_check` is asking
+        // *what will my agent be told when it disagrees* — a question that has to be answerable
+        // BEFORE a disagreement exists. The two ending prompts are readable for the same reason.
+        {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = supervised(&workspace);
+            let loops = bounded_at(lua, pane, Duration::from_secs(5))
+                .expect("the document's datamodel must carry its authored strings");
+            let preview = loops
+                .authored()
+                .expect("a machine that was built answers with its strings")
+                .dispute;
+            access.lifecycle().expect("lifecycle").close(pane);
+            assert!(
+                preview.contains("An independent check")
+                    && preview.contains("either fix what the check names"),
+                "⚠⚠⚠⚠ A CALLER MUST BE ABLE TO PREVIEW THE REFUSAL. Authoring a `milestone_check` is
+                 what makes this sentence reachable at all, and it is typed into somebody's agent in
+                 somebody's language — the one prompt a caller can turn on without being able to
+                 read it: {preview:?}",
+            );
+            // ⚠⚠⚠ AND IT CARRIES NO CHECK'S WORDS, which is `stop_prompt`'s arrangement exactly: a
+            // preview that named a reason would be item 264 one layer out — a true-looking sentence
+            // about a refusal nobody has made.
+            assert!(
+                !preview.contains("It said:") && !preview.contains(REASON),
+                "⚠⚠⚠ the shipped preview must carry the FRAME and not a verdict nobody gave: \
+                 {preview:?}",
+            );
         }
 
         // ── THE REFUSAL THAT EXPLAINS ITSELF ──

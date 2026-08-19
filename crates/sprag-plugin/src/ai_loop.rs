@@ -6430,6 +6430,188 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **EVERY STATE THAT OWES THE PEER A PROMPT ANSWERS FOR A QUESTION THAT NEVER WENT IN**
+    /// — register item 446's remedy, made total over the states that can meet its condition.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect: one state had the remedy and six can meet the condition
+    ///
+    /// 446 measured the fault on a live daemon — the text lands on the pane, the submit never
+    /// becomes a question, the session's counter never moves, and a fresh session takes the
+    /// identical prompt — and built the answer on `priming`, where the FIRST prompt is refused.
+    /// But the driver raises `prompt.unasked` **at the state the delivery landed in**, and six
+    /// states can be that: `priming`, `working` (the turn prompt, on four edges into it),
+    /// `disputing`, `reflecting`, `closing` and `stopping`. Five had no edge for it at all.
+    ///
+    /// What that cost, exactly: the event is raised, no transition takes it, **the machine stays
+    /// put**, and the driver goes back to watching a pane for a turn nobody was asked to take. A run
+    /// a single session replacement would have saved spends its wall clock instead — and the
+    /// condition is precisely the one that keeps happening to the same session, so *the next prompt
+    /// is refused too* is the expected case rather than the unlucky one.
+    ///
+    /// # ⚠⚠⚠ Why the answers are not all the same, and why two states say so themselves
+    ///
+    /// The remedy is a session replacement, and a run that is already ENDING must not buy one:
+    /// `closing` and `stopping` are asking for an account of work that is already done, so a fresh
+    /// agent would be asked to summarise work it never did. They answer with the ending they were
+    /// always going to reach, carrying no account. Everything else takes the region's rule.
+    ///
+    /// ⚠⚠ **DRIVEN AT THE DOCUMENT, EVENT BY EVENT.** What is being asserted is the machine's
+    /// ROUTING, and a pane fixture would put a delivery, a supervisor and a peer's timing between
+    /// the claim and the answer — three things that can fail on their own. The driver's own half
+    /// (raising the event at all) is `pump`'s funnel and is gated where it lives.
+    #[test]
+    fn every_state_that_owes_a_prompt_answers_a_question_that_was_never_taken() {
+        /// Walk a fresh machine through `events`, each carrying `data`, and say where it landed.
+        fn walked(events: &[(AiLoopEvent, &str)]) -> AiLoopState {
+            let (mut engine, _lua, _session) = started();
+            for (event, data) in events {
+                engine.raise_external(*event, data, "");
+                engine.step();
+            }
+            engine.get_current_state()
+        }
+
+        /// The walk into `judging`, which four of the six states are reached through.
+        const TO_JUDGING: [(AiLoopEvent, &str); 3] = [
+            (AiLoopEvent::Start, ""),
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, ""),
+        ];
+
+        /// `events`, then one more — spelled as a function because every case below is *reach the
+        /// state, then refuse its prompt*, and a reader should see the two halves apart.
+        fn then<'a>(
+            events: &[(AiLoopEvent, &'a str)],
+            last: (AiLoopEvent, &'a str),
+        ) -> Vec<(AiLoopEvent, &'a str)> {
+            let mut all = events.to_vec();
+            all.push(last);
+            all
+        }
+
+        /// One state that can owe a prompt: its name, the walk that reaches it, and the state it
+        /// must answer a never-taken question with.
+        type Refused<'a> = (&'a str, Vec<(AiLoopEvent, &'a str)>, AiLoopState);
+
+        // ⚠ SIX, AND THE NUMBER IS `Owed::on`'s. A seventh state that owes a prompt is a seventh
+        // state that can meet this condition, and a list that did not grow with it would be green
+        // about a hole — which is the shape this whole item is.
+        let cases: [Refused; 6] = [
+            // The one 446 built, and it now goes through the REGION's rule rather than its own
+            // edge — so a green here is also the proof that a child with no answer inherits one.
+            (
+                "priming",
+                vec![(AiLoopEvent::Start, "")],
+                AiLoopState::Restarting,
+            ),
+            (
+                "working",
+                vec![(AiLoopEvent::Start, ""), (AiLoopEvent::PromptSent, "")],
+                AiLoopState::Restarting,
+            ),
+            (
+                "disputing",
+                then(
+                    &TO_JUDGING,
+                    (
+                        AiLoopEvent::Judge,
+                        "{\"done\": true, \"checked\": \"failed\"}",
+                    ),
+                ),
+                AiLoopState::Restarting,
+            ),
+            (
+                "reflecting",
+                then(&TO_JUDGING, (AiLoopEvent::Judge, "{\"done\": true}")),
+                AiLoopState::Restarting,
+            ),
+            (
+                "closing",
+                then(
+                    &then(&TO_JUDGING, (AiLoopEvent::Judge, "{\"done\": true}")),
+                    (
+                        AiLoopEvent::ReflectDone,
+                        "{\"done_reason\": \"north_star\"}",
+                    ),
+                ),
+                // ⚠⚠⚠ NOT `restarting`: the run GOT THERE, and the report is a courtesy on top of a
+                // verdict already reached. A replacement here would open a session that never did
+                // the work and ask it to summarise it.
+                AiLoopState::Converged,
+            ),
+            (
+                "stopping",
+                then(
+                    &TO_JUDGING,
+                    (AiLoopEvent::Judge, "{\"stop_short\": \"turns\"}"),
+                ),
+                // ⚠⚠⚠ NOT `restarting`, for `closing`'s reason and the state's own: every way this
+                // turn can end arrives at `exhausted`, because the ending was decided by the guard
+                // that got here and no last question can un-end it.
+                AiLoopState::Exhausted,
+            ),
+        ];
+
+        for (state, walk, answer) in cases {
+            // ⚠⚠⚠⚠ THE CONTROL, PER CASE, AND IT IS NOT A FORMALITY: a walk that did not reach the
+            // state would assert the region's rule from wherever it stopped, and every one of these
+            // cases would pass from `idle`. This is the arrangement `probe_*.scxml` calls staging
+            // the hazard before measuring it.
+            let reached = walked(&walk);
+            assert_eq!(
+                format!("{reached:?}").to_lowercase(),
+                state,
+                "the walk must reach `{state}` or the claim below is about somewhere else: {walk:?}",
+            );
+            assert_eq!(
+                walked(&then(&walk, (AiLoopEvent::PromptUnasked, ""))),
+                answer,
+                "⚠⚠⚠⚠⚠ `{state}` OWES THE PEER A PROMPT, SO IT MUST ANSWER FOR ONE THAT NEVER WENT \
+                 IN. Staying put is what five of these six did: the event is raised at the state the \
+                 delivery landed in, nothing takes it, and the driver goes back to watching a pane \
+                 for a turn nobody was asked to take",
+            );
+        }
+
+        // ── ONE FREE REPLACEMENT, AND A QUESTION THAT LANDED BUYS ANOTHER ──
+        //
+        // ⚠⚠⚠ THE SECOND REFUSAL IN A ROW IS A PERSON'S. A peer that will not take the question in
+        // the session opened to fix exactly that is not something a further restart reaches.
+        let twice = [
+            (AiLoopEvent::Start, ""),
+            (AiLoopEvent::PromptUnasked, ""),
+            (AiLoopEvent::SessionReplaced, ""),
+            (AiLoopEvent::SessionReady, ""),
+            (AiLoopEvent::PromptUnasked, ""),
+        ];
+        assert_eq!(
+            walked(&twice),
+            AiLoopState::Failed,
+            "⚠⚠⚠⚠ TWICE RUNNING IS NOT A RECOVERY, IT IS A SPIN: {twice:?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE CONTROL THAT MAKES THE BOUND A BOUND RATHER THAN A ONE-SHOT — the identical
+        // walk with ONE question taken in the middle. `unasked_since_taken` is cleared by a prompt
+        // that landed, so the budget is one replacement per question that went in and not one per
+        // run. Without this arm a document that never cleared the counter would be green above and
+        // would end the second real outage of every long run.
+        let cleared = [
+            (AiLoopEvent::Start, ""),
+            (AiLoopEvent::PromptUnasked, ""),
+            (AiLoopEvent::SessionReplaced, ""),
+            (AiLoopEvent::SessionReady, ""),
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, ""),
+            (AiLoopEvent::Judge, "{\"done\": false}"),
+            (AiLoopEvent::PromptUnasked, ""),
+        ];
+        assert_eq!(
+            walked(&cleared),
+            AiLoopState::Restarting,
+            "⚠⚠⚠⚠ A QUESTION THAT LANDED MUST CLEAR THE BUDGET: {cleared:?}",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A SESSION WITH ROOM LEFT IS STILL REPLACED ONCE REPLACING IT HAS PAID FOR
     /// ITSELF** — register item 424(a), the ECONOMIC half of the owner's question *"왜 고정이야?
     /// 컨텍스트 넘길 타이밍이 계산되어야 하는 거 아니야?"*
