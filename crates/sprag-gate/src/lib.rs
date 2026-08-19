@@ -31,6 +31,12 @@
 /// is about what a SUITE DID (it manufactured its own executable and then raced the harness to run
 /// it), so no single test can be its own guard. `unix` only, because a double is a program and a
 /// link, and this workspace's suites run on Linux and macOS.
+///
+/// ⚠⚠ **It is also where a suite asks WHERE THIS MACHINE KEEPS a program** — [`doubles::system`],
+/// register item 472. Those two platforms disagree about `/bin`: on Linux it is a symlink to
+/// `/usr/bin` and so holds everything, while macOS's is a real directory of about thirty programs
+/// with neither `true` nor `false` among them. A spelled `/bin/true` is therefore green on every
+/// Linux sweep and `NotFound` on the macOS job, which is how items 467 and 471 each shipped one.
 #[cfg(unix)]
 pub mod doubles;
 
@@ -46,6 +52,13 @@ pub mod feeding;
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the
 /// walk's fiddly parts are where two copies of a rule drift apart.
 pub mod sources;
+
+/// Which PACKAGE owns a binary, so a refusal can name the command that ENDS it — item 455.
+///
+/// Here rather than inside [`Unbuilt`] because the question is about the workspace, not about one
+/// refusal: the same map answers for every binary a guard can ever be handed, including the ones
+/// no package has grown yet.
+pub mod owners;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -162,6 +175,15 @@ fn homes_from(
 /// Its own type for [`Unwatchable`]'s reason exactly: every arm here is a state in which the
 /// question *"is this the code I edited?"* has NO answer, and this crate's whole doctrine is that a
 /// probe which cannot tell must never read as clean.
+///
+/// # ⚠⚠⚠ Every arm carries a remedy, and the remedy is DERIVED — register item 455
+///
+/// A refusal is only half a gate; the other half is the command that ends it. All three arms once
+/// spelled that command as `cargo build -p sprag-host --bins`, which was true of the two binaries
+/// this guard covered on the day it was written and false of `sprag-mcp`, **its own package**. The
+/// advice was followed exactly on a build machine and the same refusal came back with the same
+/// words. [`owners::build_command`] now reads the package off this workspace's manifests, so the
+/// next binary to be added earns a sentence that works rather than the same wrong one.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Unbuilt {
     /// Nothing is there at all — cargo never built it for this package.
@@ -190,27 +212,30 @@ impl fmt::Display for Unbuilt {
         match self {
             Self::Missing(bin) => write!(
                 f,
-                "{} is not built. This suite drives a binary that belongs to another package, so \
-                 cargo does not build it for a single `-p` — run `cargo build -p sprag-host --bins` \
-                 first, or `cargo test --workspace`.",
-                bin.display()
+                "{} is not built. This suite drives a binary that belongs to ANOTHER package, which \
+                 the `-p` that built the suite does not reach — run `{}` first, or `cargo test \
+                 --workspace`.",
+                bin.display(),
+                owners::build_command(bin),
             ),
             Self::Unrecorded { bin, depfile, why } => write!(
                 f,
                 "{} is there and {} is not readable ({why}), so whether it was built from the \
                  source in this tree cannot be answered. A run that cannot tell must not pass: \
-                 rebuild it with `cargo build -p sprag-host --bins`.",
+                 rebuild it with `{}`.",
                 bin.display(),
                 depfile.display(),
+                owners::build_command(bin),
             ),
             Self::Stale { bin, edited } => {
                 write!(
                     f,
                     "{} IS STALE — {} of the sources cargo built it from have been edited since, \
-                     so this run would be about code that is not in this tree. Run \
-                     `cargo build -p sprag-host --bins` first.\n  newer than the binary:",
+                     so this run would be about code that is not in this tree. Run `{}` first.\n  \
+                     newer than the binary:",
                     bin.display(),
                     edited.len(),
+                    owners::build_command(bin),
                 )?;
                 for path in edited.iter().take(STALE_REPORT_CAP) {
                     write!(f, "\n    {}", path.display())?;
@@ -665,9 +690,13 @@ mod freshness_tests {
     #[test]
     fn cargos_own_record_for_this_workspaces_daemon_spans_the_whole_closure() {
         let Some(record) = built_daemon_record() else {
+            // ⚠ The remedy is derived here for the same reason the refusals above are — item 455.
+            // A skip that names the wrong command is a dead end with nobody watching, because a
+            // skip is not a red.
             eprintln!(
-                "skipped: no sprag-term depfile in target/debug — run `cargo build -p sprag-host \
-                 --bins` (`cargo test` alone uplifts the binary without writing one)",
+                "skipped: no sprag-term depfile in target/debug — run `{}` (`cargo test` alone \
+                 uplifts the binary without writing one)",
+                owners::build_command(Path::new("sprag-term")),
             );
             return;
         };
