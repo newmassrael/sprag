@@ -3264,15 +3264,11 @@ fn reporter_caveats(agent: &AgentInfo, pane: u64, daemon: Option<&str>, indent: 
         "{indent}`{source}` REPORTED this state; it was not read off the screen, and a report \
          outranks the screen.\n"
     );
-    // ⚠ Read off the FILESYSTEM rather than asked of the daemon, exactly as the CLI reads it and
-    // for the same reason: the condition being reported is that the hook could not reach the
-    // daemon, so the daemon is the one party that cannot know.
-    if let Ok(said) = std::fs::read_to_string(sprag_host::hooks::hook_trouble_path(pane)) {
+    if let Some(said) = reporter_mute(pane) {
         out.push_str(&format!(
-            "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {}. The state above is the \
-             last thing it MANAGED to say rather than what is true now, so read_pane is the better \
-             witness until this clears.\n",
-            said.trim(),
+            "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. The state above is \
+             the last thing it MANAGED to say rather than what is true now, so read_pane is the \
+             better witness until this clears.\n",
         ));
     }
     let named = host_sock().map_or_else(
@@ -3317,6 +3313,89 @@ fn reporter_caveats(agent: &AgentInfo, pane: u64, daemon: Option<&str>, indent: 
     out
 }
 
+/// THE HOOK'S OWN ACCOUNT OF WHY IT LAST FAILED TO DELIVER, or `None` when it is speaking.
+///
+/// One reader would not need a function; there are two, and they sit at opposite ends of the cost
+/// scale — [`reporter_caveats`] spends a sentence on it and [`reporter_flags`] spends a word. Both
+/// must agree about WHEN a reporter is mute, so the condition is written once. Two spellings of
+/// "the breadcrumb is there" is exactly how a listing comes to disagree with the tool it sends its
+/// reader to.
+///
+/// ⚠ Read off the FILESYSTEM rather than asked of the daemon, exactly as the CLI reads it and for
+/// the same reason: the condition being reported is that the hook could not reach the daemon, so
+/// the daemon is the one party that cannot know.
+fn reporter_mute(pane: u64) -> Option<String> {
+    let said = std::fs::read_to_string(sprag_host::hooks::hook_trouble_path(pane)).ok()?;
+    // An empty breadcrumb is still a failed delivery — the file's EXISTENCE is the message, and its
+    // text is only the hook's account of the failure. Kept as `Some("")` rather than filtered out,
+    // so a hook that manages to write nothing does not read as a hook that succeeded.
+    Some(said.trim().to_owned())
+}
+
+/// WHAT A SCANNER MUST NOT MISS ABOUT A REPORTED ROW, as tokens on the row itself — register item
+/// 475, and the listing-sized answer to the question [`reporter_caveats`] answers at length.
+///
+/// # ⚠⚠⚠⚠⚠ Why a listing owes this at all, when `sprag panes` is silent on the same facts
+///
+/// A report OUTRANKS the screen and never expires, so a row can be a lie in two ways a reader of
+/// this surface could not see: the reporter has stopped being able to deliver (item 344), or it is
+/// speaking for code this daemon has never run (item 412 — the ORDINARY state after a `cargo
+/// build`). `agent_state` and `agent_explain` say both since item 474. **`list_panes` is the
+/// surface an agent reads FIRST**, and it qualified nothing — so the first thing an agent learns
+/// about a sibling was the one thing it could not check.
+///
+/// The parity argument for staying silent is real but not symmetric in COST: a person reading
+/// `sprag panes` is one keystroke from `sprag agent <pane>`, and an agent reading this is one TOOL
+/// CALL and one LLM turn from `agent_state` — the tax item R367 was filed over.
+///
+/// # ⚠⚠⚠⚠ So it is WORDS, not a caveat block, and silence has to be earned
+///
+/// A sentence per row would bury a twelve-pane listing, which is the cost this surface has refused
+/// before. What a scanner needs is not the explanation but the knowledge that there IS one to go
+/// and ask for, plus the name of the tool that holds it.
+///
+/// ⚠ **Every arm but the verified-live one is marked**, so an unmarked REPORTED row means "checked,
+/// and it agrees" rather than "nothing was checked". The two *unsaid* arms stay apart for the same
+/// reason they do in the long form: an absent build is not a matching one, and WHO was silent is
+/// the difference between an old reporter and an old daemon — two different things to go and fix.
+///
+/// ⚠ `daemon` MUST be the build read off the call that produced these rows
+/// ([`query_panes_and_daemon`]); see [`reporter_caveats`] for why a separately fetched one is worse
+/// than none.
+///
+/// ⚠ `id` and `number` are both taken because they answer different questions and are not
+/// interchangeable: the breadcrumb is filed under the pane's HOST ID, and `agent_state` is called
+/// with the pane's position in THIS listing. Deriving either from the other is the class of bug a
+/// number that moves was named for.
+fn reporter_flags(agent: &AgentInfo, id: u64, number: usize, daemon: Option<&str>) -> String {
+    // The AUTHORITY is the condition, not the state: a scraped verdict has no reporter to be mute
+    // or foreign, so a row read off a screen looks exactly as it did before this existed.
+    if agent.source.is_none() {
+        return String::new();
+    }
+    let mut flags = Vec::new();
+    if reporter_mute(id).is_some() {
+        flags.push("mute");
+    }
+    match sprag_host::wire::reporter_image(agent.build.as_deref(), daemon) {
+        // The one arm that earns silence, and the only one: both halves were read and they agree.
+        sprag_host::wire::ReporterImage::SameImage { .. } => {}
+        sprag_host::wire::ReporterImage::OtherImage { .. } => flags.push("other-build"),
+        sprag_host::wire::ReporterImage::DaemonSilent { .. } => flags.push("daemon-build-unsaid"),
+        sprag_host::wire::ReporterImage::ReporterSilent => flags.push("reporter-build-unsaid"),
+    }
+    if flags.is_empty() {
+        return String::new();
+    }
+    // The tool is NAMED, with the number this listing just taught: a marker that says only "there
+    // is a doubt" leaves the reader to guess which of eleven tools resolves it, and guessing is the
+    // turn this marker exists to save.
+    format!(
+        " ⚠ {} — agent_state pane {number} says what to do",
+        flags.join(", "),
+    )
+}
+
 /// One inline image a pane shows, as an agent reads it (R1404 Stage 5): its id, pixel size, and the
 /// grid cell it is anchored at. The RGBA is not carried — a summary an agent uses to know an image
 /// is present, not to reconstruct it.
@@ -3342,7 +3421,12 @@ fn parse_image_info(entry: &Value) -> Option<ImageInfo> {
 }
 
 fn tool_list_panes() -> Result<String, String> {
-    Ok(render_pane_list(&query_panes()?, own_pane()))
+    // ⚠ The rows AND the build of the daemon that served them, off ONE call — the other half of
+    // every reporter's build in the listing ([`reporter_flags`]), and meaningless if fetched
+    // separately, because the event between two calls is precisely the daemon restart the
+    // comparison exists to detect.
+    let (panes, daemon) = query_panes_and_daemon()?;
+    Ok(render_pane_list(&panes, own_pane(), daemon.as_deref()))
 }
 
 /// `list_windows` — the session's windows in the order the user arranged them, each with its panes.
@@ -4020,7 +4104,11 @@ fn tool_list_sessions() -> Result<String, String> {
 /// their answer is this listing: a caller whose map of numbers has just been invalidated should not
 /// have to make a second call to repair it, and it must be repaired with the same words it learned
 /// them in. One rendering, so the two can never come to describe the same panes differently.
-fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
+///
+/// `daemon` is which build the daemon that SERVED these rows says it is — a property of the
+/// connection rather than of any row, which is why it rides beside the rows instead of inside them.
+/// [`reporter_flags`] is its one reader. `None` is *it did not say*, never *it matches*.
+fn render_pane_list(panes: &[PaneInfo], here: Option<u64>, daemon: Option<&str>) -> String {
     if panes.is_empty() {
         return "This sprag terminal has no panes.".to_owned();
     }
@@ -4033,7 +4121,7 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
         panes.len()
     );
     for (index, pane) in panes.iter().enumerate() {
-        out.push_str(&pane_summary(numbered(index), pane, panes, here));
+        out.push_str(&pane_summary(numbered(index), pane, panes, here, daemon));
     }
     out
 }
@@ -4042,7 +4130,16 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
 /// signal the pane raised. Each sub-line is emitted ONLY when its signal is present, so a resting
 /// pane is just the header (mirrors the additive wire). Split out as a pure function so the
 /// invisible-state lines (mouse / focus) are unit-testable without a live host.
-fn pane_summary(number: usize, pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> String {
+///
+/// `daemon` is the answering daemon's own build, passed down from [`render_pane_list`] for
+/// [`reporter_flags`] — see there for why a row cannot carry it.
+fn pane_summary(
+    number: usize,
+    pane: &PaneInfo,
+    panes: &[PaneInfo],
+    here: Option<u64>,
+    daemon: Option<&str>,
+) -> String {
     let title = if pane.title.is_empty() {
         "(none)".to_owned()
     } else {
@@ -4121,7 +4218,15 @@ fn pane_summary(number: usize, pane: &PaneInfo, panes: &[PaneInfo], here: Option
     // another agent rather than about a program: an agent scanning this list to find who needs a human
     // reads it, and every other line answers a question about the terminal.
     if let Some(agent) = &pane.agent {
-        out.push_str(&format!("      agent: {}\n", agent_line(agent)));
+        // ...and, ON THE SAME LINE, whether that verdict can be believed at all (item 475). A
+        // scanner that reads the state and stops must not be able to mistake a stale or
+        // foreign-build report for a live one, and a caveat BLOCK per row would bury the listing —
+        // so the doubt is words on the verdict and `agent_state` is named as what resolves it.
+        out.push_str(&format!(
+            "      agent: {}{}\n",
+            agent_line(agent),
+            reporter_flags(agent, pane.id, number, daemon)
+        ));
         // ...and WHAT it is asking, when it is blocked. Beside the verdict rather than folded into
         // it because the verdict is one line a scanner reads and this is a block a decider reads.
         out.push_str(&asking_block(agent, "        "));
@@ -5435,7 +5540,7 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     // NOT `?`, for [`relisted`]'s reason: the pane EXISTS from here on, so a failed re-read must
     // still tell the caller that — a call that answered "error" would leave a pane running that its
     // opener does not know it has, which is the litter this whole design exists to prevent.
-    let panes = query_panes().unwrap_or_default();
+    let (panes, daemon) = query_panes_and_daemon().unwrap_or_default();
     let born = panes.iter().position(|p| p.id == id);
     let row = born.map(|index| &panes[index]);
     let number = born
@@ -5468,7 +5573,7 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
         named
             .as_ref()
             .map(|(name, landed)| (name.as_str(), *landed)),
-        &render_pane_list(&panes, Some(opener)),
+        &render_pane_list(&panes, Some(opener), daemon.as_deref()),
     ))
 }
 
@@ -5817,8 +5922,8 @@ fn tool_rename_pane(args: &Value) -> Result<String, String> {
 /// close that says "error" about a pane that really is closed sends the caller off to close it
 /// again, or to believe a person's work survived when it did not.
 fn relisted(here: Option<u64>) -> String {
-    match query_panes() {
-        Ok(panes) => render_pane_list(&panes, here),
+    match query_panes_and_daemon() {
+        Ok((panes, daemon)) => render_pane_list(&panes, here, daemon.as_deref()),
         Err(why) => format!("(could not re-list the panes: {why} — call list_panes)"),
     }
 }
@@ -10413,17 +10518,17 @@ mod tests {
             ..opened(0)
         }];
         assert!(
-            pane_summary(1, &opened(3), &listing, None).contains("      opened by: pane 1\n"),
+            pane_summary(1, &opened(3), &listing, None, None).contains("      opened by: pane 1\n"),
             "an opener this window holds is named by its NUMBER",
         );
         assert!(
-            pane_summary(1, &opened(99), &listing, None)
+            pane_summary(1, &opened(99), &listing, None, None)
                 .contains("      opened by: pane id 99, not in this window\n"),
             "and one it does not hold is named by the id that still addresses it, with the reason \
              it has no number here — never by a number this listing would make up",
         );
         assert!(
-            pane_summary(1, &opened(3), &listing, Some(3)).contains(
+            pane_summary(1, &opened(3), &listing, Some(3), None).contains(
                 "      opened by: you (yours to \
              close)\n"
             ),
@@ -10451,7 +10556,7 @@ mod tests {
             images: vec![],
             agent: None,
         };
-        let summary = pane_summary(1, &tracking, &[], None);
+        let summary = pane_summary(1, &tracking, &[], None, None);
         assert!(
             summary.contains("mouse: tracking clicks + drag + motion"),
             "the mouse-tracking level must surface: {summary}"
@@ -10467,7 +10572,7 @@ mod tests {
             focus_tracking: false,
             ..tracking
         };
-        let resting = pane_summary(1, &resting, &[], None);
+        let resting = pane_summary(1, &resting, &[], None, None);
         assert!(
             !resting.contains("mouse:"),
             "no mouse line when off: {resting}"
@@ -10656,10 +10761,17 @@ mod tests {
             }),
             ..shell
         };
-        let summary = pane_summary(1, &claimed, &[], None);
+        let summary = pane_summary(1, &claimed, &[], None, None);
         assert!(
             summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
             "the verdict surfaces field for field: {summary}",
+        );
+        // A SCRAPED verdict has no reporter, so item 475's marker has nothing to qualify — and
+        // must not invent a doubt about a screen reading, which is the one thing a rebuild cannot
+        // make stale.
+        assert!(
+            !summary.contains('⚠'),
+            "a verdict no reporter asserted carries no reporter caveat: {summary}",
         );
 
         // A REPORTED verdict carries who said so and no rule. An agent reading this line acts on
@@ -10677,10 +10789,17 @@ mod tests {
             }),
             ..claimed
         };
-        let summary = pane_summary(1, &reported, &[], None);
+        let summary = pane_summary(1, &reported, &[], None, None);
         assert!(
             summary.contains("agent: state=working name=claude source=hook:claude seq=5"),
             "an authority is told from an inference: {summary}",
+        );
+        // ...and item 475's marker rides the SAME line, after the verdict a scanner reads. The
+        // daemon here said nothing about its own build, so the row says the comparison could not be
+        // made rather than leaving a reader to assume it was.
+        assert!(
+            summary.contains("seq=5 ⚠ daemon-build-unsaid — agent_state pane 1 says what to do"),
+            "a report this listing could not check must say so ON the row it is on: {summary}",
         );
         let quiet = pane_summary(
             1,
@@ -10690,10 +10809,81 @@ mod tests {
             },
             &[],
             None,
+            None,
         );
         assert!(
             !quiet.contains("agent:"),
             "a pane no manifest claims says nothing about an agent: {quiet}",
+        );
+    }
+
+    /// **THE FOUR BUILD ANSWERS SURVIVE THE SHRINK TO ONE WORD** — item 475.
+    ///
+    /// The listing marker is the same arithmetic `agent_state` spends a paragraph on
+    /// ([`sprag_host::wire::reporter_image`]), so the only thing that can go wrong on the way to a
+    /// token is two arms landing on one word. That is the failure this holds shut: silence is what
+    /// a VERIFIED row earns, and every other answer — including both *nobody said* arms — has to
+    /// keep its own word, or an unmarked row would mean two different things.
+    ///
+    /// ⚠ Scoped to the BUILD half deliberately. Whether a reporter is mute is a file on disk, and a
+    /// unit test cannot own the state home this process was started with; the live gate
+    /// (`an_agent_reading_the_listing_alone_cannot_believe_a_stale_report`) drives a real hook
+    /// under a state home of its own and is what holds the whole-line silence.
+    #[test]
+    fn the_listing_marker_keeps_the_four_build_answers_apart() {
+        const OTHER: &str = "0000deadbeef";
+        let reporting = |build: Option<&str>| AgentInfo {
+            state: "working".to_owned(),
+            name: Some("claude".to_owned()),
+            rule: None,
+            source: Some("hook:claude".to_owned()),
+            build: build.map(str::to_owned),
+            seq: 1,
+            asking: None,
+        };
+        let flags = |agent: &AgentInfo, daemon: Option<&str>| reporter_flags(agent, 7, 2, daemon);
+
+        // The one arm that earns silence about the build: both halves read, and they agree.
+        let same = flags(&reporting(Some(OTHER)), Some(OTHER));
+        assert!(
+            !same.contains("build"),
+            "a reporter checked against the answering daemon and found equal is the ordinary case, \
+             and a listing that shouted about it would train a reader to skip the marker: {same}",
+        );
+        // The hazard, and the only arm whose remedy is a person's.
+        let other = flags(&reporting(Some(OTHER)), Some(sprag_host::wire::BUILD));
+        assert!(
+            other.contains("⚠ other-build") && other.contains("agent_state pane 2"),
+            "⚠⚠⚠⚠⚠ A REPORT PRODUCED BY CODE THIS DAEMON HAS NEVER RUN is the ordinary state after \
+             a `cargo build`, and this listing is the first thing an agent reads. The marker names \
+             the tool that explains it, so the doubt costs a call and not a guess: {other}",
+        );
+        // ⚠⚠⚠ The two silences stay apart: WHO failed to speak is the difference between an old
+        // reporter and an old daemon, which are two different things to go and fix.
+        let daemon_quiet = flags(&reporting(Some(OTHER)), None);
+        let reporter_quiet = flags(&reporting(None), Some(sprag_host::wire::BUILD));
+        assert!(
+            daemon_quiet.contains("daemon-build-unsaid")
+                && !daemon_quiet.contains("reporter-build-unsaid"),
+            "the DAEMON is the one that said nothing here: {daemon_quiet}",
+        );
+        assert!(
+            reporter_quiet.contains("reporter-build-unsaid")
+                && !reporter_quiet.contains("daemon-build-unsaid"),
+            "⚠⚠⚠⚠⚠ AND AN ABSENT BUILD IS NOT A MATCHING ONE. Folding this into the silent arm \
+             above is a tidy-looking edit that converts *nobody knows* into *nothing is wrong*: \
+             {reporter_quiet}",
+        );
+        // A verdict READ OFF A SCREEN has no reporter to be mute or foreign, so nothing is
+        // qualified — the marker is about an AUTHORITY, never about a state.
+        let scraped = AgentInfo {
+            source: None,
+            rule: Some("dialog-choice-list".to_owned()),
+            ..reporting(Some(OTHER))
+        };
+        assert!(
+            flags(&scraped, Some(sprag_host::wire::BUILD)).is_empty(),
+            "an inference is not a report and carries no reporter caveat",
         );
     }
 

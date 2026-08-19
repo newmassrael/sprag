@@ -1531,6 +1531,143 @@ fn an_agent_is_told_whether_the_reporter_it_believes_is_mute_or_another_build() 
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **THE SURFACE AN AGENT READS FIRST QUALIFIES WHAT IT SHOWS** — register item 475, and the
+/// residue item 474 was closed with.
+///
+/// # The gap, and why closing it at `agent_state` was not enough
+///
+/// 474 gave the two AGENT TOOLS the caveats. `list_panes` is the tool an agent calls before it knows
+/// there is an agent to ask about — the doc comment at the top of this binary says so, and every
+/// other tool here describes itself in terms of it. It rendered `state=… source=hook:claude seq=…`
+/// and qualified none of it, so the FIRST thing an agent learned about a sibling was the one thing
+/// it had no way to check: whether that report is live, or the frozen last words of a reporter that
+/// can no longer speak, or perfectly current news about a build this daemon has never run.
+///
+/// A reader who stops at the listing is not a careless reader — stopping there is what a listing is
+/// FOR. So the row itself has to say when there is something to go and ask about.
+///
+/// # ⚠⚠⚠⚠ Why this is a word and `agent_state` is a paragraph
+///
+/// The parity argument for silence is real: `sprag panes` says none of this either, because a caveat
+/// per row buries a twelve-pane listing. What breaks the symmetry is COST — a person reading
+/// `sprag panes` is one keystroke from `sprag agent <pane>`, and an agent reading this is one TOOL
+/// CALL and one LLM turn from `agent_state`. So the listing pays a word and names the tool that
+/// holds the sentence, and this gate holds BOTH halves of that bargain: the marker is there, and the
+/// paragraph is not.
+///
+/// # The same three staged parties 474's gate drives, through the listing
+///
+/// * the REAL `sprag hook claude` against the real daemon — which must leave the row UNMARKED, so
+///   that an unmarked row means *checked, and it agrees* rather than *nothing was checked*;
+/// * that same report read back through [`sprag_peer::OldDaemon`] answering the handshake with a
+///   build no image in this tree can be — the ordinary state after a `cargo build`;
+/// * a report that OMITS the build key, which is what every hook older than item 459 sends;
+/// * and MUTE, staged by running the real hook against a socket nobody serves, asserted BESIDE the
+///   build answer rather than instead of it.
+#[test]
+fn an_agent_reading_the_listing_alone_cannot_believe_a_stale_report() {
+    /// A build no image in this tree can be, in the shape `build.rs` stamps.
+    const NOT_THIS_IMAGE: &str = "0000deadbeef";
+
+    let state = state_home();
+    let (_daemon, sock) = spawn_daemon_with(
+        &["cat"],
+        BOOT_PANE,
+        &[("XDG_STATE_HOME", &state.display().to_string())],
+    );
+    let silent_pane = add_pane(&sock, &["cat"]);
+
+    // THE CONTROL that makes every marker below attributable: two `cat` panes are an agent to no
+    // rule at all, so the listing carries no verdict and therefore nothing to qualify.
+    let mut server = McpServer::spawn_with_state(&sock, &state);
+    let before = server.call_tool("list_panes", json!({}));
+    assert!(
+        !before.contains('⚠') && !before.contains("agent:"),
+        "nothing in this window is an agent to any rule yet, so nothing is qualified: {before}"
+    );
+
+    // ── ARM 1: the real reporter, this daemon's own image. SILENCE IS THE ANSWER. ──
+    run_hook(&sock, &state, 0);
+    let live = server.wait_for_tool("list_panes", json!({}), "source=hook:claude");
+    assert!(
+        !live.contains('⚠'),
+        "⚠⚠⚠⚠⚠ THE MARKER HAS TO BE EARNED OR IT IS NOISE. A reporter that has just delivered, from \
+         the code this daemon is running, is the ORDINARY row — and a listing that flagged it would \
+         train a reader to skip the flag on the row that matters: {live}"
+    );
+    assert!(
+        !live.contains("REPORTED this state") && !live.contains("read_pane is the better witness"),
+        "⚠⚠⚠⚠ ...and the listing must not become the paragraph. A sentence per row is the cost this \
+         surface has refused before, and it is why the marker is a word that NAMES agent_state \
+         rather than a caveat block twelve panes deep: {live}"
+    );
+
+    // ── ARM 2: the SAME report, read back through a daemon built from other code. ──
+    let skewed = sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        &sock,
+        sprag_peer::Missing::answering(&[(sprag_rpc::BUILD_FIELD, json!(NOT_THIS_IMAGE))]),
+    );
+    let mut through_skew = McpServer::spawn_with_state(skewed.sock(), &state);
+    let skew = through_skew.call_tool("list_panes", json!({}));
+    assert!(
+        skew.contains("⚠ other-build"),
+        "⚠⚠⚠⚠⚠ THIS IS THE WHOLE HAZARD, ON THE SURFACE THAT MEETS IT FIRST: a verdict that \
+         outranks the screen, produced by code this daemon has never run. Nothing about the \
+         reporter changed between this row and the unmarked one above — only the daemon did: {skew}"
+    );
+    assert!(
+        skew.contains("agent_state pane 1 says what to do"),
+        "⚠⚠⚠⚠ and a doubt with no address is a doubt a reader has to spend a TURN resolving. The \
+         marker names the tool AND the number this listing just taught: {skew}"
+    );
+    assert!(
+        skew.contains("source=hook:claude seq="),
+        "⚠⚠ the verdict itself still renders field for field — this qualifies the row, it does not \
+         replace it: {skew}"
+    );
+    drop(through_skew);
+    drop(skewed);
+
+    // ── ARM 3: a reporter older than the key, which says nothing about its build at all. ──
+    mux_invoke(
+        &sock,
+        REPORT_AGENT_ACTION,
+        json!({ "id": silent_pane, "state": "working", "source": "hook:claude" }),
+    );
+    let unsaid = server.wait_for_tool("list_panes", json!({}), "⚠ reporter-build-unsaid");
+    assert!(
+        unsaid.contains("agent_state pane 2 says what to do"),
+        "⚠⚠⚠⚠⚠ AN ABSENT BUILD IS NOT A MATCHING ONE, and this is the arm a tidy-looking edit folds \
+         into the silent one. Marking it is what makes the UNMARKED row of arm 1 mean something: \
+         {unsaid}"
+    );
+    assert!(
+        !unsaid.contains("⚠ other-build"),
+        "⚠⚠⚠ the answers stay apart — a reporter that did not say is not a reporter that disagrees: \
+         {unsaid}"
+    );
+
+    // ── ARM 4: the LOUD half, staged by a hook that really cannot deliver. ──
+    run_hook(
+        Path::new("/nonexistent/sprag-there-is-no-daemon.sock"),
+        &state,
+        0,
+    );
+    let mute = server.wait_for_tool("list_panes", json!({}), "⚠ mute");
+    assert!(
+        mute.contains("state=working") && mute.contains("⚠ mute — agent_state pane 1"),
+        "⚠⚠⚠⚠ the stale verdict is still published — a report never expires — and what the row adds \
+         is the one word that stops a scanner acting on it: {mute}"
+    );
+    assert!(
+        !mute.split('\n').any(|row| row.contains("⚠ mute")
+            && (row.contains("other-build") || row.contains("build-unsaid"))),
+        "⚠⚠⚠⚠⚠ MUTE AND THE BUILD ARE TWO FACTS, AND THIS REPORTER IS MUTE *AND* THIS DAEMON'S \
+         IMAGE. Marking a build doubt here would be inventing one: {mute}"
+    );
+}
+
 /// `agent_explain` warns about a REFUSED `config.toml` before it explains anything — the case where
 /// its own remedy sends a reader in a circle.
 ///
