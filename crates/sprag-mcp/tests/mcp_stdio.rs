@@ -67,8 +67,8 @@ use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
     KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, RENAME_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION, SelectAsk,
-    ZOOM_PANE_ACTION,
+    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION,
+    SelectAsk, ZOOM_PANE_ACTION,
 };
 use sprag_rpc::HostConn;
 
@@ -135,6 +135,56 @@ impl Drop for Daemon {
 /// depfile instead, and it is shared with the pty suite so neither site can drift from the other.
 fn sprag_term_bin() -> PathBuf {
     sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag-mcp"), "sprag-term")
+}
+
+/// The `sprag` CLI binary, reached the same way and for the same reason.
+///
+/// One gate here needs a REAL REPORTER — `sprag hook claude` is the process whose build the agent
+/// surface judges, and it belongs to `sprag-host` like the daemon does. A hand-written report over
+/// the wire would state whatever this test chose to state, which is the one thing the gate must not
+/// be allowed to decide.
+fn sprag_cli_bin() -> PathBuf {
+    sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag-mcp"), "sprag")
+}
+
+/// A state home unique to this CALL, for the tests whose subject is a file rather than the wire.
+///
+/// Never the developer's: `sprag-gate`'s ambient-home guard fails a suite that writes under one,
+/// and the parallel siblings in this binary would collide on a path keyed only on the pid.
+fn state_home() -> PathBuf {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("sprag-mcp-state-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the state home");
+    dir
+}
+
+/// Run the REAL `sprag hook claude` for `pane` against the daemon at `sock`, with `state` as its
+/// state home, and wait for it to exit.
+///
+/// The payload is an agent's own `UserPromptSubmit` — the event that opens a turn — on stdin, which
+/// is how the agent runs it. Its exit status is deliberately not judged: a hook swallows every
+/// failure and always exits 0, on purpose, so what a caller learns from it is the report that landed
+/// or the word it left behind.
+fn run_hook(sock: &Path, state: &Path, pane: u64) {
+    let mut child = Command::new(sprag_cli_bin())
+        .args(["hook", "claude"])
+        .env(SOCK_ENV, sock)
+        .env(PANE_ENV_VAR, pane.to_string())
+        .env("XDG_STATE_HOME", state)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the sprag hook");
+    child
+        .stdin
+        .take()
+        .expect("the hook's stdin")
+        .write_all(br#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#)
+        .expect("write the hook's payload");
+    child.wait().expect("the hook exits");
 }
 
 /// A socket path unique to this CALL (pid + a per-binary counter).
@@ -320,6 +370,18 @@ impl McpServer {
     fn spawn(sock: &Path) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag-mcp"));
         cmd.env(SOCK_ENV, sock);
+        Self::from_command(cmd)
+    }
+
+    /// The ordinary spawn, with a STATE HOME of its own.
+    ///
+    /// One tool here reads a file rather than the wire — a hook that could not deliver leaves word
+    /// under `$XDG_STATE_HOME/sprag` and the daemon is by definition the party that cannot know —
+    /// so the reader and the writer have to agree on which home, and neither may be the developer's
+    /// (`sprag-gate`'s ambient-home guard, and the parallel siblings in this binary).
+    fn spawn_with_state(sock: &Path, state: &Path) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag-mcp"));
+        cmd.env(SOCK_ENV, sock).env("XDG_STATE_HOME", state);
         Self::from_command(cmd)
     }
 
@@ -1285,6 +1347,187 @@ fn the_agent_tools_report_the_daemons_own_verdict() {
     assert!(
         quiet.contains("no agent manifest claims this pane") && quiet.contains("[[agent]]"),
         "a pane with no agent is explained as exactly that: {quiet}"
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AN AGENT IS TOLD WHETHER THE REPORTER IT IS BELIEVING CAN STILL SPEAK, AND WHETHER IT
+/// IS THIS DAEMON'S CODE** — register item 474, the agent-facing half of the pair a person has had
+/// at a command line since items 344 and 473.
+///
+/// # What was wrong, and why every other gate here stayed green through it
+///
+/// A REPORTED verdict OUTRANKS the screen and never expires, so two things can make it a lie that
+/// no reader of this surface could see. The LOUD one: the reporter has stopped being able to
+/// deliver, and the last thing it managed to say stands for ever — measured at an hour of `working`
+/// against a pane whose screen had said `MILESTONE REACHED` the whole time. The QUIET one, which the
+/// register calls worse: the reporter speaks perfectly, for code this daemon has never run, which is
+/// the ORDINARY state after a `cargo build` replaces the hook binary under a live daemon.
+///
+/// `sprag agent <pane>` prints both. **`agent_state` and `agent_explain` printed neither**, and the
+/// reader that acts on those tools is a supervising LOOP — the one party with no screen to glance at
+/// and no second surface to consult. Every assertion in this file about an agent verdict was true
+/// while both sentences were missing, because a missing caveat is invisible to a test that does not
+/// ask for it.
+///
+/// # Four answers about the build, and each is staged by a different party
+///
+/// * **IS this image** — the REAL `sprag hook claude`, reporting against the real daemon, so the
+///   build in the row is one process's true stamp compared against another's.
+/// * **is NOT** — the SAME report, read back through [`sprag_peer::OldDaemon`] answering the
+///   handshake with a build no image in this tree can be. Nothing about the reporter changes between
+///   this arm and the one above; only the daemon does, which is what makes the sentence attributable
+///   to the COMPARISON rather than to the report. It is the fixture `sprag agent`'s own gate uses,
+///   in the crate that exists so a stand-in daemon has one meaning in this workspace.
+/// * **DID NOT SAY** — a report that OMITS the key, which is the exact wire every hook older than
+///   register item 459 sends, and what a person typing `sprag report-agent` still sends. An omission
+///   is not a hand-set field: there is no value here to get wrong.
+/// * and **MUTE**, which is a different fact about the same reporter and is asserted BESIDE the
+///   build sentence rather than instead of it — a reporter can be mute and this daemon's image at
+///   once, and a surface that printed only one of the two would have re-created the asymmetry the
+///   item is named for.
+///
+/// ⚠ The mute half is staged by making the hook FAIL for real — a second run of the same binary
+/// against a socket nobody serves — rather than by writing its breadcrumb by hand. The file's
+/// existence is the message, and a test that wrote the message would be asserting its own spelling.
+///
+/// ⚠⚠ **A STATE HOME OF ITS OWN**, shared by the hook that writes and the server that reads: that
+/// breadcrumb is the one fact on this surface the daemon cannot be asked for, because the condition
+/// being reported is that the daemon was unreachable.
+#[test]
+fn an_agent_is_told_whether_the_reporter_it_believes_is_mute_or_another_build() {
+    /// A build no image in this tree can be. Twelve hex digits, the shape `build.rs` stamps, so it
+    /// is refused for what it SAYS and not for how it is spelled.
+    const NOT_THIS_IMAGE: &str = "0000deadbeef";
+
+    let state = state_home();
+    let (_daemon, sock) = spawn_daemon_with(
+        &["cat"],
+        BOOT_PANE,
+        &[("XDG_STATE_HOME", &state.display().to_string())],
+    );
+    let silent_pane = add_pane(&sock, &["cat"]);
+
+    // THE CONTROL, and it is what makes every word below attributable: before any reporter speaks,
+    // a `cat` pane is an agent to no rule at all, so the surface says so and says nothing about a
+    // build.
+    let mut server = McpServer::spawn_with_state(&sock, &state);
+    let before = server.call_tool("agent_state", json!({ "pane": 1 }));
+    assert!(
+        before.contains("no agent") && !before.contains("build"),
+        "nothing on this screen is an agent to any rule yet: {before}"
+    );
+
+    // ── The reporter the whole key was written for, running for real. ──
+    run_hook(&sock, &state, 0);
+    let own = server.wait_for_tool("agent_state", json!({ "pane": 1 }), "source=hook:claude");
+
+    // ── ARM 1: the reporter IS this daemon's image, and BOTH agent tools say so. ──
+    for (tool, said) in [
+        ("agent_state", own.clone()),
+        (
+            "agent_explain",
+            server.call_tool("agent_explain", json!({ "pane": 1 })),
+        ),
+    ] {
+        assert!(
+            said.contains("is the image of the daemon at") && said.contains(sprag_rpc::BUILD),
+            "⚠⚠⚠⚠⚠ AN AGENT MUST BE ABLE TO READ THIS. The hook stated its build and the daemon \
+             holds both halves, so the mouth a supervising loop reads has to say whether the \
+             verdict it is about to act on came from this daemon's own code — {tool} said: {said}",
+        );
+        assert!(
+            said.contains(&sock.display().to_string()),
+            "⚠⚠⚠⚠ ...and it must say WHOSE build it compared. This server is a SIBLING of the \
+             daemon, not the daemon, so «this daemon» would leave a caller unable to tell which of \
+             three images is meant — {tool} said: {said}",
+        );
+        assert!(
+            !said.contains("MUTE"),
+            "a reporter that has just delivered is not mute: {tool} said: {said}",
+        );
+    }
+
+    // ── ARM 2: the SAME report, read back through a daemon built from other code. ──
+    let skewed = sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        &sock,
+        sprag_peer::Missing::answering(&[(sprag_rpc::BUILD_FIELD, json!(NOT_THIS_IMAGE))]),
+    );
+    let mut through_skew = McpServer::spawn_with_state(skewed.sock(), &state);
+    let skew = through_skew.call_tool("agent_state", json!({ "pane": 1 }));
+    assert!(
+        skew.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠⚠⚠ THIS IS THE WHOLE HAZARD: a verdict that outranks the screen, produced by code this \
+         daemon has never run. A rebuild replaces the hook under every live daemon at once, so it \
+         is the ORDINARY state after one — and a mouth that stays quiet here leaves a loop acting \
+         on a report about another build: {skew}",
+    );
+    assert!(
+        skew.contains(sprag_rpc::BUILD) && skew.contains(NOT_THIS_IMAGE),
+        "⚠⚠⚠ and it names BOTH builds — one of them alone tells a reader nothing about which is \
+         which: {skew}",
+    );
+    assert!(
+        !skew.contains("is the image of"),
+        "a reporter that is not this daemon's image must not also be called one: {skew}",
+    );
+    let skew_why = through_skew.call_tool("agent_explain", json!({ "pane": 1 }));
+    assert!(
+        skew_why.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠ BOTH MOUTHS OR NEITHER. `explain` is the tool a caller reaches for when a verdict looks \
+         wrong, which is exactly when this is the answer: {skew_why}",
+    );
+    drop(through_skew);
+    drop(skewed);
+
+    // ── ARM 3: a reporter older than the key, which says nothing about its build at all. ──
+    mux_invoke(
+        &sock,
+        REPORT_AGENT_ACTION,
+        json!({ "id": silent_pane, "state": "working", "source": "hook:claude" }),
+    );
+    let unsaid = server.wait_for_tool("agent_state", json!({ "pane": 2 }), "source=hook:claude");
+    assert!(
+        unsaid.contains("did not say which build it is"),
+        "⚠⚠⚠⚠⚠ AN ABSENT BUILD IS NOT A MATCHING ONE, and this is the arm a tidy-looking edit folds \
+         into the first. Silence here would convert *nobody knows* into *nothing is wrong* — the \
+         exact inversion `AGENT_BUILD_KEY` exists to end: {unsaid}",
+    );
+    assert!(
+        !unsaid.contains("is the image of") && !unsaid.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠⚠ the answers stay separate: a reporter that did not say is neither of the others: \
+         {unsaid}",
+    );
+
+    // ── ARM 4: the LOUD half, staged by a hook that really cannot deliver. ──
+    run_hook(
+        Path::new("/nonexistent/sprag-there-is-no-daemon.sock"),
+        &state,
+        0,
+    );
+    let mute = server.wait_for_tool("agent_state", json!({ "pane": 1 }), "MUTE");
+    assert!(
+        mute.contains("could not reach the daemon"),
+        "⚠⚠⚠⚠ the reporter's OWN account of why it failed, which is the sentence a hook otherwise \
+         writes where nothing reads: {mute}",
+    );
+    assert!(
+        mute.contains("state=working") && mute.contains("read_pane is the better witness"),
+        "⚠⚠⚠ the stale verdict is still published — it has to be, a report never expires — and what \
+         this adds is the instruction that makes it survivable: {mute}",
+    );
+    assert!(
+        mute.contains("is the image of the daemon at"),
+        "⚠⚠⚠⚠⚠ BOTH SENTENCES, NOT ONE. A reporter can be mute and this daemon's image at the same \
+         time, and printing one of the two would rebuild the very asymmetry item 474 is the name \
+         of: {mute}",
+    );
+    let mute_why = server.call_tool("agent_explain", json!({ "pane": 1 }));
+    assert!(
+        mute_why.contains("MUTE") && !mute_why.contains("pre-H3 daemon"),
+        "⚠⚠ and `explain` owes a REPORTED verdict this instead of the rule remedy it cannot use: a \
+         report fires no rule, so «pre-H3 daemon» was a false diagnosis printed at a pane a live \
+         hook had spoken for a second earlier: {mute_why}",
     );
 }
 

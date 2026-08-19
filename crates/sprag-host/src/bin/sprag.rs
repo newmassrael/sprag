@@ -5613,16 +5613,21 @@ fn weight(share: Counted) -> String {
 ///
 /// Pure, and takes both builds rather than a connection, so every answer is gateable — including
 /// the two a live daemon on this machine cannot be made to produce.
+///
+/// ⚠⚠⚠ **THE COUNTING IS NOT DONE HERE.** [`sprag_host::wire::reporter_image`] decides which of the
+/// four is true and this writes a PERSON's sentence for it; `sprag-mcp` writes an agent's from the
+/// same arm (register item 474). One vocabulary, two mouths — and a mouth that came to count
+/// differently is the defect the shared arm makes unrepresentable rather than merely unlikely.
 fn reporter_build_report(reporter: Option<&str>, daemon: Option<&str>) -> String {
-    match (reporter, daemon) {
-        (Some(reporter), Some(daemon)) if reporter == daemon => format!(
-            "    that reporter is this daemon's own image (build {reporter}), so the state above \
-             was produced by the code this daemon is running."
+    match sprag_host::wire::reporter_image(reporter, daemon) {
+        sprag_host::wire::ReporterImage::SameImage { build } => format!(
+            "    that reporter is this daemon's own image (build {build}), so the state above was \
+             produced by the code this daemon is running."
         ),
         // ⚠ THE ONE A READER MUST ACT ON: the verdict above outranks the screen and was produced by
         // code this daemon has never run. Both builds are named — a skew that names one tells a
         // reader nothing about which is which.
-        (Some(reporter), Some(daemon)) => format!(
+        sprag_host::wire::ReporterImage::OtherImage { reporter, daemon } => format!(
             "    ⚠ THAT REPORTER IS NOT THIS DAEMON'S IMAGE: it is build {reporter} and this \
              daemon is build {daemon}. The state above was produced by code this daemon has never \
              run — the ordinary state after a `cargo build` replaced the hook under it. Restart \
@@ -5631,15 +5636,17 @@ fn reporter_build_report(reporter: Option<&str>, daemon: Option<&str>) -> String
         // ⚠ Not a match and not a mismatch: nobody can compare. A daemon predating the hello's
         // build key is the only way here, and printing agreement would be this client inventing an
         // answer that daemon could not give.
-        (Some(reporter), None) => format!(
+        sprag_host::wire::ReporterImage::DaemonSilent { reporter } => format!(
             "    that reporter is build {reporter}, and this daemon does not say which build IT \
              is, so the two cannot be compared — an absent build is not a matching one."
         ),
         // ⚠⚠ AND THE ARM THAT MUST NOT COLLAPSE INTO THE FIRST. Every reporter older than
         // `AGENT_BUILD_KEY` answers exactly this, and silence here would read as agreement.
-        (None, _) => "    that reporter did not say which build it is, which is not the same as \
-                      saying it matches — whether it is this daemon's image is unknown."
-            .to_owned(),
+        sprag_host::wire::ReporterImage::ReporterSilent => {
+            "    that reporter did not say which build it is, which is not the same as saying it \
+             matches — whether it is this daemon's image is unknown."
+                .to_owned()
+        }
     }
 }
 

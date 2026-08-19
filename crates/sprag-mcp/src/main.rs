@@ -3097,6 +3097,13 @@ struct AgentInfo {
     /// on the wire: an agent reading this line has to be able to tell an authority from an
     /// inference, because only one of them is corrected by editing a manifest.
     source: Option<String>,
+    /// **WHICH BUILD THE REPORTER SAID IT IS** ([`sprag_host::wire::AGENT_BUILD_KEY`]) — the raw
+    /// fact, judged against the answering daemon's own by [`reporter_caveats`].
+    ///
+    /// ⚠ `None` is *it did not say*, never *it matches*. Carried unjudged for the reason `source`
+    /// is: the comparison needs the OTHER half, which belongs to the connection rather than to the
+    /// row.
+    build: Option<String>,
     /// Increments on a PUBLISHED change, so a poller tells "still blocked" from "blocked again"
     /// without diffing strings.
     seq: u64,
@@ -3127,6 +3134,10 @@ fn parse_agent_info(entry: &Value) -> Option<AgentInfo> {
         rule: agent.get("rule").and_then(Value::as_str).map(str::to_owned),
         source: agent
             .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        build: agent
+            .get(sprag_host::wire::AGENT_BUILD_KEY)
             .and_then(Value::as_str)
             .map(str::to_owned),
         seq: agent.get("seq").and_then(Value::as_u64).unwrap_or(0),
@@ -3203,6 +3214,107 @@ fn asking_block(agent: &AgentInfo, indent: &str) -> String {
          here is a screen fact that a redraw invalidates.\n",
     ));
     said
+}
+
+/// **WHETHER THE REPORTER THAT PRODUCED THIS VERDICT CAN STILL SPEAK, AND WHETHER IT IS THE
+/// ANSWERING DAEMON'S IMAGE** — the two things a person has been told at a command line and an
+/// agent had not (register item 474).
+///
+/// # ⚠⚠⚠⚠⚠ Why a REPORTED verdict is the one that needs qualifying
+///
+/// A scraped verdict is re-derived from the screen every time anybody looks, so it cannot go stale:
+/// the worst it can be is wrong about the pane in front of it, and `agent_explain` names the rule
+/// that read it. **A report OUTRANKS the screen and never expires.** Two separate things can
+/// therefore make it a lie a caller cannot see:
+///
+/// * The reporter has stopped being able to deliver (item 344 — the LOUD half). The last thing it
+///   MANAGED to say stands for ever, and the loop that measured this polled a pane reading
+///   `working` for an hour while its screen said `MILESTONE REACHED` the whole time.
+/// * The reporter is speaking perfectly, for code this daemon has never run (item 412 — the QUIET
+///   half, and the worse of the two). A `cargo build` replaces the hook binary under every live
+///   daemon at once, so this is the ORDINARY state after a rebuild.
+///
+/// Both facts already existed and neither reached here. That asymmetry is the item: `sprag agent
+/// <pane>` prints both, and until this the agent-facing mouth — the one a supervising loop actually
+/// reads — printed neither.
+///
+/// # ⚠⚠⚠ It says WHOSE build it compared, and the CLI's wording could not be borrowed for that
+///
+/// A person running `sprag agent` is talking to the daemon; *"this daemon"* is unambiguous there.
+/// **This server is a SIBLING of the daemon**, launched beside it and reaching it over a socket, so
+/// the same words would leave a caller unable to tell which of three images is meant — this server,
+/// the daemon, or the tree that last built either. Item 438 cost a round to exactly that confusion.
+/// So the daemon is named by the socket this answer came from, and the comparison is stated as
+/// being against THAT daemon.
+///
+/// The counting is [`sprag_host::wire::reporter_image`]'s, shared with the CLI so the two mouths
+/// cannot come to disagree about how many answers there are — only about how to word one.
+///
+/// ⚠ `daemon` MUST be the build read off the call that produced this row ([`query_panes_and_daemon`]).
+/// A build fetched separately could belong to a different process at the same path, and a
+/// comparison against a daemon that never held this verdict is worse than no sentence at all.
+fn reporter_caveats(agent: &AgentInfo, pane: u64, daemon: Option<&str>, indent: &str) -> String {
+    // ADDITIVE, and the condition is the AUTHORITY rather than the state: a scraped verdict has no
+    // reporter to be mute or foreign, so a pane whose state was read off its screen reads exactly
+    // as it did before this existed.
+    let Some(source) = &agent.source else {
+        return String::new();
+    };
+    let mut out = format!(
+        "{indent}`{source}` REPORTED this state; it was not read off the screen, and a report \
+         outranks the screen.\n"
+    );
+    // ⚠ Read off the FILESYSTEM rather than asked of the daemon, exactly as the CLI reads it and
+    // for the same reason: the condition being reported is that the hook could not reach the
+    // daemon, so the daemon is the one party that cannot know.
+    if let Ok(said) = std::fs::read_to_string(sprag_host::hooks::hook_trouble_path(pane)) {
+        out.push_str(&format!(
+            "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {}. The state above is the \
+             last thing it MANAGED to say rather than what is true now, so read_pane is the better \
+             witness until this clears.\n",
+            said.trim(),
+        ));
+    }
+    let named = host_sock().map_or_else(
+        || "the daemon this server reached".to_owned(),
+        |sock| format!("the daemon at {}", sock.display()),
+    );
+    out.push_str(indent);
+    out.push_str(&match sprag_host::wire::reporter_image(
+        agent.build.as_deref(),
+        daemon,
+    ) {
+        sprag_host::wire::ReporterImage::SameImage { build } => format!(
+            "That reporter is the image of {named} (both are build {build}), so the state above \
+             was produced by the code that daemon is running.\n"
+        ),
+        // ⚠ THE ONE A CALLER MUST ACT ON, and the remedy is a PERSON's: restarting a daemon
+        // destroys panes this agent does not own.
+        //
+        // ⚠ The socket rides in the sentence VERBATIM. A path is case-sensitive, so folding it into
+        // the shout would hand a reader an address that names nothing.
+        sprag_host::wire::ReporterImage::OtherImage { reporter, daemon } => format!(
+            "⚠ THAT REPORTER IS NOT THIS DAEMON'S IMAGE: the reporter is build {reporter} and \
+             {named} is build {daemon}. The state above was produced by code that daemon has never \
+             run — the ordinary state after a `cargo build` replaced the hook binary under it. \
+             Treat this verdict as evidence about another build, prefer read_pane, and tell a \
+             person: the fix is restarting that daemon, which destroys panes.\n"
+        ),
+        // ⚠ Neither a match nor a mismatch: nobody can compare. Only a daemon predating the build
+        // field reaches here, and printing agreement would be this server inventing an answer it
+        // was never given.
+        sprag_host::wire::ReporterImage::DaemonSilent { reporter } => format!(
+            "That reporter is build {reporter}, and {named} does not say which build IT is, so the \
+             two cannot be compared — an absent build is not a matching one.\n"
+        ),
+        // ⚠⚠ AND THE ARM THAT MUST NOT COLLAPSE INTO THE FIRST. Every reporter older than
+        // `AGENT_BUILD_KEY` answers exactly this, and silence here would read as agreement.
+        sprag_host::wire::ReporterImage::ReporterSilent => format!(
+            "That reporter did not say which build it is, which is NOT the same as saying it \
+             matches: whether it shares a build with {named} is unknown.\n"
+        ),
+    });
+    out
 }
 
 /// One inline image a pane shows, as an agent reads it (R1404 Stage 5): its id, pixel size, and the
@@ -6830,24 +6942,30 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
     // Through the ONE resolver, so "is the agent in `buildout` done?" is answerable about a pane
     // one window over — which is where a sibling agent most often is, since an agent's work pane
     // and a person's reading pane are the reason a session has more than one window at all.
-    let selected: Vec<PaneRef> = match resolve_optional_pane_ref(args)? {
-        Some(pane) => vec![pane],
-        None => {
-            let panes = query_panes()?;
-            if panes.is_empty() {
-                return Ok("This sprag terminal has no panes.".to_owned());
+    // ⚠ The daemon that ANSWERED, taken with the rows in one call — the other half of every
+    // reporter's build below ([`reporter_caveats`]), and meaningless if fetched separately.
+    let (selected, daemon): (Vec<PaneRef>, Option<String>) =
+        match resolve_optional_pane_ref_and_daemon(args)? {
+            Some((pane, daemon)) => (vec![pane], daemon),
+            None => {
+                let (panes, daemon) = query_panes_and_daemon()?;
+                if panes.is_empty() {
+                    return Ok("This sprag terminal has no panes.".to_owned());
+                }
+                (
+                    panes
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, info)| PaneRef {
+                            number: Some(numbered(index)),
+                            window: None,
+                            info,
+                        })
+                        .collect(),
+                    daemon,
+                )
             }
-            panes
-                .into_iter()
-                .enumerate()
-                .map(|(index, info)| PaneRef {
-                    number: Some(numbered(index)),
-                    window: None,
-                    info,
-                })
-                .collect()
-        }
-    };
+        };
     let mut out = String::new();
     for pane in selected {
         match &pane.info.agent {
@@ -6861,6 +6979,16 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
                 // The whole reason a caller asks this tool about a BLOCKED pane: not that it is
                 // blocked, but what it is blocked ON. Same block as `list_panes`, one indent in.
                 out.push_str(&asking_block(agent, "    "));
+                // ⚠⚠⚠ AND WHETHER THIS VERDICT CAN BE BELIEVED AT ALL. Printed for every REPORTED
+                // row rather than only for a named pane: the CLI suppresses it in a listing to keep
+                // a person's screen scannable, and a caller here is a program acting on the token —
+                // one that has no screen to glance at and no second surface to consult.
+                out.push_str(&reporter_caveats(
+                    agent,
+                    pane.id(),
+                    daemon.as_deref(),
+                    "    ",
+                ));
             }
             None => out.push_str(&format!(
                 "  {}: id={} no agent (no manifest claims this pane — not the same as idle)\n",
@@ -7207,7 +7335,7 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
     // Through the ONE resolver, and the agent's verdict rides on the pane it resolved — so this
     // answers about a sibling agent wherever it is working, which is the question the tool exists
     // for. Its twin `agent_state` reaches the same way and for the same reason.
-    let pane = resolve_pane_ref(args)?;
+    let (pane, daemon) = resolve_pane_ref_and_daemon(args)?;
     let subject = pane.subject();
     // In front of EVERY branch below, and most of all the one that says no manifest claims this
     // pane: that sentence is also what an unparsed claim looks like from here, and sending a reader
@@ -7237,11 +7365,24 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
              rule with that id in an `[[agent]]` block in sprag's config.toml — a corrected rule \
              keeps its position, and the daemon picks the edit up on its own.\n"
         )),
+        // ⚠⚠⚠ A REPORTED verdict has no rule, and telling a caller to edit a manifest for one names
+        // a rule that never fired. What it owes instead is who reported and whether that reporter
+        // can be believed, which is where the pre-H3 sentence would otherwise be printed at a pane
+        // whose state a live hook asserted a second ago.
+        None if agent.source.is_some() => out.push_str(
+            ". No rule fired, and that is not a gap: this verdict was REPORTED by a process inside \
+             the pane rather than inferred from its screen, so there is no `[[agent]]` block that \
+             could correct it. What CAN be wrong with a report is below.\n",
+        ),
         None => out.push_str(
             ". No rule id came with the verdict, which is a pre-H3 daemon rather than an \
              unexplainable state.\n",
         ),
     }
+    // ⚠⚠⚠⚠⚠ AND WHETHER THE REPORTER THAT PRODUCED IT CAN STILL SPEAK, AND IS THIS DAEMON'S CODE.
+    // A caller reaches for `explain` when a verdict looks wrong, and for a REPORTED verdict those
+    // two are the whole of the explanation — the rule branch above has nothing to offer it.
+    out.push_str(&reporter_caveats(agent, pane.id(), daemon.as_deref(), ""));
     out.push_str(&format!(
         "The state has changed {} time(s) since this pane was first seen (seq={}), so a repeat read \
          showing the same seq is the same verdict rather than a new one.\n",
@@ -7398,18 +7539,40 @@ fn resolve_pane_ref(args: &Value) -> Result<PaneRef, String> {
     resolve_pane_ref_at(args, SelectAsk::PANE_KEY)
 }
 
+/// [`resolve_pane_ref`] AND which build the daemon that served the resolving listing says it is.
+///
+/// For the two tools whose answer is a COMPARISON against that daemon rather than a reading of one
+/// pane — see [`reporter_caveats`]. It reaches through the same body as every other resolution, so
+/// a pane one window over is answered about here too; the daemon is taken from the FIRST listing,
+/// which both branches below make and which is the one connection the resolution began on.
+fn resolve_pane_ref_and_daemon(args: &Value) -> Result<(PaneRef, Option<String>), String> {
+    resolve_pane_ref_at_from_a_daemon(args, SelectAsk::PANE_KEY)
+}
+
 /// [`resolve_pane_ref`] for an argument spelled something other than `pane` — a swap's partner and
 /// a directional select's origin are pane handles in every respect except their key, so they
 /// resolve through the same grammar and reach as far.
 fn resolve_pane_ref_at(args: &Value, key: &str) -> Result<PaneRef, String> {
+    resolve_pane_ref_at_from_a_daemon(args, key).map(|(pane, _)| pane)
+}
+
+/// The ONE resolution, which every form above reaches through — differing only in whether the
+/// caller is told which daemon answered.
+fn resolve_pane_ref_at_from_a_daemon(
+    args: &Value,
+    key: &str,
+) -> Result<(PaneRef, Option<String>), String> {
     let target = pane_target_at(args, key)?;
-    let here = query_panes()?;
+    let (here, daemon) = query_panes_and_daemon()?;
     match resolve_in(&here, &target) {
-        Ok((index, pane)) => Ok(PaneRef {
-            number: Some(numbered(index)),
-            window: None,
-            info: pane.clone(),
-        }),
+        Ok((index, pane)) => Ok((
+            PaneRef {
+                number: Some(numbered(index)),
+                window: None,
+                info: pane.clone(),
+            },
+            daemon,
+        )),
         // Only a NAME looks further: a number that missed named no pane of the window it is defined
         // against, and looking elsewhere would answer about a pane the caller did not ask for.
         Err(near) => match &target {
@@ -7418,11 +7581,16 @@ fn resolve_pane_ref_at(args: &Value, key: &str) -> Result<PaneRef, String> {
                 elsewhere if elsewhere.is_empty() => Err(near),
                 elsewhere => {
                     let (window, pane) = pane_by_name_in_session(&elsewhere, name)?;
-                    Ok(PaneRef {
-                        number: None,
-                        window: Some(window),
-                        info: pane.clone(),
-                    })
+                    Ok((
+                        PaneRef {
+                            number: None,
+                            window: Some(window),
+                            info: pane.clone(),
+                        },
+                        // ⚠ The SAME daemon: another window of this session is served by the
+                        // process the listing above came from, so the identity is not re-asked.
+                        daemon,
+                    ))
                 }
             },
         },
@@ -7436,9 +7604,21 @@ fn resolve_pane_ref_at(args: &Value, key: &str) -> Result<PaneRef, String> {
 /// through the resolver at all: it already has a branch, and hand-rolling the present arm inside
 /// it is how five tools came to be window-local.
 fn resolve_optional_pane_ref(args: &Value) -> Result<Option<PaneRef>, String> {
+    Ok(resolve_optional_pane_ref_and_daemon(args)?.map(|(pane, _)| pane))
+}
+
+/// [`resolve_optional_pane_ref`] AND the daemon that answered — [`resolve_pane_ref_and_daemon`]'s
+/// optional form, for the one tool here that takes an optional pane and compares builds.
+///
+/// The pair is nested inside the [`Option`] rather than beside it, so a caller that was given no
+/// pane cannot read *"nobody was asked"* as *"the daemon did not say"*: those are different facts
+/// and this surface's whole reason for the build key is that an absence is never agreement.
+fn resolve_optional_pane_ref_and_daemon(
+    args: &Value,
+) -> Result<Option<(PaneRef, Option<String>)>, String> {
     match args.get(SelectAsk::PANE_KEY) {
         None | Some(Value::Null) => Ok(None),
-        Some(_) => resolve_pane_ref(args).map(Some),
+        Some(_) => resolve_pane_ref_and_daemon(args).map(Some),
     }
 }
 
@@ -7599,16 +7779,28 @@ fn pane_by_name<'a>(panes: &'a [PaneInfo], name: &str) -> Result<(usize, &'a Pan
     Ok(first)
 }
 
-/// Query the host's live pane list, numbered 1-based in host order.
+/// Query the host's live pane list, numbered 1-based in host order — for every reader that wants
+/// the rows and compares nothing.
 fn query_panes() -> Result<Vec<PaneInfo>, String> {
-    let value = host_call(
+    Ok(query_panes_and_daemon()?.0)
+}
+
+/// The pane list AND which build the daemon that served it says it is.
+///
+/// The second half has one reader — [`reporter_caveats`], which holds a row's reporter against the
+/// daemon holding that row — and it comes back from the SAME call for the reason
+/// [`host_call_answered`] gives: a build fetched on a second connection is a second moment, and the
+/// event in between is precisely the daemon restart the comparison exists to detect.
+fn query_panes_and_daemon() -> Result<(Vec<PaneInfo>, Option<String>), String> {
+    let answered = host_call_answered(
         "scene/query",
         windowed_params(mux_action_path(PANES_SLOT), None),
     )?;
-    let array = value
+    let array = answered
+        .value
         .as_array()
         .ok_or("the host pane list was not an array")?;
-    Ok(array.iter().map(parse_pane_info).collect())
+    Ok((array.iter().map(parse_pane_info).collect(), answered.build))
 }
 
 /// Why the daemon's agent manifests are not the ones the user's `config.toml` declares, as a line to
@@ -7739,13 +7931,49 @@ fn host_call(method: &str, params: Value) -> Result<Value, String> {
     host_call_kinded(method, params).map_err(|(sentence, _)| sentence)
 }
 
+/// [`host_call`], AND which build the daemon that answered it says it is — [`Answered::build`].
+///
+/// ⚠⚠⚠ **THE TWO HALVES OF A COMPARISON, TAKEN IN ONE BREATH.** The only caller is the reporter
+/// judgement ([`reporter_caveats`]), which holds a pane row's `build` against the daemon's own. A
+/// second connection made to fetch the second half would be reading two moments and calling them
+/// one — and the moment in between is exactly when a daemon gets restarted, which is the event the
+/// whole comparison exists to detect.
+fn host_call_answered(method: &str, params: Value) -> Result<Answered, String> {
+    host_call_unscoped_answered(method, in_our_session(params)).map_err(|(sentence, _)| sentence)
+}
+
 /// [`host_call_kinded`] WITHOUT the ambient scope — the one request that must not carry it, because
 /// it is the request that works out what it would be.
-///
-/// It is also the whole of the transport: the two public forms above differ only in how much of a
-/// failure they hand back, and they were two copies of this body until the scope needed stamping in
-/// exactly one place. Two doors onto one act is the shape this project keeps finding defects in.
 fn host_call_unscoped(method: &str, params: Value) -> Result<Value, (String, io::ErrorKind)> {
+    host_call_unscoped_answered(method, params).map(|answered| answered.value)
+}
+
+/// This process's id for the handshake — `mcp-<pid>`, the shape `cli-<pid>` and `gui-…` already
+/// use. Named rather than empty because the daemon logs it, and *"which client was that"* is a
+/// question an operator asks of a log; this server is the third kind of client on that wire.
+fn mcp_client_id() -> String {
+    format!("mcp-{}", std::process::id())
+}
+
+/// One daemon answer, with the identity of the daemon that gave it.
+///
+/// A pair rather than two calls, because the second half is only meaningful about the connection
+/// the first came back on — see [`host_call_answered`].
+struct Answered {
+    /// What the daemon replied.
+    value: Value,
+    /// Which build that daemon says it is, or [`None`] for one predating
+    /// [`sprag_rpc::BUILD_FIELD`]. **NEVER *"it matches"*** — that field's own rule.
+    build: Option<String>,
+}
+
+/// The whole of the transport: every form above differs only in how much of the answer and of a
+/// failure it hands back, and they were copies of this body until the scope needed stamping in
+/// exactly one place. Two doors onto one act is the shape this project keeps finding defects in.
+fn host_call_unscoped_answered(
+    method: &str,
+    params: Value,
+) -> Result<Answered, (String, io::ErrorKind)> {
     let sock = host_sock().ok_or_else(|| {
         (
             "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
@@ -7761,11 +7989,32 @@ fn host_call_unscoped(method: &str, params: Value) -> Result<Value, (String, io:
             kind,
         )
     })?;
+    // ⚠⚠⚠⚠⚠ THE DOOR EVERY OTHER CLIENT PASSES, AND THIS ONE DID NOT. `client/hello` is where a
+    // daemon says WHICH BUILD IT IS (`sprag_rpc::BUILD_FIELD`) — the other half of every reporter's
+    // build on a pane row, and there is no other address for that fact, so a mouth that never
+    // knocked could never answer register item 474's question at all.
+    //
+    // ⚠ It also completes the shape agreement from THIS side, and that changes almost nothing
+    // reachable: the daemon already refuses every request whose protocol param disagrees, naming
+    // both numbers and the fix. What the knock adds is the half only a client can make — a daemon
+    // so old it answers no number at all — which the CLI and both frontends have refused for as
+    // long as the handshake has existed. An ADDITIVE skew (same number, missing slot or action) is
+    // untouched: it passes the door and is answered by `older_daemon` below, which is the skew this
+    // surface actually meets.
+    conn.handshake(&mcp_client_id()).map_err(|error| {
+        let kind = error.kind();
+        (error.to_string(), kind)
+    })?;
     // Both built BEFORE the call, which consumes the params.
     let label = sprag_rpc::request_label(method, &params);
     let path = params["path"].as_str().unwrap_or_default().to_owned();
     match conn.try_call(method, params) {
-        Ok(answer) => Ok(answer),
+        // ⚠ The build is read off THIS connection, after the call it belongs to — the handshake ran
+        // when it was opened, so the answer and the identity of whoever gave it are one moment.
+        Ok(answer) => Ok(Answered {
+            value: answer,
+            build: conn.daemon_build().map(str::to_owned),
+        }),
         // TWO library sentences before this surface writes anything: the daemon does not have that
         // address at all (a skew), or it HAS it, refused, and said why (R325). An agent gets the
         // producer's own fact for the second, which is the whole of PINION-PR82's value here —
@@ -10269,6 +10518,103 @@ mod tests {
             (nameless.name, nameless.rule, nameless.seq),
             (None, None, 0)
         );
+        // ⚠⚠⚠ AND THE REPORTER'S BUILD, whose ABSENCE is the one that must not be defaulted:
+        // `AGENT_BUILD_KEY`'s rule is that a missing key means *this reporter did not say*, never
+        // *it matches*, and a parse that filled in anything here would make the commonest case (a
+        // reporter older than the key) look like the safe one.
+        assert_eq!(
+            nameless.build, None,
+            "a reporter that said nothing about its build is not one that agreed",
+        );
+        let stated = parse_agent_info(&json!({
+            "id": 1,
+            "agent": { "state": "working", "source": "hook:claude", "build": "0000deadbeef" }
+        }))
+        .expect("a reported verdict parses");
+        assert_eq!(stated.build.as_deref(), Some("0000deadbeef"));
+    }
+
+    /// ⚠⚠⚠⚠⚠ **FOUR ANSWERS ABOUT A REPORTER REACH AN AGENT, AND NO TWO OF THEM READ ALIKE** —
+    /// this mouth's half of the pair `sprag agent`'s own unit test holds for a person.
+    ///
+    /// Three of the four are driven live (`an_agent_is_told_whether_the_reporter_it_believes_is_...`
+    /// stages each with a different party). The fourth — a DAEMON that answers no build of its own —
+    /// is unreachable from any daemon this workspace can start, since every one of them is built
+    /// with [`sprag_rpc::BUILD_FIELD`] in its hello. It gets words anyway, because *"nobody can
+    /// compare"* rendered as agreement is this server inventing an answer it was never given.
+    ///
+    /// The pairwise inequality is the assertion that matters: the failure this whole key exists to
+    /// end is two DIFFERENT situations reading the same, and a count is not what catches that.
+    ///
+    /// ⚠ A scraped verdict gets NONE of them, which is the additive rule one layer up: there is no
+    /// reporter to be another build.
+    #[test]
+    fn four_answers_about_a_reporter_reach_an_agent_and_no_two_read_alike() {
+        let mine = sprag_host::wire::BUILD;
+        let reported = |build: Option<&str>| AgentInfo {
+            state: "working".to_owned(),
+            name: Some("claude".to_owned()),
+            rule: None,
+            source: Some("hook:claude".to_owned()),
+            build: build.map(str::to_owned),
+            seq: 1,
+            asking: None,
+        };
+        // ⚠ Pane 0 and a state home this process does not have: the mute half reads a FILE, and
+        // this test is about the build half alone.
+        let said =
+            |agent: &AgentInfo, daemon: Option<&str>| reporter_caveats(agent, 0, daemon, "  ");
+
+        let same = said(&reported(Some(mine)), Some(mine));
+        assert!(
+            same.contains("is the image of") && same.contains(mine),
+            "the reporter and the daemon are one image, and the build is named: {same}",
+        );
+        let skew = said(&reported(Some("0000deadbeef")), Some(mine));
+        assert!(
+            skew.contains("NOT THIS DAEMON'S IMAGE")
+                && skew.contains("0000deadbeef")
+                && skew.contains(mine),
+            "⚠⚠⚠ the hazard names BOTH builds — one alone says nothing about which is which: {skew}",
+        );
+        let unsaid = said(&reported(None), Some(mine));
+        assert!(
+            unsaid.contains("did not say which build it is") && unsaid.contains("NOT the same"),
+            "⚠⚠⚠⚠⚠ ABSENT MEANS *IT DID NOT SAY*. Every reporter older than `AGENT_BUILD_KEY` \
+             answers this, and reading it as agreement is the inversion the key exists to end: \
+             {unsaid}",
+        );
+        let neither = said(&reported(Some(mine)), None);
+        assert!(
+            neither.contains("does not say which build IT is")
+                && neither.contains("cannot be compared"),
+            "⚠⚠⚠⚠ AND THE ARM NO LIVE DAEMON HERE CAN PRODUCE: a daemon predating the hello's \
+             build field makes the comparison IMPOSSIBLE rather than successful, and claiming a \
+             match would be this server answering for it: {neither}",
+        );
+
+        let four = [&same, &skew, &unsaid, &neither];
+        for (a, first) in four.iter().enumerate() {
+            for second in four.iter().skip(a + 1) {
+                assert_ne!(
+                    first, second,
+                    "two different situations must never read alike: {first} / {second}",
+                );
+            }
+        }
+
+        // THE CONTROL: a SCRAPED verdict has no reporter, so none of the four is owed and none is
+        // printed — the additive rule that keeps this off every pane a rule read off its screen.
+        let scraped = AgentInfo {
+            source: None,
+            rule: Some("dialog-choice-list".to_owned()),
+            ..reported(None)
+        };
+        assert_eq!(
+            said(&scraped, Some(mine)),
+            "",
+            "a verdict nobody reported has no reporter to judge",
+        );
     }
 
     /// The pane list's agent line, and the additive rule that keeps it off every other pane.
@@ -10304,6 +10650,7 @@ mod tests {
                 name: Some("claude".to_owned()),
                 rule: Some("dialog-choice-list".to_owned()),
                 source: None,
+                build: None,
                 seq: 4,
                 asking: None,
             }),
@@ -10324,6 +10671,7 @@ mod tests {
                 name: Some("claude".to_owned()),
                 rule: None,
                 source: Some("hook:claude".to_owned()),
+                build: Some(sprag_host::wire::BUILD.to_owned()),
                 seq: 5,
                 asking: None,
             }),
@@ -10386,6 +10734,7 @@ mod tests {
             name: Some("claude".to_owned()),
             rule: Some("dialog-choice-list".to_owned()),
             source: None,
+            build: None,
             seq: 2,
             asking: Some(sprag_host::agent::question_json(&question)),
         };

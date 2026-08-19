@@ -4314,7 +4314,7 @@ fn the_hook_states_which_build_reported_on_the_same_terms_a_person_does() {
 /// A DAEMON WHOSE BUILD IS NOT THE ONE IT WAS BUILT FROM — a real `sprag-term` reached through a
 /// relay that changes exactly one fact about it.
 ///
-/// # ⚠⚠⚠⚠⚠ Why this exists at all: one `cargo build` cannot produce the skew it is built to gate
+/// # ⚠⚠⚠⚠⚠ Why this is needed at all: one `cargo build` cannot produce the skew it gates
 ///
 /// [`sprag_rpc::BUILD`] is stamped INTO each image at compile time from `HEAD`, and every binary
 /// linking that crate gets the SAME stamp — which is the property that makes the field mean
@@ -4325,114 +4325,25 @@ fn the_hook_states_which_build_reported_on_the_same_terms_a_person_does() {
 /// build it is not — the exact lie `crates/sprag-rpc/build.rs` refuses a dirty-tree flag over.
 ///
 /// So the DAEMON is made to differ instead, and by the one means that leaves every other byte
-/// alone: this relay passes the whole conversation through untouched except for the daemon's answer
-/// to [`CLIENT_HELLO_METHOD`], where it substitutes `build`. The daemon is real, its panes are real,
-/// the reporter is the real hook binary stating its real stamp — the only invention is the fact a
-/// second compile would otherwise have to supply.
+/// alone: the peer relays the whole conversation and substitutes `build` in the daemon's own reply.
+/// The daemon is real, its panes are real, the reporter is the real hook binary stating its real
+/// stamp — the only invention is the fact a second compile would otherwise have to supply.
 ///
-/// ⚠ It rewrites the DAEMON's half deliberately, never the reporter's. The reporter's words are the
-/// subject of the gate above and must arrive as that process wrote them.
-struct SkewedDaemon {
-    /// Where a client connects: the relay's own socket, in front of the real one.
-    sock: PathBuf,
-    /// Set on drop so the accept loop stops after the wake-up connection below.
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl SkewedDaemon {
-    /// Serve `real`'s daemon on a fresh socket that answers `build` to the hello instead.
-    fn in_front_of(real: &std::path::Path, build: &str) -> Self {
-        use std::os::unix::net::UnixListener;
-
-        let sock = socket_path();
-        let _ = std::fs::remove_file(&sock);
-        let listener = UnixListener::bind(&sock).expect("bind the relay socket");
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (halt, real, build) = (
-            std::sync::Arc::clone(&stop),
-            real.to_path_buf(),
-            build.to_owned(),
-        );
-        std::thread::spawn(move || {
-            for client in listener.incoming() {
-                if halt.load(std::sync::atomic::Ordering::Relaxed) {
-                    return;
-                }
-                let Ok(client) = client else { return };
-                let (real, build) = (real.clone(), build.clone());
-                std::thread::spawn(move || relay(client, &real, &build));
-            }
-        });
-        Self { sock, stop }
-    }
-
-    /// The socket a client should be pointed at.
-    fn socket(&self) -> &std::path::Path {
-        &self.sock
-    }
-}
-
-impl Drop for SkewedDaemon {
-    fn drop(&mut self) {
-        // The accept loop is parked in `accept()`, which no flag can interrupt — so the flag is set
-        // FIRST and then one connection is made to wake it, which is the order that terminates.
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = std::os::unix::net::UnixStream::connect(&self.sock);
-        let _ = std::fs::remove_file(&self.sock);
-    }
-}
-
-/// Pump one relayed connection: client to daemon verbatim, daemon to client with the hello reply's
-/// `build` replaced by `build`.
+/// ⚠ It rewrites the DAEMON's half deliberately, never the reporter's: only the TOP LEVEL of a
+/// `result` object is edited ([`sprag_peer::Missing::answering`]), and a pane listing's result is an
+/// ARRAY, so the reporter's own `build` in a pane row cannot be forged by this.
 ///
-/// Both directions are parsed as the line-delimited JSON the wire is, so the reply can be found by
-/// the REQUEST ID the client minted rather than by guessing which line carries a `build` — the pane
-/// rows carry one too, and rewriting those would forge the reporter's word instead of the daemon's.
-/// A line that does not parse, or parses as anything else, is forwarded byte for byte.
-fn relay(client: std::os::unix::net::UnixStream, real: &std::path::Path, build: &str) {
-    use std::io::{BufRead, BufReader, Write};
-
-    let Ok(daemon) = std::os::unix::net::UnixStream::connect(real) else {
-        return;
-    };
-    let hello: std::sync::Arc<std::sync::Mutex<Option<Value>>> = Default::default();
-    // Named rather than `_`, so the pump lives as long as this connection does.
-    let _upstream = {
-        let (mut out, seen) = (
-            daemon.try_clone().expect("clone the daemon stream"),
-            std::sync::Arc::clone(&hello),
-        );
-        let reader = BufReader::new(client.try_clone().expect("clone the client stream"));
-        std::thread::spawn(move || {
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(Value::Object(request)) = serde_json::from_str::<Value>(&line)
-                    && request.get("method").and_then(Value::as_str) == Some(CLIENT_HELLO_METHOD)
-                {
-                    // Recorded BEFORE the request is forwarded, so the reply can never win the
-                    // race against the id it will be matched by.
-                    *seen.lock().expect("the hello id") = request.get("id").cloned();
-                }
-                if writeln!(out, "{line}").is_err() || out.flush().is_err() {
-                    return;
-                }
-            }
-        })
-    };
-    let mut out = client;
-    for line in BufReader::new(daemon).lines().map_while(Result::ok) {
-        let mut answer = line.clone();
-        if let Ok(Value::Object(mut reply)) = serde_json::from_str::<Value>(&line) {
-            let wanted = hello.lock().expect("the hello id").clone();
-            let matches = wanted.is_some() && reply.get("id").cloned() == wanted;
-            if matches && reply.get("result").is_some_and(Value::is_object) {
-                reply["result"][sprag_rpc::BUILD_FIELD] = json!(build);
-                answer = Value::Object(reply).to_string();
-            }
-        }
-        if writeln!(out, "{answer}").is_err() || out.flush().is_err() {
-            break;
-        }
-    }
+/// ⚠⚠ **It is [`sprag_peer`]'s peer rather than a relay written here**, which is that crate's whole
+/// argument: four suites had each hand-written a stand-in daemon and drifted into three different
+/// meanings of *"older"*. A fifth relay living in one test file would have been the same mistake,
+/// and it is what item 474 needed to borrow — the agent-facing mouth is gated in another package
+/// and cannot reach a fixture private to this one.
+fn skewed_daemon(real: &std::path::Path, build: &str) -> sprag_peer::OldDaemon {
+    sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        real,
+        sprag_peer::Missing::answering(&[(sprag_rpc::BUILD_FIELD, json!(build))]),
+    )
 }
 
 /// ⚠⚠⚠⚠⚠ **A PERSON IS TOLD WHETHER THE REPORTER THAT ANSWERED IS THIS DAEMON'S IMAGE** — register
@@ -4453,7 +4364,7 @@ fn relay(client: std::os::unix::net::UnixStream, real: &std::path::Path, build: 
 /// * **IS this image** — put there by the REAL `sprag hook claude` against the real daemon, so the
 ///   build in the row is one process's true stamp compared against another's.
 /// * **is NOT** — the SAME report, read back through a daemon whose stated build differs
-///   ([`SkewedDaemon`], whose doc argues why no cheaper fixture is honest). Nothing about the
+///   ([`skewed_daemon`], whose doc argues why no cheaper fixture is honest). Nothing about the
 ///   reporter changes between this arm and the one above; only the daemon does, which is what makes
 ///   the two sentences attributable to the comparison rather than to the report.
 /// * **DID NOT SAY** — a report that OMITS the key, which is the exact wire every hook older than
@@ -4508,8 +4419,8 @@ fn a_person_is_told_whether_the_reporter_that_answered_is_this_daemons_image() {
     );
 
     // ── ARM 2: the same report, read against a daemon built from other code. ──
-    let skewed = SkewedDaemon::in_front_of(&sock, NOT_THIS_IMAGE);
-    let (ok, skew) = sprag_cli_output(skewed.socket(), &["agent", "0"], &[], "");
+    let skewed = skewed_daemon(&sock, NOT_THIS_IMAGE);
+    let (ok, skew) = sprag_cli_output(skewed.sock(), &["agent", "0"], &[], "");
     assert!(ok, "`sprag agent 0` succeeded through the relay: {skew:?}");
     assert!(
         skew.contains("NOT THIS DAEMON'S IMAGE"),

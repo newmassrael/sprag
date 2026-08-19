@@ -124,7 +124,20 @@ pub struct Missing {
     /// in would agree with every real daemon this repository can start. A peer that publishes a
     /// DIFFERENT ceiling is the only witness that can disagree.
     ///
-    /// Top level of `result`, like [`answer_keys`](Self::answer_keys).
+    /// # ⚠⚠⚠⚠⚠ Its sharpest use is the HANDSHAKE, and it is the only fixture that can stage that
+    ///
+    /// [`sprag_rpc::BUILD_FIELD`] rides on the hello reply, and it names **which image the daemon
+    /// is** — a fact the register (items 412, 473, 474) needs a surface to compare a reporter
+    /// against. One `cargo build` cannot produce that skew: the build is stamped into every binary
+    /// linking `sprag-rpc` at compile time, so a daemon and a hook built together are one image by
+    /// construction. Compiling a second image inside a suite is the defect item 467 removed, and an
+    /// env override on the stamp is the lie `build.rs` refuses a dirty-tree flag over. Answering the
+    /// handshake's `build` differently is what is left, and it leaves every other byte alone.
+    ///
+    /// Top level of `result`, like [`answer_keys`](Self::answer_keys) — and that boundary is
+    /// load-bearing for this use: a pane listing's `result` is an ARRAY, so a reporter's own `build`
+    /// in a pane row is out of reach here. This peer can make the DAEMON say something else and can
+    /// never forge what a reporter said.
     pub answer_values: Vec<(String, Value)>,
 }
 

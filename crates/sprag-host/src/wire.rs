@@ -1813,6 +1813,78 @@ pub const AGENT_TRANSCRIPT_KEY: &str = "transcript";
 /// evidence, since a refused report is one that never says which build it was.
 pub const AGENT_BUILD_KEY: &str = "build";
 
+/// **WHICH OF FOUR THINGS IS TRUE** about the reporter that produced a pane's verdict, once the
+/// party holding both builds has compared them — [`AGENT_BUILD_KEY`]'s judgement, as data.
+///
+/// # ⚠⚠⚠⚠⚠ The arithmetic is shared and the PROSE deliberately is not
+///
+/// Two mouths render this and they answer different readers. `sprag agent <pane>` writes a
+/// sentence for a person standing at the daemon's own command line. `sprag-mcp`'s `agent_state`
+/// and `agent_explain` write one for a sibling AI, and that one has to name WHOSE build it
+/// compared — an MCP server is a SIBLING of the daemon rather than the daemon itself, so *"this
+/// daemon"* would leave an agent guessing which of three images the word means (register item 438
+/// cost a round to exactly that confusion; item 474 is the round that gave the second mouth these
+/// sentences at all).
+///
+/// What they must NOT do is count differently, and counting is where this repository has already
+/// been wrong: the register said three answers and the product needed four — discovered one round
+/// after the item was filed, because [`crate::wire::BUILD_FIELD`] is additive and a daemon that
+/// predates it answers no build of its OWN. So the comparison is made once, here, and each surface
+/// words the arm it is handed. A mouth that grew a fifth case or folded two into one stops
+/// compiling.
+///
+/// ⚠ Borrowed rather than owned: both halves are already held by whoever asks (a pane row and a
+/// connection's hello), and this decides between them rather than storing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReporterImage<'a> {
+    /// The reporter stated a build and it is the comparing daemon's — the verdict came from the
+    /// code that daemon is running.
+    SameImage {
+        /// The one build both of them are.
+        build: &'a str,
+    },
+    /// **THE ONE A READER MUST ACT ON.** Both stated a build and they differ: the verdict outranks
+    /// the screen and was produced by code the daemon has never run, which is the ORDINARY state
+    /// after a `cargo build` replaced the hook binary under a live daemon.
+    ///
+    /// ⚠ BOTH are carried, because naming one of them tells a reader nothing about which is which.
+    OtherImage {
+        /// What the reporter said it is.
+        reporter: &'a str,
+        /// What the daemon holding the verdict said IT is.
+        daemon: &'a str,
+    },
+    /// The reporter stated a build and the DAEMON did not, so nobody can compare. Reachable only
+    /// against a daemon predating [`crate::wire::BUILD_FIELD`] — and rendering it as agreement
+    /// would be a client inventing an answer that daemon could not give.
+    DaemonSilent {
+        /// What the reporter said it is, with nothing to hold it against.
+        reporter: &'a str,
+    },
+    /// **THE ARM A TIDY-LOOKING EDIT FOLDS INTO [`SameImage`](Self::SameImage).** The reporter said
+    /// nothing about its build, which is *it did not say* and never *it matches* — every reporter
+    /// older than [`AGENT_BUILD_KEY`] answers exactly this, and so does a person typing `sprag
+    /// report-agent`.
+    ReporterSilent,
+}
+
+/// Compare a reporter's stated build against the build of the daemon that holds its verdict.
+///
+/// Pure, and takes the two facts rather than a connection, so every answer is reachable from a
+/// test — including the two that no live daemon on a developer's machine can be made to produce.
+/// See [`ReporterImage`] for why the four arms are four.
+#[must_use]
+pub fn reporter_image<'a>(reporter: Option<&'a str>, daemon: Option<&'a str>) -> ReporterImage<'a> {
+    match (reporter, daemon) {
+        (Some(reporter), Some(daemon)) if reporter == daemon => {
+            ReporterImage::SameImage { build: reporter }
+        }
+        (Some(reporter), Some(daemon)) => ReporterImage::OtherImage { reporter, daemon },
+        (Some(reporter), None) => ReporterImage::DaemonSilent { reporter },
+        (None, _) => ReporterImage::ReporterSilent,
+    }
+}
+
 /// The key carrying WHAT A BLOCKED PEER IS ASKING — on a pane's `agent` object and on a run's
 /// outcome alike.
 ///
