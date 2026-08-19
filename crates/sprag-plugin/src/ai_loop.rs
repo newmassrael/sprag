@@ -5883,7 +5883,14 @@ mod tests {
         //
         // ⚠⚠ It is an EXCEPTION rather than a loosening: without it this assertion would have to
         // become *"a subset of ALL"*, which is satisfied by a gate that arranges nothing.
-        const AUTHORED_IN_THE_DOCUMENT: [ReflectReason; 1] = [ReflectReason::Capacity];
+        // ⚠⚠⚠ A SECOND EXCEPTION, AND IT CARRIES THE SAME DEBT THE FIRST ONE DOES: `Refused` needs
+        // the document's `reflect_after_refusals` authored small enough to reach inside a bounded
+        // walk, which no `Brief` can say — so the run that renders that word is
+        // `a_claim_refused_to_the_ceiling_reflects_rather_than_buying_another_turn` in `outer.rs`,
+        // which drives a real pump against a real checker and asserts this same rendering, with the
+        // ceiling-out-of-reach control beside it. Register item 449.
+        const AUTHORED_IN_THE_DOCUMENT: [ReflectReason; 2] =
+            [ReflectReason::Capacity, ReflectReason::Refused];
         let covered: std::collections::BTreeSet<ReflectReason> =
             arms.iter().map(|(_, reason, _)| *reason).collect();
         assert_eq!(

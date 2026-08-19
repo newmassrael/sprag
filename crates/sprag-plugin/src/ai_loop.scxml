@@ -1019,9 +1019,37 @@
     -->
     <data id="turn_within_ms" expr="1800000"/>
 
+    <!--
+      ⚠⚠⚠⚠⚠ HOW MANY TIMES IN A ROW A CHECK MAY REFUSE BEFORE THE RUN REFLECTS
+      — register item 449, and the number that stops a refusal being a wall.
+
+      A refusal buys ONE MORE TURN (`judging`'s refusing edge, and item 428's
+      whole point), and until this existed it bought them without limit while
+      preempting every other way out. **Measured on run 16: nine consecutive
+      refusals across seventeen iterations, each one 1129 identical bytes, and
+      the run left the state only because a person pressed Escape.**
+
+      ⚠⚠⚠ THREE, AND NOT ONE. One would end the buying that item 428 exists to
+      do; two is an agent that fixed it on the second attempt, which happens. By
+      the THIRD identical refusal there is no evidence in the run that anything
+      is converging — and today the agent is not even told it was refused
+      (item 448), so the third is generous rather than hasty.
+
+      ⚠⚠ IT IS THE KIND'S TO AUTHOR, like `max_turns` and `reflect_every`: how
+      patient to be with a checker is a judgement about the work, not about the
+      loop. ⚠ A kind that sets it to 0 or 1 gets a reflection on the first
+      refusal, which is a choice this document allows and does not recommend.
+    -->
+    <data id="reflect_after_refusals" expr="3"/>
+
     <!-- ── below the line: loop bookkeeping, not authored ── -->
     <data id="turns" expr="0"/>
     <data id="turns_since_reflect" expr="0"/>
+    <!--
+      ⚠ CONSECUTIVE refusals, cleared when the run reflects — see
+      `reflect_after_refusals` above and `reflecting`'s own `onentry`.
+    -->
+    <data id="refusals" expr="0"/>
     <!--
       ⚠⚠⚠ WHAT THE INNER SESSION HAS BEEN CHARGED TO READ, as of its last billed
       request. Written by the driver on every `turn.done` and by nothing else.
@@ -2249,7 +2277,50 @@
       driver puts the difference in words on the edge itself, beside the reason
       the edge was taken rather than instead of it (`Pumped::Moved`'s `checked`).
     -->
+    <!--
+      ⚠⚠⚠⚠⚠ AND A RUN THAT KEEPS BEING REFUSED HAS TO BE ABLE TO LEAVE —
+      register item 449, watched live and paid for by a human keystroke.
+
+      The edge below buys ONE MORE TURN per refusal, which is right. What it
+      could not do was STOP buying: SCXML takes the first enabled transition, so
+      while `checked == 'failed'` held, every escape further down this list —
+      `max_turns`, the screened edge, capacity, and the reflection cadence — was
+      **never evaluated at all**. Run 16 was refused on iterations 6, 8, 10 … 22
+      — NINE times, at 1129 identical bytes each — and passed a
+      `reflect_every` of 5 TWICE with nothing firing. It did not get out by
+      itself; the owner pressed Escape in the pane. **A loop built to run
+      unattended needed a person to leave a state its own document could not
+      leave.**
+
+      ⚠⚠⚠⚠ SO THE CEILING SENDS IT TO `reflecting`, WHICH IS THE POINT rather
+      than a convenient target: reflection is how this document replaces a
+      session, and the owner's question was *"왜 다음 세션으로 안 넘어가고 같은
+      세션에서 계속 반복되는거야?"*. Session replacement is reached THROUGH
+      here, so **the one situation where a run most needs a fresh session was
+      the one situation where it could not get one.**
+
+      ⚠⚠⚠ IT DOES NOT END THE RUN, and that is the other half. A refusal buying
+      one more turn is item 428 working; a ceiling that ended the run on the
+      third would throw away the turn the check was asking for. This buys a
+      REFLECTION — a fresh look, and possibly a fresh session — and the run
+      carries on.
+
+      ⚠⚠ ITS OWN COUNT AND NOT `turns_since_reflect`. Reusing the cadence would
+      make one refusal spend the improvement budget, which is a different
+      decision wearing the same number — the mistake `reflect_every` was split
+      out of.
+
+      ⚠ `refusals + 1`, because the increment belongs to the edge below and this
+      one fires INSTEAD of it: the question here is *would this refusal be the
+      Nth*, asked before the count has taken it.
+    -->
+    <transition event="judge"
+                cond="_event.data.done &amp;&amp; _event.data.checked == 'failed' &amp;&amp; refusals + 1 &gt;= reflect_after_refusals"
+                target="reflecting">
+      <assign location="reflect_reason" expr="'refused'"/>
+    </transition>
     <transition event="judge" cond="_event.data.done &amp;&amp; _event.data.checked == 'failed'" target="working">
+      <assign location="refusals" expr="refusals + 1"/>
       <send event="prompt.turn"/>
     </transition>
     <transition event="judge" cond="_event.data.done" target="reflecting">
@@ -2485,6 +2556,15 @@
   <state id="reflecting">
     <onentry>
       <assign location="turns_since_reflect" expr="0"/>
+      <!--
+        ⚠⚠⚠ AND THE REFUSAL STREAK, cleared here for the reason directly below
+        and one of its own: the ceiling buys a REFLECTION and not an ending, so
+        a run that has just had one starts counting again. Cleared on ENTRY, so
+        it is cleared however this state was reached — the ceiling, the cadence,
+        a passing check — and a streak cannot survive a reflection that answered
+        `reflect.none` and went back to work.
+      -->
+      <assign location="refusals" expr="0"/>
       <!--
         ⚠⚠ BOTH REASONS TO BE HERE ARE CLEARED ON ENTRY, not on the way out. A
         reflection that finds nothing worth changing answers `reflect.none` and

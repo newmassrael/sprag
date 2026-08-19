@@ -361,6 +361,15 @@ const REFLECT_REASON: &str = "reflect_reason";
 #[cfg(test)]
 const CONTEXT_CEILING: &str = "context_ceiling";
 
+/// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE BEFORE THE RUN REFLECTS** — the document's own
+/// bound, register item 449.
+///
+/// ⚠ `#[cfg(test)]` for [`CONTEXT_CEILING`]'s reason exactly: nothing in this driver reads it, the
+/// DOCUMENT does, and the only reader here is the gate that has to author a smaller one than the
+/// shipped three to reach the arm in a bounded number of turns.
+#[cfg(test)]
+const REFLECT_AFTER_REFUSALS: &str = "reflect_after_refusals";
+
 /// The datamodel variable saying **WHICH CEILING ended the run** — written by whichever `judge`
 /// transition reached `stopping`, and read by two parties that must not disagree: the document's own
 /// `stopping` composes the sentence its agent is asked out of it, and [`OuterLoop::stopping_because`]
@@ -1146,15 +1155,33 @@ pub enum ReflectReason {
     /// cannot fire exactly when the loop can see least. The alternative would reflect on every turn
     /// of every run whose transcript is unreadable, replacing sessions that may be nearly empty.
     Capacity,
+    /// **A CHECK HAS REFUSED THIS RUN'S CLAIM TOO MANY TIMES IN A ROW** — `refusals` reached
+    /// `reflect_after_refusals`, so the loop stops buying turns and takes a fresh look. Register
+    /// item 449.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The reason that exists because a run could not leave a state at all
+    ///
+    /// The refusing edge sits ABOVE every escape in `judging`, and SCXML takes the first enabled
+    /// transition — so while a check kept saying no, `max_turns`, the screened edge, capacity and
+    /// the reflection cadence were **never evaluated**. Watched live: nine consecutive refusals over
+    /// seventeen iterations, `reflect_every` passed twice with nothing firing, and the run left only
+    /// because a PERSON pressed Escape in the pane.
+    ///
+    /// ⚠⚠⚠ It is a reflection and not an ending, which is the whole shape of the repair: a refusal
+    /// buying one more turn is item 428 working as designed, and what was missing was a bound on how
+    /// many. Reflection is also how this document REPLACES A SESSION — so the situation where a run
+    /// most needs a fresh one stops being the situation where it cannot get one.
+    Refused,
 }
 
 impl ReflectReason {
     /// Every arm, so the document's words and the readers below are one list.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Milestone,
         Self::Instruction,
         Self::Budget,
         Self::Capacity,
+        Self::Refused,
     ];
 
     /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
@@ -1168,6 +1195,7 @@ impl ReflectReason {
             Self::Instruction => "instruction",
             Self::Budget => "budget",
             Self::Capacity => "capacity",
+            Self::Refused => "refused",
         }
     }
 
@@ -1201,6 +1229,11 @@ impl ReflectReason {
                  `context_ceiling`), so the run is handing over BEFORE the window fills rather than \
                  finding out afterwards — nothing was wrong with the work, and if these handovers \
                  are too frequent the number to change is the ceiling"
+            }
+            Self::Refused => {
+                "an independent check has refused this claim `reflect_after_refusals` times in a \
+                 row, so the loop has stopped buying turns and is taking a fresh look — read what \
+                 the check SAID on those refusals, because the run is not learning from them"
             }
         }
     }
@@ -11258,6 +11291,146 @@ mod tests {
             "⚠⚠⚠ every arm of `RestartReason` must be REACHED by a run here, or this gate is \
              proving three of an unknown number of doors and the register's claim that there are \
              three is folklore",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A CLAIM A CHECK KEEPS REFUSING REACHES `reflecting` INSTEAD OF BUYING TURNS FOR
+    /// EVER** — register item 449, and the state a live run could not leave without a person.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What this is about, watched rather than reasoned
+    ///
+    /// The refusing edge sits ABOVE every escape in `judging`, and SCXML takes the FIRST enabled
+    /// transition — so while `checked == 'failed'` held, `max_turns`, the screened edge, capacity
+    /// and the reflection cadence were **never evaluated at all**. Run 16 was refused on iterations
+    /// 6, 8, 10 … 22 — nine times, 1129 identical bytes each — and passed a `reflect_every` of 5
+    /// TWICE with nothing firing. **It left only because the owner pressed Escape in the pane.**
+    ///
+    /// # ⚠⚠⚠⚠ The control is the same run with the ceiling out of reach
+    ///
+    /// Without it this gate passes on a run that reflected for ANY reason — the cadence, a screened
+    /// dialog, a claim that was finally believed. `reflect_every` is off and `max_turns` is far
+    /// away in both arms, so the ONE difference is the number this item adds, and the control must
+    /// still be buying turns at the pass where the armed run has already reflected.
+    ///
+    /// ⚠⚠ The ceiling is authored SMALLER than the shipped three, in the document's own datamodel —
+    /// [`CONTEXT_CEILING`]'s arrangement one number over. A gate that waited for the shipped value
+    /// would be asserting about a default it never named.
+    #[test]
+    fn a_claim_refused_to_the_ceiling_reflects_rather_than_buying_another_turn() {
+        /// A checker that denies every claim it is shown, so every judgement refuses.
+        const DENIES: &str = "/bin/echo NO";
+        /// Small enough to reach inside a bounded walk, and still more than one — a refusal buying
+        /// ONE more turn is item 428 working, and this item is a bound on how many, not a removal.
+        const CEILING: i64 = 2;
+        /// Out of reach, so the control cannot reflect for this reason however long it runs.
+        const NEVER: i64 = 99;
+
+        /// Drive a run whose every turn claims the milestone and whose every claim is refused, and
+        /// say where it got to and why.
+        fn driven(ceiling: i64) -> (Option<ReflectReason>, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠ ONE prompt to the marker, and the stand-in says it on EVERY turn after — which is
+            // exactly run 16's shape: an agent that goes on claiming what the check goes on
+            // refusing.
+            let (workspace, pane) = standin_agent(1);
+            let access = supervised(&workspace);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    REFLECT_AFTER_REFUSALS,
+                    ScriptValue::Int(ceiling),
+                )
+                .expect("the document's own refusal ceiling is writable");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "the stand-in claims the milestone and a check denies it"
+                        .to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    milestone_check: Some(DENIES.to_string()),
+                    service: None,
+                    // ⚠⚠ BOTH OTHER ESCAPES ARE OUT OF REACH, which is what makes the arm below
+                    // about the refusal ceiling and nothing else.
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut reason = None;
+            while walked.len() < 16 {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        because,
+                        ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if to == AiLoopState::Reflecting {
+                            reason = match because {
+                                Some(Because::Reflected(why)) => Some(why),
+                                _ => None,
+                            };
+                            break;
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            access.lifecycle().expect("lifecycle").close(pane);
+            (reason, walked)
+        }
+
+        let (armed, armed_walk) = driven(CEILING);
+        assert_eq!(
+            armed,
+            Some(ReflectReason::Refused),
+            "⚠⚠⚠⚠⚠ A RUN BEING REFUSED MUST BE ABLE TO LEAVE. The refusing edge preempts every \
+             other way out of `judging`, so without this ceiling the loop buys turns until the \
+             DRIVER's clock ends it — measured live at nine refusals, and the run got out only \
+             because a person pressed Escape. Walked {armed_walk:?}",
+        );
+
+        // ── THE CONTROL: the same run, the ceiling out of reach ──
+        let (never, never_walk) = driven(NEVER);
+        assert_eq!(
+            never, None,
+            "⚠⚠⚠⚠ the control: with the ceiling unreachable this run must STILL be buying turns \
+             where the armed one had already reflected. A reflection here would mean the arm above \
+             passed on the cadence, a dialog, or a claim that was believed — none of which is the \
+             number this item adds. Walked {never_walk:?}",
+        );
+        assert!(
+            never_walk
+                .iter()
+                .filter(|note| note.contains("Judging --Judge--> Working"))
+                .count()
+                > usize::try_from(CEILING).expect("a small ceiling"),
+            "⚠⚠⚠ and it must have refused MORE times than the armed run's ceiling, or the control \
+             is quiet for want of refusals rather than for want of a bound. Walked {never_walk:?}",
         );
     }
 
