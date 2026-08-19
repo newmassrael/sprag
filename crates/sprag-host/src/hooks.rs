@@ -2246,6 +2246,108 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE AGENT STILL USES THE WORD THIS CRATE ACTS ON** — the one gate here that asks the
+    /// INSTALLED AGENT rather than a payload this repository captured.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the captured fixtures cannot answer this, which is the whole reason it exists
+    ///
+    /// Every other gate in this module drives [`captured_idle_notice`] — a payload frozen on
+    /// 2026-08-19. **A frozen payload stays green for ever**, including on the day the agent renames
+    /// the field or the value. That is register item 428's shape at this door: a fixture that
+    /// bypasses the product's own source of truth passes while the door is nailed shut.
+    ///
+    /// ⚠⚠⚠⚠ **AND THE FAILURE WOULD BE SILENT AND EXPENSIVE.** [`report_for`] reads
+    /// [`NOTICE_KIND`]; if that key or [`IDLE_NOTICE`] moves, `is_idle_notice` answers `false`, the
+    /// notice falls through to [`Target::events`], and a resting pane is reported **`blocked`** —
+    /// which is the defect item 452 measured, arriving back with no red anywhere. An unattended run
+    /// then takes `screening` → `awaiting_human` → the `<final>` `blocked`.
+    ///
+    /// # ⚠⚠⚠ Why it is `#[ignore]`d, and why that is not a loophole
+    ///
+    /// It reads a program that is not this repository's and may not be installed at all — a
+    /// contributor without `claude`, and every hosted runner. This workspace's standing arrangement
+    /// for a gate that needs the real world is exactly this: `-- --ignored --test-threads=1`, run
+    /// locally as part of a round. ⚠ It REFUSES rather than skipping when the agent is absent: a
+    /// gate asked to check the live vocabulary and finding no agent has not checked anything, and
+    /// passing there is the vacuity this whole test is about.
+    #[test]
+    #[ignore = "reads the installed agent's own image; run with --ignored"]
+    fn the_installed_agent_still_speaks_the_words_this_crate_reads() {
+        /// Bytes at a time, with an overlap, because the image is hundreds of megabytes and a
+        /// needle can straddle any boundary a reader picks.
+        const CHUNK: usize = 1 << 20;
+
+        let Ok(found) = std::process::Command::new("sh")
+            .args(["-c", "command -v claude"])
+            .output()
+        else {
+            panic!("⚠ this gate needs a shell to locate the agent");
+        };
+        let path = String::from_utf8_lossy(&found.stdout).trim().to_owned();
+        assert!(
+            !path.is_empty(),
+            "⚠⚠⚠ NO `claude` ON PATH, so the live vocabulary could not be read at all. This gate \
+             refuses rather than passing: an agent it cannot find is an agent it has not checked, \
+             and a green here would be the frozen-fixture vacuity it exists to end",
+        );
+        // The launcher on this platform is a symlink to a versioned image; the words are in the
+        // image, so the link is followed rather than read.
+        let image = std::fs::canonicalize(&path).unwrap_or_else(|why| {
+            panic!("⚠ the agent at {path:?} could not be resolved to an image: {why}")
+        });
+
+        let carries = |needle: &str| -> bool {
+            use std::io::Read as _;
+            let Ok(mut file) = std::fs::File::open(&image) else {
+                return false;
+            };
+            let mut window = vec![0_u8; CHUNK + needle.len()];
+            let mut carried = 0_usize;
+            loop {
+                let Ok(read) = file.read(&mut window[carried..]) else {
+                    return false;
+                };
+                if read == 0 {
+                    return false;
+                }
+                let filled = carried + read;
+                if window[..filled]
+                    .windows(needle.len())
+                    .any(|at| at == needle.as_bytes())
+                {
+                    return true;
+                }
+                // Keep the tail so a needle split across two reads is still found.
+                carried = needle.len().saturating_sub(1).min(filled);
+                window.copy_within(filled - carried..filled, 0);
+            }
+        };
+
+        assert!(
+            carries(NOTICE_KIND),
+            "⚠⚠⚠⚠⚠ THE AGENT AT {image:?} NO LONGER CARRIES {NOTICE_KIND:?}. `report_for` reads \
+             that key to tell an idle nag from a dialog; without it EVERY notice becomes `blocked` \
+             again, including the one that means the pane is at REST — register items 452 and 458. \
+             Re-capture the payload, and re-read what the kinds are now",
+        );
+        assert!(
+            carries(IDLE_NOTICE),
+            "⚠⚠⚠⚠⚠ THE AGENT AT {image:?} NO LONGER CARRIES {IDLE_NOTICE:?}. This is the one value \
+             this crate ACTS on: without it a resting pane is reported `blocked`, and an unattended \
+             run walks that to the `<final>` `blocked` with nothing anywhere going red. Find what \
+             the idle notice is called now — `grep -a -o 'notificationType:\"[a-z_]*\"' <image>` is \
+             how the closed set was read in the first place",
+        );
+        // ⚠⚠⚠ AND THE CONTROL: a word nobody has ever put in that image must NOT be found, or this
+        // gate would pass on a reader that answers `true` for anything — the shape a search over a
+        // 300MB file makes very easy to ship.
+        assert!(
+            !carries("sprag_never_wrote_this_word_into_any_agent"),
+            "⚠⚠⚠ the control: this search must be capable of saying NO, or both claims above are \
+             about a function that always agrees",
+        );
+    }
+
     /// ⚠⚠⚠⚠ **AND THE NOTICE'S WORDS SURVIVE** — the half that answers *what does the peer want*.
     ///
     /// `awaiting_human` reports *"the peer is blocked on something this host cannot read as a
