@@ -721,6 +721,26 @@ pub struct AiLoopSpec {
     /// blocked turn to `screening` as before. A run that did not ask for a second agent must not
     /// acquire one, so this crate names no model of its own.
     pub judge: Option<crate::judge::JudgeSpec>,
+    /// **THE STATE DIRECTORY THIS RUN'S REVIEWS KEEP THEIR COUNTS IN**, or [`None`] to keep none.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A BINDING, which is why it is here and not on the [`Brief`]
+    ///
+    /// `context_review.scxml` names the FILE (`ledger_into`) and decides whether to keep counts at
+    /// all; that is the author's, and a caller who wants it elsewhere authors an absolute name.
+    /// **Which machine's state directory a bare name lands in is nobody's judgement** — it is the
+    /// same kind of thing as [`crate::judge::JudgeSpec`]'s argv, and register item 314's rule is
+    /// that argv is a binding where its bound is a decision. Bindings are run arguments.
+    ///
+    /// ⚠⚠ **AND THAT IS THE EXCEPTION [`AiLoopSpec::driving`] STATES**: it is the one field here
+    /// that is not a predicate about the peer. It cannot be — nothing about an agent CLI says where
+    /// a daemon keeps its files, which is exactly why the value has to arrive from whoever knows.
+    ///
+    /// ⚠⚠⚠ [`None`] KEEPS NOTHING, and that default is load-bearing rather than tidy. It used to be
+    /// *the ambient `$XDG_STATE_HOME`*, resolved inside [`crate::review`] where no caller could see
+    /// it, so every gate that walked `reviewing` appended to the home of whoever ran the suite —
+    /// thirty lines from one crate's tests, measured 2026-08-19. A run that never says where its
+    /// counts go now keeps none, and the daemon that knows says so once.
+    pub review_ledger: Option<std::path::PathBuf>,
 }
 
 impl AiLoopSpec {
@@ -741,11 +761,17 @@ impl AiLoopSpec {
             // HERE, and none of them does now: they are the document's, through
             // [`Brief::may_answer`], [`Brief::await_person_ms`], [`Brief::ready_timeout_ms`] and
             // [`Brief::turn_within_ms`]. What is left on this spec is what BINDS a run to its
-            // pane rather than what a person decided in advance — and every field of it is now a
-            // predicate about the peer, which is register item 300's line.
+            // pane rather than what a person decided in advance — and every field of it is a
+            // predicate about the peer EXCEPT the two the doc names, which is register item 300's
+            // line plus the exceptions 314 and this round found by checking the sentence.
             // ⚠ NO JUDGE. A judge is a second agent with a bill; naming one here would have
             // every loop built from this constructor quietly acquire one.
             judge: None,
+            // ⚠⚠⚠ AND NO LEDGER, for the same shape of reason one field up: a spec built from an
+            // agent's NAME cannot know where a machine keeps state, and a constructor that guessed
+            // would have every loop built from it write a directory its caller never named. The
+            // daemon says so — see [`Self::review_ledger`], where the guess used to live.
+            review_ledger: None,
         }
     }
 }
@@ -2382,6 +2408,13 @@ pub struct OuterLoop {
     /// make the words a run types into somebody's dialog a round trip through a script engine that
     /// has already been measured mangling non-ASCII once.
     claimed: Option<crate::judge::JudgedRule>,
+    /// **WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS** — [`AiLoopSpec::review_ledger`]'s value, and
+    /// [`None`] for a run that named no directory, which keeps none.
+    ///
+    /// ⚠ Carried rather than re-read, because there is nowhere to re-read it FROM: it is the one
+    /// thing about a review that is not the document's, and [`crate::review`]'s own `ledger_path`
+    /// holds why this crate must not go looking for it in the environment.
+    review_ledger: Option<std::path::PathBuf>,
     /// **WHEN THIS RUN STARTED WAITING FOR A PERSON**, or [`None`] when it is not waiting.
     ///
     /// ⚠⚠ [`attend`](Self::attend) is the only reader AND the only writer, which is what keeps it
@@ -2703,6 +2736,7 @@ impl OuterLoop {
             done_when: spec.done_when,
             shows_the_prompt: spec.shows_the_prompt,
             judge: spec.judge.clone(),
+            review_ledger: spec.review_ledger.clone(),
             claimed: None,
             awaiting: None,
             outage: None,
@@ -2717,6 +2751,15 @@ impl OuterLoop {
             witnessed: None,
             told: Told::default(),
         })
+    }
+
+    /// **WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS** — [`AiLoopSpec::review_ledger`] as it was
+    /// given, or [`None`] for a run that keeps none. See
+    /// [`AiLoop::keeping_counts_in`](crate::AiLoop::keeping_counts_in), which holds why an
+    /// unobservable binding is one that can be dropped without anybody noticing.
+    #[must_use]
+    pub fn keeping_counts_in(&self) -> Option<&std::path::Path> {
+        self.review_ledger.as_deref()
     }
 
     /// **WAS THE TURN IN FLIGHT EVER ACTUALLY ASKED?** — [`false`] for a prompt that reached the
@@ -5057,7 +5100,12 @@ impl OuterLoop {
     /// the next session with. None of them is a reason to stop a run that was working — see
     /// `reviewing`, which deliberately has no edge to `failed`.
     fn review(&mut self) -> Raise {
-        let Some(mut review) = crate::review::ContextReview::new(Arc::clone(&self.script)) else {
+        // ⚠⚠ THE DIRECTORY IS THE RUN'S, HANDED DOWN — never resolved from this process's
+        // environment. A run that named none keeps no counts, which is what makes every gate below
+        // safe to walk through `reviewing` without appending to somebody's home directory.
+        let Some(mut review) =
+            crate::review::ContextReview::new(Arc::clone(&self.script), self.review_ledger.clone())
+        else {
             return AiLoopEvent::ReviewNone.into();
         };
         // ⚠ The CLOSED sessions only. The one being driven has not ended, and counting a transcript
@@ -6882,6 +6930,13 @@ mod tests {
             // ⚠ AND NO JUDGE, for the same reason: a judge would put a spawned agent in the middle
             // of every blocked turn these gates drive.
             judge: None,
+            // ⚠⚠⚠⚠⚠ AND NO LEDGER, WHICH IS WHAT KEEPS THIS SUITE OUT OF SOMEBODY'S HOME. Several
+            // gates below walk `reviewing`, and the review kept its counts under the AMBIENT
+            // `$XDG_STATE_HOME` until this field existed — twenty-nine lines appended to the home
+            // of whoever ran `cargo test`, measured 2026-08-19, which is the write CI's
+            // `ambient-home-guard` had been failing on. A gate that WANTS the counts names a
+            // directory of its own; none of these does.
+            review_ledger: None,
         }
     }
 
@@ -7816,6 +7871,87 @@ mod tests {
             .lifecycle()
             .expect("lifecycle")
             .close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **`reviewing` KEEPS ITS COUNTS WHERE THE RUN SAID, AND NOWHERE AT ALL WHEN IT SAID
+    /// NOTHING** — the driver's half of a wire whose other half is
+    /// [`crate::review::ledger_path`], and the half no gate held while it was wrong.
+    ///
+    /// # ⚠⚠⚠ Why the ABSENT case is the one that matters, and why it was invisible
+    ///
+    /// [`crate::review::ContextReview`] is built and dropped inside [`OuterLoop::review`], so the
+    /// destination it writes to is reachable from nowhere a gate can see. It used to be the
+    /// AMBIENT `$XDG_STATE_HOME`, resolved a library down — which meant **every gate in this module
+    /// that walks `reviewing` appended a line to the home of whoever ran the suite.** Measured
+    /// 2026-08-19: thirty lines from one `cargo test -p sprag-plugin --lib`, twenty-nine of them
+    /// from gates that have nothing to do with ledgers, and 179 lines standing in a shared build
+    /// machine's real `~/.local/state`. CI's `ambient-home-guard` is what finally said so.
+    ///
+    /// ⚠⚠ A test cannot be that guard — `$XDG_STATE_HOME` is process-global, so a test can neither
+    /// observe nor isolate what the tests beside it do to it, which is `sprag_gate`'s whole reason
+    /// for being a separate process. So this gate measures the SEAM instead: given a directory the
+    /// counts land in it, given none they land nowhere, and both readings are taken against a
+    /// directory this gate owns and can prove the state of.
+    ///
+    /// ⚠⚠⚠ **BOTH HALVES OR NEITHER IS WORTH ANYTHING.** *Keeps nothing* alone is satisfied by a
+    /// `keep` somebody deleted; *keeps something* alone is satisfied by the ambient read this
+    /// replaced. A driver that ignored [`AiLoopSpec::review_ledger`] fails the first; one that
+    /// invented a directory of its own fails the second.
+    #[test]
+    fn reviewing_keeps_its_counts_under_the_directory_the_run_named_and_none_when_it_named_none() {
+        /// One review's effect, run against a loop built with `ledger`, answering what landed in
+        /// `dir` — which nothing but this run can write to.
+        fn counted_in(ledger: Option<std::path::PathBuf>, dir: &std::path::Path) -> usize {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let mut loops = OuterLoop::new(
+                Arc::clone(&lua),
+                pane,
+                &AiLoopSpec {
+                    review_ledger: ledger,
+                    ..spec(None)
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            // ⚠ `reviewing`'s effect, called where the pump would call it. A run with no closed
+            // session reviews `nothing`, which is the majority reading and the one that must STILL
+            // be kept — see `review.rs`'s own gate for why an unkept `nothing` makes *did this get
+            // better?* unanswerable.
+            let _ = loops.review();
+            WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .lifecycle()
+                .expect("lifecycle")
+                .close(pane);
+            std::fs::read_dir(dir).map_or(0, |read| read.count())
+        }
+
+        let named =
+            std::env::temp_dir().join(format!("sprag-reviewing-named-{}", std::process::id()));
+        let unnamed =
+            std::env::temp_dir().join(format!("sprag-reviewing-unnamed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&named);
+        let _ = std::fs::remove_dir_all(&unnamed);
+        std::fs::create_dir_all(&unnamed).expect("a directory nobody was told about");
+
+        assert_eq!(
+            counted_in(Some(named.clone()), &named),
+            1,
+            "⚠⚠⚠⚠ A RUN THAT NAMED A STATE DIRECTORY MUST KEEP ITS COUNTS THERE. Zero here is the \
+             driver dropping `review_ledger` on the floor, and the daemon that fills it in \
+             (`sprag_host::plugins`) would then be the only reader of a value nothing acts on — a \
+             loop whose reviews are never comparable with the next run's",
+        );
+        assert_eq!(
+            counted_in(None, &unnamed),
+            0,
+            "⚠⚠⚠⚠⚠ AND A RUN THAT NAMED NONE MUST WRITE NOTHING ANYWHERE. This is the reading \
+             every other gate in this module takes without knowing it: the failure it catches does \
+             not land here at all, it lands in the home of whoever ran `cargo test`, where no \
+             assertion can see it and only CI's separate-process guard ever could",
+        );
+
+        let _ = std::fs::remove_dir_all(&named);
+        let _ = std::fs::remove_dir_all(&unnamed);
     }
 
     /// **THE GATE FOR WHERE A SESSION IS REPLACED** — register item 424, and the four claims are

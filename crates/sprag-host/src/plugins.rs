@@ -840,6 +840,21 @@ impl PluginsExternal {
                 // bound cannot be spelled on this spec at all, so the two keys could not be read
                 // together even by a caller who wanted them to be.
                 spec.done_when = opt_done_when(map)?.unwrap_or(sprag_plugin::INNER_SESSION_ENDS);
+                // ⚠⚠⚠⚠⚠ WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS, AND THIS IS THE ONLY PLACE
+                // THAT KNOWS. `sprag-plugin` used to read `$XDG_STATE_HOME` itself, one library
+                // down, which made *the daemon's state directory* mean *the home of whoever ran
+                // the process* — so the whole suite appended to a developer's `~/.local/state`
+                // (measured 2026-08-19: thirty lines from one crate, the write CI's
+                // `ambient-home-guard` was red on). The derivation is
+                // [`crate::durability::state_dir`], the one this daemon files every other durable
+                // artifact under, so the counts land beside the snapshot and the run registry
+                // rather than in a second directory of their own.
+                //
+                // ⚠⚠ NOT a wire key. A caller does not choose where this machine keeps its files,
+                // and the document already owns the two decisions that ARE a caller's: whether to
+                // keep counts at all and what to call the file (`ledger_into`, which overrides
+                // this outright when it is authored absolute).
+                spec.review_ledger = Some(crate::durability::state_dir());
                 if !declined(map, "shows_prompt") {
                     spec.shows_the_prompt = map["shows_prompt"]
                         .as_bool()
@@ -2237,6 +2252,68 @@ mod tests {
     /// adding a third clause to their own document does not have to come and edit a number here —
     /// and so this cannot pass by agreeing with a literal that drifted.
     ///
+    /// ⚠⚠⚠⚠⚠ **A LOOP THIS DAEMON STARTS KEEPS ITS REVIEWS' COUNTS IN THIS DAEMON'S STATE
+    /// DIRECTORY** — the one line only the daemon can write, gated where dropping it would be
+    /// invisible.
+    ///
+    /// # ⚠⚠⚠ Why the library must NOT answer this and once did
+    ///
+    /// `context_review.scxml` authors a bare file name and says a driver resolves it *"against the
+    /// daemon's state directory"*. `sprag-plugin` implemented that by reading `$XDG_STATE_HOME`
+    /// itself — so under `cargo test`, where there is no daemon, *the daemon's state directory*
+    /// meant **the home of whoever ran the suite**. Measured 2026-08-19: thirty lines per
+    /// `cargo test -p sprag-plugin --lib`, and 179 standing in a shared build machine's real
+    /// `~/.local/state/sprag/context-review.jsonl`. CI's `ambient-home-guard` had been failing on
+    /// exactly that write.
+    ///
+    /// The library cannot name a home any more, which is the fix. **What that moves here is the
+    /// power to forget**: a daemon that drops the assignment builds a run which comes up looking
+    /// perfectly configured, reviews normally, and keeps counts nobody can ever compare with the
+    /// next run's — [`sprag_plugin::AiLoop::keeping_counts_in`]'s whole reason, and the same shape
+    /// as the consents gate below it.
+    ///
+    /// ⚠⚠ Compared against [`crate::durability::state_dir`] rather than against a literal, because
+    /// a literal here would be a SECOND derivation of the path — the exact duplication that
+    /// function exists to prevent — and would drift the day the state directory moves.
+    #[test]
+    fn a_loop_this_daemon_starts_keeps_its_counts_in_this_daemons_state_directory() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let asked = ai_loop_request(pane, json!({}));
+        let (built, _label) = external
+            .build_plugin(asked.as_object().expect("an object"))
+            .expect("a plain ai_loop request is well-formed");
+        let PluginKind::AiLoop(loops) = built else {
+            panic!("the control: an `ai_loop` request builds an ai_loop");
+        };
+
+        let expected = crate::durability::state_dir();
+        assert!(
+            expected.is_absolute(),
+            "⚠⚠⚠ THE CONTROL: a state directory that is not absolute would make the assertion \
+             below pass while the counts landed relative to whatever directory the daemon happened \
+             to be started in. Got {expected:?}",
+        );
+        assert_eq!(
+            loops.keeping_counts_in(),
+            Some(expected.as_path()),
+            "⚠⚠⚠⚠⚠ A RUN THIS DAEMON BUILT MUST CARRY THIS DAEMON'S STATE DIRECTORY. `None` here \
+             is the daemon's one line gone: nothing fails, no run stops, and the loop simply stops \
+             keeping the readings that make *is this getting better?* a question with an answer. \
+             Any OTHER directory is a second derivation of a path this daemon already owns",
+        );
+    }
+
     /// ⚠⚠ AND THE CONTROL IS THE OTHER DIRECTION: a caller who DOES name consents must still win.
     /// Without it, "the kind is consulted" and "the kind always wins" are the same green, and the
     /// second one silently discards what a caller asked for.

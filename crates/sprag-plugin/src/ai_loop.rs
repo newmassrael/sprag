@@ -232,6 +232,19 @@ impl AiLoop {
         self.inner.authored()
     }
 
+    /// **WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS**, or [`None`] for a run that keeps none.
+    ///
+    /// ⚠⚠⚠ Here for [`consenting`](Self::consenting)'s reason exactly, and it is the same failure
+    /// one field over: **a carrier nothing can observe is a carrier that can quietly drop what it
+    /// carries.** Only the daemon knows its own state directory, it says so in one line
+    /// (`sprag_host::plugins`), and a run built without that line looks identical from out here —
+    /// it comes up configured, reviews normally, and keeps counts nobody can compare with the next
+    /// run's. This is what lets a gate see the difference.
+    #[must_use]
+    pub fn keeping_counts_in(&self) -> Option<&std::path::Path> {
+        self.inner.keeping_counts_in()
+    }
+
     /// **WHICH DIALOGS THIS RUN MAY ANSWER**, read live off its datamodel — or [`None`] for a run
     /// that answers none.
     ///
@@ -1171,6 +1184,10 @@ mod tests {
             // every blocked turn takes the `screening` edge. A stand-in gate that acquired one
             // would spawn a real agent per dialog, which is what these gates exist to avoid.
             judge: None,
+            // ⚠⚠⚠ AND NO LEDGER: a stand-in that kept counts would keep them under the AMBIENT
+            // state home, which is the home of whoever ran the suite. See
+            // [`AiLoopSpec::review_ledger`], where that used to happen with no way to say no.
+            review_ledger: None,
         }
     }
 

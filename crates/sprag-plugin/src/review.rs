@@ -340,13 +340,29 @@ impl Review {
     }
 }
 
-/// **WHERE A BARE LEDGER NAME LIVES** — the daemon's state directory.
+/// **WHERE A BARE LEDGER NAME LIVES** — under `state`, the directory the driver was HANDED.
 ///
 /// ⚠ Mechanism, not policy: `context_review.scxml` decides whether to keep the counts and what to
 /// call them, and this decides where a machine's state goes — the same split
 /// [`crate::spend::record_of`] already makes when it resolves an agent's own record under
 /// `$HOME/.claude/projects` from a name the agent chose.
-fn ledger_path(named: &str) -> Option<std::path::PathBuf> {
+///
+/// # ⚠⚠⚠⚠⚠ Why the directory is a PARAMETER, where this crate used to read `$XDG_STATE_HOME`
+///
+/// The document says a bare name is resolved *"against the daemon's state directory"*, and this
+/// resolved it against the AMBIENT one — which is the daemon's only when a daemon is what is
+/// running. Under `cargo test` it is **the home of whoever ran the suite**.
+///
+/// ⚠⚠ Measured 2026-08-19, not argued: one `cargo test -p sprag-plugin --lib` appended THIRTY
+/// lines to `$XDG_STATE_HOME/sprag/context-review.jsonl`. Twenty-nine came from [`crate::outer`]
+/// gates that walk `reviewing` and have no idea this file exists — so *"the test that forgot"* was
+/// never the shape of it, and CI's `ambient-home-guard` had been red on exactly this.
+///
+/// **A library that resolves the ambient environment behind its caller decides something that is
+/// not its to decide, and no call site can opt out of it.** So the directory is handed in — by
+/// [`crate::AiLoopSpec::review_ledger`], which a daemon fills from its own state directory — and
+/// [`None`] keeps nothing. The suite cannot write a home this crate can no longer name.
+fn ledger_path(named: &str, state: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
     if named.is_empty() {
         return None;
     }
@@ -354,13 +370,7 @@ fn ledger_path(named: &str) -> Option<std::path::PathBuf> {
     if named.is_absolute() {
         return Some(named.to_path_buf());
     }
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| std::path::PathBuf::from(home).join(".local").join("state"))
-        })?;
-    Some(state.join("sprag").join(named))
+    Some(state?.join(named))
 }
 
 /// A run of `context_review.scxml` against one run's closed sessions.
@@ -386,16 +396,27 @@ pub struct ContextReview {
     machine: Engine<ContextReviewPolicy>,
     script: Arc<dyn IScriptEngine>,
     session: String,
+    /// **THE STATE DIRECTORY A BARE `ledger_into` RESOLVES UNDER**, or [`None`] to keep nothing.
+    ///
+    /// ⚠ Held rather than read from the environment, and [`ledger_path`] carries the whole reason.
+    state: Option<std::path::PathBuf>,
 }
 
 impl ContextReview {
-    /// A review over the compiled document, or [`None`] when its script session cannot be opened.
+    /// A review over the compiled document, keeping its counts under `state` — or [`None`] when
+    /// the document's script session cannot be opened.
+    ///
+    /// ⚠⚠ `state` is where a BARE `ledger_into` lands, which is the shipped document's; [`None`]
+    /// keeps nothing at all. An absolute `ledger_into` is honoured whatever this says. This
+    /// module's own `ledger_path` is where the whole argument for a parameter over an ambient read
+    /// is written down.
     #[must_use]
-    pub fn new(script: Arc<dyn IScriptEngine>) -> Option<Self> {
+    pub fn new(script: Arc<dyn IScriptEngine>, state: Option<std::path::PathBuf>) -> Option<Self> {
         let mut machine = Engine::new(ContextReviewPolicy::new(Arc::clone(&script)));
         machine.initialize();
         let session = machine.policy().session_id.clone()?;
         Some(Self {
+            state,
             machine,
             script,
             session,
@@ -583,7 +604,7 @@ impl ContextReview {
     /// and a run that could not open its state directory has still done its work; turning that into
     /// a `fail` would stop a loop over a file nobody was waiting on.
     fn keep(&self, review: &Review) {
-        let Some(path) = ledger_path(&self.text("ledger_into")) else {
+        let Some(path) = ledger_path(&self.text("ledger_into"), self.state.as_deref()) else {
             return;
         };
         if let Some(parent) = path.parent() {
@@ -607,7 +628,7 @@ mod ledger_tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{ContextReview, Ending};
+    use super::{ContextReview, Ending, ledger_path};
 
     /// ⚠⚠⚠ **A REVIEW THAT FOUND NOTHING STILL LEAVES ITS COUNTS BEHIND** — the one property that
     /// makes *did this get better?* a question with an answer.
@@ -625,8 +646,10 @@ mod ledger_tests {
     #[test]
     fn a_review_that_carries_nothing_still_keeps_what_it_counted() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ NO STATE DIRECTORY, and the `ledger_into` below is absolute, so what this measures is
+        // the route a caller who names a file takes — see [`ledger_path`].
         let mut review =
-            ContextReview::new(Arc::clone(&lua)).expect("the document opens a session");
+            ContextReview::new(Arc::clone(&lua), None).expect("the document opens a session");
 
         let into = std::env::temp_dir()
             .join("sprag-review-gate")
@@ -688,6 +711,98 @@ mod ledger_tests {
         let _ = std::fs::remove_file(&into);
     }
 
+    /// ⚠⚠⚠⚠⚠ **A REVIEW THAT WAS HANDED NO STATE DIRECTORY WRITES NOTHING ANYWHERE** — the
+    /// property that keeps this whole suite out of the home of whoever ran it.
+    ///
+    /// # Why the shipped document alone cannot decide this
+    ///
+    /// `context_review.scxml` authors `ledger_into` as a BARE name (`context-review.jsonl`), which
+    /// is right: an author names the file, and cannot know which machine's state directory it
+    /// belongs under. [`ledger_path`] used to answer that question by reading `$XDG_STATE_HOME`
+    /// itself — so *the daemon's state directory* silently meant *the ambient one*, and under
+    /// `cargo test` there is no daemon. **Measured 2026-08-19: `cargo test -p sprag-plugin --lib`
+    /// appended THIRTY lines to `$XDG_STATE_HOME/sprag/context-review.jsonl`**, twenty-nine of them
+    /// from [`crate::outer`] gates that walk `reviewing` and never heard of this file. That is the
+    /// write CI's `ambient-home-guard` had been failing on, and no test could have caught it: the
+    /// variable is process-global, so a test can neither observe nor isolate what its neighbours do
+    /// to it — which is why that guard is a separate process and this gate is about the SEAM.
+    ///
+    /// ⚠⚠ So the subject here is an ABSENCE, and it is asserted the only way an absence can be:
+    /// against a directory this gate owns and can therefore prove is still empty. A version that
+    /// re-read the environment fails it — [`None`] is the only thing that can mean *keep nothing*
+    /// once the crate has no second place to look.
+    #[test]
+    fn a_review_handed_no_state_directory_keeps_its_counts_nowhere() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut review =
+            ContextReview::new(Arc::clone(&lua), None).expect("the document opens a session");
+
+        // The shipped `ledger_into` is left exactly as the document authors it — a bare name — so
+        // this is the run every caller who says nothing about a ledger gets.
+        let bare = review.text("ledger_into");
+        assert_eq!(
+            bare, "context-review.jsonl",
+            "⚠⚠⚠ THE PREMISE OF THIS GATE IS THE SHIPPED DOCUMENT'S OWN DEFAULT. If the author \
+             stopped authoring a bare name, the write this measures cannot happen any more and \
+             this gate would be quietly measuring nothing. Got {bare:?}",
+        );
+
+        let answered = review.run(&[]);
+        assert_eq!(
+            answered.ending,
+            Ending::Nothing,
+            "⚠ the review itself still runs and answers — keeping no counts is not failing",
+        );
+
+        // ⚠ The question a bare name is resolved against, asked directly: with nothing handed in
+        // there is no path at all, which is what stops the write before a directory is even made.
+        assert_eq!(
+            ledger_path(&bare, None),
+            None,
+            "⚠⚠⚠⚠⚠ A BARE LEDGER NAME WITH NO STATE DIRECTORY MUST RESOLVE TO NOWHERE. Anything \
+             else is this crate choosing a home on its caller's behalf, and the home it chose was \
+             the developer's: thirty lines of somebody's `~/.local/state` per suite run.",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE COUNTS DO LAND WHEN A RUN NAMES WHERE THEY GO** — the other half, without
+    /// which *keep nothing* would be a fix that simply broke the feature.
+    ///
+    /// ⚠⚠ This is the DAEMON's route, not a fixture's: `sprag-host` passes its own
+    /// `durability::state_dir()` as [`crate::AiLoopSpec::review_ledger`], the document's bare
+    /// `ledger_into` is left standing, and the file lands under the directory that was handed in.
+    /// A gate that only proved the absence above would pass just as well against a `keep` that had
+    /// been deleted.
+    #[test]
+    fn a_bare_ledger_name_lands_under_the_state_directory_the_run_was_given() {
+        let state = std::env::temp_dir().join(format!("sprag-review-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut review = ContextReview::new(Arc::clone(&lua), Some(state.clone()))
+            .expect("the document opens a session");
+
+        review.run(&[]);
+
+        // ⚠ The document's own file name, under the caller's directory — neither half invented
+        // here. A driver that joined its own name would land somewhere this assertion is not.
+        let landed = state.join("context-review.jsonl");
+        let kept = std::fs::read_to_string(&landed).unwrap_or_else(|why| {
+            panic!(
+                "⚠⚠⚠⚠ THE COUNTS MUST LAND UNDER THE DIRECTORY THE RUN NAMED. A daemon says where \
+                 its state lives exactly once, and if that does not reach the ledger then the \
+                 review measures a run nobody can compare with the next one. Reading {landed:?}: \
+                 {why}"
+            )
+        });
+        assert_eq!(
+            kept.lines().count(),
+            1,
+            "⚠⚠ one review, one line. Got {kept:?}",
+        );
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
     /// ⚠⚠⚠⚠⚠ **A REVIEW OPENS THE RECORD IT IS HANDED, WITHOUT DERIVING A PATH FROM A NAME** —
     /// register item 431 reaching its second reader.
     ///
@@ -720,8 +835,12 @@ mod ledger_tests {
         );
 
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠⚠ NO STATE DIRECTORY AND NO `ledger_into` OF ITS OWN, which is this gate's subject only
+        // in passing and was a real write until 2026-08-19: the shipped `ledger_into` is a BARE
+        // name, so this line used to append to `$XDG_STATE_HOME/sprag/context-review.jsonl` — the
+        // home of whoever ran the suite. It keeps nothing now. See [`ledger_path`].
         let mut review =
-            ContextReview::new(Arc::clone(&lua)).expect("the document opens a session");
+            ContextReview::new(Arc::clone(&lua), None).expect("the document opens a session");
 
         let home = std::env::temp_dir().join(format!("sprag-review-record-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
