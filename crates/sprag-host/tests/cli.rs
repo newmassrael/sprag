@@ -6595,7 +6595,6 @@ fn a_hooks_report_does_not_outlive_an_agent_the_pane_did_not_spawn() {
 /// installer's refusal is about a stdin that is not a TERMINAL rather than about a stdin that is
 /// missing.
 fn sprag_stdin(sock: &Path, args: &[&str], envs: &[(&str, &str)], input: &str) -> CliRun {
-    use std::io::Write as _;
     let mut child = Command::new(env!("CARGO_BIN_EXE_sprag"))
         .args(args)
         .env("SPRAG_HOST_RPC_SOCK", sock)
@@ -6618,12 +6617,11 @@ fn sprag_stdin(sock: &Path, args: &[&str], envs: &[(&str, &str)], input: &str) -
         .stderr(Stdio::piped())
         .spawn()
         .expect("run the sprag CLI");
-    child
-        .stdin
-        .take()
-        .expect("a piped stdin")
-        .write_all(input.as_bytes())
-        .expect("write the payload");
+    // ⚠⚠⚠⚠ Through [`sprag_gate::feeding`] — register item 471. The CLI can REFUSE before it reads
+    // its payload (an unparseable argument, a socket that is not there), and a fixture that treated
+    // the resulting `EPIPE` as fatal would report a write failure where the refusal it came for is
+    // sitting in the exit status.
+    sprag_gate::feeding::feed(&mut child, input.as_bytes());
     let output = child.wait_with_output().expect("wait for the sprag CLI");
     CliRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

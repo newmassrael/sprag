@@ -39,12 +39,7 @@
 //! substituted into the script (a log path, an exit code, a tail) become DATA files beside the link,
 //! which nothing execs. A file nobody writes cannot be busy.
 
-use std::path::{Path, PathBuf};
-
-/// The workspace this gate is part of — `crates/sprag-gate/` is two levels down from it.
-fn repo_root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
-}
+use sprag_gate::sources::{rust_sources, workspace_root};
 
 /// One line that makes a file executable, or copies a program out of the system's directories.
 #[derive(Debug)]
@@ -84,37 +79,6 @@ const EXEMPT: [(&str, &str); 3] = [
     ),
 ];
 
-/// Every `.rs` file under `crates/`, relative to the workspace root.
-fn sources() -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    walk(&repo_root().join("crates"), &mut found);
-    found.sort();
-    assert!(
-        found.len() > 100,
-        "a scan that found only {} sources is pointed at the wrong tree, and a probe pointed at \
-         nothing must never read as clean",
-        found.len(),
-    );
-    found
-}
-
-fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|why| panic!("{} is this workspace's source: {why}", dir.display()));
-    for entry in entries {
-        let path = entry.expect("read a directory entry").path();
-        if path.is_dir() {
-            // Build output is not source, and it holds copies of everything.
-            if path.file_name().is_some_and(|name| name == "target") {
-                continue;
-            }
-            walk(&path, into);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            into.push(path);
-        }
-    }
-}
-
 /// The mode literal in `from_mode(0o…)` or `.mode(0o…)`, if the line carries one.
 ///
 /// ⚠ Only OWNER-execute is read. A mode is written for the owner first and this gate is about
@@ -145,29 +109,18 @@ fn copies_a_system_program(line: &str) -> bool {
 }
 
 /// Every line in the workspace that manufactures an executable, exemptions included.
+///
+/// ⚠ The walk itself is [`sprag_gate::sources`], shared with item 471's ratchet — and it is what
+/// drops the COMMENT lines, so a warning that names one of these shapes is not read as the shape.
 fn manufactures() -> Vec<Manufacture> {
-    let root = repo_root();
     let mut found = Vec::new();
-    for path in sources() {
-        let file = path
-            .strip_prefix(&root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|why| panic!("{file} is a source of this workspace: {why}"));
-        for (index, line) in text.lines().enumerate() {
-            let trimmed = line.trim();
-            // A comment saying what this gate forbids is not the thing it forbids — every one of
-            // the ten sites carries such a comment now, naming the item.
-            if trimmed.starts_with("//") || trimmed.starts_with("#") {
-                continue;
-            }
-            if executable_mode_on(line).is_some() || copies_a_system_program(line) {
+    for source in rust_sources() {
+        for (line, text) in &source.code {
+            if executable_mode_on(text).is_some() || copies_a_system_program(text) {
                 found.push(Manufacture {
-                    file: file.clone(),
-                    line: index + 1,
-                    text: trimmed.to_owned(),
+                    file: source.file.clone(),
+                    line: *line,
+                    text: text.clone(),
                 });
             }
         }
@@ -232,7 +185,7 @@ fn every_exemption_is_still_load_bearing() {
 fn every_tracked_double_is_executable_in_the_index() {
     let listed = std::process::Command::new("git")
         .args(["ls-files", "-s", "--", "crates"])
-        .current_dir(repo_root())
+        .current_dir(workspace_root())
         .output()
         .expect("git lists what this repository carries");
     assert!(

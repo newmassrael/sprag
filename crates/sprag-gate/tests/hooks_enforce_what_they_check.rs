@@ -26,7 +26,6 @@
 //! are enforced.**
 
 use sprag_gate::doubles::Doubles;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -205,20 +204,17 @@ fn a_message_carrying_a_non_english_line_is_refused_and_the_line_is_shown() {
 fn the_double_removes_pcre_and_nothing_else() {
     let grep = grep_without_pcre().join("grep");
 
-    let ere = Command::new(&grep)
+    let mut child = Command::new(&grep)
         .args(["-q", "-E", "x"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
-        .and_then(|mut child| {
-            child
-                .stdin
-                .take()
-                .expect("the double's stdin")
-                .write_all(b"x\n")?;
-            child.wait()
-        })
         .expect("run the double with a POSIX pattern");
+    // ⚠⚠⚠⚠ Through [`sprag_gate::feeding`] — register item 471. `grep -q` exits the instant it
+    // MATCHES, which is what this case is asking it to do, so the write can meet a closed pipe and
+    // the answer wanted here is the status rather than the write.
+    sprag_gate::feeding::feed(&mut child, b"x\n");
+    let ere = child.wait().expect("wait for the double");
     assert!(
         ere.success(),
         "the double must still be a working grep for every rule that is not PCRE, \

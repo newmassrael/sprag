@@ -34,6 +34,19 @@
 #[cfg(unix)]
 pub mod doubles;
 
+/// Handing a child its standard input, and surviving one that refuses first — register item 471.
+///
+/// Here for the same reason as [`doubles`]: three suites in this workspace fed a child's stdin and
+/// treated `EPIPE` as fatal, so the claim is about what SUITES do rather than about any one of
+/// them, and a rule kept in one of them is a rule the next one does not get.
+pub mod feeding;
+
+/// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
+///
+/// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the
+/// walk's fiddly parts are where two copies of a rule drift apart.
+pub mod sources;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};

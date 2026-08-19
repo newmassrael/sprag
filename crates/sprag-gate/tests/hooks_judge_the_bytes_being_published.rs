@@ -38,7 +38,6 @@
 //! logic, and it had never been executed by anything before this file.
 
 use sprag_gate::doubles::Doubles;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -255,12 +254,11 @@ impl Sandbox {
             .spawn()
             .unwrap_or_else(|why| panic!(".githooks/{hook} must be executable: {why}"));
         if let Some(refs) = refs_on_stdin {
-            child
-                .stdin
-                .take()
-                .expect("the hook's stdin")
-                .write_all(refs.as_bytes())
-                .expect("feed the refs git would feed");
+            // ⚠⚠⚠⚠ Through [`sprag_gate::feeding`], because a hook may REFUSE before it reads a
+            // byte — the guard cases below are exactly that — and this used to treat the resulting
+            // `EPIPE` as fatal. Register item 471; git tolerates the same thing and judges the
+            // hook by its status.
+            sprag_gate::feeding::feed(&mut child, refs.as_bytes());
         }
         child.wait_with_output().expect("wait for the hook")
     }
@@ -954,6 +952,51 @@ fn neither_hook_proceeds_when_the_tool_all_its_checks_need_is_absent() {
         );
         sandbox.done();
     }
+}
+
+/// ⚠⚠⚠⚠⚠ **A HOOK THAT REFUSES BEFORE READING ITS REFS IS STILL JUDGED BY ITS STATUS** — register
+/// item 471, and the case above is the one that kept meeting it.
+///
+/// `pre-push` reads git's ref list at its top, but AFTER the `command -v mnemosyne-cli` guard, so a
+/// machine without that tool refuses with the list undrained. Git tolerates the `EPIPE` that follows
+/// and reads the hook's exit status; a harness standing in for git has to do the same, or the case
+/// above cannot be expressed at all.
+///
+/// ⚠⚠⚠⚠ **THE LENGTH IS THE WHOLE GATE.** A short list fits in the pipe's buffer, so the write
+/// SUCCEEDS unless the child happens to have gone first — a race that failed once in the first
+/// seven runs of a 30-run loop on a loaded build machine and passed every run on its own, which is
+/// how it survived as *a flake*. Longer than any pipe buffer, the write must block and then meet
+/// the closed pipe, every time and on every machine.
+#[test]
+fn a_hook_that_refuses_before_reading_a_long_ref_list_is_still_judged_by_its_status() {
+    let mut sandbox = Sandbox::new("refs-left-unread");
+    sandbox.without("mnemosyne-cli");
+    sandbox.write("crates/sprag-gui/paint.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-gui/paint.rs"]);
+    let base = sandbox.commit("base");
+
+    // ~90 bytes a line: comfortably past Linux's 64 KiB pipe, and a plausible list — a push of
+    // every branch of a busy repository is not a strange thing to feed a hook.
+    let refs = ref_line(&base, ABSENT).repeat(2048);
+    assert!(
+        refs.len() > 128 * 1024,
+        "the list has to exceed any pipe buffer, or this case is the race it replaces: {} bytes",
+        refs.len(),
+    );
+
+    let run = sandbox.run("pre-push", Some(&refs), None);
+    let told = said(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "the hook refused at its guard and the harness must have READ that, rather than dying on \
+         the write of a list nobody drained: {told}",
+    );
+    assert!(
+        told.contains("install mnemosyne-cli"),
+        "and the refusal is still the one it names: {told}",
+    );
+    sandbox.done();
 }
 
 #[test]
