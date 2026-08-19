@@ -1037,6 +1037,11 @@ pub(crate) fn agent_state_source(
                 // be read for it (register item 441). Carried through untouched, exactly like the
                 // question above: this layer states, and the plugin judges.
                 said: facts.said,
+                // ⚠⚠⚠⚠⚠ AND WHY IT WANTS A PERSON — the half `asking` above is `None` for, which is
+                // precisely the case a run has to hand to one (register item 452). Carried through
+                // untouched on the same terms: this layer states, the plugin decides what to do about
+                // it, and neither invents a sentence the peer did not say.
+                noticed: facts.noticed,
                 transcript: facts.transcript,
                 state,
                 agent: facts.agent,
@@ -3262,6 +3267,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             },
@@ -3317,6 +3323,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             },
@@ -3367,6 +3374,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         };
@@ -3489,6 +3497,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         };
@@ -3569,6 +3578,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         };

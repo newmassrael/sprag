@@ -213,6 +213,18 @@ pub struct AgentFacts {
     ///
     /// ⚠ Undated on its own — pair it with [`said_seq`](Self::said_seq).
     pub said: Option<String>,
+    /// **WHY THE AGENT ITSELF SAID IT WANTS A PERSON**, carried from the hook it raises to ask.
+    ///
+    /// ⚠⚠⚠⚠ [`asking`](Self::asking)'s other kind, and it answers precisely where that one gives up:
+    /// `asking` is `None` on a blocked pane whose question this build could not parse as a numbered
+    /// menu, and until this field existed that pane's whole account was *something is wrong, go
+    /// look*. The peer had said what it wanted, in the payload that produced the word `blocked`
+    /// (register item 452).
+    ///
+    /// ⚠ NOT undated the way [`said`](Self::said) is, and needs no counter: the tracker replaces it
+    /// on every report rather than carrying it, so a sentence standing here belongs to the report in
+    /// force. See `sprag_detect::Report::noticed`.
+    pub noticed: Option<String>,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT** — stated, never derived from an id.
     pub transcript: Option<String>,
 }
@@ -458,6 +470,7 @@ impl AgentRegistry {
             // produce them and must not clear them.
             asked: tracker.reported_asked().map(str::to_owned),
             said: tracker.reported_said().map(str::to_owned),
+            noticed: tracker.reported_noticed().map(str::to_owned),
             transcript: tracker.reported_transcript().map(str::to_owned),
         })
     }
@@ -909,6 +922,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             },
@@ -966,6 +980,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: build.map(str::to_owned),
                 },
@@ -1028,6 +1043,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 },
@@ -1077,6 +1093,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             },
@@ -1398,6 +1415,7 @@ mod clock_tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             },

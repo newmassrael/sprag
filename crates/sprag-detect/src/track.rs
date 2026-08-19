@@ -300,6 +300,20 @@ struct Reported {
     /// [`asked`](Self::asked)'s reason one end over: only the event that ENDS a turn carries one,
     /// and the events that follow it carry none.
     said: Option<String>,
+    /// **WHY THIS PANE'S AGENT SAID IT WANTS A PERSON**, or `None` where the report in force said
+    /// nothing about it.
+    ///
+    /// ⚠⚠⚠⚠⚠ NOT CARRIED, which is the opposite of the two fields above and is the whole meaning of
+    /// the field. Those are the two ends of a TURN, stated once and needed afterwards. **A notice is
+    /// a request that is either outstanding or dealt with**, and the report that follows it is the
+    /// evidence it was dealt with — a peer that went back to `working` is not still asking. Carrying
+    /// it would let a supervisor quote, at a pane blocked on something else, a question a person
+    /// answered an hour ago; and it would do so in the peer's own voice, which is exactly what makes
+    /// such a quote convincing.
+    ///
+    /// ⚠ This is also why no `noticed_seq` sits beside [`Tracker::said_seq`]: nothing here is ever
+    /// older than the report in force, so there is no gap for a counter to date.
+    noticed: Option<String>,
     /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, carried forward for [`asked`](Self::asked)'s
     /// reason exactly: a transcript path is stated on the turn's first event and on no other, while
     /// the file goes on existing for the whole session.
@@ -360,6 +374,18 @@ pub struct Report {
     /// ⚠ Kept as the LAST one reported rather than a history: what a delivery asks is *did my
     /// question arrive*, and the answer to that is about the most recent turn.
     pub asked: Option<String>,
+    /// **WHY THE AGENT SAYS IT WANTS A PERSON**, on the one event it raises to ask for attention, and
+    /// `None` on every other.
+    ///
+    /// ⚠⚠⚠⚠ The half a screen cannot supply for the case the screen was BUILT for. A blocked pane's
+    /// question is read as a numbered menu; a peer blocked on anything else leaves a supervisor with
+    /// *"this host cannot read it — hand the pane to a person"*, while the peer's own sentence was in
+    /// the payload that produced the word `blocked` (register item 452).
+    ///
+    /// ⚠ REPLACED and never carried, unlike [`asked`](Self::asked) and [`said`](Self::said) — see
+    /// the field it is stored in for why a request that has been dealt with must not outlive the
+    /// report that dealt with it.
+    pub noticed: Option<String>,
     /// **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT.**
     ///
     /// Stated rather than resolved from an id — see the wire key's own doc for what resolving it
@@ -591,6 +617,7 @@ impl Tracker {
             owner,
             asked,
             said,
+            noticed,
             transcript,
             build,
         } = report;
@@ -663,6 +690,14 @@ impl Tracker {
             owner,
             asked: asked.or_else(|| carried.as_ref().and_then(|held| held.asked.clone())),
             said: said.or_else(|| carried.as_ref().and_then(|held| held.said.clone())),
+            // ⚠⚠⚠⚠⚠ REPLACED, LIKE `build` BELOW AND UNLIKE THE TWO ABOVE — and the difference is
+            // not stylistic. `asked` and `said` are the two ends of a TURN: each is stated once and
+            // read afterwards, so carrying is what keeps them readable at all. A NOTICE is an
+            // outstanding request, and the next report is the evidence it is no longer outstanding —
+            // a peer that went back to `working` is not still asking for a person. Carried, it would
+            // let a supervisor quote a dealt-with question at a pane blocked on something else, in
+            // the peer's own voice, which is what would make the quote believed.
+            noticed,
             transcript: transcript
                 .or_else(|| carried.as_ref().and_then(|held| held.transcript.clone())),
             // ⚠⚠⚠⚠⚠ REPLACED, NEVER CARRIED — the opposite of its two neighbours above, and the
@@ -775,6 +810,20 @@ impl Tracker {
     #[must_use]
     pub fn reported_said(&self) -> Option<&str> {
         self.reported.as_ref().and_then(|held| held.said.as_deref())
+    }
+
+    /// **WHY THIS PANE'S AGENT SAYS IT WANTS A PERSON**, or `None` where the report in force did not
+    /// say — which is every report but the one that asks.
+    ///
+    /// ⚠⚠⚠ UNDATED ON PURPOSE, and it needs no dating: unlike [`reported_said`](Self::reported_said)
+    /// this is not carried across reports, so anything standing here belongs to the report in force
+    /// and to no earlier one. A supervisor reads it beside the published state and needs no watermark
+    /// to know it is current.
+    #[must_use]
+    pub fn reported_noticed(&self) -> Option<&str> {
+        self.reported
+            .as_ref()
+            .and_then(|held| held.noticed.as_deref())
     }
 
     /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, or `None` if none ever has.
@@ -1512,6 +1561,7 @@ mod tests {
             owner: None,
             asked: asked.map(str::to_owned),
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         };
@@ -1551,6 +1601,88 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A REQUEST THAT HAS BEEN DEALT WITH MUST NOT OUTLIVE THE REPORT THAT DEALT WITH IT** —
+    /// register item 452, and the one design decision `noticed` makes that its neighbours do not.
+    ///
+    /// # Why this is the sharp end of the field and not a detail
+    ///
+    /// `asked` and `said` are CARRIED across reports that say nothing about them, because each is
+    /// stated once — at a turn's two ends — and read afterwards. Carrying `noticed` on the same
+    /// reflex would be a silent defect of a nastier kind: a supervisor reads it to tell a person WHY
+    /// their peer wants them, **in the peer's own voice**, and a quotation is exactly the sort of
+    /// evidence nobody re-checks. A notice a person answered an hour ago, re-quoted at a pane blocked
+    /// on something else, would send them to a question that no longer exists and would sound
+    /// authoritative doing it.
+    ///
+    /// ⚠⚠⚠ **AND THIS IS WHY NO `noticed_seq` SITS BESIDE [`said_seq`](Tracker::said_seq).** That
+    /// counter exists because a carried statement cannot be dated. Nothing standing in `noticed` is
+    /// ever older than the report in force, so there is no gap for a counter to close — the retirement
+    /// asserted here is what makes the missing counter honest rather than an omission.
+    ///
+    /// ⚠ The two halves are asserted against each other in ONE tracker, so a change that made every
+    /// stated fact behave alike goes red whichever direction it moved them in.
+    #[test]
+    fn a_notice_is_retired_by_the_next_report_although_the_turns_words_are_kept() {
+        let mut tracker = Tracker::new(Hysteresis::default());
+        let speaking =
+            |state: AgentState, said: Option<&str>, noticed: Option<&str>, seq: u64| Report {
+                state,
+                agent: Some("claude".to_owned()),
+                source: "hook:claude".to_owned(),
+                seq: Some(seq),
+                owner: None,
+                asked: None,
+                said: said.map(str::to_owned),
+                noticed: noticed.map(str::to_owned),
+                transcript: None,
+                build: None,
+            };
+
+        // The turn ends with an answer, and then the peer asks for a person.
+        tracker.report(speaking(
+            AgentState::Idle,
+            Some("the turn's answer"),
+            None,
+            1,
+        ));
+        tracker.report(speaking(
+            AgentState::Blocked,
+            None,
+            Some("Claude needs your permission to use Bash"),
+            2,
+        ));
+        assert_eq!(
+            tracker.reported_noticed(),
+            Some("Claude needs your permission to use Bash"),
+            "⚠ THE STAGING: the notice has to be readable at all before its retirement means \
+             anything",
+        );
+        assert_eq!(
+            tracker.reported_said(),
+            Some("the turn's answer"),
+            "and the answer is still standing, carried past a report that stated none",
+        );
+
+        // ── THE ARM THAT MATTERS: somebody dealt with it, and the peer went back to work. ──
+        tracker.report(speaking(AgentState::Working, None, None, 3));
+        assert_eq!(
+            tracker.reported_noticed(),
+            None,
+            "⚠⚠⚠⚠⚠ THE REQUEST IS GONE WITH THE REPORT THAT ANSWERED IT. Carrying it — the `or_else` \
+             its two neighbours use — leaves a supervisor able to quote, at a pane blocked on \
+             something else entirely, a question a person has already dealt with, in the peer's own \
+             words. Every other gate in this workspace stays green under that one-line change",
+        );
+        assert_eq!(
+            tracker.reported_said(),
+            Some("the turn's answer"),
+            "⚠⚠⚠⚠ AND THE ANSWER IS STILL CARRIED, which is what keeps this a decision about MEANING \
+             rather than a rule about stated facts: a turn's words are read after the turn, a \
+             request is read only while it is outstanding. A change that made the two behave alike \
+             fails here whichever way it moved them",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A PEER STILL SPEAKING AND A PEER THAT HAS STOPPED READ THE SAME ON EVERY OTHER
     /// COUNTER** — register item 458, and the arm this fourth number exists for.
     ///
@@ -1584,6 +1716,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         };
@@ -1668,6 +1801,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -1722,6 +1856,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -1790,6 +1925,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -1827,6 +1963,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 })
@@ -1841,6 +1978,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             }),
@@ -1864,6 +2002,7 @@ mod tests {
                 owner: None,
                 asked: None,
                 said: None,
+                noticed: None,
                 transcript: None,
                 build: None,
             }),
@@ -1883,6 +2022,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 })
@@ -1902,6 +2042,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 })
@@ -1920,6 +2061,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 })
@@ -1935,6 +2077,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 })
@@ -1956,6 +2099,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -1969,6 +2113,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -1995,6 +2140,7 @@ mod tests {
                     owner: None,
                     asked: None,
                     said: None,
+                    noticed: None,
                     transcript: None,
                     build: None,
                 })
@@ -2024,6 +2170,7 @@ mod tests {
             owner: Some(4242),
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -2038,6 +2185,7 @@ mod tests {
             owner: Some(99),
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -2053,6 +2201,7 @@ mod tests {
             owner: None,
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });
@@ -2071,6 +2220,7 @@ mod tests {
             owner: Some(7),
             asked: None,
             said: None,
+            noticed: None,
             transcript: None,
             build: None,
         });

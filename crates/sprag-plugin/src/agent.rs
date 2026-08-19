@@ -1122,6 +1122,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {

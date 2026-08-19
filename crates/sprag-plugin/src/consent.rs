@@ -636,6 +636,44 @@ impl Unanswered {
         }
     }
 
+    /// A peer blocked on something this host cannot read as a menu, **QUOTING WHAT THE PEER SAID IT
+    /// WANTS** — [`unreadable`](Self::unreadable) with the one thing that arm has never been able to
+    /// offer.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The sentence was always there, one layer above the pixels
+    ///
+    /// [`Refusal::Unreadable`]'s remedy is *hand the pane to a person*, and a person handed it was
+    /// told only that a question exists. That is the honest limit of a SCREEN reader: a dialog this
+    /// build cannot parse as a numbered menu is exactly the case where the pixels have already
+    /// failed, and every round spent tightening the parser was spent on the wrong layer.
+    ///
+    /// **The agent states it.** Its notice hook carries the notice's own prose, sprag reduced the
+    /// payload to the single word `blocked`, and the words were dropped in the hook process
+    /// (register item 452). They now travel to
+    /// [`AgentObservation::noticed`](crate::access::AgentObservation::noticed), and this is where a
+    /// run puts them in front of the person it is waking.
+    ///
+    /// ⚠⚠ **IT QUOTES AND DOES NOT INTERPRET.** The words are the peer's, marked as the peer's, and
+    /// nothing here parses them for an option — a sentence understood into a choice would be this run
+    /// answering a dialog it just said it could not read, which is the one thing this arm exists to
+    /// refuse. The remedy is unchanged; only the person's information is not.
+    ///
+    /// ⚠ Blank or whitespace-only prose is [`unreadable`](Self::unreadable) unchanged: a quotation
+    /// with nothing in it reads as a peer that said something empty, which is a claim the peer did
+    /// not make.
+    #[must_use]
+    pub fn unreadable_saying(said: &str) -> Self {
+        if said.trim().is_empty() {
+            return Self::unreadable();
+        }
+        Self {
+            question: None,
+            why: Refusal::Unreadable,
+            bytes: 0,
+            detail: Some(format!("the peer says it wants one for: {said:?}")),
+        }
+    }
+
     /// A question this host READ and the run did not type at, and why.
     ///
     /// ⚠ `why` is taken as a [`Refusal`] rather than as one of the non-`Unreadable` arms because a

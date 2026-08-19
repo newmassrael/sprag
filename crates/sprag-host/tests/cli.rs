@@ -6923,6 +6923,98 @@ fn a_turn_that_ended_without_a_stop_does_not_leave_its_pane_working() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **A PANE BLOCKED ON SOMETHING NOBODY CAN PARSE STILL SAYS WHAT THE PEER ASKED FOR** —
+/// register item 452, driven through the door a real agent's hook uses.
+///
+/// # What was being thrown away, and where
+///
+/// The daemon's answer for a blocked pane whose screen carries no readable menu was *"look at the
+/// pane yourself"* — and the pane is a screen this build has just failed to read. Every round spent
+/// on that failure was spent on the wrong layer: **the agent had already said what it wanted**, in
+/// the `message` of the very payload that produced the word `blocked`, and `deliver_hook` dropped it
+/// on the floor. This walks the whole distance — real hook process, real socket, real daemon, real
+/// CLI — because a fixture that assembles the observation by hand proves the plumbing nobody built.
+///
+/// # ⚠⚠⚠ The retirement is asserted here too, and it is the sharp half
+///
+/// The tracker REPLACES this field instead of carrying it, so a request that has been dealt with
+/// cannot be re-quoted at a later block. That decision is invisible in one payload and load-bearing
+/// in three: the last step drives the peer back to work and demands the sentence be gone. A
+/// supervisor quoting a stale notice would be telling somebody, in the peer's own voice, to go and
+/// answer a question that no longer exists.
+#[test]
+fn a_blocked_pane_says_what_its_agent_asked_a_person_for() {
+    let (_host, sock) = spawn_host();
+    let pane = [("SPRAG_PANE", "0")];
+    // The kind a permission dialog carries, captured live 2026-08-19 — the arm whose menu this
+    // daemon may or may not be able to read, and the one a person is handed either way.
+    let dialog = r#"{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#;
+    let submit = r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#;
+    let hook = |payload: &str| {
+        let run = sprag_stdin(&sock, &["hook", "claude"], &pane, payload);
+        assert!(run.ok, "the hook must succeed: {}", run.stderr);
+        sprag(&sock, &["agent", "0"]).stdout
+    };
+
+    // ── 1. THE FIX, end to end. Nothing about the screen changed: a `cat` shows no menu at all, so
+    //       the daemon's own parse answers nothing here and the sentence can only be the agent's.
+    let explained = hook(dialog);
+    assert!(
+        explained.contains("0: blocked  claude"),
+        "⚠ THE STAGING: the notice has to reach the daemon as a block before its words matter: \
+         {explained}",
+    );
+    assert!(
+        explained.contains("Claude needs your permission to use Bash"),
+        "⚠⚠⚠⚠⚠ AND THE PERSON IS TOLD WHAT FOR. Without it the whole account is *look at the pane \
+         yourself* — pointing them at a screen this daemon has just failed to read, while the agent \
+         stated its business in the payload that produced the word `blocked`. Drop `noticed_in` \
+         from `deliver_hook` and every other test in this file stays green: {explained}",
+    );
+    assert!(
+        explained.contains("could not read as a menu"),
+        "⚠⚠⚠ AND THE REMEDY IS UNCHANGED. The quotation is beside the instruction, never instead of \
+         it: quoting a sentence is not parsing it into options, and a daemon that acted on prose it \
+         could not read as a menu would be doing what that line exists to refuse: {explained}",
+    );
+
+    // ── 2. SOMEBODY DEALT WITH IT and the peer went back to work.
+    assert!(
+        hook(submit).contains("0: working  claude"),
+        "⚠ THE STAGING for the arm below: the request is now answered",
+    );
+
+    // ── 3. THE RETIREMENT, ASKED WHERE IT IS OBSERVABLE. The peer blocks AGAIN, on something it did
+    //       not describe — a notice with no `message`, which this daemon reads as *it did not say*.
+    //
+    //       ⚠⚠⚠⚠⚠ THE `working` STEP ABOVE CANNOT CARRY THIS CLAIM AND WAS FIRST WRITTEN AS THOUGH
+    //       IT COULD. The person-facing line is printed only for a BLOCKED pane, so its absence at a
+    //       working one is a fact about the renderer and not about the tracker — the assertion
+    //       passed under the very mutation it named, which is this register's *a control can be
+    //       vacuous* (items 441, 447) arriving by the front door. A second BLOCK is where a carried
+    //       sentence would actually be spoken, and it is the hazard in its real shape: a peer that
+    //       stops for a reason it did not state must not be given the last reason it did.
+    let silent_block =
+        r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#;
+    let explained = hook(silent_block);
+    assert!(
+        explained.contains("0: blocked  claude"),
+        "⚠ THE STAGING: this arm is about a SECOND block, so it has to be one: {explained}",
+    );
+    assert!(
+        !explained.contains("Claude needs your permission"),
+        "⚠⚠⚠⚠⚠ A REQUEST DOES NOT OUTLIVE THE REPORT THAT ANSWERED IT. Carry this field the way its \
+         two neighbours are carried — one `or_else` in `Tracker::report` — and a person stopping at \
+         this second, undescribed block is handed the FIRST one's question, in the peer's own voice, \
+         which is the sort of evidence nobody re-checks: {explained}",
+    );
+    assert!(
+        explained.contains("could not read as a menu"),
+        "and the honest account of an undescribed block is the one that was always there: \
+         {explained}",
+    );
+}
+
 /// A daemon that is UP but wedged cannot stall a REQUEST VERB either — it says so and exits.
 ///
 /// The hook path below has been bounded since R273 because an agent waits for it. Every other verb

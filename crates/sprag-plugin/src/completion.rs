@@ -912,6 +912,7 @@ mod tests {
             asked: None,
             said: None,
             said_seq: 0,
+            noticed: None,
             transcript: None,
         }));
         let source = {
@@ -948,6 +949,7 @@ mod tests {
             asked: None,
             said: None,
             said_seq: 0,
+            noticed: None,
             transcript: None,
         }));
         let source = {
@@ -1868,6 +1870,7 @@ mod tests {
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: None,
             })));
         let source = {
@@ -1955,6 +1958,7 @@ mod tests {
             asked: None,
             said: None,
             said_seq: 0,
+            noticed: None,
             transcript: None,
         });
         assert_eq!(

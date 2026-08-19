@@ -812,6 +812,7 @@ impl InlineGrammar {
         ArgGrammar::open(AGENT_BIND_KEY, "bool").optional(),
         ArgGrammar::open(AGENT_ASKED_KEY, "string").optional(),
         ArgGrammar::open(AGENT_SAID_KEY, "string").optional(),
+        ArgGrammar::open(AGENT_NOTICED_KEY, "string").optional(),
         ArgGrammar::open(AGENT_TRANSCRIPT_KEY, "string").optional(),
         ArgGrammar::open(AGENT_BUILD_KEY, "string").optional(),
     ])];
@@ -1707,6 +1708,58 @@ pub const AGENT_ASKED_KEY: &str = "asked";
 /// an absent `said` as evidence ABOUT the agent — *it answered nothing* rather than *it did not
 /// say* — an older reporter starts meaning something it never meant, and the number is owed.
 pub const AGENT_SAID_KEY: &str = "said";
+/// [`REPORT_AGENT_ACTION`]'s key carrying **WHY THE AGENT SAYS IT WANTS A PERSON** — the notice's own
+/// prose, off the one event an agent raises to ask for attention.
+///
+/// # ⚠⚠⚠⚠⚠ The field this product received and threw away, and what that cost
+///
+/// A blocked pane's question is read off its SCREEN, as a numbered menu, and a peer blocked on
+/// anything else is reported by `sprag_plugin::Refusal::Unreadable`: *"the peer is blocked on
+/// something this host cannot read as a numbered menu … hand the pane to a person"*. True, and
+/// incomplete — the peer had already SAID what it wanted, in a field one layer up, and the daemon
+/// reduced the whole payload to the single word *blocked* (register item 452).
+///
+/// **Captured live 2026-08-19**, with a logging wrapper at the path the agent's own configuration
+/// names:
+///
+/// ```text
+/// {"hook_event_name":"Notification",
+///  "message":"Claude is waiting for your input",
+///  "notification_type":"idle_prompt", …}
+/// ```
+///
+/// So a run that stops for a person can now hand them the peer's own sentence instead of only the
+/// news that there is one. The screen is not consulted for it and cannot be: a dialog this build
+/// cannot parse as a menu is exactly the case where the pixels have already failed.
+///
+/// # ⚠⚠⚠ REPLACED, NEVER CARRIED — the opposite of [`AGENT_SAID_KEY`], and the difference is meaning
+///
+/// `asked` and `said` are carried forward across later reports because they are the two ends of a
+/// TURN, and only the report that opens or closes one states them: a reader that arrives afterwards
+/// still needs them. **A notice is a request that is either outstanding or answered.** Carrying it
+/// would let a run quote a question a person has already dealt with, at a pane that is blocked on
+/// something else entirely — the stale-statement confusion `said_seq` exists to bound, arriving by
+/// the front door. Held by `sprag_detect::track`, where the field is set and the reason is written
+/// against the two neighbours that do carry.
+///
+/// ⚠ That is also why it needs no counter of its own: nothing standing here is ever older than the
+/// report in force, so there is no gap for a sequence number to date.
+///
+/// # ⚠⚠⚠⚠ Why this earns NO [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`AGENT_SAID_KEY`]'s own measured
+/// terms
+///
+/// **NEW hook → OLD daemon.** An undeclared key is IGNORED at this surface rather than refused —
+/// measured against a live daemon, a `report_agent` carrying one answers byte-identically to the
+/// same report without it. The old daemon honours the report and never reads the sentence.
+///
+/// **OLD hook → NEW daemon.** The key is absent, which is `None` — *this reporter did not say*. The
+/// pane row omits it and a run reports `Refusal::Unreadable` alone, which is exactly what shipped
+/// before this key existed.
+///
+/// ⚠⚠ THE EXEMPTION IS CONDITIONAL, [`AGENT_SAID_KEY`]'s condition exactly: the moment a surface
+/// reads an ABSENT notice as evidence about the AGENT — *it wants nothing* rather than *it did not
+/// say* — an older reporter starts meaning something it never meant and the number is owed.
+pub const AGENT_NOTICED_KEY: &str = "noticed";
 /// [`REPORT_AGENT_ACTION`]'s key carrying **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT**.
 ///
 /// ⚠⚠⚠ Stated rather than resolved. The spend reader finds a transcript by deriving a path from a
@@ -8312,7 +8365,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_pane[object]:pane:int name:string?",
                 "sprag_workspace/sprag_mux/rename_session[object]:name:string",
                 "sprag_workspace/sprag_mux/rename_window[object]:window:string? name:string",
-                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? said:string? transcript:string? build:string?",
+                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? said:string? noticed:string? transcript:string? build:string?",
                 "sprag_workspace/sprag_mux/resize[object]:id:int cols:int rows:int cell_width:int? cell_height:int?",
                 "sprag_workspace/sprag_mux/resize_pane[object]:dir:string pane:int? cells:int?",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",

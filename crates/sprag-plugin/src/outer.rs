@@ -5090,8 +5090,14 @@ impl OuterLoop {
         // ⚠ A blocked pane whose question nothing could read reaches here too — `barrier_says`
         // records `Unanswered::unreadable()` for it. No rule can quote what nobody parsed, and the
         // honest answer is the one that arm already carries: the remedy is a person.
+        //
+        // ⚠⚠⚠⚠⚠ THE BARRIER'S OWN REFUSAL IS KEPT, NOT REBUILT. It used to be replaced with a fresh
+        // `unreadable()` here, which was invisible while that arm carried nothing but its standing
+        // sentence — and stops being invisible the moment it carries the PEER'S WORDS
+        // (`Unanswered::unreadable_saying`, register item 452). Re-constructing it would throw away
+        // the one thing the person being woken can act on, at the last step before they are woken.
         let Some(question) = unanswered.question().cloned() else {
-            self.noticed = Some(Noticed::Asking(Unanswered::unreadable()));
+            self.noticed = Some(Noticed::Asking(unanswered));
             return Ok(AiLoopEvent::ScreenNone.into());
         };
         let rules = match self.screening() {
@@ -7565,6 +7571,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             });
@@ -7791,6 +7798,7 @@ mod tests {
                     asked: submitted.then(|| typed.replace('\r', "")),
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             });
@@ -7964,6 +7972,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: said.clone(),
                 })
             });
@@ -8067,6 +8076,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: said.clone(),
                 })
             });
@@ -8155,6 +8165,7 @@ mod tests {
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: Some(said.clone()),
             })
         });
@@ -8229,6 +8240,7 @@ mod tests {
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: stated.lock().expect("what the agent says").clone(),
             })
         });
@@ -10623,6 +10635,7 @@ mod tests {
                 asked: None,
                 said: self.said.clone(),
                 said_seq: self.said_seq,
+                noticed: None,
                 transcript: None,
             })
         }
@@ -11825,6 +11838,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             });
@@ -14126,6 +14140,164 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE RUN THAT WAKES A PERSON TELLS THEM WHAT THE PEER ASKED FOR** — register item
+    /// 452, driven all the way through the loop rather than at the barrier that composes it.
+    ///
+    /// # ⚠⚠⚠⚠ Why the barrier's own gate is not enough, and this one is not a copy of it
+    ///
+    /// `readiness`'s gate proves the SENTENCE is composed. This proves it SURVIVES — and it did not.
+    /// A refusal with no question travels barrier → `turn.blocked` → `screening`, and `screening`
+    /// **rebuilt** it as a fresh `Unanswered::unreadable()` one step before the person is woken.
+    /// That was invisible while the arm carried nothing but its standing sentence: two bare
+    /// `unreadable()`s are equal, so no gate could see the difference and none did. It stops being
+    /// invisible the moment the arm carries the peer's words, and the thing it destroys is the only
+    /// part of the report the person can act on.
+    ///
+    /// ⚠⚠⚠ **THE SHAPE IS THIS REGISTER'S OWN LESSON, ARRIVING FROM THE OTHER SIDE**: a value that
+    /// is re-CONSTRUCTED where it could have been CARRIED is a fix waiting to be dropped, and
+    /// nothing fails until somebody puts data in it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The staging is the REAL SEQUENCE, and two wrong ones were measured first
+    ///
+    /// A turn STARTS at a peer that is not blocked, and the peer blocks part-way through — which is
+    /// what a permission dialog is. Staging the block before the run starts does not reach the code
+    /// under test at all: the barrier answers `NotReady` out of `idle` and the machine never leaves
+    /// it, so `screening` is never entered.
+    ///
+    /// ⚠⚠⚠⚠ **AND `await_person_ms: None` IS NOT «NOBODY IS EXPECTED» — IT IS «DO NOT OVERRIDE THE
+    /// DOCUMENT», WHOSE OWN DEFAULT IS LONG.** Measured: the first pump parked for **34 minutes at
+    /// 0.2% CPU** inside the barrier's wait for a person who was never coming. The bound is declared
+    /// here for that reason, and a short one, so the wait is a step rather than the subject.
+    ///
+    /// ⚠⚠ The person's wait RE-HEADS the refusal as [`Refusal::Unattended`] and carries the detail
+    /// through, which is the barrier's own doing. This gate asserts the SENTENCE rather than the arm
+    /// for exactly that reason: what must survive is what the person can act on, and which of the
+    /// two remedies is on top is a question the barrier already answers where it lives.
+    ///
+    /// The pane is a `cat`: it shows no menu at all, so `asking` is `None` honestly and this run is
+    /// not one that could have answered and chose not to. No consent and no screen rule are
+    /// declared, so every route out of `screening` but `screen.none` is closed.
+    #[test]
+    fn a_loop_that_wakes_a_person_tells_them_what_the_peer_asked_for() {
+        /// What the agent's notice hook said, and the sentence a person must end up holding.
+        const WANTED: &str = "Claude needs your permission to use Bash";
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        // ⚠ STARTS UNBLOCKED so the run can begin at all, and is moved BELOW — see the doc.
+        let seen: Arc<Mutex<crate::access::AgentObservation>> =
+            Arc::new(Mutex::new(crate::access::AgentObservation {
+                state: sprag_detect::AgentState::Idle,
+                agent: Some("claude".to_string()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_string(),
+                },
+                seq: 1,
+                asked_seq: 1,
+                reports: 3,
+                asking: None,
+                asked: None,
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                transcript: None,
+            }));
+        let source = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |_id: PaneId| Some(seen.lock().expect("the observation").clone()))
+        };
+        let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .with_agent_state(Some(source));
+
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "a peer blocked on something nothing here can parse".to_string(),
+                milestone: "reach a person who knows what for".to_string(),
+                reference: "register item 452".to_string(),
+                closing_rules: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: Some(99),
+                // ⚠ NO RULE AND NO CONSENT: the run must have nothing of its own to say about this
+                // dialog, or the gate would be about a claim rather than about a handover.
+                screen_rules: None,
+                may_answer: None,
+                // ⚠⚠⚠ DECLARED, AND SHORT — see the doc: `None` leaves the DOCUMENT's own long
+                // default standing, which parked the first draft of this gate for 34 minutes.
+                await_person_ms: Some(1_000),
+                handback_still_ms: None,
+                ready_timeout_ms: Some(5_000),
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked = Vec::new();
+        for _ in 0..8 {
+            match loops.pump(&access, &run).expect("the pane stays readable") {
+                Pumped::Moved {
+                    from, raised, to, ..
+                } => {
+                    walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                    // ⚠ THE BLOCK ARRIVES MID-TURN, the moment the run is under way — a peer asking
+                    // for permission part-way through the work it was given, which is the only way
+                    // this state is ever really reached.
+                    if to == AiLoopState::Working {
+                        let mut peer = seen.lock().expect("the observation");
+                        peer.state = sprag_detect::AgentState::Blocked;
+                        peer.seq += 1;
+                        peer.noticed = Some(WANTED.to_string());
+                    }
+                    if to == AiLoopState::AwaitingHuman {
+                        break;
+                    }
+                }
+                other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+            }
+        }
+        let landed = loops.state();
+        let standing = loops.noticed().cloned();
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        assert_eq!(
+            landed,
+            AiLoopState::AwaitingHuman,
+            "⚠ THE STAGING: a run that never reached the person cannot be asked what it told them. \
+             Walked {walked:?}",
+        );
+        assert!(
+            walked.iter().any(|edge| edge.contains("Screening")),
+            "⚠⚠⚠ AND IT GOT THERE THROUGH `screening`, which is the step that used to destroy the \
+             sentence. A run that reached `awaiting_human` by another door would pass the assertion \
+             below without ever exercising the fix: {walked:?}",
+        );
+        let Some(Noticed::Asking(unanswered)) = standing else {
+            panic!("the run must carry WHY it is waiting: {standing:?}, walked {walked:?}");
+        };
+        assert!(
+            unanswered.question().is_none(),
+            "⚠ THE STAGING: this gate is about the arm with NO readable question — a run that had \
+             parsed one is a different case with a different remedy: {unanswered:?}",
+        );
+        let account = unanswered.explain();
+        assert!(
+            account.contains(WANTED),
+            "⚠⚠⚠⚠⚠ THE SENTENCE SURVIVED THE WALK. `screening` used to REBUILD this refusal from \
+             scratch, throwing away everything the barrier had learned one step before the person \
+             was woken — and no gate could see it, because a bare `unreadable()` equals a bare \
+             `unreadable()`. Walked {walked:?}, account: {account}",
+        );
+        assert!(
+            account.contains("person"),
+            "⚠⚠ AND THE REMEDY IS STILL SAID OUT LOUD beside it: {account}",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A LOOP WHOSE PEER STOPS SPEAKING ASKS FOR A PERSON, INSTEAD OF WAITING OUT THE
     /// DAY** — register item 458's *"done when"*, driven through the driver's own door.
     ///
@@ -14189,6 +14361,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 }));
             let source = {

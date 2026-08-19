@@ -1125,6 +1125,28 @@ pub struct AgentObservation {
     /// already read `idle`, and a second `Stop` inside a settle window publishes nothing. So `seq`
     /// cannot date a statement and this can.
     pub said_seq: u64,
+    /// **WHY THE AGENT SAID IT WANTS A PERSON**, and `None` where the report in force did not say.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It answers exactly where [`asking`](Self::asking) gives up
+    ///
+    /// `asking` is what THIS BUILD could read off the screen, as a numbered menu, and its `None` on a
+    /// blocked pane is the honest report of a parse that failed. A run meeting that publishes
+    /// [`Refusal::Unreadable`](crate::Refusal::Unreadable) — *"hand the pane to a person"* — which
+    /// tells the person there is a question and not what it is. **The peer had already said what it
+    /// was**, in the payload that produced the word `blocked`, and the product dropped everything but
+    /// the word (register item 452).
+    ///
+    /// So the two are read together and neither replaces the other: the menu is what can be ANSWERED,
+    /// this is what was ASKED, and a dialog no parser here understands still has one of them.
+    ///
+    /// ⚠⚠ **NEEDS NO WATERMARK**, unlike [`said`](Self::said) beside it. The tracker REPLACES this on
+    /// every report instead of carrying it, so a sentence standing here belongs to the report in
+    /// force — a peer that went back to `working` reports no notice and this goes `None` in the same
+    /// breath. A supervisor may quote it as current without holding a counter.
+    ///
+    /// ⚠ `None` is *nobody told us*, never *the peer wants nothing*: a pane whose state was scraped
+    /// off the screen has no reporter, and neither has an agent with no hooks installed.
+    pub noticed: Option<String>,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT**, and `None` where none has said so.
     ///
     /// Stated rather than derived. The spend reader resolves this path from a session id and was

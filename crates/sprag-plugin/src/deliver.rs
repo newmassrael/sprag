@@ -1492,6 +1492,7 @@ mod tests {
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: None,
             })
         });
@@ -2056,6 +2057,7 @@ mod tests {
                 asked: submitted.then(|| self.said.clone()).flatten(),
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: None,
             })
         }

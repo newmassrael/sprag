@@ -3572,6 +3572,12 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
     // half costs when nobody reads it: the pane it would otherwise be scraped off was measured
     // unable to advance its line addresses at all.
     let said = hooks::said_in(&payload);
+    // ⚠⚠⚠⚠ AND WHY IT WANTS A PERSON, off the one event it raises to ask for one — see
+    // [`hooks::noticed_in`]. The third of the same kind: `report_for` decides a STATE and these three
+    // carry what the agent itself stated. Until this line the whole notice was reduced to the word
+    // `blocked` and a run that stopped for a person could not tell them what for, while the sentence
+    // had been in this process's stdin (register item 452).
+    let noticed = hooks::noticed_in(&payload);
     let pane = std::env::var(sprag_host::PANE_ENV_VAR)
         .ok()?
         .parse::<u64>()
@@ -3604,6 +3610,7 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                 // nothing about a prompt because they are not the event that opens a turn.
                 sprag_host::wire::AGENT_ASKED_KEY: asked.as_ref().map(|a| a.prompt.clone()),
                 sprag_host::wire::AGENT_SAID_KEY: said.clone(),
+                sprag_host::wire::AGENT_NOTICED_KEY: noticed.clone(),
                 sprag_host::wire::AGENT_TRANSCRIPT_KEY: asked
                     .as_ref()
                     .and_then(|a| a.transcript.as_ref())
@@ -5669,6 +5676,21 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                         "    it is waiting on something this daemon could not read as a menu, so \
                          no consent can name an option on it — look at the pane yourself."
                     ),
+                }
+                // ⚠⚠⚠⚠⚠ AND WHAT THE PEER SAID IT WANTS, which is the half the sentence above has
+                // never been able to give (register item 452). That branch sends a person to go and
+                // stare at a screen this daemon has already failed to parse — while the agent itself
+                // stated its business, in prose, on the very hook that produced the word `blocked`.
+                //
+                // ⚠⚠ PRINTED BESIDE THE MENU RATHER THAN INSTEAD OF IT: the two are different facts
+                // about the same wait — one is what can be ANSWERED, the other is what was ASKED —
+                // and a pane can carry either, both, or neither.
+                //
+                // ⚠ QUOTED, never interpreted. Nothing here reads the sentence for an option: a
+                // daemon that acted on prose it could not parse into a menu would be doing exactly
+                // what the branch above refuses to do.
+                if let Some(noticed) = agent[sprag_host::wire::AGENT_NOTICED_KEY].as_str() {
+                    println!("    the agent says it wants a person for: {noticed:?}");
                 }
             }
         }

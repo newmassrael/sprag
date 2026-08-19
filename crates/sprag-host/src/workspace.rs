@@ -1284,6 +1284,15 @@ impl WorkspaceExternal {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
         };
+        // ⚠⚠⚠ AND WHY IT WANTS A PERSON, on `said`'s terms with one difference the tracker owns:
+        // absent and `null` mean *this report said nothing about a notice*, and because this field is
+        // REPLACED rather than carried, that silence also RETIRES whatever the last notice said. See
+        // `crate::wire::AGENT_NOTICED_KEY` — a request the peer has stopped making must not be
+        // quotable at a pane blocked on something else.
+        let noticed = match map.get(crate::wire::AGENT_NOTICED_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
         let transcript = match map.get(crate::wire::AGENT_TRANSCRIPT_KEY) {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
@@ -1315,6 +1324,7 @@ impl WorkspaceExternal {
                 owner: owner.flatten().map(u64::from),
                 asked,
                 said,
+                noticed,
                 transcript,
                 build,
             },
@@ -2986,6 +2996,19 @@ impl WorkspaceExternal {
                             if let Some(question) = &facts.asking {
                                 value[crate::wire::ASKING_KEY] =
                                     crate::agent::question_json(question);
+                            }
+                            // ⚠⚠⚠ AND WHY THE PEER SAYS IT WANTS ONE, which is what the paragraph
+                            // above admits `asking`'s absence cannot say. The two are additive on
+                            // identical terms and are NOT alternatives: a pane can carry a menu this
+                            // build parsed AND the sentence the agent raised it with, and a pane can
+                            // carry the sentence with no menu at all — which is the case that used to
+                            // publish nothing but the word `blocked`.
+                            //
+                            // ⚠⚠ ABSENT means *the reporter did not say*, never *the peer wants
+                            // nothing*: every pane read off the screen answers absent, as does every
+                            // reporter older than `crate::wire::AGENT_NOTICED_KEY`.
+                            if let Some(noticed) = &facts.noticed {
+                                value[crate::wire::AGENT_NOTICED_KEY] = serde_json::json!(noticed);
                             }
                             entry["agent"] = value;
                         }
@@ -9002,11 +9025,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            34,
+            35,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
-             verb, a message's text and audience, a report's source, name, BUILD and what the \
-             agent SAID (item 441), and a dropped path",
+             verb, a message's text and audience, a report's source, name, BUILD, what the agent \
+             SAID (item 441) and why it says it wants a PERSON (item 452), and a dropped path",
         );
     }
 
@@ -9021,7 +9044,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            66,
+            67,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -9035,12 +9058,13 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            106,
+            107,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb: 31 across the seven ask-backed verbs and 66 across the \
+             per form rather than per verb: 31 across the seven ask-backed verbs and 67 across the \
              twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \
-             values and flat all along; the 65th is `report_agent`'s `build`, item 412, and the \
-             66th is its `said` — what the agent answered, item 441)",
+             values and flat all along; the 65th is `report_agent`'s `build`, item 412, the 66th is \
+             its `said` — what the agent answered, item 441 — and the 67th its `noticed`, why the \
+             agent says it wants a person, item 452)",
         );
     }
 

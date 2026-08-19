@@ -494,6 +494,7 @@ pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             })
@@ -1953,6 +1954,7 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             })
@@ -2024,6 +2026,7 @@ impl DialogBetweenTheReads {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                     // ⚠ `None` even while blocked: what this fixture stages is the ARM, and the
                     // arm's own doc says the question it carries is DROPPED — the barrier reads the
@@ -2094,6 +2097,7 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: None,
             })
         })
@@ -2136,6 +2140,7 @@ pub(crate) fn supervised_writing(
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: Some(said.clone()),
             })
         })

@@ -73,6 +73,28 @@ pub(crate) fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Option
     (seen.state == AgentState::Blocked).then_some(seen.asking)
 }
 
+/// **WHY THE PEER IN `pane` SAYS IT WANTS A PERSON**, in its own words, or `None` where it has not
+/// said — which includes a pane that is not blocked at all.
+///
+/// [`peer_asking`]'s sibling and its complement: that one asks what THIS BUILD could read off the
+/// screen and answers `None` for a dialog no parser here understands, which is the case a run must
+/// hand to a person. This one asks what the AGENT said, and it is at its most useful in exactly that
+/// case (register item 452).
+///
+/// ⚠⚠ **GUARDED ON `Blocked`, WHICH IS NOT REDUNDANT WITH THE TRACKER'S OWN RETIREMENT.** The notice
+/// is replaced on every report rather than carried, so a peer that went back to working has already
+/// dropped it — but a pane's published verdict can also come from the SCREEN, and a verdict that no
+/// longer says `blocked` must not be explained by a sentence about waiting. The guard is what keeps
+/// the quotation about the wait the pane is in now.
+///
+/// ⚠ A host with no supervisor answers `None`, and the run reports the refusal it always did.
+pub(crate) fn peer_noticed(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
+    let seen = panes.supervision()?.pane_agent_state(pane)?;
+    (seen.state == AgentState::Blocked)
+        .then_some(seen.noticed)
+        .flatten()
+}
+
 /// What a peer did with the number that was typed at it — the three states an answer can be in
 /// while it is being given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1336,7 +1358,14 @@ impl Readiness {
         run: &RunContext,
     ) -> Result<Reached, PaneError> {
         let Some(question) = asking else {
-            return Ok(Reached::Asking(Unanswered::unreadable()));
+            // ⚠⚠⚠⚠⚠ NOTHING THIS BUILD COULD PARSE — and the peer may have said what it wants anyway.
+            // The remedy is unchanged (a person); what changes is that they are told what for, in the
+            // peer's own words, instead of only that there is a question somewhere on that screen.
+            // See `peer_noticed` and register item 452.
+            return Ok(Reached::Asking(match peer_noticed(panes, pane) {
+                Some(words) => Unanswered::unreadable_saying(&words),
+                None => Unanswered::unreadable(),
+            }));
         };
         let Some(consent) = self.consent.as_ref() else {
             return Ok(Reached::Asking(Unanswered::refused(
@@ -1814,6 +1843,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             })
@@ -2763,6 +2793,7 @@ mod tests {
                     asked: None,
                     said: None,
                     said_seq: 0,
+                    noticed: None,
                     transcript: None,
                 })
             }
@@ -3467,6 +3498,7 @@ mod tests {
                 asked: None,
                 said: None,
                 said_seq: 0,
+                noticed: None,
                 transcript: None,
             })
         }) as crate::access::AgentStateSource;
@@ -3487,6 +3519,97 @@ mod tests {
             unanswered.why().describe().contains("person"),
             "and the remedy is a PERSON, said out loud rather than left in a doc comment: {}",
             unanswered.why().describe(),
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND WHEN THE PEER SAID WHAT IT WANTS, THE PERSON IS TOLD WHAT FOR** — register item
+    /// 452, and the half the gate above it could not give.
+    ///
+    /// # The layer, which is the whole point
+    ///
+    /// Its neighbour stages the same pane and asserts the remedy: *hand it to a person*. True, and
+    /// all a SCREEN reader can ever say — a dialog no parser here understands is precisely the case
+    /// where the pixels have already failed, and tightening the parser is the round this workspace
+    /// keeps re-running (`a_prompt_typed_onto_a_dirty_composer…` recorded that it is ruled out).
+    ///
+    /// **The agent had already said it.** Its notice hook carries the sentence; the product reduced
+    /// the whole payload to the word `blocked` and dropped the rest in the hook process. So the fix
+    /// is not a better reading of the screen, it is reading the channel that was already speaking —
+    /// 441's lesson, which item 452 records me applying BACKWARDS on the day it was learned.
+    ///
+    /// ⚠⚠⚠ **THE TWO ASSERTIONS ARE DELIBERATELY OPPOSED.** The remedy must NOT move — a run that
+    /// started answering a dialog it just called unreadable would be the failure this arm exists to
+    /// prevent — and the account must carry the peer's words. A change that only quoted, or only
+    /// refused, fails one of them.
+    #[test]
+    fn a_blocked_pane_this_host_cannot_read_still_says_what_the_peer_asked_for() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .expect("the workspace mutex")
+                .spawn(command, "peer".to_string(), 20, 4)
+                .expect("spawn pane")
+        };
+        // ⚠ THE STAGING IS ITS NEIGHBOUR'S, WITH ONE FIELD MOVED: the screen is still unreadable
+        // (`asking: None`), so nothing here is a better parse — the only difference is that the
+        // agent's own notice reached this observation instead of dying in the hook.
+        let source = Arc::new(|_id: PaneId| {
+            Some(crate::access::AgentObservation {
+                state: AgentState::Blocked,
+                agent: Some("claude".to_string()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook".to_string(),
+                },
+                seq: 3,
+                asked_seq: 3,
+                reports: 0,
+                asking: None,
+                asked: None,
+                said: None,
+                said_seq: 0,
+                noticed: Some("Claude needs your permission to use Bash".to_string()),
+                transcript: None,
+            })
+        }) as crate::access::AgentStateSource;
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+
+        let reached = answering(Some(consent_to("Yes")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a blocked peer is not an error");
+        let Reached::Asking(unanswered) = reached else {
+            panic!("a blocked pane must never be reported ready: {reached:?}");
+        };
+        assert_eq!(
+            unanswered.why(),
+            Refusal::Unreadable,
+            "⚠⚠⚠⚠ THE VERDICT DOES NOT MOVE. Quoting a sentence is not understanding it, and a run \
+             that answered on the strength of prose it cannot parse into options would be selecting \
+             for its caller at the exact dialog this arm refuses",
+        );
+        assert!(
+            unanswered.question().is_none(),
+            "and no question is invented from the words either — the screen is still unreadable",
+        );
+
+        let account = unanswered.explain();
+        assert!(
+            account.contains("Claude needs your permission to use Bash"),
+            "⚠⚠⚠⚠⚠ THE PERSON BEING WOKEN IS TOLD WHAT FOR. Without this the whole account is *there \
+             is a question somewhere on that screen* — while the peer had said what it was, in a \
+             field the hook process was already holding. Drop `peer_noticed` from the barrier and \
+             every other gate in this workspace stays green: {account}",
+        );
+        assert!(
+            account.contains("person"),
+            "⚠⚠⚠ AND THE REMEDY IS STILL SAID OUT LOUD. A quotation that displaced the instruction \
+             would trade one incomplete sentence for another: {account}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
