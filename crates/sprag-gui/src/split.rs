@@ -411,9 +411,82 @@ fn wire_panes(wire: &LayoutWire) -> std::collections::HashSet<PaneId> {
 /// [`sync_layout`] needs to tell "the user is still dragging" from "the arrangement moved".
 #[derive(Default)]
 struct LayoutSync {
-    /// The arrangement the host last told us it holds, at the revision it was at. A local
-    /// surface that differs from this is an un-written gesture.
-    seen: LayoutSnapshot,
+    /// The arrangement the host last told us it holds, at the revision it was at — or [`None`]
+    /// while this client has adopted NOTHING. A local surface that differs from an adopted one is
+    /// an un-written gesture.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why an `Option`, which is the whole of register item 462's second half
+    ///
+    /// It was a bare [`LayoutSnapshot`], defaulted — so a client that had adopted nothing recorded
+    /// `revision: 0`, and [`sync_layout`] re-projects exactly when the host's revision DIFFERS
+    /// from this one. **`0` is a real revision.** A window whose arrangement has never been
+    /// changed since it was built serves `layout_revision: 0`, so its first frame compared 0 with
+    /// 0, decided it had already adopted this arrangement, and returned — leaving the dock surface
+    /// with no leaves and the window painting WHITE for ever.
+    ///
+    /// ⚠⚠ MEASURED ON THE OWNER'S OWN LIVE DAEMON, 2026-08-19, while a white window stood open:
+    /// `sprag layout` answered `revision 0` / `pane 116`, `sprag list-clients` answered
+    /// `[96x20]`, and `sprag panes` answered `116: 96x20`. **Every fact was correct and present**
+    /// — the size arbitrated, the pane alive and sized, the arrangement holding it — which is why
+    /// this hid behind *"the terminal is not visible"* for so long and why four fixes aimed at
+    /// REPAINTS all missed: the repaints arrive, and this comparison discards them.
+    ///
+    /// ⚠⚠⚠ A window that gets a revision ABOVE zero paints, which is what made the defect look
+    /// intermittent: creating a session bumps it (measured `revision 1` on a fresh daemon), so a
+    /// launch that made its own session was fine. **A RESTORED window is rebuilt at
+    /// `layout_revision: 0` deliberately** — *"a restored window is NEW, and every pre-reboot
+    /// client that held a revision is gone"* — so every daemon restart, which is every promotion,
+    /// handed the next client a white window. The daemon is right; a bookmark that cannot be told
+    /// from *no bookmark* is what was wrong.
+    ///
+    /// ⚠ The cure people found — RE-ATTACH — worked because it lands the client on a different
+    /// window, whose revision is not 0. An OS resize never did, because nothing about the revision
+    /// moves.
+    seen: Option<LayoutSnapshot>,
+}
+
+/// **WHETHER THIS CLIENT MUST RE-PROJECT THE HOST'S ARRANGEMENT** — true while it has adopted
+/// nothing (`adopted` is [`None`]), and whenever the host is at a revision it has not adopted.
+///
+/// # ⚠⚠⚠⚠⚠ A function, because the `None` arm is register item 462 and nothing could red it
+///
+/// This was two inline `!=` comparisons against a DEFAULTED snapshot, which made *nothing adopted*
+/// indistinguishable from *adopted revision 0* — and `0` is a real revision that a restored window
+/// serves. Naming the decision is what lets a gate ask about the arm that was wrong, where a
+/// comparison buried in a frame hook needed a live daemon, a display and a re-attach to observe.
+const fn must_adopt(adopted: Option<u64>, host: u64) -> bool {
+    match adopted {
+        Some(adopted) => adopted != host,
+        // ⚠ NOT `unwrap_or_default() != host`, which is the defect spelled out: it answers *no,
+        // you have already adopted this* to a client that has adopted nothing, for the one host
+        // revision that is zero.
+        None => true,
+    }
+}
+
+/// The revision this client has ADOPTED, or [`None`] while it has adopted none.
+///
+/// ⚠ Separate from the tree read below so the every-frame path costs no clone — see
+/// [`LayoutSync::seen`] for why the distinction this returns exists at all.
+fn adopted_revision() -> Option<u64> {
+    use_layout_sync()
+        .borrow()
+        .seen
+        .as_ref()
+        .map(|seen| seen.revision)
+}
+
+/// The arrangement this client has ADOPTED, or an empty one while it has adopted none.
+///
+/// ⚠ Empty is the honest reading for *nothing adopted* at both call sites: it is what this client
+/// is currently projecting, and it can only ever make a comparison find a difference — never hide
+/// one.
+fn adopted_tree() -> LayoutWire {
+    use_layout_sync()
+        .borrow()
+        .seen
+        .as_ref()
+        .map_or_else(LayoutWire::default, |seen| seen.tree.clone())
 }
 
 /// `Owner::cache` key for the client's record of the host's arrangement.
@@ -462,7 +535,7 @@ pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::S
         return;
     }
     // Drive only the shares the host actually moved (see the fn docs).
-    let was = use_layout_sync().borrow().seen.tree.clone();
+    let was = adopted_tree();
     if let Some(root) = tree.root() {
         force_changed_ratios(root, &ratios_of(&was));
     }
@@ -475,7 +548,7 @@ pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::S
     // fact — project it too, or a floated pane would have neither a leaf nor a window and
     // would vanish (which is exactly what a reattach used to do to it).
     crate::dock::reconcile_float_windows(&snapshot.floating, &|pane| slots.slot_of(pane));
-    use_layout_sync().borrow_mut().seen = snapshot.clone();
+    use_layout_sync().borrow_mut().seen = Some(snapshot.clone());
 }
 
 /// Each divider's share in `wire`, by id — what [`adopt_layout`] diffs the incoming
@@ -570,14 +643,18 @@ fn force_changed_ratios(node: &LayoutNode, was: &std::collections::HashMap<Split
 /// frame" look like "settled", and the intermediate ratio was written mid-gesture.
 pub(crate) fn sync_layout(slots: &crate::slotview::SlotView) {
     let host = slots.layout();
-    if host.revision != use_layout_sync().borrow().seen.revision {
+    // ⚠⚠⚠⚠⚠ A CLIENT THAT HAS ADOPTED NOTHING ADOPTS, WHATEVER NUMBER THE HOST IS AT. This read
+    // was `!=` against a DEFAULTED snapshot, so *nothing adopted* and *adopted revision 0* were
+    // one value — and a window at revision 0 (every restored one) was therefore never projected
+    // and never drawn. Register item 462, and [`LayoutSync::seen`] carries the measurement.
+    if must_adopt(adopted_revision(), host.revision) {
         adopt_layout(&host, slots);
         return;
     }
     let Some((current, expected)) = pending_write(slots) else {
         return;
     };
-    if same_shape(&current, &use_layout_sync().borrow().seen.tree) {
+    if same_shape(&current, &adopted_tree()) {
         return; // ratio-only: not ours (see the docs above) — `commit_layout` owns it
     }
     adopt_layout(&slots.set_layout(current, expected), slots);
@@ -644,7 +721,9 @@ fn same_shape(a: &LayoutWire, b: &LayoutWire) -> bool {
 /// the missing edge is pinion's to emit.
 pub(crate) fn commit_layout(slots: &crate::slotview::SlotView) {
     let host = slots.layout();
-    if host.revision != use_layout_sync().borrow().seen.revision {
+    // ⚠ Adopts when nothing has been adopted yet, on [`sync_layout`]'s reason exactly — a commit
+    // edge reached before this client ever projected the host has no gesture to preserve.
+    if must_adopt(adopted_revision(), host.revision) {
         adopt_layout(&host, slots); // the host moved under the drag; it wins, the drag is dropped
         return;
     }
@@ -678,19 +757,21 @@ fn pending_write(slots: &crate::slotview::SlotView) -> Option<(LayoutWire, u64)>
     let current = unproject_layout(use_dock_topology().get().as_ref(), &|slot| {
         slots.pane_at(slot)
     })?;
-    let sync = use_layout_sync();
-    if wire_panes(&current) != wire_panes(&sync.borrow().seen.tree) {
+    // * NOTHING ADOPTED — this client has never projected the host's arrangement, so its surface
+    //   is not a re-arrangement of anything and there is no revision to write against. The fourth
+    //   case, and it became expressible when `seen` stopped defaulting to revision 0 (item 462).
+    let seen = use_layout_sync().borrow().seen.clone()?;
+    if wire_panes(&current) != wire_panes(&seen.tree) {
         tracing::debug!(
             target: "sprag_gui::split",
             "this client cannot render every tiled pane; not writing (its arrangement is the host's)",
         );
         return None;
     }
-    if current == sync.borrow().seen.tree {
+    if current == seen.tree {
         return None;
     }
-    let expected = sync.borrow().seen.revision;
-    Some((current, expected))
+    Some((current, seen.revision))
 }
 
 /// `Owner::cache` key for the held dock-tree topology Signal.
@@ -857,6 +938,68 @@ mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
     use pinion_widget_paint::dock::DockNode; // used only by the boot-shape assertion
+
+    /// ⚠⚠⚠⚠⚠ **A CLIENT THAT HAS ADOPTED NOTHING RE-PROJECTS, EVEN WHEN THE HOST IS AT REVISION
+    /// ZERO** — register item 462, the white first window, and the arm that had no gate.
+    ///
+    /// # What the owner saw for weeks
+    ///
+    /// *"sprag가 처음뜰때 여전히 터미널이 안보이고 백색화면만 나오는데"* — the first window paints
+    /// white. Everything else is correct and can be read while it stands there: measured on the
+    /// owner's live daemon 2026-08-19, `sprag layout` answered `revision 0` / `pane 116`,
+    /// `sprag list-clients` answered `[96x20]`, `sprag panes` answered `116: 96x20`. The pane is
+    /// alive, sized, arranged and readable; only the projection never happens.
+    ///
+    /// [`sync_layout`] re-projects when the host's revision differs from the adopted one, and the
+    /// adopted one lived in a DEFAULTED [`LayoutSnapshot`] — so a client that had adopted nothing
+    /// claimed revision `0`. **A restored window is rebuilt at `layout_revision: 0` on purpose**
+    /// (*"a restored window is NEW, and every pre-reboot client that held a revision is gone"*),
+    /// so `0 == 0` and the first frame concluded it had already drawn this arrangement. Every
+    /// daemon restart — which is every promotion — handed the next client a white window.
+    ///
+    /// # ⚠⚠⚠ Why the zero case is the whole gate, and the others are the controls
+    ///
+    /// Creating a session bumps the revision (measured `revision 1` on a fresh daemon), so a launch
+    /// that made its own session painted and the defect looked intermittent. Zero is the ONE value
+    /// where *no bookmark* and *this bookmark* collide, which is why four fixes aimed at repaints
+    /// missed it entirely: the repaints all arrive, and this comparison discards them.
+    ///
+    /// ⚠⚠ The three controls are not decoration. Without them, *always re-project* passes the
+    /// first assertion and destroys the property the revision exists for — re-projecting on top of
+    /// a user's live drag, which is the regression `Window::layout_revision` is documented to
+    /// prevent.
+    #[test]
+    fn a_client_that_has_adopted_nothing_projects_a_host_sitting_at_revision_zero() {
+        assert!(
+            must_adopt(None, 0),
+            "⚠⚠⚠⚠⚠ THE DEFECT ITSELF. A client that has adopted NOTHING must project what the \
+             host holds, and a restored window holds revision 0 — so answering *already adopted* \
+             here is a window that never draws its panes. The daemon is right and was right all \
+             along: a bookmark that cannot be told from NO bookmark is what was wrong.",
+        );
+        assert!(
+            must_adopt(None, 7),
+            "⚠ and it has nothing to do with the number: a fresh client projects whatever it is \
+             handed",
+        );
+
+        // ── THE CONTROLS: what the revision is FOR, which *always re-project* would destroy ──
+        assert!(
+            !must_adopt(Some(0), 0),
+            "⚠⚠⚠⚠ A CLIENT THAT HAS ADOPTED REVISION 0 MUST NOT RE-PROJECT IT. This is the half \
+             that makes the fix a distinction rather than a surrender: re-projecting every frame \
+             would slam a divider back to the host's share under the user's cursor mid-drag",
+        );
+        assert!(
+            !must_adopt(Some(7), 7),
+            "⚠⚠ nor at any other number it has already adopted",
+        );
+        assert!(
+            must_adopt(Some(7), 8),
+            "⚠⚠⚠ and a host that MOVED must still win outright — it is the authority, and a \
+             client that argued would fork the tree",
+        );
+    }
 
     #[test]
     fn panel_id_round_trips_through_pane_index_of_panel() {
