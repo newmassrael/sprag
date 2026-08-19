@@ -66,12 +66,15 @@ mod tests {
 
     /// ⚠⚠⚠⚠⚠ **THE DEFECT, STAGED ON PURPOSE RATHER THAN WAITED FOR.**
     ///
-    /// `/bin/true` exits without reading a byte, so a payload this size cannot fit in the buffer
-    /// and the write is guaranteed to meet the closed pipe. Before this module the same shape was a
+    /// `true` exits without reading a byte, so a payload this size cannot fit in the buffer and
+    /// the write is guaranteed to meet the closed pipe. Before this module the same shape was a
     /// 1-in-7 failure under load and green on its own, which is how it survived as *a flake*.
+    ///
+    /// ⚠ Reached through [`crate::doubles::system`] rather than spelled `/bin/true`: macOS has no
+    /// such file, and this case went red on the macOS job of `28fb1a6` for that and nothing else.
     #[test]
     fn a_child_that_refuses_before_reading_does_not_take_its_feeder_down() {
-        let mut child = Command::new("/bin/true")
+        let mut child = Command::new(crate::doubles::system("true"))
             .stdin(Stdio::piped())
             .spawn()
             .expect("a child that exits without reading");

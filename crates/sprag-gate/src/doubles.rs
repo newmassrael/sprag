@@ -186,6 +186,58 @@ pub fn linked_as(program: &Path, at: &Path) -> PathBuf {
     at.to_path_buf()
 }
 
+/// Where THIS machine keeps the system program called `name`, found the way a shell finds it.
+///
+/// # ⚠⚠⚠⚠⚠ Why nothing here may spell `/bin/<name>`
+///
+/// The two platforms this workspace's suites run on do not agree about what `/bin` holds. On Linux
+/// `/bin` is a symlink to `/usr/bin` and therefore holds EVERYTHING, so any `/bin/<name>` a source
+/// spells resolves. macOS's `/bin` is a real directory of about thirty programs, and `true` and
+/// `false` are not among them — they live in `/usr/bin` and there is no `/bin/true` at all.
+///
+/// So `/bin/<name>` is precisely the shape that is green on every Linux run and `NotFound` on the
+/// macOS job: a red that arrives hours later, in a crate whose author was editing something else,
+/// wearing the wrong cause.
+///
+/// ⚠⚠ **This workspace has now learned that three times and applied it none.** It is written on a
+/// `pty` doctest, where it was first paid for; it is written in register item 467's own entry,
+/// which recorded copying `/bin/true`; and it came back as the macOS red on `28fb1a6`, which item
+/// 467's `doubles` tests and item 471's `feeding` test both carried in on the same push. A lesson
+/// recorded beside one call site does not reach the next one — so this seam exists, and
+/// `no_source_spells_a_bin_path_the_other_platform_lacks` is what makes the tree take it.
+///
+/// ⚠ `PATH` rather than a list of directories to try, because that is the question actually being
+/// asked — *where does this machine keep it* — and it is the answer the product's own children get.
+///
+/// # Panics
+///
+/// When no executable called `name` is on `PATH`. A fixture that quietly fell back to a program
+/// that is not there would fail later and somewhere else, which is the diagnosis this project keeps
+/// paying for.
+#[must_use]
+pub fn system(name: &str) -> PathBuf {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let searched: Vec<PathBuf> = std::env::split_paths(&inherited).collect();
+    for dir in &searched {
+        let candidate = dir.join(name);
+        let Ok(found) = candidate.metadata() else {
+            continue;
+        };
+        if found.is_file() && found.permissions().mode() & 0o111 != 0 {
+            return candidate;
+        }
+    }
+    panic!(
+        "⚠ this machine has no executable called `{name}` on PATH, so a fixture cannot reach the \
+         system program it wanted to stand in for. Searched: {}",
+        searched
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,7 +267,7 @@ mod tests {
             ("script", b"#!/bin/sh\nexit 0\n".to_vec()),
             (
                 "image",
-                std::fs::read("/bin/true").expect("a real binary to copy"),
+                std::fs::read(system("true")).expect("a real binary to copy"),
             ),
         ] {
             let path = dir.join(name);
@@ -272,7 +324,7 @@ mod tests {
         // A directory with a SPACE in it, because that is the shape `sprag-host`'s hook fixture
         // needs and the one a copy was reached for.
         let at = dir.join("a dir").join("claude");
-        linked_as(Path::new("/bin/true"), &at);
+        linked_as(&system("true"), &at);
         assert!(
             std::process::Command::new(&at)
                 .status()
@@ -281,7 +333,7 @@ mod tests {
         );
 
         // Re-staging is not an error: a fixture may point the same name somewhere else.
-        linked_as(Path::new("/bin/false"), &at);
+        linked_as(&system("false"), &at);
         assert!(
             !std::process::Command::new(&at)
                 .status()

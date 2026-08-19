@@ -1489,12 +1489,13 @@ fn attach_refuses_an_unknown_argument() {
 /// same session + socket env. `/usr/bin/env` stands in for `sprag-tui` (prints its env, exits 0),
 /// which is what makes the launch provable without a terminal to take.
 ///
-/// `SPRAG_GUI_BIN` is pointed at `/bin/false` throughout, and that is the half of this test that
-/// distinguishes "the flag chose the terminal client" from "a client was launched" — a pass here
-/// cannot be produced by launching the wrong one. MEASURED, by making the launch resolve
-/// `SPRAG_GUI_BIN` whatever the flag says: exit 1 with NOTHING on either stream, because `exec`
-/// leaves no CLI behind to say what it launched. The silence is the point — the flag is not
-/// something a diagnostic could recover from being wrong about.
+/// `SPRAG_GUI_BIN` is pointed at the system's `false` throughout — reached by name through
+/// [`sprag_gate::doubles::system`], because macOS keeps it in `/usr/bin` and has no `/bin/false`.
+/// That is the half of this test that distinguishes "the flag chose the terminal client" from "a
+/// client was launched" — a pass here cannot be produced by launching the wrong one. MEASURED, by
+/// making the launch resolve `SPRAG_GUI_BIN` whatever the flag says: exit 1 with NOTHING on either
+/// stream, because `exec` leaves no CLI behind to say what it launched. The silence is the point —
+/// the flag is not something a diagnostic could recover from being wrong about.
 #[test]
 fn the_cli_attach_tui_launches_the_terminal_client_scoped_to_the_session() {
     let (_host, sock) = spawn_host();
@@ -1502,10 +1503,11 @@ fn the_cli_attach_tui_launches_the_terminal_client_scoped_to_the_session() {
         sprag(&sock, &["new", "work"]).ok,
         "created a session to attach to"
     );
-    let clients = [
-        ("SPRAG_TUI_BIN", "/usr/bin/env"),
-        ("SPRAG_GUI_BIN", "/bin/false"),
-    ];
+    let never = sprag_gate::doubles::system("false");
+    let never = never
+        .to_str()
+        .expect("the system's `false` has a utf-8 path");
+    let clients = [("SPRAG_TUI_BIN", "/usr/bin/env"), ("SPRAG_GUI_BIN", never)];
 
     // The pre-flight is the terminal client's too: a missing session is the "no session" error,
     // NOT a launch failure — which is what proves nothing was exec'd on a bad name.
