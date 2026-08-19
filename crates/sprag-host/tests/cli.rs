@@ -6772,6 +6772,88 @@ fn an_installed_hook_moves_its_own_pane_and_stays_silent_outside_one() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **A TURN THAT ENDED WITHOUT A `Stop` DOES NOT LEAVE ITS PANE `working`** — register item
+/// 458, driven through the same door a real agent's hook uses.
+///
+/// Every row of [`sprag_host::hooks::CLAUDE`]'s table but one is a TURN BOUNDARY, so a turn whose
+/// boundary is LOST raises nothing further and the last thing the pane said stands for ever — item
+/// 344's ordinary case, where a rebuilt or refused reporter leaves a `working` that nothing can
+/// correct. **Measured 2026-08-19**: a fresh run over such a pane sat at `0 iterations, 0 steps` for
+/// six minutes until a person released it.
+///
+/// The agent's idle nag is raised by its own idleness timer rather than by anything about a turn, so
+/// it is the one report that arrives in exactly that case. **Measured end to end the same day** with
+/// a live agent whose `Stop` was dropped on its way to the daemon: the pane read `working` with the
+/// turn already over, and the nag moved it to `idle` 60.02 s later.
+///
+/// ⚠⚠ **THE STEPS BELOW ARE THAT SEQUENCE AND NOT THE OTHER HALF OF 458.** A turn a person
+/// INTERRUPTS emits no payload at all — Escape restores the prompt into the composer and the nag is
+/// suppressed while it holds text — so nothing this file can send reproduces it, and no gate here
+/// should pretend to. That half belongs to the wait, not to this table.
+///
+/// # ⚠⚠⚠⚠ The control is the DIALOG's own notice, and it is what stops this passing vacuously
+///
+/// A gate that only walked *notice → rest* would pass on a build that stopped reading
+/// `notification_type` and called every notice rest — and that build lets a run type its next prompt
+/// into a numbered menu, where the keystroke SELECTS. So `permission_prompt` reaches the same pane in
+/// the same state and must leave it `blocked`. The five steps are one claim each, and the pane is
+/// re-armed between them so no arm inherits its predecessor's answer.
+#[test]
+fn a_turn_that_ended_without_a_stop_does_not_leave_its_pane_working() {
+    let (_host, sock) = spawn_host();
+    let pane = [("SPRAG_PANE", "0")];
+    let submit = r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#;
+    // Verbatim from the live capture but for the ids — see `hooks::captured_idle_notice`.
+    let nag = r#"{"hook_event_name":"Notification","message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#;
+    // The kind a permission dialog carries, captured live 2026-08-19 on an Edit approval.
+    let dialog = r#"{"hook_event_name":"Notification","message":"Claude needs your permission","notification_type":"permission_prompt"}"#;
+    let hook = |payload: &str| {
+        let run = sprag_stdin(&sock, &["hook", "claude"], &pane, payload);
+        assert!(run.ok, "the hook must succeed: {}", run.stderr);
+        sprag(&sock, &["agent"]).stdout
+    };
+
+    // ── 1. The turn OPENS, and nothing ends it. This is what a 529 and an Escape both look like
+    //       from here: one boundary in, and then silence.
+    assert!(
+        hook(submit).contains("0: working  claude"),
+        "the submit opened a turn",
+    );
+
+    // ── 2. THE FIX. The nag arrives with no turn boundary behind it, and the pane is at rest.
+    let listed = hook(nag);
+    assert!(
+        listed.contains("0: idle  claude"),
+        "⚠⚠⚠⚠⚠ THE PANE IS AT REST AND THIS IS THE ONLY THING THAT SAYS SO. Dropping this notice \
+         leaves the dead turn's `working` standing until a person releases the pane — which is what \
+         happened, twice, on the day this was written: {listed}",
+    );
+    assert!(
+        listed.contains("source=hook:claude"),
+        "and it is the agent's own account, not a rule reading the screen: {listed}",
+    );
+
+    // ── 3. RE-ARMED, so the arms below cannot inherit the answer above.
+    assert!(hook(submit).contains("0: working  claude"), "working again");
+
+    // ── 4. THE CONTROL. A DIALOG's notice reaches the same pane in the same state, and rest is the
+    //       one thing it must not be read as.
+    let listed = hook(dialog);
+    assert!(
+        listed.contains("0: blocked  claude"),
+        "⚠⚠⚠⚠⚠ THE DIALOG MUST STILL BLOCK. A build that stopped reading the notice's KIND would \
+         answer `idle` here, and a run that believes it types its prompt at a numbered menu where \
+         the keystroke SELECTS: {listed}",
+    );
+
+    // ── 5. AND A STALE `blocked` IS CORRECTED TOO, which is item 458's other face exactly: the
+    //       readiness barrier a fresh run waits on wants `idle`, and `blocked` is not it.
+    assert!(
+        hook(nag).contains("0: idle  claude"),
+        "a report nobody is behind any more gives way to the agent's own statement of rest",
+    );
+}
+
 /// A daemon that is UP but wedged cannot stall a REQUEST VERB either — it says so and exits.
 ///
 /// The hook path below has been bounded since R273 because an agent waits for it. Every other verb

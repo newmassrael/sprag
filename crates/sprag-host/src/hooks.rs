@@ -320,6 +320,10 @@ pub const CLAUDE: Target = Target {
         // The agent has asked the human something. This is the event a permission prompt raises,
         // which is why no attempt is made to recognise a "permission-shaped" tool call: the agent
         // already tells us, and guessing at `tool_input` would be a second, worse answer.
+        //
+        // ⚠⚠⚠ THE ONE ROW THIS TABLE DOES NOT DECIDE ALONE. A notice carries its own KIND, and
+        // exactly one of those kinds — [`IDLE_NOTICE`] — means the opposite of this word. See
+        // [`report_for`]: every other kind, and an absent one, is answered here.
         ("Notification", Outcome::Report(AgentState::Blocked)),
         ("Stop", Outcome::Report(AgentState::Idle)),
         // Not a state: the agent has exited and has no further claim on the pane.
@@ -861,18 +865,19 @@ pub fn report_for(target: &Target, payload: &Value) -> Option<Outcome> {
     {
         return None;
     }
-    // ⚠⚠⚠⚠⚠ AN IDLE NAG IS NOT A STATE CHANGE — see [`IDLE_NOTICE`], captured live twice on
-    // 2026-08-19. The table answers `blocked` for every notice because the event name is all it
-    // reads; the payload says which KIND of notice it is, and this one arrives after the turn's own
-    // `Stop`, about a pane that is at rest. Reporting it would overwrite a true `idle` with a false
-    // `blocked` — and a false `blocked` is what sends an unattended run to `screening`,
-    // `awaiting_human` and the `<final>` `blocked`.
+    // ⚠⚠⚠⚠⚠ AN IDLE NAG IS THE PANE'S REST, AND IT IS THE ONE REPORT THAT ARRIVES WHEN NO TURN
+    // BOUNDARY DOES — see [`IDLE_NOTICE`] for both measurements this rests on. The table answers
+    // `blocked` for every notice because the event NAME is all it reads; the payload says which KIND
+    // of notice it is, and this kind says the agent is waiting for input with nothing in flight,
+    // which is [`AgentState::Idle`] in this crate's own words.
     //
-    // ⚠⚠ `None` here means THIS EVENT CHANGES NOTHING, which is the same effect as the subagent
-    // exclusion above and deliberately reached by the same door: both are *do not report a state*,
-    // and inventing a second spelling for one answer is how two readers come to disagree.
+    // Reporting `blocked` here was the defect: a false `blocked` sends an unattended run through
+    // `screening` and `awaiting_human` to the `<final>` `blocked`. Reporting NOTHING was the half-fix
+    // that followed it, and it threw away the only evidence a pane whose turn DIED ever produces —
+    // register item 458. **Measured 2026-08-19 on a live pane whose turn ended without its `Stop`
+    // ever reaching this daemon: the nag was the only thing that spoke.**
     if is_idle_notice(payload) {
-        return None;
+        return Some(Outcome::Report(AgentState::Idle));
     }
     let event = payload.get("hook_event_name")?.as_str()?;
     target
@@ -1046,12 +1051,64 @@ const NOTICE_KIND: &str = "notification_type";
 /// What the agent calls the notice's prose, inside a [`NOTICE_EVENT`] payload.
 const NOTICE_TEXT: &str = "message";
 
-/// The one [`NOTICE_KIND`] this crate has SEEN: the agent has nothing in flight and would like
-/// another prompt.
+/// The one [`NOTICE_KIND`] this crate has measured a MEANING for: the agent has nothing in flight
+/// and would like another prompt.
 ///
-/// ⚠⚠ It is not a state change and must not be reported as one. The turn's own `Stop` already said
-/// where the pane stands; an idle nag arriving later says the same thing again, and turning it into
-/// `blocked` overwrites a true report with a false one.
+/// # ⚠⚠⚠⚠⚠ It is the pane's REST, and it is the only thing that speaks when no turn boundary does
+///
+/// Every other row of [`Target::events`] is a TURN BOUNDARY — a submit, a tool call, a stop — so a
+/// turn that DIED or was INTERRUPTED raises none of them, and the last thing the pane said stands
+/// for ever. **Register item 458 is that class, and it was seen twice in one day**: a turn killed by
+/// an API `529` left `blocked` behind it and a FRESH run waited on that report for six minutes; a
+/// turn a person interrupted with Escape left `working` behind it and its driver polled *"looked,
+/// nothing had happened"* against a turn that could never end. Both were ended by a HUMAN, which is
+/// the whole complaint — nothing expires a report, because the only thing that could speak is the
+/// agent and these are exactly the cases where it does not.
+///
+/// This notice is what speaks anyway. It is raised by the agent's own IDLENESS TIMER and not by
+/// anything about a turn, so it arrives precisely where the boundaries do not — which is what makes
+/// it worth reading rather than a seventh boundary that would go missing with the rest.
+///
+/// **Measured end to end 2026-08-19**, with a live agent whose `Stop` was dropped on its way to the
+/// daemon — item 344's ordinary case, where a rebuilt or refused reporter leaves the pane's last
+/// `working` standing *"for ever, because the thing that would have said otherwise can no longer
+/// speak"*. The pane read `working` with the turn already over, and this notice arrived **60.02 s
+/// later and moved it to `idle`**. That is what this row buys: a lost boundary stops being permanent.
+///
+/// # ⚠⚠⚠⚠⚠ What it does NOT reach, measured in the same session
+///
+/// **A turn a person INTERRUPTS with Escape is not covered, and cannot be from here.** Escape
+/// restores the prompt into the COMPOSER, and this notice is suppressed while the composer holds
+/// text — so an interrupted turn emits **no payload of any kind**: no `Stop`, and no nag either. A
+/// pane measured this way stayed `working seq=6` for **fourteen minutes**, and clearing the composer
+/// by hand did not re-arm the timer. There is nothing left for a report to expire against, so that
+/// half of register item 458 belongs to the WAIT that depends on the report and not to this table.
+/// Reading it off the screen instead is what 441 and 452 rule out.
+///
+/// # ⚠⚠⚠⚠ Why `idle` is the safe reading here, MEASURED rather than reasoned
+///
+/// A false `idle` is the worst answer this table can give. A run that believes it types its next
+/// prompt into whatever the pane is showing, and if that is a numbered menu the keystroke SELECTS —
+/// so the claim was measured twice, once against the agent's own image (`claude 2.1.235`) and once
+/// live:
+///
+/// * **A dialog carries a DIFFERENT word.** The kinds are a closed set in that image, and the
+///   permission dialog's is `permission_prompt` — beside `worker_permission_prompt`,
+///   `agent_needs_input`, `agent_completed`, `elicitation_*`, `quota_auto_resume_*`,
+///   `push_notification`, `computer_use_*` and `auth_success`. This word is not among them.
+/// * **And the agent SUPPRESSES this notice while a dialog is open**: its trigger is an idleness
+///   effect guarded on the dialog store being empty, at `messageIdleNotifThresholdMs` = 60_000.
+///
+/// **Captured live 2026-08-19**: an edit-permission dialog was left standing for **155 seconds**,
+/// 2.6× that threshold, and raised `permission_prompt` and no idle notice at all. In the same
+/// session an idle notice arrived with no `Stop` anywhere before it, which is the other half — the
+/// nag does not wait for a turn to have ended tidily.
+///
+/// ⚠⚠ **ONLY THIS ONE WORD IS READ.** Every other value, and an absent field, keeps the meaning the
+/// event NAME has always had — `blocked`, which is the right answer for `permission_prompt` and the
+/// safe one for a word whose meaning nobody here has measured. Naming a word nobody has SEEN is the
+/// mistake this module's history records paying for, and acting on a word whose MEANING was only
+/// guessed is that mistake one step in.
 const IDLE_NOTICE: &str = "idle_prompt";
 
 /// **WHAT AN AGENT SAID WHEN IT ASKED FOR ATTENTION** — the notice's own words, or [`None`] for a
@@ -2114,36 +2171,66 @@ mod tests {
         })
     }
 
-    /// ⚠⚠⚠⚠⚠ **AN IDLE NAG DOES NOT MAKE A RESTING PANE BLOCKED** — the state half of the fix.
+    /// **THE KIND A PERMISSION DIALOG CARRIES**, captured live 2026-08-19 — the word register item
+    /// 452 recorded as missing and could not raise.
     ///
-    /// Measured live, twice: the notice arrives AFTER the turn's own `Stop`, with the agent's
-    /// answer already stated, and [`report_for`] answered `blocked` because the event NAME is all
-    /// it read. A false `blocked` is not a cosmetic error — it is the reading that sends an
-    /// unattended run through `screening` to `awaiting_human` and then to the `<final>` `blocked`.
+    /// It has no branch in [`report_for`] and must not get one: the event's own row already answers
+    /// `blocked`, which is the right answer for it. What it is for is being THIS gate's control, so
+    /// the boundary around [`IDLE_NOTICE`] is drawn against the word the product actually sends
+    /// rather than an invented one — the difference between *"a kind I made up still blocks"* and
+    /// *"the dialog still blocks"*.
+    const CAPTURED_DIALOG_NOTICE: &str = "permission_prompt";
+
+    /// ⚠⚠⚠⚠⚠ **AN IDLE NAG IS THE REST NO TURN BOUNDARY ANNOUNCED** — register item 458's first
+    /// half, and the completion of 452's.
     ///
-    /// ⚠⚠ **THE CONTROL IS A NOTICE OF ANOTHER KIND, AND IT MUST STILL BLOCK.** Only `idle_prompt`
-    /// was measured; a permission dialog carries some other value that this round did not manage to
-    /// raise. Every other kind — and a notice with no kind at all — keeps the meaning it has always
-    /// had, and this gate is what says that boundary was a decision.
+    /// Every other row of [`Target::events`] is a turn boundary, so a turn that DIES raises none of
+    /// them and the pane's last report stands for ever: measured, a fresh run waited six minutes on
+    /// one. This notice is raised by the agent's own idleness timer instead, so it is the only thing
+    /// that speaks in exactly that case — **measured live on a pane whose turn ended without its
+    /// `Stop` ever reaching this daemon.** 452 stopped it being read as a false `blocked`; this is
+    /// the other half, where it delivers the true `idle`.
+    ///
+    /// # ⚠⚠⚠⚠ The control is the DIALOG'S OWN WORD, and it must still block
+    ///
+    /// A false `idle` is the worst answer here — a run types its next prompt into whatever is on the
+    /// pane, and a numbered menu takes it as a SELECTION. Two independent measurements say this word
+    /// is not a dialog's: the dialog's is [`CAPTURED_DIALOG_NOTICE`], and the agent suppresses the
+    /// nag entirely while a dialog is open (one stood 155 s, 2.6× the 60 s threshold, and raised no
+    /// idle notice).
+    ///
+    /// ⚠⚠ **EACH ARM KILLS ITS OWN MUTATION**, which is what makes three of them rather than one:
+    /// the first dies if the notice is dropped or read as `blocked`, the second if the KIND stops
+    /// being read at all, and the third if an ABSENT kind is taken for a claim of rest.
     #[test]
-    fn an_idle_notice_leaves_a_resting_pane_alone_and_every_other_notice_still_blocks() {
+    fn an_idle_notice_reports_the_rest_and_a_real_dialog_still_blocks() {
         assert_eq!(
             report_for(&CLAUDE, &captured_idle_notice()),
-            None,
-            "⚠⚠⚠⚠ THE PANE IS AT REST AND SAYS SO. Reporting a state here overwrites the `idle` \
-             this turn's own `Stop` reported with a `blocked` nobody can answer",
+            Some(Outcome::Report(AgentState::Idle)),
+            "⚠⚠⚠⚠⚠ THE PANE IS AT REST AND THIS IS THE ONLY THING THAT SAYS SO. A turn killed by \
+             an API error raises no `Stop`, so dropping this leaves the pane's last `working` \
+             standing for ever and a fresh run waiting on it — register item 458",
         );
 
-        // ⚠⚠⚠ THE CONTROL, one field changed. A notice this crate has NOT measured keeps today's
-        // meaning — the boundary is what was seen, not what was guessed.
+        // ⚠⚠⚠⚠ THE CONTROL, one field changed, and the field carries the word the product SENDS.
         let mut permission = captured_idle_notice();
-        permission[NOTICE_KIND] = serde_json::json!("some_kind_nobody_here_has_seen");
+        permission[NOTICE_KIND] = serde_json::json!(CAPTURED_DIALOG_NOTICE);
         assert_eq!(
             report_for(&CLAUDE, &permission),
             Some(Outcome::Report(AgentState::Blocked)),
+            "⚠⚠⚠⚠⚠ THE DIALOG MUST STILL BLOCK. A notice read as `idle` because it is a notice \
+             would let a run type its next prompt at a numbered menu, where the keystroke SELECTS",
+        );
+
+        // ⚠⚠⚠ AND A KIND NOBODY HERE HAS INTERPRETED KEEPS THE EVENT'S OWN MEANING. The image ships
+        // ten more of these words; this crate has measured the meaning of exactly one.
+        let mut unread = captured_idle_notice();
+        unread[NOTICE_KIND] = serde_json::json!("some_kind_nobody_here_has_seen");
+        assert_eq!(
+            report_for(&CLAUDE, &unread),
+            Some(Outcome::Report(AgentState::Blocked)),
             "⚠⚠⚠ a notice of an UNMEASURED kind must still mean the agent wants somebody — \
-             narrowing this to the one word that was captured is how a real permission dialog \
-             would stop being seen",
+             widening the rest to every notice is how a real dialog would stop being seen",
         );
 
         // ⚠⚠ AND A NOTICE WITH NO KIND AT ALL, which is what an older agent sends.
