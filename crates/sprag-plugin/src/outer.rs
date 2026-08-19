@@ -375,6 +375,14 @@ const CONTEXT_CEILING: &str = "context_ceiling";
 #[cfg(test)]
 const REFLECT_AFTER_REFUSALS: &str = "reflect_after_refusals";
 
+/// **WHAT AN AGENT WHOSE MILESTONE A CHECK REFUSED IS TOLD** — composed by `disputing`'s `onentry`
+/// out of the document's own four parts and the check's own words, and delivered by
+/// [`Owed::Dispute`]. Register item 448.
+///
+/// ⚠ NOT `#[cfg(test)]`, unlike the two above: this one the DRIVER reads, because delivering it is
+/// what the state is for.
+const DISPUTE_PROMPT: &str = "dispute_prompt";
+
 /// The datamodel variable saying **WHICH CEILING ended the run** — written by whichever `judge`
 /// transition reached `stopping`, and read by two parties that must not disagree: the document's own
 /// `stopping` composes the sentence its agent is asked out of it, and [`OuterLoop::stopping_because`]
@@ -871,6 +879,27 @@ pub(crate) enum Owed {
     /// deliberately re-brief nothing. `Owed` is about what the peer is told, not about what kind of
     /// sentence it is.
     ServiceRetry,
+    /// ⚠⚠⚠⚠⚠ The `dispute_prompt` — **what the agent is told when an independent check refused its
+    /// milestone**, owed by the one edge out of `judging` that means *the claim was not believed*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this variant needed a STATE in the document before it could exist here
+    ///
+    /// The refusing edge used to be `judge` landing in `working`, carrying `<send event="prompt.turn"/>`
+    /// — and so are the two ordinary edges beside it. [`Self::on`] keys on `(event, landed)`, so all
+    /// three were **the same key**: there was no expression over this table's inputs that could have
+    /// told a refused turn from an ordinary one. The driver could have re-read the verdict it had
+    /// just published and branched on it, and that would have made the DRIVER decide what a
+    /// transition owes — a second author, exactly what this table exists to stop being needed.
+    ///
+    /// So the document grew `disputing`, the refusing edge lands there, and the key is different by
+    /// construction. Register item 448; the state's own comment carries the measurement (nine
+    /// refusals, 1129 identical bytes each, because the agent was asked the identical question).
+    ///
+    /// ⚠⚠ **IT IS A TURN PROMPT AND NOT A SECOND KIND OF QUESTION.** `disputing`'s entry composes
+    /// the check's words with `turn_prompt` itself, so what arrives is the ordinary turn the refusal
+    /// bought, opened by the reason it was bought. A prompt that replaced the turn would answer a
+    /// check by taking the work away.
+    Dispute,
 }
 
 impl Owed {
@@ -892,6 +921,7 @@ impl Owed {
             Self::End => "end_prompt",
             Self::Stop => "stop_prompt",
             Self::Reflect => "reflect_prompt",
+            Self::Dispute => DISPUTE_PROMPT,
             Self::ServiceRetry => SERVICE_RETRY_TEXT,
             Self::Nothing => panic!("`Owed::Nothing` names no prompt; the caller matches it first"),
         }
@@ -915,9 +945,17 @@ impl Owed {
     pub(crate) const fn fallback(self) -> Option<&'static str> {
         match self {
             Self::ServiceRetry => Some(DEFAULT_SERVICE_RETRY_TEXT),
-            Self::Start | Self::Turn | Self::End | Self::Stop | Self::Reflect | Self::Nothing => {
-                None
-            }
+            // ⚠⚠ A DISPUTE IS A PROMPT AND TAKES A PROMPT'S ANSWER: an empty one is a document that
+            // has been edited wrong, and standing something in would hide that. It is composed on
+            // entry out of four parts this file ships non-empty, so an empty one here is a fact
+            // worth failing over rather than papering over.
+            Self::Start
+            | Self::Turn
+            | Self::End
+            | Self::Stop
+            | Self::Reflect
+            | Self::Dispute
+            | Self::Nothing => None,
         }
     }
 
@@ -948,6 +986,11 @@ impl Owed {
             // that sent `end_prompt` here would ask an agent that ran out of turns mid-edit to
             // summarise finished work.
             AiLoopState::Stopping => Self::Stop,
+            // ⚠⚠⚠⚠⚠ A CLAIM AN INDEPENDENT CHECK REFUSED IS ANSWERED WITH THE CHECK'S OWN WORDS —
+            // register item 448, and this arm is why the state exists at all. It is keyed by the
+            // STATE and not by the event, like the four above and unlike `working`'s: one edge
+            // reaches `disputing`, and it reaches it for one reason.
+            AiLoopState::Disputing => Self::Dispute,
             // ⚠⚠⚠ A REFLECTION IS A TURN, so arriving here OWES the agent a question — see
             // [`OuterLoop::reflect`]. Before it did, this state sat in the silent list below and a
             // reflection could only ever carry what the document's author had written.
@@ -999,6 +1042,9 @@ impl Owed {
                 | AiLoopEvent::PromptStop
                 | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
+                // ⚠ `prompt.dispute` IS `disputing`'s OWN onentry SEND, so it is the state that
+                // answers for it above — this arm is the event arriving somewhere it never lands.
+                | AiLoopEvent::PromptDispute
                 | AiLoopEvent::ReflectApplied
                 | AiLoopEvent::ReviewBegin
                 | AiLoopEvent::ReviewDone
@@ -1110,6 +1156,11 @@ impl Owed {
             // and the one thing it eventually types is `service_retry_text` on the way OUT.
             | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
+            // ⚠⚠⚠ A DISPUTE ASKS FOR WORK AND NOT FOR AN ACCOUNT — register item 448, and the
+            // distinction this function exists to make. It types a prompt, like the two `true`
+            // arms above; what it asks for is the next TURN, opened by the reason the check gave.
+            // A `true` here would take the agent's next piece of work off it as a report.
+            | AiLoopState::Disputing
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Reviewing
@@ -3930,6 +3981,16 @@ impl OuterLoop {
             // by whichever transition brought us here — see `advance`.
             AiLoopState::Priming => AiLoopEvent::PromptSent.into(),
 
+            // ⚠⚠⚠⚠⚠ THE CHECK REFUSED THE CLAIM AND THE AGENT HAS JUST BEEN TOLD SO — register item
+            // 448. Like `priming` above, the prompt was already delivered by the transition that
+            // landed here (`Owed::Dispute`), so what is left is to say it went and hand the turn
+            // back to `working`, which watches it exactly as it watches every other turn.
+            //
+            // ⚠⚠ IT IS THE SAME EVENT `priming` RAISES, and that is the document's arrangement
+            // rather than a shortcut: both states deliver a prompt and neither waits for anything
+            // else, so *the prompt was sent* is the whole of what either has to report.
+            AiLoopState::Disputing => AiLoopEvent::PromptSent.into(),
+
             // ⚠⚠⚠ THE STATE THE WHOLE ROUND WAS ABOUT. The inner agent is working and the driver
             // watches its pane; what the turn ENDS ON is what the machine is told.
             // ⚠⚠ A TURN THAT ENDED CARRIES WHAT THE SESSION HAS BEEN CHARGED TO READ, and only that
@@ -4031,9 +4092,17 @@ impl OuterLoop {
                 self.verdict = heard.said().then_some(checked);
                 // ⚠⚠⚠⚠⚠ BESIDE THE VERDICT AND ON THE SAME CONDITION — register item 461. Kept here
                 // for `verdict`'s reason exactly: it belongs to THIS judgement and is gone the
-                // instant the payload is built. It reaches the walk on [`Pumped::Moved`] and it does
-                // NOT reach the datamodel: the document routes on the WORD, and a reason it could
-                // match on would be a second authority on a decision `checked` already makes.
+                // instant the payload is built. It reaches the walk on [`Pumped::Moved`].
+                //
+                // ⚠⚠⚠⚠⚠ AND SINCE ITEM 448 IT ALSO TRAVELS ON THE EVENT, WHICH IS A NARROWER CLAIM
+                // THAN THE ONE THIS COMMENT USED TO MAKE. It said the reason must not reach the
+                // datamodel at all, and the argument under it was about ROUTING: *a reason the
+                // document could match on would be a second authority on a decision `checked` has
+                // already made*. That argument is untouched and still binds — no `cond` in the
+                // document reads this key, and a gate holds that rather than this comment. What the
+                // sentence got wrong was the scope: the words also have to be SAID to the agent,
+                // and the only party that can compose an authored sentence out of them is the
+                // document. So the ban is on deciding with it, not on carrying it.
                 self.explained = heard.said().then_some(explained).flatten();
                 // ⚠⚠⚠⚠⚠ AND WHICH READER THE CHECK WAS SHOWN — register item 448. Beside the other
                 // two and on the same condition, for their reason: it belongs to THIS judgement and
@@ -4051,6 +4120,21 @@ impl OuterLoop {
                         // so a document authoring no check takes exactly the edges it always did.
                         "checked": match checked.wire_str() {
                             Some(word) => serde_json::Value::from(word),
+                            None => serde_json::Value::Bool(false),
+                        },
+                        // ⚠⚠⚠⚠⚠ AND WHAT THE CHECK SAID, so `disputing` can put it to the agent —
+                        // register item 448. The verdict above decides the route and this decides
+                        // nothing: it is one line of somebody else's prose, carried so that an
+                        // authored sentence can quote it.
+                        //
+                        // ⚠⚠ A NON-EMPTY LINE OR `false`, NEVER `''`, and this one is load-bearing
+                        // rather than conventional: `disputing` asks `<if cond="_event.data.explained">`
+                        // and this datamodel is Lua, where the empty string is TRUE — so an empty
+                        // word here would compose *"It said:"* followed by nothing, typed at a live
+                        // agent. [`crate::judge::asked_of_another`] filters empty lines to `None`,
+                        // and this arm is what keeps that promise on the wire.
+                        "explained": match self.explained.as_deref() {
+                            Some(line) => serde_json::Value::from(line),
                             None => serde_json::Value::Bool(false),
                         },
                         // ⚠⚠⚠ AND WHETHER A `false` ABOVE IS TRUSTWORTHY. `done` is a yes-or-no and
@@ -4195,6 +4279,14 @@ impl OuterLoop {
                 AiLoopState::Working if from == AiLoopState::Judging => {
                     self.saw.map(Because::Judged)
                 }
+                // ⚠⚠⚠⚠⚠ AND THE REFUSED TURN CARRIES THE SAME READING, which is a fix inside a fix:
+                // moving the refusing edge off `working` (register item 448) would otherwise have
+                // taken the sentence *the agent said the marker and an independent process shown
+                // the same disagreed* off the walk with it, because the arm above is keyed on the
+                // state a refusal no longer lands in. It needs no `if`: ONE edge reaches
+                // `disputing`, it comes from `judging`, and the reading it carries is that
+                // judgement's own.
+                AiLoopState::Disputing => self.saw.map(Because::Judged),
                 AiLoopState::Idle
                 | AiLoopState::Priming
                 | AiLoopState::Working
@@ -12012,10 +12104,15 @@ mod tests {
              passed on the cadence, a dialog, or a claim that was believed — none of which is the \
              number this item adds. Walked {never_walk:?}",
         );
+        // ⚠⚠⚠⚠ THE NEEDLE IS `Disputing` SINCE REGISTER ITEM 448, AND IT IS A STRICTLY BETTER ONE.
+        // It used to be `Judging --Judge--> Working`, which every ordinary turn and every unreadable
+        // one also takes — so the count was *judgements that went back to work* standing in for
+        // *refusals*, and it was only exact because this run's stand-in claims the milestone every
+        // turn. One edge reaches `disputing` and only a refusal takes it.
         assert!(
             never_walk
                 .iter()
-                .filter(|note| note.contains("Judging --Judge--> Working"))
+                .filter(|note| note.contains("Judging --Judge--> Disputing"))
                 .count()
                 > usize::try_from(CEILING).expect("a small ceiling"),
             "⚠⚠⚠ and it must have refused MORE times than the armed run's ceiling, or the control \
@@ -12226,7 +12323,14 @@ mod tests {
         let (denied, why, denied_walk) = judged(Some(DENIES));
         assert_eq!(
             denied,
-            AiLoopState::Working,
+            // ⚠⚠⚠⚠ IT WAS `Working` UNTIL REGISTER ITEM 448, and the CLAIM is unchanged: a refused
+            // claim still buys one more turn. What changed is that the turn is now composed with
+            // the check's words on the way, and `disputing` is where that happens — the state
+            // exists because the driver keys a transition's prompt on `(event, landed)` and this
+            // edge shared both with the ordinary one. That the turn is still bought is measured by
+            // `a_refused_claim_reaches_the_agent_with_the_checks_own_words`, which walks the run
+            // straight back into `working`; this gate stays about WHERE the verdict sends it.
+            AiLoopState::Disputing,
             "⚠⚠⚠⚠⚠ ITEM 428: the agent said the milestone was reached and an independent process \
              said it was not, so this run must buy ONE MORE TURN rather than a convergence nobody \
              earned. Walked {denied_walk:?}",
@@ -12273,6 +12377,362 @@ mod tests {
             "⚠⚠⚠ and the sentence must say it plainly. A reader who is told nothing concludes the \
              milestone was verified, because that is what a milestone sounds like: {:?}",
             Checked::NotAsked.describe(),
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AN AGENT WHOSE MILESTONE A CHECK REFUSED IS TOLD SO, IN THE CHECK'S OWN WORDS** —
+    /// register item 448, and the return path item 428 was built without.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect, watched live rather than reasoned
+    ///
+    /// Run 16 was refused on iterations 6, 8, 10 … 22 — NINE times, `Judging --Judge--> Working` at
+    /// **1129 identical bytes each**. The verdict reached the journal, the reason reached the walk
+    /// (item 461), the reader it was shown reached the harness (item 448's second half) — and the
+    /// agent was sent the ORDINARY turn prompt, so it answered the same question with the same
+    /// claim, nine times. **Every party could read the refusal except the only one who could act on
+    /// it.**
+    ///
+    /// # ⚠⚠⚠⚠ What is asserted, and why each arm is a different failure
+    ///
+    /// * the run walks `judging` → `disputing` → `working`, so the turn a refusal buys is still
+    ///   bought — the ceiling item 449 added counts refusals, not endings;
+    /// * what the agent is TOLD carries the check's own line, framed as the check's;
+    /// * it also carries the whole ordinary turn prompt, so answering the objection is not
+    ///   traded for knowing what the work is;
+    /// * a check that refuses and explains NOTHING says so, rather than composing `nil` or an
+    ///   empty quotation into a sentence typed at a live agent (`stop_said`'s measured hazard);
+    /// * a second refusal composes ONE sentence, not two — this state is re-entered, unlike
+    ///   `stopping`, so composing from the parts is load-bearing rather than careful;
+    /// * ⚠ and the CONTROL: a turn nobody refused is told none of it.
+    #[test]
+    fn a_refused_claim_reaches_the_agent_with_the_checks_own_words() {
+        /// A checker that refuses AND says why — the words the agent must end up holding.
+        ///
+        /// ⚠ Its reason is deliberately words no rendered question contains: the question travels
+        /// as the last argv and `/bin/echo` prints its arguments, so a reason that also appeared in
+        /// the prompt would be cut as the echo it cannot be told from — the neighbour gate's own
+        /// residue, and this arm would then pass on the wrong mechanism.
+        const EXPLAINS: &str = "/bin/echo NO the artifact is empty";
+        /// The check's own line, as it must reach the agent.
+        const REASON: &str = "the artifact is empty";
+        /// And a checker that refuses and says NOTHING — a bare verdict, which the first half of
+        /// this item asked the check not to give and cannot stop it giving.
+        const MUTE: &str = "/bin/echo NO";
+
+        /// ⚠⚠⚠⚠ THE BRIEF BOTH RUNS BELOW ARE GIVEN, in ONE place — and the first draft of this
+        /// gate paid for the alternative. The `turn_prompt` a dispute composes in NAMES THE
+        /// MILESTONE, so a control briefed differently reads back the template's `(edit me)` and
+        /// the two prompts cannot be compared at all. The check is the only thing that varies.
+        fn briefing(check: Option<&str>) -> Brief {
+            Brief {
+                north_star: "the stand-in claims a milestone a check refuses".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                milestone_check: check.map(ToOwned::to_owned),
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠⚠ BOTH OTHER WAYS OUT OF `judging` ARE OUT OF REACH, so what this gate reads is
+                // the refusal's own route and not a cadence that happened to fire.
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }
+        }
+
+        /// Drive a run and hand back its walk, what the document composed for the agent, and the
+        /// pane the agent actually reads.
+        ///
+        /// ⚠ `prompts_before_done` is the stand-in's own axis: `1` claims the milestone on every
+        /// turn (so every judgement is refused), and a larger number never claims it inside the
+        /// walk below — which is the control, and it is the SAME peer either way.
+        fn driven(
+            check: Option<&str>,
+            prompts_before_done: u32,
+            passes: usize,
+        ) -> (Vec<String>, Option<String>, String) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = standin_agent(prompts_before_done);
+            let access = supervised(&workspace);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its authored strings");
+            assert_eq!(
+                loops.brief(&briefing(check)),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            while walked.len() < passes {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        spent,
+                        ..
+                    } => {
+                        // ⚠⚠ THE BYTES ARE IN THE WALK BECAUSE THE CLAIM IS ABOUT A DELIVERY. A
+                        // gate that reads only the arrows cannot tell *the prompt went in* from
+                        // *the machine moved and nothing was typed*, which is the pair item 448 is
+                        // entirely about — and it is the pair the first run of this gate met.
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?} [{spent}B]"));
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            // ⚠⚠⚠ READ FROM THE DATAMODEL AFTER THE RUN HAS MOVED, which is where the answer is:
+            // `disputing`'s entry composes it, and a copy taken before the edge was taken would be
+            // the shipped preview rather than what this run's agent was told.
+            let composed = match loops.script.get_variable(&loops.session, DISPUTE_PROMPT) {
+                Ok(ScriptValue::String(text)) => Some(text),
+                _ => None,
+            };
+            // ⚠⚠⚠⚠ THE WHOLE OUTPUT, WITH THE ROW BREAKS TAKEN OUT — and both halves of that are
+            // fixes the first two runs of this gate paid for.
+            //
+            // THE WHOLE OUTPUT: `pane_collapsed` reads the sixteen visible rows, and a snapshot
+            // taken at the pass that DELIVERED shows the screen before the peer has painted what it
+            // was just handed — measured, with the walk reporting 464 bytes written on that very
+            // edge. What proves a delivery landed is the peer's echo, which arrives on ITS
+            // schedule, so the read has to be one that keeps output the grid has since scrolled
+            // past.
+            //
+            // ⚠⚠⚠ WITH THE BREAKS OUT: `pane_full_text` joins ROWS with `\n`, and this prompt is
+            // one logical line far longer than eighty columns — so a plain `contains` would split
+            // the check's words at whatever column the authored opening happened to end on, and the
+            // gate would pass or fail on the length of a sentence somebody may reword. Dropping the
+            // separators is exactly what `pane_collapsed` does for the visible screen, applied to
+            // the part of the output that has scrolled.
+            let screen = access
+                .pane_full_text(pane)
+                .unwrap_or_default()
+                .replace('\n', "");
+            access.lifecycle().expect("lifecycle").close(pane);
+            (walked, composed, screen)
+        }
+
+        /// What the document composes for an ORDINARY turn, read off a run of the same shape.
+        ///
+        /// ⚠ Read from the document rather than retyped, because the claim below is that the two
+        /// prompts are the same text — a literal here would pass while the product composed
+        /// something else entirely.
+        fn ordinary_turn_prompt() -> String {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = standin_agent(9);
+            let access = supervised(&workspace);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its authored strings");
+            assert_eq!(
+                loops.brief(&briefing(None)),
+                Briefed::Took,
+                "the parts must be held",
+            );
+            let run = RunContext::uncancellable();
+            // ⚠ ONE PASS PAST `idle`: the working prompts are composed on entry to `priming`, and
+            // before that they are the empty strings the datamodel ships.
+            for _ in 0..2 {
+                loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable");
+            }
+            let read = loops
+                .script
+                .get_variable(&loops.session, Owed::Turn.variable());
+            access.lifecycle().expect("lifecycle").close(pane);
+            match read {
+                Ok(ScriptValue::String(text)) => text,
+                other => panic!("the document must compose a turn prompt: {other:?}"),
+            }
+        }
+
+        // ── THE REFUSAL THAT EXPLAINS ITSELF ──
+        //
+        // ⚠ Six passes: start, prime, one turn, the judgement, the dispute, and back to work. The
+        // last two are what this item added.
+        let (walked, composed, screen) = driven(Some(EXPLAINS), 1, 6);
+        assert!(
+            walked
+                .iter()
+                .any(|note| note.contains("Judging --Judge--> Disputing"))
+                && walked
+                    .iter()
+                    .any(|note| note.contains("Disputing --PromptSent--> Working")),
+            "⚠⚠⚠⚠⚠ ITEM 448: a refused claim must reach a state of its own and hand straight back \
+             to `working`. Landing in `working` directly is what made the refusing edge and the \
+             ordinary one one key, and a driver that cannot tell them apart cannot say anything \
+             different to the agent. Walked {walked:?}",
+        );
+        let Some(told) = composed else {
+            panic!("`{DISPUTE_PROMPT}` must be a string the driver can deliver: walked {walked:?}");
+        };
+        assert!(
+            told.contains(REASON),
+            "⚠⚠⚠⚠⚠ THE CHECK'S OWN WORDS MUST BE IN WHAT THE AGENT IS TOLD. Nine live refusals \
+             carried a reason the agent never saw, so its next turn was its last turn again: {told:?}",
+        );
+        assert!(
+            told.contains("It said:"),
+            "⚠⚠⚠ and they must be QUOTED rather than asserted. This document has looked at nothing; \
+             a reason in its own voice reads as the loop's own finding: {told:?}",
+        );
+        // ⚠⚠⚠⚠ AND THE WORK IS NOT TAKEN AWAY TO MAKE ROOM FOR THE OBJECTION. The turn prompt
+        // carries the milestone, the standing instructions and the marker instruction; a refusal
+        // that replaced it would answer a check by leaving the agent with nothing to do.
+        let ordinary = ordinary_turn_prompt();
+        assert!(
+            !ordinary.is_empty() && told.contains(&ordinary),
+            "⚠⚠⚠⚠ THE ORDINARY TURN MUST BE COMPOSED IN AND NOT REPLACED — the refusal bought a \
+             TURN, and an agent told only that it was refused has been given an objection and no \
+             work. Told {told:?}, turn {ordinary:?}",
+        );
+        // ⚠⚠⚠⚠⚠ AND IT REACHED THE PEER. Everything above is about a string in a datamodel; this is
+        // the only assertion that says the agent was TOLD, which is the whole item. The stand-in
+        // prints back every line it is handed, so the reason is on its screen because it arrived.
+        assert!(
+            screen.contains(REASON),
+            "⚠⚠⚠⚠⚠ THE REFUSAL MUST REACH THE PANE. A prompt composed and never delivered is item \
+             448 with a longer walk — the verdict readable everywhere except by the party that can \
+             act on it. Walked {walked:?}, screen {screen:?}",
+        );
+
+        // ── THE REFUSAL THAT EXPLAINS NOTHING ──
+        let (mute_walk, mute_composed, _) = driven(Some(MUTE), 1, 6);
+        let Some(mute_told) = mute_composed else {
+            panic!("a mute refusal must still compose a prompt: walked {mute_walk:?}");
+        };
+        assert!(
+            mute_told.contains("It gave no reason"),
+            "⚠⚠⚠⚠ A CHECK THAT REFUSED AND SAID NOTHING MUST SAY SO. The document asks its checker \
+             for a reason and cannot make it give one, and *no reason* is a fact the agent can act \
+             on — it is the difference between an objection to answer and a verdict to appeal: \
+             {mute_told:?}",
+        );
+        assert!(
+            !mute_told.contains("nil") && !mute_told.contains("It said:"),
+            "⚠⚠⚠⚠⚠ AND IT MUST NOT COMPOSE A HOLE. `stop_said` measured this exact hazard: a missing \
+             part does not fail the `<assign>`, it puts the word `nil` in a sentence TYPED INTO A \
+             LIVE AGENT'S PANE. An empty quotation is the same failure wearing better manners: \
+             {mute_told:?}",
+        );
+
+        // ── A SECOND REFUSAL COMPOSES ONE SENTENCE, NOT TWO ──
+        //
+        // ⚠⚠⚠ THIS STATE IS RE-ENTERED, unlike `stopping`, so composing from the parts rather than
+        // from itself is what this gate holds: `dispute_prompt = dispute_prompt + …` would grow by
+        // one full refusal every time a check said no, and the run's own ceiling allows three.
+        let (twice_walk, twice_composed, _) = driven(Some(EXPLAINS), 1, 10);
+        let Some(twice_told) = twice_composed else {
+            panic!("a second refusal must still compose a prompt: walked {twice_walk:?}");
+        };
+        assert_eq!(
+            twice_walk
+                .iter()
+                .filter(|note| note.contains("Judging --Judge--> Disputing"))
+                .count(),
+            2,
+            "the fixture must have staged TWO refusals or the claim below is about one: \
+             walked {twice_walk:?}",
+        );
+        assert_eq!(
+            twice_told.matches(REASON).count(),
+            1,
+            "⚠⚠⚠⚠ EVERY REFUSAL COMPOSES ITS OWN SENTENCE FROM THE PARTS. A prompt built from \
+             ITSELF accumulates — three refusals, three stacked objections, and an agent reading \
+             the same complaint three times over: {twice_told:?}",
+        );
+
+        // ── THE CONTROL: A TURN NOBODY REFUSED IS TOLD NONE OF IT ──
+        //
+        // ⚠⚠⚠ THE SAME PEER AND THE SAME DOCUMENT, differing in ONE fact: this agent has not
+        // claimed the milestone, so nothing is checked and nothing refuses. Without this arm the
+        // gate above would pass on a document that opened EVERY turn with a refusal, which is a
+        // worse defect than the one it is closing.
+        let (plain_walk, _, plain_screen) = driven(None, 9, 8);
+        assert!(
+            plain_walk
+                .iter()
+                .any(|note| note.contains("Judging --Judge--> Working")),
+            "the control must have judged an ordinary turn: walked {plain_walk:?}",
+        );
+        assert!(
+            !plain_walk.iter().any(|note| note.contains("Disputing"))
+                && !plain_screen.contains("did not agree"),
+            "⚠⚠⚠⚠⚠ A TURN NOBODY REFUSED MUST BE TOLD NOTHING ABOUT A REFUSAL. An agent told its \
+             claim was refused when it made no claim is being argued with by its own loop. \
+             Walked {plain_walk:?}, screen {plain_screen:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE CHECK'S REASON IS CARRIED, AND IT DECIDES NOTHING** — the line register item 448
+    /// had to narrow, held by a gate rather than by the comment that narrowed it.
+    ///
+    /// # ⚠⚠⚠ What was true, what is true now, and why only a gate can tell them apart
+    ///
+    /// Item 461 published the checker's words on the walk and deliberately kept them OFF the wire,
+    /// with a reason worth keeping: *the document routes on the WORD, and a reason it could match on
+    /// would be a second authority on a decision `checked` has already made*. A `cond` that read the
+    /// prose would be a route decided by an unbounded string somebody else's process wrote.
+    ///
+    /// Item 448 needs the same words on the event — an authored sentence cannot quote what it cannot
+    /// see — so the ban had to be narrowed from *do not carry it* to **do not decide with it**. That
+    /// narrowing is a sentence in a comment, and a sentence in a comment is exactly what this
+    /// workspace has measured going stale: the next author to add a guard would break nothing, and
+    /// nothing anywhere would say so.
+    ///
+    /// ⚠⚠ READ AS TEXT, for the reason the neighbouring document gates state: the compiled machine
+    /// cannot answer *which guards exist and what each reads*, and what has to survive an edit is
+    /// precisely that shape.
+    #[test]
+    fn the_checks_reason_is_carried_to_the_agent_and_never_routed_on() {
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        // ⚠ A TRANSITION IS THE UNIT, NOT A LINE — an author may put `cond` and `target` on
+        // separate lines, and a line-wise filter reports an unguarded edge that is guarded two
+        // lines up. The neighbour gate learned this the same way.
+        let flat: String = DOCUMENT.split_whitespace().collect::<Vec<_>>().join(" ");
+        let guards: Vec<&str> = flat
+            .match_indices("<transition")
+            .filter_map(|(at, _)| {
+                let rest = &flat[at..];
+                let end = rest.find('>')? + 1;
+                Some(&rest[..end])
+            })
+            .filter(|edge| edge.contains("_event.data.explained"))
+            .collect();
+        assert!(
+            guards.is_empty(),
+            "⚠⚠⚠⚠⚠ NO ROUTE MAY BE DECIDED BY THE CHECK'S PROSE. The verdict is a closed set of \
+             words this product spells (`Checked::wire_str`); the reason is an unbounded line \
+             another process wrote, and a guard reading it would let a checker's wording — or its \
+             silence — move a run. It is carried so `disputing` can QUOTE it, and for nothing \
+             else: {guards:?}",
+        );
+        // ⚠⚠⚠ AND THE CONTROL, which is what makes the assertion above worth anything: the reason
+        // must actually BE in the document, in the one place that quotes it. Without this the gate
+        // is green on a document that dropped the whole mechanism — the vacuous-control failure
+        // this crate has now paid for twice (register items 441 and 447).
+        assert!(
+            flat.contains("<if cond=\"_event.data.explained\">"),
+            "⚠⚠⚠⚠ the document must still READ the reason where it composes the sentence, or this \
+             gate is asserting the absence of something nothing was going to add anyway",
         );
     }
 

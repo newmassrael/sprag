@@ -575,6 +575,98 @@
     <data id="stop_prompt" expr="stop_opening + ' ' + stop_asking"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ WHAT AN AGENT WHOSE CLAIM WAS REFUSED IS TOLD — register item 448,
+      and the half of item 428 that was never built.
+
+      An independent check refusing a milestone is item 428 working. The agent
+      hearing NOTHING about it is not: the refusing edge sent the ORDINARY turn
+      prompt, so the next turn opened with *Continue toward: …* and nothing
+      else. Measured live on run 16 — iterations 6, 8, 10 … 22, NINE refusals,
+      **1129 identical bytes each**. The agent said the same thing every time
+      because it was asked the same thing every time, and the one party who
+      could act on the verdict was the one party never shown it.
+
+      ⚠⚠⚠ THE COST OF THE SILENCE IS PAID TWICE. The run buys a turn per refusal
+      (deliberately — a convergence nobody earned is the expensive mistake), and
+      an agent that does not know why it was refused spends that turn re-doing
+      what it just did. Nine turns bought, nine turns spent on the same claim.
+
+      ⚠⚠ AND THIS IS `standing`'s SHAPE REFUSED, DELIBERATELY. `screening` solved
+      the identical disease with a standing instruction carried in the datamodel
+      and composed into every later prompt — right there, wrong here: a verdict
+      about THIS milestone that outlived the milestone would go on telling an
+      agent about a claim it has since abandoned. What is true here is true for
+      exactly one turn, so it is composed for exactly one turn, on entry to the
+      state that delivers it.
+    -->
+    <data id="dispute_opening"
+          expr="'You said this milestone was reached. An independent check was shown what this turn produced and did not agree.'"/>
+    <!--
+      ⚠⚠⚠ THE CHECKER'S OWN WORDS, FRAMED AS QUOTED RATHER THAN ASSERTED. The
+      clause the reason arrives in has to say WHOSE reason it is: an agent told
+      *the artifact is empty* in this document's voice reads it as the loop's
+      finding, and this document has not looked at anything. Register item 461
+      is what makes there be words at all; this is what stops them being put in
+      the wrong mouth.
+    -->
+    <data id="dispute_quoting" expr="'It said:'"/>
+    <!--
+      ⚠⚠⚠⚠ AND WHAT IS SAID WHEN IT GAVE NO REASON, which is a real answer and
+      not a defensive fallback. The check's prompt ASKS for a reason (item 448's
+      first half), and a checker may still answer the bare word — `explained` is
+      `None` for exactly that, and `judges` is careful to answer `None` rather
+      than an echo of our own question.
+
+      ⚠⚠⚠ IT IS SPELLED HERE RATHER THAN LEFT TO THE CONCATENATION, AND THE
+      SENTENCE IT REPLACES WAS MEASURED RATHER THAN GUESSED. Deleting the branch
+      below and composing the reason unconditionally tells a live agent
+
+        "… did not agree. It said: false Do not repeat that claim as it stands…"
+
+      — the wire's *nobody explained* rendered as the check's own words, in the
+      turn where the agent is being asked to act on them. `stop_said` measured
+      the same class one prompt over and got `nil`; the word differs because the
+      absence travels differently, and the failure is identical. A refusal the
+      agent would try to ACT on is worse than the silence this item is about.
+    -->
+    <data id="dispute_unexplained"
+          expr="'It gave no reason beyond the verdict.'"/>
+    <!--
+      ⚠⚠⚠ WHAT IS ACTUALLY ASKED, kept apart from the opening so the check's
+      words have somewhere to go BETWEEN them — `stop_asking`'s arrangement, for
+      `stop_asking`'s reason.
+
+      ⚠⚠⚠ IT ASKS FOR THE OBJECTION TO BE ANSWERED AND NOT FOR THE CLAIM TO BE
+      DROPPED. The check can be wrong — run 16's own refusals were about evidence
+      the agent's account did not SHOW rather than work it had not done — so an
+      instruction to abandon the milestone would spend the bought turn undoing
+      finished work. Both remedies are named: fix what it names, or show what it
+      could not see.
+    -->
+    <data id="dispute_asking"
+          expr="'Do not repeat that claim as it stands: either fix what the check names, or show the evidence it was not shown. Then carry on.'"/>
+    <!--
+      ⚠⚠ THE CLAUSE THE REASON ARRIVES IN, composed on entry to `disputing` out
+      of the two above. Empty here because no claim has been refused yet, which
+      is the honest preview: WHICH words a check will use is not knowable until
+      one refuses.
+    -->
+    <data id="dispute_said" expr="''"/>
+    <!--
+      ⚠⚠ SHIPPED WITHOUT THE CHECK'S CLAUSE AND WITHOUT THE TURN, and true that
+      way — `stop_prompt`'s arrangement exactly. A caller previewing a loop sees
+      what its agent will be told when a check refuses it; what the check will
+      SAY, and which milestone the turn will name, are facts that do not exist
+      until a run reaches them.
+
+      ⚠ COMPOSED FROM THE PARTS RATHER THAN FROM ITSELF, so a run refused three
+      times composes one sentence three times rather than three sentences once —
+      and this state IS re-entered, unlike `stopping`, so that is load-bearing
+      here rather than merely careful.
+    -->
+    <data id="dispute_prompt" expr="dispute_opening + ' ' + dispute_asking"/>
+
+    <!--
       Standing instructions for dialogs the person has already decided about.
       When the inner agent raises a question no consent covers, `screening`
       matches it against these before anybody is woken; a match TURNS THE CALL
@@ -1152,8 +1244,16 @@
       ⚠⚠⚠ THREE, AND NOT ONE. One would end the buying that item 428 exists to
       do; two is an agent that fixed it on the second attempt, which happens. By
       the THIRD identical refusal there is no evidence in the run that anything
-      is converging — and today the agent is not even told it was refused
-      (item 448), so the third is generous rather than hasty.
+      is converging.
+
+      ⚠⚠⚠⚠ AND THE NUMBER WAS CHOSEN WHILE THE REFUSALS WERE MUTE. When this was
+      written the agent was not told it had been refused at all (item 448,
+      `disputing`), so three was generous rather than hasty — three turns spent
+      answering a question nobody had asked. Now that each refusal arrives with
+      the check's own words, an agent that fixes it on the second attempt is the
+      LIKELY case rather than the hopeful one, and three refusals is three
+      INFORMED attempts. The number is unchanged and its argument is not: a kind
+      that finds it slack now has a fact it did not have then.
 
       ⚠⚠ IT IS THE KIND'S TO AUTHOR, like `max_turns` and `reflect_every`: how
       patient to be with a checker is a judgement about the work, not about the
@@ -2497,9 +2597,25 @@
                 target="reflecting">
       <assign location="reflect_reason" expr="'refused'"/>
     </transition>
-    <transition event="judge" cond="_event.data.done &amp;&amp; _event.data.checked == 'failed'" target="working">
+    <!--
+      ⚠⚠⚠⚠⚠ AND IT GOES SOMEWHERE OF ITS OWN RATHER THAN STRAIGHT BACK TO WORK —
+      register item 448, and the reason is a fact about the DRIVER rather than a
+      preference about layout.
+
+      This edge used to carry `<send event="prompt.turn"/>` and land in
+      `working`, exactly like the two ordinary edges below it. The driver pays a
+      transition's `<send>` by asking *what does arriving at this state, by this
+      event, owe* (`Owed::on`) — and BOTH of those edges are `judge` landing in
+      `working`. **They are the same key.** So the refusing edge could not be
+      given a different prompt without the driver guessing which of the two it
+      was looking at, and a driver that guesses is a second author.
+
+      A state of its own makes the key different, and it is `redirecting`'s shape
+      one door over: a state entered for one reason, whose `onentry` composes the
+      one thing that reason owes, and which hands straight back to `working`.
+    -->
+    <transition event="judge" cond="_event.data.done &amp;&amp; _event.data.checked == 'failed'" target="disputing">
       <assign location="refusals" expr="refusals + 1"/>
-      <send event="prompt.turn"/>
     </transition>
     <transition event="judge" cond="_event.data.done" target="reflecting">
       <assign location="reflect_reason" expr="'milestone'"/>
@@ -2697,6 +2813,85 @@
     </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
+  </state>
+
+  <!--
+    ⚠⚠⚠⚠⚠ THE CLAIM WAS REFUSED AND THE AGENT IS TOLD SO, IN THE CHECK'S OWN
+    WORDS — register item 448, the return path item 428 was missing.
+
+    The check runs in a pane of its own, says yes or no, and says why (item 461).
+    Every one of those facts reached the run's JOURNAL and none of them reached
+    the AGENT: the refusing edge sent the ordinary turn prompt, so a run refused
+    nine times asked its agent the identical question nine times and got the
+    identical answer. **The verdict was readable by everyone except the only
+    party who could act on it.**
+
+    ⚠⚠⚠ THE STATE EXISTS FOR THE DRIVER'S SAKE, WHICH IS WHY IT IS A STATE AND
+    NOT AN `<assign>` ON THE EDGE. What a transition owes the peer is answered by
+    `(event, landed state)`, and the refusing edge and the ordinary one were both
+    `judge` into `working` — one key, two prompts, and no way for the driver to
+    tell which it had taken. The refusing edge landing HERE is what makes the two
+    distinguishable, and it is `redirecting`'s shape: entered for one reason,
+    composing the one thing that reason owes, handing straight back to `working`.
+
+    ⚠⚠ IT IS NOT AN ENDING AND IT DOES NOT COUNT AGAINST ANYTHING. The refusal
+    was already counted on the edge that got here (`refusals`), the turn it buys
+    is counted where every turn is (`working`'s own `turn.done`), and the ceiling
+    that stops the buying is `judging`'s. This state's whole part is the sentence.
+
+    ⚠⚠⚠ AND THE TURN IS WATCHED IN `working` RATHER THAN HERE, exactly as
+    `priming`'s is. A state that both delivered a prompt and waited out the turn
+    would be a second `working` — with its own screening, its own service branch
+    and its own blocked routing to keep in step, which is the copy-drift this
+    file refuses everywhere it composes rather than repeats.
+  -->
+  <state id="disputing">
+    <onentry>
+      <!--
+        ⚠⚠⚠⚠ THE ONE BRANCH IN THIS DOCUMENT'S EXECUTABLE CONTENT, and it is here
+        rather than on two transitions on purpose: the `judging` edge that
+        reaches this state is ONE decision (*the check refused*), and whether the
+        check also explained itself is a fact about the ANSWER, not a second
+        route. Written as two guarded edges it would have been two copies of the
+        refusal count and the guard that reads the verdict — the drift this file
+        warns about wherever it composes rather than repeats.
+
+        ⚠⚠ `_event.data.explained` IS A NON-EMPTY WORD OR `false`, NEVER `''` —
+        the driver's, and it matters here rather than there: this datamodel is
+        Lua, where the empty string is TRUE, so a check that explained itself
+        with nothing would take the quoting branch and quote nothing.
+      -->
+      <if cond="_event.data.explained">
+        <assign location="dispute_said"
+                expr="dispute_quoting + ' ' + _event.data.explained"/>
+      <else/>
+        <assign location="dispute_said" expr="dispute_unexplained"/>
+      </if>
+      <!--
+        ⚠⚠⚠ THE ORDINARY TURN PROMPT IS COMPOSED IN RATHER THAN REPLACED, and
+        that is the difference between telling an agent it was refused and
+        telling it to stop. `turn_prompt` carries the milestone, the standing
+        instructions and the marker instruction — everything the agent needs to
+        go on working — so a refusal that replaced it would answer the check by
+        taking the work away.
+
+        ⚠ Composed on ENTRY for `stopping`'s reason: the parts cannot have
+        changed since, and the check's words do not exist until the edge that got
+        here was taken.
+      -->
+      <assign location="dispute_prompt"
+              expr="dispute_opening + ' ' + dispute_said + ' ' + dispute_asking + '\n' + turn_prompt"/>
+      <send event="prompt.dispute"/>
+    </onentry>
+    <transition event="prompt.sent" target="working"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+    <!--
+      ⚠⚠ EVERY STATE A PROMPT CAN BE OWED FROM NEEDS THIS EDGE — the driver raises
+      `peer.gone` at the state the delivery LANDED in, and a refusal typed at a
+      pane whose program has exited is the write that never returns.
+    -->
     <transition event="peer.gone" target="peer_gone"/>
   </state>
 

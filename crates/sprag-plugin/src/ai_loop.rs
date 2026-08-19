@@ -495,6 +495,11 @@ impl AiLoop {
             // its session is intact, and the only thing between it and `working` is time.
             | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
+            // ⚠⚠⚠ A REFUSAL IS NOT AN ENDING EITHER, AND IT IS THE STATE THAT MOST LOOKS LIKE ONE:
+            // the run reached its milestone, said so, and was told no. What it actually is, is a
+            // prompt being composed — the run leaves for `working` on the very next pass, carrying
+            // the turn the refusal bought it. Register item 448.
+            | AiLoopState::Disputing
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Reviewing
@@ -710,6 +715,10 @@ impl AiLoop {
             // state exists because an outage was reaching a caller as `blocked`.
             | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
+            // ⚠⚠ AND SO IS A RUN BEING TOLD ITS CLAIM WAS REFUSED — register item 448. A refusal is
+            // the one non-ending that most resembles one, and a `Verdict` here would report a run
+            // about to take another turn as finished.
+            | AiLoopState::Disputing
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Reviewing
@@ -954,6 +963,10 @@ impl Plugin for AiLoop {
             // session, and the wait itself is this driver's — so there is a pane to stop.
             | AiLoopState::ServiceDown
             | AiLoopState::Redirecting
+            // ⚠⚠ AND A REFUSAL BEING COMPOSED HAS A PANE FOR THE SAME REASON — item 448. The peer
+            // is at rest between two turns, and the sentence about to be typed at it is this
+            // driver's own act, so a cancel here has something to reach.
+            | AiLoopState::Disputing
             | AiLoopState::AwaitingHuman
             | AiLoopState::Reflecting
             | AiLoopState::Reviewing
@@ -1102,6 +1115,10 @@ impl Plugin for AiLoop {
             | AiLoopState::Judging
             | AiLoopState::Screening
             | AiLoopState::Redirecting
+            // ⚠⚠ A REFUSAL IS ON ITS WAY BACK INTO A TURN — item 448 — so the latch reaches
+            // `judging` by the same route `working`'s does, one state later. `redirecting` is
+            // beside it for the same reason and neither is a session boundary.
+            | AiLoopState::Disputing
             | AiLoopState::Closing
             | AiLoopState::Stopping => {
                 self.inner.stop_short(ceiling);
