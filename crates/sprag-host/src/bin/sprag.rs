@@ -302,6 +302,8 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Runs => runs(args.collect()),
         Verb::CancelRun => cancel_run(args.collect()),
         Verb::StandDown => stand_down(args.collect()),
+        Verb::HoldRun => hold_run(args.collect(), true),
+        Verb::ResumeRun => hold_run(args.collect(), false),
         Verb::Agent => agent(args.collect()),
         Verb::AnswerPane => answer_pane(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
@@ -5408,6 +5410,57 @@ fn stand_down(args: Vec<String>) -> io::Result<()> {
         "run {id} asked to finish up; it stops at its next milestone, and its work is kept — \
          `sprag runs` says when it has"
     );
+    Ok(())
+}
+
+/// `hold-run ID` / `resume-run ID`: **HALT A RUN BETWEEN TURNS, AND LET IT GO AGAIN** — register
+/// item 9, and the third thing a person may say to a run.
+///
+/// The other two both END it: `cancel-run` throws the turn in flight away, `stand-down` banks the
+/// milestone and converges. Neither of them is *wait, let me read this pane* — and `ai_loop.scxml`
+/// has carried the edge for it since R378 with nothing able to raise it.
+///
+/// ⚠ ONE FUNCTION FOR BOTH DIRECTIONS, because they are one order with a sign. Two bodies would be
+/// two places for the id-parsing and the sentence to drift apart, and the wire verb takes the
+/// direction as an argument for exactly this reason.
+fn hold_run(args: Vec<String>, held: bool) -> io::Result<()> {
+    let verb = if held { "hold-run" } else { "resume-run" };
+    let (session, args) = scope_and_rest(args, verb)?;
+    let mut rest = args.into_iter();
+    let id = rest
+        .next()
+        .ok_or_else(|| bad_input(&format!("{verb}: which run? (see `sprag runs`)")))?;
+    if let Some(extra) = rest.next() {
+        return Err(bad_input(&format!(
+            "{verb}: unexpected argument {extra:?} (one run at a time)"
+        )));
+    }
+    let id: u64 = id.parse().map_err(|_| {
+        bad_input(&format!(
+            "{verb}: {id:?} is not a run id (see `sprag runs`)"
+        ))
+    })?;
+    // Pre-flighted for [`cancel_run`]'s reason, which is [`runs`]'.
+    let mut conn = connect_scoped(session.as_deref())?;
+    invoke_action(
+        &mut conn,
+        scoped_call(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::HOLD_RUN_ACTION),
+            json!({ "id": id, "held": held }),
+        ),
+    )?;
+    // ⚠ THE SENTENCE SAYS WHAT IS AND IS NOT TRUE YET. A hold takes effect at the run's next pass,
+    // not at this return — and a person who read "held" and started editing the pane mid-turn would
+    // be typing underneath an agent that is still working.
+    if held {
+        println!(
+            "run {id} asked to hold; it stops at its next turn boundary and waits — nothing is \
+             typed at the pane while it does, and `sprag resume-run {id}` sends it on"
+        );
+    } else {
+        println!("run {id} let go; it takes a fresh turn at its next pass");
+    }
     Ok(())
 }
 

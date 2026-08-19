@@ -2619,6 +2619,18 @@ pub struct OuterLoop {
     /// through the pump — would put the phase in the driver, which is exactly what `restarting` and
     /// `resuming` are two states to avoid.
     awaiting: Option<Instant>,
+    /// **WHETHER THIS DRIVER HAS RAISED `hold` AND NOT YET UNDONE IT** — register item 9.
+    ///
+    /// ⚠⚠⚠⚠⚠ It is NOT a second copy of the person's order — that lives on the
+    /// [`crate::run::RunContext`] and is read fresh every pass. This is the driver
+    /// remembering **which order it gave**, and it exists because `resume` is a transition of
+    /// `awaiting_human` while THREE other doors lead into that state: a person typing in the pane,
+    /// a peer that stopped speaking, a dialog nothing could read. Undoing on the order alone would
+    /// wave all three on, immediately, and each of them means the opposite.
+    ///
+    /// ⚠ False for every run nobody holds, which is every run today — so the two edges cost a pass
+    /// one boolean read until somebody says the word.
+    holding: bool,
     /// **WHEN THIS RUN STARTED WAITING OUT ITS PEER'S SERVICE**, or [`None`] when it is not.
     ///
     /// ⚠⚠ Held on [`awaiting`](Self::awaiting)'s terms and for its reason:
@@ -2899,6 +2911,8 @@ impl OuterLoop {
         Some(Self {
             done: Completion::new(spec.done_when),
             noticed: None,
+            // Nobody has said anything to a run that has not started — see the field.
+            holding: false,
             // ⚠⚠⚠ THE CALLER'S CONSENTS AND THEIR ATTENDANT REACH THE BARRIER, and that reverses a
             // decision this constructor used to argue: *"answering a dialog is `screening`'s job,
             // and a consent given to the barrier would answer dialogs one level below the machine
@@ -3505,6 +3519,50 @@ impl OuterLoop {
         self.machine.process_event(AiLoopEvent::StandDown);
     }
 
+    /// **A WATCHING PERSON HALTS THE LOOP BETWEEN TURNS** — `hold` → `awaiting_human`, the edge
+    /// register item 9 recorded as having no producer.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is the word that was missing, not a third way to end a run
+    ///
+    /// `cancel` throws the turn in flight away; `stand_down` finishes the milestone and converges.
+    /// Both END the run, and a person who only wants to READ the pane had to pick one of them —
+    /// which is why the loop's own operating notes list three things a person may say and none of
+    /// them is *wait*. This is that word, and the document has always known what to do with it:
+    /// `awaiting_human` sends nothing, so the pane stays exactly as they found it.
+    ///
+    /// ⚠⚠ **IT IS A STATE IN THE DOCUMENT, NOT A FLAG HERE** — [`stand_down`](Self::stand_down)'s
+    /// arrangement and its reason: the order is then in the run's walk with everything else, where
+    /// somebody reading the run can see it.
+    ///
+    /// ⚠⚠⚠ **RAISED ON EVERY HELD PASS, AND IT HAS TO BE.** A machine already in `awaiting_human`
+    /// has no `hold` transition, so repeating costs nothing — while raising it once, on the moment
+    /// the order arrives, puts it into whatever state the run happened to be in. Measured: the order
+    /// landed while the loop was still in `idle`, where no such edge exists, and the run drove on
+    /// with the person's word already spent.
+    pub fn hold(&mut self) {
+        self.machine.process_event(AiLoopEvent::Hold);
+    }
+
+    /// **THE PERSON LOOKED AND WAVED IT ON** — `resume` → `working`, [`hold`](Self::hold)'s way back
+    /// and the other half item 9 was missing.
+    ///
+    /// ⚠⚠⚠ **THE ONE ORDER THAT CAN BE TAKEN BACK, and that is what keeps it off `order`'s flag.**
+    /// A stand-down is one-way on purpose; a hold whose only exit was a run ending would be a
+    /// slower cancel wearing a different word.
+    ///
+    /// ⚠⚠⚠⚠⚠ **RAISED ONLY TO UNDO THIS DRIVER'S OWN HOLD**, and the first draft of this round did
+    /// it on every pass a person was not holding — which would have waved on every OTHER run sitting
+    /// in `awaiting_human`. Three doors lead into that state and none of them wants resuming: a
+    /// person typing in the pane, a peer that stopped speaking, a dialog nothing could read. The
+    /// machine cannot tell which door it came through, so the caller must only undo what it did.
+    ///
+    /// ⚠ The document's `resume` sends `prompt.turn`, so the loop takes a NEW turn rather than
+    /// resuming a half-finished one. That is the honest reading of *waved it on*: whatever the peer
+    /// was doing when the person stepped in is theirs now, and the run starts its next turn cleanly.
+    pub fn let_go(&mut self) {
+        self.machine.process_event(AiLoopEvent::Resume);
+    }
+
     pub fn took_answer(&mut self) -> Option<crate::consent::Answered> {
         match self.noticed {
             Some(Noticed::Answered(_)) => match self.noticed.take() {
@@ -3830,6 +3888,43 @@ impl OuterLoop {
         // raise on every pass changes nothing after the first.
         if run.stood_down() {
             self.stand_down();
+        }
+        // ⚠⚠⚠⚠⚠ AND WHETHER SOMEBODY HAS IT HELD — register item 9's live half. `ai_loop.scxml` has
+        // carried *"a watching person can halt the loop between turns"* since R378 and NOTHING could
+        // raise it: the edge was authored, documented, reachable in the machine, and dead. What a
+        // person had instead were the two ENDINGS, and neither of them is *wait, let me look*.
+        //
+        // ⚠⚠⚠ READ AT THE TOP OF A PASS, `stand_down`'s reason exactly: the flag is raised by a host
+        // thread at a moment nothing here controls, so this is the one place it can be read without
+        // racing a decision.
+        //
+        // ⚠⚠⚠⚠⚠ EACH EDGE IS RAISED ON THE *CHANGE*, AND THE DRIVER REMEMBERS ITS OWN ORDER —
+        // which the stand-down beside it does not need and this cannot do without. `resume` is a
+        // transition of `awaiting_human`, and **three other doors lead into that state**: a person
+        // typing in the pane (`turn.interrupted`), a peer that stopped speaking (`peer.silent`), a
+        // dialog nothing could read (`screen.none`). A `resume` sent on every pass a person is not
+        // holding would wave those on **immediately**, which is the opposite of what each of them
+        // means. So the flag here is not a decision living outside the document — it is this driver
+        // remembering which order IT gave, so it undoes that one and nothing else.
+        //
+        // ⚠⚠⚠⚠⚠ **`hold` IS RAISED ON EVERY HELD PASS, AND THAT IS MEASURED RATHER THAN CHOSEN.**
+        // Raising it once, on the moment the order arrives, was the first draft: the order lands
+        // while the machine is still in `idle`, `hold` is a transition of `working`, so the raise
+        // was consumed where no edge existed and never sent again — the run drove on with the
+        // person's word already spent. Repeating is safe because `awaiting_human` has no `hold`
+        // transition, so it is a no-op the moment it has worked.
+        //
+        // ⚠⚠⚠ **AND IT IS RAISED HERE RATHER THAN AS THE PASS'S OWN EVENT.** A second draft made it
+        // the raised event inside `pumping` so it would show in the walk — and it then outranked
+        // `idle`'s own `start`, holding a run that had not begun in a state where the document has
+        // no word for being held. *Between turns* is the document's phrase and this placement is
+        // what honours it: the order waits for a turn boundary to exist.
+        if run.held() {
+            self.holding = true;
+            self.hold();
+        } else if self.holding {
+            self.holding = false;
+            self.let_go();
         }
         // ⚠⚠⚠⚠ **THE DELIVERY EVIDENCE IS EMPTIED HERE AND NOWHERE ELSE** — register item 434.
         // Cleared at the TOP of the pass rather than taken at the funnel, because a pass has six
@@ -4907,6 +5002,20 @@ impl OuterLoop {
         // turn — *"the pane is the witness: their byte reached the peer, so the goal was ONE turn
         // away, and the run did not take it"* is the claim, and ordering these two lines is the
         // whole of it.
+        //
+        // ⚠⚠⚠⚠⚠ AND BEFORE EVEN THAT: A RUN SOMEBODY IS DELIBERATELY HOLDING IS NOT ONE NOBODY CAME
+        // TO — register item 9, and the arm that keeps `hold` from being a slower `cancel`.
+        // `unattended` is this state's run-ENDING exit and its whole meaning is *a person was
+        // expected here and did not come*; said about a run a person paused ON PURPOSE it sends
+        // whoever reads it looking for somebody who is standing right there.
+        //
+        // ⚠⚠ AND THEIR PATIENCE IS NOT RUNNING WHILE THEY HOLD IT. The anchor is cleared rather
+        // than left, so a run held for an hour and let go has the caller's whole patience ahead of
+        // it — the alternative spends their declared hour on the minutes they spent reading.
+        if run.held() {
+            self.awaiting = None;
+            return Ok(AiLoopEvent::Null.into());
+        }
         let Some(patience) = self.driving.ready.attended().patience() else {
             self.awaiting = None;
             return Ok(AiLoopEvent::Unattended.into());
@@ -14289,6 +14398,174 @@ mod tests {
              was paid, so nothing cleared it, and `blocked` — the word this run is heading for — \
              cannot say whether it was reached over a question or over a server that never came \
              back",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A PERSON CAN HALT THE LOOP BETWEEN TURNS AND SEND IT ON AGAIN** — register item 9,
+    /// the edge `ai_loop.scxml` has carried since R378 with nothing able to raise it.
+    ///
+    /// # ⚠⚠⚠⚠ What a person had instead, and why neither of them is this
+    ///
+    /// `cancel` stops the run mid-turn and throws that turn away; `stand_down` finishes the
+    /// milestone and converges. **Both END the run**, so somebody who only wanted to read the pane
+    /// had to choose which cost to pay. The document has always known what to do with *wait*:
+    /// `awaiting_human` sends nothing, so the pane stays exactly as they found it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The three arms, and the third is the one a first draft got wrong
+    ///
+    /// 1. **Held, and the run stops** — it reaches `awaiting_human` and stays there.
+    /// 2. **Held, and it is NOT reported as unattended.** That word is this state's run-ENDING exit
+    ///    and means *a person was expected and did not come*; saying it about a run somebody paused
+    ///    on purpose sends whoever reads it looking for the person who is standing right there. A
+    ///    build that skipped this arm turns `hold` into a slow `cancel` — and it would pass arm 1.
+    /// 3. **Let go, and it takes a turn again.**
+    ///
+    /// ⚠⚠⚠ **AND THE CONTROL IS A RUN NOBODY HELD.** `resume` is a transition of `awaiting_human`,
+    /// and three OTHER doors lead into that state. The first draft of this round raised `resume` on
+    /// every pass a person was not holding, which would have waved on a run waiting because a person
+    /// was typing in its pane — so the control drives that door and asserts the loop stays put.
+    #[test]
+    fn a_person_can_hold_the_loop_and_send_it_on_and_only_their_own_hold_is_undone() {
+        /// The pane's turn bound, short so the arms are about the order rather than the wait.
+        const TURN: Duration = Duration::from_secs(2);
+
+        /// Drive a loop whose peer never finishes a turn, with `hold` as the person's order, and say
+        /// where it landed and how it walked. `release_at` lowers the order after that many passes.
+        ///
+        /// ⚠⚠⚠ **THE PEER STAYS `Working`, AND THAT IS THE STAGING RATHER THAN A CONVENIENCE.** A
+        /// first draft blocked it instead, and the run reached `awaiting_human` through
+        /// `screen.none` **before the hold could fire** — so the landing assertion passed while the
+        /// word under test did not exist. The `hold` edge belongs to `working`; a peer that is
+        /// working is the only place it can be taken from.
+        fn ran(
+            hold: &Arc<std::sync::atomic::AtomicBool>,
+            release_at: Option<usize>,
+        ) -> (AiLoopState, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let seen: Arc<Mutex<crate::access::AgentObservation>> =
+                Arc::new(Mutex::new(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Working,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_string(),
+                    },
+                    seq: 1,
+                    asked_seq: 1,
+                    reports: 3,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    transcript: None,
+                }));
+            let source = {
+                let seen = Arc::clone(&seen);
+                Arc::new(move |_id: PaneId| Some(seen.lock().expect("the observation").clone()))
+            };
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .with_agent_state(Some(source as crate::access::AgentStateSource));
+
+            let run = RunContext::uncancellable().held_by(Arc::clone(hold));
+            let mut loops = bounded_at(Arc::clone(&lua), pane, TURN)
+                .expect("the document's datamodel must carry its four authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "a loop a person can pause".to_string(),
+                    milestone: "be held and let go".to_string(),
+                    reference: "register item 9".to_string(),
+                    closing_rules: None,
+                    milestone_check: None,
+                    service: None,
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    // ⚠⚠⚠ SHORT ON PURPOSE: this is the patience a HELD run must not spend. With
+                    // the hold honoured the loop sits here indefinitely; without it, this is how
+                    // long before the run is declared unattended and ends.
+                    await_person_ms: Some(300),
+                    handback_still_ms: None,
+                    ready_timeout_ms: Some(5_000),
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let mut walked = Vec::new();
+            for pass in 0..10 {
+                if release_at == Some(pass) {
+                    hold.store(false, Ordering::Release);
+                }
+                // ⚠ SOMETHING IS SPEAKING FOR THE PANE ON EVERY PASS, or the document's silence
+                // bound takes this run to the SAME state by `peer.silent` — a fourth door, and one
+                // that would let the landing assertion pass with `hold` still dead.
+                seen.lock().expect("the observation").reports += 1;
+                if let Pumped::Moved {
+                    from, raised, to, ..
+                } = loops.pump(&access, &run).expect("the pane stays readable")
+                {
+                    walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                }
+                // ⚠⚠ LONGER THAN THE DECLARED PATIENCE, so a build that ignored the hold in
+                // `attend` has time to call this run unattended and end it. Without this the gate
+                // would be green on a driver that merely had not got round to the defect yet.
+                if loops.state() == AiLoopState::AwaitingHuman {
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+            }
+            (loops.state(), walked)
+        }
+
+        // ── ARMS 1 AND 2: held from the start, and never let go. ──
+        let hold = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (landed, walked) = ran(&hold, None);
+        assert_eq!(
+            landed,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ A HELD RUN WAITS, AND IS NOT REPORTED AS ONE NOBODY CAME TO. `unattended` is \
+             this state's run-ending exit and it means *a person was expected and did not come* — \
+             said about a run somebody paused on purpose, it sends whoever reads it looking for the \
+             person who is standing right there. The patience above is 300 ms and this walk took \
+             far longer: {walked:?}",
+        );
+        assert!(
+            walked.iter().any(|edge| edge.contains("Working")),
+            "⚠ THE STAGING: it has to have been DRIVING before the order can be about stopping it. \
+             `hold` is a transition of `working` — *between turns* is the document's own phrase — so \
+             a run that never got there was never holdable: {walked:?}",
+        );
+
+        // ── ARM 3: held, then let go — and the loop takes a turn again. ──
+        let hold = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (landed, walked) = ran(&hold, Some(5));
+        assert_eq!(
+            landed,
+            AiLoopState::Working,
+            "⚠⚠⚠⚠⚠ THE PERSON LOOKED AND WAVED IT ON, AND THE LOOP IS DRIVING AGAIN. This asserts \
+             WHERE it went and not merely that it left, and the difference is the whole assertion: \
+             a build that never raises `resume` also stops sitting in `awaiting_human` — it is \
+             declared UNATTENDED and ends at `blocked`, which passed the first draft of this line. \
+             Same fixture, same ten passes; the only difference from the arm above is that the flag \
+             went down half way: {walked:?}",
+        );
+
+        // ── THE CONTROL: nobody ever held it, and it never waits. ──
+        //
+        // ⚠⚠⚠⚠⚠ THIS IS WHAT SAYS WHICH DOOR ARM 1 CAME THROUGH. Three others lead into
+        // `awaiting_human` and this fixture closes all of them: the peer never blocks (no
+        // `screen.none`), nobody types in the pane (no `turn.interrupted`), and something speaks for
+        // it on every pass (no `peer.silent`). So a run that reaches that state here reached it by
+        // `hold` — and one nobody held must not reach it at all.
+        let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (landed, walked) = ran(&never, None);
+        assert_ne!(
+            landed,
+            AiLoopState::AwaitingHuman,
+            "⚠ THE CONTROL FOR ARM 1: this same fixture does not sit in `awaiting_human` on its own, \
+             so the two results differ by the order and by nothing else: {walked:?}",
         );
     }
 

@@ -1472,6 +1472,21 @@ impl PluginGrammar {
     /// choosing between them is choosing whether that turn's work survives.
     pub const STAND_DOWN: &'static [CallForm] =
         &[CallForm::object(&[ArgGrammar::open("id", "int")])];
+
+    /// [`HOLD_RUN_ACTION`](crate::plugins::HOLD_RUN_ACTION) — the run to halt between turns, and
+    /// which direction.
+    ///
+    /// ⚠⚠⚠ **THE ONLY ONE OF THE THREE THAT TAKES A SECOND ARGUMENT**, and the asymmetry is the
+    /// meaning. `cancel` and `stand_down` are LATCHES — an un-ordering racing a milestone would make
+    /// a run's ending depend on which message arrived first — while a hold is a level somebody
+    /// raises and lowers, with the document's own `resume` as the way back.
+    ///
+    /// ⚠ `held` is OPTIONAL and absent means *hold it*: that is what a person typing the verb means,
+    /// and it is the direction a caller who omitted the key cannot have meant to invert.
+    pub const HOLD_RUN: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open("id", "int"),
+        ArgGrammar::open("held", "bool").optional(),
+    ])];
 }
 
 /// The request grammar of the PANE-INPUT verbs — the six ways a client drives what is inside a pane.
@@ -2067,6 +2082,11 @@ pub const PLUGINS_GRAMMAR: &[ActionGrammar] = &[
     ActionGrammar {
         action: crate::plugins::STAND_DOWN_ACTION,
         forms: PluginGrammar::STAND_DOWN,
+        from_ask: false,
+    },
+    ActionGrammar {
+        action: crate::plugins::HOLD_RUN_ACTION,
+        forms: PluginGrammar::HOLD_RUN,
         from_ask: false,
     },
 ];
@@ -8134,6 +8154,7 @@ mod tests {
                 // nothing an agent has to choose a word for. It appears here because the pin is over
                 // every verb the surface serves, not only the ones with enumerations: a verb
                 // missing from this list is a verb whose value space nothing is watching.
+                "sprag_workspace/sprag_plugins/hold_run:",
                 "sprag_workspace/sprag_plugins/stand_down:",
             ],
         );
@@ -8425,6 +8446,7 @@ mod tests {
                 // opposite in meaning — a stand-down banks the turn in flight where a cancel loses
                 // it — which is exactly why the two are separate addresses rather than one with a
                 // mode.
+                "sprag_workspace/sprag_plugins/hold_run[object]:id:int held:bool?",
                 "sprag_workspace/sprag_plugins/stand_down[object]:id:int",
             ],
         );
@@ -8923,6 +8945,11 @@ mod tests {
             // WIRE_PROTOCOL stands — and this slot exists precisely so a client need not compile
             // the number in.
             "guardrail_defaults",
+            // ⚠⚠ ADDED on `stand_down`'s terms below and for its reason — register item 9. The
+            // residue is the same and is stated rather than hidden: a person on a new CLI cannot
+            // hold a run on an old daemon, and what they see is an unknown address rather than a
+            // silent no-op.
+            "hold_run",
             "image_data.",
             "image_data.<id>",
             "join_pane",
@@ -9377,11 +9404,11 @@ mod tests {
                 SURFACES,
             )
             .count_or_panic(),
-            38,
+            39,
             "the whole write half of this crate's wire: twenty-nine multiplexer verbs, a pane's six, \
-             and the plugin host's THREE — run, cancel, and stand_down. ⚠ The third is the second \
-             thing anybody can say to a run in flight, and the first that lets it keep the turn it \
-             is in the middle of",
+             and the plugin host's FOUR — run, cancel, stand_down and hold_run. ⚠ The last two are \
+             the second and third things anybody can say to a run in flight: one lets it keep the \
+             turn it is in the middle of, and the other is the only order a person can take back",
         );
     }
 

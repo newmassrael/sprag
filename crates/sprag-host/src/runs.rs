@@ -131,6 +131,17 @@ struct RunRecord {
     /// run that banked its milestone and the run that lost it look identical from here, and those
     /// are exactly the two outcomes the person raising one is choosing between.
     order: Arc<AtomicBool>,
+    /// **THE RUN'S HOLD FLAG**, shared with the `RunContext` its worker drives through — the third
+    /// thing a person can say to a run, and the only one they can take back.
+    ///
+    /// ⚠⚠⚠ A THIRD FLAG BECAUSE IT IS TWO-WAY. `order` above is one-way on purpose: an un-ordering
+    /// racing a milestone would make a run's ending depend on which message arrived first. A hold
+    /// has a way back by construction — the document's `resume` — and folding it into `order` would
+    /// hand the irreversible order an undo.
+    ///
+    /// ⚠ It ends nothing. A held run is WAITING, and a person who wanted it over reaches for one of
+    /// the other two. See `sprag_plugin::RunContext::held`.
+    hold: Arc<AtomicBool>,
     /// WHICH BUILD DROVE THIS RUN — [`crate::wire::BUILD`] for a run this daemon started, the dead
     /// daemon's for one taken from a predecessor's log, and [`None`] for a log written before this
     /// field existed.
@@ -205,6 +216,9 @@ pub struct NewRun {
     /// The flag that asks the run to finish its milestone and then stop — see `RunRecord::order`
     /// for why it is not the one above.
     pub order: Arc<AtomicBool>,
+    /// The flag that HALTS the run between turns and lets it go again — see `RunRecord::hold` for
+    /// why it is neither of the two above.
+    pub hold: Arc<AtomicBool>,
 }
 
 /// ONE RUN AS IT SURVIVES ITS DAEMON — the durable mirror of a live run record.
@@ -347,6 +361,7 @@ impl RunRegistry {
             progress: run.progress,
             cancel: run.cancel,
             order: run.order,
+            hold: run.hold,
             // ⚠ STAMPED HERE AND NOWHERE ELSE ON THIS PATH — see `RunRecord::build`. The worker
             // about to run is inside THIS image, so this image is the only honest answer, and it
             // is read from the constant the same binary published at `client/hello`.
@@ -383,6 +398,33 @@ impl RunRegistry {
         match self.runs.iter().find(|record| record.id == id) {
             Some(record) => {
                 record.order.store(true, Ordering::Release);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// **HALT RUN `id` BETWEEN TURNS, OR LET IT GO AGAIN**, returning whether such a run exists.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The word a person did not have — register item 9
+    ///
+    /// `ai_loop.scxml` has carried *"a watching person can halt the loop between turns"* as an edge
+    /// since R378 with **nothing able to raise it**. What a person had were the two ENDINGS —
+    /// [`cancel`](Self::cancel) loses the turn, [`stand_down`](Self::stand_down) banks the milestone
+    /// and converges — and neither of them is *wait, let me read this*.
+    ///
+    /// ⚠⚠⚠ **TWO-WAY, WHICH IS WHY IT TAKES AN ARGUMENT WHERE ITS NEIGHBOURS TAKE NONE.** Those two
+    /// are latches and must be: an un-ordering racing a milestone would make a run's ending depend
+    /// on message arrival. This one is a level a person raises and lowers, and the document's
+    /// `resume` is the way back it was built with.
+    ///
+    /// ⚠ NOTHING IS INTERRUPTED and nothing ends. The turn in flight runs to its end, the loop then
+    /// stops at `awaiting_human` — which sends nothing, so the pane stays exactly as the person
+    /// found it — and their declared patience does not run while they hold it.
+    pub fn hold(&self, id: RunId, held: bool) -> bool {
+        match self.runs.iter().find(|record| record.id == id) {
+            Some(record) => {
+                record.hold.store(held, Ordering::Release);
                 true
             }
             None => false,
@@ -567,6 +609,11 @@ impl RunRegistry {
                 // Persisting an order would let a restart resurrect an instruction nobody could act
                 // on.
                 order: Arc::new(AtomicBool::new(false)),
+                // ⚠ NOR CAN A RESTORED RUN BE HELD, for the line above's reason exactly: a hold is
+                // an instruction to a worker, and this run's worker died with its daemon. Held state
+                // is even less persistable than an order — it is a level somebody is CURRENTLY
+                // holding, and nobody can be holding a run that is not moving.
+                hold: Arc::new(AtomicBool::new(false)),
                 // ⚠⚠⚠ AND THIS ONE IS TAKEN FROM THE LOG RATHER THAN STAMPED, which is the
                 // opposite decision to every field above and the reason the field exists. The rest
                 // of this record is about a run that is over, so inventing a value would assert
@@ -770,6 +817,7 @@ mod tests {
                 progress: ProgressCell::default(),
                 cancel,
                 order: Arc::new(AtomicBool::new(false)),
+                hold: Arc::new(AtomicBool::new(false)),
             }),
             RunId(0),
             "a reserved id is the id the record carries",
@@ -944,6 +992,7 @@ mod tests {
             progress: ProgressCell::default(),
             cancel: Arc::new(AtomicBool::new(false)),
             order: Arc::new(AtomicBool::new(false)),
+            hold: Arc::new(AtomicBool::new(false)),
         }
     }
 

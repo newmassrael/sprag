@@ -203,6 +203,20 @@ pub enum Verb {
     /// person leaving for the day wants this one**, and until it existed the only sentence available
     /// was the one that discards work.
     StandDown,
+    /// `hold-run` — halt a run between turns so a person can read its pane.
+    ///
+    /// ⚠⚠⚠⚠⚠ THE THIRD THING ANYBODY CAN SAY TO A RUN, AND THE ONLY ONE THEY CAN TAKE BACK. Its two
+    /// neighbours both END the loop and differ only in what that costs the turn in flight. Neither is
+    /// *wait, let me look at this* — so a person who wanted to read a pane had to choose between
+    /// losing a turn and ending the run. `ai_loop.scxml` has had the edge for this since R378 with
+    /// nothing in the product able to raise it (register item 9).
+    HoldRun,
+    /// `resume-run` — send a held run on again.
+    ///
+    /// ⚠ A verb of its own rather than a flag on [`HoldRun`](Self::HoldRun), because what a person
+    /// types is a sentence and *"hold this, but the other way"* is not one. They are one wire call
+    /// with a direction underneath.
+    ResumeRun,
     /// `display-message` — put a sentence on somebody's screen.
     DisplayMessage,
     /// `install-hooks` — wire an agent's hooks into its own config.
@@ -562,7 +576,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 67] = [
+    pub const ALL: [Self; 69] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -616,6 +630,8 @@ impl Verb {
         Self::Runs,
         Self::CancelRun,
         Self::StandDown,
+        Self::HoldRun,
+        Self::ResumeRun,
         Self::ListKeys,
         Self::BindKey,
         Self::UnbindKey,
@@ -1140,6 +1156,27 @@ impl Verb {
                 // this one and does not belong in this row.
                 Agent::NotBuilt,
             ),
+            Self::HoldRun => (
+                "hold-run",
+                Group::Orchestration,
+                Shell::Runs(" ID [-t SESSION]"),
+                // ⚠⚠⚠ THE BEST CANDIDATE FOR A KEY OF THE THREE, and still `NotBuilt`: *stop what
+                // you are doing so I can read this* is the one order somebody wants to give WITHOUT
+                // leaving the pane they are looking at — which is exactly what a keystroke is for.
+                // Filed here rather than built because a key names no run, and this verb needs one.
+                Keystroke::NotBuilt,
+                // ⚠ A supervising agent holding ANOTHER run while it reads that run's pane is the
+                // same legitimate ask `stand-down`'s row records, and the mouth has no tool for it
+                // yet either.
+                Agent::NotBuilt,
+            ),
+            Self::ResumeRun => (
+                "resume-run",
+                Group::Orchestration,
+                Shell::Runs(" ID [-t SESSION]"),
+                Keystroke::NotBuilt,
+                Agent::NotBuilt,
+            ),
             // ── keys ────────────────────────────────────────────────────────────────────────────
             // THE ONE ANSWERING VERB THAT IS BOUND, and the reason is the whole content of
             // [`NotAKeystroke::Answers`]: this client has a VIEW for the answer
@@ -1643,7 +1680,10 @@ mod tests {
             // the cancel flag that exist.
             // ⚠ `stand-down` is the EIGHTH not-built: a supervising agent standing another run
             // down is a legitimate ask with no tool behind it yet.
-            (38, 8, 21),
+            // ⚠ `hold-run` and `resume-run` (register item 9) join the middle column: a supervising
+            // agent holding another run while it reads that run's pane is the same legitimate ask
+            // `stand-down`'s row records, and the mouth has no tool for it yet.
+            (38, 10, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1666,6 +1706,10 @@ mod tests {
                 // ⚠ A SUPERVISING agent standing another run down is the ask with no tool behind it.
                 // A run standing ITSELF down would be a different verb and a refusal, not this gap.
                 "stand-down",
+                // ⚠ The same gap one order over (register item 9): a supervising agent holding
+                // another run while it reads that run's pane has no tool behind it either.
+                "hold-run",
+                "resume-run",
                 "list-keys",
                 "show-options",
                 "version",
@@ -1801,7 +1845,8 @@ mod tests {
             // `orchestrate`, `runs` and `cancel-run`.
             // ⚠ `stand-down` is the 59th — the second thing a person can say to a run, and the
             // first that lets it keep the turn it is in the middle of.
-            (59, 3, 5),
+            // ⚠ Both of item 9's verbs are a shell's to say and are dispatched, so they land here.
+            (61, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1893,7 +1938,8 @@ mod tests {
             // ⚠⚠ `stand-down` is the FOURTH `NotBuilt`, and the best candidate of them: a person
             // leaving their desk wants the verb that keeps the work, and leaving a desk is exactly
             // when a keystroke is reached for. Nobody has built "stand down every run I started".
-            (25, 4, 38),
+            // ⚠ Item 9's two join the middle column for `stand-down`'s reason: a key names no run.
+            (25, 6, 38),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1909,7 +1955,18 @@ mod tests {
             // ⚠ `stand-down` sits beside `cancel-run` because they are the same shape of gap — "do
             // this to every run I started" — and it is the one a person is likeliest to want under
             // a key, since it is the one they reach for on the way out of the door.
-            ["run", "stop-job", "cancel-run", "stand-down"],
+            // ⚠⚠ `hold-run` is the BEST candidate on this list (register item 9): *stop so I can
+            // read this* is the one order somebody wants to give without leaving the pane they are
+            // looking at, which is what a keystroke is for. It waits here for the same reason as its
+            // neighbours — a key names no run.
+            [
+                "run",
+                "stop-job",
+                "cancel-run",
+                "stand-down",
+                "hold-run",
+                "resume-run",
+            ],
             "the keyboard's remaining gap, by name",
         );
     }

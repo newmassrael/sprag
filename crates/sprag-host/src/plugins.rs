@@ -70,6 +70,18 @@ pub const CANCEL_ACTION: &str = "cancel";
 /// stated: a client newer than its daemon gets `UnknownPath` for it, which is the daemon saying it
 /// does not serve that address, and is the answer that case should get.
 pub const STAND_DOWN_ACTION: &str = "stand_down";
+/// **HALT A RUN BETWEEN TURNS, OR LET IT GO** — the third thing a person may say to a run, and the
+/// only one they can take back (register item 9).
+///
+/// Its two neighbours both END the run and differ in what that costs: `cancel` loses the turn in
+/// flight, `stand_down` banks the milestone. Neither is *wait, let me read this* — and
+/// `ai_loop.scxml` has carried the edge for it (`hold` → `awaiting_human`) since R378 with nothing
+/// in the product able to raise it.
+///
+/// ⚠ ADDITIVE, on [`STAND_DOWN_ACTION`]'s own terms and for its reason: an older client cannot
+/// reach an address it does not know, so this earns no `WIRE_PROTOCOL` bump. A client newer than its
+/// daemon gets `UnknownPath`, which is the daemon saying it does not serve that address.
+pub const HOLD_RUN_ACTION: &str = "hold_run";
 /// The slot reporting every run this daemon holds.
 pub const RUNS_SLOT: &str = "runs";
 /// The slot listing the plugins a `run` may name.
@@ -539,6 +551,38 @@ impl PluginsExternal {
         }
     }
 
+    /// **HALT A RUN BETWEEN TURNS, OR LET IT GO AGAIN** — [`HOLD_RUN_ACTION`], and the word a person
+    /// did not have (register item 9).
+    ///
+    /// `cancel` loses the turn and `stand_down` ends the run; neither of them is *wait, let me read
+    /// this*. `ai_loop.scxml` has carried the edge for it since R378 with nothing able to raise it.
+    ///
+    /// ⚠⚠⚠ **IT TAKES `held` WHERE ITS TWO NEIGHBOURS TAKE NOTHING**, and that asymmetry is the
+    /// meaning rather than an inconsistency: those two are LATCHES on purpose, and this is a level a
+    /// person raises and lowers. The document's `resume` is the way back it was built with.
+    ///
+    /// ⚠ It only moves a flag. The worker carries it into the document at its next pass and the
+    /// DOCUMENT decides; nothing here interrupts anything, and a held run is still running.
+    fn hold_run(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = map
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or(InvokeError::TypeMismatch)?;
+        // ⚠ ABSENT MEANS *hold it* — the direction somebody typing this verb by hand almost always
+        // means, and the one a caller that omitted the key cannot have meant to invert. Malformed is
+        // refused rather than defaulted, this surface's rule for every optional it reads.
+        let held = match map.get("held") {
+            None | Some(Value::Null) => true,
+            Some(value) => value.as_bool().ok_or(InvokeError::TypeMismatch)?,
+        };
+        if lock(&self.runs).hold(RunId(id), held) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(refused(format!("no run {id} is in flight")))
+        }
+    }
+
     /// Parse the plugin discriminator + its args, validating target panes
     /// exist (fail fast → synchronous `Rejected`).
     fn build_plugin(&self, map: &Map<String, Value>) -> Result<(PluginKind, String), InvokeError> {
@@ -902,7 +946,12 @@ impl PluginsExternal {
         // are doing and then stop* is not a softer cancel, it is the opposite outcome — the turn in
         // flight is banked rather than lost. See `RunRecord::order`.
         let order = Arc::new(AtomicBool::new(false));
-        let run_ctx = RunContext::new(Arc::clone(&cancel)).ordered_by(Arc::clone(&order));
+        // ⚠⚠⚠ AND THE THIRD, which is the only one a person can take back — see `RunRecord::hold`.
+        // A flag of its own rather than a mode on `order` because that one is a latch by design.
+        let hold = Arc::new(AtomicBool::new(false));
+        let run_ctx = RunContext::new(Arc::clone(&cancel))
+            .ordered_by(Arc::clone(&order))
+            .held_by(Arc::clone(&hold));
         let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace))
             .with_pane_exit(self.on_pane_exit.clone())
             // The detector, as an opaque per-pane read. A run that never supervises never calls
@@ -961,6 +1010,7 @@ impl PluginsExternal {
             progress,
             cancel,
             order,
+            hold,
         })
     }
 }
@@ -1130,6 +1180,7 @@ impl ExternalIntrospect for PluginsExternal {
                     SchemaField::action(RUN_ACTION, "action"),
                     SchemaField::action(CANCEL_ACTION, "action"),
                     SchemaField::action(STAND_DOWN_ACTION, "action"),
+                    SchemaField::action(HOLD_RUN_ACTION, "action"),
                     SchemaField::new(RUNS_SLOT, "list"),
                     SchemaField::new(PLUGINS_SLOT, "list"),
                     SchemaField::new(GUARDRAIL_DEFAULTS_SLOT, "object"),
@@ -1171,6 +1222,7 @@ impl ExternalIntrospect for PluginsExternal {
             RUN_ACTION => self.run(&args),
             CANCEL_ACTION => self.cancel(&args),
             STAND_DOWN_ACTION => self.stand_down(&args),
+            HOLD_RUN_ACTION => self.hold_run(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -3852,7 +3904,7 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            70,
+            71,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
              malformed rather than declined. ⚠⚠⚠⚠ THE NEWEST IS `max_turns`, and it is the one \
@@ -3915,7 +3967,7 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            114,
+            116,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
              TEN to answer a pane, TWENTY-EIGHT to run an AI loop, one to cancel, and ONE TO STAND \

@@ -8801,7 +8801,9 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // ⚠ `stand-down` is the 59th, and it is DRIVEN here before the count moves — the sweep
         // above runs it against a live daemon, which is what makes this a claim about the binary
         // rather than about the table.
-        (59, 5, 3),
+        // R(item 9): `hold-run` and `resume-run` — the third thing a person may say to a run, and
+        // the only one they can take back. Both are shell verbs, so both land in the first column.
+        (61, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -8975,7 +8977,11 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // one question and one option forever, which is the one shape a consent must never take.
         // ⚠ `stand-down` is the FOURTH in the last column, beside `cancel-run` and for its reason:
         // "stand down every run I started" is an act a key could mean and nobody has built it.
-        (15, 10, 38, 4),
+        // R(item 9): `hold-run` and `resume-run` join the fourth column. A key naming no run cannot
+        // give an order about one — and `hold-run` is the best candidate of the three for a binding,
+        // because *stop so I can read this* is the order somebody wants to give without leaving the
+        // pane they are looking at.
+        (15, 10, 38, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

@@ -63,6 +63,26 @@ pub struct RunContext {
     /// ⚠ The flag only CARRIES the order. What it means is the loop document's, which holds it as a
     /// state in its own orders region and decides at the next milestone; nothing here judges.
     order: Arc<AtomicBool>,
+    /// **WHETHER A PERSON HAS THIS RUN HELD** — the third thing somebody can say to it, and the
+    /// only one they can take back.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it is not [`order`](Self::order) with a second meaning
+    ///
+    /// `ai_loop.scxml` has carried *"a watching person can halt the loop between turns"* as an edge
+    /// (`hold` → `awaiting_human`) since R378, **with nothing in the product able to raise it** —
+    /// register item 9, and a transition no producer can take is the vacuous kind this workspace
+    /// keeps paying for. What a person had instead were the two ENDINGS: `cancel` throws the turn
+    /// away, `stand_down` finishes the milestone and converges. Neither is *wait, let me look*.
+    ///
+    /// ⚠⚠⚠ **AND IT IS TWO-WAY, WHICH IS WHY IT CANNOT SHARE `order`'s FLAG.** A stand-down is
+    /// deliberately one-way — its doc says a *"stand down, no wait, carry on"* racing a milestone
+    /// would make a run's ending depend on which message arrived first. A hold is the opposite by
+    /// construction: the document's way back out is `resume`, and the run goes on. Folding the two
+    /// into one flag would give the irreversible order an undo.
+    ///
+    /// ⚠ Like `order`, this only CARRIES the fact. What it MEANS is the document's — it is a state
+    /// in the orders region and the machine decides — and nothing here judges.
+    hold: Arc<AtomicBool>,
     /// WHEN THIS RUN MUST BE OVER, or [`None`] for a run nothing times.
     ///
     /// An `Instant` and not a `Duration`, because the question every wait asks is
@@ -81,6 +101,7 @@ impl RunContext {
         Self {
             cancel,
             order: Arc::new(AtomicBool::new(false)),
+            hold: Arc::new(AtomicBool::new(false)),
             deadline: None,
         }
     }
@@ -95,6 +116,14 @@ impl RunContext {
     #[must_use]
     pub fn ordered_by(self, order: Arc<AtomicBool>) -> Self {
         Self { order, ..self }
+    }
+
+    /// This context sharing `hold` — the flag a host raises and LOWERS when somebody halts the run
+    /// and lets it go again. [`ordered_by`](Self::ordered_by)'s terms exactly, one order over: a
+    /// driver with no host to be spoken through can never be held, which is what it should be.
+    #[must_use]
+    pub fn held_by(self, hold: Arc<AtomicBool>) -> Self {
+        Self { hold, ..self }
     }
 
     /// A context that can never be cancelled — for fire-and-forget runs and
@@ -118,6 +147,10 @@ impl RunContext {
             // would leave a run unable to hear the one thing a person said to it, and the drop
             // would be invisible — the run would simply carry on working.
             order: Arc::clone(&self.order),
+            // CARRIED for `order`'s reason and one harder: a derived context that dropped this
+            // would leave a HELD run driving on, which is the one order whose whole point is that
+            // the run stops moving while somebody reads its pane.
+            hold: Arc::clone(&self.hold),
             deadline: within.map(|d| Instant::now() + d),
         }
     }
@@ -136,6 +169,17 @@ impl RunContext {
     #[must_use]
     pub fn stood_down(&self) -> bool {
         self.order.load(Ordering::Acquire)
+    }
+
+    /// **WHETHER A PERSON HAS THIS RUN HELD** — see the field for why it is neither a cancel nor a
+    /// stand-down.
+    ///
+    /// ⚠⚠⚠ NOT part of [`stopped`](Self::stopped), for [`stood_down`](Self::stood_down)'s reason
+    /// and more sharply: a held run is not finishing, it is WAITING, and a wait that read this as
+    /// *the run is over* would abandon the very turn the person means to come back to.
+    #[must_use]
+    pub fn held(&self) -> bool {
+        self.hold.load(Ordering::Acquire)
     }
 
     /// Whether the run's deadline has passed. Always false for a run with none.
@@ -290,6 +334,53 @@ mod tests {
             poll_until(&run, Duration::from_millis(30), || false),
             Waited::TimedOut,
             "the wait must run to its own bound, not report the order as an ending",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A HELD RUN IS NEITHER OVER NOR STOOD DOWN, AND IT CAN BE LET GO** — register item 9,
+    /// and the three claims that keep `hold` from collapsing into either of its neighbours.
+    ///
+    /// A hold folded into [`stopped`](RunContext::stopped) would end every wait the moment somebody
+    /// paused a run, which is a cancel with a friendlier word. Folded into
+    /// [`stood_down`](RunContext::stood_down) it would converge the run at its next milestone, which
+    /// is the other ending. **The whole point is that the run is still there when the person looks
+    /// up** — so this asserts what a hold is NOT, and then the one thing only it can do.
+    ///
+    /// ⚠⚠ **THE REVERSAL IS THE THIRD ASSERTION AND THE SHARPEST.** `order` is a latch by design;
+    /// this must not be, or the document's `resume` edge has nothing to be raised by and `hold`
+    /// becomes a slow cancel. A flag that could only be set would pass the first two.
+    #[test]
+    fn a_held_run_is_not_over_not_stood_down_and_can_be_let_go() {
+        let hold = Arc::new(AtomicBool::new(true));
+        let run = RunContext::uncancellable().held_by(Arc::clone(&hold));
+        assert!(run.held(), "the fixture must stage the order");
+        assert!(
+            !run.stopped(),
+            "⚠⚠⚠⚠⚠ A HELD RUN IS WAITING, NOT FINISHED. Folded into `stopped`, every wait in this \
+             crate ends the moment somebody pauses a run — which is `cancel` wearing a kinder word, \
+             and the turn the person meant to come back to is gone",
+        );
+        assert!(
+            !run.stood_down(),
+            "⚠⚠⚠⚠ AND IT IS NOT THE OTHER ENDING EITHER. A hold read as a stand-down converges the \
+             run at its next milestone, so a person who asked to READ a pane would find the loop \
+             finished when they looked up",
+        );
+        assert_eq!(
+            poll_until(&run, Duration::from_millis(30), || false),
+            Waited::TimedOut,
+            "and the waits run to their own bounds, exactly as they do under an order",
+        );
+
+        // ── THE ARM ITS NEIGHBOURS CANNOT HAVE: the person lets go. ──
+        hold.store(false, Ordering::Release);
+        assert!(
+            !run.held(),
+            "⚠⚠⚠⚠⚠ THE ONE ORDER A PERSON CAN TAKE BACK. `order` is a latch on purpose — an \
+             un-ordering racing a milestone would make a run's ending depend on which message \
+             arrived first — and this is the opposite by construction: the document's way back out \
+             is `resume`, and a flag that could only be set would leave that edge with nothing to \
+             raise it",
         );
     }
 }
