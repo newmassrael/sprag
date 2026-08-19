@@ -172,9 +172,10 @@
 // surface, so the lint is a structural false positive here (mirrors `sprag-gui`).
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -2015,12 +2016,45 @@ fn exec_client(command: &mut Command, what: &str) -> io::Error {
 /// `target/debug/sprag-gui` beside it, where `PATH` alone would find nothing — or, worse, an
 /// installed client of a different version against this daemon.
 fn client_bin(env_override: &str, bin: &str) -> PathBuf {
-    if let Some(path) = std::env::var_os(env_override) {
+    client_beside(
+        std::env::var_os(env_override),
+        std::env::current_exe().ok().as_deref(),
+        bin,
+    )
+}
+
+/// [`client_bin`]'s DECISION, separated from the process and the environment it reads — the split
+/// `sprag_host::host`'s `sprag_beside` and `mcp_beside` are written with, for their reason.
+///
+/// # ⚠⚠⚠⚠⚠ The sibling step is the whole of register item 463's construction half, and NOTHING
+/// exercised it
+///
+/// *"The GUI a person launches is the daemon's own build"* rests entirely on the middle branch
+/// here, and `current_exe` is process-global — so a test of the rule was a test nothing could
+/// drive, and every CLI gate over `attach` sets the override env and returns at the FIRST branch.
+/// The branch the claim depends on was reached by no test in this tree.
+///
+/// # ⚠⚠⚠ Why the last branch is a `PATH` name and not a refusal
+///
+/// It is `sprag_beside`'s ruling and not `mcp_beside`'s, and the two differ for a stated reason: an
+/// MCP server's whole value is its VINTAGE, so a copy of unknown age is worse than none. A display
+/// client's value is that a person gets their window — and in both layouts this product ships (a
+/// cargo build tree, and `cargo install`'s one `bin`) the sibling is there, so this branch is a
+/// deployment that copied SOME of the binaries. Refusing there would hand a person no window at
+/// all rather than one to be doubted.
+///
+/// ⚠⚠ **And the doubt is now REPORTED rather than assumed away**: a client launched off `PATH`
+/// states its build at `client/hello` like any other, so `sprag doctor` names it if it is not this
+/// daemon's image ([`attached_build_report`]). Construction where it reaches, report where it
+/// cannot — which is item 463's own ruling, applied to its own fallback.
+fn client_beside(env_override: Option<OsString>, exe: Option<&Path>, bin: &str) -> PathBuf {
+    if let Some(path) = env_override {
         return PathBuf::from(path);
     }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(sibling) = exe.parent().map(|dir| dir.join(bin))
-        && sibling.exists()
+    if let Some(sibling) = exe
+        .and_then(Path::parent)
+        .map(|dir| dir.join(bin))
+        .filter(|sibling| sibling.exists())
     {
         return sibling;
     }
@@ -8564,6 +8598,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE WINDOW `attach` LAUNCHES IS THE ONE BESIDE THIS BINARY** — register item 463's
+    /// construction half, and the branch the whole claim rests on had never been run.
+    ///
+    /// # What was untested, and why it stayed that way
+    ///
+    /// *"A person cannot start a GUI that is not the daemon's build"* is true only because of the
+    /// SIBLING step: `target/debug/sprag` launches the `target/debug/sprag-gui` beside it rather
+    /// than whatever `PATH` finds. Every CLI gate over `attach` points `SPRAG_GUI_BIN` at a stand-in
+    /// — which is right, because a test must not open a window — and that override returns at the
+    /// FIRST branch, so the middle one was reached by nothing at all. It could not be: `client_bin`
+    /// read `current_exe`, which is process-global, so the rule had no seam a test could drive.
+    /// [`client_beside`] is that seam, split exactly as `sprag_beside` and `mcp_beside` are.
+    ///
+    /// ⚠⚠⚠ **The order is the substance, not a detail.** An override that lost to a sibling would
+    /// make this suite's stand-ins unreachable; a sibling that lost to `PATH` would launch an
+    /// installed client of unknown age against this daemon, which is the whole hazard item 463 was
+    /// filed for. Each of the three is pinned against a directory this test builds, so a passing
+    /// answer names a file that is really there.
+    #[test]
+    fn the_window_attach_launches_is_the_one_beside_this_binary() {
+        let dir = std::env::temp_dir().join(format!("sprag-beside-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("a tree of this test's own");
+        let exe = bin.join("sprag");
+        std::fs::write(&exe, b"#!/bin/sh\n").expect("a stand-in for the running binary");
+        let sibling = bin.join("sprag-gui");
+
+        // ── NO SIBLING: the name alone, which `PATH` resolves to whatever is installed ──
+        assert_eq!(
+            client_beside(None, Some(&exe), "sprag-gui"),
+            PathBuf::from("sprag-gui"),
+            "a deployment that copied only some of the binaries still gets a window — and the \
+             doubt about which build it is belongs to `doctor`, not to a refusal here",
+        );
+
+        // ── THE SIBLING EXISTS: it wins, and this is the branch nothing used to reach ──
+        std::fs::write(&sibling, b"#!/bin/sh\n").expect("a sibling client beside it");
+        assert_eq!(
+            client_beside(None, Some(&exe), "sprag-gui"),
+            sibling,
+            "⚠⚠⚠⚠⚠ THIS IS THE CONSTRUCTION HALF OF ITEM 463: the window a person gets is the one \
+             built beside the binary they typed, never one `PATH` chose for them",
+        );
+
+        // ── THE OVERRIDE STILL WINS, or every stand-in in this suite stops standing in ──
+        assert_eq!(
+            client_beside(
+                Some(OsString::from("/elsewhere/gui")),
+                Some(&exe),
+                "sprag-gui"
+            ),
+            PathBuf::from("/elsewhere/gui"),
+            "⚠⚠ an override that lost to the sibling would make the CLI suite's stand-ins \
+             unreachable — and it is the door a person points at their own build",
+        );
+
+        // ── AND A PROCESS THAT CANNOT SAY WHERE IT IS falls through rather than guessing ──
+        assert_eq!(
+            client_beside(None, None, "sprag-gui"),
+            PathBuf::from("sprag-gui"),
+            "no exe path is no sibling to find; naming one anyway would be inventing a file",
+        );
+        std::fs::remove_dir_all(&dir).expect("this test leaves nothing behind");
     }
 
     /// ⚠⚠⚠⚠⚠ **A WINDOW THAT IS NOT THE DAEMON'S BUILD IS NAMED, AND A SET THAT MATCHES SAYS SO
