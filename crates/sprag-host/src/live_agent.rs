@@ -2923,7 +2923,7 @@ fn what_a_live_agent_asks_while_it_works() {
         // what a loop's `watch` reads, so what is captured here is what a run would have met. A
         // hand-rolled poll for a menu would be a second reader of one screen, which this crate has
         // paid for before.
-        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, None, &run);
         // ⚠⚠ ROWS, NOT THE COLLAPSED SCREEN, and the first run of this gate is why: it captured
         // `pane_collapsed`, which joins the whole pane into ONE string, and produced a "fixture"
         // of a single two-thousand-character line. `sprag_detect` reads `row_text` per row, so a
@@ -3193,7 +3193,8 @@ fn what_a_key_does_to_a_live_agents_permission_dialog() {
             },
         )
         .expect("the pane must take the prompt");
-        let Over::Asking(Some(question)) = done.wait(&live.access, live.pane, ASKS_WITHIN, &run)
+        let Over::Asking(Some(question)) =
+            done.wait(&live.access, live.pane, ASKS_WITHIN, None, &run)
         else {
             panic!(
                 "⚠⚠⚠ {key}: this measurement needs a real dialog on the screen and did not get \
@@ -3287,7 +3288,7 @@ fn what_a_key_does_to_a_live_agents_permission_dialog() {
             Ok(other) => format!("was confirmed on screen ({other:?})"),
             Err(error) => format!("⚠ could not be typed at all ({error:?})"),
         };
-        let over = after.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        let over = after.wait(&live.access, live.pane, ASKS_WITHIN, None, &run);
         println!(
             "  the redirect {landed}\n  the turn then ended {}\n  the agent said {REDIRECTED}: \
              {}\n  {MADE} at the end: {}\n  final screen:\n{}",
@@ -3379,7 +3380,7 @@ fn one_turn(live: &Live, run: &RunContext, index: usize, sampled: bool, began: I
 
     let watch = sampled.then(|| Watch::start(live));
     let asked_at = Instant::now();
-    let over = done.wait(&live.access, live.pane, TURN_BOUND, run);
+    let over = done.wait(&live.access, live.pane, TURN_BOUND, None, run);
     let elapsed = asked_at.elapsed();
     let walk = watch.map(Watch::walk).unwrap_or_default();
     let seq_after = live.seq();
@@ -4145,7 +4146,7 @@ fn what_a_live_agent_asks_when_the_decision_is_a_design_one() {
 
         // The product's own turn-ending vocabulary does the measuring, for R383's reason: `Over` is
         // what a loop's `watch` reads, so what is seen here is what a run would have met.
-        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, None, &run);
         let rows: Vec<String> = live
             .access
             .pane_rows(live.pane)
@@ -4719,7 +4720,7 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
             "{label}: {delivered:?}",
         );
 
-        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, &run);
+        let over = done.wait(&live.access, live.pane, ASKS_WITHIN, None, &run);
         let rows: Vec<String> = live
             .access
             .pane_rows(live.pane)
@@ -4894,7 +4895,7 @@ fn what_a_live_agents_report_looks_like_to_a_reader() {
         !matches!(delivered, Delivered::Unconfirmed { .. }),
         "a live agent PAINTS what is typed into its composer: {delivered:?}",
     );
-    let over = done.wait(&live.access, live.pane, REPORT_WITHIN, &run);
+    let over = done.wait(&live.access, live.pane, REPORT_WITHIN, None, &run);
     step(began, &format!("the report turn ended {over:?}"));
 
     let rendered = trail.fresh(&live.access, live.pane);
@@ -5050,7 +5051,7 @@ fn a_reply_that_never_scrolled_is_still_readable_since_the_mark() {
         !matches!(delivered, Delivered::Unconfirmed { .. }),
         "a live agent PAINTS what is typed into its composer: {delivered:?}",
     );
-    let over = done.wait(&live.access, live.pane, REPORT_WITHIN, &run);
+    let over = done.wait(&live.access, live.pane, REPORT_WITHIN, None, &run);
     step(began, &format!("the report turn ended {over:?}"));
 
     let rendered = trail.fresh(&live.access, live.pane);
@@ -5193,7 +5194,7 @@ fn a_reply_read_off_a_pane_the_previous_turn_filled_is_still_there() {
             !matches!(delivered, Delivered::Unconfirmed { .. }),
             "a live agent PAINTS what is typed into its composer: {delivered:?}",
         );
-        done.wait(&live.access, live.pane, TURN_WITHIN, &run)
+        done.wait(&live.access, live.pane, TURN_WITHIN, None, &run)
     };
 
     // ── TURN ONE: fill the pane. Nothing is read off this turn; it is the STATE the measurement
@@ -5448,7 +5449,7 @@ fn a_prompt_whose_confirmation_was_already_on_the_screen_still_starts_a_turn() {
             )
             .expect("the pane must take the prompt");
             let delivery_took = began_delivery.elapsed();
-            let over = done.wait(&live.access, live.pane, REPLY_WITHIN, &run);
+            let over = done.wait(&live.access, live.pane, REPLY_WITHIN, None, &run);
             step(
                 began,
                 &format!(
@@ -5646,7 +5647,7 @@ fn what_a_live_agent_does_with_a_submit_it_was_never_given() {
         SubmittedWhen::Stirs { within: grace },
         "control",
     );
-    let over = done.wait(&live.access, live.pane, REPLY_WITHIN, &run);
+    let over = done.wait(&live.access, live.pane, REPLY_WITHIN, None, &run);
     let answered = live
         .access
         .pane_full_text(live.pane)
@@ -5965,7 +5966,7 @@ fn one_turn_on(live: &Live, pane: PaneId, run: &RunContext, index: usize, began:
     .expect("the pane must take the prompt");
     step(began, &format!("turn {index}: delivered {delivered:?}"));
     let asked_at = Instant::now();
-    let over = done.wait(&live.access, pane, TURN_BOUND, run);
+    let over = done.wait(&live.access, pane, TURN_BOUND, None, run);
     let elapsed = asked_at.elapsed();
     let answered = live
         .access

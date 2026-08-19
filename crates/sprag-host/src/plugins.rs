@@ -3533,6 +3533,99 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **A SUPERVISOR IS TOLD HOW MANY TIMES A PANE HAS BEEN SPOKEN FOR** — register item
+    /// 458, at the seam where the count crosses from the tracker into the surface a plugin reads.
+    ///
+    /// # ⚠⚠⚠⚠ Why this gate is in THIS crate and could not be written in `sprag-plugin`
+    ///
+    /// The silence ceiling is decided in the plugin, and every gate there builds an
+    /// `AgentObservation` — so all of them would go on passing if this line stopped carrying the
+    /// number. **A fixture that supplies the very field the product omits cannot see the omission**;
+    /// that is item 428's shape, and item 459 is a live example of exactly it one crate over. So
+    /// the assertion belongs where the ADAPTER is, driven through
+    /// [`AgentClock::report`](crate::AgentClock::report) — the door a hook's payload actually
+    /// arrives by.
+    ///
+    /// # ⚠⚠⚠ What makes it the right number rather than any number
+    ///
+    /// The two reports below say the SAME THING TWICE — `working`, then `working` — which is
+    /// precisely a turn calling tool after tool. So `seq` cannot move, and if it did this would be
+    /// measuring the wrong counter. What must move is this one, because it counts REPORTS and not
+    /// verdicts, and it is the only sign of life a turn like that leaves.
+    #[test]
+    fn a_supervisor_is_told_how_many_times_a_pane_has_been_spoken_for() {
+        let (workspace, id) = pane_painting_in_turn(&[
+            CLAUDE_AT_REST.replace("%s", "one"),
+            CLAUDE_WORKING.to_owned(),
+        ]);
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        let read = source(&workspace, &agents);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let hook = |seq: u64| Report {
+            state: AgentState::Working,
+            agent: Some("claude".to_owned()),
+            source: "claude-hook".to_owned(),
+            seq: Some(seq),
+            owner: None,
+            asked: None,
+            said: None,
+            transcript: None,
+            build: None,
+        };
+
+        wait_for_screen(&access, id, "GO");
+        advance(&access, id);
+        wait_for_screen(&access, id, "at rest one");
+
+        // ── THE CONTROL FIRST: a pane nothing has reported for ──
+        //
+        // ⚠⚠⚠⚠⚠ ITS ANSWER IS ZERO AND ALWAYS WILL BE, and that is why a caller may not read zero
+        // as silence: it means *this pane has no reporter to be silent*, not *nobody is speaking*.
+        // Without this reading, `reports` moving below could be a counter that starts anywhere.
+        let scraped = read(id).expect("the pane is an agent's from its screen alone");
+        assert_eq!(
+            (scraped.reports, scraped.authority.is_exact()),
+            (0, false),
+            "a pane read from its SCREEN has been spoken for by nobody, and says so through its \
+             authority as well as its count: {scraped:?}",
+        );
+
+        agents.report(id, hook(1), instant_window);
+        let first = read(id).expect("an agent");
+        // The same turn, still working, still calling tools — one more report saying nothing new.
+        agents.report(id, hook(2), instant_window);
+        let second = read(id).expect("an agent");
+
+        assert_eq!(
+            (second.seq, second.state),
+            (first.seq, first.state),
+            "⚠⚠⚠ THE FIXTURE: these two reports must publish NOTHING, or this gate is about `seq` \
+             after all. A turn calling tool after tool reports `working` every time and the \
+             verdict never moves — which is the whole reason a fourth counter had to exist",
+        );
+        assert_eq!(
+            (first.asked_seq, first.said_seq),
+            (second.asked_seq, second.said_seq),
+            "and neither counter of STATEMENTS moves either: a turn in flight has stated no \
+             question and no answer, so all three stand still together",
+        );
+        assert_eq!(
+            (first.reports, second.reports),
+            (1, 2),
+            "⚠⚠⚠⚠⚠ AND THIS ONE MOVES, EVERY REPORT, WHATEVER IT SAID. It is the only thing left \
+             that separates a peer working slowly from a peer that has stopped speaking, and a \
+             supervisor that never receives it is back where the fourteen measured minutes were: \
+             `working seq=6 asked=2 said=0`, indistinguishable from a turn nothing will ever end. \
+             Got {first:?} then {second:?}",
+        );
+
+        let closed = lock(&workspace).close(id);
+        assert!(
+            closed.is_some(),
+            "the pane this test opened was there to close"
+        );
+    }
+
     /// A host with no detector says it cannot supervise, and that is a DIFFERENT answer from a pane
     /// that is not an agent's.
     ///

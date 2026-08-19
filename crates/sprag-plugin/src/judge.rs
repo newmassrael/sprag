@@ -333,7 +333,10 @@ pub fn asked_of_another(
         .ok()?;
     // From here every exit path closes the pane. A judge left running would hold a pty and a
     // process for the rest of the run, once per blocked turn.
-    let over = Completion::new(DoneWhen::Exits).wait(panes, pane, within, run);
+    // ⚠ NO SILENCE BOUND. A judgement is one short-lived peer answering one question, and this call
+    // already treats everything but `Yes` as *no verdict came back* — see
+    // [`Over::Silent`](crate::completion::Over::Silent)'s own count of this site.
+    let over = Completion::new(DoneWhen::Exits).wait(panes, pane, within, None, run);
     let reply = panes.pane_full_text(pane).unwrap_or_default();
     life.close(pane);
 

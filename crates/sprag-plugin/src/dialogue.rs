@@ -275,7 +275,10 @@ impl Plugin for Dialogue {
         // renders no dialog for anybody to answer, and the pane is destroyed before the next turn
         // begins. A supervision pull per turn to arm a claim about a program that cannot make it
         // would be ceremony. Said here rather than left to be inferred from an absent call.
-        let waited = Completion::new(DoneWhen::Exits).wait(panes, id, self.spec.timeout, run);
+        // ⚠ NO SILENCE BOUND, and the same sentence as the arming above: a `claude -p` reports
+        // nothing about itself, so there is no reporter here that could fall quiet. See
+        // [`Over::Silent`](crate::completion::Over::Silent).
+        let waited = Completion::new(DoneWhen::Exits).wait(panes, id, self.spec.timeout, None, run);
 
         // If the RUN ended mid-turn — cancelled, or out of time — record nothing
         // (no junk partial turn) and return Continue with the spend committed so

@@ -85,7 +85,7 @@ use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
 use sprag_terminal::PaneId;
 
 use crate::access::{PaneAccess, PaneError};
-use crate::completion::{Completion, DoneWhen, Over, Turn};
+use crate::completion::{Completion, DoneWhen, Over, Quiet, Turn};
 use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -963,6 +963,16 @@ impl Owed {
                 // here — but it is spelled rather than left to a catch-all, which is the arm's own
                 // rule: this list is what makes an edge added into `working` fail to compile.
                 | AiLoopEvent::PeerGone
+                // ⚠⚠⚠⚠ `peer.silent` LEAVES `working` FOR `awaiting_human` AND NEVER ARRIVES IN IT
+                // — register item 458. It owes nothing wherever it lands, and that is the point of
+                // the state it lands in: NOTHING is sent from `awaiting_human`, because the pane
+                // must stay exactly as the person will find it. A prompt owed on this edge would
+                // type at the very peer whose silence is the thing nobody can explain yet.
+                //
+                // ⚠⚠ And this arm is the mechanism working as documented: adding the edge to the
+                // document made this match stop compiling, which is how the decision came to be
+                // taken here rather than defaulted.
+                | AiLoopEvent::PeerSilent
                 // ⚠⚠⚠ `prompt.unasked` REACHES `restarting` OR `failed` AND NEVER HERE — register
                 // item 446. It is raised where a delivery ended with the question never taken, and
                 // what it buys is a fresh SESSION, so a prompt owed on arrival would be a question
@@ -1935,6 +1945,20 @@ pub enum Noticed {
         /// Bytes the delivery put on the pane's pseudoterminal.
         written: u64,
     },
+    /// ⚠⚠⚠⚠ **NOTHING SPOKE FOR THE PANE FOR THE WHOLE OF THE DOCUMENT'S SILENCE BOUND** — register
+    /// item 458, and it is on this enum by the rule the paragraph below states rather than in spite
+    /// of it.
+    ///
+    /// The state it leads to CANNOT say this. `awaiting_human`'s other two doors are *the peer
+    /// stopped to ask* and *a person took the pane*, and both leave something a reader can go and
+    /// look at — a question on the screen, a hand on the keyboard. Silence leaves nothing at all, so
+    /// a run reported as `blocked` with an [`Unanswered::unreadable`](crate::consent::Unanswered)
+    /// would send whoever reads it hunting for a dialog that was never there.
+    ///
+    /// ⚠⚠ IT CARRIES THE EVIDENCE rather than the bare fact, for [`Unasked`](Self::Unasked)'s
+    /// reason: *how long nothing spoke* and *how many times this pane's reporter HAD spoken* are the
+    /// two numbers that separate a stalled agent from a pane whose reporter never existed.
+    Silent(crate::completion::Silence),
     // ⚠⚠⚠ AND THERE IS DELIBERATELY NO `PeerGone` ARM, though the first draft of that round wrote
     // one. Every notice here exists because the state it leads to CANNOT say the thing itself —
     // `failed` is reached from six transitions and cannot name the variable, `blocked` cannot
@@ -4304,10 +4328,13 @@ impl OuterLoop {
         // here, so `turn.done` and `turn.blocked` had no producer and this function could not be
         // written.
         Ok(
-            match self
-                .done
-                .wait(panes, self.driving.pane, self.patience(), run)
-            {
+            match self.done.wait(
+                panes,
+                self.driving.pane,
+                self.patience(),
+                self.quiet_within(),
+                run,
+            ) {
                 Over::Yes => AiLoopEvent::TurnDone,
                 // ⚠⚠⚠ THE SECOND DOOR, ANSWERED BY THE FIRST — see [`barrier_says`](Self::barrier_says).
                 // The question this ending carries is DROPPED rather than re-published, which is
@@ -4323,7 +4350,31 @@ impl OuterLoop {
                 // no *the turn overran* transition, and inventing one out here would put a decision in
                 // the driver that belongs in the document. The run's own clock bounds it, and the next
                 // pump asks again.
+                //
+                // ⚠⚠⚠⚠⚠ AND THIS ARM IS WHY [`Over::Silent`] HAD TO EXIST. For as long as it was the
+                // ONLY answer a wait that ran out could give, *the peer is thinking* and *nothing is
+                // ever going to speak for this pane again* were one word — so the loop re-waited the
+                // whole per-turn bound, pass after pass, toward a `max_seconds` the shipped kind
+                // authors at twenty-four hours. Register item 458, measured twice in one day, and
+                // both times a PERSON ended it.
                 Over::NotYet => AiLoopEvent::Null,
+                // ⚠⚠⚠⚠ NOTHING HAS SPOKEN FOR THE PANE FOR THE WHOLE OF THE DOCUMENT'S OWN BOUND.
+                //
+                // The event goes to `awaiting_human`, and the destination is the decision: this
+                // driver CANNOT tell a frozen turn from a reporter that was replaced under it, and
+                // the one thing that settles either is a person looking at the pane. That state
+                // already notifies (`notify.human`), already ends the run if nobody comes
+                // (`unattended`), and already lets a turn that comes back walk on as if nothing had
+                // happened (`turn.done`) — so a peer that speaks again costs the run nothing.
+                //
+                // ⚠⚠⚠ THE NOTICE IS RECORDED because `awaiting_human` cannot say this itself. Its
+                // other two doors are a question and a person, and a reader told only *blocked* about
+                // a run that stopped on SILENCE would go looking for a dialog that was never there —
+                // which is [`Noticed`]'s whole reason for existing.
+                Over::Silent(silence) => {
+                    self.noticed = Some(Noticed::Silent(silence));
+                    AiLoopEvent::PeerSilent
+                }
                 // ⚠⚠⚠⚠ AND THE ENDING THIS DOCUMENT HAD NO WORD FOR UNTIL NOW. It is an EVENT
                 // where the arm above it is `Null`, and the difference is the whole point:
                 // *the turn overran* is a fact the next pump can ask about again, and *the agent's
@@ -4556,9 +4607,16 @@ impl OuterLoop {
             return Ok(AiLoopEvent::Unattended.into());
         };
         let since = *self.awaiting.get_or_insert_with(Instant::now);
+        // ⚠⚠⚠⚠ NO SILENCE BOUND HERE, AND IT IS THIS STATE'S OWN ARGUMENT RATHER THAN AN OMISSION.
+        // `awaiting_human` exists because the run is already waiting for a PERSON — which is the
+        // only remedy silence has — so noticing it again would be the loop discovering, at a bound
+        // of its own, the thing it is standing here doing something about. Worse, it would fire on
+        // every run waiting at a dialog: a peer blocked on a question reports nothing while it waits,
+        // so ten minutes at any permission prompt reads as silence. The wait this state wants is
+        // `patience`, and the answer it wants at the end of it is `unattended`.
         let raised = match self
             .done
-            .wait(panes, self.driving.pane, self.patience(), run)
+            .wait(panes, self.driving.pane, self.patience(), None, run)
         {
             Over::Yes => Raise::carrying(AiLoopEvent::TurnDone, self.costs_now(panes)),
             // ⚠⚠ THE THIRD DOOR ONTO *the run ended underneath* — see
@@ -4607,10 +4665,16 @@ impl OuterLoop {
             // ⚠ The peer has not finished what the person unblocked. `Completion::wait` really did
             // wait for this one — `NotYet` is its timeout — so there is no spin here, and the only
             // question left is whether the caller's patience has also run out.
-            Over::NotYet if since.elapsed() < patience => {
+            // ⚠ TWO ARMS, ONE ANSWER, and `Silent` is only here because the compiler asks — the
+            // `None` above makes it unreachable by construction. Folded in rather than given an
+            // `unreachable!`: if a later round ever hands this wait a bound, *nothing spoke while we
+            // waited for a person* is exactly as much news as *the peer has not finished*, and the
+            // honest reading of both is the one question this state has left — has the person's
+            // patience run out.
+            Over::NotYet | Over::Silent(_) if since.elapsed() < patience => {
                 return Ok(AiLoopEvent::Null.into());
             }
-            Over::NotYet => AiLoopEvent::Unattended.into(),
+            Over::NotYet | Over::Silent(_) => AiLoopEvent::Unattended.into(),
             // ⚠⚠⚠ AND NOT `unattended`, WHICH IS THE DECISION WORTH SPELLING. Both endings stop the
             // run, and they send its reader to opposite places: `blocked` says *a person was
             // expected here and did not come*, and this says *there is nothing left for them to
@@ -5297,6 +5361,26 @@ impl OuterLoop {
     fn turn_bound(&self) -> Option<Option<Duration>> {
         let ms = Self::ms_at(&self.script, &self.session, Turn::WIRE_KEY)?;
         Some((ms > 0).then(|| Duration::from_millis(ms)))
+    }
+
+    /// **HOW LONG THIS DOCUMENT LETS NOTHING SPEAK FOR THE PANE**, read at the moment of the wait —
+    /// [`None`] where the author declared no such bound, or the document holds nothing this can
+    /// read.
+    ///
+    /// ⚠⚠ FLAT WHERE [`turn_bound`](Self::turn_bound) IS NESTED, and the difference is that the two
+    /// `None`s here have the same remedy: [`Quiet::of`] already refuses zero, so *the author
+    /// declined* and *this document cannot be read* both leave the wait asking nothing about
+    /// silence — which is what every run did before this bound existed. Nesting them would publish a
+    /// distinction no caller can act on.
+    ///
+    /// ⚠ Re-read every pass, [`patience`](Self::patience)' discipline: a copy taken at construction
+    /// is taken before the brief that may replace the document's numbers.
+    fn quiet_within(&self) -> Option<Quiet> {
+        Quiet::of(Duration::from_millis(Self::ms_at(
+            &self.script,
+            &self.session,
+            Quiet::DOCUMENT_KEY,
+        )?))
     }
 
     /// A whole number of milliseconds under `name`, or [`None`] where this document holds none
@@ -13003,6 +13087,218 @@ mod tests {
              rather than in a file other repositories copy:\n{}",
             findings.len(),
             findings.join("\n"),
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A LOOP WHOSE PEER STOPS SPEAKING ASKS FOR A PERSON, INSTEAD OF WAITING OUT THE
+    /// DAY** — register item 458's *"done when"*, driven through the driver's own door.
+    ///
+    /// # ⚠⚠⚠⚠ What this is measuring, and why `completion.rs`'s gate is not enough on its own
+    ///
+    /// That one proves the CONTRACT can say *nothing is speaking*. This one proves the DRIVER acts
+    /// on it and the DOCUMENT decides what the act is — the three-arm split register item 444 asked
+    /// for. A `Completion` that answered perfectly into a `watch` arm that still mapped it to
+    /// [`AiLoopEvent::Null`] would leave the product exactly where the fourteen measured minutes
+    /// found it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The fixture is a peer whose turn CANNOT end, which is the honest staging
+    ///
+    /// The pane runs `cat` and its supervisor reports `working` for ever, so
+    /// [`DoneWhen::Settles`] is never satisfied, no question is ever on the screen and the child
+    /// never exits. **Every ending this wait has is unreachable except the two under test**, so
+    /// what separates the three runs below is exactly one thing each.
+    ///
+    /// ⚠⚠ The supervisor is driven BY HAND rather than derived from the screen, and it has to be:
+    /// *how many times anything has spoken for this pane* is the one fact a terminal does not
+    /// carry — which is the whole reason the counter exists rather than being read off the pane.
+    /// The host's own carry of it is gated where it lives, in `sprag-host`'s
+    /// `a_supervisor_is_told_how_many_times_a_pane_has_been_spoken_for`.
+    #[test]
+    fn a_loop_whose_peer_stops_speaking_asks_for_a_person_instead_of_waiting_out_the_day() {
+        /// The TURN bound the document holds. Long enough that reaching it is unmistakably *the
+        /// wait ran out* — the answer this whole item is about — rather than silence deciding.
+        const TURN: Duration = Duration::from_secs(4);
+        /// The SILENCE bound, well inside it.
+        const QUIET_MS: i64 = 250;
+        /// Enough passes that *it never left `working`* is not *it had not got round to it*.
+        const PASSES: usize = 6;
+
+        /// Drive a loop over a peer that never finishes a turn, and say where it got to.
+        ///
+        /// `quiet_ms` is written into the DOCUMENT, never passed to the driver — which is what
+        /// makes the third run below a statement about the author's number rather than about an
+        /// argument. `speaking` decides whether anything reports for the pane while it waits.
+        fn ran(quiet_ms: i64, speaking: bool) -> (AiLoopState, Vec<String>, Option<Noticed>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            // ⚠ `working` FOR EVER and named, so the completion contract is armed (it needs an
+            // agent name) and can never be satisfied (it needs `Idle`). The pane's own screen says
+            // nothing either way, which is the truth about a `cat`.
+            let seen: Arc<Mutex<crate::access::AgentObservation>> =
+                Arc::new(Mutex::new(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Working,
+                    agent: Some("claude".to_string()),
+                    // ⚠⚠ REPORTED, because only a reported pane can be silent — a scraped one
+                    // answers `reports: 0` for ever and means *nobody is speaking FOR me*, which is
+                    // not the same sentence. `completion.rs`'s control holds that half.
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_string(),
+                    },
+                    seq: 1,
+                    asked_seq: 1,
+                    // ⚠ NOT ZERO, so a `Silence` that carried a default could not pass for one that
+                    // carried the truth.
+                    reports: 3,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    transcript: None,
+                }));
+            let source = {
+                let seen = Arc::clone(&seen);
+                Arc::new(move |_id: PaneId| Some(seen.lock().expect("the observation").clone()))
+            };
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .with_agent_state(Some(source));
+
+            // ⚠⚠ NO READINESS CONDITION, and it is forced rather than chosen: `ReadyWhen::Settles`
+            // asks whether the agent is AT REST, and this fixture's whole point is a peer that is
+            // never at rest. Declaring one here refuses the run at the barrier
+            // (`NeverReady { wanted: Settles("claude") }` — measured), which is a gate about the
+            // START of a turn while this one is about the end of one.
+            let mut loops = bounded_at(Arc::clone(&lua), pane, TURN)
+                .expect("the document's datamodel must carry its four authored strings");
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    Quiet::DOCUMENT_KEY,
+                    ScriptValue::Int(quiet_ms),
+                )
+                .expect("the document's own silence bound is writable");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "a peer that never finishes a turn".to_string(),
+                    milestone: "reach a person".to_string(),
+                    reference: "register item 458".to_string(),
+                    closing_rules: None,
+                    milestone_check: None,
+                    service: None,
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    // ⚠ A person IS expected, or `awaiting_human` ends the run on arrival with
+                    // `unattended` and this gate could not tell the two states apart.
+                    await_person_ms: Some(60_000),
+                    handback_still_ms: None,
+                    // ⚠ The barrier passes at once: this run's subject is the END of a turn.
+                    ready_timeout_ms: Some(5_000),
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let reporter = speaking.then(|| {
+                let talking = Arc::clone(&seen);
+                let halt = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !halt.load(std::sync::atomic::Ordering::Acquire) {
+                        talking.lock().expect("the observation").reports += 1;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                })
+            });
+
+            let run = RunContext::uncancellable();
+            let mut walked = Vec::new();
+            for _ in 0..PASSES {
+                match loops.pump(&access, &run).expect("the pane stays readable") {
+                    Pumped::Moved {
+                        from, raised, to, ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if to == AiLoopState::AwaitingHuman {
+                            break;
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(reporter) = reporter {
+                reporter.join().expect("the reporter thread");
+            }
+            let landed = loops.state();
+            let noticed = loops.noticed().cloned();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (landed, walked, noticed)
+        }
+
+        // ── THE HEADLINE: nothing speaks, and the run reaches the one remedy silence has ──
+        let (silent, silent_walk, noticed) = ran(QUIET_MS, false);
+        assert_eq!(
+            silent,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ NOTHING HAS SPOKEN FOR THIS PANE AND THE RUN MUST SAY SO TO SOMEBODY. Left in \
+             `working` this is the product as measured: a loop re-waiting its per-turn bound, pass \
+             after pass, at a peer that will never report again, toward a `max_seconds` the \
+             shipped kind authors at TWENTY-FOUR HOURS — and both incidents were ended by a person \
+             typing at the pane, never by the product. Walked {silent_walk:?}",
+        );
+        assert!(
+            silent_walk
+                .iter()
+                .any(|edge| edge.contains("PeerSilent") && edge.contains("AwaitingHuman")),
+            "and it must get there by the DOCUMENT's own edge rather than by any other route into \
+             that state — `turn.interrupted` and `turn.blocked` land in the same place and mean \
+             somebody is at the pane or a dialog is up, neither of which is true here: \
+             {silent_walk:?}",
+        );
+        assert_eq!(
+            noticed,
+            Some(Noticed::Silent(crate::completion::Silence {
+                reports: 3,
+                within: Duration::from_millis(QUIET_MS as u64),
+            })),
+            "⚠⚠⚠⚠ AND THE RUN HAS TO CARRY WHY, because `awaiting_human` cannot say it: its other \
+             two doors leave a question on the screen or a hand on the keyboard, and this one \
+             leaves a pane that has not moved. A reader told only *blocked* would go hunting for a \
+             dialog that was never there",
+        );
+
+        // ── CONTROL ONE: the same run, with its reporter still speaking ──
+        //
+        // ⚠⚠⚠⚠ WITHOUT THIS THE HEADLINE IS PASSED BY A DRIVER THAT GIVES UP ON EVERY TURN. The
+        // peer is identical — same pane, same never-ending turn, same bounds — and differs in one
+        // thing: something is still speaking for it. That is a turn calling tool after tool, which
+        // is the commonest thing a real loop does.
+        let (talking, talking_walk, _) = ran(QUIET_MS, true);
+        assert_eq!(
+            talking,
+            AiLoopState::Working,
+            "⚠⚠⚠⚠ THE CONTROL FAILED. A peer whose reporter is alive is a peer that is WORKING, \
+             however long its turn takes, and a loop that calls a person to it has taken every \
+             healthy tool-calling turn away from itself: {talking_walk:?}",
+        );
+
+        // ── CONTROL TWO: the number is the DOCUMENT's, and an author who declines is obeyed ──
+        //
+        // ⚠⚠⚠⚠⚠ THE ARM THAT SEPARATES *the driver reads the document* FROM *the driver has a
+        // constant*. Zero is how a `<data>` spells «I declare no bound of my own» — `Quiet::of`
+        // refuses it — so this run must behave exactly as every run did before this existed, with
+        // a peer that is every bit as silent as the headline's.
+        let (declined, declined_walk, _) = ran(0, false);
+        assert_eq!(
+            declined,
+            AiLoopState::Working,
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, and it is the one that says whose number this is. This peer \
+             is silent in exactly the way the headline's is; the only difference is that its \
+             document declined to bound silence. A driver holding a constant of its own passes the \
+             headline and fails here: {declined_walk:?}",
         );
     }
 }

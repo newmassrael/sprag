@@ -999,10 +999,19 @@
       where the judgements live.
 
       ⚠⚠ WHAT IT BOUNDS IS THE WAIT, NOT THE AGENT. Nothing here interrupts a
-      peer: the bound decides when `working` stops watching and the machine is
-      told `turn.blocked` instead of `turn.done`. So a number that is too small
-      does not kill a turn, it makes the loop judge one that had not finished —
-      which is why the honest direction to be wrong in is LONG.
+      peer: the bound decides when `working` stops WATCHING for this pass. So a
+      number that is too small does not kill a turn — it makes the loop stop
+      looking at one that had not finished, and look again on the next pump.
+
+      ⚠⚠⚠⚠ AND THE SENTENCE ABOVE USED TO SAY «the machine is told `turn.blocked`
+      instead of `turn.done`», WHICH THE PRODUCT HAS NEVER DONE. `Over::NotYet`
+      reaches `AiLoopEvent::Null` — *nothing happened that this document has a
+      word for* — and the machine stays exactly where it is. `turn.blocked` is
+      what a peer that stopped to ASK produces, which is a different fact
+      arriving by a different door. The correction is written here rather than
+      quietly applied because the false version is the one that made this bound
+      look like it had a ceiling behind it: it does not, and `quiet_within_ms`
+      below is the ceiling that was missing.
 
       ⚠ ZERO MEANS THIS DOCUMENT DECLARES NO BOUND OF ITS OWN, and the run's own
       clock and cancel — the bounds every run already has — are the only ones.
@@ -1018,6 +1027,68 @@
       accepted one.**
     -->
     <data id="turn_within_ms" expr="1800000"/>
+
+    <!--
+      ⚠⚠⚠⚠⚠ HOW LONG NOTHING MAY SPEAK FOR THE PANE before the loop stops calling
+      its peer «thinking» and asks for a person, in milliseconds — TEN MINUTES,
+      inside `turn_within_ms`'s thirty.
+
+      ⚠⚠⚠⚠⚠ WHAT IT IS FOR, MEASURED, AND WHY THE BOUND ABOVE COULD NOT DO IT.
+      On 2026-08-19 a turn a person stopped with Escape emitted NO PAYLOAD OF ANY
+      KIND for fourteen minutes: the agent restores the prompt into its composer
+      and suppresses its own idle nag while the composer holds text, so nothing
+      was ever going to speak again. The pane read `working seq=6 asked=2 said=0`
+      throughout — which is exactly what a long turn reads — and the loop
+      re-waited its half hour, pass after pass, toward the 24-hour ceiling. Both
+      of that day's incidents were ended by a PERSON typing at the pane.
+
+      ⚠⚠⚠⚠ THE TWO BOUNDS MEASURE DIFFERENT THINGS AND ONE NUMBER CANNOT SAY
+      BOTH. A turn may legitimately take the whole half hour; it may not be
+      SILENT for ten minutes of it, because a turn that is working reports every
+      time it calls a tool. That fourth counter is what makes this decidable at
+      all — `seq` counts published verdicts, and a turn calling tools publishes
+      none of them, so before it existed a working turn and a dead one were the
+      same picture.
+
+      ⚠⚠⚠ THE EDGE IT PRODUCES IS `peer.silent`, AND IT GOES TO `awaiting_human`
+      RATHER THAN ENDING ANYTHING. The driver cannot tell a frozen agent from a
+      reporter that was replaced under a running daemon — a rebuild does exactly
+      that — so the honest remedy is the person this document already knows how
+      to wait for. A peer that speaks again is back in `working` by `turn.done`
+      and has lost nothing; a person who never comes reaches `blocked` through
+      `unattended`, on `await_person_ms` and not on a clock invented for this.
+
+      ⚠⚠⚠⚠⚠ WHERE TEN MINUTES COMES FROM — MEASURED, NOT CHOSEN. The longest
+      thing a turn of this loop does in silence is ONE TOOL CALL: `PreToolUse`
+      reports when it starts and `PostToolUse` when it ends, and between them
+      nothing speaks. Over **1,972 real build-and-test commands a working loop
+      ran** (2026-08-19): p50 = 7 s, p90 = 107 s, p99 = 273 s, and the LONGEST
+      EVER = 447 s. Ten minutes clears the measured maximum by two and a half.
+
+      ⚠⚠ AN AUTHOR WHOSE AGENT DOES SOMETHING SLOWER RE-MEASURES THIS, and the
+      measurement is the same one: the longest single tool call the work makes.
+      A loop that compiles a large tree, waits on a remote job or sleeps on a
+      deploy has a longer one, and this number is the only thing that has to
+      move.
+
+      ⚠⚠⚠⚠ AND THE HONEST DIRECTION TO BE WRONG IN IS *SHORT*, WHICH IS THE
+      OPPOSITE OF `turn_within_ms` ABOVE — so the two numbers must not be reasoned
+      about together. Too small here raises ONE attention notice at a peer that
+      was merely slow, and `awaiting_human`'s own `turn.done` picks the turn
+      up when it lands, so the run loses nothing but the noise. Too large is the
+      twenty-four hours this exists to end. A bound that cries wolf is a cost
+      somebody pays attention with; a bound that never fires costs a day.
+
+      ⚠⚠ A VALUE AT OR ABOVE `turn_within_ms` DECIDES NOTHING, and that is a
+      real authoring rather than a mistake to guard against: the wait ends on the
+      turn bound first, so a document whose quiet bound is the larger has said
+      *do not notice silence*.
+
+      ⚠ ZERO IS THAT SAME DECLINING, spelled the way `turn_within_ms` spells it —
+      `Quiet::of` refuses a zero bound, so *call my peer silent the instant I stop
+      looking* is not a reading in play, which leaves exactly one.
+    -->
+    <data id="quiet_within_ms" expr="600000"/>
 
     <!--
       ⚠⚠⚠⚠⚠ HOW MANY TIMES IN A ROW A CHECK MAY REFUSE BEFORE THE RUN REFLECTS
@@ -1935,6 +2006,27 @@
     <transition event="turn.interrupted" target="awaiting_human"/>
     <!-- A watching person can halt the loop between turns. -->
     <transition event="hold" target="awaiting_human"/>
+    <!--
+      ⚠⚠⚠⚠⚠ NOTHING HAS SPOKEN FOR THE PANE FOR THE WHOLE OF `quiet_within_ms`.
+      See that `<data>` for what was measured; this is where the decision about
+      it lives.
+
+      ⚠⚠⚠ TO `awaiting_human` AND NOT TO `peer_gone`, WHICH IS THE WHOLE
+      DISTINCTION. A gone process cannot come back and its state is final. A
+      silent one is a peer that may speak on its very next tool call — the thing
+      that stopped speaking may be its REPORTER, which a rebuild replaces under a
+      running daemon, and no reading of a pane can separate the two. So this
+      names the one remedy that settles either: a person. `turn.done` above is
+      still open to a turn that returns, so being wrong here costs a run nothing
+      but the notice.
+
+      ⚠⚠ AND NOT `hold`, THOUGH IT LANDS IN THE SAME STATE. `hold` is a person
+      SAYING to stop; this is nobody saying anything. Reusing the word would make
+      a run that fell silent unattended read, forever afterwards, as one somebody
+      paused on purpose — and the two want opposite things from whoever finds
+      them.
+    -->
+    <transition event="peer.silent" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
     <!--

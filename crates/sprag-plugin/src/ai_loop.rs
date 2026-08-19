@@ -531,6 +531,15 @@ impl AiLoop {
             Some(Noticed::Interrupted(who)) => Some(format!(
                 " — no account: somebody took the pane ({who:?}) before the agent answered"
             )),
+            // ⚠⚠⚠ THE ONE ENDING WITH NOTHING ON THE PANE TO POINT AT — register item 458. The two
+            // above leave a reader something to go and look at; this leaves a screen that has not
+            // moved, so the sentence has to carry the whole fact or the run's account says a turn
+            // simply stopped. Both numbers, for `Noticed::Silent`'s reason.
+            Some(Noticed::Silent(silence)) => Some(format!(
+                " — no account: nothing spoke for the pane for {:?}, after {} report(s), so the \
+                 turn was never seen to end",
+                silence.within, silence.reports
+            )),
             _ => None,
         }
     }
@@ -6152,6 +6161,83 @@ mod tests {
                  watches, or *{effect}* would have to be inferred from something else",
             );
         }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A PEER THAT WENT SILENT AND A PEER THAT IS GONE ARE TWO WORDS AND TWO
+    /// DESTINATIONS** — register item 458's edge, and the document's own answer to *is this
+    /// recoverable*.
+    ///
+    /// # ⚠⚠⚠⚠ Why this is a document gate and not a driver one
+    ///
+    /// The driver's gate proves it RAISES `peer.silent`. What the raise is WORTH is a decision the
+    /// `.scxml` takes and nothing else can: `peer.gone` reaches a FINAL state, so the run is over
+    /// and its pane is beyond help, while this must not — the thing that stopped speaking may be
+    /// the peer's REPORTER, which a rebuild replaces under a running daemon, and no reading of a
+    /// pane can separate the two. **Both events are raised from `working` by the same driver in the
+    /// same pass, so if the document sent them to the same place the driver could not tell.**
+    ///
+    /// ⚠⚠⚠ **AND THE RECOVERY IS THE OTHER HALF, WHICH IS WHAT MAKES BEING WRONG CHEAP.** A model
+    /// that thinks for the whole silence bound without calling a tool moves no counter either — the
+    /// residue this ceiling is named with — so a run called silent has to be able to walk on the
+    /// moment its peer answers. That is `awaiting_human --turn.done--> judging`, driven here rather
+    /// than asserted about, because it is the sentence the whole design rests on.
+    #[test]
+    fn a_peer_that_went_silent_is_recoverable_where_a_peer_that_is_gone_is_not() {
+        /// Reach `working` the way a run does, then raise `left` and say where it went.
+        fn from_working(left: AiLoopEvent) -> AiLoopState {
+            let (mut engine, _lua, _session) = started();
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Working,
+                "the fixture: both events below are raised from `working` and nowhere else",
+            );
+            engine.process_event(left);
+            engine.get_current_state()
+        }
+
+        assert_eq!(
+            from_working(AiLoopEvent::PeerSilent),
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ NOTHING IS SPEAKING FOR THE PANE AND THE REMEDY IS A PERSON. That state already \
+             notifies one and already ends the run if none comes, on the caller's own \
+             `await_person_ms` — so the edge buys the whole answer. A document with no edge at all \
+             leaves the machine in `working`, which is the product as measured: fourteen minutes \
+             of nothing, and a person ending it by hand",
+        );
+
+        // ⚠⚠⚠⚠ THE CONTROL, AND IT IS THE POINT: the same state, the same driver, the other word.
+        assert_eq!(
+            from_working(AiLoopEvent::PeerGone),
+            AiLoopState::PeerGone,
+            "⚠⚠⚠ THE CONTROL FAILED — a gone process cannot come back, so its run ENDS, and if \
+             both words landed in the same place the driver would have no way to say which it \
+             found. Two facts, two destinations",
+        );
+        assert!(
+            !AiLoop::is_final(AiLoopState::AwaitingHuman)
+                && AiLoop::is_final(AiLoopState::PeerGone),
+            "⚠⚠⚠⚠ and the difference has to be the one that matters: silence PAUSES a run and a \
+             dead peer ENDS one. A `peer.silent` that reached a final state would turn a reporter \
+             somebody rebuilt into a lost run",
+        );
+
+        // ── THE RECOVERY: the peer speaks again, and the run has lost nothing ──
+        let (mut engine, _lua, _session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        engine.process_event(AiLoopEvent::PromptSent);
+        engine.process_event(AiLoopEvent::PeerSilent);
+        engine.process_event(AiLoopEvent::TurnDone);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Judging,
+            "⚠⚠⚠⚠⚠ A TURN THAT COMES BACK AFTER THE SILENCE IS JUDGED LIKE ANY OTHER. This is what \
+             makes the bound safe to author generously and safe to be WRONG about: a model that \
+             thought for the whole bound without calling a tool costs the run one notification and \
+             nothing else. Without this edge the ceiling would trade a 24-hour hang for a run that \
+             a slow turn kills",
+        );
     }
 
     /// ⚠⚠⚠ **HOW `judging`'s GOAL-MET GUARD ACTUALLY READS ITS DATA** — the one fact an outer

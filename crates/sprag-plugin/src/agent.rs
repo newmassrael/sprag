@@ -559,7 +559,11 @@ impl Agent {
     /// peer never exits, so every one of its turns ran the full timeout out. See
     /// [`mod@crate::completion`].
     fn await_reply(&self, panes: &dyn PaneAccess, run: &RunContext) -> Over {
-        self.done.wait(panes, self.pane, self.spec.timeout, run)
+        // ⚠ NO SILENCE BOUND, decided rather than inherited — see
+        // [`Over::Silent`](crate::completion::Over::Silent), which counts this site by name. This
+        // plugin's note heads on `== NotYet`, and a peer with no reporter cannot fall silent.
+        self.done
+            .wait(panes, self.pane, self.spec.timeout, None, run)
     }
 
     /// Capture what the pane has produced since `baseline` — the reply region — joined as the
