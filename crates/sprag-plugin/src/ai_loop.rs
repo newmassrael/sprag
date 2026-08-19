@@ -143,6 +143,12 @@ struct Learned<'a> {
     unreadable: Option<&'a std::path::Path>,
     /// What an independent check said about the milestone this judgement claimed — item 428.
     checked: Option<crate::outer::Checked>,
+    /// What that check said BESIDE its verdict — register item 461.
+    ///
+    /// ⚠ Borrowed, like [`found`](Self::found) and [`unreadable`](Self::unreadable) beside it: this
+    /// struct is `Copy` so a caller cannot half-fill it, and an owned string here would take that
+    /// away for a value the renderer only reads.
+    explained: Option<&'a str>,
     /// What proved this pass's delivery arrived, when that is not what the run was already told —
     /// register item 434.
     witnessed: Option<crate::deliver::Witnessed>,
@@ -375,6 +381,7 @@ impl AiLoop {
             because,
             unreadable,
             checked,
+            explained,
             witnessed,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
@@ -392,6 +399,15 @@ impl AiLoop {
         // make room for another. Both, in a fixed order, is this function's own rule.
         if let Some(verdict) = checked {
             note = format!("{note} — {}", verdict.describe());
+            // ⚠⚠⚠⚠⚠ AND WHAT THE CHECKER SAID IN ITS OWN WORDS, straight after the sentence this
+            // crate writes about it — register item 461. **Quoted, and attributed**: everything
+            // else on this line is the product speaking, and this is a model's prose arriving in a
+            // report a person will act on, so a reader has to be able to see where one stops and
+            // the other starts. ⚠ INSIDE the verdict's arm, because a reason with no verdict beside
+            // it would be a sentence about a judgement this line never says was made.
+            if let Some(words) = explained {
+                note = format!("{note} — it said: {words:?}");
+            }
         }
         // ⚠⚠⚠⚠ **WHAT PROVED THE PROMPT THIS EDGE DELIVERED ACTUALLY ARRIVED** — register item 434,
         // straight after the cause and the verdict because it is about the act this edge PERFORMED,
@@ -725,6 +741,7 @@ impl Plugin for AiLoop {
                 because,
                 unreadable,
                 checked,
+                explained,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
                 // is reported once. The barrier answered the peer's question inside this pump, on
@@ -772,6 +789,7 @@ impl Plugin for AiLoop {
                         because,
                         unreadable: unreadable.as_deref(),
                         checked,
+                        explained: explained.as_deref(),
                         witnessed,
                     },
                 );

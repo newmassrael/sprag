@@ -1753,6 +1753,16 @@ pub enum Pumped {
         /// with `NotAsked` has a milestone resting on the working agent's own word, and the whole of
         /// item 428 is that nothing said so.
         checked: Option<Checked>,
+        /// **WHAT THE CHECKER SAID BESIDE ITS VERDICT** — register item 461, and [`None`] where it
+        /// said only the word or nothing was asked.
+        ///
+        /// ⚠⚠⚠⚠ APPENDED BESIDE `checked` AND NEVER INSTEAD OF IT, which is that field's own rule
+        /// one step further out: the verdict says WHAT an independent process decided and this says
+        /// WHY it said so, and a line that dropped either to make room for the other is the failure
+        /// this whole payload keeps being about. What it repays is measured — a run refused NINE
+        /// times published one fixed sentence and no reason at all, so nobody could tell nine
+        /// disagreements from one repeated.
+        explained: Option<String>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -2470,6 +2480,20 @@ pub struct OuterLoop {
     /// field's reason: a verdict belongs to ONE claim, and carrying a stale one onto a later edge
     /// would put a check's answer on a milestone it never saw.
     verdict: Option<Checked>,
+    /// ⚠⚠⚠⚠⚠ **AND WHAT THE CHECKER SAID BESIDE THAT VERDICT** — register item 461, and [`None`]
+    /// where it said only its word.
+    ///
+    /// # ⚠⚠⚠⚠ Why a field and not a richer [`Checked`]
+    ///
+    /// [`Checked`] is the word the DOCUMENT routes on, and it is `Copy` with a closed four-arm
+    /// vocabulary that `wire_str` publishes. A reason folded into it would make the thing the
+    /// document matches on carry prose the document must never see — and `judging`'s guards would
+    /// then be reading a model's sentence. Two facts, appended in a fixed order, is this driver's
+    /// own rule ([`Pumped::Moved`]'s `checked`, which had to be argued the same way).
+    ///
+    /// ⚠⚠ Written fresh beside [`verdict`](Self::verdict) on the same condition and never latched:
+    /// a reason belongs to ONE claim, and a stale one would explain a refusal that never happened.
+    explained: Option<String>,
     /// ⚠⚠⚠ **A RECORD THIS RUN'S AGENT NAMED AND NOTHING COULD READ** — register item 431(a). See
     /// [`Accounted::Unreadable`], and [`Pumped::Moved`]'s `unreadable`, which is how the CHANGE in
     /// this level reaches a reader.
@@ -2655,6 +2679,7 @@ impl OuterLoop {
             unasked: false,
             saw: None,
             verdict: None,
+            explained: None,
             unaccountable: None,
             witnessed: None,
             told: Told::default(),
@@ -3584,6 +3609,9 @@ impl OuterLoop {
                     because: self.restarting_because().map(Because::Restarted),
                     unreadable: None,
                     checked: None,
+                    // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
+                    // said beside — see `Pumped::Moved`'s `explained`.
+                    explained: None,
                 })
             }
             Err(PaneError::PeerGone(_)) => {
@@ -3606,6 +3634,9 @@ impl OuterLoop {
                     // ⚠ AND NO JUDGEMENT HAPPENED, so no milestone was claimed for anything to
                     // check: this pass is a pane whose program has gone.
                     checked: None,
+                    // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
+                    // said beside — see `Pumped::Moved`'s `explained`.
+                    explained: None,
                 })
             }
             otherwise => otherwise,
@@ -3771,12 +3802,18 @@ impl OuterLoop {
                 // ⚠⚠⚠⚠⚠ AND THE THIRD FACT: **DID ANYBODY WHO DID NOT DO THE WORK AGREE** — register
                 // item 428. Asked only where the agent has claimed the milestone, and answered by a
                 // process in a pane of its own. See [`Self::checked`] and [`Checked`].
-                let checked = self.checked(panes, run, heard);
+                let (checked, explained) = self.checked(panes, run, heard);
                 // ⚠⚠ KEPT BESIDE THE READING IT ANSWERS ABOUT, and for the same reason: it belongs
                 // to THIS judgement and is gone the instant the payload is built. It travels on
                 // [`Pumped::Moved`]'s `checked` — BESIDE the edge's own cause and never instead of
                 // it, which three neighbouring gates had to say before it was written that way.
                 self.verdict = heard.said().then_some(checked);
+                // ⚠⚠⚠⚠⚠ BESIDE THE VERDICT AND ON THE SAME CONDITION — register item 461. Kept here
+                // for `verdict`'s reason exactly: it belongs to THIS judgement and is gone the
+                // instant the payload is built. It reaches the walk on [`Pumped::Moved`] and it does
+                // NOT reach the datamodel: the document routes on the WORD, and a reason it could
+                // match on would be a second authority on a decision `checked` already makes.
+                self.explained = heard.said().then_some(explained).flatten();
                 Raise::carrying(
                     AiLoopEvent::Judge,
                     serde_json::json!({
@@ -3978,6 +4015,12 @@ impl OuterLoop {
             // pass reading it would put a check's answer on a milestone it never saw.
             checked: (from == AiLoopState::Judging)
                 .then_some(self.verdict)
+                .flatten(),
+            // ⚠ ON THE SAME EDGES AND THE SAME CONDITION as the verdict it explains — a reason
+            // published where the verdict is not would be a sentence about a judgement this pass
+            // never made.
+            explained: (from == AiLoopState::Judging)
+                .then(|| self.explained.clone())
                 .flatten(),
         })
     }
@@ -5538,9 +5581,19 @@ impl OuterLoop {
     /// ⚠ It runs in a pane of its own through
     /// [`asked_of_another`](crate::judge::asked_of_another), which is the same bounded, closing,
     /// silence-is-never-a-yes machinery a judged dialog uses. Two callers, one implementation.
-    fn checked(&mut self, panes: &dyn PaneAccess, run: &RunContext, said: Heard) -> Checked {
+    /// ⚠⚠⚠⚠⚠ **AND WHAT THE CHECKER SAID BESIDE ITS VERDICT** — register item 461. The pair is
+    /// returned rather than the word alone because the reason is a fact of the SAME judgement, and
+    /// the shape this repays is exactly one of them being kept: a run refused nine times left one
+    /// fixed sentence and no reason anywhere, so the round told to measure why could not.
+    /// [`None`] where the judge said only its verdict, or where nothing was asked.
+    fn checked(
+        &mut self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+        said: Heard,
+    ) -> (Checked, Option<String>) {
         if !said.said() {
-            return Checked::NotAsked;
+            return (Checked::NotAsked, None);
         }
         let argv: Vec<String> = self
             .text_of(MILESTONE_CHECK)
@@ -5549,15 +5602,21 @@ impl OuterLoop {
             .map(ToOwned::to_owned)
             .collect();
         if argv.is_empty() {
-            return Checked::NotAsked;
+            return (Checked::NotAsked, None);
         }
         let question = self.check_question(panes);
         match crate::judge::asked_of_another(panes, run, &argv, &question, CHECK_WITHIN) {
-            Some(judged) if judged.holds => Checked::Passed,
-            Some(_) => Checked::Failed,
+            // ⚠⚠ THE WORDS TRAVEL WITH BOTH VERDICTS, not only the refusal. A reader deciding what
+            // an AGREEMENT is worth needs them for the same reason register item 428 needs the
+            // verdict at all — and publishing them on one arm would tell the two apart by the
+            // absence of a sentence, which is the reading this crate has burned wire numbers over.
+            Some(judged) if judged.holds => (Checked::Passed, judged.explained),
+            Some(judged) => (Checked::Failed, judged.explained),
             // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
-            // and this crate's standing direction: silence is never a yes.
-            None => Checked::Silent,
+            // and this crate's standing direction: silence is never a yes. ⚠ It explains nothing by
+            // construction: a judge whose first word was not a verdict answered `None` above, so
+            // there is no verdict for anything to be said beside.
+            None => (Checked::Silent, None),
         }
     }
 
@@ -8959,8 +9018,10 @@ mod tests {
                 because: None,
                 // ⚠ AND NO TURN ENDED, so no record was read: this run failed at its first prompt.
                 unreadable: None,
-                // ⚠ AND NOTHING WAS JUDGED, so no milestone was claimed to be checked.
+                // ⚠ AND NOTHING WAS JUDGED, so no milestone was claimed to be checked — and with no
+                // verdict there is nothing for a checker's words to be said beside (item 461).
                 checked: None,
+                explained: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
              own `fail` is what must happen — with nothing typed into the pane. A driver that sent \
@@ -11235,6 +11296,13 @@ mod tests {
         /// is merely broken. It is the arm the module's standing direction is about: **silence is
         /// never a yes**, and a `Passed` here would certify a milestone on nobody's decision.
         const MUMBLES: &str = "/bin/echo perhaps";
+        /// And one that REFUSES AND SAYS WHY — register item 461, the words that used to be
+        /// dropped.
+        ///
+        /// ⚠ Its reason is deliberately words no rendered question contains, because the question
+        /// is echoed after it: a reason that appeared in the prompt would be cut as the echo it
+        /// would be indistinguishable from, and this arm would pass on the wrong mechanism.
+        const EXPLAINS: &str = "/bin/echo NO the artifact is empty";
 
         /// Drive a run to the pass that judges its FIRST claimed milestone, and say where it went
         /// and what the check said about it.
@@ -11333,17 +11401,39 @@ mod tests {
                 loops.checked(&access, &run, Heard::Said(Evidence::Pane))
             };
             assert_eq!(
-                (ask(&mut loops, DENIES), ask(&mut loops, AGREES)),
+                (ask(&mut loops, DENIES).0, ask(&mut loops, AGREES).0),
                 (Checked::Failed, Checked::Passed),
                 "⚠⚠⚠ the checker must actually run and its verdict must reach the driver, or every \
                  claim in this gate is about a check that never happened",
+            );
+
+            // ⚠⚠⚠⚠⚠ **AND THE REASON SURVIVES THE VERDICT** — register item 461. A run refused NINE
+            // times published one fixed sentence and no reason anywhere, so the round instructed to
+            // measure WHY could not: the checker's own words were read and dropped one line below
+            // the verdict they explain.
+            assert_eq!(
+                ask(&mut loops, EXPLAINS).1.as_deref(),
+                Some("the artifact is empty"),
+                "⚠⚠⚠⚠ the checker's own words must reach the driver, or nine refusals are \
+                 indistinguishable from one repeated",
+            );
+            // ⚠⚠⚠⚠⚠ THE CONTROL, and it is the one that decides whether this field is worth
+            // anything: the question travels as the LAST ARGV and `/bin/echo` PRINTS ITS ARGUMENTS,
+            // so a reply read naively hands back this run's own prompt as the judge's reasoning.
+            // `DENIES` says nothing of its own, and the answer must be silence rather than an echo.
+            assert_eq!(
+                ask(&mut loops, DENIES).1,
+                None,
+                "⚠⚠⚠⚠⚠ AN ECHO IS NOT A STATEMENT. Quoting the question back as `it said` puts this \
+                 product's own words in the judge's mouth, on the line a person reads to decide \
+                 whether the refusal was fair — the same reading `ReadyWhen::Prints` refuses",
             );
             // ⚠⚠⚠⚠ AND A CHECKER THAT ANSWERS NOTHING IS NOT A CHECKER THAT AGREED — this crate's
             // standing direction, and the arm a mutation walked straight through: reading silence as
             // `Passed` certifies a milestone on NOBODY's decision, which is worse than the defect
             // item 428 is about, because it looks like a check.
             assert_eq!(
-                ask(&mut loops, MUMBLES),
+                ask(&mut loops, MUMBLES).0,
                 Checked::Silent,
                 "⚠⚠⚠ a reply whose first word is not a verdict is SILENCE — a broken checker, and a \
                  fact a reader can act on. It must not be an agreement, and it must not be a verdict \
@@ -11360,7 +11450,7 @@ mod tests {
                         from: Evidence::Pane,
                     },
                 ),
-                Checked::NotAsked,
+                (Checked::NotAsked, None),
                 "⚠⚠⚠ AND NOTHING IS ASKED WHERE NOTHING WAS CLAIMED: a check answers *was that \
                  claim true*, so it has no meaning before there is a claim — and a process spawned \
                  on every ordinary turn would price every turn at the cost of one nobody made",
@@ -11814,6 +11904,7 @@ mod tests {
                     because,
                     unreadable,
                     checked,
+                    explained: _,
                 } => {
                     spent_total += spent;
                     // ⚠⚠⚠⚠ **NO PASS REPORTS EVIDENCE ABOUT A DELIVERY IT DID NOT MAKE** — register

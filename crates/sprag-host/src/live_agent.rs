@@ -693,6 +693,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 because,
                 unreadable,
                 checked,
+                explained,
                 witnessed,
                 spent: _,
             } => {
@@ -733,8 +734,24 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 // finished. Without this clause, *the agent said the milestone was reached* is the
                 // whole of what they are told, and the party that did the work is the party that
                 // certified it.
+                // ⚠⚠⚠⚠⚠ AND THE CHECKER'S OWN WORDS BESIDE THE SENTENCE THIS CRATE WRITES ABOUT IT
+                // — register item 461, and THIS reader is again the one it was written for. A person
+                // watching a live agent be refused needs to know WHY it was refused, and until this
+                // existed the reply's first word was kept and the rest thrown away: a run refused
+                // nine times printed one fixed sentence nine times over, and nobody could tell nine
+                // disagreements from one repeated.
+                //
+                // ⚠⚠ QUOTED AND ATTRIBUTED, exactly as the plugin's own walk does it: every other
+                // clause on this line is this product speaking, and this one is a model's prose
+                // arriving in front of a person who will act on it.
                 let verdict = checked
-                    .map(|verdict| format!(" — {}", verdict.describe()))
+                    .map(|verdict| {
+                        let why = explained
+                            .as_deref()
+                            .map(|words| format!(" — it said: {words:?}"))
+                            .unwrap_or_default();
+                        format!(" — {}{why}", verdict.describe())
+                    })
                     .unwrap_or_default();
                 // ⚠⚠⚠⚠⚠ AND WHAT PROVED THE PROMPT ARRIVED — register item 434, and **this harness
                 // is the one place it can be measured against a real `claude` rather than a

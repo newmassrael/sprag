@@ -231,6 +231,31 @@ pub struct Judgement {
     /// comparing whole replies called a stable verdict unstable. The first word is the verdict and
     /// the rest is commentary — this is the part that was read.
     pub said: String,
+    /// **WHAT THE JUDGE WENT ON TO SAY AFTER ITS VERDICT**, and [`None`] where it said only the
+    /// word.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The field that exists because a refusal loop could not be diagnosed by anybody
+    ///
+    /// [`said`](Self::said) above is the verdict and the rest was **read and thrown away** — and the
+    /// rest is the REASON. Register item 461, measured by failing to measure: a live run was refused
+    /// NINE times over seventeen iterations, and the only record anywhere was one fixed sentence,
+    /// *"an independent process shown the same disagreed"*, nine times over. Nothing on disk, nothing
+    /// in the walk, nothing in the agent's next prompt. **The round sent to pay item 449 was
+    /// instructed to measure why the check was refusing before changing anything, and against the
+    /// shipped product that instruction could not be carried out at all.**
+    ///
+    /// ⚠⚠ **THE FIRST-WORD RULE ITSELF IS RIGHT AND STAYS.** It is measured (a model answers some
+    /// dialogs with a bare verdict and others with a paragraph) and nothing here loosens it: the
+    /// verdict is still decided by the first word alone, and a judge that explains itself changes no
+    /// verdict by doing so. What changes is that the paragraph is KEPT beside the word instead of
+    /// dropped.
+    ///
+    /// ⚠ **ONE LINE, and that is a rule rather than a length.** What a walk carries is a line a
+    /// person reads, so this is the first line of whatever followed the verdict — the reply is
+    /// trimmed FIRST, so a judge that puts its reason on the line below the word (`NO\nBecause …`)
+    /// is read exactly like one that puts it beside (`NO because …`). Inventing a byte ceiling here
+    /// would be a number nobody chose; a line is the unit the reader already has.
+    pub explained: Option<String>,
     /// How long the agent stood blocked waiting for it.
     pub took: Duration,
 }
@@ -315,10 +340,44 @@ pub fn asked_of_another(
     if over != Over::Yes {
         return None;
     }
-    let said = reply
-        .split_whitespace()
-        .next()?
-        .trim_matches(|c: char| !c.is_ascii_alphabetic());
+    // ⚠⚠ SPLIT ONCE, so the verdict and what follows it are read off the SAME reply at the same
+    // moment. Taking the first word here and re-scanning the text for the rest would be two readers
+    // of one string, free to disagree about where the word ended.
+    let trimmed = reply.trim_start();
+    let (first, rest) =
+        trimmed.split_at(trimmed.find(char::is_whitespace).unwrap_or(trimmed.len()));
+    if first.is_empty() {
+        return None;
+    }
+    let said = first.trim_matches(|c: char| !c.is_ascii_alphabetic());
+    // ⚠⚠⚠⚠⚠ AND WHAT IT WENT ON TO SAY — see [`Judgement::explained`]. TRIMMED BEFORE the line is
+    // taken, so a judge that puts its reason under the verdict reads the same as one that puts it
+    // beside: `NO\nBecause …` and `NO because …` both answer *Because …*.
+    //
+    // ⚠⚠⚠⚠ **AND THE QUESTION WE SENT IS CUT OFF FIRST, BECAUSE AN ECHO IS NOT A STATEMENT.** The
+    // rendered question travels as the LAST ARGV, which a print-mode CLI reads positionally and
+    // never prints — but a checker spelled `/bin/echo NO` prints its arguments, so everything after
+    // the verdict is this run's own prompt coming back. Quoting that into a walk as *"it said"*
+    // would put the product's words in the judge's mouth, on a line a person acts on. This crate
+    // already refuses the same shape one door over, where a readiness marker found in what was
+    // TYPED is never evidence ([`ReadyWhen::Prints`](crate::readiness::ReadyWhen::Prints)).
+    //
+    // ⚠ Cut at the question's FIRST LINE, which is where the echo begins wherever it lands — a
+    // checker that echoes on the verdict's own line and one that echoes below it are the same case.
+    // The residue, stated: a judge that opens by quoting that line loses everything after it. That
+    // is a false SILENCE, which is the safe direction — the same one the first-word rule takes.
+    let opening = question.lines().next().unwrap_or_default();
+    let spoken = match opening.is_empty() {
+        true => rest,
+        false => rest.split(opening).next().unwrap_or_default(),
+    };
+    let explained = spoken
+        .trim()
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned);
     let holds = match said.to_ascii_uppercase().as_str() {
         "YES" => true,
         "NO" => false,
@@ -331,6 +390,7 @@ pub fn asked_of_another(
     Some(Judgement {
         holds,
         said: said.to_owned(),
+        explained,
         took: began.elapsed(),
     })
 }
