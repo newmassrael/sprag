@@ -766,6 +766,26 @@ impl McpServer {
         panic!("{name} never reported {needle:?} {want} time(s); last answer was:\n{last}")
     }
 
+    /// Poll `list_runs` until RUN `id` ITSELF reports `word`, returning the whole listing.
+    ///
+    /// ⚠⚠⚠⚠ **THE BARRIER FOR A RUN, AND NOT `wait_for_tool` ON THE SAME TOOL.** See
+    /// [`a_runs_own_line`]: a run's journal is printed in the same closed vocabulary its outcome is,
+    /// and it is published while the run is still going — so a barrier that searched the whole
+    /// answer would return for a run that has not finished, and every assertion after it would read
+    /// a summary nobody had written. This waits on the one line that can only be the run's own.
+    fn wait_for_run(&mut self, id: u64, word: &str) -> String {
+        let deadline = Instant::now() + DEADLINE;
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            last = self.call_tool("list_runs", json!({}));
+            if a_run_itself_says(&last, id, word) {
+                return last;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("run {id} never said {word:?} on its OWN line; the last listing was:\n{last}")
+    }
+
     /// Everything the server has written to stderr so far.
     fn stderr(&self) -> String {
         self.stderr.lock().expect("stderr sink").clone()
@@ -817,6 +837,44 @@ fn tool_text(result: &Value) -> String {
         .as_str()
         .unwrap_or_else(|| panic!("a tool result carries text content: {result}"))
         .to_owned()
+}
+
+/// THE LINE `list_runs` PRINTS FOR RUN `id` ITSELF, or `None` — never one of its journal's steps.
+///
+/// # ⚠⚠⚠⚠ Why a run listing cannot be read as a bag of words
+///
+/// The word a RUN ends on and the word one of its STEPS ends on come from two published
+/// vocabularies that OVERLAP: `Verdict::WIRE_WORDS`, which every journal step is printed in, and
+/// `OutcomeState::WIRE_WORDS`, which the run's own ending is printed in, share `converged`,
+/// `exhausted`, `blocked` and `taken_over`. And the journal is published A STEP AT A TIME WHILE THE
+/// RUN GOES ON — `Driver::record` then `Driver::publish`, before the outcome exists at all — so the
+/// step that ends a run is readable before the run has ended.
+///
+/// ⚠⚠ MEASURED, NOT ARGUED. CI run `32285054841` (`headless (linux)`, 2026-08-19) answered a
+/// barrier parked on the bare word `converged` with this, and the assertion under it then read a
+/// run summary nobody had written yet:
+///
+/// ```text
+/// Run 0 (orchestrator pane=1): still running — 1 iterations, 5 bytes spent so far.
+///   What its steps did:
+///     1. 5 bytes — converged: the sentinel appeared
+/// ```
+///
+/// ⚠⚠⚠ AND IT IS NOT ONLY THAT RACE. A step's NOTE quotes the peer's own screen, so a pane whose
+/// dialog asks *"did it converge?"* puts the word into a running run's listing with no race at all
+/// — which is what this reading is gated against, deterministically.
+fn a_runs_own_line(listing: &str, id: u64) -> Option<&str> {
+    let head = format!("Run {id} (");
+    listing.lines().find(|line| line.starts_with(&head))
+}
+
+/// Whether RUN `id` ITSELF says `word` — the whole question every barrier on a run is parked on.
+///
+/// ⚠ Scoped by ID and not merely to *some* run's line, because the listing holds every run this
+/// agent started: a neighbour that really did converge would otherwise answer a barrier about one
+/// that has not.
+fn a_run_itself_says(listing: &str, id: u64, word: &str) -> bool {
+    a_runs_own_line(listing, id).is_some_and(|line| line.contains(word))
 }
 
 // ----- the protocol loop -----
@@ -4859,7 +4917,7 @@ fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
             "max_iterations": 3,
         }),
     );
-    let ended = server.wait_for_tool("list_runs", json!({}), "converged");
+    let ended = server.wait_for_run(0, "converged");
     assert!(
         ended.contains("the sentinel appeared"),
         "the run waited for the peer to come up and then drove it to its sentinel: {ended}",
@@ -4963,7 +5021,7 @@ fn an_agent_opens_a_pane_that_is_the_program_rather_than_a_shell_running_it() {
             "max_iterations": 3,
         }),
     );
-    let ended = server.wait_for_tool("list_runs", json!({}), "converged");
+    let ended = server.wait_for_run(0, "converged");
     assert!(
         ended.contains("the sentinel appeared"),
         "the run drove the program the pane IS: {ended}",
@@ -5215,7 +5273,7 @@ fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
         "a run id comes back at once, and the answer says the run is bounded: {started}",
     );
 
-    let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
+    let ended = server.wait_for_run(0, "exhausted");
     assert!(
         ended.contains("exhausted — it ran out of iterations after 3 iterations"),
         "THE GUARDRAIL BOUND IT, AND SAID WHICH ONE: the agent asked for three turns and got \
@@ -5287,12 +5345,12 @@ fn a_cancelled_run_tells_the_agent_whether_its_peer_is_still_working() {
         }),
     );
     assert!(started.contains("Run 0 started"), "{started}");
-    server.wait_for_tool("list_runs", json!({}), "still running");
+    server.wait_for_run(0, "still running");
 
     let cancelled = server.call_tool("cancel_run", json!({ "run": 0 }));
     assert!(!cancelled.is_empty(), "the cancel is taken: {cancelled}");
 
-    let ended = server.wait_for_tool("list_runs", json!({}), "cancelled");
+    let ended = server.wait_for_run(0, "cancelled");
     assert!(
         ended.contains("still running"),
         "⚠⚠ THE ANSWER AN AGENT ACTS ON: a cancelled run must say whether its peer stopped, and \
@@ -5371,7 +5429,7 @@ fn an_agent_may_tighten_a_guardrail_and_never_loosen_one() {
             "max_iterations": 2,
         }),
     );
-    let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
+    let ended = server.wait_for_run(0, "exhausted");
     assert!(ended.contains("after 2 iterations"), "{ended}");
 }
 
@@ -5455,7 +5513,7 @@ fn an_agent_is_held_to_a_time_ceiling_the_clamp_was_never_told_about() {
             "max_seconds": 1,
         }),
     );
-    let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
+    let ended = server.wait_for_run(0, "exhausted");
     assert!(
         ended.contains("it ran out of duration"),
         "an agent is told WHICH ceiling stopped its loop, and here it is the clock rather than \
@@ -5550,7 +5608,7 @@ fn one_agents_runs_are_invisible_to_another() {
             "max_iterations": 2,
         }),
     );
-    let mine = first.wait_for_tool("list_runs", json!({}), "exhausted");
+    let mine = first.wait_for_run(0, "exhausted");
     assert!(
         mine.contains("Run 0"),
         "the first agent sees its own: {mine}"
@@ -5667,7 +5725,7 @@ fn a_cancelled_loop_wakes_the_wait_that_was_parked_on_it() {
             "max_iterations": 100,
         }),
     );
-    server.wait_for_tool("list_runs", json!({}), "still running");
+    server.wait_for_run(0, "still running");
 
     server.call_tool("cancel_run", json!({ "run": 0 }));
     let woke = server.call_tool(
@@ -5715,7 +5773,7 @@ fn a_running_loop_reports_its_progress_and_agrees_with_its_own_outcome() {
         }),
     );
 
-    let mid = server.wait_for_tool("list_runs", json!({}), "still running — 1");
+    let mid = server.wait_for_run(0, "still running — 1");
     assert!(
         mid.contains("bytes spent so far"),
         "a running run reports its spend in the run's OWN unit: {mid}",
@@ -5724,7 +5782,7 @@ fn a_running_loop_reports_its_progress_and_agrees_with_its_own_outcome() {
     // The AGREEMENT half: cancel it, then require the outcome's numbers to be the ones progress was
     // reporting. A counter that ran ahead of the work, or lagged behind it, fails here.
     server.call_tool("cancel_run", json!({ "run": 0 }));
-    let ended = server.wait_for_tool("list_runs", json!({}), "cancelled");
+    let ended = server.wait_for_run(0, "cancelled");
     let iterations = |text: &str, marker: &str| -> u64 {
         text.split(marker)
             .nth(1)
@@ -5765,7 +5823,7 @@ fn a_loop_that_ended_before_the_first_wait_is_reported_by_it() {
         }),
     );
     // THE ORDER, forced: the run is over before anybody waits for it.
-    server.wait_for_tool("list_runs", json!({}), "exhausted");
+    server.wait_for_run(0, "exhausted");
 
     let woke = server.call_tool(
         "wait_for_change",
@@ -5775,6 +5833,202 @@ fn a_loop_that_ended_before_the_first_wait_is_reported_by_it() {
         woke.contains("run_finished") && woke.contains("run 0"),
         "the wait must report a change that landed before it was called, naming the run: {woke}",
     );
+}
+
+/// ⚠⚠⚠⚠⚠ **A STEP THAT SAYS `converged` IS NOT THE RUN SAYING IT** — register item 476, driven
+/// rather than argued.
+///
+/// # What went wrong, and why a fixture had to say it
+///
+/// A run's journal is printed in `Verdict::WIRE_WORDS` and its ending in `OutcomeState::WIRE_WORDS`,
+/// and the two OVERLAP. The journal is published while the run is still going, so a barrier parked
+/// on the bare word `converged` was answered — on a loaded two-core CI runner — by a run that had
+/// not finished. See [`a_runs_own_line`] for the listing CI actually returned.
+///
+/// # ⚠⚠⚠⚠ The hazard is STAGED, not raced
+///
+/// Waiting for that window would be a coin toss (measured here: 0 in 20 alone and 0 in 20 under
+/// eight-fold CPU contention on two cores — the window is microseconds wide on an idle box). So the
+/// word gets into the journal the OTHER way, which needs no window at all: a step's note QUOTES THE
+/// PEER, and this peer's dialog asks a question with `converged` in it. The run then parks on
+/// `await_person_ms` waiting for somebody who never comes, so the state is held open for as long as
+/// the assertions need rather than for as long as a scheduler allows.
+///
+/// # ⚠⚠⚠ And the second run is the control that stops this passing vacuously
+///
+/// A reading that answered *no* to everything would pass the first half. Run 1 really does converge,
+/// in the same listing, at the same instant — so the same function must say YES about it and NO
+/// about run 0. That also covers the OTHER ambiguity a bag-of-words reading has: one run's ending is
+/// not another's.
+#[test]
+fn a_step_that_says_converged_is_not_the_run_saying_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_pane", json!({ "name": "quoting" }));
+    // The OSC 2 title is the agent fingerprint — without it nothing claims the pane, the daemon
+    // reads no dialog, and the step below would never quote a question. `ASKER-UP` is what the
+    // run's readiness barrier waits for, so the stimulus lands after the peer is up; the dialog is
+    // drawn only once that stimulus has been read, which is what makes it THIS turn's answer.
+    server.call_tool(
+        "write_pane",
+        json!({
+            "pane": "quoting",
+            // ⚠ The marker is assembled by `printf`'s FORMAT rather than written out, for the
+            // reason `Readiness` states: a marker that appears in what was TYPED at the pane has
+            // two possible authors, so `ASKER-UP` in this command line could never be evidence that
+            // the peer printed anything.
+            "text": "stty -icanon -echo; printf '\\033]2;\\342\\234\\263 Claude Code\\007'; \
+                     printf 'ASKER-%s\\r\\n' UP; read go; printf '\\033[2J\\033[H'; \
+                     printf 'Has the last step converged yet?\\r\\n'; \
+                     printf '\\342\\235\\257 1. Yes\\r\\n'; printf '  2. No\\r\\n'; \
+                     printf '  3. Not sure\\r\\n'; while :; do sleep 1; done",
+        }),
+    );
+    // ⚠⚠⚠ THE DAEMON HAS TO HAVE PUBLISHED A VERDICT FOR THIS PANE BEFORE THE RUN ADDRESSES IT,
+    // and this wait is what buys it. A turn arms itself against the pane's agent AND its published
+    // counter (`Completion::begin`), so a run that starts before anything has been published about
+    // the pane is armed against nothing and can never see the ask — measured here first: the step
+    // waited out its whole 20 s and reported `continue: the pane answered as the step's wait ran
+    // out` while `agent_state` said `blocked seq=1`. Rest is published on a SETTLE window rather
+    // than on sight, so this costs about two seconds and is not optional.
+    server.wait_for_tool("agent_state", json!({ "pane": "quoting" }), "state=idle");
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "quoting",
+            "stimulus": "look",
+            // ⚠ `shows` and not `prints`: this peer says its one word BEFORE the run is submitted,
+            // and `prints` clears on a marker seen MORE times than when it armed — which for a
+            // banner already on the screen never happens.
+            "ready_when": { "match": "shows", "marker": "ASKER-UP" },
+            // A contract is what lets a turn END on a question rather than waiting out its bound,
+            // and it is what puts the peer's words into the journal.
+            "done_when": "settles",
+            "turn_within_ms": 20_000,
+            "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+            "max_iterations": 3,
+            // ⚠ THE PARK. Nobody answers, so the run waits — still running, its journal already
+            // written — for as long as this takes, instead of ending `blocked` in forty
+            // milliseconds.
+            "await_person_ms": 30_000,
+        }),
+    );
+    // ⚠ THE FIXTURE'S OWN PREMISE FIRST, so a peer that never reached its dialog is told apart from
+    // a listing that reads wrong: the daemon has to see this pane as a peer that stopped to ask.
+    server.wait_for_tool("agent_state", json!({ "pane": "quoting" }), "state=blocked");
+    // ⚠ Waited for by the NOTE's own fixed sentence, which is in neither vocabulary: waiting on
+    // `converged` here would be the defect this gate is about, used to detect itself.
+    let parked = server.wait_for_tool("list_runs", json!({}), "the peer stopped to ASK");
+    assert!(
+        parked.contains("converged"),
+        "⚠ THE PREMISE: the listing has to carry the word for this gate to claim anything. The \
+         step's note quotes the peer's question, and this peer asks one with `converged` in it: \
+         {parked}",
+    );
+    assert!(
+        a_run_itself_says(&parked, 0, "still running"),
+        "and the run itself is still going, which is what makes the word above a false answer: \
+         {parked}",
+    );
+    assert!(
+        !a_run_itself_says(&parked, 0, "converged"),
+        "⚠⚠⚠⚠⚠ THE CLAIM: a barrier on this run must NOT be answered by a step of its journal. It \
+         was, on CI, and the assertion under it then read a run summary that had not been written: \
+         {parked}",
+    );
+
+    // ⚠⚠⚠ AND THE MOUTH SAYS SO, because a hazard only a suite knows about is one every agent
+    // reading this tool walks into: the words that fooled a barrier are the words an agent polls
+    // for. The remedy is named too — a wait costs one call however long the run takes.
+    let roster = server.request("tools/list", json!({}));
+    let listing_tool = roster["result"]["tools"]
+        .as_array()
+        .expect("the roster is a list")
+        .iter()
+        .find(|tool| tool["name"] == json!("list_runs"))
+        .expect("list_runs is published")
+        .clone();
+    let description = listing_tool["description"].as_str().unwrap_or_default();
+    assert!(
+        description.contains("RUN'S OWN LINE") && description.contains("run_finished"),
+        "⚠⚠⚠ an agent is TOLD how to read this answer and what to wait on instead of polling it: \
+         {description}",
+    );
+
+    // THE CONTROL — a run that really did end that way, in the same listing.
+    open_echo_pane(&mut server, "quick");
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "quick",
+            "stimulus": "echo done",
+            "sentinel": "done",
+            "max_iterations": 3,
+        }),
+    );
+    let both = server.wait_for_run(1, "converged");
+    assert!(
+        a_run_itself_says(&both, 1, "converged"),
+        "the control must be reachable, or the claim above is a function that says no to \
+         everything: {both}",
+    );
+    assert!(
+        !a_run_itself_says(&both, 0, "converged"),
+        "⚠⚠⚠⚠ AND THE OTHER HALF OF THE SAME DEFECT: run 1's ending is not run 0's, and the two \
+         are now in one answer: {both}",
+    );
+}
+
+/// ⚠⚠⚠⚠ **AND NO TENTH BARRIER CAN BE WRITTEN THE WAY THE NINE WERE** — the ratchet, because
+/// fixing a list leaves the next site unprotected (register item 467's lesson, one suite along).
+///
+/// The rule is about SPELLING and says so: this crate has no Rust parser, so what it forbids is the
+/// shape `wait_for_tool` on `list_runs` with an OUTCOME WORD as its needle — the barrier that
+/// searches a whole listing for a word the journal under it also carries. [`McpServer::wait_for_run`]
+/// is what to write instead.
+///
+/// ⚠⚠ THE PREMISE IS RE-MEASURED RATHER THAN REMEMBERED. The rule binds because the two published
+/// vocabularies overlap; if they ever stop overlapping, the assertion below goes red and a person
+/// re-decides whether this ratchet is still worth its cost, instead of it quietly guarding nothing.
+///
+/// ⚠ The words come from the PRODUCT's own published lists, so a ninth verdict or a seventh outcome
+/// is covered the day it is added rather than the day somebody remembers this file.
+#[test]
+fn no_barrier_here_waits_for_a_run_by_searching_the_whole_listing() {
+    let outcomes = sprag_plugin::driver::OutcomeState::WIRE_WORDS;
+    let verdicts = sprag_plugin::plugin::Verdict::WIRE_WORDS;
+    let shared: Vec<&&str> = outcomes
+        .iter()
+        .filter(|word| verdicts.contains(word))
+        .collect();
+    assert!(
+        !shared.is_empty(),
+        "the premise of this rule is that a run's ending and a step's verdict are spelled from \
+         overlapping sets; they no longer are ({outcomes:?} vs {verdicts:?}), so the rule below is \
+         guarding nothing and somebody has to decide whether to keep it",
+    );
+
+    // Comment lines dropped, because this file's own prose names the shape it forbids — a gate that
+    // read its own warning as the offence would be red on the fix. Whitespace goes with them: the
+    // formatter splits a long call across lines, and a rule that lost to that would be worse than
+    // none.
+    let source: String = include_str!("mcp_stdio.rs")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(|line| line.chars().filter(|glyph| !glyph.is_whitespace()))
+        .collect();
+    for word in outcomes {
+        let shape = format!(r#""list_runs",json!({{}}),"{word}"#);
+        assert!(
+            !source.contains(&shape),
+            "a barrier is parked on {word:?} across a WHOLE run listing, and a step of the \
+             journal is printed in that same word while the run is still going. Wait on the run's \
+             own line — `wait_for_run(<id>, {word:?})` — see `a_runs_own_line` for what CI \
+             returned when this shape was last written",
+        );
+    }
 }
 
 // ----- answering a blocked peer, from the surface that publishes the question (R369) -----

@@ -1517,7 +1517,14 @@ fn orchestration_tools() -> Vec<Value> {
                 run captured. Runs another agent or the person started are NOT listed: a run \
                 carries the pane that asked for it, and this answers about yours. Poll this after \
                 orchestrate rather than watching the pane — a run's outcome is a level, so it is \
-                still here whether or not you were looking when it finished.",
+                still here whether or not you were looking when it finished. \
+                ⚠ READ THE RUN'S OWN LINE — the one that starts `Run <id>` — for how a run ended. \
+                The steps listed under it are printed in the SAME words (`converged`, `exhausted`, \
+                `blocked`, `taken_over`) and a step is published WHILE THE RUN IS STILL GOING, so \
+                an answer with `converged` somewhere in it can be a run that has not finished; a \
+                step's note also quotes whatever its peer said. To wait for a run instead of \
+                polling for it, use wait_for_change with `run_finished`, which costs one call \
+                however long the run takes.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
