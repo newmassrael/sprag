@@ -147,10 +147,53 @@ fi
 # first), and three thousand does — so the commits that escaped the lint were the LARGEST ones.
 # `$staged_rs` is built with `grep -E` and no `-q`, which reads its input to the end.
 if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
-    echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
-    cargo clippy --workspace --all-targets -- -D warnings
-
-    doc_gate
+    # ⚠ ROUTED THROUGH THE BUILD-MACHINE WRAPPER WHEN ONE IS CONFIGURED (`$BX`),
+    # because these two are the heaviest thing this hook does to the machine it
+    # runs on. Measured 2026-08-19 on the 31GB workstation: the doc gate spawned
+    # five concurrent rustdocs and ONE of them reached 6.5GB RSS, which pushed
+    # 13GB into swap and took the box to load 29 while 82% of its CPU sat idle —
+    # all of that load was processes blocked on the paging disk, none of it
+    # compute. The note below already records this gate at 250s; that is its
+    # cost in TIME, and this is its cost in MEMORY.
+    #
+    # THE TWO TRAVEL TOGETHER so the tree is synced once rather than twice, and
+    # `&&` keeps clippy's fail-fast: a clippy failure never reaches the doc gate.
+    # (They do not share a warm build the way some workspaces do — `doc_gate`
+    # sets its own `CARGO_TARGET_DIR`, which is exactly why it costs 250s — so
+    # what is saved here is the transfer, not a rebuild.)
+    #
+    # `$BX` IS AN OPT-IN AND ITS ABSENCE IS THE OLD BEHAVIOUR. No host, path or
+    # account is named in this tree; a checkout without it runs both here,
+    # unchanged.
+    #
+    # ⚠⚠ AND IT FAILS OPEN. Setting `$BX` is not a promise that a build machine
+    # answers — the fleet goes away mid-session — and a hook that turned that
+    # into a blocked commit would be reporting a network as a code defect. The
+    # wrapper's own failure to RUN the pair is therefore not a verdict; only the
+    # pair's exit status is. The two are told apart by the wrapper's own
+    # contract: it prints `bx: exit=<N>` only once the wrapped command has
+    # actually produced a status.
+    lint_and_doc='cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items'
+    echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings && doc gate ..." >&2
+    if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
+        bx_err="$(mktemp)"
+        if "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc" 2>"$bx_err"; then
+            bx_rc=0
+        else
+            bx_rc=$?
+        fi
+        cat "$bx_err" >&2
+        if grep -q '^bx: exit=' "$bx_err"; then
+            rm -f "$bx_err"
+            [ "$bx_rc" -eq 0 ] || exit "$bx_rc"
+        else
+            rm -f "$bx_err"
+            echo "pre-commit: the build machine could not RUN the gate (infrastructure, not a gate failure) — running it here instead" >&2
+            bash -c "$lint_and_doc"
+        fi
+    else
+        bash -c "$lint_and_doc"
+    fi
 
     # ⚠⚠⚠⚠⚠ RECORD WHICH TREE THESE TWO GATES CLEARED, so `pre-push` need not run them again on the
     # same content — register item 443, raised by the owner asking why a push takes minutes.
