@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# A `git` that fails the way an unreadable index does -- and ONLY on
+# `diff --cached`, delegating everything else to the real one.
+#
+# It has to delegate: the hooks call git for `rev-parse`, `cat-file`,
+# `checkout-index` and `ls-tree`, and a double that broke those would be staging
+# a different failure than the one under test. Same reasoning as the grep double
+# in `commit-msg/`, and the same lesson (item 384) behind it.
+#
+# ## Why it finds the real git itself rather than being told
+#
+# The suite used to WRITE this file with the real git's path substituted into
+# it, and that is register item 467: a file this process holds open for writing
+# cannot be executed, and a harness that runs its cases on threads makes every
+# sibling's fork inherit the handle. A tracked file cannot carry a path chosen at
+# run time, so it does what the grep double does -- walks `PATH` and skips its
+# own directory, which is where the suite links it.
+set -u
+
+if [ "${1:-}" = "diff" ]; then
+    for arg in "$@"; do
+        if [ "$arg" = "--cached" ]; then
+            echo "fatal: unable to read index file" >&2
+            exit 128
+        fi
+    done
+fi
+
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+IFS=':' read -r -a path_dirs <<<"${PATH:-}"
+for dir in "${path_dirs[@]}"; do
+    [ -n "$dir" ] || continue
+    [ -x "$dir/git" ] || continue
+    here=$(cd -- "$dir" 2>/dev/null && pwd) || continue
+    if [ "$here" != "$self_dir" ]; then
+        exec "$dir/git" "$@"
+    fi
+done
+
+echo "git: no real git on PATH to delegate to" >&2
+exit 127

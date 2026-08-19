@@ -25,8 +25,8 @@
 //! X server, so driving them belongs to item 404's later payments. **Nothing here says those two
 //! are enforced.**
 
+use sprag_gate::doubles::Doubles;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -68,28 +68,16 @@ fn scratch(tag: &str) -> PathBuf {
 ///
 /// ⚠⚠⚠ AND THE FIXTURE ASSERTS ITS OWN STAGING, this file's stated rule: a tracked file can arrive
 /// without its mode (a checkout that dropped it, an archive that flattened it), and a double that
-/// cannot be executed would make every case below refuse for the wrong reason.
+/// cannot be executed would make every case below refuse for the wrong reason. That check now lives
+/// in [`sprag_gate::doubles`], which item 467 made the one place this workspace says it.
+///
+/// ⚠⚠ It is a SET of its own (`tests/doubles/commit-msg/`) rather than a flat directory, because
+/// what this returns goes on a `PATH` whole and the hook under test calls `git` five times — a
+/// sibling suite's `git` double sitting beside this one would answer them.
 fn grep_without_pcre() -> PathBuf {
-    let dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "doubles"]
-        .iter()
-        .collect();
-    let bin = dir.join("grep");
-    let mode = std::fs::metadata(&bin)
-        .unwrap_or_else(|why| {
-            panic!(
-                "the tracked double must be there: {} — {why}",
-                bin.display()
-            )
-        })
-        .permissions()
-        .mode();
-    assert!(
-        mode & 0o111 != 0,
-        "⚠⚠⚠ THE DOUBLE MUST BE EXECUTABLE ({mode:o}). Without the bit every case below would \
-         report the hook refusing, which is what they assert — for the wrong reason entirely: {}",
-        bin.display(),
-    );
-    dir
+    let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("commit-msg");
+    let _ = doubles.program("grep");
+    doubles.dir().to_path_buf()
 }
 
 /// How this run's grep is chosen.

@@ -1,0 +1,27 @@
+#!/bin/sh
+# A `ccache` that prints the bytes the real tool printed on this project's own
+# machine, so the doctor's two probes can be RUN without ccache being installed.
+#
+# `-s` is the statistics page the hit rate and the occupancy are read from, and
+# `-p` is the configuration page `max_size` and `depend_mode` come from. Any
+# other invocation exits 3, because a probe that asked something else and was
+# answered anyway would be a fixture agreeing with whatever the product sent.
+#
+# ## Why this file is TRACKED rather than written by the test that uses it
+#
+# Register item 467. A file cannot be executed while any process holds it open
+# for writing (`ETXTBSY`), and Rust's test harness runs its cases on THREADS of
+# one process: a sibling case forking to spawn a program inherits this one's
+# open write handle and holds it until its own exec. Item 465 measured the same
+# shape on `sprag-gate` at 10 failures in 30 runs. A file nobody writes cannot
+# be busy.
+case "$1" in
+-s) echo 'Cacheable calls:   187469 / 210800 (88.93%)'
+    echo '  Hits:            149641 / 187469 (79.82%)'
+    echo 'Local storage:'
+    echo '  Cache size (GB):    3.9 /   50.0 ( 7.88%)'
+    echo '  Cleanups:           388' ;;
+-p) echo '(/home/x/.config/ccache/ccache.conf) depend_mode = true'
+    echo '(/home/x/.config/ccache/ccache.conf) max_size = 50.0 GB' ;;
+*) exit 3 ;;
+esac

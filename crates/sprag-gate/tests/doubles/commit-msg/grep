@@ -21,6 +21,14 @@
 # manufactures its own executable in a process that also forks. A file nobody
 # writes cannot be busy.
 #
+# ## Why it sits in a directory named for the suite that owns it
+#
+# Item 467 put nine more doubles beside this one. A double's directory goes on a
+# `PATH` whole, and the commit-msg hook this suite drives calls `git` five times
+# -- so a flat directory holding another suite's `git` would answer those calls
+# with a stand-in nobody here asked for. One directory per suite is what keeps a
+# double's blast radius to the suite that wrote it.
+#
 # ## Why it finds the real grep itself
 #
 # The hook under test calls grep four more times, for rules that have nothing to

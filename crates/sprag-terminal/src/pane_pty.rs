@@ -2709,13 +2709,28 @@ mod tests {
     /// the start of the line misses on the space, and anchoring on the FIRST `)` misses on the
     /// paren. Either way the number read belongs to something else entirely, and a pane's child is
     /// whatever the user configured as their shell — so this is a rename away from being real.
+    ///
+    /// # ⚠⚠⚠⚠ The awkward name is a LINK to `/bin/sleep`, never a copy
+    ///
+    /// A copy is a file this process wrote, and this case then SPAWNS it — register item 467's
+    /// window exactly: the kernel refuses to execute a file any process holds open for writing, and
+    /// this harness runs its cases on threads, so a sibling forking to spawn a program inherits the
+    /// write handle and holds it until its own exec. (This site was not among the nine that item
+    /// listed. It was found by asking the tree rather than the ledger, which is the register's own
+    /// standing lesson about its lists.)
+    ///
+    /// ⚠ The link is what carries the name, and that is what the claim needs: `comm` in
+    /// `/proc/<pid>/stat` is the basename of the path that was EXEC'D, so a link called `sl) eep`
+    /// puts both hazards into the field being parsed exactly as a copy did.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_child_whose_name_breaks_a_naive_stat_parse_is_still_read_correctly() {
         let dir = std::env::temp_dir().join(format!("sprag-pty-space-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
-        let spaced = dir.join("sl) eep");
-        std::fs::copy("/bin/sleep", &spaced).expect("a copy of sleep under an awkward name");
+        let spaced = sprag_gate::doubles::linked_as(
+            std::path::Path::new("/bin/sleep"),
+            &dir.join("sl) eep"),
+        );
 
         let mut command = CommandBuilder::new(&spaced);
         command.arg("300");

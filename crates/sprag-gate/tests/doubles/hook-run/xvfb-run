@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# An `xvfb-run` that records the command it was handed and agrees, so reaching
+# the pixel smoke is observable without an X server or a Vulkan stack.
+#
+# TRACKED rather than written by the suite: register item 467.
+printf 'xvfb-run %s\n' "$*" >> "$DOUBLE_LOG"
+exit 0

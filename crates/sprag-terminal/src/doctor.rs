@@ -2227,30 +2227,27 @@ Local storage:
     /// The stand-in prints the bytes the real tool printed on this machine, so what is proved is
     /// that the two probes are RUN, that their output reaches the parsers, and that a
     /// non-zero exit is not read as an answer.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Both stand-ins are TRACKED files, and that is a fix rather than a tidy-up
+    ///
+    /// This case used to WRITE them and the product then EXECUTED them, which is `ETXTBSY` waiting
+    /// to happen: the kernel refuses to execute a file any process holds open for writing, and this
+    /// harness runs its cases on THREADS of one process — so a sibling forking to spawn a program
+    /// inherits this case's write handle and holds it until its own exec. `O_CLOEXEC` does not
+    /// close that window, it ends it one exec too late. Register item 465 measured the same shape
+    /// on `sprag-gate` at **10 failures in 30 runs, 0 in 30 after**; item 467 is the class, and
+    /// this was two of its ten sites. A file nobody writes cannot be busy.
+    ///
+    /// ⚠ **The product is what execs here**, so an interpreter is not available as the remedy: it
+    /// spawns whatever path `Sources::ccache` names, which is the behaviour under test. Tracking
+    /// the file is the only fix that does not change the subject.
+    #[cfg(unix)]
     #[test]
     fn the_two_ccache_probes_are_run_and_their_output_reaches_the_reading() {
+        let doubles = sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR")).set("doctor");
         let machine = FakeMachine::new("probe");
         machine.write("shims/cc", "");
-        let fake = machine.write(
-            "bin/ccache",
-            "#!/bin/sh\n\
-             case \"$1\" in\n\
-             -s) echo 'Cacheable calls:   187469 / 210800 (88.93%)'\n\
-                 echo '  Hits:            149641 / 187469 (79.82%)'\n\
-                 echo 'Local storage:'\n\
-                 echo '  Cache size (GB):    3.9 /   50.0 ( 7.88%)'\n\
-                 echo '  Cleanups:           388' ;;\n\
-             -p) echo '(/home/x/.config/ccache/ccache.conf) depend_mode = true'\n\
-                 echo '(/home/x/.config/ccache/ccache.conf) max_size = 50.0 GB' ;;\n\
-             *) exit 3 ;;\n\
-             esac\n",
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
-                .expect("fixture ccache is executable");
-        }
+        let fake = doubles.program("ccache");
         let sources = Sources {
             shims: machine.root.join("shims"),
             ccache: Some(fake.clone()),
@@ -2280,16 +2277,7 @@ Local storage:
         // fixture with only the absent case cannot express the failure at all — the mutation that
         // takes a failed program's stdout anyway came back green against exactly that fixture.
         // Here the program runs, prints something that would parse, and exits non-zero.
-        let liar = machine.write(
-            "bin/liar",
-            "#!/bin/sh\necho '  Cleanups:           999'\nexit 1\n",
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&liar, std::fs::Permissions::from_mode(0o755))
-                .expect("fixture liar is executable");
-        }
+        let liar = doubles.program("liar");
         let ccache = read_ccache(&Sources {
             ccache: Some(liar),
             ..sources

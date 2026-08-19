@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# A `mnemosyne-cli` that records what it was asked and agrees.
+#
+# `REFS_REPORT` is how a case chooses what `validate-code-refs` says on its way
+# out -- the point of the report cases is that the hook must not lose it,
+# whatever shape it takes.
+#
+# TRACKED rather than written by the suite: register item 467. A file this
+# process holds open for writing cannot be executed (`ETXTBSY`), and a harness
+# that runs its cases on threads makes every sibling's fork inherit that handle.
+printf 'mnemosyne-cli %s\n' "$*" >> "$DOUBLE_LOG"
+if [ "${1:-}" = "validate-code-refs" ]; then
+    printf '%s\n' "${REFS_REPORT:-violations: total=0}"
+fi
+exit 0

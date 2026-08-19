@@ -5975,30 +5975,62 @@ fn stand_in_path(state: &Path) -> String {
     format!("{}:{inherited}", notify_stand_in_dir(state).display())
 }
 
-/// Write the stand-in `notify-send` and make it executable.
+/// Put the stand-in `notify-send` on this run's `PATH`, by LINKING the tracked one.
 ///
-/// Each line is `<caller pid>` then the argv, with a unit separator between fields so an argument
-/// containing a space cannot be read as two. It exits 0, because the product must not be tested
-/// against a notifier that is failing.
+/// What the stand-in does and why it records the caller's pid is documented in the file itself
+/// (`crates/sprag-gui/tests/doubles/smoke/notify-send`), which is where somebody debugging a
+/// notification will be looking.
 ///
-/// **The pid is what makes a reading an ATTRIBUTION.** Both children inherit this `PATH`, so a
-/// recorder that logged only the argv would answer *somebody ran the notifier* — and the claim under
-/// test is that the CLIENT does, which a daemon doing it would satisfy while being the wrong design.
-/// `$PPID` inside the script is the process that spawned it, which is the client itself: its
-/// notifier thread is a thread of that process, not a helper of its own.
+/// # ⚠⚠⚠⚠⚠ Why it is linked and not written
+///
+/// Register item 467. This used to compose the script here and the CLIENT then EXEC'd it, which is
+/// `ETXTBSY` waiting to happen: the kernel refuses to execute a file any process holds open for
+/// writing, and this binary forks from more than one thread. Item 465 measured the same shape on
+/// `sprag-gate` at **10 failures in 30 runs, 0 in 30 after**. A file nobody writes cannot be busy.
+///
+/// ⚠ **The check is spelled out here rather than taken from `sprag_gate::doubles`**, which is the
+/// one place the rest of this workspace says it — named in plain code rather than as a doc LINK,
+/// because a link would have to resolve and this crate deliberately cannot see that one.
+/// `sprag-gate` is a DEV-ONLY crate by its own charter
+/// — *no sprag binary depends on this* — and `sprag-smoke` is a binary, so a dev-dependency does not
+/// reach it and a real dependency would break the charter. The rule is the same one; only its
+/// spelling is local.
 fn install_notify_stand_in(state: &Path) -> io::Result<()> {
+    let tracked: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "doubles",
+        "smoke",
+        "notify-send",
+    ]
+    .iter()
+    .collect();
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&tracked)
+        .map_err(|why| {
+            io::Error::new(
+                why.kind(),
+                format!(
+                    "the tracked notifier double must be there: {} — {why}",
+                    tracked.display()
+                ),
+            )
+        })?
+        .permissions()
+        .mode();
+    if mode & 0o111 == 0 {
+        return Err(io::Error::other(format!(
+            "the notifier double is not executable ({mode:o}): {} — every notification claim \
+             below would read as the product not notifying",
+            tracked.display(),
+        )));
+    }
+
     let dir = notify_stand_in_dir(state);
     std::fs::create_dir_all(&dir)?;
-    let record = notify_record(state);
-    let script = format!(
-        "#!/bin/sh\nprintf '%s\\037' \"$PPID\" \"$@\" >> {}\nprintf '\\n' >> {}\nexit 0\n",
-        record.display(),
-        record.display(),
-    );
     let path = dir.join("notify-send");
-    std::fs::write(&path, script)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+    let _ = std::fs::remove_file(&path);
+    std::os::unix::fs::symlink(&tracked, &path)
 }
 
 /// Every notifier invocation the stand-in has recorded, as `(caller pid, arguments)`.

@@ -1,0 +1,25 @@
+#!/bin/sh
+# A stand-in `ssh` that records the exec argv it was given -- one token per line,
+# in `argv.txt` beside itself -- and then does whatever the case staged in
+# `tail.sh` beside it: `exec cat` to block like a live pane, or a listener to
+# stand in for `ssh -L`.
+#
+# ## Why the varying half is SOURCED rather than written into this file
+#
+# Register item 467. The suite used to compose this script per case and the
+# DAEMON then exec'd it, which is `ETXTBSY` waiting to happen: the kernel
+# refuses to execute a file any process holds open for writing, and the harness
+# runs its cases on THREADS of one process, so a sibling forking to spawn a
+# program inherits the write handle and holds it until its own exec. Item 465
+# measured that shape on `sprag-gate` at 10 failures in 30 runs.
+#
+# A tracked file cannot carry a per-case tail, so the tail is a DATA file the
+# case writes next to this one. Nothing execs `tail.sh` -- `.` reads it -- so it
+# carries none of the window this file was moved out of.
+#
+# `$0` is the path the kernel was handed, which is this file's link inside the
+# case's own directory: that is what makes `argv.txt` and `tail.sh` findable
+# without the suite substituting an absolute path into these bytes.
+here=$(dirname "$0")
+printf '%s\n' "$@" > "$here/argv.txt"
+. "$here/tail.sh"

@@ -1905,23 +1905,23 @@ impl Drop for TempDir {
 /// live pane, or a listener to simulate `ssh -L`. `tail` receives the dir so it can reference sibling
 /// files by absolute path (the pane is exec'd via PATH, so `$0`-relative paths are unreliable).
 /// Returns the drop guard, the dir (prepend to the daemon PATH), and the argv-record path.
+///
+/// ⚠⚠⚠⚠ **The stub is LINKED from a tracked file and the per-case tail is a DATA file beside it** —
+/// register item 467. It used to be composed here and the DAEMON then exec'd it: a file any process
+/// holds open for writing cannot be executed (`ETXTBSY`), and this harness runs its cases on THREADS
+/// of one process, so a sibling forking to spawn a program inherits the write handle and holds it
+/// until its own exec. Item 465 measured that shape on `sprag-gate` at 10 failures in 30 runs.
+/// `tail.sh` is SOURCED by the stub rather than executed, so it carries none of the window.
 fn stub_ssh(label: &str, tail: impl FnOnce(&Path) -> String) -> (TempDir, PathBuf, PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("sprag-ssh-it-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the stand-in ssh dir");
     let argv_file = dir.join("argv.txt");
-    let ssh = dir.join("ssh");
-    std::fs::write(
-        &ssh,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n{}\n",
-            argv_file.display(),
-            tail(&dir),
-        ),
-    )
-    .expect("write the stand-in ssh");
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+    std::fs::write(dir.join("tail.sh"), format!("{}\n", tail(&dir)))
+        .expect("what the stand-in ssh is to do after it has recorded its argv");
+    sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+        .set("cli")
+        .link("ssh", &dir.join("ssh"));
     (TempDir(dir.clone()), dir, argv_file)
 }
 

@@ -28,3 +28,7 @@ libc = { workspace = true }
 [dev-dependencies]
 # The layout's wire round-trip proof (the detach/reattach fidelity guarantee).
 serde_json = { workspace = true }
+# What a stand-in program is, and the rule that no suite writes one (register item 467): a file
+# held open for writing cannot be executed, and this harness forks from threads. DEV-ONLY, and it
+# takes no dependencies of its own.
+sprag-gate = { workspace = true }

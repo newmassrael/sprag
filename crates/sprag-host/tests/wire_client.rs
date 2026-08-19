@@ -2945,24 +2945,22 @@ struct DropFixture {
 }
 
 impl DropFixture {
+    /// ⚠⚠⚠⚠ The stand-in is LINKED from a tracked file and told its exit code through a DATA file
+    /// beside it — register item 467. It used to be composed here with the code substituted in, and
+    /// the DAEMON then exec'd it: a file any process holds open for writing cannot be executed, and
+    /// this harness runs its cases on threads, so a sibling's fork inherits the write handle and
+    /// holds it until its own exec. `exit-code` is read, never executed, so it carries none of that.
     fn new(label: &str, scp_exit: i32) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir =
             std::env::temp_dir().join(format!("sprag-drop-it-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create the stand-in scp dir");
         let argv_file = dir.join("argv.txt");
-        let scp = dir.join("scp");
-        std::fs::write(
-            &scp,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit {scp_exit}\n",
-                argv_file.display()
-            ),
-        )
-        .expect("write the stand-in scp");
-        std::fs::set_permissions(&scp, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+        std::fs::write(dir.join("exit-code"), format!("{scp_exit}\n"))
+            .expect("the status the stand-in scp is to answer with");
+        sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+            .set("wire")
+            .link("scp", &dir.join("scp"));
 
         // A REAL file: the host canonicalizes the drop before delivering it. The space in the name
         // is load-bearing — it is what makes the answer prove the shell quoting.

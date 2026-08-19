@@ -25,6 +25,15 @@
 //! variables the suite ran under, and a variable that is unset or does not name a directory is an
 //! ERROR rather than an empty walk. A probe pointed at nothing must never read as clean.
 
+/// What a stand-in program is, and the rule that no suite writes one — register item 467.
+///
+/// It lives here rather than in any one suite for the reason the rest of this crate does: the claim
+/// is about what a SUITE DID (it manufactured its own executable and then raced the harness to run
+/// it), so no single test can be its own guard. `unix` only, because a double is a program and a
+/// link, and this workspace's suites run on Linux and macOS.
+#[cfg(unix)]
+pub mod doubles;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};

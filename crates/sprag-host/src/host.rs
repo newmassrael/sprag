@@ -5196,16 +5196,15 @@ mod tests {
         // A program BASENAMED `claude`, which is what both the allowlist and `hooks::agent_of` read.
         // `cat` stands in for the agent: this gate is about which arguments reach the launch, and a
         // real agent would answer that identically while costing a model call.
+        //
+        // ⚠⚠⚠⚠ A LINK to `/bin/cat`, never a copy — register item 467. A copy is a file this
+        // process wrote and the DAEMON then execs it, which is the `ETXTBSY` window: the kernel
+        // refuses to execute a file any process holds open for writing, and this harness runs its
+        // cases on threads. The link is what carries the name, and the name is what the rule under
+        // test reads, so nothing about the claim changes.
         let dir = std::env::temp_dir().join(format!("sprag-resume-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a directory for the stand-in agent");
-        let agent = dir.join("claude");
-        std::fs::copy("/bin/cat", &agent).expect("a stand-in agent to launch");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755))
-                .expect("the stand-in must be executable");
-        }
+        let agent =
+            sprag_gate::doubles::linked_as(std::path::Path::new("/bin/cat"), &dir.join("claude"));
 
         let pane = |id: u64, argv: Vec<String>| PaneSnapshot {
             id: PaneId(id),

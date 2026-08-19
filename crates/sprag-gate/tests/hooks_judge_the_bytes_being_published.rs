@@ -37,8 +37,8 @@
 //! that decision — read the pushed range, answer *owed* on anything it cannot resolve — is the
 //! logic, and it had never been executed by anything before this file.
 
+use sprag_gate::doubles::Doubles;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -53,45 +53,25 @@ const FORMATTED: &str = "fn paint() {}\n";
 /// The same item, spaced so rustfmt rewrites it. `--check` answers 1 and names the file.
 const UNFORMATTED: &str = "fn  paint (  )   { }\n";
 
-/// A `mnemosyne-cli` that records what it was asked and agrees.
+/// ⚠⚠⚠⚠⚠ **THE DOUBLES ARE TRACKED FILES, NOT STRINGS THIS SUITE WRITES** — register item 467.
 ///
-/// `REFS_REPORT` is how a case chooses what `validate-code-refs` says on its way out — the point of
-/// the report cases below is that the hook must not lose it, whatever shape it takes.
-const MNEMOSYNE_DOUBLE: &str = r#"#!/usr/bin/env bash
-printf 'mnemosyne-cli %s\n' "$*" >> "$DOUBLE_LOG"
-if [ "${1:-}" = "validate-code-refs" ]; then
-    printf '%s\n' "${REFS_REPORT:-violations: total=0}"
-fi
-exit 0
-"#;
-
-/// A `cargo` that records its subcommand and agrees. Clippy and rustdoc are minutes on a real
-/// workspace and are not what these cases are about.
-const CARGO_DOUBLE: &str = r#"#!/usr/bin/env bash
-printf 'cargo %s\n' "$*" >> "$DOUBLE_LOG"
-exit 0
-"#;
-
-/// An `actionlint` that records **the bytes of every file it was given** and refuses the ones
-/// carrying `INVALID-WORKFLOW`, which is how the real one behaves: a verdict read off the content.
+/// They used to be `const &str` bodies written into the sandbox's `bin/` and then executed, which
+/// is `ETXTBSY` waiting to happen: the kernel refuses to execute a file any process holds open for
+/// writing, and this harness runs its cases on THREADS of one process, so a case forking to spawn a
+/// program inherits a sibling's open write handle and holds it until its own exec. Item 465
+/// measured that shape on the neighbouring suite — **10 failures in 30 runs, 0 in 30 after** — and
+/// this file carried five more of it.
 ///
-/// ⚠⚠⚠ Recording the CONTENT, not merely the argument list, is the whole point: the question these
-/// cases ask is *which bytes reached the checker*, and a verdict alone is a noisier way to ask it —
-/// a staged-versus-disk mix-up can leave both versions invalid, or both valid, and then the verdict
-/// says nothing at all.
-const ACTIONLINT_DOUBLE: &str = r#"#!/usr/bin/env bash
-printf 'actionlint %s\n' "$*" >> "$DOUBLE_LOG"
-status=0
-for arg in "$@"; do
-    case "$arg" in -*) continue ;; esac
-    printf 'actionlint-read %s\n' "$(cat "$arg")" >> "$DOUBLE_LOG"
-    if grep -q 'INVALID-WORKFLOW' "$arg"; then
-        echo "actionlint: $arg: the workflow is invalid" >&2
-        status=1
-    fi
-done
-exit "$status"
-"#;
+/// They live in [`sprag_gate::doubles`]'s `hook-run` set: `mnemosyne-cli`, `cargo`, `actionlint`,
+/// `git`, `xvfb-run`. What each one does is documented in the file itself, which is where a person
+/// debugging a hook run will be looking.
+///
+/// ⚠ The one that had to change shape is `git`: it delegated to a path this file substituted into
+/// its body at run time, and a tracked file cannot carry that. It now walks `PATH` skipping its own
+/// directory, exactly as the `commit-msg` set's `grep` does.
+fn doubles() -> Doubles {
+    Doubles::of(env!("CARGO_MANIFEST_DIR")).set("hook-run")
+}
 
 /// A workflow this project's CI gate accepts.
 const VALID_WORKFLOW: &str = "name: ci\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n";
@@ -102,33 +82,7 @@ const VALID_WORKFLOW: &str = "name: ci\non: push\njobs:\n  build:\n    runs-on: 
 const INVALID_WORKFLOW: &str =
     "name: ci # INVALID-WORKFLOW\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n";
 
-/// A `git` that fails the way an unreadable index does — and ONLY on `diff --cached`, delegating
-/// everything else to the real one.
-///
-/// ⚠⚠ It has to delegate: the hooks call git for `rev-parse`, `cat-file`, `checkout-index` and
-/// `ls-tree`, and a double that broke those would be staging a different failure than the one under
-/// test. Same reasoning as the grep double in [`hooks_enforce_what_they_check`], and the same
-/// lesson (item 384) behind it.
-const GIT_DOUBLE: &str = r#"#!/usr/bin/env bash
-if [ "${1:-}" = "diff" ]; then
-    for arg in "$@"; do
-        if [ "$arg" = "--cached" ]; then
-            echo "fatal: unable to read index file" >&2
-            exit 128
-        fi
-    done
-fi
-exec REAL_GIT "$@"
-"#;
-
-/// An `xvfb-run` that records the command it was handed and agrees, so reaching the pixel smoke is
-/// observable without an X server or a Vulkan stack.
-const XVFB_DOUBLE: &str = r#"#!/usr/bin/env bash
-printf 'xvfb-run %s\n' "$*" >> "$DOUBLE_LOG"
-exit 0
-"#;
-
-/// A repository of this test's own, holding a COPY of the real `.githooks/` and a `bin/` of
+/// A repository of this test's own, holding the real `.githooks/` and a `bin/` of
 /// doubles, so a hook runs exactly as git runs it without touching the developer's tree.
 struct Sandbox {
     dir: PathBuf,
@@ -152,13 +106,13 @@ impl Sandbox {
         };
         std::fs::create_dir_all(&sandbox.bin).expect("create the sandbox's PATH directory");
 
-        sandbox.copy_hooks();
+        sandbox.link_hooks();
         // `[ -f Cargo.toml ]` is what both hooks gate their cargo work on.
         sandbox.write("Cargo.toml", "[workspace]\nmembers = []\n");
-        sandbox.double("mnemosyne-cli", MNEMOSYNE_DOUBLE);
-        sandbox.double("cargo", CARGO_DOUBLE);
-        sandbox.double("actionlint", ACTIONLINT_DOUBLE);
-        sandbox.double("xvfb-run", XVFB_DOUBLE);
+        sandbox.double("mnemosyne-cli");
+        sandbox.double("cargo");
+        sandbox.double("actionlint");
+        sandbox.double("xvfb-run");
 
         sandbox.git(&["init", "-q", "."]);
         sandbox.git(&["config", "user.email", "gate@example.invalid"]);
@@ -172,7 +126,17 @@ impl Sandbox {
 
     /// The hooks as they are on disk, MODE AND ALL — git invokes only an executable file, and
     /// `hooks_cannot_pass_in_silence` is the gate on that bit being recorded.
-    fn copy_hooks(&self) {
+    ///
+    /// ⚠⚠⚠⚠ **LINKED RATHER THAN COPIED** — register item 467. A copy is a file this process wrote,
+    /// and the hooks are then EXECUTED, so every sandbox carried the `ETXTBSY` window that item 465
+    /// measured at 10 failures in 30 runs on the neighbouring suite. A link opens nothing for
+    /// writing, and `metadata` follows it, so the mode this claims to carry across is still the
+    /// real hook's own — read from the same inode git will refuse to run without the bit.
+    ///
+    /// ⚠ Every entry travels, not only the executable ones: both hooks `source` their siblings
+    /// (`.githooks/doc-gate.sh`, `.githooks/content-gate.sh`) through the sandbox's own
+    /// `git rev-parse --show-toplevel`, so a hook directory missing them is a hook that cannot run.
+    fn link_hooks(&self) {
         let from = repo_root().join(".githooks");
         let to = self.dir.join(".githooks");
         std::fs::create_dir_all(&to).expect("create the sandbox's hook directory");
@@ -184,13 +148,7 @@ impl Sandbox {
                 continue;
             }
             let name = path.file_name().expect("a hook has a name");
-            let mode = std::fs::metadata(&path)
-                .expect("a hook's mode")
-                .permissions()
-                .mode();
-            std::fs::copy(&path, to.join(name)).expect("copy a hook into the sandbox");
-            std::fs::set_permissions(to.join(name), std::fs::Permissions::from_mode(mode))
-                .expect("carry the hook's mode across");
+            sprag_gate::doubles::linked_as(&path, &to.join(name));
         }
     }
 
@@ -202,11 +160,14 @@ impl Sandbox {
         std::fs::write(&path, text).unwrap_or_else(|why| panic!("write {rel}: {why}"));
     }
 
-    fn double(&self, name: &str, body: &str) {
-        let path = self.bin.join(name);
-        std::fs::write(&path, body).unwrap_or_else(|why| panic!("write the {name} double: {why}"));
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make the double executable");
+    /// Put the tracked double called `name` on this sandbox's `PATH`.
+    ///
+    /// ⚠ A LINK, and the double itself is never written — see [`doubles`]. It links into `bin/`
+    /// rather than putting the tracked directory on `PATH` because [`Sandbox::without`] has to be
+    /// able to take a single tool away, and because the `git` double finds the real git by skipping
+    /// *its own* directory, which must be this sandbox's and not one shared with another suite.
+    fn double(&self, name: &str) {
+        doubles().link(name, &self.bin.join(name));
     }
 
     /// Take a tool off the table entirely — this sandbox's double AND any real one the developer
@@ -222,19 +183,13 @@ impl Sandbox {
 
     /// Make `git diff --cached` fail for the HOOK the way an unreadable index would, leaving every
     /// other git call intact. Installed on demand, after staging is done with the real git.
+    ///
+    /// ⚠ The double finds the real git for itself, by walking `PATH` and skipping the directory it
+    /// was linked into. This used to be a path substituted into the double's body as it was
+    /// written — which is exactly the write item 467 is about, and a tracked file cannot carry a
+    /// path chosen at run time anyway.
     fn break_index_reads(&self) {
-        let real = std::env::var_os("PATH")
-            .map(|path| {
-                std::env::split_paths(&path)
-                    .map(|dir| dir.join("git"))
-                    .find(|candidate| candidate.is_file())
-                    .expect("git on PATH — the double has to delegate to it")
-            })
-            .expect("a PATH to find git on");
-        self.double(
-            "git",
-            &GIT_DOUBLE.replace("REAL_GIT", &real.display().to_string()),
-        );
+        self.double("git");
     }
 
     /// A PATH with the doubles in front of whatever the developer has, minus any hidden tool.

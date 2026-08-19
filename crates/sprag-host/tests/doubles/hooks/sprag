@@ -1,0 +1,15 @@
+#!/bin/sh
+# A stand-in `sprag` for the hook-command case: it only has to say IT RAN, by
+# leaving a marker where the case can read it.
+#
+# The case links this file into a directory whose name contains a SPACE, which
+# is the whole point -- a hook entry's `command` is handed to a shell, and a
+# path a shell would re-split reaches nothing. `$0` is the path the kernel was
+# handed, so the marker lands beside the case's own fixture directory without
+# this file carrying an absolute path.
+#
+# TRACKED rather than written by the case: register item 467. A file any process
+# holds open for writing cannot be executed, and this harness runs its cases on
+# THREADS of one process -- a sibling forking to spawn a program inherits the
+# write handle and holds it until its own exec.
+printf ok > "$(dirname "$0")/../it-ran"

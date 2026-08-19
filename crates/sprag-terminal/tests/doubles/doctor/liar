@@ -1,0 +1,14 @@
+#!/bin/sh
+# A program that RAN and FAILED, which is a different case from one that is not
+# installed and the one the success check exists for.
+#
+# An absent program fails at the spawn and never reaches the status check, so a
+# fixture with only the absent case cannot express this failure at all -- the
+# mutation that takes a failed program's stdout anyway came back green against
+# exactly that fixture. This one runs, prints something that would parse, and
+# exits non-zero.
+#
+# TRACKED rather than written by the test: register item 467 -- a file held open
+# for writing cannot be executed, and this harness forks from threads.
+echo '  Cleanups:           999'
+exit 1

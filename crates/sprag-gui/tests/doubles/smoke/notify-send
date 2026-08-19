@@ -1,0 +1,36 @@
+#!/bin/sh
+# The stand-in `notify-send` the headless smoke puts in front of the real one.
+#
+# The GUI's desktop notification is a PROGRAM it runs, so the honest way to read
+# what it sent is to BE that program: this records the real argv the real binary
+# built, with no seam in the product and no injection point a shipped path could
+# route around.
+#
+# One line per invocation: the CALLER's pid first, then the argv, with a unit
+# separator between fields so an argument containing a space cannot be read as
+# two. It exits 0, because the product must not be tested against a notifier
+# that is failing.
+#
+# ## Why the pid
+#
+# It is what makes a reading an ATTRIBUTION. Both children inherit this PATH, so
+# a recorder that logged only the argv would answer *somebody ran the notifier*
+# -- and the claim under test is that the CLIENT does, which a daemon doing it
+# would satisfy while being the wrong design. `$PPID` is the process that
+# spawned this script, which is the client itself: its notifier thread is a
+# thread of that process, not a helper of its own.
+#
+# ## Why this file is TRACKED rather than written by the smoke
+#
+# Register item 467. A file cannot be executed while any process holds it open
+# for writing (`ETXTBSY`), and the smoke both writes this and has the CLIENT
+# exec it while the smoke's own threads are forking. Item 465 measured the shape
+# on `sprag-gate` at 10 failures in 30 runs. A file nobody writes cannot be busy.
+#
+# The record lands beside the smoke's state directory rather than at a path
+# substituted into these bytes: `$0` is the path the kernel was handed, which is
+# this file's link inside `<state>/bin/`.
+record="$(dirname "$0")/../notify-send.log"
+printf '%s\037' "$PPID" "$@" >> "$record"
+printf '\n' >> "$record"
+exit 0

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# A `cargo` that records its subcommand and agrees. Clippy and rustdoc are
+# minutes on a real workspace and are not what these cases are about.
+#
+# TRACKED rather than written by the suite: register item 467.
+printf 'cargo %s\n' "$*" >> "$DOUBLE_LOG"
+exit 0

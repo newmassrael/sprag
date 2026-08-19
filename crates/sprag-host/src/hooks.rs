@@ -3950,23 +3950,20 @@ mod tests {
     /// **Run rather than compared.** An assertion that the rendered string equals some expected
     /// quoting would be this test agreeing with the renderer; only handing it to `sh` says whether a
     /// shell reaches the program. Every one of the 35 tests here was green before the fix.
+    ///
+    /// ⚠⚠⚠⚠ **The stand-in is LINKED from a tracked file, never written here** — register item 467.
+    /// A file any process holds open for writing cannot be executed, and this harness runs its
+    /// cases on THREADS of one process, so a sibling forking to spawn a program inherits the write
+    /// handle and holds it until its own exec. The shell below is what execs it, so the window was
+    /// real. The double leaves its marker beside its own directory (`$0`-relative), which is what
+    /// lets a tracked file serve a fixture path chosen at run time.
     #[test]
     fn a_hook_command_reaches_a_program_whose_path_a_shell_would_split() {
         let fixture = Fixture::new(&CLAUDE, None);
-        let awkward = fixture.0.join("a dir");
-        std::fs::create_dir_all(&awkward).expect("a directory whose name has a space");
-        let program = awkward.join("sprag");
+        let program = sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+            .set("hooks")
+            .link("sprag", &fixture.0.join("a dir").join("sprag"));
         let marker = fixture.0.join("it-ran");
-        std::fs::write(
-            &program,
-            format!("#!/bin/sh\nprintf ok > '{}'\n", marker.display()),
-        )
-        .expect("a stand-in binary");
-        std::fs::set_permissions(
-            &program,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-        )
-        .expect("make it executable");
 
         let command = CLAUDE.command(&program);
         let ran = std::process::Command::new("sh")

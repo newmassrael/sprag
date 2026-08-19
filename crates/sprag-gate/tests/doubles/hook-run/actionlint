@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# An `actionlint` that records THE BYTES OF EVERY FILE IT WAS GIVEN and refuses
+# the ones carrying `INVALID-WORKFLOW`, which is how the real one behaves: a
+# verdict read off the content.
+#
+# Recording the CONTENT, not merely the argument list, is the whole point: the
+# question these cases ask is *which bytes reached the checker*, and a verdict
+# alone is a noisier way to ask it -- a staged-versus-disk mix-up can leave both
+# versions invalid, or both valid, and then the verdict says nothing at all.
+#
+# TRACKED rather than written by the suite: register item 467.
+printf 'actionlint %s\n' "$*" >> "$DOUBLE_LOG"
+status=0
+for arg in "$@"; do
+    case "$arg" in -*) continue ;; esac
+    printf 'actionlint-read %s\n' "$(cat "$arg")" >> "$DOUBLE_LOG"
+    if grep -q 'INVALID-WORKFLOW' "$arg"; then
+        echo "actionlint: $arg: the workflow is invalid" >&2
+        status=1
+    fi
+done
+exit "$status"

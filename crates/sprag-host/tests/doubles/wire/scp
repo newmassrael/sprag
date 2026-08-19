@@ -1,0 +1,22 @@
+#!/bin/sh
+# A stand-in `scp` for the drag-to-upload cases: it records the argv it was
+# exec'd with -- one token per line, in `argv.txt` beside itself -- and exits
+# with the code the case asked for, so both the success and the failure arm are
+# drivable.
+#
+# It goes on the DAEMON's PATH, because the daemon is what spawns the upload;
+# stubbing the test process's own PATH would prove nothing.
+#
+# ## Why the exit code is READ rather than written into this file
+#
+# Register item 467. The suite used to compose this script with the code
+# substituted in, and the daemon then exec'd it -- the `ETXTBSY` window: a file
+# any process holds open for writing cannot be executed, and this harness runs
+# its cases on THREADS of one process, so a sibling's fork inherits the write
+# handle and holds it until its own exec.
+#
+# A tracked file cannot carry a per-case number, so the number is a DATA file
+# the case writes beside this one. Nothing execs `exit-code`; `cat` reads it.
+here=$(dirname "$0")
+printf '%s\n' "$@" > "$here/argv.txt"
+exit "$(cat "$here/exit-code")"
