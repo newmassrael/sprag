@@ -4691,10 +4691,43 @@ impl OuterLoop {
     ///
     /// ⚠ A pane that cannot be read at all answers `false`, which is the pre-existing path: the
     /// turn goes to `screening` exactly as it did before this existed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE PEER IS ASKED FIRST, AND THE SCREEN IS THE FALLBACK — register item 452(3)
+    ///
+    /// This read the screen and nothing else, and that was the defect the owner named: **the fix
+    /// had been put on the nearest arm**. `screening` already reads the screen, so the outage went
+    /// there — while on the 529 this exists for, the peer's hook FIRED at the exact moment
+    /// (`source=hook:claude`, `blocked`, `seq` moved) and the product reduced the whole payload to
+    /// one enum value. Item 452(1) built the pipe; this is the demotion it made possible.
+    ///
+    /// ⚠⚠⚠ **THE NEEDLE IS THE SAME ONE, ASKED OF A BETTER WITNESS.** Nothing is guessed about what
+    /// a notice says: the author's own words are searched in the peer's statement before they are
+    /// searched in the pixels. What that buys is everything a screen loses — a message the terminal
+    /// WRAPPED (measured, 2026-08-19), a full-screen agent that repaints its line addresses into
+    /// silence (item 441), a pane scrolled past it.
+    ///
+    /// ⚠⚠⚠⚠ **AND THE SCREEN IS NOT DELETED, WHICH IS THE CLAUSE'S OWN WORD.** A peer that raises
+    /// no notice states nothing however good the pipe is —
+    /// [`Peer::speaks_up`](sprag_detect::peer::Peer::speaks_up) is that fact, and `codex` is why it
+    /// is a field rather than an assumption. For such a peer the pixels are the only answer there
+    /// will ever be.
+    ///
+    /// ⚠ An UNDECLARED peer keeps the screen too: `peer::of` answering `None` means *this build
+    /// knows nothing about that program*, which is not a licence to skip a channel it might have.
     fn service_failed(&self, panes: &dyn PaneAccess) -> bool {
         let Some(needle) = self.text_of(SERVICE_NEEDLE).filter(|it| !it.is_empty()) else {
             return false;
         };
+        // THE PEER'S OWN ACCOUNT FIRST. `noticed` is replaced on every report rather than carried,
+        // so anything standing in it belongs to the report in force — there is no stale sentence
+        // here to mistake for this turn's (see `sprag_detect::Report::noticed`).
+        let stated = panes
+            .supervision()
+            .and_then(|seen| seen.pane_agent_state(self.driving.pane))
+            .and_then(|seen| seen.noticed);
+        if stated.is_some_and(|said| said.contains(&needle)) {
+            return true;
+        }
         panes
             .pane_collapsed(self.driving.pane)
             .is_some_and(|screen| screen.contains(&needle))
@@ -13556,6 +13589,125 @@ mod tests {
             "⚠⚠⚠⚠⚠ THIS GATE PROVES NOTHING UNLESS THE NEEDLE IS ACTUALLY BROKEN ACROSS ROWS. \
              Adjust the padding until it is — a version reading `pane_rows` must FAIL here, and \
              it goes green the moment one row happens to carry the whole needle: {rows:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE PEER IS ASKED BEFORE THE PIXELS, AND A PEER THAT SAYS NOTHING STILL GETS
+    /// READ** — register item 452(3)'s demotion, both halves in one staging.
+    ///
+    /// # ⚠⚠⚠⚠ Why the screen must be EMPTY here, and its neighbour's screen must not
+    ///
+    /// The gate above proves the screen path works. This one proves it is no longer the ONLY path,
+    /// and the only way to prove that is to take the screen away: the pane shows nothing of the
+    /// needle, so a build that still read pixels alone answers `false` and this gate is red. That
+    /// is the whole defect item 452 named — the fix had been put on the nearest arm, `screening`
+    /// already read the screen, while the peer's hook had fired at the exact moment and the product
+    /// reduced the payload to one enum value.
+    ///
+    /// ⚠⚠⚠ **AND THE DEMOTION IS NOT A DELETION**, which is the clause's own word. The second arm
+    /// puts the needle back on the SCREEN with the peer stating nothing — a `codex`-shaped peer,
+    /// which raises no notice at all — and the answer must still be yes. A change that moved the
+    /// read to the hook instead of ahead of it passes the first arm and fails this one.
+    ///
+    /// ⚠⚠ The two arms differ in ONE thing each and share everything else: same loop, same brief,
+    /// same needle, same pane.
+    #[test]
+    fn an_outage_the_peer_states_is_heard_before_the_screen_and_without_one_after_it() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let outage = crate::kind::LoopKind::debt(Arc::clone(&lua))
+            .expect("the debt kind's document must open a script session")
+            .service_outage()
+            .expect("this repository's kind must name what its peer prints");
+
+        let (workspace, pane) = quiet_pane();
+        // The peer's own account, moved between the arms. `None` is a peer that states nothing,
+        // which is `codex` and is why `Peer::speaks_up` is a field rather than an assumption.
+        let stated: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let source = {
+            let stated = Arc::clone(&stated);
+            Arc::new(move |_id: PaneId| {
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Blocked,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_string(),
+                    },
+                    seq: 2,
+                    asked_seq: 1,
+                    reports: 3,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    noticed: stated.lock().expect("the statement").clone(),
+                    transcript: None,
+                })
+            })
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .with_agent_state(Some(source as crate::access::AgentStateSource));
+
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "n".to_string(),
+                milestone: "m".to_string(),
+                reference: "r".to_string(),
+                closing_rules: None,
+                milestone_check: None,
+                service: Some(outage.clone()),
+                max_turns: Some(Counted::Of(3)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the control: the brief lands and the needle is in force",
+        );
+
+        // ── THE STAGING: the screen says nothing of it. A `cat` at its prompt shows no such words.
+        let blank = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !blank.contains(&outage.needle),
+            "⚠ THE STAGING: this gate is about a screen that CANNOT answer, so it must not: \
+             {blank:?}",
+        );
+        assert!(
+            !loops.service_failed(&access),
+            "⚠ and with nobody saying anything, nothing is wrong yet",
+        );
+
+        // ── ARM 1: the peer states it, and the pixels are still blank. ──
+        *stated.lock().expect("the statement") = Some(format!(
+            "{} Overloaded. This is a server-side issue, usually temporary.",
+            outage.needle,
+        ));
+        assert!(
+            loops.service_failed(&access),
+            "⚠⚠⚠⚠⚠ THE PEER'S OWN ACCOUNT MUST BE HEARD. Its hook fired at the exact moment of the \
+             529 that cost a live run 28 minutes, and the product read the screen instead because \
+             `screening` already read the screen — the weak kind of fix this register names. A \
+             build that still reads pixels alone answers false here with the screen blank",
+        );
+
+        // ── ARM 2: nothing is stated — a peer that raises no notice — and the words are on screen.
+        *stated.lock().expect("the statement") = None;
+        let line = format!("{} Overloaded.\n", outage.needle);
+        let _echoed = access
+            .inject(pane, &crate::access::KeyStroke::text(&line))
+            .expect("the pane must take what is typed at it");
+        let screen = crate::testing::screen_showing(&access, pane, "Overloaded");
+        assert!(
+            loops.service_failed(&access),
+            "⚠⚠⚠⚠⚠ THE SCREEN IS DEMOTED, NOT DELETED — item 452(3)'s own word. A peer that raises \
+             no notice states nothing however good the pipe is, and `codex` is exactly that peer. \
+             A change that MOVED the read to the hook rather than putting it in front passes the \
+             arm above and blinds every silent peer: {screen:?}",
         );
     }
 

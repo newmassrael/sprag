@@ -70,7 +70,20 @@ use crate::run::{RunContext, Waited, poll_until};
 /// matching option to exist, which is precisely the case a consent cannot reach.
 ///
 /// See the module doc for why a rule may not name this itself.
-pub const REFUSES: &str = "Escape";
+///
+/// # ⚠⚠⚠ It is READ from the peer declaration, not spelled here — register items 150 and 452
+///
+/// This was a `const` with the key written into it, which made it the first of *what `claude` is*'s
+/// four homes. The declaration is [`sprag_detect::peer`], which also says the thing this constant
+/// never could: the key arrives on the SCREEN — nothing reports it, it is pressed and then read.
+///
+/// ⚠⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN — item 150's remaining half.** This site is
+/// AGENT-BLIND: `refuse` is handed a pane and a question, not a peer, so one agent's key is what
+/// every agent gets. Reading it from `claude`'s row makes the source single without making the
+/// choice per-agent, which is the honest half to pay first. What keeps it from being silent is
+/// unchanged: an agent that does not take this key leaves the dialog up, NOTHING is typed, and the
+/// run reports `Refusal::NotDismissed`.
+pub const REFUSES: &str = sprag_detect::peer::Peer::CLAUDE.refuses;
 
 /// How long the dialog has to leave the screen after [`REFUSES`] goes in.
 ///

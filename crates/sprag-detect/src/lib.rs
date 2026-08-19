@@ -110,6 +110,7 @@ use regex::Regex;
 use sprag_vt::Screen;
 
 mod choice;
+pub mod peer;
 mod track;
 
 pub use choice::{Choice, Question, question};
