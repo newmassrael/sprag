@@ -3617,6 +3617,21 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                     .as_ref()
                     .and_then(|a| a.transcript.as_ref())
                     .map(|path| path.display().to_string()),
+                // ⚠⚠⚠⚠⚠ WHICH BUILD IS REPORTING — register item 459. THIS is the reporter the key
+                // was written for: `AGENT_BUILD_KEY`'s whole argument is that a `cargo build`
+                // replaces THE HOOK BINARY under a running daemon, "the ORDINARY state after any
+                // rebuild", and until this line the hook was the one reporter that never said. The
+                // only writer in the tree was the `report-agent` VERB — a person at a command line,
+                // the reporter the key was NOT written for — so `reporter_build` was `None` for
+                // every production report, which that key's own doc defines as *this reporter did
+                // not say*. Item 412's quiet skew had no detector at all.
+                //
+                // ⚠ On the same terms `report-agent` states it: unconditionally, and about THIS
+                // process rather than about the daemon. This side cannot make the comparison —
+                // `HostConn::daemon_build` is one connection's answer where the daemon has to
+                // answer for every reporter it holds — so it states the fact and lets the holder of
+                // both compare, exactly as `source` divides the same work.
+                sprag_host::wire::AGENT_BUILD_KEY: sprag_host::wire::BUILD,
                 // This report is made ON BEHALF OF the agent that spawned this process, not by it,
                 // so it must not outlive that agent. `SessionEnd` covers the graceful exit; this
                 // covers the two it cannot — an agent that is killed or crashes runs no hook, and

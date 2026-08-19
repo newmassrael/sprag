@@ -4152,6 +4152,151 @@ fn an_agent_this_daemon_launched_reports_the_turn_boundaries_it_alone_knows() {
     );
 }
 
+/// Run the REAL `sprag` CLI against `sock`, feeding it `input`, with `envs` on top.
+///
+/// ⚠⚠ `XDG_STATE_HOME` is redirected because `hook` is the verb that WRITES: `note_hook_trouble`
+/// files `sprag/hook-mute.<pane>` whenever a report could not be delivered, and without a state
+/// home of its own that lands in the runner's real `~/.local/state` — the residue CI's
+/// `ambient-home-guard` reported in register item 464, bisected there rather than reasoned.
+///
+/// ⚠ Fed through [`sprag_gate::feeding`] (register item 471): this CLI can refuse BEFORE it reads
+/// its payload, and a fixture that treated the resulting `EPIPE` as fatal would report a write
+/// failure where the exit status it came for is the answer.
+fn sprag_cli(sock: &std::path::Path, args: &[&str], envs: &[(&str, &str)], input: &str) -> bool {
+    let state = sock.with_extension("state");
+    std::fs::create_dir_all(&state).expect("a state home of this test's own");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .args(args)
+        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .env("XDG_STATE_HOME", &state)
+        // ⚠ The pane THIS suite's runner is itself in must not leak into the CLI it drives —
+        // register item 226. The debt-repayment loop's own agent runs in a sprag pane, so a test
+        // that inherited `SPRAG_PANE` would report to a daemon that has never heard of it. Before
+        // `envs`, so a caller that WANTS a pane still sets one and wins.
+        .env_remove(sprag_host::PANE_ENV_VAR)
+        .envs(envs.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run the sprag CLI");
+    sprag_gate::feeding::feed(&mut child, input.as_bytes());
+    child
+        .wait_with_output()
+        .expect("wait for the sprag CLI")
+        .status
+        .success()
+}
+
+/// ⚠⚠⚠⚠⚠ **THE HOOK SAYS WHICH BUILD IT IS, ON THE SAME TERMS A PERSON'S `report-agent` DOES** —
+/// register item 459, at the door the whole key was written for.
+///
+/// # ⚠⚠⚠⚠ Why this exists when two gates already carry `build`
+///
+/// Both of them supply the very field the product was omitting.
+/// `agent::tests::a_reporter_says_which_build_it_is_and_silence_is_never_agreement` hands the
+/// REGISTRY a `Report { build: Some(..) }` by hand, and
+/// `workspace::tests::a_reporters_build_reaches_the_pane_row` invokes `report_agent` with the key
+/// already in the params. Each proves its own layer carries a build **somebody sends** — and
+/// nobody did. [`sprag_host::wire::AGENT_BUILD_KEY`]'s entire argument is about the HOOK ("a
+/// `cargo build` replaces the reporter under a running daemon … the ORDINARY state after any
+/// rebuild"), and the hook was the one reporter in the tree that never stated it: `deliver_hook`
+/// built its params with `id`/`state`/`source`/`name`/`seq`/`asked`/`said`/`transcript`/`bind` and
+/// no `build`, so `reporter_build` was `None` — *this reporter did not say* — for every report
+/// production has ever made. Item 412's quiet skew had no detector at all, and a gate whose
+/// fixture supplies the omitted field cannot see the omission (register item 428's shape).
+///
+/// So this one sends NOTHING by hand. It runs the real `sprag hook claude` binary on a real
+/// daemon's socket and reads the answer off the pane row a client reads.
+///
+/// # The two halves, and why neither is the other's decoration
+///
+/// * **The hook's**, on the boot pane. Its CONTROL is that a `cat` pane has no agent key at all
+///   before the hook runs, so every word of the row afterwards came from that process.
+/// * **A person's `report-agent`**, on a second pane, which is the *"same terms"* half of the
+///   item's done-when — and not a tautology: it is also the first gate anywhere that the VERB
+///   states a build over a real socket. Without it a green above could be produced by a wire that
+///   defaulted the key, and the cross-check (`the two reporters agree`) is what refutes that.
+///
+/// ⚠ [`sprag_rpc::BUILD`] is the oracle because every binary linking that crate is stamped with the
+/// SAME value, so within one `cargo build` the hook, the daemon and this test are one image — the
+/// property the const's own doc states, and the reason a mismatch here means a reporter that is
+/// not this image rather than a flaky fixture.
+#[test]
+fn the_hook_states_which_build_reported_on_the_same_terms_a_person_does() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // THE CONTROL: `cat` paints nothing any rule reads, so this pane has no agent key whatever.
+    let before = pane_entry(&mut conn, 0);
+    assert!(
+        before.get("agent").is_none(),
+        "nothing on this screen is an agent to any rule, which is what makes the rest \
+         attributable: {before}",
+    );
+
+    // A second pane for the person's half, so the two reporters never overwrite each other and a
+    // `None` on one cannot be hidden by a `Some` on the other.
+    let second = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a 2nd pane over the wire")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+
+    // ── The hook, as an agent's session runs it: the real binary, its payload on stdin. ──
+    assert!(
+        sprag_cli(
+            &sock,
+            &["hook", "claude"],
+            &[(sprag_host::PANE_ENV_VAR, "0")],
+            r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#,
+        ),
+        "the hook binary succeeded",
+    );
+    let reported = wait_until(Duration::from_secs(5), || {
+        pane_entry(&mut conn, 0)["agent"]["source"].as_str() == Some("hook:claude")
+    });
+    let hooked = pane_entry(&mut conn, 0);
+    assert!(reported, "the hook never reached the daemon: {hooked}");
+    assert_eq!(
+        hooked["agent"][sprag_host::wire::AGENT_BUILD_KEY],
+        json!(sprag_rpc::BUILD),
+        "⚠⚠⚠⚠⚠ THE HOOK MUST SAY WHICH BUILD IT IS. It is the reporter `AGENT_BUILD_KEY` was \
+         written for — the one a `cargo build` replaces under a running daemon — and an absent key \
+         means *this reporter did not say*, never *it matches*. With it absent the quiet skew of \
+         register item 412 (reports accepted, reporter running code the daemon has never seen) is \
+         undetectable by construction: {hooked}",
+    );
+
+    // ── A person at a command line, on the terms the item names. ──
+    assert!(
+        sprag_cli(
+            &sock,
+            &["report-agent", "working", "--pane", &second.to_string()],
+            &[],
+            "",
+        ),
+        "the report-agent verb succeeded",
+    );
+    let by_hand = pane_entry(&mut conn, second);
+    assert_eq!(
+        by_hand["agent"][sprag_host::wire::AGENT_BUILD_KEY],
+        json!(sprag_rpc::BUILD),
+        "a person's report states its build over a real socket too — the terms the hook is held \
+         to, measured rather than assumed: {by_hand}",
+    );
+    assert_eq!(
+        hooked["agent"][sprag_host::wire::AGENT_BUILD_KEY],
+        by_hand["agent"][sprag_host::wire::AGENT_BUILD_KEY],
+        "and the two reporters of one image agree, which is what makes a DISAGREEMENT mean \
+         something: {hooked} / {by_hand}",
+    );
+}
+
 /// **AN AGENT THIS DAEMON LAUNCHED TALKS TO THE MCP SERVER OF THE IMAGE THAT MADE ITS PANE** —
 /// register item 444, end to end, with no step faked and no install anywhere.
 ///
