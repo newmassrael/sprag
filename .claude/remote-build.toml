@@ -35,10 +35,19 @@ packages = ["libfontconfig-dev"]
 min_ram_gb = 16
 min_free_gb = 20
 
-# ⚠ `peak_gb_per_task` is DELIBERATELY ABSENT. The skill's parallelism formula uses it to cap by
-# RAM, and sprag has never measured what its heaviest test actually peaks at — writing a number
-# nobody measured would make the cap look derived when it was guessed. The CPU half of the formula
-# still applies. Fill this in the day somebody measures it.
+# What ONE task of this repository peaks at. bx divides a host's free RAM by this to get the
+# parallelism budget, so it is the RAM half of a formula that ran on cores alone until 2026-08-20.
+#
+# ⚠⚠ IT IS A MEASUREMENT AND IT IS DERIVED, NOT TYPED. `[peak_measured]` at the foot of this file
+# holds the readings; the gate `a_fleet_ceiling_is_a_measurement_with_a_date` recomputes this
+# integer from them and refuses a value that does not follow. BOTH directions of wrong are real:
+# too LOW packs a host past its RAM — the swap storm of 2026-08-19, load 29 with 82% of the CPU
+# idle — and too HIGH divides free RAM by a number nobody measured and refuses hosts that could
+# have done the work, which is the failure that wears the face of caution.
+#
+# ⚠ Whole GiB because bx parses this field with an INTEGER regex: a `2.5` here would be read as
+# `2` silently, so the file would declare one ceiling and the fleet would use another.
+peak_gb_per_task = 2
 
 [commands]
 # What the machine has to produce before anything can be judged.
@@ -131,3 +140,54 @@ verify = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS
 # ⚠ THE FIRST CLASS ABOVE IS NOT CLOSED BY THIS. `a_hooks_report_does_not_outlive_an_agent_the_pane_
 # did_not_spawn` was GREEN on the build machine in this round's full run, which is one reading of an
 # intermittent red and therefore proves nothing. Its note stands.
+
+# WHERE `peak_gb_per_task` CAME FROM — the readings, and what took them.
+#
+# One row per command in `[commands]`, keyed by that command's name. The command's own TEXT is
+# recorded beside its number so that EDITING A COMMAND IS EDITING SOMETHING THE GATE COMPARES: a
+# `verify` that grows a fifth clause is a different amount of work by a different program, and the
+# ceiling that covered the old one is then a claim nobody re-checked. `*_kb` is kilobytes as the
+# instrument reported them, not a rounded GB, so a re-run can be compared against this file.
+#
+# ⚠⚠ THE INSTRUMENT, because the obvious one was wrong. `/usr/bin/time -v` reports ru_maxrss of
+# RUSAGE_CHILDREN, and it answered ~1.2GB for five workloads as different as a 5-second rustdoc
+# pass and a 36-second cold build — a coincidence that turned out to be the largest rustc being the
+# same crate every time, but which no reading of that number alone could distinguish from the
+# instrument measuring `cargo` itself. The numbers here come from sampling /proc for the VmHWM of
+# every process under the run, which is why each one can NAME what peaked.
+#
+# ⚠ EACH CLAUSE OF `verify` WAS MEASURED IN ITS OWN COLD TARGET DIRECTORY, and `verify_kb` is the
+# largest of them: the chain stops at its first failure, so a single chained run measures only as
+# far as it got — two attempts at the whole chain stopped in its first clause. Readings, same host
+# and day, in kB:
+#     cargo test --workspace --exclude sprag-gui     1192760   (rustc sprag_host)
+#     cargo test -p sprag-gui --bins                 1201984   (rustc sprag_host)
+#     cargo clippy --workspace --all-targets         1199108   (rustc sce_build)
+#     cargo doc --workspace --no-deps                1233428   (rustdoc sprag_gui)  <- verify_kb
+#
+# ⚠⚠ THE SUITE ROW IS THE ONE THAT NEEDED FORCING, and it is the row that mattered: a suite that
+# stops early says what a COMPILER peaks at and nothing about what a TEST peaks at. It was taken
+# from `cargo build --workspace --bins && cargo test --workspace --exclude sprag-gui --no-fail-fast`
+# — the bins first because the staleness gates refuse a binary `cargo test` never built, and
+# `--no-fail-fast` so a red target does not end the run. 2150 processes sampled, the whole suite
+# run, and NOT ONE TEST BINARY reached the top eight: the largest was 1192760 kB of rustc and the
+# heaviest non-compiler was less than half that. On this workspace the ceiling is a compilation
+# ceiling, which is why `build` and `verify` land within 3% of each other.
+#
+# ⚠⚠⚠ 6.5GB IS NOT HERE AND MUST NOT BE. That reading was `cargo doc --document-private-items`,
+# which is the COMMIT HOOK's doc gate and is not a command this file sends — the same tree answers
+# differently per command, which is why every row here carries the command that produced it. The
+# hook has no ceiling of any kind and that is its own debt (register item 457), not this field's.
+#
+# ⚠ RESIDUE: the sampler follows the run's process group and its ancestry, so a descendant that
+# calls `setsid` and outlives its parent — which sprag's own daemons do on purpose — can leave the
+# tracked set. Every peak recorded here is a compiler, so nothing observed was lost this way; a
+# reading whose `worst` is a sprag binary should be taken again with that in mind.
+[peak_measured]
+date = "2026-08-20"
+host = "pc2, a 32-core 125GB build machine, rustc 1.97.1, RUST_TEST_THREADS=CARGO_BUILD_JOBS=31"
+worst = "rustdoc --crate-name sprag_gui crates/sprag-gui/src/main.rs, in the cargo doc clause of verify"
+build_cmd = "cargo test --workspace --no-run"
+build_kb = 1204328
+verify_cmd = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR=/nonexistent cargo test -p sprag-gui --bins && cargo clippy --workspace --all-targets && cargo doc --workspace --no-deps"
+verify_kb = 1233428
