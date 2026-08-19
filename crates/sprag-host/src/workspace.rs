@@ -6157,7 +6157,7 @@ mod tests {
         {
             let mut a = lock(&attachments);
             let conn = pinion_rpc::ConnId::allocate();
-            a.hello(conn, "gui".to_owned());
+            a.hello(conn, "gui".to_owned(), None);
             let (id, landing) = {
                 let reg = lock(&reg);
                 let session = reg.default_session();
@@ -6764,7 +6764,7 @@ mod tests {
             let mut a = lock(&attachments);
             for (client, session) in [("gui", "work"), ("tui", "work"), ("other", "keeper")] {
                 let conn = pinion_rpc::ConnId::allocate();
-                a.hello(conn, client.to_owned());
+                a.hello(conn, client.to_owned(), None);
                 let (id, landing) = {
                     let reg = lock(&reg);
                     let held = reg.session(session).expect("the fixture session");
@@ -7964,7 +7964,7 @@ mod tests {
         {
             let mut a = lock(&attachments);
             let conn = pinion_rpc::ConnId::allocate();
-            a.hello(conn, "gui".to_owned());
+            a.hello(conn, "gui".to_owned(), None);
             let (id, landing) = {
                 let reg = lock(reg);
                 let session = reg.default_session();

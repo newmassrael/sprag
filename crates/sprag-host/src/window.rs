@@ -835,7 +835,7 @@ mod tests {
         // so the arbitrated window is exactly that whatever the user's `window-size` is set to.
         let attachments = Arc::new(Mutex::new(crate::attach::AttachmentRegistry::default()));
         let conn = pinion_rpc::ConnId::allocate();
-        lock(&attachments).hello(conn, "client-under-test".to_owned());
+        lock(&attachments).hello(conn, "client-under-test".to_owned(), None);
         let (id, landing) = {
             let registry = lock(&registry);
             let held = registry.session(&session).expect("the fixture session");

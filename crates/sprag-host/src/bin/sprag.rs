@@ -4403,6 +4403,93 @@ fn build_report(daemon: Option<&str>) -> String {
     }
 }
 
+/// **WHICH BUILD EVERY ATTACHED WINDOW SAID IT IS**, held against the daemon's own — [`doctor`]'s
+/// third build section, and the one about the process a person is actually looking at.
+///
+/// # ⚠⚠⚠⚠⚠ The window was the one companion nothing could date (register item 463)
+///
+/// This daemon RESOLVES two of its companions: the hook and the MCP server are the sibling of the
+/// running executable, so a daemon cannot hand its agents a reporter from another build. **The GUI
+/// is outside that structure and always has been** — it is started by hand from wherever somebody
+/// points, and this repository's own promotion procedure copies the daemon into one directory and
+/// then runs `target/debug/sprag-gui`. So the skew is the ORDINARY state here rather than an exotic
+/// one, and the owner raised it the moment it bit: an experimental window driving a daemon built
+/// from other code, with nothing anywhere able to say so.
+///
+/// ⚠⚠⚠ **IT TELLS, IT NEVER REFUSES**, and that is the same ruling `sprag_rpc::BUILD_FIELD` states
+/// for the daemon's own build: `WIRE_PROTOCOL` owns refusal because a shape neither end can parse
+/// must stop, where a behaviour skew is a fact a reader acts on. A GUI refused at the door over a
+/// build difference would throw a person out of the windows they are working in, every rebuild.
+///
+/// # ⚠⚠⚠⚠ The counts are printed even when nothing is wrong, and that is the substance
+///
+/// A report that printed only the odd ones leaves a reader unable to tell *every window was checked
+/// and matched* from *nobody looked* — and this surface is read exactly when somebody already
+/// suspects the answer. So the summary states how many were compared and how each of them came out;
+/// silence here is earned rather than assumed.
+///
+/// # Four answers, and the fourth belongs to the SET rather than to any client
+///
+/// The comparison is `sprag_host::wire::reporter_image`'s, shared with the hook's sentence one verb
+/// over so the two mouths cannot come to count differently. Three of its arms are per-client. The
+/// fourth — a daemon that cannot say its OWN build — is a property of the daemon every row is being
+/// held against, so it is said once, for however many clients it swallowed. Rendering it per row
+/// would repeat one fact N times and read as N problems.
+///
+/// Pure, and takes the two facts rather than a connection, so every answer is gateable — including
+/// the daemon-silent one, which no live daemon in this tree can be made to produce.
+fn attached_build_report(daemon: Option<&str>, clients: &[(String, Option<String>)]) -> String {
+    if clients.is_empty() {
+        return "no client is attached, so no window's build was compared\n".to_owned();
+    }
+    let (mut same, mut uncomparable) = (0_usize, 0_usize);
+    let mut findings = String::new();
+    let (mut other, mut unsaid) = (0_usize, 0_usize);
+    for (client, build) in clients {
+        match sprag_host::wire::reporter_image(build.as_deref(), daemon) {
+            sprag_host::wire::ReporterImage::SameImage { .. } => same += 1,
+            // ⚠ THE ONE A READER MUST ACT ON: the window on the screen is drawing from code this
+            // daemon has never run. BOTH builds are named — one of them alone tells a reader
+            // nothing about which is which.
+            sprag_host::wire::ReporterImage::OtherImage { reporter, daemon } => {
+                other += 1;
+                findings.push_str(&format!(
+                    "⚠ THE WINDOW {client:?} IS NOT THIS DAEMON'S IMAGE: it is build {reporter} \
+                     and this daemon is build {daemon}. What it draws, and every key it sends, is \
+                     that build's behaviour — close it and start the `sprag-gui` beside this \
+                     daemon, or restart the daemon to promote the tree the window came from\n"
+                ));
+            }
+            // ⚠⚠ Counted for the SET, said once below: a daemon that cannot say its own build
+            // makes every comparison impossible for the same single reason.
+            sprag_host::wire::ReporterImage::DaemonSilent { .. } => uncomparable += 1,
+            // ⚠⚠⚠ AND THE ARM A TIDY EDIT FOLDS INTO THE FIRST. Every client older than
+            // `sprag_rpc::CLIENT_BUILD_PARAM` says exactly nothing, and reading that as agreement
+            // would make the commonest case look like the safe one.
+            sprag_host::wire::ReporterImage::ReporterSilent => {
+                unsaid += 1;
+                findings.push_str(&format!(
+                    "{client:?} does not say which build it is, which is not the same as saying it \
+                     matches — a client older than this key answers exactly this\n"
+                ));
+            }
+        }
+    }
+    let mut report = format!(
+        "{} attached client(s): {same} on the daemon's build, {other} on other code, {unsaid} did \
+         not say\n",
+        clients.len(),
+    );
+    if uncomparable > 0 {
+        report.push_str(&format!(
+            "{uncomparable} of them stated a build and this daemon does not say which build IT is, \
+             so those could not be compared — an absent build is not a matching one\n"
+        ));
+    }
+    report.push_str(&findings);
+    report
+}
+
 /// `doctor`: what is WRONG with the machine the panes run on.
 ///
 /// # Why it prints the healthy rows too, and why every row carries a number
@@ -4430,6 +4517,33 @@ fn doctor(args: Vec<String>) -> io::Result<()> {
     }
     let mut conn = connect()?;
     print!("{}", build_report(conn.daemon_build()));
+    // ⚠⚠⚠⚠⚠ AND THE BUILD OF EVERY WINDOW SOMEBODY IS LOOKING AT — register item 463. The pair
+    // above is THIS process against the daemon, which says nothing about the `sprag-gui` on the
+    // screen: that one is started by hand from wherever a person points, so it is the companion
+    // this daemon does not resolve and the only one that could differ unnoticed. The daemon holds
+    // every client's stated build beside its own, so it is the party that can be asked.
+    //
+    // ⚠ Read BEFORE the pause below, deliberately: the machine checks sample twice half a second
+    // apart, and a build skew is the fact most likely to explain everything printed after it.
+    let daemon_build = conn.daemon_build().map(str::to_owned);
+    let attached = query_slot(&mut conn, json!({ "path": mux_action_path(CLIENTS_SLOT) }))?;
+    let attached: Vec<(String, Option<String>)> = attached
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|client| {
+            (
+                client["client"].as_str().unwrap_or("?").to_owned(),
+                // Absent for a client that did not say, which is the `None` the renderer must be
+                // handed rather than a fabricated word — the whole key's rule.
+                client["build"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    print!(
+        "{}",
+        attached_build_report(daemon_build.as_deref(), &attached)
+    );
     let answer = query_slot(
         &mut conn,
         json!({ "path": mux_action_path(&doctor_over(DOCTOR_WINDOW_MS)) }),
@@ -8450,6 +8564,118 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A WINDOW THAT IS NOT THE DAEMON'S BUILD IS NAMED, AND A SET THAT MATCHES SAYS SO
+    /// OUT LOUD** — register item 463's report half, pinned where a live daemon cannot reach.
+    ///
+    /// # What this is for
+    ///
+    /// The daemon RESOLVES its hook and its MCP server as siblings of the running executable, so
+    /// neither can be another build without a deployment that split them. **The GUI is outside that
+    /// structure**: it is launched by hand from wherever somebody points, and this repository's own
+    /// promotion copies the daemon to one directory and runs `target/debug/sprag-gui`. The skew is
+    /// therefore ordinary here, and until this nothing anywhere could state it.
+    ///
+    /// # ⚠⚠⚠⚠ The mutations this exists to catch, and both look like tidying
+    ///
+    /// * **Folding the silent client into the matching ones.** Every client older than
+    ///   `sprag_rpc::CLIENT_BUILD_PARAM` says nothing, so that fold makes the commonest case read
+    ///   as the safe one — the inversion all three build keys exist to end.
+    /// * **Printing findings only.** A surface that says nothing when every window matches cannot
+    ///   be told from one that did not look, and this is read exactly when somebody already
+    ///   suspects the answer. The counts are the earned silence.
+    ///
+    /// ⚠ The daemon-silent arm is driven as a VALUE for [`build_report`]'s reason: it is reachable
+    /// only from a daemon predating `sprag_rpc::BUILD_FIELD`, which is not a process this tree can
+    /// build.
+    #[test]
+    fn a_window_that_is_not_the_daemons_build_is_named_and_a_matching_set_says_so() {
+        let mine = sprag_host::wire::BUILD;
+        let named =
+            |client: &str, build: Option<&str>| vec![(client.to_owned(), build.map(str::to_owned))];
+
+        // ── THE ORDINARY CASE, and it must still SAY that it looked ──
+        let agreed = attached_build_report(Some(mine), &named("gui-1", Some(mine)));
+        assert!(
+            agreed.contains("1 attached client(s)") && agreed.contains("1 on the daemon's build"),
+            "⚠⚠⚠⚠ SILENCE HAS TO BE EARNED. A reader cannot tell *checked and matched* from \
+             *nobody looked* unless the count is printed: {agreed:?}",
+        );
+        assert!(
+            !agreed.contains("NOT THIS DAEMON'S IMAGE"),
+            "a window on the daemon's own build is not a finding: {agreed:?}",
+        );
+
+        // ── THE WHOLE HAZARD: the window is drawing from code this daemon has never run ──
+        let skewed = attached_build_report(Some(mine), &named("gui-2", Some("0000deadbeef")));
+        assert!(
+            skewed.contains("NOT THIS DAEMON'S IMAGE") && skewed.contains("gui-2"),
+            "⚠⚠⚠⚠⚠ the finding must NAME the window, because a person with three of them open \
+             cannot act on a count: {skewed:?}",
+        );
+        assert!(
+            skewed.contains(mine) && skewed.contains("0000deadbeef"),
+            "⚠⚠⚠ and it names BOTH builds — one alone tells a reader nothing about which is \
+             which: {skewed:?}",
+        );
+
+        // ── THE ARM A TIDY EDIT FOLDS INTO THE FIRST ──
+        let quiet = attached_build_report(Some(mine), &named("gui-3", None));
+        assert!(
+            quiet.contains("1 did not say") && quiet.contains("gui-3"),
+            "⚠⚠⚠⚠⚠ AN ABSENT BUILD IS NOT A MATCHING ONE. Every client older than this key sends \
+             exactly this silence, and counting it as agreement would make the commonest case look \
+             like the safe one: {quiet:?}",
+        );
+        assert!(
+            !quiet.contains("1 on the daemon's build"),
+            "a client that did not say was not compared, so it cannot be counted as matching: \
+             {quiet:?}",
+        );
+
+        // ── THE DAEMON THAT CANNOT SAY ITS OWN: nobody can compare, and it is said ONCE ──
+        let blind = attached_build_report(None, &named("gui-4", Some(mine)));
+        assert!(
+            blind.contains("could not be compared"),
+            "⚠⚠⚠⚠ a daemon predating the hello's build key makes every row unjudgeable, and \
+             claiming a match here would break the no-bump argument `BUILD_FIELD` rests on: \
+             {blind:?}",
+        );
+        assert!(
+            !blind.contains("1 on the daemon's build"),
+            "there is no daemon build to be on: {blind:?}",
+        );
+
+        // ── AND A SET SAYS ONE THING PER CLIENT, not one thing per set ──
+        let mixed = attached_build_report(
+            Some(mine),
+            &[
+                ("gui-ok".to_owned(), Some(mine.to_owned())),
+                ("gui-old".to_owned(), Some("0000deadbeef".to_owned())),
+                ("tui-quiet".to_owned(), None),
+            ],
+        );
+        assert!(
+            mixed.contains("3 attached client(s)")
+                && mixed.contains("1 on the daemon's build")
+                && mixed.contains("1 on other code")
+                && mixed.contains("1 did not say"),
+            "⚠⚠⚠ three windows in three states are three answers, and a summary that collapses \
+             them is a report about none of them: {mixed:?}",
+        );
+        assert!(
+            mixed.contains("gui-old") && mixed.contains("tui-quiet") && !mixed.contains("gui-ok"),
+            "⚠⚠ the two a reader must act on are named and the one that is fine is not — a \
+             finding per healthy row is how a report stops being read: {mixed:?}",
+        );
+
+        // ── NOBODY ATTACHED IS ITS OWN ANSWER, never an empty pass ──
+        let none = attached_build_report(Some(mine), &[]);
+        assert!(
+            none.contains("no client is attached"),
+            "⚠⚠⚠ zero windows compared must not render as zero problems found: {none:?}",
+        );
     }
 
     /// ⚠⚠⚠⚠ **A RUN WITH NO RECORDED BUILD SAYS SO, WHERE ONE THAT MATCHES SAYS NOTHING** — the

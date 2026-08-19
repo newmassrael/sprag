@@ -86,6 +86,22 @@ pub struct ClientInfo {
     /// them; resolved by the caller, which is the only side that holds the registry.
     #[serde(default)]
     pub window: Option<String>,
+    /// **WHICH BUILD THIS CLIENT SAID IT IS** ([`sprag_rpc::CLIENT_BUILD_PARAM`]), or `None` from
+    /// one that did not say.
+    ///
+    /// # ⚠⚠⚠⚠⚠ `None` is *"it did not say"*, and a reader that renders it as agreement breaks the
+    /// key's licence
+    ///
+    /// The daemon is the only party holding every window's answer AND its own, so this is the row
+    /// that lets a person ask *is the window I am looking at running this daemon's code*. Register
+    /// item 463: a `sprag-gui` is started by hand from wherever somebody points, and this
+    /// repository's own promotion copies the daemon to one directory while the GUI is run out of
+    /// `target/debug` — so the skew is ordinary, not exotic.
+    ///
+    /// Additive, like the two fields above: a reader predating it sees no key, which is exactly the
+    /// answer it would get from a daemon that has one and a client that stayed quiet.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 /// What an [`attach`](AttachmentRegistry::attach) did, so the caller knows whether the per-session
@@ -223,6 +239,25 @@ pub struct AttachmentRegistry {
     /// collected cannot outlive the client it was addressed to and become a sentence a LATER client
     /// with the same id is shown — the capture the history beside it already refuses.
     client_mail: HashMap<ClientId, Announcement>,
+    /// **WHICH BUILD each present client SAID IT IS** ([`sprag_rpc::CLIENT_BUILD_PARAM`], stated at
+    /// `client/hello`), or no entry at all for one that did not say.
+    ///
+    /// # ⚠⚠⚠⚠ An absent entry is *"it did not say"* and never *"it matches"*
+    ///
+    /// This registry only RECORDS; the comparison and its four answers live in
+    /// [`crate::wire::reporter_image`], because a client that stated nothing and a client that
+    /// stated this daemon's own build are different facts and a `bool` here would fold them. Every
+    /// client older than the key sends exactly that silence, so the fold would make the commonest
+    /// case read as the safe one.
+    ///
+    /// Keyed by CLIENT and not by connection, for the reason the size and the mailbox beside it
+    /// are: a client's several connections are one surface, and they are one PROCESS — so they
+    /// carry one build, and the last hello of a client re-states what its first one did.
+    ///
+    /// Dropped with the client in [`disconnect`](AttachmentRegistry::disconnect), for the reason
+    /// the mailbox is: a client id is a lifecycle token, and a departed window's build left behind
+    /// would be reported as the build of whoever next holds that id.
+    client_build: HashMap<ClientId, String>,
     /// The stamp the next report takes. Monotone for the life of the daemon — it orders reports,
     /// it does not count them, so wrapping is not a concern at one per window change.
     next_ordinal: u64,
@@ -231,7 +266,15 @@ pub struct AttachmentRegistry {
 impl AttachmentRegistry {
     /// Associate `conn` with the `client` it belongs to (`client/hello`). Idempotent; every
     /// connection of a client calls this once so the client stays present while any is live.
-    pub fn hello(&mut self, conn: ConnId, client: ClientId) {
+    ///
+    /// `build` is what that client SAID it is ([`sprag_rpc::CLIENT_BUILD_PARAM`]) — `None` from a
+    /// client that did not say, which is not a client that matches. A `None` never ERASES a build
+    /// already held for this client: the two connections of one window are one process, so the
+    /// answer belongs to the client rather than to whichever connection spoke last.
+    pub fn hello(&mut self, conn: ConnId, client: ClientId, build: Option<String>) {
+        if let Some(build) = build {
+            self.client_build.insert(client.clone(), build);
+        }
         self.conn_client.insert(conn, client);
     }
 
@@ -494,6 +537,11 @@ impl AttachmentRegistry {
         // ...and so does anything still waiting to be said to it. A client id is a lifecycle token,
         // so leaving the mailbox would hand a stranger a sentence meant for somebody who has gone.
         self.client_mail.remove(&client);
+        // ...and so does what it said it was built from. A client id is a lifecycle token, so a
+        // departed window's build left behind would be reported as the build of whoever takes that
+        // id next — and the whole value of this field is that a reader can trust which window it
+        // describes.
+        self.client_build.remove(&client);
         self.client_session.remove(&client)
     }
 
@@ -582,6 +630,9 @@ impl AttachmentRegistry {
                 client: client.clone(),
                 session: session.clone(),
                 size: self.client_size.get(client).map(|held| held.size),
+                // Cloned rather than defaulted: the ABSENCE is a fact this row must be able to
+                // carry, because a client that did not say is not a client that matches.
+                build: self.client_build.get(client).cloned(),
                 // Resolved by the CALLER, for the reason `last_viewed` takes its resolver: this
                 // registry holds no session tree, and the lock order is attachments THEN registry.
                 window: self
@@ -812,9 +863,9 @@ mod tests {
     fn a_session_message_reaches_that_sessions_viewers_only() {
         let mut registry = AttachmentRegistry::default();
         let (watching, also, elsewhere) = (conn(1), conn(2), conn(3));
-        registry.hello(watching, "one".into());
-        registry.hello(also, "two".into());
-        registry.hello(elsewhere, "three".into());
+        registry.hello(watching, "one".into(), None);
+        registry.hello(also, "two".into(), None);
+        registry.hello(elsewhere, "three".into(), None);
         registry.attach(watching, "build".into(), sid("build"), wid("build"));
         registry.attach(also, "build".into(), sid("build"), wid("build"));
         registry.attach(elsewhere, "notes".into(), sid("notes"), wid("notes"));
@@ -839,8 +890,8 @@ mod tests {
     fn a_named_client_is_the_only_one_reached() {
         let mut registry = AttachmentRegistry::default();
         let (named, neighbour) = (conn(1), conn(2));
-        registry.hello(named, "one".into());
-        registry.hello(neighbour, "two".into());
+        registry.hello(named, "one".into(), None);
+        registry.hello(neighbour, "two".into(), None);
         registry.attach(named, "build".into(), sid("build"), wid("build"));
         registry.attach(neighbour, "build".into(), sid("build"), wid("build"));
 
@@ -859,7 +910,7 @@ mod tests {
     fn a_message_with_no_client_attached_reaches_nobody_and_says_which() {
         let mut registry = AttachmentRegistry::default();
         let hello_only = conn(1);
-        registry.hello(hello_only, "one".into());
+        registry.hello(hello_only, "one".into(), None);
 
         let delivery = registry.deliver(
             &Audience::Session("build".into()),
@@ -883,7 +934,7 @@ mod tests {
     fn a_message_is_handed_over_exactly_once() {
         let mut registry = AttachmentRegistry::default();
         let client = conn(1);
-        registry.hello(client, "one".into());
+        registry.hello(client, "one".into(), None);
         registry.attach(client, "build".into(), sid("build"), wid("build"));
 
         let _ = registry.deliver(
@@ -904,7 +955,7 @@ mod tests {
     fn a_waiting_alert_is_not_displaced_by_a_note() {
         let mut registry = AttachmentRegistry::default();
         let client = conn(1);
-        registry.hello(client, "one".into());
+        registry.hello(client, "one".into(), None);
         registry.attach(client, "build".into(), sid("build"), wid("build"));
         let audience = Audience::Session("build".into());
 
@@ -931,7 +982,7 @@ mod tests {
     fn an_uncollected_message_does_not_outlive_its_client() {
         let mut registry = AttachmentRegistry::default();
         let gone = conn(1);
-        registry.hello(gone, "one".into());
+        registry.hello(gone, "one".into(), None);
         registry.attach(gone, "build".into(), sid("build"), wid("build"));
         let _ = registry.deliver(
             &Audience::Session("build".into()),
@@ -940,7 +991,7 @@ mod tests {
         registry.disconnect(gone);
 
         let reborn = conn(2);
-        registry.hello(reborn, "one".into());
+        registry.hello(reborn, "one".into(), None);
         registry.attach(reborn, "build".into(), sid("build"), wid("build"));
         assert!(
             registry.collect(reborn).is_none(),
@@ -954,8 +1005,8 @@ mod tests {
     fn a_clients_several_connections_share_one_mailbox() {
         let mut registry = AttachmentRegistry::default();
         let (requests, poll) = (conn(1), conn(2));
-        registry.hello(requests, "one".into());
-        registry.hello(poll, "one".into());
+        registry.hello(requests, "one".into(), None);
+        registry.hello(poll, "one".into(), None);
         registry.attach(requests, "build".into(), sid("build"), wid("build"));
 
         let delivery = registry.deliver(
@@ -977,8 +1028,8 @@ mod tests {
     fn the_delivery_says_who_in_its_own_words() {
         let mut registry = AttachmentRegistry::default();
         let (one, two) = (conn(1), conn(2));
-        registry.hello(one, "gui-1".into());
-        registry.hello(two, "gui-2".into());
+        registry.hello(one, "gui-1".into(), None);
+        registry.hello(two, "gui-2".into(), None);
         registry.attach(one, "build".into(), sid("build"), wid("build"));
         let audience = Audience::Session("build".into());
 
@@ -1003,7 +1054,7 @@ mod tests {
     fn a_client_is_addressable_exactly_while_it_is_listed() {
         let mut registry = AttachmentRegistry::default();
         let client = conn(1);
-        registry.hello(client, "one".into());
+        registry.hello(client, "one".into(), None);
         assert!(
             !registry.is_attached("one"),
             "hello alone is not an attachment",
@@ -1019,7 +1070,7 @@ mod tests {
     fn hello_then_attach_counts_one() {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
-        reg.hello(c, "client-a".to_owned());
+        reg.hello(c, "client-a".to_owned(), None);
         assert_eq!(
             reg.attach(c, "work".to_owned(), sid("work"), wid("work")),
             AttachOutcome::Changed { previous: None },
@@ -1036,8 +1087,8 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let poll = conn(1);
         let request = conn(2);
-        reg.hello(poll, "gui".to_owned());
-        reg.hello(request, "gui".to_owned());
+        reg.hello(poll, "gui".to_owned(), None);
+        reg.hello(request, "gui".to_owned(), None);
         reg.attach(request, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.attached_count("work"),
@@ -1050,7 +1101,7 @@ mod tests {
     fn re_attach_same_session_is_unchanged() {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
-        reg.hello(c, "client-a".to_owned());
+        reg.hello(c, "client-a".to_owned(), None);
         assert_eq!(
             reg.attach(c, "work".to_owned(), sid("work"), wid("work")),
             AttachOutcome::Changed { previous: None }
@@ -1066,7 +1117,7 @@ mod tests {
     fn switch_moves_the_count_between_sessions() {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
-        reg.hello(c, "client-a".to_owned());
+        reg.hello(c, "client-a".to_owned(), None);
         reg.attach(c, "one".to_owned(), sid("one"), wid("one"));
         assert_eq!(
             reg.attach(c, "two".to_owned(), sid("two"), wid("two")),
@@ -1093,7 +1144,7 @@ mod tests {
     fn disconnect_of_the_only_connection_releases_the_client() {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
-        reg.hello(c, "client-a".to_owned());
+        reg.hello(c, "client-a".to_owned(), None);
         reg.attach(c, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.disconnect(c).as_deref(),
@@ -1108,8 +1159,8 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let poll = conn(1);
         let request = conn(2);
-        reg.hello(poll, "gui".to_owned());
-        reg.hello(request, "gui".to_owned());
+        reg.hello(poll, "gui".to_owned(), None);
+        reg.hello(request, "gui".to_owned(), None);
         reg.attach(request, "work".to_owned(), sid("work"), wid("work"));
         assert!(
             reg.disconnect(poll).is_none(),
@@ -1129,8 +1180,8 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let a = conn(1);
         let b = conn(2);
-        reg.hello(a, "client-a".to_owned());
-        reg.hello(b, "client-b".to_owned());
+        reg.hello(a, "client-a".to_owned(), None);
+        reg.hello(b, "client-b".to_owned(), None);
         reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(reg.attached_count("work"), 2, "two windows, two viewers");
@@ -1142,7 +1193,7 @@ mod tests {
     fn disconnect_of_a_hello_only_connection_moves_nothing() {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
-        reg.hello(c, "client-a".to_owned());
+        reg.hello(c, "client-a".to_owned(), None);
         assert!(
             reg.disconnect(c).is_none(),
             "a connection that never attached releases no count"
@@ -1155,9 +1206,9 @@ mod tests {
         let a = conn(1);
         let b = conn(2);
         let hello_only = conn(3);
-        reg.hello(a, "client-b".to_owned());
-        reg.hello(b, "client-a".to_owned());
-        reg.hello(hello_only, "client-c".to_owned());
+        reg.hello(a, "client-b".to_owned(), None);
+        reg.hello(b, "client-a".to_owned(), None);
+        reg.hello(hello_only, "client-c".to_owned(), None);
         reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(b, "home".to_owned(), sid("home"), wid("home"));
         // Only ONE of them reports an area, so the listing is asserted in both states: a size that
@@ -1182,15 +1233,77 @@ mod tests {
                         rows: 40
                     }),
                     window: Some(format!("w{}", wid("home").0)),
+                    // Neither said which build it is — the wire every client older than
+                    // `CLIENT_BUILD_PARAM` sends, and an absence a reader must not read as a match.
+                    build: None,
                 },
                 ClientInfo {
                     client: "client-b".to_owned(),
                     session: "work".to_owned(),
                     size: None,
                     window: Some(format!("w{}", wid("work").0)),
+                    build: None,
                 },
             ],
             "attached clients only, sorted by client id"
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **WHAT A WINDOW SAID IT WAS BUILT FROM REACHES THE LISTING, AND LEAVES WITH THE
+    /// WINDOW** — register item 463's daemon-side half, which is the only half that can be asked
+    /// about a process nobody resolved.
+    ///
+    /// Three facts, and each one is a defect somewhere else if it goes the other way:
+    ///
+    /// * **A client's several connections are ONE PROCESS.** A `sprag-gui` opens a request stream
+    ///   and a long poll, and both say hello. A later hello carrying nothing must not ERASE what
+    ///   the first one stated, or the answer would depend on which connection spoke last.
+    /// * **Nothing said is not something said.** A client older than
+    ///   [`sprag_rpc::CLIENT_BUILD_PARAM`] sends no build at all, and that has to reach the listing
+    ///   as an absence — the comparison's fourth answer is built on it.
+    /// * **A client id is a lifecycle token.** The build must die with the window, exactly as its
+    ///   size, its view and its mailbox do; a stale one left behind would be reported as the build
+    ///   of whoever takes that id next, which is this registry's standing capture hazard.
+    #[test]
+    fn what_a_window_said_it_was_built_from_is_listed_and_dies_with_the_window() {
+        /// A build no image in this tree can be — twelve hex digits, the shape `build.rs` stamps.
+        const A_BUILD: &str = "0000deadbeef";
+
+        let mut reg = AttachmentRegistry::default();
+        let (poll, request, quiet) = (conn(1), conn(2), conn(3));
+        reg.hello(poll, "gui".to_owned(), Some(A_BUILD.to_owned()));
+        reg.hello(request, "gui".to_owned(), None);
+        reg.hello(quiet, "tui".to_owned(), None);
+        reg.attach(request, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(quiet, "work".to_owned(), sid("work"), wid("work"));
+
+        let listed = reg.clients(|_, _| None);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|c| c.build.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some(A_BUILD), None],
+            "⚠⚠⚠ the window that stated a build is listed with it — from its FIRST connection, \
+             which a second hello carrying nothing must not overwrite — and the one that stated \
+             nothing is listed with nothing, because *did not say* is not *matches*",
+        );
+
+        // ── THE TOKEN IS REUSED, which is the capture every other per-client field refuses ──
+        reg.disconnect(poll);
+        reg.disconnect(request);
+        let reborn = conn(4);
+        reg.hello(reborn, "gui".to_owned(), None);
+        reg.attach(reborn, "work".to_owned(), sid("work"), wid("work"));
+        assert_eq!(
+            reg.clients(|_, _| None)
+                .iter()
+                .map(|c| c.build.as_deref())
+                .collect::<Vec<_>>(),
+            vec![None, None],
+            "⚠⚠⚠⚠⚠ A NEW WINDOW ON A REUSED ID INHERITS NOTHING. A build left behind would be \
+             reported as this window's, which is worse than not knowing: it is a wrong answer to \
+             the one question this field exists for",
         );
     }
 
@@ -1216,8 +1329,8 @@ mod tests {
             ClientSize { cols: 60, rows: 20 },
         );
 
-        reg.hello(desk, "desk".to_owned());
-        reg.hello(phone, "phone".to_owned());
+        reg.hello(desk, "desk".to_owned(), None);
+        reg.hello(phone, "phone".to_owned(), None);
         reg.attach(desk, "work".to_owned(), sid("work"), zero);
         reg.attach(phone, "work".to_owned(), sid("work"), zero);
         reg.size(desk, big);
@@ -1289,7 +1402,7 @@ mod tests {
             SizeOutcome::NoClient,
             "a connection that never said hello has no client to size"
         );
-        reg.hello(c, "tui".to_owned());
+        reg.hello(c, "tui".to_owned(), None);
         assert_eq!(reg.size(c, size), SizeOutcome::Changed, "the first report");
         assert_eq!(
             reg.size(c, size),
@@ -1313,7 +1426,7 @@ mod tests {
             (elsewhere, "elsewhere"),
             (silent, "silent"),
         ] {
-            reg.hello(c, name.to_owned());
+            reg.hello(c, name.to_owned(), None);
         }
         reg.attach(big, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(small, "work".to_owned(), sid("work"), wid("work"));
@@ -1360,8 +1473,8 @@ mod tests {
     fn the_recency_order_follows_the_latest_report_and_a_real_attach() {
         let mut reg = AttachmentRegistry::default();
         let (a, b) = (conn(1), conn(2));
-        reg.hello(a, "a".to_owned());
-        reg.hello(b, "b".to_owned());
+        reg.hello(a, "a".to_owned(), None);
+        reg.hello(b, "b".to_owned(), None);
         reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         reg.size(
@@ -1411,8 +1524,8 @@ mod tests {
     fn a_departed_clients_area_stops_arbitrating() {
         let mut reg = AttachmentRegistry::default();
         let (stays, leaves) = (conn(1), conn(2));
-        reg.hello(stays, "stays".to_owned());
-        reg.hello(leaves, "leaves".to_owned());
+        reg.hello(stays, "stays".to_owned(), None);
+        reg.hello(leaves, "leaves".to_owned(), None);
         reg.attach(stays, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(leaves, "work".to_owned(), sid("work"), wid("work"));
         reg.size(
@@ -1438,7 +1551,7 @@ mod tests {
     fn clients_drops_a_client_when_its_last_connection_closes() {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
-        reg.hello(c, "gui".to_owned());
+        reg.hello(c, "gui".to_owned(), None);
         reg.attach(c, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.clients(|_, _| None).len(),
@@ -1459,9 +1572,9 @@ mod tests {
     fn attachments_follow_a_renamed_session() {
         let mut reg = AttachmentRegistry::default();
         let (a, b, elsewhere) = (ConnId::allocate(), ConnId::allocate(), ConnId::allocate());
-        reg.hello(a, "client-a".to_owned());
-        reg.hello(b, "client-b".to_owned());
-        reg.hello(elsewhere, "client-c".to_owned());
+        reg.hello(a, "client-a".to_owned(), None);
+        reg.hello(b, "client-b".to_owned(), None);
+        reg.hello(elsewhere, "client-c".to_owned(), None);
         reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(elsewhere, "play".to_owned(), sid("play"), wid("play"));
@@ -1494,7 +1607,7 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let (a, b, elsewhere) = (ConnId::allocate(), ConnId::allocate(), ConnId::allocate());
         for (conn, client) in [(a, "client-a"), (b, "client-b"), (elsewhere, "client-c")] {
-            reg.hello(conn, client.to_owned());
+            reg.hello(conn, client.to_owned(), None);
         }
         reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
         reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
@@ -1601,7 +1714,7 @@ mod tests {
         let (a, b) = (sessions.born(1, "alpha"), sessions.born(2, "beta"));
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
-        reg.hello(conn, "gui".to_owned());
+        reg.hello(conn, "gui".to_owned(), None);
         for _ in 0..8 {
             reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
             reg.attach(conn, "beta".to_owned(), b, wid("beta"));
@@ -1635,7 +1748,7 @@ mod tests {
         );
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
-        reg.hello(conn, "gui".to_owned());
+        reg.hello(conn, "gui".to_owned(), None);
         reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
         reg.attach(conn, "beta".to_owned(), b, wid("beta"));
         reg.attach(conn, "gamma".to_owned(), c, wid("gamma"));
@@ -1664,7 +1777,7 @@ mod tests {
         let (a, b) = (sessions.born(1, "alpha"), sessions.born(2, "beta"));
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
-        reg.hello(conn, "gui".to_owned());
+        reg.hello(conn, "gui".to_owned(), None);
         reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
         assert_eq!(
             reg.last_viewed(conn, sessions.name_of(), false),
@@ -1702,7 +1815,7 @@ mod tests {
         let (work, here) = (sessions.born(1, "work"), sessions.born(2, "here"));
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
-        reg.hello(conn, "gui".to_owned());
+        reg.hello(conn, "gui".to_owned(), None);
         reg.attach(conn, "work".to_owned(), work, wid("work"));
         reg.attach(conn, "here".to_owned(), here, wid("here"));
 
@@ -1732,13 +1845,13 @@ mod tests {
         );
         let mut reg = AttachmentRegistry::default();
         let mine = conn(1);
-        reg.hello(mine, "gui".to_owned());
+        reg.hello(mine, "gui".to_owned(), None);
         for (name, id) in [("alpha", a), ("beta", b), ("gamma", c)] {
             reg.attach(mine, name.to_owned(), id, wid(name));
         }
         // Somebody else joins `beta`, the one I would otherwise go back to.
         let theirs = conn(2);
-        reg.hello(theirs, "tui".to_owned());
+        reg.hello(theirs, "tui".to_owned(), None);
         reg.attach(theirs, "beta".to_owned(), b, wid("beta"));
 
         assert_eq!(
@@ -1768,7 +1881,7 @@ mod tests {
         );
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
-        reg.hello(conn, "gui".to_owned());
+        reg.hello(conn, "gui".to_owned(), None);
         for (name, id) in [("alpha", a), ("beta", b), ("gamma", c)] {
             reg.attach(conn, name.to_owned(), id, wid(name));
         }
@@ -1809,7 +1922,7 @@ mod tests {
         let (a, b) = (sessions.born(1, "alpha"), sessions.born(2, "beta"));
         let mut reg = AttachmentRegistry::default();
         let first = conn(1);
-        reg.hello(first, "gui".to_owned());
+        reg.hello(first, "gui".to_owned(), None);
         reg.attach(first, "alpha".to_owned(), a, wid("alpha"));
         reg.attach(first, "beta".to_owned(), b, wid("beta"));
         assert_eq!(
@@ -1820,7 +1933,7 @@ mod tests {
         reg.disconnect(first);
 
         let second = conn(2);
-        reg.hello(second, "gui".to_owned()); // the SAME token, a new client
+        reg.hello(second, "gui".to_owned(), None); // the SAME token, a new client
         reg.attach(second, "beta".to_owned(), b, wid("beta"));
         assert_eq!(
             reg.last_viewed(second, sessions.name_of(), false),

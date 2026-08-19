@@ -44,12 +44,13 @@ use crate::notify::{ChannelRegistry, OutputQuery};
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
-    AttachAsk, AttachFault, BUILD, BUILD_FIELD, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD,
-    CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD,
-    EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, GOTO_PANE_PARAM, GOTO_PARAM, GOTO_SESSION_PARAM,
-    GOTO_WINDOW_PARAM, INVALID_PARAMS, LAST_PARAM, MESSAGE_FIELD, NEEDLE_PARAM, PANE_PARAM,
-    PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM,
-    SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM, TREE_SLOT, UNATTACHED_PARAM, WIRE_PROTOCOL,
+    AttachAsk, AttachFault, BUILD, BUILD_FIELD, CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM,
+    CLIENT_HELLO_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
+    EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, GOTO_PANE_PARAM,
+    GOTO_PARAM, GOTO_SESSION_PARAM, GOTO_WINDOW_PARAM, INVALID_PARAMS, LAST_PARAM, MESSAGE_FIELD,
+    NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD,
+    PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM, TREE_SLOT,
+    UNATTACHED_PARAM, WIRE_PROTOCOL,
 };
 use serde_json::Value;
 use sprag_terminal::{OrderStep, SessionInfo};
@@ -1176,10 +1177,28 @@ fn window_moved(state: &HostState, session: &str) {
 /// keeps running BEHAVIOUR its clients' tree has already replaced, and no shape moves when it does.
 /// The number refuses; this one only tells. Register item 438 is what a run costs when nothing
 /// tells: a whole walk was read as evidence about code the daemon driving it did not contain.
+///
+/// ⚠⚠⚠ AND THE ANSWER TRAVELS BOTH WAYS NOW ([`CLIENT_BUILD_PARAM`]). The client states which build
+/// IT is, because the daemon is the only party that holds every window's answer beside its own —
+/// so *"is the window I am looking at running this daemon's code"* becomes a question something can
+/// answer. Register item 463 is the hole: a `sprag-gui` is started by hand from wherever a person
+/// points, its daemon is whatever was last promoted, and until this nothing anywhere could say they
+/// differed. Recorded, never refused — the same ruling the reply's build states, one direction over.
 fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<String> {
+    // ⚠ WHAT THE CLIENT SAID IT IS, recorded rather than judged here — the other direction of the
+    // build below, and the only way a daemon can be asked whether the window on somebody's screen
+    // is running its code (register item 463). An absent key is *this client did not say*, which is
+    // the wire every client older than the key sends and is never *it matches*; the four answers
+    // are `crate::wire::reporter_image`'s, made where both halves are held.
+    let build = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get(CLIENT_BUILD_PARAM))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     match request.params.as_ref().and_then(|p| p.get(CLIENT_PARAM)) {
         Some(serde_json::Value::String(client)) => {
-            lock(state.attachments()).hello(conn, client.clone());
+            lock(state.attachments()).hello(conn, client.clone(), build);
             let id = request.id.clone()?;
             Some(
                 serde_json::json!({

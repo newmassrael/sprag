@@ -2764,7 +2764,13 @@ pub use sprag_rpc::{INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCO
 /// absent-not-wrong to an old reader*. The condition on that rule is that nobody reads the absence
 /// as a promise, which is written on [`BUILD_FIELD`] itself and is the thing to check if this key
 /// ever grows a consumer.
-pub use sprag_rpc::{BUILD, BUILD_FIELD};
+///
+/// ⚠⚠ [`CLIENT_BUILD_PARAM`] is the same fact travelling the OTHER way — what a display client
+/// states about ITSELF at the same hello — and it is re-exported here so both directions of one
+/// question are reached by one spelling. Its no-bump argument is its own and is narrower: an added
+/// REQUEST key is one of this wire's named bump causes, and it escapes only because nothing waits
+/// on this one.
+pub use sprag_rpc::{BUILD, BUILD_FIELD, CLIENT_BUILD_PARAM};
 
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].

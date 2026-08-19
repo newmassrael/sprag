@@ -1085,6 +1085,44 @@ pub const CLIENT_ATTACH_METHOD: &str = "client/attach";
 /// The [`CLIENT_HELLO_METHOD`] params key carrying the opaque client id.
 pub const CLIENT_PARAM: &str = "client";
 
+/// The [`CLIENT_HELLO_METHOD`] REQUEST key carrying **WHICH BUILD THIS CLIENT IS** ([`BUILD`]) —
+/// [`BUILD_FIELD`] turned around, so a daemon can say *that window is not my image*.
+///
+/// # ⚠⚠⚠⚠⚠ The window on a person's screen is the one companion nothing could date
+///
+/// This wire already carries the fact in the two directions where the daemon is one end: it TELLS
+/// its own build in the hello reply ([`BUILD_FIELD`]), and a hook STATES its build when it reports
+/// (`sprag_host::wire::AGENT_BUILD_KEY`). The third party is the display client, and it is the one
+/// a person is actually looking at. Register item 463 is that hole: a `sprag-gui` is started by
+/// hand from wherever somebody points, its daemon is whatever was promoted, and **the two are
+/// routinely different builds with nothing anywhere able to say so** — this repository's own
+/// promotion procedure copies the daemon into one directory and runs the GUI out of `target/debug`,
+/// so the skew is the ORDINARY state here rather than an exotic one.
+///
+/// ⚠⚠⚠ **ABSENT MEANS *"THIS CLIENT DID NOT SAY"*, NEVER *"IT MATCHES"*** — [`BUILD_FIELD`]'s rule,
+/// which this is the third direction of. Every client older than this key sends exactly that
+/// silence, so a reader taking it for agreement would make the commonest case look like the safe
+/// one — the inversion all three keys exist to end.
+///
+/// # ⚠⚠⚠⚠ Why an ADDED REQUEST KEY earns no [`WIRE_PROTOCOL`] bump here, where version 37's did
+///
+/// Version 37 bumped for `report_agent`'s `asked`, and its argument was measured rather than
+/// argued: an unknown argument is SWALLOWED rather than refused, so a caller that names it to a
+/// daemon predating it is answered `accepted` while the fact is dropped — **and something was
+/// waiting on that fact**. A delivery decided whether a prompt had landed by reading it back.
+///
+/// Nothing waits on this one. A daemon that drops it holds no build for that client, which renders
+/// as *did not say* — the honest answer, and the same one that daemon would give about a client
+/// that never sent it. No caller branches on a promise, so nothing is silently converted into
+/// agreement. **That licence is CONDITIONAL and is gated**: the moment a surface renders the
+/// absence as a match, this key is making a claim old daemons cannot support and it earns the
+/// number after all.
+///
+/// ⚠ Sent by [`HostConn::handshake`], which is the ONE seam every client of this wire passes
+/// through — so no client can omit it, including the ones that do not exist yet. A fact every
+/// connection must carry belongs where the connection is made, never at each call site.
+pub const CLIENT_BUILD_PARAM: &str = "build";
+
 /// The JSON-RPC method a connection sends to report the cell area its client can give a window —
 /// `params: { "cols": <u16>, "rows": <u16> }` — once when it attaches and again on every window
 /// change. The calling connection must have sent [`CLIENT_HELLO_METHOD`] first.
@@ -1555,6 +1593,12 @@ impl HostConn {
     /// client answers the unknown protocol param happily and would otherwise be discovered slot by
     /// slot.
     ///
+    /// ⚠⚠ **It also STATES which build this client is** ([`CLIENT_BUILD_PARAM`]), which is the
+    /// SHAPE agreement's companion and not part of it: the number decides whether the two can
+    /// speak, the build says whether the window a person is looking at is running the daemon's
+    /// code. Sent from here rather than by each client for the reason the protocol param is merged
+    /// at [`call`](Self::call) — a client that had to remember is a client that will not.
+    ///
     /// # Errors
     ///
     /// The hello failing, or the daemon answering with a different [`WIRE_PROTOCOL`] — or with
@@ -1563,7 +1607,10 @@ impl HostConn {
     pub fn handshake(&mut self, client_id: &str) -> io::Result<()> {
         let reply = self.call(
             CLIENT_HELLO_METHOD,
-            serde_json::json!({ CLIENT_PARAM: client_id }),
+            // ⚠ THE BUILD RIDES HERE, at the one seam every client passes through
+            // ([`CLIENT_BUILD_PARAM`]): a `sprag-gui` a person started by hand states which image
+            // it is without its author remembering to, and so does a client written after this.
+            serde_json::json!({ CLIENT_PARAM: client_id, CLIENT_BUILD_PARAM: BUILD }),
         )?;
         // ⚠ TAKEN BEFORE THE SHAPE IS JUDGED, deliberately: the reply that REFUSES is the one a
         // reader most wants attributed, and a mismatch is exactly the moment somebody asks which

@@ -29,8 +29,8 @@ use sprag_host::wire::{
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, EVENTS_WAIT_METHOD, HostConn,
-    PROTOCOL_FIELD, PROTOCOL_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
+    CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
+    EVENTS_WAIT_METHOD, HostConn, PROTOCOL_FIELD, PROTOCOL_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
 };
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
@@ -4473,6 +4473,136 @@ fn a_person_is_told_whether_the_reporter_that_answered_is_this_daemons_image() {
         !unsaid.contains("own image") && !unsaid.contains("NOT THIS DAEMON'S IMAGE"),
         "⚠⚠⚠ three answers stay three: a reporter that did not say is neither of the other two: \
          {unsaid:?}",
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **A PERSON IS TOLD WHICH OF THE WINDOWS ON THEIR SCREEN IS THIS DAEMON'S BUILD** —
+/// register item 463, end to end, over the real socket and through the real CLI.
+///
+/// # The companion this daemon does NOT resolve
+///
+/// `host.rs` resolves the hook and the MCP server as siblings of the running executable, so a
+/// daemon cannot hand its agents a reporter from another build. **There is no such rule for the
+/// display client**, and there cannot be a complete one: a `sprag-gui` is a process a person starts,
+/// from whatever directory they point at. This repository's own promotion procedure does exactly
+/// the thing that produces the skew — it copies the daemon into one directory and then launches
+/// `target/debug/sprag-gui` — so *the window is a different build from the daemon it drives* is the
+/// ordinary state here, and until this round nothing anywhere could say it.
+///
+/// The owner raised it the moment it bit, with an experimental window driving a daemon built from
+/// other code. **The answer is a report and never a refusal**, which is `sprag_rpc::BUILD_FIELD`'s
+/// standing ruling one direction over: a GUI thrown out of the door on a build difference would
+/// take a person's windows with it, every rebuild.
+///
+/// # Four states, and each is staged by a different party
+///
+/// * **NOBODY ATTACHED** — the control, read before any client exists, so every word afterwards is
+///   attributable to a connection this test made.
+/// * **IS this build** — a client that went through the product's OWN seam
+///   ([`HostConn::handshake`]), which is what puts [`sprag_rpc::CLIENT_BUILD_PARAM`] on the wire.
+///   Nothing here hand-writes the happy case, so a fix that only ever worked in a fixture fails.
+/// * **is NOT** — a hand-written hello naming another build, because **one `cargo build` cannot
+///   manufacture two images** (register item 474 paid a round to learn that): every binary this
+///   tree produces carries the same stamp, so the foreign one has to be SAID.
+/// * **DID NOT SAY** — a hello with no build key at all, which is the exact wire every client older
+///   than this round sends. An omission is not a hand-set value: there is nothing here to get
+///   wrong, and it must never render as agreement.
+#[test]
+fn a_person_is_told_which_of_the_windows_on_their_screen_is_this_daemons_build() {
+    /// A build no image in this tree can be. Twelve hex digits, the shape `build.rs` stamps, so it
+    /// is judged for what it SAYS and not for how it is spelled.
+    const NOT_THIS_IMAGE: &str = "0000deadbeef";
+
+    let (_host, sock) = spawn_host();
+
+    // ── THE CONTROL: no window exists yet, and that is its own answer ──
+    let (ok, alone) = sprag_cli_output(&sock, &["doctor"], &[], "");
+    assert!(
+        ok,
+        "`sprag doctor` succeeded against a fresh daemon: {alone:?}"
+    );
+    assert!(
+        alone.contains("no client is attached"),
+        "⚠⚠⚠ zero windows compared must not read as zero problems found — and this is the line \
+         every assertion below is a change FROM: {alone:?}",
+    );
+
+    // ── THE PRODUCT'S OWN SEAM states this image; nothing here writes the happy case by hand ──
+    let mut current =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the current window connects");
+    current
+        .handshake("gui-current")
+        .expect("the real handshake is accepted");
+    current
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+
+    // ── THE WINDOW STARTED FROM SOMEWHERE ELSE ──
+    let mut foreign =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the foreign window connects");
+    foreign
+        .call(
+            CLIENT_HELLO_METHOD,
+            json!({ CLIENT_PARAM: "gui-foreign", CLIENT_BUILD_PARAM: NOT_THIS_IMAGE }),
+        )
+        .expect("client/hello is accepted");
+    foreign
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+
+    // ── AND A CLIENT OLDER THAN THE KEY, which says nothing at all ──
+    let mut quiet =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the quiet window connects");
+    quiet
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "tui-quiet" }))
+        .expect("a hello with no build — every client older than this key");
+    quiet
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+
+    let (ok, report) = sprag_cli_output(&sock, &["doctor"], &[], "");
+    assert!(
+        ok,
+        "`sprag doctor` succeeded with three windows: {report:?}"
+    );
+    assert!(
+        report.contains("3 attached client(s)") && report.contains("1 on the daemon's build"),
+        "⚠⚠⚠⚠ SILENCE HAS TO BE EARNED: a reader cannot tell *every window was checked* from \
+         *nobody looked* unless the count says so, and this surface is read precisely when \
+         somebody already suspects the answer: {report:?}",
+    );
+
+    let named = |who: &str| {
+        report
+            .lines()
+            .find(|line| line.contains(who))
+            .unwrap_or_else(|| panic!("no line of the report names {who}: {report:?}"))
+            .to_owned()
+    };
+    let skew = named("gui-foreign");
+    assert!(
+        skew.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠⚠⚠⚠ THIS IS THE WHOLE HAZARD: the window a person is looking at draws from code this \
+         daemon has never run, and every key they press is that build's behaviour: {skew:?}",
+    );
+    assert!(
+        skew.contains(NOT_THIS_IMAGE) && skew.contains(sprag_rpc::BUILD),
+        "⚠⚠⚠ and the finding names BOTH builds on its own line — one of them alone tells a reader \
+         nothing about which is which: {skew:?}",
+    );
+
+    let unsaid = named("tui-quiet");
+    assert!(
+        report.contains("1 did not say") && !unsaid.contains("NOT THIS DAEMON'S IMAGE"),
+        "⚠⚠⚠⚠⚠ AN ABSENT BUILD IS NOT A MATCHING ONE, and it is not a skew either. Every client \
+         older than this key answers exactly this silence, so counting it either way is the \
+         inversion the key exists to end: {unsaid:?}",
+    );
+
+    assert!(
+        !report.contains("gui-current"),
+        "⚠⚠ the window that IS this daemon's build is counted and not named — a finding per \
+         healthy row is how a report stops being read: {report:?}",
     );
 }
 
