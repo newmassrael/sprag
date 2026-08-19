@@ -113,13 +113,70 @@ pub(crate) struct ReportMarker {
 fn reported_window(terminal: &TerminalView) -> Option<(u16, u16)> {
     let layout = terminal.slots.layout();
     let projection = layout.projection();
+    // ⚠⚠⚠⚠⚠ **WITH NO PANES TO FOLD, THIS CLIENT ANSWERS FROM ITS OWN SURFACE** — register item
+    // 462, and without it the client and the daemon wait for each other for ever.
+    //
+    // The daemon derives a layout FROM THE ATTACHED CLIENT'S SIZE, so a client that has not
+    // reported one is sent `panes: []` — and the fold below has nothing to measure, so it reports
+    // nothing, so the daemon still has no size. **Neither side can move first.** Measured on the
+    // wire: a first attach sits at `size: null`, `layout.tree = {nodes: [], root: null}`, and the
+    // window paints **87.6% white** while the very same introspect lists the session, the window
+    // and the pane. Forcing the client to attach AGAIN registers `{cols: 161, rows: 33}` and the
+    // terminal appears — so the content was never missing, only the rectangle to draw it in.
+    //
+    // ⚠⚠⚠⚠ **AND IT IS THE CLIENT'S TIE TO BREAK, NOT THE DAEMON'S.** *What can this client show*
+    // is a fact about its own surface; the fold below is a REFINEMENT of that, not its only source.
+    // A daemon inventing a size for a client that has not spoken would be a number nobody chose —
+    // and it would be wrong for every headless reader of the same wire.
+    //
+    // ⚠⚠ IT IS AN APPROXIMATION AND SAYS SO: the whole viewport still carries the chrome that
+    // pinion's layout takes out of a pane's rect, so this over-reports by the header and the
+    // scrollbar. That is a bootstrap claim, corrected on the very next run of this Effect — which
+    // re-fires the moment a pane rect exists to fold. ⚠ And `use_viewport_size` is a TRACKED read,
+    // so an OS window resize now re-fires this too; measured before the fix, resizing the window
+    // did NOT lift the deadlock, because nothing this Effect read had changed.
+    //
+    // ⚠ `(0, 0)` — a shell that has not sized the window yet — still answers `None` through
+    // `reflow_target`, which is the honest *I cannot say* rather than a fabricated 1x1.
+    //
+    // ⚠⚠⚠⚠⚠ **READ UNCONDITIONALLY, BEFORE THE FOLD, BECAUSE THE SUBSCRIPTION IS HALF THE FIX.**
+    // A tracked read is what re-runs this Effect, and in the deadlock every pane rect is stuck at
+    // the sentinel — so nothing this Effect read could ever change and it ran ONCE, at boot, for
+    // ever. Measured with a probe inside the client: two runs total, and the second happened only
+    // because the probe itself had read the viewport. Reading it here means the first real window
+    // size re-fires this, which is exactly when the client first has something to say.
+    let surface = pinion_core::use_viewport_size();
     let mut measured = Vec::new();
+    let mut unmeasured = false;
     for pane in projection.panes() {
         let slot = terminal.slots.slot_of(pane)?;
         // A TRACKED read, and the reason this Effect re-runs: any pane's rect moving can change
         // what this client can give the arrangement.
         let rect = pinion_core::use_pane_viewport_size(pane_tag(slot));
-        measured.push((pane, reflow_target(rect, terminal.metric)?));
+        match reflow_target(rect, terminal.metric) {
+            Some(cells) => measured.push((pane, cells)),
+            None => unmeasured = true,
+        }
+    }
+    // ⚠⚠⚠⚠⚠ NOT ONE PANE COULD BE MEASURED — the deadlock, and the only place this function may
+    // answer from the surface. Measured live: the projection holds a pane, its rect is the
+    // pre-layout sentinel, and it will never leave it, because the daemon lays out nothing until
+    // this client reports and this client reports nothing until it is laid out.
+    //
+    // ⚠⚠⚠ THE OVER-REPORT THIS COSTS IS REAL AND IS THE LESSER FAULT. The doc above rejects the
+    // surface for a good reason — sprag's chrome is PER PANE, so a window folded from the surface
+    // is larger than this client can draw. That reasoning holds for a laid-out client and says
+    // nothing about one that cannot be laid out at all: the choice here is not *accurate or
+    // approximate*, it is *approximate for one frame or blank for ever*. The next run folds from
+    // real rects and replaces it, and the host ignores a repeat of numbers it already has.
+    if measured.is_empty() {
+        return reflow_target(surface, terminal.metric);
+    }
+    // ⚠ A PARTIALLY LAID-OUT CLIENT STILL SAYS NOTHING, which is this function's own older rule:
+    // folding only the panes it happens to know would name a window missing a pane's worth of
+    // cells. That rule is kept whole — it is only the ALL-unmeasured case that changed.
+    if unmeasured {
+        return None;
     }
     fit_window(&projection, &measured)
 }
