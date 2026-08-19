@@ -288,19 +288,38 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
     // nothing wrong in this product. `StillInsideTheDevice` is the opposite: a caller stuck inside
     // `write(2)`, which is **the 43-hour wedge this whole file exists to prevent**.
     //
-    // ⚠⚠⚠⚠ MEASURED ON macOS 2026-08-19, AND THE LOG COULD NOT SAY WHICH: the hosted runner has
-    // failed here on every run since 2026-08-14 with only *"THE CONTROL FAILED"* to show for it, so
-    // the one question that decides whether this is a kernel fact or a shipped defect had no answer
-    // in the artifact. Register items 460 and 151. **The next macOS run is what this line is for.**
+    // ⚠⚠⚠⚠⚠ **AND THE macOS RUN ANSWERED IT, 2026-08-19: `Refused { after: 1024, held: 50.916µs }`.**
+    // That is the KERNEL arm, exactly as the paragraph above predicted — Darwin's line discipline
+    // pushes back at its canonical limit where Linux's drops — so **nothing in this product is
+    // wrong and this control was asserting a Linux fact on every platform.** It had failed every
+    // hosted macOS run since 2026-08-14 for that reason alone (register items 460, 151).
+    //
+    // ⚠⚠⚠⚠ WHAT THE CONTROL ASSERTS NOW, AND WHY IT IS NOT WEAKER. The property this whole file
+    // exists for is that **the writer COMES BACK** — `StillInsideTheDevice` is the 43-hour wedge
+    // and is still a failure everywhere. What differs between kernels is only WHICH way it comes
+    // back, so that is the part that is now platform-conditional rather than the part that matters.
+    //
+    // ⚠⚠⚠ On LINUX the sharp claim is KEPT rather than relaxed into *either ending will do*: this
+    // arm is what stops the repair below being read as *a dead pane refuses everything*, and it can
+    // still make that point on the platform whose discipline drops. A Linux that started refusing
+    // here would be a real change and must still red.
     let took = offer_until_it_stops(&hole, partial);
     assert!(
-        matches!(took, HowTheWriterEnded::TookEverything),
-        "⚠⚠⚠ THE CONTROL FAILED, so the refusal below is not about a STOPPED DEVICE: a dead pane \
-         must take {GIVE_UP_AFTER} bytes of unterminated input without ever pushing back. It ended \
-         {took:?} instead. ⚠⚠⚠⚠ WHICH ENDING THAT IS DECIDES WHAT THIS MEANS: `Refused` is this \
-         platform's line discipline pushing back where Linux's drops, and nothing in this product \
-         is wrong; `StillInsideTheDevice` is a caller stuck inside `write(2)`, which is the wedge \
-         this file was written for and is a defect on this platform",
+        !matches!(took, HowTheWriterEnded::StillInsideTheDevice { .. }),
+        "⚠⚠⚠⚠⚠ THE WEDGE ITSELF, ON WHATEVER KERNEL THIS IS. A writer still inside `write(2)` \
+         {STALLED_AFTER:?} later is the 43 hours this file was written to prevent, and no line \
+         discipline anywhere makes that acceptable. It ended {took:?}",
+    );
+    assert!(
+        !cfg!(target_os = "linux") || matches!(took, HowTheWriterEnded::TookEverything),
+        "⚠⚠⚠ THE LINUX CONTROL FAILED, so the refusal below is no longer known to be about WHOLE \
+         LINES rather than about a stopped device: on THIS kernel a dead pane must take \
+         {GIVE_UP_AFTER} bytes of UNTERMINATED input without ever pushing back, because its line \
+         discipline drops past the canonical limit. It ended {took:?} instead. ⚠⚠⚠⚠ This assertion \
+         is deliberately Linux-only: Darwin was measured answering `Refused {{ after: 1024 }}` here \
+         (2026-08-19), which is that kernel holding rather than dropping and is not a defect. A \
+         LINUX reading of `Refused` is a different claim — the platform this arm's premise is about \
+         changed under it — and is what this exists to catch",
     );
 
     // ── THE ARM THAT COST 43 HOURS, and what it must do now ──

@@ -28,7 +28,47 @@ impl Drop for HostChild {
         let _ = self.0.kill();
         let _ = self.0.wait();
         let _ = std::fs::remove_file(&self.1);
+        // ⚠ And the state home this daemon was given — see [`isolated_state_home`]. Removed on the
+        // socket's terms: a guard that cleaned up one and leaked the other would trade a stray
+        // socket for a stray directory tree.
+        let _ = std::fs::remove_dir_all(isolated_state_home(&self.1));
     }
+}
+
+/// The state home a spawned daemon is given, derived from the socket it already owns.
+///
+/// # ⚠⚠⚠⚠⚠ Why every spawned daemon needs one, and what it cost not to have it
+///
+/// A daemon writes its snapshot, its run registry and its pane history under
+/// `$XDG_STATE_HOME/sprag`. A test that spawns one WITHOUT saying where that is has just pointed a
+/// real daemon at the ambient state home — **which on a developer's machine is their
+/// `~/.local/state`** — and `sprag-gate`'s whole reason for existing is that no test can be the
+/// guard for that, because the variable is process-global.
+///
+/// ⚠⚠ MEASURED 2026-08-19, by bisecting the suite against a scratch XDG home rather than by
+/// reading: `-p sprag-host` left `$XDG_STATE_HOME/sprag` behind while `--lib` and the
+/// `wire_client` target did not, so THIS file's daemons are the ones that write. It is the last
+/// thing CI's `ambient-home-guard` was still failing on once register item 464 removed the ledger
+/// file — an EMPTY directory is still a write, and the guard walks recursively for exactly that
+/// reason (*"a walk that only listed the entries of `home` itself … could not tell a directory
+/// somebody made from a file somebody wrote"*).
+///
+/// ⚠ Keyed on the SOCKET, which [`socket_path`] already mints unique per call, so parallel threads
+/// in one binary cannot share a state home any more than they can share a socket — the R152/R153
+/// race lesson applied to the second thing a daemon owns.
+fn isolated_state_home(sock: &Path) -> PathBuf {
+    sock.with_extension("state")
+}
+
+/// A state home unique to this CALL, for a CLI run that has no socket to derive one from.
+///
+/// ⚠ Its own counter rather than [`socket_path`]'s, for that function's stated reason: parallel
+/// test threads share one binary, so a name keyed only on the pid is the same string in every
+/// thread that asks — and here that would have two CLI runs removing each other's directory.
+fn scratch_state_home() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("sprag-cli-it-{}-state-{n}", std::process::id()))
 }
 
 /// A socket path unique to this CALL (pid + a per-binary counter), so parallel test threads in
@@ -86,11 +126,16 @@ fn spawn_host_argv(
 ) -> (HostChild, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
+    // ⚠⚠⚠ BEFORE `.envs`, so a caller that wants to CHOOSE the state home (the restore tests, which
+    // hand the same one to two daemon lifetimes) still overrides this. What it replaces is the
+    // ambient default, which is somebody's real `~/.local/state` — see [`isolated_state_home`].
+    let state = isolated_state_home(&sock);
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
         .args(leading)
         .args(program_and_args)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
+        .env("XDG_STATE_HOME", &state)
         .envs(envs.iter().copied())
         .stdin(Stdio::null())
         .spawn()
@@ -135,6 +180,17 @@ fn sprag(sock: &Path, args: &[&str]) -> CliRun {
 fn sprag_env(sock: &Path, args: &[&str], envs: &[(&str, &str)]) -> CliRun {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag"));
     cmd.args(args).env("SPRAG_HOST_RPC_SOCK", sock);
+    // ⚠⚠⚠⚠⚠ **THE CLI WRITES STATE TOO, AND THAT IS WHAT WAS ACTUALLY LEAKING.** `sprag mute-hook`
+    // files `$XDG_STATE_HOME/sprag/hook-mute.<pane>` (`hooks.rs`), so pointing only the SOCKET at
+    // this test's daemon left the CLI writing the runner's real `~/.local/state`. Bisected against
+    // a scratch XDG home 2026-08-19: the residue was `state/sprag/hook-mute.0`, and it is the last
+    // thing CI's `ambient-home-guard` failed on after register item 464 took the review ledger out.
+    //
+    // ⚠⚠ IT IS THE SAME STATE HOME THE DAEMON ON THIS SOCKET WAS GIVEN — see
+    // [`isolated_state_home`] — because these two processes are meant to share one machine's state:
+    // a CLI that muted a hook somewhere the daemon does not read would be a gate proving nothing.
+    // ⚠ Before `envs` below, so a caller that names its own still wins.
+    cmd.env("XDG_STATE_HOME", isolated_state_home(sock));
     // ⚠⚠⚠⚠ **THE PANE THIS SUITE'S RUNNER IS ITSELF IN MUST NOT LEAK INTO THE CLI IT DRIVES** —
     // register item 226, which named ONE gate and had two. Run from a shell inside a sprag pane,
     // `sprag report-agent` picked up the RUNNER's `SPRAG_PANE` and asked a test daemon about a pane
@@ -6543,6 +6599,19 @@ fn sprag_stdin(sock: &Path, args: &[&str], envs: &[(&str, &str)], input: &str) -
     let mut child = Command::new(env!("CARGO_BIN_EXE_sprag"))
         .args(args)
         .env("SPRAG_HOST_RPC_SOCK", sock)
+        // ⚠⚠⚠⚠⚠ **THIS IS THE HELPER THE `hook` VERB RUNS THROUGH, AND `hook` IS THE ONE THAT
+        // WRITES.** `note_hook_trouble` files `$XDG_STATE_HOME/sprag/hook-mute.<pane>` whenever a
+        // report could not be delivered — *"the daemon is by definition unreachable when this is
+        // written"* — so the refusal gates below leave a breadcrumb by construction. Without a
+        // state home of its own it landed in the runner's real `~/.local/state`, and it was the
+        // last residue CI's `ambient-home-guard` reported after register item 464 removed the
+        // review ledger. ⚠ Bisected rather than reasoned, and THREE call sites were wrongly
+        // accused first (the daemon spawner, the plain CLI runner, the socket-less one): the
+        // artifact was `state/sprag/hook-mute.0` and only `hook` ever writes that name.
+        //
+        // ⚠ The same home the daemon on this socket has, for [`isolated_state_home`]'s reason —
+        // these two are meant to share one machine's state. Before `envs`, so a caller still wins.
+        .env("XDG_STATE_HOME", isolated_state_home(sock))
         .envs(envs.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -8279,10 +8348,24 @@ fn a_verb_given_no_pane_acts_on_the_callers_own_pane() {
 fn sprag_no_sock(args: &[&str], envs: &[(&str, &str)]) -> CliRun {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag"));
     cmd.args(args).env_remove("SPRAG_HOST_RPC_SOCK");
+    // ⚠⚠⚠⚠⚠ **THIS HELPER IS THE ONE THAT WRITES, PRECISELY BECAUSE IT REACHES NO DAEMON.** A
+    // reporter that cannot reach one leaves a breadcrumb at
+    // `$XDG_STATE_HOME/sprag/hook-mute.<pane>` (`hooks::hook_trouble_path`) — *"the daemon is by
+    // definition unreachable when this is written"* — so the very condition these gates construct
+    // is the condition that files something. With no state home of its own that landed in the
+    // runner's real `~/.local/state`, and it was the last residue CI's `ambient-home-guard`
+    // reported once register item 464 removed the review ledger: bisected to
+    // `state/sprag/hook-mute.0` on 2026-08-19.
+    //
+    // ⚠ Its own directory, removed once the CLI has exited — `output()` has already waited, so
+    // nothing is still writing here. Before `envs`, so a caller naming its own still wins.
+    let state = scratch_state_home();
+    cmd.env("XDG_STATE_HOME", &state);
     for (key, value) in envs {
         cmd.env(key, value);
     }
     let output = cmd.output().expect("run the sprag CLI");
+    let _ = std::fs::remove_dir_all(&state);
     CliRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
