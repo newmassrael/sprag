@@ -139,6 +139,13 @@ pub struct AgentFacts {
     /// standing in the tracker could be the previous turn's, which is precisely the confusion
     /// register item 441 is made of at the other end.
     pub said_seq: u64,
+    /// **HOW MANY REPORTS THIS PANE HAS ACCEPTED**, whatever they said — register item 458.
+    ///
+    /// ⚠⚠⚠⚠ The one counter that moves while a turn is merely WORKING: the three above it stand
+    /// still through a turn calling tool after tool, which is the same reading as a turn that was
+    /// interrupted and will never report again. Measured — a pane read `working seq=6 asked=2
+    /// said=0` for fourteen minutes after an Escape, and a driver polled it toward a 24-hour clock.
+    pub reports: u64,
     /// WHO said so, when a process inside the pane reported it rather than a rule inferring it —
     /// `None` for a scraped verdict.
     ///
@@ -443,6 +450,7 @@ impl AgentRegistry {
             seq: tracker.seq(),
             asked_seq: tracker.asked_seq(),
             said_seq: tracker.said_seq(),
+            reports: tracker.reports(),
             source: tracker.reported_source().map(str::to_owned),
             reporter_build: tracker.reported_build().map(str::to_owned),
             // ⚠ Taken from the TRACKER rather than from this look: they are stated by the agent on

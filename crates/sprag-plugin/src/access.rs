@@ -1042,6 +1042,30 @@ pub struct AgentObservation {
     /// it work where comparing the TEXT does not: a loop re-prompting the same words is exactly the
     /// case a text match cannot tell from an echo.
     pub asked_seq: u64,
+    /// **HOW MANY REPORTS THIS PANE HAS ACCEPTED**, whatever any of them said — register item 458,
+    /// and the number that separates *the peer is working* from *the peer has stopped speaking*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the three counters beside it cannot answer this
+    ///
+    /// [`seq`](Self::seq) counts published CHANGES, and a turn that calls tool after tool reports
+    /// `working` every time and changes nothing. [`asked_seq`](Self::asked_seq) and
+    /// [`said_seq`](Self::said_seq) count STATEMENTS, and a turn still in flight has made neither.
+    /// So a long turn and a dead one read identically on all three.
+    ///
+    /// **Measured 2026-08-19**: a turn a person stopped with Escape emitted no hook payload of any
+    /// kind for fourteen minutes — the agent restores the prompt into its composer, and its idle nag
+    /// is suppressed while the composer holds text, so nothing was ever going to speak again. The
+    /// pane read `working seq=6 asked=2 said=0` throughout, and the driver polled *"looked, nothing
+    /// had happened"* toward a `max_seconds` the shipped kind authors at **24 hours**.
+    ///
+    /// ⚠⚠ A COUNT AND NOT AN AGE. A supervisor holds its own watermark and compares — the same
+    /// discipline [`Hands`] documents, and for its reason: the pane keeps no
+    /// reader state, so several waiters can each ask *since I last looked* without coordinating.
+    ///
+    /// ⚠ **A SCRAPED OBSERVATION ANSWERS `0` AND ALWAYS WILL** — nothing reported it, which is not
+    /// the same as nothing speaking. A caller that reads `0` as silence would call every
+    /// screen-inferred pane dead; what it means is *this pane has no reporter to be silent*.
+    pub reports: u64,
     /// What the pane is blocked ON, when it is blocked and the question is on its screen.
     ///
     /// Populated only for [`AgentState::Blocked`], because that is the only state in which the

@@ -1032,6 +1032,11 @@ pub(crate) fn agent_state_source(
                 // `seq` cannot say whether the peer took the prompt just typed at it, because a
                 // submit into an already-`working` pane publishes nothing.
                 asked_seq: facts.asked_seq,
+                // ⚠⚠⚠⚠⚠ AND THE COUNT THAT MOVES WHILE A TURN IS MERELY WORKING — register item
+                // 458. The three counters beside it stand still through a turn calling tools, which
+                // reads exactly like a turn nothing will ever end; this one is the peer's reporter
+                // being alive, carried through untouched like every other stated fact here.
+                reports: facts.reports,
                 // ⚠⚠ AND THE COUNT THAT DATES THE ANSWER, without which the text above cannot be
                 // told from the previous turn's — see `AgentObservation::said_seq`.
                 said_seq: facts.said_seq,

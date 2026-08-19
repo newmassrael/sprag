@@ -220,6 +220,28 @@ pub struct Tracker {
     /// requires it to have MOVED before reading what came back — the same discipline
     /// [`Verdict`]-arming already uses at both ends of a turn.
     said_seq: u64,
+    /// **HOW MANY REPORTS THIS PANE HAS ACCEPTED**, whatever any of them said — register item 458.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE ONLY NUMBER HERE THAT MOVES WHILE A TURN IS MERELY WORKING.** [`seq`](Self::seq)
+    /// counts published CHANGES, and a turn that calls tool after tool reports `working` each time
+    /// and changes nothing; [`asked_seq`](Self::asked_seq) and [`said_seq`](Self::said_seq) count
+    /// statements, and a turn in flight has made neither. So *the agent is thinking* and *the agent
+    /// was interrupted and will never speak again* were the same three frozen numbers.
+    ///
+    /// **Measured 2026-08-19**: a turn stopped with Escape emitted no payload of any kind for
+    /// fourteen minutes, and the pane read `working seq=6 asked=2 said=0` throughout — exactly what
+    /// a long turn reads. A driver polled it and would have done so for `max_seconds`, which the
+    /// shipped kind authors at 24 hours.
+    ///
+    /// ⚠⚠ A FOURTH COUNTER RATHER THAN A RICHER `seq`, on [`asked_seq`](Self::asked_seq)'s own
+    /// argument: folding it in would make every tool call a published change, waking every client
+    /// and conflating *what this pane is doing* with *has anything spoken for it*.
+    ///
+    /// ⚠ It says nothing about WHEN. A caller that wants an age compares this across two looks of
+    /// its own — the watermark discipline this workspace's hand counts already use, and the reason
+    /// this is a count and not an instant: the tracker keeps no reader state, so several waiters can
+    /// each ask *since I last looked* without coordinating, and one that never looks costs nothing.
+    reports: u64,
     pending: Option<Pending>,
     seen: Option<Seen>,
     /// Which agent this pane was last IDENTIFIED as, independent of what it is doing.
@@ -389,6 +411,7 @@ impl Tracker {
             seq: 0,
             asked_seq: 0,
             said_seq: 0,
+            reports: 0,
             pending: None,
             seen: None,
             identity: None,
@@ -429,6 +452,17 @@ impl Tracker {
     #[must_use]
     pub const fn said_seq(&self) -> u64 {
         self.said_seq
+    }
+
+    /// **HOW MANY REPORTS THIS PANE HAS ACCEPTED** — see [`reports`](Self::reports)' field for why
+    /// none of the three counters above it can answer what this does.
+    ///
+    /// A supervisor snapshots it when a turn begins and compares it after the turn's own bound has
+    /// gone by: a number that MOVED is the peer's reporter still speaking, however little the
+    /// verdict changed, and a number that did not is a turn nothing will ever end.
+    #[must_use]
+    pub const fn reports(&self) -> u64 {
+        self.reports
     }
 
     /// When a pending candidate would be published, or `None` when nothing is pending.
@@ -586,6 +620,18 @@ impl Tracker {
         if said.is_some() {
             self.said_seq += 1;
         }
+        // ⚠⚠⚠⚠⚠ AND THE REPORT ITSELF IS COUNTED, WHATEVER IT SAID — register item 458, and the one
+        // number that separates a peer working slowly from a peer that has stopped speaking.
+        //
+        // Every counter above it is about a STATEMENT (a question, an answer), and `seq` is about
+        // the published VERDICT — so a turn calling tools reports `working` over and over while all
+        // three stand still. That is the same reading as a turn whose agent was interrupted and will
+        // never report again, and there was no fourth number to tell them apart.
+        //
+        // ⚠⚠ COUNTED AFTER THE STALENESS REFUSAL, so a replayed report is not a heartbeat: this
+        // exists to answer *is anything still speaking for this pane*, and a message the tracker
+        // already refused is not something speaking.
+        self.reports += 1;
         // A reporter that names itself SETS the pane's identity; one that does not leaves it, and the
         // published verdict falls back to whatever the pane already was. That asymmetry is the same
         // one `evaluate` already keeps — the memory answers where the current evidence is silent about
@@ -1502,6 +1548,86 @@ mod tests {
             after_first + 1,
             "a report with no prompt in it is not a question — only the turn's opening event states \
              one, and every other report of that turn would otherwise inflate the count",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A PEER STILL SPEAKING AND A PEER THAT HAS STOPPED READ THE SAME ON EVERY OTHER
+    /// COUNTER** — register item 458, and the arm this fourth number exists for.
+    ///
+    /// # What it costs to have no such number, measured
+    ///
+    /// A turn calling tool after tool reports `working` each time: the verdict never moves, so
+    /// [`seq`](Tracker::seq) stands still; no prompt and no answer are stated, so
+    /// [`asked_seq`](Tracker::asked_seq) and [`said_seq`](Tracker::said_seq) stand still too. **A
+    /// turn a person stopped with Escape reads exactly the same** — and it reads that way for ever,
+    /// because the agent restores the prompt into its composer and its idle nag is suppressed while
+    /// the composer holds text, so nothing will ever speak for that pane again.
+    ///
+    /// Live, 2026-08-19: `working seq=6 asked=2 said=0`, unchanged across **fourteen minutes**,
+    /// while the driver polled *"looked, nothing had happened"* toward a `max_seconds` the shipped
+    /// kind authors at 24 hours. A person typed `exit` to end it.
+    ///
+    /// # ⚠⚠⚠ The second arm is what keeps it a HEARTBEAT rather than a message count
+    ///
+    /// A replayed report — the same speaker, a clock that went backwards — is refused, and a
+    /// refusal must not tick this. What the number answers is *is anything still speaking for this
+    /// pane*, and a message the tracker just threw away is not something speaking. Without that arm
+    /// a stuck reporter retrying could look exactly like a live one.
+    #[test]
+    fn a_report_that_changes_nothing_still_says_something_is_speaking() {
+        let mut tracker = Tracker::new(Hysteresis::default());
+        let working = |seq: u64| Report {
+            state: AgentState::Working,
+            agent: Some("claude".to_owned()),
+            source: "hook:claude".to_owned(),
+            seq: Some(seq),
+            owner: None,
+            asked: None,
+            said: None,
+            transcript: None,
+            build: None,
+        };
+
+        tracker.report(working(1));
+        let (published, asked, said, beat) = (
+            tracker.seq(),
+            tracker.asked_seq(),
+            tracker.said_seq(),
+            tracker.reports(),
+        );
+
+        // ── THE ARM: a tool call on a pane that is already working. Nothing it states moves. ──
+        let outcome = tracker.report(working(2));
+        assert!(
+            outcome.accepted && !outcome.changed,
+            "⚠ THE STAGING: this report must be TAKEN and must move no verdict, or the gate is \
+             about an easier case than the live one — {outcome:?}",
+        );
+        assert_eq!(
+            (tracker.seq(), tracker.asked_seq(), tracker.said_seq()),
+            (published, asked, said),
+            "⚠⚠⚠ AND ALL THREE OF THE OLDER COUNTERS MUST STAND STILL. Their standing still IS the \
+             defect: it is what makes a turn in flight and a turn nothing will ever end the same \
+             three numbers",
+        );
+        assert_eq!(
+            tracker.reports(),
+            beat + 1,
+            "⚠⚠⚠⚠⚠ BUT SOMETHING SPOKE. This is the only observable difference between a peer \
+             working and a peer that was interrupted and will never report again — and a wait that \
+             cannot draw it polls a dead turn toward a 24-hour clock. Deleting the count in \
+             `report` leaves every other gate in this workspace green",
+        );
+
+        // ── AND A REFUSED REPLAY IS NOT A HEARTBEAT ──
+        let replay = tracker.report(working(2));
+        assert!(!replay.accepted, "the staleness rule still refuses it");
+        assert_eq!(
+            tracker.reports(),
+            beat + 1,
+            "⚠⚠⚠⚠ a message this tracker THREW AWAY must not read as something speaking, or a \
+             reporter stuck retrying one report looks exactly like a live one — which is the \
+             confusion this number was added to end",
         );
     }
 
