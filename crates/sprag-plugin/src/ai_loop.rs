@@ -540,6 +540,14 @@ impl AiLoop {
                  turn was never seen to end",
                 silence.within, silence.reports
             )),
+            // ⚠⚠⚠⚠ AND THE ONE WHERE NOTHING IS WRONG WITH THE RUN AT ALL — register item 447. The
+            // agent's work is intact and its session is where it left it; what ran out is patience
+            // with an upstream service. A reader told only *blocked* would go looking for a
+            // question, and there is none.
+            Some(Noticed::ServiceDown { retried, waited }) => Some(format!(
+                " — no account: the peer's service was down and this run had already waited it out \
+                 {retried} time(s), the last for {waited:?}, so nothing was asked"
+            )),
             _ => None,
         }
     }
@@ -595,9 +603,22 @@ impl AiLoop {
                 }
                 Verdict::Exhausted(self.inner.stopped_short_by().unwrap_or(Ceiling::Turns))
             }
-            // Reached from `awaiting_human --unattended-->`, which nothing produces yet (registered
-            // debt), and kept exhaustive rather than folded into the arm below it.
-            AiLoopState::Blocked => Verdict::Blocked(self.asking()),
+            // ⚠⚠⚠⚠ REACHED FROM `awaiting_human` BY `unattended`, WHICH `attend` NOW PRODUCES —
+            // this comment said *"which nothing produces yet (registered debt)"* for as long as
+            // that was true and outlived it, which is item 437's class caught in its own file.
+            //
+            // ⚠⚠⚠⚠⚠ AND `awaiting_human` HAS THREE CAUSES THAT END HERE AS ONE WORD, so the SENTENCE
+            // is where they are told apart — a question nobody could answer (`Unanswered`), a peer
+            // that stopped speaking (register item 458), and an upstream service that never came
+            // back (item 447). `blocked` is the honest verdict for all three: the run stopped and a
+            // person is what it needs. What is NOT honest is `asking()`'s `Unanswered::unreadable`
+            // standing in for the other two, so the note carries what the verdict cannot.
+            AiLoopState::Blocked => {
+                if let Some(unfinished) = self.left_behind() {
+                    note.push_str(&unfinished);
+                }
+                Verdict::Blocked(self.asking())
+            }
             // ⚠⚠⚠ `cancel` IS RAISED ONLY WHEN THE RUN ITSELF HAS ENDED — `watch` answers it for
             // `Reached::RunEnded` and `Over::RunEnded`, both of which mean this run's context was
             // cancelled or its deadline passed. Both facts are MONOTONE, so the Driver's own
@@ -6865,6 +6886,123 @@ mod tests {
             "⚠⚠ THE COUNTER MOVED. A reader asking afterwards why a run took all night has \
              nothing else to tell a bad afternoon upstream from hard work, and an edge missing \
              its `<assign>` would reach `working` looking exactly like this one: {retried:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AN OUTAGE THAT NEVER CLEARS REACHES A PERSON INSTEAD OF RETRYING ALL NIGHT** —
+    /// register item 447's second half, asked of the MACHINE.
+    ///
+    /// # ⚠⚠⚠⚠ What the state above it fixed, and what it left open
+    ///
+    /// `service_down` exists because a 529 used to cost a run its life: the outage was filed under
+    /// *a human judgement is required*, and an unattended run reaches `blocked`, which is
+    /// `<final>`. That is paid, and the gate above this one holds it. **What it did not say is what
+    /// happens when the service never comes back** — and the answer was «wait, type, be refused,
+    /// wait» until `max_seconds`, which the shipped kind authors at TWENTY-FOUR HOURS. A run that
+    /// survives a server hiccup and then burns a night on a server outage has traded one failure
+    /// for a quieter one.
+    ///
+    /// # ⚠⚠⚠ The three arms, and what each alone would let through
+    ///
+    /// * **THE CEILING.** At the authored count the retry reaches `awaiting_human` — which
+    ///   notifies, and ends the run on the caller's own `await_person_ms` rather than on a clock
+    ///   invented for outages.
+    /// * ⚠⚠⚠⚠ **THE CONTROL, BELOW THE CEILING**, without which a document that sent EVERY retry to
+    ///   a person would pass — and that is strictly worse than the defect: it turns the first
+    ///   hiccup back into the 28 minutes this whole state was built to stop losing.
+    /// * ⚠⚠⚠ **AND `'never'`**, because the document promises `max_turns`' own idiom for *do not
+    ///   bound this*. A run that asked for no ceiling must not get one.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE `'never'` ARM IS A REGRESSION GUARD ON THE ENGINE AND NOT A TEST OF THE GUARD'S
+    /// TEXT — MEASURED, AND SAID HERE BECAUSE A CONTROL CAN BE VACUOUS.** Deleting `service_retry_max
+    /// != 'never'` from the document leaves this arm GREEN: at the pinned engine `999 >= 'never'`
+    /// already answers false, so the numeric half decides it alone. What this arm therefore holds is
+    /// the BEHAVIOUR (*a run that authored no ceiling never reaches a person over an outage*) across
+    /// an engine whose coercion rules could change, which is worth having — but a reader who counted
+    /// it as proof that the clause does something would be wrong, and that is the mistake this
+    /// paragraph exists to stop. The other two arms both red under their own mutations.
+    ///
+    /// ⚠⚠ The counter is asserted on BOTH sides of the ceiling: it must move on the way back to
+    /// work and must NOT move on the way to a person, because nothing was retried — an edge that
+    /// carried the `<assign>` on both would tell a morning reader the run tried once more than it
+    /// did.
+    #[test]
+    fn an_outage_that_never_clears_reaches_a_person_instead_of_retrying_all_night() {
+        /// Reach `service_down`, author `retried` and `max`, then retry — and say where it landed
+        /// and what the counter reads afterwards.
+        ///
+        /// ⚠ `max` is a [`ScriptValue`] rather than a number, because the whole third arm is that
+        /// this document's «no ceiling» is the STRING `'never'`.
+        fn retried_at(
+            retried: i64,
+            max: ScriptValue,
+        ) -> (AiLoopState, Result<ScriptValue, String>) {
+            let (mut engine, lua, session) = started();
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            engine.raise_external(
+                AiLoopEvent::TurnBlocked,
+                &serde_json::json!({"service": true, "judged": false, "rule": ""}).to_string(),
+                "",
+            );
+            engine.step();
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::ServiceDown,
+                "the fixture: every arm below starts from the outage state",
+            );
+            lua.set_variable(&session, "service_retried", ScriptValue::Int(retried))
+                .expect("the document's own counter is writable");
+            lua.set_variable(&session, "service_retry_max", max)
+                .expect("the document's own ceiling is writable");
+            engine.process_event(AiLoopEvent::ServiceRetry);
+            let counter = lua
+                .get_variable(&session, "service_retried")
+                .map_err(|error| format!("{error:?}"));
+            (engine.get_current_state(), counter)
+        }
+
+        // ── THE HEADLINE: the ceiling is reached and the run asks for a person ──
+        let (exhausted, still_at) = retried_at(6, ScriptValue::Int(6));
+        assert_eq!(
+            exhausted,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ SIX WAITS OF TEN MINUTES IS AN HOUR, AND AN HOUR OF REFUSAL IS NOT A HICCUP. \
+             Left in `working` this run types `continue` at a service that is not answering, is \
+             refused, waits again — until a 24-hour ceiling the document cannot see. Reaching a \
+             person is what makes the run's ending say something true",
+        );
+        assert!(
+            matches!(still_at, Ok(ScriptValue::Int(6))),
+            "⚠⚠ and NOTHING WAS RETRIED, so the counter must not move: this edge carries no \
+             `<assign>` and an edge that carried one would tell a morning reader the run tried a \
+             seventh time. Got {still_at:?}",
+        );
+
+        // ── CONTROL ONE: below the ceiling, the outage is still just an outage ──
+        let (waiting, moved) = retried_at(5, ScriptValue::Int(6));
+        assert_eq!(
+            waiting,
+            AiLoopState::Working,
+            "⚠⚠⚠⚠ THE CONTROL FAILED, and it is the expensive way to be wrong: a document that \
+             sends every retry to a person has put the 28 minutes back. The FIRST hiccup must cost \
+             a wait and nothing else",
+        );
+        assert!(
+            matches!(moved, Ok(ScriptValue::Int(6))),
+            "and the counter moves on the way back to work, which is the only thing that tells a \
+             nine-hour run apart from a bad afternoon upstream: {moved:?}",
+        );
+
+        // ── CONTROL TWO: `'never'` is this document's own word for no ceiling ──
+        let (unbounded, _) = retried_at(999, ScriptValue::String("never".to_string()));
+        assert_eq!(
+            unbounded,
+            AiLoopState::Working,
+            "⚠⚠⚠ THE CONTROL FAILED. `max_turns` spells *do not bound this* as `'never'` and this \
+             guard promises the same word; a comparison that read the string as a number would \
+             ceiling on the first retry of every run that asked for no ceiling — the opposite of \
+             what its author wrote",
         );
     }
 

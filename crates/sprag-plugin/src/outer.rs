@@ -308,6 +308,11 @@ const SERVICE_RETRY_MS: &str = "service_retry_ms";
 /// **WHAT TO TYPE WHEN THE WAIT IS OVER**, as the document spells it.
 const SERVICE_RETRY_TEXT: &str = "service_retry_text";
 
+/// **HOW MANY OUTAGES THIS RUN HAS ALREADY WAITED OUT**, as the document spells it — read by the
+/// driver only to REPORT it (see [`Noticed::ServiceDown`]); the ceiling that acts on it is the
+/// document's own guard, and register item 447 is why the two are separate.
+const SERVICE_RETRIED: &str = "service_retried";
+
 /// The wait [`OuterLoop::wait_out_service`] falls back to when the document holds no readable
 /// number — the same ten minutes `ai_loop.scxml` ships, so the fallback and the default agree.
 ///
@@ -844,6 +849,28 @@ pub(crate) enum Owed {
     /// The `reflect_prompt` — **what should this run do next?**, asked of the agent that has been
     /// doing the work, and answered into the session that replaces it.
     Reflect,
+    /// ⚠⚠⚠⚠ The `service_retry_text` — **the word that ends an outage**, owed by the edge out of
+    /// `service_down` that reaches `working` and by nothing else.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is owed here rather than typed by the state's own driver
+    ///
+    /// It used to be typed inside [`OuterLoop::wait_out_service`], BEFORE the event was raised —
+    /// and that was correct for exactly as long as `service.retry` had one destination. The moment
+    /// the document gained a ceiling (register item 447) it had two, and typing first meant a run
+    /// whose retries had run out **put a word into the composer of a service that had just refused
+    /// it, and then handed a person a pane with somebody else's text in it** — against
+    /// `awaiting_human`'s own rule that the pane stays exactly as the person will find it.
+    ///
+    /// This table already answers *what does the transition that was actually taken owe*, which is
+    /// the question, and [`OuterLoop::advance`]'s doc calls that ordering THE CONTRACT. So the fix
+    /// is not a second check in the driver; it is putting the word where the other five already
+    /// are.
+    ///
+    /// ⚠⚠ **IT IS NOT A PROMPT AND THE NAME OF THE TABLE IS STILL RIGHT.** What the five above owe
+    /// is a question; what this owes is *carry on with the one you already have* — `service_down`
+    /// deliberately re-brief nothing. `Owed` is about what the peer is told, not about what kind of
+    /// sentence it is.
+    ServiceRetry,
 }
 
 impl Owed {
@@ -865,7 +892,32 @@ impl Owed {
             Self::End => "end_prompt",
             Self::Stop => "stop_prompt",
             Self::Reflect => "reflect_prompt",
+            Self::ServiceRetry => SERVICE_RETRY_TEXT,
             Self::Nothing => panic!("`Owed::Nothing` names no prompt; the caller matches it first"),
+        }
+    }
+
+    /// **THE WORD THIS DEBT STANDS IN WITH WHEN THE DOCUMENT HOLDS AN EMPTY ONE**, or [`None`] for
+    /// the five that have none.
+    ///
+    /// # ⚠⚠⚠ Why exactly one variant has a fallback, and why it is not generosity
+    ///
+    /// An empty PROMPT is a document that has been edited wrong, and the honest answer is to say so
+    /// — which the caller's `None` arm already does. An empty `service_retry_text` is different in
+    /// kind: `service_down`'s ONLY way back to work is something being said, so a blank there is a
+    /// run that waits for ever, and *waiting for ever* is precisely the `blocked` that whole state
+    /// exists to stop being. The behaviour is carried over verbatim from
+    /// [`OuterLoop::wait_out_service`], where it was written and argued when the word was typed
+    /// there.
+    ///
+    /// ⚠⚠ **A FALLBACK IS NOT A SECOND DECISION**, which is [`DEFAULT_SERVICE_RETRY_MS`]'s own
+    /// sentence: it is the template's own default, so the stand-in and the shipped answer agree.
+    pub(crate) const fn fallback(self) -> Option<&'static str> {
+        match self {
+            Self::ServiceRetry => Some(DEFAULT_SERVICE_RETRY_TEXT),
+            Self::Start | Self::Turn | Self::End | Self::Stop | Self::Reflect | Self::Nothing => {
+                None
+            }
         }
     }
 
@@ -904,6 +956,19 @@ impl Owed {
                 // `judging --judge-->`, `awaiting_human --resume-->` and
                 // `reflecting --reflect.none-->` each carry `<send event="prompt.turn"/>`.
                 AiLoopEvent::Judge | AiLoopEvent::Resume | AiLoopEvent::ReflectNone => Self::Turn,
+                // ⚠⚠⚠⚠ THE OUTAGE ENDED AND THE PEER HAS TO BE TOLD TO CARRY ON — register item
+                // 447, and this arm IS the fix. The word used to be typed inside
+                // `wait_out_service` before the event was raised, which was right while
+                // `service.retry` had one destination and wrong the moment the document gained a
+                // ceiling: it typed at a service that had just refused and then handed the pane to
+                // a person with the word still in it.
+                //
+                // ⚠⚠⚠ It is keyed on the EVENT here and not on the state, and this is the second
+                // place in this table where that matters: `working` is also reached from
+                // `service_down` by nothing else, so the event is the whole condition. The OTHER
+                // destination of the same event — `awaiting_human`, the ceiling — falls to the
+                // state arm below and owes nothing, which is the entire behaviour change.
+                AiLoopEvent::ServiceRetry => Self::ServiceRetry,
                 // ⚠⚠ `priming --prompt.sent-->` carries none because the START prompt is already
                 // in the pane, and `screening --screen.matched-->` carries none DELIBERATELY: the
                 // peer has just been handed its answer by the driver's own keystroke and is
@@ -944,12 +1009,6 @@ impl Owed {
                 | AiLoopEvent::ReflectDone
                 | AiLoopEvent::PromptReflect
                 | AiLoopEvent::ScreenBegin
-                // ⚠⚠⚠ THE DRIVER HAS ALREADY SPOKEN ON THIS EDGE, which is `screen.matched`'s
-                // arrangement one line up and the reason this belongs beside it rather than in a
-                // clause of its own. `wait_out_service` waits the outage out and types
-                // `service_retry_text` ITSELF, then raises this; a prompt owed here would type a
-                // second thing on top of the word that just went in.
-                | AiLoopEvent::ServiceRetry
                 | AiLoopEvent::ScreenNone
                 | AiLoopEvent::SessionReady
                 | AiLoopEvent::SessionReplace
@@ -1959,6 +2018,29 @@ pub enum Noticed {
     /// reason: *how long nothing spoke* and *how many times this pane's reporter HAD spoken* are the
     /// two numbers that separate a stalled agent from a pane whose reporter never existed.
     Silent(crate::completion::Silence),
+    /// ⚠⚠⚠⚠ **THE PEER'S SERVICE WAS DOWN AND THE RUN WAITED IT OUT** — register item 447.
+    ///
+    /// # ⚠⚠⚠ Why this is on the enum when `service_down` is a state a reader can see
+    ///
+    /// Because the state a run ENDS in is not that one. An outage that clears leaves no trace worth
+    /// keeping, and the notice is erased by the very next prompt (`say`). An outage that does NOT
+    /// clear ends the run at `blocked` — the same word an unanswered dialog ends at — and the two
+    /// send whoever reads it in the morning to opposite places: one wants somebody to look at a
+    /// question, the other wants somebody to ask whether an upstream service is ever coming back.
+    /// **Filing an outage under the first is what cost a live run 28 minutes on 2026-08-19.**
+    ///
+    /// ⚠⚠ The walk names it too (`ServiceDown --ServiceRetry--> AwaitingHuman` is the only edge
+    /// between those states), and this is the same fact for the reader who has a REPORT and not a
+    /// journal. That is not a second authority: the notice is where the driver puts what it
+    /// measured, and the document is where the decision about it lives.
+    ServiceDown {
+        /// How many outages this run had already waited out when this one began — the document's
+        /// own `service_retried`, read rather than counted here.
+        retried: i64,
+        /// How long THIS wait lasted, which is the number `service_retry_ms` was authored as and
+        /// the one a reader compares against it.
+        waited: Duration,
+    },
     // ⚠⚠⚠ AND THERE IS DELIBERATELY NO `PeerGone` ARM, though the first draft of that round wrote
     // one. Every notice here exists because the state it leads to CANNOT say the thing itself —
     // `failed` is reached from six transitions and cannot name the variable, `blocked` cannot
@@ -3954,7 +4036,7 @@ impl OuterLoop {
 
             // ⚠⚠⚠ THE PEER'S SERVICE FAILED AND THE ONLY TREATMENT IS TIME — see
             // [`wait_out_service`](Self::wait_out_service).
-            AiLoopState::ServiceDown => self.wait_out_service(panes, run)?,
+            AiLoopState::ServiceDown => self.wait_out_service(),
 
             // ⚠⚠⚠ THE LOOP IMPROVES ITS OWN SETUP AND THEN REPLACES THE SESSION THAT READS IT —
             // three states, because the three things that happen are genuinely different acts and
@@ -4479,10 +4561,27 @@ impl OuterLoop {
     /// the outage did not take. See `restarting` for the case where starting over IS the answer,
     /// and note that this is not it.
     ///
-    /// ⚠⚠⚠ **AND THERE IS NO RETRY CEILING HERE, DELIBERATELY.** `max_seconds` and `max_iterations`
-    /// are the driver's own guardrails and a document cannot talk past them, so a service that
-    /// never returns costs a run its ceiling rather than forever. A second ceiling would be a number
-    /// nothing keeps in step with those two.
+    /// # ⚠⚠⚠⚠⚠ There IS a retry ceiling now, and the paragraph that said otherwise was the defect
+    ///
+    /// This doc used to argue: *"AND THERE IS NO RETRY CEILING HERE, DELIBERATELY. `max_seconds`
+    /// and `max_iterations` are the driver's own guardrails and a document cannot talk past them,
+    /// so a service that never returns costs a run its ceiling rather than forever. A second
+    /// ceiling would be a number nothing keeps in step with those two."* **Every clause of that is
+    /// true and the conclusion is wrong** — register item 447, and it is kept here rather than
+    /// deleted because a reasonable-sounding argument for a defect is the thing worth recognising
+    /// next time.
+    ///
+    /// What it missed is what the ceiling it deferred to actually SAYS. `max_seconds` is 24 hours
+    /// in the shipped kind, and a run that hits it reports *exhausted — duration*: a sentence about
+    /// a run that worked too long, for a run that did no work at all. **The two ceilings do not
+    /// need keeping in step, because they are about different things** — one bounds the work, the
+    /// other bounds waiting for a peer that is not there — and collapsing them cost the register's
+    /// own example: «wait, type, be refused, wait» all night, ending on a word that names the wrong
+    /// cause.
+    ///
+    /// ⚠⚠ So the ceiling is `service_retry_max`, it is the DOCUMENT's (this driver neither holds it
+    /// nor consults it — see the `<data>`), and what it buys is that the run's ending says a person
+    /// was needed rather than that the work took too long.
     ///
     /// # ⚠⚠ Why `Null` and not a self-loop
     ///
@@ -4491,14 +4590,15 @@ impl OuterLoop {
     /// changed when nothing did. The anchor is this function's alone — set on the first look and
     /// cleared on the way out — so no other state can leave it stale.
     ///
-    /// # Errors
+    /// # ⚠⚠⚠ Why it takes no pane and cannot fail
     ///
-    /// Whatever typing into the pane answers.
-    fn wait_out_service(
-        &mut self,
-        panes: &dyn PaneAccess,
-        run: &RunContext,
-    ) -> Result<Raise, PaneError> {
+    /// Because it no longer TOUCHES one. The word that ends an outage moved to [`Owed::ServiceRetry`]
+    /// when `service.retry` gained a second destination, and what is left here is a clock and two
+    /// reads of the document — which is what the state's own comment always claimed it was
+    /// (*"Nothing is sent on entry … the only act that helps is to let time pass"*). **The signature
+    /// says so now instead of the prose**, and that is the check `cargo test` cannot make: clippy is
+    /// what noticed the arguments had stopped being used.
+    fn wait_out_service(&mut self) -> Raise {
         let since = *self.outage.get_or_insert_with(Instant::now);
         // ⚠⚠ THE DOCUMENT'S NUMBER, READ AT THE MOMENT OF USE, which is `await_person_ms`'s own
         // arrangement one function down. A copy taken at construction would be the value a kind
@@ -4509,26 +4609,33 @@ impl OuterLoop {
                 .unwrap_or(DEFAULT_SERVICE_RETRY_MS),
         );
         if since.elapsed() < wait {
-            return Ok(AiLoopEvent::Null.into());
+            return AiLoopEvent::Null.into();
         }
-        // ⚠⚠⚠ THE WORD IS THE DOCUMENT'S AND AN EMPTY ONE IS NOT A REASON TO TYPE NOTHING FOREVER.
-        // A kind that named a needle and blanked the text has asked for a wait with no way out of
-        // it, and this state's only exit is something being said — so the template's own default
-        // stands in, and the run moves. ⚠ The alternative considered and turned down: staying put
-        // silently, which is the `blocked` this whole state exists to stop being.
-        let said = self
-            .text_of(SERVICE_RETRY_TEXT)
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| DEFAULT_SERVICE_RETRY_TEXT.to_owned());
-        // ⚠⚠ WHAT IT COST IS NOT CARRIED ON THE EVENT AND MUST NOT BE: `advance` reads the spend
-        // off the session, which `say` has already recorded, and a number on the event would be a
-        // second authority on one fact. The event itself has nothing to say — the document's
-        // `service.retry` reads no `_event.data`.
-        let _typed = self.say(panes, run, &said)?;
+        // ⚠⚠⚠⚠⚠ AND NOTHING IS TYPED HERE ANY MORE — register item 447. The word is
+        // [`Owed::ServiceRetry`]'s now, paid by `advance` AFTER the machine has moved, because
+        // `service.retry` has TWO destinations since the document gained a ceiling and only one of
+        // them is spoken to. Typing first meant a run out of retries put `continue` into the
+        // composer of a service that had just refused it and then handed a person a pane holding a
+        // word they did not type. ⚠ The fallback for an empty `service_retry_text` travelled with
+        // the word; it is `Owed::fallback` and it says why it exists.
+        //
+        // ⚠⚠ WHAT IT COSTS IS STILL NOT CARRIED ON THE EVENT: `advance` reads the spend off the
+        // session, which `say` records, and a number on the event would be a second authority on
+        // one fact. The document's `service.retry` reads no `_event.data`.
+        //
+        // ⚠⚠⚠⚠ THE NOTICE IS RECORDED AND THE CLEARING IS WHAT MAKES IT HONEST. `say` clears
+        // `noticed` on every prompt, so a retry that reaches `working` pays the word and erases
+        // this in the same breath; a retry the ceiling turned away pays nothing, so it stands — and
+        // it must, because `blocked` cannot say WHY it was reached and its two causes want opposite
+        // things from whoever finds them.
+        self.noticed = Some(Noticed::ServiceDown {
+            retried: self.authored_number(SERVICE_RETRIED).unwrap_or_default(),
+            waited: since.elapsed(),
+        });
         // ⚠ CLEARED ON THE WAY OUT, so the next outage starts its own clock rather than inheriting
         // this one's elapsed time.
         self.outage = None;
-        Ok(AiLoopEvent::ServiceRetry.into())
+        AiLoopEvent::ServiceRetry.into()
     }
 
     /// **WAIT FOR THE PERSON** — `awaiting_human`'s whole effect, and the last state of
@@ -5508,7 +5615,17 @@ impl OuterLoop {
         // documents. `priming`'s `onentry` composes the prompts out of the parts, and it has just
         // run — the machine moved above. A driver reading a construction-time copy would send the
         // template's `(edit me)` however carefully the caller had briefed it.
-        let Some(text) = self.text_of(owed.variable()) else {
+        // ⚠⚠⚠ AN EMPTY ANSWER STANDS IN ONLY WHERE THE DEBT SAYS ONE MAY — see [`Owed::fallback`],
+        // which is `Some` for exactly one variant and says why. An empty PROMPT is left empty and
+        // reaches the peer as nothing, which is the behaviour every prompt has always had; an empty
+        // `service_retry_text` would be a state whose only exit is never taken.
+        let Some(text) =
+            self.text_of(owed.variable())
+                .map(|text| match (text.is_empty(), owed.fallback()) {
+                    (true, Some(standing_in)) => standing_in.to_owned(),
+                    _ => text,
+                })
+        else {
             // ⚠ THE DOCUMENT'S OWN ANSWER, not one invented out here. A machine whose datamodel has
             // stopped holding its prompts cannot be driven, and `fail` -> `failed` is what this
             // document says happens to a run that cannot go on. Inventing a `Pumped` arm for it
@@ -13087,6 +13204,156 @@ mod tests {
              rather than in a file other repositories copy:\n{}",
             findings.len(),
             findings.join("\n"),
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RETRY THE CEILING TURNED AWAY TYPES NOTHING** — register item 447, at the driver
+    /// rather than at the document, and the half a state-machine gate cannot see.
+    ///
+    /// # ⚠⚠⚠⚠ Why moving one line changed what a person finds on the pane
+    ///
+    /// `wait_out_service` used to type `service_retry_text` and THEN raise `service.retry`. That
+    /// was correct for exactly as long as the event had one destination. The moment the document
+    /// gained a ceiling it had two, and typing first means a run that has given up **puts
+    /// `continue` into the composer of a service that just refused it, and then hands a person a
+    /// pane holding a word they did not type** — against `awaiting_human`'s own rule that the pane
+    /// stays exactly as the person will find it.
+    ///
+    /// The fix is not a second check in the driver: it is [`Owed`], which already answers *what
+    /// does the transition that was actually TAKEN owe*, and whose table [`OuterLoop::advance`]
+    /// consults after the machine has moved. So this gate asks that table the two questions the
+    /// two destinations pose, and then asks the driver itself, because a table is not a product.
+    ///
+    /// ⚠⚠ **THE SPEND IS THE INSTRUMENT.** `advance` answers how many bytes went in, so *typed
+    /// nothing* is a number and not an absence somebody has to trust — which is the same reason
+    /// `a_loop_whose_peer_is_dead_stops_typing_instead_of_marching_to_the_wall` counts bytes rather
+    /// than reading the screen.
+    #[test]
+    fn a_retry_the_ceiling_turned_away_types_nothing_where_an_ordinary_one_speaks() {
+        // ── THE TABLE, both destinations of ONE event ──
+        assert_eq!(
+            Owed::on(AiLoopEvent::ServiceRetry, AiLoopState::Working),
+            Owed::ServiceRetry,
+            "⚠⚠⚠ the outage ended and the peer has to be told to carry on, or `service_down`'s only \
+             way back to work is never taken and the run waits for ever — which is the `blocked` \
+             that state exists to stop being",
+        );
+        assert_eq!(
+            Owed::on(AiLoopEvent::ServiceRetry, AiLoopState::AwaitingHuman),
+            Owed::Nothing,
+            "⚠⚠⚠⚠⚠ AND THE SAME EVENT OWES NOTHING WHERE THE CEILING TURNED IT AWAY. This is the \
+             whole behaviour change: one event, two landings, and only one of them is spoken to",
+        );
+        assert_eq!(
+            (
+                Owed::ServiceRetry.variable(),
+                Owed::ServiceRetry.fallback(),
+                Owed::Turn.fallback(),
+            ),
+            (SERVICE_RETRY_TEXT, Some(DEFAULT_SERVICE_RETRY_TEXT), None),
+            "⚠⚠ the word is the DOCUMENT's, and exactly one debt stands a default in — see \
+             `Owed::fallback`, which says why an empty prompt is left empty and an empty retry word \
+             is not",
+        );
+
+        /// Drive a real loop into `service_down`, author the ceiling, retry — and say where it
+        /// landed and **how many bytes went into the pane getting there**.
+        fn retried_with(max: i64, retried: i64) -> (AiLoopState, u64, Option<Noticed>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its four authored strings");
+            let run = RunContext::uncancellable();
+
+            // Into `working` by the door a run uses, then into the outage by the document's own
+            // routing key — never by writing the state, which no product can do.
+            loops
+                .advance(&access, &run, AiLoopEvent::Start.into())
+                .expect("the pane stays readable");
+            loops
+                .advance(&access, &run, AiLoopEvent::PromptSent.into())
+                .expect("the pane stays readable");
+            loops
+                .advance(
+                    &access,
+                    &run,
+                    Raise::carrying(
+                        AiLoopEvent::TurnBlocked,
+                        serde_json::json!({"service": true, "judged": false, "rule": ""}),
+                    ),
+                )
+                .expect("the pane stays readable");
+            assert_eq!(
+                loops.state(),
+                AiLoopState::ServiceDown,
+                "the fixture: both arms start from the outage state",
+            );
+            for (name, value) in [("service_retry_max", max), (SERVICE_RETRIED, retried)] {
+                loops
+                    .script
+                    .set_variable(&loops.session, name, ScriptValue::Int(value))
+                    .expect("the document's own numbers are writable");
+            }
+            // ⚠ The notice the driver records while waiting, set here rather than by letting the
+            // clock run: what this gate is about is what the RETRY does, and `wait_out_service`'s
+            // own bound is ten minutes.
+            loops.noticed = Some(Noticed::ServiceDown {
+                retried,
+                waited: Duration::from_secs(600),
+            });
+            let (landed, spent) = loops
+                .advance(&access, &run, AiLoopEvent::ServiceRetry.into())
+                .expect("the pane stays readable");
+            let noticed = loops.noticed.clone();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (landed, spent, noticed)
+        }
+
+        // ── THE CONTROL: an ordinary retry speaks ──
+        let (working, said, cleared) = retried_with(6, 0);
+        assert_eq!(
+            working,
+            AiLoopState::Working,
+            "the control: below the ceiling an outage is still just an outage",
+        );
+        assert!(
+            said >= DEFAULT_SERVICE_RETRY_TEXT.len() as u64,
+            "⚠⚠⚠⚠ THE CONTROL FAILED. Moving the word out of `wait_out_service` and onto `Owed` \
+             must not stop it being said: `service_down`'s ONLY exit is something being typed, so \
+             a run that types nothing here waits for ever — and a gate that only checked the \
+             silent arm would call that a pass. Got {said} byte(s)",
+        );
+        assert_eq!(
+            cleared, None,
+            "⚠⚠⚠ and the notice is GONE, because a retry that reached work paid a word and `say` \
+             clears it — which is what stops a cleared outage being reported as the reason a run \
+             ended hours later",
+        );
+
+        // ── THE HEADLINE: the ceiling turned it away, and nothing went in ──
+        let (person, typed, standing) = retried_with(6, 6);
+        assert_eq!(
+            person,
+            AiLoopState::AwaitingHuman,
+            "the ceiling is reached, so the run asks for somebody",
+        );
+        assert_eq!(
+            typed, 0,
+            "⚠⚠⚠⚠⚠ NOT ONE BYTE. The pane is what the person will read, and a run that gave up \
+             must not leave `continue` in the composer of a service that refused it — nor spend \
+             one more request on a service it has just decided is not coming back. Typed {typed}",
+        );
+        assert_eq!(
+            standing,
+            Some(Noticed::ServiceDown {
+                retried: 6,
+                waited: Duration::from_secs(600),
+            }),
+            "⚠⚠⚠⚠ AND THE NOTICE STANDS, which is the same mechanism read the other way: nothing \
+             was paid, so nothing cleared it, and `blocked` — the word this run is heading for — \
+             cannot say whether it was reached over a question or over a server that never came \
+             back",
         );
     }
 

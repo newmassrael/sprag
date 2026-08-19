@@ -304,6 +304,55 @@
     <data id="service_retried" expr="0"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ HOW MANY TIMES IT MAY DO THAT BEFORE A PERSON IS ASKED — the ceiling
+      the retry did not have, and the second half of the outage story.
+
+      ⚠⚠⚠⚠ WHY A CEILING AT ALL, IN ONE SENTENCE: **an unbounded retry is how a
+      loop burns a night instead of losing one.** The state above it was built so
+      that a 529 costs a run a wait rather than its life, and that is right; what
+      it did not say is what happens when the service never comes back. Without
+      this the answer was «wait, type, get refused, wait» until `max_seconds`,
+      which the shipped kind authors at 24 hours — the same shape, one door over,
+      as the silence this document now bounds with `quiet_within_ms`.
+
+      ⚠⚠⚠ WHAT THE NUMBER MEANS IS THE PRODUCT OF TWO, AND A READER MUST NOT
+      TAKE THIS ONE ALONE. The run tolerates roughly
+      `service_retry_max × service_retry_ms` of outage — six waits of ten minutes
+      is about an hour. An author who lengthens the wait shortens nothing here
+      and lengthens the total; the two are edited together or not at all.
+
+      ⚠⚠ SIX, AND THE ARGUMENT IS THE SHAPE OF THE FAILURE RATHER THAN A
+      MEASUREMENT — said plainly because this register's rule is that an undated
+      number is a guess. A 529 that clears, clears in minutes; a service that has
+      been refusing for an hour is not a hiccup, and by then the honest thing to
+      report is that nobody could work rather than to keep paying for silence.
+      ⚠ It fails in the direction that STOPS, and that is deliberate: stopping is
+      visible and a night spent retrying is not.
+
+      ⚠⚠⚠ `'never'` IS NO CEILING, spelled exactly as `max_turns` spells it and
+      guarded the same way — this document already has an idiom for «do not bound
+      this» and inventing a second one (0? -1?) would make two things that mean
+      the same thing look different. A run that authors `'never'` gets what every
+      run got before this existed.
+
+      ⚠⚠⚠⚠⚠ AND THE `!= 'never'` HALF OF THAT GUARD IS INERT AT THE PINNED
+      ENGINE — MEASURED, NOT ASSUMED, AND WRITTEN HERE SO NOBODY READS IT AS
+      LOAD-BEARING. Deleting it and re-running the gate leaves the gate GREEN:
+      `999 >= 'never'` already answers false, so the numeric half decides the
+      whole thing on its own. It is KEPT anyway, for two reasons that are not
+      «it might work differently»: it says what the author meant, where a bare
+      `>=` against a string says only what the engine happens to do; and this
+      document's own header rule is that a shape no gate drives is not known to
+      work here — a mixed-type comparison is exactly such a shape, and relying on
+      its result is relying on the thing that rule forbids.
+
+      ⚠ So the gate's `'never'` arm is a REGRESSION GUARD ON THE ENGINE, not a
+      test of this clause. It is labelled that way where it is written; a reader
+      who mistakes it for the second is the reason this paragraph exists.
+    -->
+    <data id="service_retry_max" expr="6"/>
+
+    <!--
       ⚠⚠⚠ AND WHAT THE AGENT SAYS WHEN THERE IS NOTHING LEFT TO DO AT ALL.
 
       `done_marker` ends a MILESTONE; this ends the RUN. Until both existed a
@@ -2140,13 +2189,50 @@
     `service_retry_text` rather than the milestone — see `restarting` for the
     case where starting over IS the answer, and note that this is not it.
 
-    ⚠ ONE WAY OUT AND THREE WAYS TO DIE. `service.retry` is the driver saying the
-    wait is over and it has spoken; the other three are the endings every state
-    here carries. There is no edge for *the service came back on its own*,
-    because a run that says nothing learns nothing: the peer only tells us it is
-    healthy by answering, and it can only answer something asked.
+    ⚠ TWO WAYS OUT AND THREE WAYS TO DIE. `service.retry` is the driver saying
+    the wait is over; where it LANDS is this document's decision and it is the
+    two transitions below. The other three are the endings every state here
+    carries. There is no edge for *the service came back on its own*, because a
+    run that says nothing learns nothing: the peer only tells us it is healthy by
+    answering, and it can only answer something asked.
+
+    ⚠⚠⚠⚠ AND THE DRIVER TYPES NOTHING ON THE WAY OUT — `service_retry_text` is
+    OWED by the edge that reaches `working`, on the same terms as every prompt in
+    this document, so the edge that reaches `awaiting_human` owes nothing and
+    says nothing. That ordering is not tidiness: it used to type first and route
+    afterwards, which put a word into the composer of a service that had just
+    refused and then handed a person a pane with somebody else's text in it —
+    against this document's own rule that `awaiting_human` leaves the pane
+    exactly as the person will find it.
   -->
   <state id="service_down">
+    <!--
+      ⚠⚠⚠⚠⚠ THE SERVICE NEVER CAME BACK. FIRST, because the guard is what makes
+      the edge below it bounded, and an unguarded first match would take every
+      retry for ever.
+
+      TO `awaiting_human` AND NOT TO `failed`: nothing about this run is broken.
+      Its session is intact, its work is where it left it, and the one thing
+      nobody here can answer is whether the peer's service is coming back — which
+      is a judgement, and this document has exactly one state for a judgement it
+      cannot make. A person who comes finds a pane that still holds the work; one
+      who does not, reaches `blocked` through `unattended`, on the caller's own
+      `await_person_ms` rather than on a clock invented for outages.
+
+      ⚠⚠ AND THE WALK NAMES IT WITHOUT A WORD OF ITS OWN, because this is the
+      ONLY edge from `service_down` to `awaiting_human`: a reader meeting that
+      pair in the morning knows a server was down and nobody came, where the same
+      state reached from `screening` by `screen.none` says a question really
+      needed a person. Telling those two apart is the whole of what a morning
+      reader wants, and it was one bucket until now.
+
+      ⚠ The walk's own arrow notation is deliberately NOT written out here:
+      `sce-build` refuses an XML comment containing a double hyphen, and reports
+      it against line 0 of the whole file (register item 341).
+    -->
+    <transition event="service.retry"
+                cond="service_retry_max != 'never' &amp;&amp; service_retried &gt;= service_retry_max"
+                target="awaiting_human"/>
     <transition event="service.retry" target="working">
       <assign location="service_retried" expr="service_retried + 1"/>
     </transition>
