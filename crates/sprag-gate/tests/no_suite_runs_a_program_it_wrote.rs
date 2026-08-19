@@ -79,21 +79,37 @@ const EXEMPT: [(&str, &str); 3] = [
     ),
 ];
 
-/// The mode literal in `from_mode(0o…)` or `.mode(0o…)`, if the line carries one.
+/// The mode literal in any `…mode(0o…)` call on the line, if one of them can be executed.
 ///
 /// ⚠ Only OWNER-execute is read. A mode is written for the owner first and this gate is about
 /// whether the file can be handed to `execve` by the process that made it.
+///
+/// ⚠⚠⚠⚠⚠ **ONE RULE, NOT A LIST OF SPELLINGS** — register item 453. This used to name the two
+/// openers somebody had seen (`from_mode(0o` and `.mode(0o`), and a list of spellings is a list
+/// that ages in silence: `perms.set_mode(0o755)` — the spelling every Rust reference reaches for —
+/// matched NEITHER, because the dot in it is followed by `set_`. The gate above was therefore blind
+/// to the ordinary way of writing the very defect it exists to stop, and blindness in a ratchet
+/// reads exactly like compliance.
+///
+/// So the needle is now the CALL rather than its receiver: anything ending `mode(` handed an octal.
+/// That is `from_mode`, `.mode`, `set_mode`, and whatever the next one is called, which is the
+/// point — [`the_reader_sees_every_spelling_of_an_executable_mode`] holds it to the spellings that
+/// exist, in both directions.
+///
+/// ⚠⚠ Every occurrence on the line is examined, not just the first. A line may set several modes,
+/// and the old form abandoned the whole line the moment one of them failed to parse.
 fn executable_mode_on(line: &str) -> Option<u32> {
-    for opener in ["from_mode(0o", ".mode(0o"] {
-        let Some(at) = line.find(opener) else {
-            continue;
-        };
-        let digits: String = line[at + opener.len()..]
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        let mode = u32::from_str_radix(&digits, 8).ok()?;
-        if mode & 0o100 != 0 {
+    /// A mode handed to a call, which is what `metadata.permissions().mode()` — a READ — never has.
+    const CALL: &str = "mode(0o";
+
+    let mut rest = line;
+    while let Some(at) = rest.find(CALL) {
+        rest = &rest[at + CALL.len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Some(mode) = u32::from_str_radix(&digits, 8)
+            .ok()
+            .filter(|mode| mode & 0o100 != 0)
+        {
             return Some(mode);
         }
     }
@@ -219,4 +235,95 @@ fn every_tracked_double_is_executable_in_the_index() {
              reason.",
         );
     }
+}
+
+/// Every way this workspace's language spells *make this file executable*, and what the reader owes
+/// each one — register item 453.
+///
+/// ⚠⚠⚠⚠⚠ **A LINE SCAN IS ONLY AS WIDE AS ITS NEEDLE, AND NOTHING TELLS A NEEDLE IT HAS GONE
+/// NARROW.** The ratchet above is this workspace's whole defence against item 453's race, and it
+/// reaches a line only through [`executable_mode_on`]. So the question *does the gate still see the
+/// shape* is a different question from *does the gate still pass*, and only the first one is worth
+/// anything: a blind gate is green forever, in exactly the voice of a working one.
+///
+/// The row that made this file necessary is `perms.set_mode(0o755)`. It is the spelling every Rust
+/// reference reaches for — take a file's `permissions()`, set the bit, hand it back — and the
+/// reader's needles were `from_mode(0o` and `.mode(0o`, **neither of which is a substring of
+/// `perms.set_mode(0o755)`**: the `.` in that line is followed by `set_`, not by `mode`. A suite
+/// written the ordinary way therefore manufactured a program, executed it, and the gate built to
+/// stop precisely that said nothing.
+///
+/// ⚠⚠ **BOTH DIRECTIONS, which is this file's own standing rule.** A needle that matched everything
+/// would also be green here and would be worthless — so the rows below include modes that carry no
+/// owner-execute bit, and the reader must decline those. `0o644` is a file nobody can run and it is
+/// not this item's defect.
+#[test]
+fn the_reader_sees_every_spelling_of_an_executable_mode() {
+    /// A line as a source could really carry it, and the mode the reader owes it.
+    const SPELLINGS: [(&str, Option<u32>, &str); 8] = [
+        (
+            "std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))",
+            Some(0o755),
+            "the constructor spelling, which `doubles.rs` uses",
+        ),
+        (
+            "OpenOptions::new().mode(0o700).open(&p)",
+            Some(0o700),
+            "the builder spelling, where the mode is asked for at create time",
+        ),
+        (
+            "perms.set_mode(0o755);",
+            Some(0o755),
+            "⚠ THE ROW THIS TEST EXISTS FOR — the mutating spelling, invisible to a needle \
+             anchored on a leading dot",
+        ),
+        (
+            "std::fs::Permissions::from_mode(0o111)",
+            Some(0o111),
+            "execute for everyone and read for nobody is still a program",
+        ),
+        (
+            "std::fs::Permissions::from_mode(0o644)",
+            None,
+            "a file nobody can run — not this item's defect, and a reader that flags it is a \
+             reader that will be exempted into uselessness",
+        ),
+        (
+            "perms.set_mode(0o600);",
+            None,
+            "the same, in the spelling this round added",
+        ),
+        (
+            "OpenOptions::new().mode(0o400).open(&p)",
+            None,
+            "read-only, asked for at create time",
+        ),
+        (
+            "let mode = metadata.permissions().mode();",
+            None,
+            "READING a mode is not setting one, and this line appears in `sprag-smoke` doing \
+             exactly the right thing",
+        ),
+    ];
+
+    let missed: Vec<&(&str, Option<u32>, &str)> = SPELLINGS
+        .iter()
+        .filter(|(line, owed, _)| executable_mode_on(line) != *owed)
+        .collect();
+
+    assert!(
+        missed.is_empty(),
+        "⚠⚠⚠⚠⚠ {} spelling(s) of an executable mode are read wrongly, so the ratchet above is \
+         BLIND to them and will stay green while a suite manufactures the program it runs — \
+         register item 453's race, walking back in through a needle nobody re-measured.\n{}",
+        missed.len(),
+        missed
+            .iter()
+            .map(|(line, owed, why)| format!(
+                "  {line}\n    owed {owed:?}, read {:?} — {why}",
+                executable_mode_on(line)
+            ))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }
