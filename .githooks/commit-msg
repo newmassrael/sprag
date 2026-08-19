@@ -29,7 +29,26 @@ fi
 # Strip leading '#'-comment lines (git appends instructions during interactive
 # commit; they are stripped before commit lands, so the hook should not see
 # them as content).
-mapfile -t lines < <(grep -v '^#' "$msg_file")
+#
+# ⚠⚠⚠⚠⚠ READ IN A LOOP RATHER THAN WITH `mapfile`, WHICH IS A BASH 4 BUILTIN AND
+# THIS HOOK RUNS ON MACHINES THAT SHIP BASH 3.2. macOS is the one that matters and
+# it is not going to change: Apple froze bash at 3.2 over its licence, so
+# `#!/usr/bin/env bash` there resolves to a shell without this builtin.
+#
+# ⚠⚠⚠⚠ WHAT THAT COST, and it is worse than a red test: `set -e` made line 32 the
+# END of this hook, so on macOS **every rule below was unreachable** — the emoji
+# rule, the English-only rule, the bullet rules. A Mac committed whatever it liked
+# and the hook reported a missing builtin. Four gates in `sprag-gate` said so on
+# every CI run from 2026-08-14, and nobody read them (register items 460, 151).
+#
+# ⚠⚠ `IFS=` and `-r` are what make the loop equivalent: without them `read` would
+# strip leading and trailing whitespace and eat backslashes, and this hook measures
+# lines BY BYTE. `grep` always ends its output with a newline, so no line is lost
+# to the loop's final read.
+lines=()
+while IFS= read -r line; do
+    lines+=("$line")
+done < <(grep -v '^#' "$msg_file")
 
 errors=()
 

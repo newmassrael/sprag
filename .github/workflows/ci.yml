@@ -267,6 +267,23 @@ jobs:
       - name: Build
         run: cargo build --workspace --exclude sprag-gui
 
+      # THE COMMIT-MESSAGE GATE NEEDS A grep THAT HAS -P, AND THIS RUNNER SHIPS BSD grep, WHICH
+      # DOES NOT. Without it `.githooks/commit-msg` refuses every message — correctly, since its
+      # emoji and English-only rules have no other implementation and it will not pass what it
+      # cannot check — so `sprag-gate`'s four end-to-end gates measure a machine that cannot run the
+      # hook rather than a hook that is wrong.
+      #
+      # ⚠⚠⚠ INSTALLED RATHER THAN SKIPPED, and that is the same repair register item 454 made on a
+      # build machine that could not enforce these rules either: the answer to *this host cannot run
+      # the gate* is to make the host able, never to stop asking. A skip here would leave every Mac
+      # in the project committing whatever it liked with nothing to say so.
+      #
+      # ⚠ The path is the hook's own advice, printed in its refusal.
+      - name: GNU grep, which the commit-message gate has no substitute for
+        run: |
+          brew install grep
+          echo "$(brew --prefix)/opt/grep/libexec/gnubin" >> "$GITHUB_PATH"
+
       # Both halves duplicated from the Linux job deliberately: the guard below is a claim about
       # what THE SUITE does, and a claim checked on one platform is a claim about that platform. A
       # call site that resolves the ambient home only where `cfg(unix)` splits would otherwise be
