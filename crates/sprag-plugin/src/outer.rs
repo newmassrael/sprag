@@ -10388,6 +10388,13 @@ mod tests {
         const SHALLOW: u16 = 3;
         /// Bounded so a fixture that never reaches the arrangement fails instead of spinning.
         const SCROLLS: usize = 40;
+        /// How long ONE line may take to come back from the parrot.
+        ///
+        /// ⚠ Generous on purpose, and it is not a timing guess this gate rests on: the wait ASSERTS
+        /// when it expires, so this number decides how long a red takes to arrive and never whether
+        /// the fixture is correct. The runner this must survive is 6,500× slower than the box that
+        /// certifies it (0.02 s against 130 s), which is exactly the ratio no small number survives.
+        const ECHO_WITHIN: Duration = Duration::from_secs(30);
 
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let workspace = Arc::new(Mutex::new(Workspace::new((FATAL, SHALLOW))));
@@ -10430,31 +10437,63 @@ mod tests {
                 .first()
                 .is_some_and(|row| stands_alone(&row.text, &marker))
         };
-        // ⚠⚠⚠⚠ **THROUGH A [`RowTrail`], WHICH IS THE PRODUCT'S OWN ANSWER TO THIS EXACT QUESTION.**
-        // This loop waited for `pane_rows(pane) != before`, and [`PaneRow`] derives equality over
-        // its damage GENERATION as well as its text — so it asked *has this pane been repainted?*
-        // when what it needs is *has a line gone by?*. A generation is a PAINT signal, stamped by a
-        // resize or a palette change "while no program produces a byte" ([`RowTrail`]'s own doc,
-        // which exists because four plugins made this mistake before this fixture did). Answered
-        // that way the wait returns before the parrot's line lands, the loop sends its next Enter
-        // early and walks a three-row screen PAST the one scroll step where the marker is the top
-        // row. Measured as a red inside a loaded workspace run — *"after 40 scrolls the marker
-        // still is not the grid's top row"*, rows blank at generation 379.
+        // ⚠⚠⚠⚠⚠ **EACH SCROLL SENDS A LINE NOBODY HAS SENT BEFORE AND WAITS FOR THE PARROT TO PRINT
+        // THAT LINE BACK** — because the two waits that stood here could not see the event they were
+        // waiting for, and each one's blindness was a different shape.
+        //
+        // The first asked `pane_rows(pane) != before`, which compares a row's damage GENERATION as
+        // well as its text: a PAINT signal, stamped by a resize or a palette change while no program
+        // produces a byte. The second asked a [`RowTrail`], which compares TEXT — and this parrot
+        // answers a blank line with **a blank line**. `RowTrail`'s own doc says a row "that
+        // reprinted the text it already held" is not fresh, and is "indistinguishable from *nothing
+        // happened* by any measure a screen can offer". So once the grid filled with blank rows the
+        // signal could never fire again: the wait spent its whole deadline, **the loop took that
+        // expiry for an arrival**, and the next Enter put two lines in flight — stepping a three-row
+        // screen past the one arrangement this fixture exists to build.
+        //
+        // ⚠⚠⚠⚠⚠ **AND A GREEN RUN HERE PROVES NOTHING ABOUT THE MACHINE THAT MATTERS.** This test
+        // takes **0.02 s** on the box that certifies it and **over 130 s** on the hosted runner,
+        // where it has failed on every push since 2026-08-14 — *"after 40 scrolls the marker still
+        // is not the grid's top row"*, every row blank, which is 5 s of expiry times the scrolls
+        // left. Register item 460.
+        //
+        // ⚠⚠⚠ THE LINE IS UNIQUE PER SCROLL, and that is what makes the wait answerable at all: two
+        // identical lines are the one case no reader can tell from an echo of the first. The peer
+        // runs `stty -echo`, so the text is on the pane only because the PARROT printed it — the
+        // same evidence rule [`crate::readiness::ReadyWhen::Prints`] is built on.
+        //
+        // ⚠⚠ AND THE WAIT ASSERTS RATHER THAN EXPIRING QUIETLY, which is the defect above stated as
+        // a rule: a fixture that cannot stage its hazard must SAY so, exactly as the assertion below
+        // does, rather than carry on and measure something else.
+        let printed = |line: &str| {
+            access
+                .pane_full_text(pane)
+                .is_some_and(|text| text.contains(line))
+        };
         let mut scrolled = 0;
         while !top_is_marker(&access) && scrolled < SCROLLS {
-            let before = crate::access::RowTrail::mark(&access, pane);
-            let typed = access
-                .inject(pane, &[crate::access::KeyStroke::named("Enter")])
-                .expect("the parrot takes a blank line");
+            scrolled += 1;
+            let line = format!("scroll-{scrolled}");
+            let mut keys = crate::access::KeyStroke::text(&line);
+            keys.push(crate::access::KeyStroke::named("Enter"));
+            let typed = access.inject(pane, &keys).expect("the parrot takes a line");
             assert!(
                 typed.bytes() > 0,
-                "a newline that reached no pane scrolls nothing",
+                "a line that reached no pane scrolls nothing",
             );
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while before.fresh(&access, pane).is_empty() && std::time::Instant::now() < deadline {
+            let deadline = std::time::Instant::now() + ECHO_WITHIN;
+            while !printed(&line) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            scrolled += 1;
+            assert!(
+                printed(&line),
+                "⚠⚠⚠⚠⚠ THE PARROT DID NOT PRINT {line:?} WITHIN {ECHO_WITHIN:?}, so this scroll \
+                 never landed. Carrying on here is what shipped the failure this wait replaced: the \
+                 next line goes in with the last one still in flight, two rows move at once, and a \
+                 three-row screen steps over the one arrangement the gate below measures. Screen: \
+                 {:?}",
+                access.pane_full_text(pane),
+            );
         }
         assert!(
             top_is_marker(&access),
