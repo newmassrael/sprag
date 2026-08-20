@@ -963,7 +963,9 @@
         tokens per restart and came up 3.2 to 4.4 times short.
 
         ⚠⚠ AND MOST OF A SESSION'S CONTEXT CANNOT BE DISCARDED AT ALL. The
-        second request of every session already reads about 38,500 tokens; that
+        second request already reads about 38,500 tokens in the session this was
+        measured on — 21,350 at the median of the 250 measured where the loop
+        actually runs, which is a TOOL SET's difference and not a drift; that
         is the system prompt and the tool definitions, and a restart pays for it
         again rather than escaping it. What a restart can actually drop is only
         what sits ON TOP: 17,358 tokens at the end of the single session, about
@@ -1387,19 +1389,30 @@
       first request cannot show it, having nothing to read back yet.
 
       ⚠⚠⚠⚠ AND THAT NUMBER BELONGS TO A POPULATION, WHICH THIS PARAGRAPH DID NOT
-      SAY. The 38,500 is a PLAIN agent session. Measured 2026-08-20 across 25 of
-      THIS repository's own sessions (48 to 2,171 requests each), the same
-      quantity is a median of 24,106 and the toll `cold` is 29,083 — four times
-      the 7,000 the gates' fixture uses. Neither number is wrong; they are
-      different tool sets, and a reader who took either for the other would
+      SAY. The 38,500 is a PLAIN agent session. Measured 2026-08-20 over every
+      one of THIS repository's own transcripts that carries the two billed
+      requests these numbers are defined on — 250 of the 255 on disk — the same
+      quantity is a median of 21,350 and the toll `cold` is 28,981, four times
+      the 7,000 the gates' fixture used to carry. Neither number is wrong; they
+      are different tool sets, and a reader who took either for the other would
       mis-price the trade by a factor of four.
 
       ⚠⚠ WHAT THAT DOES TO THE BREAK-EVEN, stated because it is the whole point
       of the pair: at those measured values a restart pays for itself only past
-      `20 * 29,083 + 24,106` = 605,766 tokens of reading, and only 4 of the 25
-      sessions ever got there. The economic edge is therefore RARE in production
-      and the fixture makes it look ordinary — registered rather than left for
-      somebody to infer.
+      `20 * 28,981 + 21,350` = 600,970 tokens of reading, and 49 of the 250
+      sessions ever got there. The economic edge is therefore a MINORITY door in
+      production and the fixture made it look ordinary — registered rather than
+      left for somebody to infer.
+
+      ⚠⚠⚠ AND THE FIRST FILING OF THAT FINDING WAS ITSELF A SAMPLE OFFERED AS A
+      POPULATION: it read 25 sessions of the 255 and reported 24,106 / 29,083
+      and *4 of 25*, which moves the break-even by about 5,000 and the rate by a
+      fifth. The numbers above are all of it. ⚠⚠⚠⚠ A MEASUREMENT IS A MOMENT, so
+      the date is part of the claim, and the round that re-measures must move
+      this paragraph AND `MEASURED_HERE` in `testing.rs` together — the ratchet
+      `an_economic_edge_carries_the_population_it_was_measured_in` reds on either
+      one alone, and it recomputes this arithmetic against the multiplier the
+      guards below actually use rather than trusting the sum written here.
 
       ⚠⚠ SO THE DISCARDABLE AMOUNT IS `context - floor`, and the trade is that
       against `cold` at twenty to one. `reflecting` composes all of it into the

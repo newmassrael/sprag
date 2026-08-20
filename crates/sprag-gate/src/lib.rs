@@ -61,6 +61,13 @@ pub mod loop_shape;
 /// workspace's Rust, and item 492 paid one instance of a defect whose CLASS is what this closes.
 pub mod authored;
 
+/// Whether the loop's economic edge is priced in the POPULATION it will run in — item 493.
+///
+/// Beside [`authored`] and for the same reason: the claim spans the template's prose and the Rust
+/// that drives it, so neither side alone can hold it. Item 494 pinned which numbers a KIND may
+/// author; this pins that a MEASURED one still describes the sessions it was measured on.
+pub mod economics;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the

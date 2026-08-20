@@ -2181,6 +2181,127 @@ pub(crate) fn supervised_writing(
     WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
 }
 
+/// **WHAT A BILLED SESSION COSTS, AS THREE NUMBERS THAT BELONG TO A POPULATION** — register item
+/// 493.
+///
+/// # ⚠⚠⚠⚠⚠ The fixture made a RARE door look ordinary, and no gate could see it
+///
+/// `reviewing`'s economic edge fires when `context - floor >= 20 * cold`: replacing a session pays
+/// for itself once the reading it discards is worth twenty times the cache the replacement
+/// re-writes. Every gate that drives that edge used ONE hand-copied trio — a cold start of 7,000, a
+/// floor of 38,500 and a last reading of 466,013 — which puts the break-even at 178,500 and the
+/// fixture three times past it. There is no way to read those gates and not conclude the arm is
+/// ORDINARY.
+///
+/// Measured 2026-08-20 over EVERY transcript this repository has (250 of the 255 files under
+/// `~/.claude/projects/-home-coin-sprag/` hold the two billed requests that `cold` and `floor` are
+/// defined on): the median `cold` is 28,981 and the median `floor` is 21,350, so the break-even
+/// here is 600,970 and **49 of those 250 sessions ever read that far**. ⚠⚠ At the fixture's own
+/// 466,013 the trade LOSES — 444,663 discardable against a toll of 579,620 — so the single session
+/// that five gates priced as *"long past break-even"* would, in this repository, have kept its
+/// session and gone back to work. That is not prose here: it is
+/// `the_economic_door_is_priced_in_the_population_it_will_run_in`.
+///
+/// ⚠⚠⚠ **AND 38,500 WAS NOT A STALE NUMBER, IT WAS A DIFFERENT POPULATION.** It is a PLAIN agent
+/// session; a session with this daemon's MCP tools loaded pays a different standing cost. Neither
+/// is wrong and the fixture said neither which, which is why [`A_PLAIN_AGENT_SESSION`] is kept and
+/// named rather than deleted — a control needs something to be a control OF.
+///
+/// ⚠ The register's own filing measured 25 sessions and read 24,106 / 29,083 / *4 of 25*. **That
+/// was a sample of the 255 files offered as the population** — the same defect one size down — and
+/// all of it moves the break-even by about 5,000. A measurement is a moment: this one carries its
+/// date, and the round that re-measures must replace this trio AND the paragraph in
+/// `ai_loop.scxml` together, because `an_economic_edge_carries_the_population_it_was_measured_in`
+/// reds on either one alone.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Billed {
+    /// The FIRST billed request's cache WRITE — the toll a replacement re-pays. It cannot be read
+    /// off any later request: by then there is something to read back.
+    pub(crate) cold: u64,
+    /// The SECOND billed request's cache READ — the standing cost no restart escapes (system prompt
+    /// and tool definitions). The first request cannot show it, having nothing to read back yet.
+    pub(crate) floor: u64,
+    /// The LAST billed request's cache read — what the session is carrying now.
+    pub(crate) context: u64,
+}
+
+impl Billed {
+    /// What replacing this session re-writes, at the document's own twenty-to-one.
+    pub(crate) const fn toll(&self) -> u64 {
+        20 * self.cold
+    }
+
+    /// What replacing it would throw away.
+    pub(crate) const fn discardable(&self) -> u64 {
+        self.context - self.floor
+    }
+
+    /// The reading past which the trade pays for itself — `floor + 20 * cold`, which is
+    /// `reviewing`'s guard rearranged.
+    pub(crate) const fn break_even(&self) -> u64 {
+        self.floor + self.toll()
+    }
+
+    /// Whether the economic edge would fire on this session. ⚠ It is the DOCUMENT's comparison, so
+    /// a gate can assert the arithmetic it is about to drive instead of asserting a digit it typed.
+    pub(crate) const fn pays(&self) -> bool {
+        self.discardable() >= self.toll()
+    }
+
+    /// The same session's costs with a different last reading — the one axis a control is allowed
+    /// to move. ⚠ Every field is spelled rather than `..*self`: the day a fourth cost joins this
+    /// struct, the compiler asks what a control should do with it instead of copying one silently
+    /// (register item 478's `Seat::of`, the same argument).
+    pub(crate) const fn reading(&self, context: u64) -> Self {
+        Self {
+            cold: self.cold,
+            floor: self.floor,
+            context,
+        }
+    }
+
+    /// The record an agent files, as its reader will meet it: **three** billed requests, because
+    /// `cold` is the first one's WRITE and `floor` is the second one's READ — a two-request fixture
+    /// cannot tell a reader that confuses them from one that does not.
+    pub(crate) fn transcript(&self) -> String {
+        let request = |id: &str, wrote: u64, read: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"{id}","usage":{{"input_tokens":0,"cache_read_input_tokens":{read},"cache_creation_input_tokens":{wrote},"output_tokens":1}}}}}}"#
+            )
+        };
+        [
+            request("m1", self.cold, 0),
+            request("m2", 0, self.floor),
+            request("m3", 0, self.context),
+        ]
+        .join("\n")
+    }
+}
+
+/// **THIS REPOSITORY'S OWN SESSIONS, MEASURED 2026-08-20.** `cold` and `floor` are medians over the
+/// 250 transcripts carrying two billed requests; `context` is the MEDIAN PEAK OF THE 49 THAT REACH
+/// THE ECONOMIC EDGE, because a fixture whose job is to demonstrate that door has to stand where
+/// the sessions that reach it stand.
+///
+/// ⚠ 696,747 rather than the round 700,000 the register guessed, for the same reason the other two
+/// are not round: a round number is an author's choice and this is a reading. ⚠⚠ It is also inside
+/// what was observed — the largest session measured read 999,732 — so no gate built on it is
+/// demonstrating a session this repository has never had.
+pub(crate) const MEASURED_HERE: Billed = Billed {
+    cold: 28_981,
+    floor: 21_350,
+    context: 696_747,
+};
+
+/// **A PLAIN `claude` SESSION — the population every economics fixture borrowed from until item
+/// 493**, kept named because the finding is that the two price the same session four times apart,
+/// and a number nobody can name cannot be compared.
+pub(crate) const A_PLAIN_AGENT_SESSION: Billed = Billed {
+    cold: 7_000,
+    floor: 38_500,
+    context: 466_013,
+};
+
 #[cfg(test)]
 mod tests {
     use super::refused_naming;

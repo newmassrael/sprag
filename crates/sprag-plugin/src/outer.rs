@@ -8225,7 +8225,13 @@ mod tests {
     /// `cold`, `floor` and `context` come off DIFFERENT requests of one record — the first
     /// request's cache write, the second's cache read, the last one's whole charge. A fixture that
     /// used one number for all three would pass for a reader that returned any of them for all of
-    /// them. The last is the real 466,013, so the assertion and the measurement are the same number.
+    /// them.
+    ///
+    /// ⚠⚠⚠ **THE THREE ARE NOW THIS REPOSITORY'S OWN, AND TWO OF THEM ARE CLOSE** — register item
+    /// 493. They used to be 7,000 / 38,500 / 466,013, borrowed from a plain agent session, and the
+    /// live incident above happens to be where the 466,013 came from. `cold` and `floor` measured
+    /// HERE sit within 8,000 of each other, so this gate now says the reader picks them apart by
+    /// POSITION rather than by size — a stronger claim than the old spread could make.
     ///
     /// ⚠⚠ **THE CONTROL IS THE SAME PANE UNDER A SUPERVISOR THAT STATES NOTHING**, and it must read
     /// `0`: that is what says the numbers above arrived through the STATED path. This peer is
@@ -8238,19 +8244,13 @@ mod tests {
     /// [`Session::spent`]'s shape — it returns on the stated path and never reaches the fallback.
     #[test]
     fn a_loop_reads_the_transcript_its_agent_named_rather_than_one_derived_from_a_launch_name() {
-        /// The record the agent says it is writing. ⚠ Three billed requests, because `cold` is the
-        /// FIRST one's cache write and `floor` is the SECOND one's cache read — a two-request
-        /// fixture cannot tell a reader that confuses them from one that does not.
-        const WRITTEN: &str = concat!(
-            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":0,"cache_creation_input_tokens":7000,"output_tokens":1}}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":38500,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
-        );
+        // The record the agent says it is writing — THIS REPOSITORY'S OWN measured costs (register
+        // item 493), rendered by the one fixture that holds them. ⚠ Three billed requests, because
+        // `cold` is the FIRST one's cache write and `floor` is the SECOND one's cache read: a
+        // two-request fixture cannot tell a reader that confuses them from one that does not, and
+        // the two numbers are within 8,000 of each other here — so this gate is what says the
+        // reader picks them apart by POSITION rather than by size.
+        let written = crate::testing::MEASURED_HERE.transcript();
 
         let home = std::env::temp_dir().join(format!("sprag-stated-record-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
@@ -8258,7 +8258,7 @@ mod tests {
         // under `$HOME/.claude/projects`; this file is neither in that tree nor called that, so the
         // only way any reader reaches it is by being TOLD where it is.
         let record = home.join("what-the-agent-said.jsonl");
-        std::fs::write(&record, WRITTEN).expect("the agent's own record");
+        std::fs::write(&record, &written).expect("the agent's own record");
 
         let read = |stated: Option<&std::path::Path>| {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -8296,18 +8296,19 @@ mod tests {
         let told = read(Some(&record));
         let _ = std::fs::remove_dir_all(&home);
 
+        let sample = crate::testing::MEASURED_HERE;
         assert_eq!(
-            told["context"], 466_013,
+            told["context"], sample.context,
             "⚠⚠⚠⚠ THE NUMBER IS IN THE FILE THE AGENT NAMED. A loop that resolves its record from \
              the name its pane was LAUNCHED with reads 0 here, which is exactly what a live run \
              published while this quantity sat on disk (register item 431). Got {told}",
         );
         assert_eq!(
-            told["floor"], 38_500,
+            told["floor"], sample.floor,
             "⚠⚠ and the floor a restart cannot escape — the SECOND request's cache read: {told}",
         );
         assert_eq!(
-            told["cold"], 7_000,
+            told["cold"], sample.cold,
             "⚠⚠ and the toll a restart re-pays — the FIRST request's cache write: {told}",
         );
 
@@ -11818,30 +11819,25 @@ mod tests {
     /// # ⚠⚠ Three runs differing in ONE fact: what the session has read
     ///
     /// The same stand-in, the same brief, the same ceiling — and a record the agent states it is
-    /// writing, holding 466,013 tokens of cache read, or a record that cannot be read at all. The
+    /// writing, holding what [`crate::testing::MEASURED_HERE`] read, or a record that cannot be
+    /// read at all. ⚠ The reading is NAMED rather than spelled here: register item 493 re-measured
+    /// it and five gates carried the old digits in prose that no test could red-light. The
     /// budget is off (`reflect_every: 99`) and the peer says no marker, so **nothing but capacity can
     /// move these runs**.
     #[test]
     fn a_session_past_its_ceiling_reflects_without_being_asked() {
-        /// A record whose last billed request read far past any ceiling this gate authors — the
-        /// shape and the number register item 431 measured on a live loop.
-        const WRITTEN: &str = concat!(
-            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":0,"cache_creation_input_tokens":7000,"output_tokens":1}}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":38500,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
-        );
+        // A record whose last billed request read far past any ceiling this gate authors — the
+        // shape register item 431 measured on a live loop, with THIS REPOSITORY'S OWN costs
+        // (register item 493) rather than a plain session's.
+        let sample = crate::testing::MEASURED_HERE;
+        let written = sample.transcript();
         /// Far below what that record holds, so the run is unambiguously PAST it.
         const CEILING: i64 = 100_000;
 
         let home = std::env::temp_dir().join(format!("sprag-ceiling-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
         let record = home.join("what-the-agent-said.jsonl");
-        std::fs::write(&record, WRITTEN).expect("the agent's own record");
+        std::fs::write(&record, &written).expect("the agent's own record");
         let missing = home.join("never-written.jsonl");
 
         /// Drive a run to its first judgement and say where it went, why, **and what the document
@@ -11935,7 +11931,10 @@ mod tests {
         // ceiling should — which is the shape item 428's round learned the hard way.
         assert_eq!(
             (held, blind),
-            (Some(466_013), Some(0)),
+            (
+                Some(i64::try_from(sample.context).expect("a reading fits an i64")),
+                Some(0)
+            ),
             "⚠⚠⚠ the session's own record must reach the document as `context`, and the unreadable \
              one must read 0 — otherwise this gate is about a reader rather than about a door",
         );
@@ -11943,10 +11942,11 @@ mod tests {
         assert_eq!(
             full,
             AiLoopState::Reflecting,
-            "⚠⚠⚠⚠⚠ ITEM 424(b): this session has read 466,013 against a ceiling of {CEILING}, and \
+            "⚠⚠⚠⚠⚠ ITEM 424(b): this session has read {} against a ceiling of {CEILING}, and \
              nothing else in the run can move it — the agent said no marker and the budget is off. \
              A loop that cannot hand over until a COUNT comes round finds out it is full only \
              afterwards. Walked {full_walk:?}",
+            sample.context,
         );
         assert_eq!(
             why,
@@ -11980,6 +11980,104 @@ mod tests {
         );
     }
 
+    /// What the reflecting stand-in proposes when it is asked.
+    const NEXT: &str = "the debt this run picked after the last one";
+    /// And where it says the replacement should start reading.
+    const READ_NEXT: &str = "the register entry for it";
+
+    /// Drive a run until it takes the edge OUT of `reviewing`, and hand back where it went, what
+    /// that pass said, and the whole walk — because *which line* is the first question of any red.
+    ///
+    /// ⚠⚠⚠⚠ **IT REPORTS THE EXIT RATHER THAN WAITING FOR A RESTART**, which is register item
+    /// 493's doing: `reviewing` has an edge back to `working` for a session whose trade does not
+    /// pay, and a driver that looped until `restarting` could only ever report that door as a
+    /// TIMEOUT. Two gates share this one function so that *replaced* and *kept* are read off the
+    /// same instrument.
+    fn left_reviewing(
+        record: &std::path::Path,
+        ceiling: i64,
+    ) -> (AiLoopState, Option<Because>, Vec<String>) {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ IT NAMES A NEXT MILESTONE, which is what carries a reflection through
+        // `reflect.applied` to `reviewing`. A peer that named none would answer `reflect.none`
+        // and go back to work, and no run here would ever reach the state under test.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(
+            // ⚠ NEVER says the done marker: a claimed milestone would reach `reflecting` by a
+            // different door, and these gates are about what happens one state later.
+            u32::MAX,
+            NEXT,
+            READ_NEXT,
+        );
+        let access = crate::testing::supervised_writing(&workspace, record);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the stand-in keeps answering".to_string(),
+                milestone: "reach the first checkpoint".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                // ⚠⚠⚠⚠⚠ AUTHORED THROUGH THE BRIEF — item 492, and see the same line in
+                // `a_session_past_its_ceiling_reflects_without_being_asked` for what it
+                // replaced: a `set_variable` into the datamodel, which is a road no caller had.
+                context_ceiling: Some(ceiling),
+                reflect_after_refusals: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠ ON, and it is the only thing that can start a reflection here: the peer
+                // never claims a milestone and nothing is screened, so one judged turn is what
+                // brings every one of these runs to the state under test.
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut landed = None;
+        while walked.len() < 40 {
+            match loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            {
+                Pumped::Moved {
+                    from,
+                    raised,
+                    to,
+                    because,
+                    ..
+                } => {
+                    walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                    if from == AiLoopState::Reviewing {
+                        landed = Some((to, because));
+                        break;
+                    }
+                }
+                other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+            }
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        let Some((to, because)) = landed else {
+            panic!("no run left `reviewing` in 40 passes: {walked:?}");
+        };
+        (to, because, walked)
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHICH DECISION REPLACED THE SESSION** — register item 445, which is
     /// items 261, 265 and 267's finding at the fourth many-doored state, and register item 477,
     /// which is the same finding INSIDE this gate's own fall-back.
@@ -12010,11 +12108,14 @@ mod tests {
     /// # ⚠⚠ Five runs, and only what is under test moves between them
     ///
     /// The same peer, the same brief: `context_ceiling` moves, and for the last two the RECORD is a
-    /// path nothing wrote. The readable record holds a cold start of 7,000, a floor of 38,500 and a
-    /// last reading of 466,013, so
+    /// path nothing wrote. The readable record is [`crate::testing::MEASURED_HERE`] — this
+    /// repository's own measured costs, and **not the plain-session trio five gates used to carry**
+    /// (register item 493) — so
     ///
-    /// * a **high** ceiling leaves room and the break-even is long past (427,513 discardable
-    ///   against a toll of 140,000) — `economics`;
+    /// * a **high** ceiling leaves room and the reading is past the break-even the DOCUMENT's own
+    ///   guard computes from that sample — `economics`. ⚠ The margin is asserted rather than
+    ///   described, because at the old fixture's reading this population does not reach it at all;
+    ///   see `the_economic_door_is_priced_in_the_population_it_will_run_in`;
     /// * a **low** ceiling puts the session past it — `capacity`, which outranks;
     /// * **no** ceiling with a good reading is the shipped document — `no_ceiling`;
     /// * a ceiling with **no reading** is item 431's failure — `unread`;
@@ -12027,121 +12128,52 @@ mod tests {
     /// did before this existed.
     #[test]
     fn the_walk_says_which_decision_replaced_the_session() {
-        /// The record all three runs read, and the same shape register item 431 measured live: a
-        /// first request that WRITES cache (`cold`), a second that reads (`floor`), and a last
-        /// whose reading is what the session now carries (`context`).
-        const WRITTEN: &str = concat!(
-            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":0,"cache_creation_input_tokens":7000,"output_tokens":1}}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":38500,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":0,"#,
-            r#""cache_read_input_tokens":466013,"cache_creation_input_tokens":0,"output_tokens":1}}}"#,
-        );
-        /// Room to spare over what that record holds — 466,013 against it, and a break-even at
-        /// about 178,500.
+        // The record all five runs read, and the same shape register item 431 measured live: a
+        // first request that WRITES cache (`cold`), a second that reads (`floor`), and a last whose
+        // reading is what the session now carries (`context`). ⚠ Register item 493: the numbers are
+        // THIS REPOSITORY'S, so the `economics` run below is past a break-even this workload
+        // actually reaches rather than one a plain session's costs made look easy.
+        let sample = crate::testing::MEASURED_HERE;
+        let written = sample.transcript();
+        /// Room to spare over what that record holds, and above its break-even — both asserted
+        /// against the sample below rather than left to a reader to check.
         const ROOMY: i64 = 800_000;
         /// And far below it, so the same session is unambiguously PAST its ceiling.
         const CRAMPED: i64 = 100_000;
-        /// What the reflecting stand-in proposes when it is asked.
-        const NEXT: &str = "the debt this run picked after the last one";
-        /// And where it says the replacement should start reading.
-        const READ_NEXT: &str = "the register entry for it";
 
         let home = std::env::temp_dir().join(format!("sprag-restart-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
         let record = home.join("what-the-agent-said.jsonl");
-        std::fs::write(&record, WRITTEN).expect("the agent's own record");
+        std::fs::write(&record, &written).expect("the agent's own record");
 
-        /// Drive a run until it takes the edge OUT of `reviewing` and INTO `restarting`, and hand
-        /// back what that pass said — with the whole walk, because *which line* is the first
-        /// question of any red here.
-        fn replaced(
-            record: &std::path::Path,
-            ceiling: i64,
-        ) -> (AiLoopState, Option<Because>, Vec<String>) {
-            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-            // ⚠ IT NAMES A NEXT MILESTONE, which is what carries a reflection through
-            // `reflect.applied` to `reviewing`. A peer that named none would answer `reflect.none`
-            // and go back to work, and no run here would ever reach the state under test.
-            let (workspace, pane) = crate::testing::standin_agent_reflecting(
-                // ⚠ NEVER says the done marker: a claimed milestone would reach `reflecting` by a
-                // different door, and this gate is about what happens one state later.
-                u32::MAX,
-                NEXT,
-                READ_NEXT,
-            );
-            let access = crate::testing::supervised_writing(&workspace, record);
-            let mut loops = ready_bounded_at(
-                Arc::clone(&lua),
-                pane,
-                ReadyWhen::Settles("claude".to_string()),
-                Duration::from_secs(5),
-            )
-            .expect("the document's datamodel must carry its four authored strings");
-            assert_eq!(
-                loops.brief(&Brief {
-                    north_star: "the stand-in keeps answering".to_string(),
-                    milestone: "reach the first checkpoint".to_string(),
-                    reference: "this gate".to_string(),
-                    closing_rules: None,
-                    // ⚠⚠⚠⚠⚠ AUTHORED THROUGH THE BRIEF — item 492, and see the same line in
-                    // `a_session_past_its_ceiling_reflects_without_being_asked` for what it
-                    // replaced: a `set_variable` into the datamodel, which is a road no caller had.
-                    context_ceiling: Some(ceiling),
-                    reflect_after_refusals: None,
-                    milestone_check: None,
-                    service: None,
-                    max_turns: Some(Counted::Of(40)),
-                    // ⚠ ON, and it is the only thing that can start a reflection here: the peer
-                    // never claims a milestone and nothing is screened, so one judged turn is what
-                    // brings every one of these runs to the state under test.
-                    reflect_every: Some(1),
-                    screen_rules: None,
-                    may_answer: None,
-                    await_person_ms: Some(0),
-                    handback_still_ms: None,
-                    ready_timeout_ms: None,
-                    turn_within_ms: None,
-                }),
-                Briefed::Took,
-                "the parts must be held",
-            );
+        // ⚠⚠⚠⚠ THE FIXTURE'S OWN PREMISES, ASSERTED BEFORE ANY RUN — register item 493. Each of
+        // the five words below is claimed of a ceiling and a reading, and a sample that had drifted
+        // out from under them would send this gate's `economics` run to `working` and read as the
+        // DRIVER having lost a word. These three lines are what tell those two apart.
+        assert!(
+            sample.pays(),
+            "⚠⚠⚠ `economics` is unreachable with this sample: {} discardable against a toll of \
+             {}, so the document's guard declines and the run keeps its session. The sample is \
+             {sample:?}",
+            sample.discardable(),
+            sample.toll(),
+        );
+        let reading = i64::try_from(sample.context).expect("a reading fits an i64");
+        assert!(
+            reading < ROOMY,
+            "⚠⚠ and ROOMY must leave room: a ceiling at or under the reading makes `capacity` \
+             outrank, and the run below would carry the RIGHT word for the wrong reason",
+        );
+        assert!(
+            reading > CRAMPED,
+            "⚠⚠ and CRAMPED must not: this is the same session PAST its ceiling, which is the only \
+             thing separating the second run from the first",
+        );
 
-            let run = RunContext::uncancellable();
-            let mut walked: Vec<String> = Vec::new();
-            let mut landed = None;
-            while walked.len() < 40 {
-                match loops
-                    .pump(&access, &run)
-                    .expect("the pane must stay readable")
-                {
-                    Pumped::Moved {
-                        from,
-                        raised,
-                        to,
-                        because,
-                        ..
-                    } => {
-                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
-                        if from == AiLoopState::Reviewing {
-                            landed = Some((to, because));
-                            break;
-                        }
-                    }
-                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
-                }
-            }
-            for live in access.pane_ids() {
-                access.lifecycle().expect("lifecycle").close(live);
-            }
-            let Some((to, because)) = landed else {
-                panic!("no run left `reviewing` in 40 passes: {walked:?}");
-            };
-            (to, because, walked)
-        }
+        // ⚠ The driver for the five runs below is `left_reviewing`, one module level up, because
+        // register item 493's gate drives the SAME state to a different door and the two must read
+        // off ONE instrument — a door reported as *replaced* by one driver and as a TIMEOUT by
+        // another is two findings where there is one.
 
         /// **A FOURTH RUN, AND THE ONLY ONE THAT DOES NOT COME THROUGH `reviewing`** — register
         /// item 446. Its peer paints and settles exactly like the three above and never reports
@@ -12277,15 +12309,16 @@ mod tests {
         }
 
         // ⚠⚠⚠ A PATH NOTHING WROTE, which is how `context` reads 0 — the same instrument the gate
-        // above this one measures directly (`(held, blind) == (Some(466_013), Some(0))`), so the
-        // two runs below are separated by the reading itself rather than by a number typed here.
+        // above this one measures directly (its `(held, blind)` reads the sample's own `context`
+        // against 0), so the two runs below are separated by the reading itself rather than by a
+        // number typed here.
         let missing = home.join("no-record-was-ever-written.jsonl");
 
-        let (paid_to, paid, paid_walk) = replaced(&record, ROOMY);
-        let (full_to, full, full_walk) = replaced(&record, CRAMPED);
-        let (blind_to, blind, blind_walk) = replaced(&record, 0);
-        let (unread_to, unread, unread_walk) = replaced(&missing, ROOMY);
-        let (neither_to, neither, neither_walk) = replaced(&missing, 0);
+        let (paid_to, paid, paid_walk) = left_reviewing(&record, ROOMY);
+        let (full_to, full, full_walk) = left_reviewing(&record, CRAMPED);
+        let (blind_to, blind, blind_walk) = left_reviewing(&record, 0);
+        let (unread_to, unread, unread_walk) = left_reviewing(&missing, ROOMY);
+        let (neither_to, neither, neither_walk) = left_reviewing(&missing, 0);
         let (wedged_to, wedged, wedged_walk) = never_asked(&record);
         let _ = std::fs::remove_dir_all(&home);
 
@@ -12311,10 +12344,14 @@ mod tests {
         assert_eq!(
             paid,
             Some(Because::Restarted(RestartReason::Economics)),
-            "⚠⚠⚠⚠⚠ ITEM 445: this session can discard 427,513 tokens where its replacement \
-             re-writes 7,000, with {ROOMY} of ceiling it never came near — so the handover is the \
-             ECONOMIC one, and a reader who found it too frequent should be told that nothing is \
-             wrong rather than sent looking for a fault. Walked {paid_walk:?}",
+            "⚠⚠⚠⚠⚠ ITEM 445: this session can discard {} tokens where its replacement re-writes \
+             {}, with {ROOMY} of ceiling it never came near — so the handover is the ECONOMIC one, \
+             and a reader who found it too frequent should be told that nothing is wrong rather \
+             than sent looking for a fault. ⚠ ITEM 493: the two quantities are PRINTED FROM THE \
+             SAMPLE, because this message spelled a plain session's 427,513-against-7,000 for as \
+             long as the fixture did and no test could tell. Walked {paid_walk:?}",
+            sample.discardable(),
+            sample.cold,
         );
         assert_eq!(
             full,
@@ -12403,6 +12440,97 @@ mod tests {
              folklore. ⚠⚠⚠⚠⚠ REGISTER ITEM 477 IS WHAT THIS ASSERTION CANNOT SEE ON ITS OWN: it \
              was green while one word stood in for two facts, because reachability says nothing \
              about whether a word is ONE fact",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE ECONOMIC DOOR IS PRICED IN THE POPULATION THE LOOP WILL RUN IN** — register
+    /// item 493, and it is the half a reachability gate cannot hold.
+    ///
+    /// # ⚠⚠⚠⚠ What every gate beside this one was quietly saying
+    ///
+    /// `reviewing`'s economic edge fires on `context - floor >= 20 * cold`, and every fixture that
+    /// drove it carried one borrowed trio: cold 7,000, floor 38,500, a last reading of 466,013.
+    /// That is a break-even of 178,500 with the run **three times past it**, so the gates proved
+    /// the arm REACHABLE and left a reader believing it was ORDINARY. Measured 2026-08-20 over all
+    /// 250 of this repository's transcripts that carry two billed requests, the break-even here is
+    /// 600,970 and **49 of the 250 sessions ever read that far**.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND AT 466,013 THIS POPULATION DOES NOT REACH IT AT ALL.** The very session five
+    /// gates priced as *"long past break-even"* discards 444,663 against a toll of 579,620 — it
+    /// loses, keeps its session, and goes back to work. So the fixture was not merely optimistic:
+    /// **it inverted the decision** for the only reading anybody had written down.
+    ///
+    /// # ⚠⚠⚠ Two runs, one axis, and the arithmetic done by the DOCUMENT
+    ///
+    /// Same peer, same brief, same roomy ceiling, same `cold` and `floor` — the LAST REQUEST'S
+    /// READING is the only thing that moves. Nothing here compares numbers itself: the guard in
+    /// `ai_loop.scxml` is what declines, and this gate reads which door the run left by.
+    /// [`crate::testing::Billed::pays`] is asserted first only as a PREMISE, so that a red here
+    /// separates *the fixture drifted* from *the document changed its mind*.
+    #[test]
+    fn the_economic_door_is_priced_in_the_population_it_will_run_in() {
+        /// Above both readings, so `capacity` can never be what moves either run — the same
+        /// ceiling the sibling gate calls ROOMY.
+        const ROOMY: i64 = 800_000;
+
+        let here = crate::testing::MEASURED_HERE;
+        let borrowed = here.reading(crate::testing::A_PLAIN_AGENT_SESSION.context);
+
+        // ⚠⚠⚠⚠ THE PREMISES, BEFORE ANY PANE EXISTS. These are arithmetic, and they are what make
+        // the two runs below a CONTRAST rather than a coincidence.
+        assert!(
+            here.pays(),
+            "⚠ this repository's own sample must be past its break-even or the first run below is \
+             measuring nothing: {} discardable against a toll of {}",
+            here.discardable(),
+            here.toll(),
+        );
+        assert!(
+            !borrowed.pays(),
+            "⚠⚠⚠⚠⚠ ITEM 493 ITSELF: with this repository's `cold` and `floor`, the reading every \
+             fixture carried ({}) must NOT pay — {} discardable against a toll of {}, where the \
+             break-even is {}. If this ever becomes true the finding is over and this gate should \
+             be retired rather than muted.",
+            borrowed.context,
+            borrowed.discardable(),
+            borrowed.toll(),
+            borrowed.break_even(),
+        );
+        assert!(
+            i64::try_from(here.context).is_ok_and(|reading| reading < ROOMY),
+            "⚠⚠ and the roomy ceiling must stay above the larger reading, or `capacity` outranks \
+             and both runs restart for a reason that is not this gate's subject",
+        );
+
+        let home = std::env::temp_dir().join(format!("sprag-priced-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the records in");
+        let past = home.join("read-past-the-break-even.jsonl");
+        let short = home.join("read-what-the-fixture-carried.jsonl");
+        std::fs::write(&past, here.transcript()).expect("the agent's own record");
+        std::fs::write(&short, borrowed.transcript()).expect("the agent's own record");
+
+        let (past_to, past_why, past_walk) = left_reviewing(&past, ROOMY);
+        let (short_to, short_why, short_walk) = left_reviewing(&short, ROOMY);
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            (past_to, past_why),
+            (
+                AiLoopState::Restarting,
+                Some(Because::Restarted(RestartReason::Economics))
+            ),
+            "⚠⚠⚠ a session that HAS read past this population's break-even must still take the \
+             economic door — otherwise item 493's repair has cost the arm its only run. Walked \
+             {past_walk:?}",
+        );
+        assert_eq!(
+            (short_to, short_why),
+            (AiLoopState::Working, None),
+            "⚠⚠⚠⚠⚠ ITEM 493: the SAME session, the same ceiling, reading only what the old \
+             fixture said it read — and this repository's costs make replacing it a LOSS, so the \
+             document must keep the session and send it back to work. A `Restarting` here means \
+             the economic edge fires on a trade that does not pay, which is the fixture's belief \
+             become the product's. Walked {short_walk:?}",
         );
     }
 

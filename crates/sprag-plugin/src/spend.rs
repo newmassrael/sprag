@@ -178,7 +178,10 @@ pub struct Spend {
     ///
     /// The first request has nothing to read back; the second is the earliest one that shows the
     /// standing cost of the session — the system prompt and the tool definitions, about 38,500
-    /// tokens where this was measured. A restart pays that again rather than escaping it, so it is
+    /// tokens in the plain agent session this was first measured on and a median of **21,350**
+    /// across the 250 transcripts of the repository that runs this loop (2026-08-20, register item
+    /// 493: the quantity belongs to a TOOL SET, so a number carried across populations mis-prices
+    /// the trade). A restart pays that again rather than escaping it, so it is
     /// the SUBTRAHEND: what a restart can actually discard is `context - floor`, and nothing below
     /// that line is available however long the session runs.
     ///
