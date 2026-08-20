@@ -555,20 +555,64 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
         "⚠ THE FIXTURE: one message at a pane owing nothing must be accepted — a single offer is \
          never held back for its own size",
     );
+    // ⚠⚠⚠⚠⚠ **WHETHER THE DEVICE PARKS OR ENDS IS THE KERNEL'S ANSWER, AND THIS ARM USED TO
+    // ASSUME LINUX'S** — register item 487(b), its SECOND consequence, found the round after the
+    // first. The sentence half was repaired and this number half was left, so the same platform
+    // difference came back one assertion further down: macOS answered `0` against a demand for
+    // 32768 and the message blamed the product for camouflage.
+    //
+    // The claim item 304 is really about survives on both kernels, and it is this: **a pane must
+    // never look IDLE while bytes it was handed are going nowhere.** There are two honest ways to
+    // not look idle and the device picks which —
+    //
+    //   * it PARKS inside `write(2)`: the bytes are still owed, so the backlog must stay at the
+    //     whole message for as long as anybody watches. Linux's line discipline, and the sharp
+    //     claim is kept there rather than relaxed into *either will do* (this file's own rule, one
+    //     arm up);
+    //   * it ENDS: nothing is waiting any more, so `0` is the truthful number — **and then the
+    //     pane has to SAY the device has ended to the next writer**, or that `0` is exactly the
+    //     camouflage. Darwin's answer, measured 2026-08-20.
+    //
+    // ⚠⚠ **THE RESIDUE, STATED AND NARROWER THAN IT LOOKS.** No Linux device ends, so a Linux
+    // sweep of the SHIPPING product never takes the second branch. It is not unreached, though:
+    // mutating `input_backlog` to under-report drives it here and it goes red on the spot, which
+    // is how this arm was measured rather than argued. What no machine but Darwin proves is that a
+    // REAL ending lands in it — and the sentence that branch demands is read on every platform by
+    // `every_sentence_a_stopped_device_has_is_read_and_nothing_else_is`.
     let began = Instant::now();
-    while began.elapsed() < WATCH_THE_BACKLOG_FOR {
+    let mut ended_at = None;
+    while began.elapsed() < WATCH_THE_BACKLOG_FOR && ended_at.is_none() {
+        let owed = parked.input_backlog();
+        if owed == one_message.len() {
+            std::thread::sleep(Duration::from_millis(25));
+            continue;
+        }
+        ended_at = Some(owed);
+    }
+
+    if let Some(owed) = ended_at {
+        // ⚠⚠⚠ The backlog fell, so this device did not park. That is only allowed to mean ENDED,
+        // and the pane has to be able to say so — a number that fell for any other reason is the
+        // dequeue-counting mutation this arm exists to kill.
+        let refused = parked.write(b"x\n", Hand::APerson).expect_err(
+            "⚠⚠⚠⚠ THE PANE STOPPED OWING THE BYTES AND STILL TAKES INPUT, WHICH IS THE CAMOUFLAGE \
+             ITEM 304 IS ABOUT. A backlog that falls the moment the device thread PICKS a message \
+             up is counting dequeues, not deliveries, and a pane on its way to a wall it will \
+             never get past then reads as an idle one",
+        );
         assert_eq!(
-            parked.input_backlog(),
-            one_message.len(),
-            "⚠⚠⚠⚠ THE PANE SAYS ITS DEVICE HAS TAKEN BYTES IT IS STILL PARKED INSIDE. Nothing is \
-             ever going to drain that pseudoterminal, so this number must stay at the whole {} \
-             bytes it was handed; a backlog that falls the moment the device thread PICKS a \
-             message up is counting dequeues, not deliveries — and it reports a pane on its way to \
-             a wall it will never get past as an idle one, which is the camouflage item 304 is \
-             about",
+            which_refusal(&refused.to_string()),
+            ["can take no more input"],
+            "⚠⚠⚠ and the reason must be that the DEVICE HAS ENDED. Any other refusal means the \
+             bytes went somewhere this gate cannot account for: it said {refused}",
+        );
+        assert!(
+            !cfg!(target_os = "linux") || owed == one_message.len(),
+            "⚠⚠⚠ ON LINUX THE DEVICE PARKS — its line discipline holds the write for ever, so the \
+             backlog must stay at {} and not fall to {owed}. A Linux that ends instead is a real \
+             change to the premise every arm above rests on, and this is what catches it",
             one_message.len(),
         );
-        std::thread::sleep(Duration::from_millis(25));
     }
     let still_owed = parked.input_backlog();
 
