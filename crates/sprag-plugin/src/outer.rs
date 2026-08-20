@@ -187,6 +187,34 @@ fn confirmable(text: &str) -> Option<String> {
 /// names no `done_when` gets.
 pub const INNER_SESSION_ENDS: DoneWhen = DoneWhen::Settles;
 
+/// **WHAT A PERSON IS TOLD `hold` WILL DO** — the sentence `sprag hold-run` prints, kept in the
+/// crate that holds the document that does it.
+///
+/// # ⛔⛔⛔ Why the words live here and not at the command
+///
+/// Register item 522. The command said the run *"stops at its next turn boundary and waits"*, and
+/// `ai_loop.scxml` puts `hold` on `working` with `target="awaiting_human"` — the loop parks on the
+/// pass that carries the order in, mid-turn, which is sooner and means something different. **A
+/// person who was told a boundary would be reached waits for one.** Three surfaces disagreed with
+/// the document at once: this sentence, the repayment skill, and the datamodel's own hour.
+///
+/// So the words moved to the crate that can be asked. `sprag-host` depends on this one, prints
+/// this constant, and holds no wording of its own to drift; and
+/// `outer::tests::the_sentence_a_person_is_told_about_a_hold_is_what_the_document_does` reads BOTH
+/// artefacts — this string and `ai_loop.scxml` — so neither can move without the other.
+///
+/// ⚠⚠ THE BUDGET CLAUSE IS A CLAIM WITH A GATE UNDER IT, not a promise in prose:
+/// `ai_loop::tests::a_held_run_does_not_spend_an_iteration_on_every_look` measures that crossing a
+/// hold costs the run one step rather than one per look. Before that gate existed the sentence
+/// would have been false in the other direction too — a hold spent ~69 iterations a second and
+/// killed run 18 in twenty-four minutes, under a document declaring an hour of patience.
+///
+/// ⚠ It names no run id, so the caller composes the id and the way back around it.
+pub const HOLD_TAKES_EFFECT: &str = "it parks at its next pass, leaving the turn its agent is in \
+                                     the middle of alone; nothing further is typed at the pane \
+                                     while it waits, and waiting spends no part of its iteration \
+                                     budget";
+
 /// **WHICH EVIDENCE SAYS THIS LOOP'S PROMPT WAS SUBMITTED**, given the contract its caller already
 /// declared for the turn's other end — see [`OuterLoop::submit_lands_when`], where the argument is.
 ///
@@ -5287,6 +5315,39 @@ impl OuterLoop {
         // the alternative spends their declared hour on the minutes they spent reading.
         if run.held() {
             self.awaiting = None;
+            // ⚠⚠⚠⚠⚠ **AND THE LOOK IS ONE LOOK** — register item 522, which is the arithmetic the
+            // `Over::Asking` arm below was already fixed out of, arriving on the arm above it.
+            // Returning here without waiting leaves the Driver — which pauses between steps for
+            // NOTHING — asking again immediately, so a person reading a pane for twenty minutes is
+            // charged twenty minutes of ITERATIONS against a ceiling the document cannot see.
+            // Measured on run 18: held, then `exhausted (iterations)` twenty-four minutes later,
+            // its walk from step 99,938 to the end all `AwaitingHuman: looked, nothing had
+            // happened`. **A state that declares an hour of patience killed the run in less than
+            // half of one**, and the number that did it was the `--max_iterations 100000` the
+            // loop's own launch recipe recommends.
+            //
+            // ⚠⚠⚠ **THE CONDITION THAT ENDS A HOLD IS THE PERSON LETTING GO, AND NOTHING ELSE.**
+            // A hold has no ending of its own — `unattended` is refused for it by the document's
+            // own `cond="!In('held')"` — so this waits on the ORDER rather than on anything read
+            // off the pane, which is also why no screen read belongs in here. [`poll_until`]
+            // answers a cancel and the run's own deadline in the same breath, so the two ceilings
+            // that still mean something for a held run go on meaning it.
+            //
+            // ⚠⚠ **THE BOUND IS THE DOCUMENT'S `await_person_ms`, READ AT THE MOMENT OF USE, AND
+            // IT ENDS NOTHING**: when it elapses the look is simply taken again. So a held run
+            // spends iterations at the rate the document authors for a PERSON — one an hour, on
+            // the shipped number — rather than at the rate this machine can spin. ⚠ A document
+            // naming no patience at all describes somebody this run will wait for; that wait is
+            // bounded by the run's deadline and by a cancel, exactly as every other wait here is.
+            poll_until(
+                run,
+                self.driving
+                    .ready
+                    .attended()
+                    .patience()
+                    .unwrap_or(Duration::MAX),
+                || !run.held(),
+            );
             return Ok(AiLoopEvent::Null.into());
         }
         let Some(patience) = self.driving.ready.attended().patience() else {
@@ -8862,18 +8923,38 @@ mod tests {
         // gate failed: an author may put `cond` and `target` on separate lines, and a line-wise
         // filter then reports an unguarded edge that is plainly guarded two lines up.
         let flat: String = DOCUMENT.split_whitespace().collect::<Vec<_>>().join(" ");
-        let staying: Vec<&str> = flat
+        // ⚠⚠⚠⚠ SCOPED TO `reviewing`'s OWN BLOCK, and the scoping is register item 523's doing.
+        // This gate used to select every transition in the document that targeted `working`, which
+        // read as *the keeping edge* only for as long as that was where the keeping edge went. The
+        // moment it moved, the filter went on matching a dozen unrelated edges and the claims below
+        // became claims about `judging --judge--> working`. **A selector that names a DESTINATION
+        // is a selector that stops being about its subject the day the subject moves.** The subject
+        // is this state's exits.
+        let reviewing = {
+            let at = flat
+                .find("<state id=\"reviewing\">")
+                .expect("⚠ the document must still hold the state this gate is about");
+            let rest = &flat[at..];
+            let end = rest
+                .find("</state>")
+                .expect("⚠ and that state must still be closed")
+                + "</state>".len();
+            &rest[..end]
+        };
+        // ⚠ A TRANSITION IS THE UNIT, NOT A LINE — see the flattening above for what reading lines
+        // cost the first draft.
+        let exits: Vec<&str> = reviewing
             .match_indices("<transition")
             .filter_map(|(at, _)| {
-                let rest = &flat[at..];
+                let rest = &reviewing[at..];
                 let end = rest.find('>')? + 1;
                 Some(&rest[..end])
             })
-            .filter(|edge| edge.contains("target=\"working\""))
+            .filter(|edge| edge.contains("event=\"review."))
             .collect();
-        let guarded: Vec<&&str> = staying
+        let staying: Vec<&&str> = exits
             .iter()
-            .filter(|edge| edge.contains("cond="))
+            .filter(|edge| !edge.contains("target=\"restarting\""))
             .collect();
 
         // 1. The session can be KEPT at all — the edge that makes the decision a decision.
@@ -8882,20 +8963,41 @@ mod tests {
             "⚠⚠⚠⚠ ITEM 424: `reviewing` must be able to take the next milestone in the session \
              that already holds the work. With both exits going to `restarting`, an improvement \
              cadence and a session-replacement policy are the same number wearing one name — and \
-             five was chosen on the first axis while paying on the second",
+             five was chosen on the first axis while paying on the second. Its exits are {exits:?}",
         );
 
         // 2. And it is guarded on the READING rather than on a count.
-        let ceiling: Vec<&&str> = guarded
+        let ceiling: Vec<&&&str> = staying
             .iter()
-            .filter(|edge| edge.contains("context_ceiling"))
-            .copied()
+            .filter(|edge| edge.contains("cond=") && edge.contains("context_ceiling"))
             .collect();
-        assert!(
-            !ceiling.is_empty(),
+        assert_eq!(
+            ceiling.len(),
+            staying.len(),
             "⚠⚠⚠ the edge that keeps the session must ask what the session has READ. A turn count \
              cannot bound it: the same measurement puts one request's growth between 861 tokens \
-             and 633,749",
+             and 633,749. Got {staying:?}",
+        );
+
+        // 2a. ⛔⛔⛔ AND IT MUST REACH THE COMPOSITION — register item 523, read off the document
+        //     rather than off a run. `turn_prompt` is composed in `priming` and NOWHERE else, and
+        //     `reviewing` is reached by one edge — `reflect.applied` — so every run standing here
+        //     has just adopted a new milestone. A keeping edge that went straight to `working`
+        //     therefore handed the agent the checkpoint it had just moved PAST, while the check
+        //     judged it against the new one: the livelock run 20 died in. Its twin on the pane is
+        //     `a_reflection_that_moves_the_milestone_moves_the_prompt_the_pane_receives`, and
+        //     neither can hold this alone — this one cannot see what was typed, and that one
+        //     cannot see an edge no fixture reaches.
+        assert!(
+            staying
+                .iter()
+                .all(|edge| edge.contains("target=\"priming\"")),
+            "⛔⛔⛔ ITEM 523: an edge that keeps the session must still pass through the one state \
+             that composes the prompts. `priming` is not a session replacement — `restarting` is, \
+             and it counts `restarts` on the way in — so this costs the run one prompt and keeps \
+             the agent's whole context. Going anywhere else leaves `turn_prompt` as it was composed \
+             before the reflection, which is a run briefed on work it has already finished. \
+             Got {staying:?}",
         );
 
         // 3. ⚠⚠⚠⚠ AND ZERO IS NOT A SMALL NUMBER ON EITHER SIDE. An unauthored ceiling and an
@@ -12714,14 +12816,301 @@ mod tests {
              economic door — otherwise item 493's repair has cost the arm its only run. Walked \
              {past_walk:?}",
         );
+        // ⚠⚠⚠ `Priming`, NOT `Working`, AND THE CHANGE IS REGISTER ITEM 523's. This gate is about
+        // WHICH TRADE the door takes — keep the session or replace it — and it still is: `priming`
+        // composes and prompts, where `restarting` REPLACES and counts a restart. What moved is
+        // that the keep-door now passes through the one place `turn_prompt` is composed, because a
+        // run that kept its session and went straight back to work carried the milestone it had
+        // just moved past. A `Working` here again means that door was put back.
         assert_eq!(
             (short_to, short_why),
-            (AiLoopState::Working, None),
+            (AiLoopState::Priming, None),
             "⚠⚠⚠⚠⚠ ITEM 493: the SAME session, the same ceiling, reading only what the old \
              fixture said it read — and this repository's costs make replacing it a LOSS, so the \
              document must keep the session and send it back to work. A `Restarting` here means \
              the economic edge fires on a trade that does not pay, which is the fixture's belief \
              become the product's. Walked {short_walk:?}",
+        );
+    }
+
+    /// ⛔⛔⛔ **THE SENTENCE A PERSON IS TOLD ABOUT A HOLD IS WHAT THE DOCUMENT DOES** — register
+    /// item 522's other half, and a ratchet that reads BOTH artefacts.
+    ///
+    /// # What the two said, measured
+    ///
+    /// `sprag hold-run` printed *"it stops at its next turn boundary and waits"*. The document puts
+    /// `hold` on `working` with `target="awaiting_human"`: the loop parks on the pass that carries
+    /// the order in, MID-TURN, which is sooner and means something else entirely. A person told a
+    /// boundary would be reached waits for one — and the repayment skill repeated the command's
+    /// sentence rather than the document's, which is how one wrong line became three.
+    ///
+    /// # ⚠⚠⚠ Why it takes two artefacts and neither alone
+    ///
+    /// A gate on the prose alone would go green the day somebody MOVED the hold to a real turn
+    /// boundary, and a gate on the document alone cannot see what a person is told. This reads the
+    /// document for where a held run parks and the published sentence for what it claims, so a
+    /// change to either side without the other is a red — which is the only arrangement under
+    /// which the two can be said to agree.
+    ///
+    /// ⚠ The sentence's third clause — *waiting spends no part of its iteration budget* — is a
+    /// claim with its own gate under it, `crate::ai_loop::tests::
+    /// a_held_run_does_not_spend_an_iteration_on_every_look`, and not prose this one can check.
+    #[test]
+    fn the_sentence_a_person_is_told_about_a_hold_is_what_the_document_does() {
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        let flat: String = DOCUMENT.split_whitespace().collect::<Vec<_>>().join(" ");
+        // ⚠ THE STATE'S OWN BLOCK, with a control on the extractor: a state holding a nested one
+        // would end at the CHILD's close tag and every claim below would be about the wrong text.
+        let block = |id: &str| -> String {
+            let opens = format!("<state id=\"{id}\">");
+            let at = flat
+                .find(&opens)
+                .unwrap_or_else(|| panic!("⚠ the document must still hold {opens}"));
+            let rest = &flat[at + opens.len()..];
+            let end = rest
+                .find("</state>")
+                .unwrap_or_else(|| panic!("⚠ and {opens} must still be closed"));
+            let held = rest[..end].to_string();
+            assert!(
+                !held.contains("<state id="),
+                "⚠⚠ the extractor stopped at a NESTED state's close tag, so {opens} is not the \
+                 text this gate read: {held:?}",
+            );
+            held
+        };
+
+        // 1. ── THE DOCUMENT PARKS A HELD RUN MID-TURN ──
+        assert!(
+            block("working").contains("<transition event=\"hold\" target=\"awaiting_human\"/>"),
+            "⛔⛔⛔ ITEM 522: `working` no longer parks on a hold, so the sentence below is about a \
+             machine that does not exist. If the hold was deliberately moved, this assertion and \
+             `HOLD_TAKES_EFFECT` change together — that pairing is the whole point of this gate.",
+        );
+
+        // 2. ── AND NOT AT A TURN BOUNDARY ── `judging` is where a turn ENDS, and it takes no hold.
+        assert!(
+            !block("judging").contains("event=\"hold\""),
+            "⚠⚠⚠⚠ the hold is now taken at the turn boundary as well, which makes the command's \
+             ORIGINAL sentence true again and this one wrong. Two edges for one order is also a \
+             run whose parking depends on which arrived first.",
+        );
+
+        // 3. ── SO THE PUBLISHED SENTENCE MAY NOT CLAIM ONE ──
+        assert!(
+            !crate::outer::HOLD_TAKES_EFFECT.contains("turn boundary"),
+            "⛔⛔⛔ ITEM 522: the sentence tells a person the run stops at a turn boundary, and the \
+             document parks it on the very next pass — mid-turn. Somebody who reads this waits for \
+             a boundary that is not coming. Got {:?}",
+            crate::outer::HOLD_TAKES_EFFECT,
+        );
+        assert!(
+            crate::outer::HOLD_TAKES_EFFECT.contains("next pass"),
+            "⚠⚠⚠ and it must SAY when the hold lands rather than merely not misstating it: a \
+             sentence that dropped the timing entirely would pass the assertion above while \
+             leaving a person with nothing to expect. Got {:?}",
+            crate::outer::HOLD_TAKES_EFFECT,
+        );
+    }
+
+    /// ⛔⛔⛔ **A REFLECTION THAT MOVES THE MILESTONE MUST MOVE THE PROMPT THE NEXT TURN CARRIES** —
+    /// register item 523, and the loop's headline design intent failing.
+    ///
+    /// # What it cost, measured on a live run before any fixture could see it
+    ///
+    /// Run 20 said four things at once: the agent named `NEXT MILESTONE: 부채 410`, the walk read
+    /// `Reflecting --ReflectApplied--> Reviewing --ReviewNone--> Working`, the independent check
+    /// judged against **410** — and the pane's prompt still read `Continue toward: 부채 406`, the
+    /// run's original `--milestone`. The result is a livelock: re-briefed on finished work, declares
+    /// done, refused against the new milestone, reflects, and is briefed on 406 again.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE DOCUMENT'S OWN DEFENCE OF THE ARRANGEMENT IS THE EVIDENCE AGAINST IT.**
+    /// `priming`'s entry says it composes *"exactly as often as the parts can have changed — a
+    /// brief before the run, **a reflection during it**"*, on the argument that `idle` and
+    /// `restarting` are *"the only two ways this loop ever comes to send a prompt"*. There is a
+    /// third: `reviewing`'s door back to `working`, which keeps the session and therefore never
+    /// passes through `priming`. So a reflection during the run changes `milestone` in the
+    /// datamodel and leaves `turn_prompt` — the text actually typed — as `priming` composed it.
+    ///
+    /// # ⚠⚠⚠⚠ Why 400-odd gates never saw it: the door is only open on the shipped kind
+    ///
+    /// That door's guard is `context_ceiling > 0 && context > 0 && context < context_ceiling`.
+    /// **Every stand-in gate in this crate briefs `context_ceiling` 0 or none**, which is the
+    /// template's own value, so all of them leave `reviewing` by a `restarting` door and get
+    /// `priming`'s recomposition for free. The only document that authors a ceiling is
+    /// `debt_loop.scxml` (800,000) — the kind the debt loop actually runs under. The defect is
+    /// reachable only in the configuration that ships, which is register item 493's lesson
+    /// arriving on a different edge: **an economic door is a population, not a shape.**
+    ///
+    /// ⚠⚠ SO THIS GATE BUYS THAT DOOR DELIBERATELY, with the sibling gate's own fixture: a reading
+    /// whose trade does NOT pay, under a ceiling far above it, is the one arrangement that keeps
+    /// the session AND stays under capacity.
+    ///
+    /// # ⚠ What it reads, and why it is the pane
+    ///
+    /// The assertion is the last `Continue toward:` the PANE received — not the datamodel. A
+    /// document that assigned the right variable and a driver that typed the wrong text are the two
+    /// halves of this defect, and only the pane can tell them apart.
+    #[test]
+    fn a_reflection_that_moves_the_milestone_moves_the_prompt_the_pane_receives() {
+        /// Far above the reading below, so `capacity` never decides — the sibling gates' ROOMY.
+        const ROOMY: i64 = 800_000;
+        /// What the run is briefed with, and what it must STOP being told once it has moved on.
+        const FIRST: &str = "reach the first checkpoint";
+        /// The label `turn_prompt` opens with — what a person reads off the pane to see which
+        /// milestone the loop is actually driving toward.
+        const CARRIES: &str = "Continue toward:";
+
+        let borrowed =
+            crate::testing::MEASURED_HERE.reading(crate::testing::A_PLAIN_AGENT_SESSION.context);
+        // ⚠⚠⚠ THE PREMISE, ASSERTED BEFORE A PANE EXISTS: this reading must NOT pay for a
+        // replacement. If it ever does, the run leaves `reviewing` by a `restarting` door,
+        // `priming` recomposes, and this gate silently stops measuring the only path the defect
+        // lives on — green for the wrong reason, which is the failure item 493 registered.
+        assert!(
+            !borrowed.pays(),
+            "⚠⚠⚠⚠⚠ the session-keeping door is shut for this fixture: {} discardable against a \
+             toll of {}, break-even {}. Without it this gate measures the restart path, which was \
+             never broken.",
+            borrowed.discardable(),
+            borrowed.toll(),
+            borrowed.break_even(),
+        );
+
+        let home = std::env::temp_dir().join(format!("sprag-moved-on-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let record = home.join("read-what-the-fixture-carried.jsonl");
+        std::fs::write(&record, borrowed.transcript()).expect("the agent's own record");
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ IT NAMES A NEXT MILESTONE, which is what carries a reflection through
+        // `reflect.applied` to `reviewing` at all — see the sibling harness.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        let access = crate::testing::supervised_writing(&workspace, &record);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the stand-in keeps answering".to_string(),
+                milestone: FIRST.to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠⚠ TWO, AND THE SIBLING HARNESS'S ONE WOULD MEASURE NOTHING HERE: the run has to
+                // take a WORKING turn after the reflection for the prompt under test to be typed,
+                // and `reflect_every: 1` sends it straight back into another reflection instead.
+                reflect_every: Some(2),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                // ⚠⚠⚠ SHORT, SO A BROKEN RUN FAILS RATHER THAN HANGS. The door under test types
+                // NOTHING on the way to `working` (`Owed::on` lists `review.none` among the silent
+                // edges), so a run that takes it sits waiting out a turn nobody armed — half an
+                // hour, on the shipped number. A gate that inherited that would report a timeout
+                // instead of the finding.
+                turn_within_ms: Some(3_000),
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut kept_the_session = false;
+        let mut prompted_after = false;
+        while walked.len() < 150 {
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            else {
+                break;
+            };
+            // ⚠ Null passes are moves that changed nothing and they are the bulk of a stuck run —
+            // recorded, because *which line* is the first question of any red.
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            if from == AiLoopState::Reviewing {
+                kept_the_session = to != AiLoopState::Restarting;
+            }
+            // The run has been PROMPTED for a working turn since the reflection — the only moment
+            // the text under test reaches the pane.
+            if kept_the_session && to == AiLoopState::Working && raised == AiLoopEvent::Judge {
+                prompted_after = true;
+                break;
+            }
+        }
+        // ⚠⚠⚠ THE SCROLLBACK, NOT THE VISIBLE SCREEN. The stand-in's pane is sixteen rows and a run
+        // that reaches this point has painted far more than that, so the collapsed screen answered
+        // `""` for a prompt that was really typed — a red for the right reason wearing the wrong
+        // sentence, which is exactly the class register item 517 paid for.
+        //
+        // ⚠⚠⚠⚠ AND IT IS A BOUNDED WAIT, BECAUSE TYPING IS NOT PAINTING. `advance` types the prompt
+        // and the pass returns; the peer echoes it a moment later. Read at once, this caught the
+        // PREVIOUS `Continue toward:` and reported the defect for a reason that would have survived
+        // the fix — a gate that goes green only by luck of scheduling is worse than none.
+        let last_carried = |text: &str| {
+            text.lines()
+                .rfind(|line| line.contains(CARRIES))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let painting = std::time::Instant::now();
+        let mut screen = String::new();
+        while painting.elapsed() < Duration::from_secs(5) {
+            screen = access.pane_full_text(pane).unwrap_or_default();
+            if last_carried(&screen).contains(NEXT) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        // ── the controls, before the finding ──
+        assert!(
+            kept_the_session,
+            "⚠⚠⚠ THE CONTROL: this run had to leave `reviewing` KEEPING its session, or it took a \
+             restart door and `priming` recomposed — the one path this defect cannot be seen on. \
+             Walked {walked:?}",
+        );
+        assert!(
+            prompted_after,
+            "⚠⚠⚠⚠ THE RUN WAS NEVER PROMPTED AGAIN AFTER THE REFLECTION. It kept its session, and \
+             nothing typed a working prompt at the pane in {} passes — which is the same defect \
+             seen one step earlier: `Owed::on` pays nothing for the edge this door raises, so the \
+             agent is left holding the question it was asked BEFORE the milestone moved. \
+             Walked {walked:?}",
+            walked.len(),
+        );
+
+        let carried = last_carried(&screen);
+        assert!(
+            carried.contains(NEXT),
+            "⛔⛔⛔ THE REFLECTION MOVED AND THE PROMPT DID NOT. The last `{CARRIES}` this pane \
+             received is {carried:?}, and the milestone this run adopted is {NEXT:?}. The \
+             datamodel moved — `reflect.applied` assigns it — but `turn_prompt` is composed in \
+             `priming` alone, and the door this run took back to `working` keeps the session and \
+             never enters it. That is the livelock run 20 died in: judged against the new \
+             milestone, briefed on the old one, for ever. Walked {walked:?}",
+        );
+        assert!(
+            !carried.contains(FIRST),
+            "⚠⚠⚠ AND IT MUST NOT STILL CARRY THE OLD ONE. {carried:?} names both checkpoints, so \
+             a fix that APPENDS the new milestone rather than composing from the current parts \
+             would pass the assertion above while handing the agent two goals.",
         );
     }
 

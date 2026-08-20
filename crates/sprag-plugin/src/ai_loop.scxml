@@ -1953,11 +1953,21 @@
       <!--
         ⚠⚠⚠ THE COMPOSITION, WRITTEN ONCE AND RUN ON EVERY PATH TO A PROMPT.
 
-        `priming` is entered from `idle` at the start and from `restarting`
-        after every session replacement, and those are the only two ways this
-        loop ever comes to send a prompt. So composing here is composing exactly
-        as often as the parts can have changed — a brief before the run, a
-        reflection during it — with one copy of the text.
+        `priming` is entered from `idle` at the start, from `restarting` after
+        every session replacement, and from `reviewing` when a reflection has
+        changed the parts and the session was worth keeping. Those are the only
+        three ways this loop ever comes to send a prompt, so composing here is
+        composing exactly as often as the parts can have changed — a brief
+        before the run, a reflection during it — with one copy of the text.
+
+        ⚠⚠⚠⚠⚠ THE THIRD DOOR IS REGISTER ITEM 523, AND THIS PARAGRAPH IS WHAT
+        HID IT. It read *the only two ways* while `reviewing` held a door of its
+        own straight back to `working`, so a reflection during the run moved
+        `milestone` in the datamodel and left `turn_prompt` exactly as this
+        block had composed it before any work was done: judged against the new
+        checkpoint, briefed on the old one, for ever. **The sentence defending
+        the arrangement was the evidence against it**, which is why the door was
+        moved here rather than the prompts being composed a second time.
 
         ⚠ ORDER IS LOAD-BEARING, as it was in `<data>` before: `done_instruction`
         is composed FIRST because the two working prompts end with it. Executable
@@ -3291,9 +3301,35 @@
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="restart_reason" expr="'economics'"/>
     </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE SESSION IS KEPT AND THE PROMPTS ARE STILL RECOMPOSED. Register
+      item 523, and the reason this door no longer goes straight to `working`.
+
+      `reviewing` is reached by ONE edge, `reflect.applied`, so every run
+      standing here has just adopted a new milestone. The text a working turn
+      actually carries, `turn_prompt`, is composed in `priming` and NOWHERE
+      ELSE. A door that kept the session by going straight back to work left the
+      run driving toward its ORIGINAL milestone while being judged against the
+      new one, for ever. Measured on run 20: the walk read
+      `Reflecting, ReflectApplied, Reviewing, ReviewNone, Working` while the
+      pane's prompt still named the milestone the run had moved past.
+
+      ⚠⚠⚠ `priming` IS NOT A SESSION REPLACEMENT, and the difference is what
+      keeps this door cheap. `restarting` is what replaces a session, and it
+      counts `restarts` on the way in; this state composes and sends a prompt,
+      which is what its driver says in as many words: *a session exists and has
+      not been prompted*. The agent's whole context is kept; the toll is one
+      prompt.
+
+      ⚠⚠ AND IT IS WHAT MAKES THIS DOOR SAY ANYTHING AT ALL. The driver owes a
+      prompt on the STATE for `priming`, where `working` is keyed on the EVENT
+      and `review.done` sits in its silent list. So the old door typed nothing:
+      the run went back to work still holding the question it had been asked
+      before the milestone moved.
+    -->
     <transition event="review.done"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
-                target="working">
+                target="priming">
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="turns_since_reflect" expr="0"/>
     </transition>
@@ -3381,9 +3417,16 @@
       <assign location="carried" expr="''"/>
       <assign location="restart_reason" expr="'economics'"/>
     </transition>
+    <!--
+      ⚠⚠⚠⚠ THE SAME DOOR ON THE OTHER ENDING, and it must be the same door for
+      the reason its neighbours give: a vocabulary or a route written on only
+      one of the two endings would make *did the reviewer find a habit* decide
+      whether the run is told which milestone it is now working toward. See the
+      `review.done` twin above for what going straight to `working` cost.
+    -->
     <transition event="review.none"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling"
-                target="working">
+                target="priming">
       <assign location="carried" expr="''"/>
       <assign location="turns_since_reflect" expr="0"/>
     </transition>

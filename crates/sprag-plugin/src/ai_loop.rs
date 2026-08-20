@@ -2689,6 +2689,158 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⛔⛔⛔ **A RUN A PERSON IS HOLDING MUST NOT SPEND ITS ITERATION BUDGET WHILE THEY HOLD IT** —
+    /// register item 522, measured on a live run and on no fixture until this one.
+    ///
+    /// # What it cost, measured rather than argued
+    ///
+    /// `sprag hold-run` parks a run in `awaiting_human` — immediately, which is `ai_loop.scxml`'s
+    /// `hold` transition on `working` and not a turn boundary — and twenty-four minutes later run
+    /// 18 was over: **`exhausted (iterations)`**, its walk from step 99,938 to the end reading
+    /// `AwaitingHuman: looked, nothing had happened`. A state whose document declares
+    /// `await_person_ms = 1 hour` killed the run in less than half of one, and the number that did
+    /// it was `--max_iterations 100000` — the ceiling the loop's own launch recipe recommends.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE HOLD IS THE ONE ORDER A PERSON CAN TAKE BACK.** A hold that ends the run is not
+    /// a slower `cancel`; it is a worse one, because `resume` was still on the table and the person
+    /// was told to expect it. Three surfaces said it waited — the CLI's own sentence, the loop
+    /// skill, and the datamodel's hour — while the driver spent the budget underneath all three.
+    ///
+    /// # ⚠⚠⚠ Why its neighbour below cannot hold this, and why neither can hold both
+    ///
+    /// [`a_run_waiting_for_a_person_spends_one_step_on_the_whole_wait`] measures the same
+    /// arithmetic on a DIFFERENT arm — `Over::Asking`, reached because a peer stopped to ask. A
+    /// held run never reaches it: `attend` reads [`RunContext::held`] FIRST and returns before any
+    /// wait at all, which it is entitled to do (their patience must not run while they hold it) and
+    /// which is exactly the shape the asking arm was fixed out of. **The two fixes are independent,
+    /// so killing either leaves the other's gate green** — measured, and the reason this is its own
+    /// gate rather than a second assertion on that one.
+    ///
+    /// ⚠⚠ WHAT THIS GATE ASSERTS IS STEPS, NOT ELAPSED TIME, for that neighbour's reason: a driver
+    /// that spun for exactly as long would pass a duration assertion. The wait must be ONE wait.
+    /// The elapsed time is asserted too, because one step and no waiting is the opposite defect —
+    /// a run that carried on underneath the person who held it.
+    #[test]
+    fn a_held_run_does_not_spend_an_iteration_on_every_look() {
+        /// The document's patience, far longer than the hold below, so *left because the person let
+        /// go* and *left because their patience ran out* are different numbers.
+        const PATIENCE: Duration = Duration::from_secs(30);
+        /// How long the person keeps it. Long enough that a spinning driver takes hundreds of steps
+        /// to cross it, short enough to keep the gate cheap.
+        const HELD_FOR: Duration = Duration::from_millis(500);
+        /// ⚠ Far above the two steps a parked run may take, and low enough that a spinning driver
+        /// — measured at ~69 looks a second on the live run — trips it in seconds rather than
+        /// minutes.
+        const GIVE_UP_AFTER: u32 = 200;
+
+        let (workspace, pane) = standin_agent(4);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                // ⚠⚠ A PERSON IS EXPECTED HERE. `brief_for` says nobody is, and a run nobody
+                // attends takes `unattended` the moment it parks — an ending, where this gate is
+                // about a run that must NOT end.
+                await_person_ms: Some(PATIENCE.as_millis() as i64),
+                handback_still_ms: Some(50),
+                ..brief_for(1_000_000)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        // ⚠ The hold is the HOST's flag — raised and lowered by whoever ran `sprag hold-run` — so
+        // the gate holds the same `Arc` the run reads, which is how a person is staged at all.
+        let hold = Arc::new(AtomicBool::new(false));
+        let run = RunContext::uncancellable().held_by(Arc::clone(&hold));
+
+        let mut walked: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            if loops.state() == AiLoopState::Working {
+                break;
+            }
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a starting run must be readable");
+            if let Some(note) = step.note {
+                walked.push(note);
+            }
+        }
+        assert_eq!(
+            loops.state(),
+            AiLoopState::Working,
+            "⚠ the control: the run must be WORKING before a person can hold it — `hold` is a \
+             transition of `working` and of nowhere else, so a gate that held a run somewhere else \
+             would measure a pass that never parked. Walked {walked:?}",
+        );
+
+        // ── THE PERSON HOLDS IT, READS THE PANE, AND LETS IT GO ──
+        // ⚠⚠ ARMED BEFORE THE FIRST MEASURED STEP, because that step is the one that carries the
+        // order in AND parks: a releasing thread spawned after it would be waited out by the very
+        // park being measured.
+        hold.store(true, Ordering::Release);
+        let releasing = {
+            let hold = Arc::clone(&hold);
+            std::thread::spawn(move || {
+                std::thread::sleep(HELD_FOR);
+                hold.store(false, Ordering::Release);
+            })
+        };
+
+        let began = Instant::now();
+        let mut spent = 0_u32;
+        loop {
+            loops
+                .step(&access, &run)
+                .expect("a held run is still readable");
+            spent += 1;
+            if loops.state() != AiLoopState::AwaitingHuman || spent >= GIVE_UP_AFTER {
+                break;
+            }
+        }
+        let took = began.elapsed();
+        releasing.join().expect("the person's own thread");
+
+        assert!(
+            spent <= 2,
+            "⛔⛔⛔ A HELD RUN IS SPENDING ITS ITERATION BUDGET ON LOOKING. Crossing a {HELD_FOR:?} \
+             hold took {spent} steps over {took:?}, so the driver is re-deriving an unchanged \
+             screen instead of parking on the one condition that ends a hold — the person letting \
+             go. Every one of those steps is an iteration charged against a ceiling the document \
+             cannot see, and on run 18 that arithmetic ended the run: `exhausted (iterations)` \
+             after 24 minutes, at ~69 looks a second, under an `await_person_ms` of one hour.",
+        );
+        assert!(
+            took >= HELD_FOR,
+            "⚠⚠⚠ AND THE HOLD MUST ACTUALLY HAVE HELD. The run left after {took:?} of a \
+             {HELD_FOR:?} hold, which is the opposite defect and just as wrong: a person who was \
+             promised the run would wait got one that carried on underneath them.",
+        );
+        // ⚠⚠⚠⚠ **AND IT MUST HAVE LEFT ON THE PERSON'S HAND, NOT ON THEIR CLOCK** — the assertion
+        // this gate passed its own mutation without. A park that waits out the whole
+        // `await_person_ms` and only THEN looks at the order spends two steps, which is everything
+        // the count above asks for, and leaves a person who lifted the hold watching a dead pane
+        // for the rest of the shipped HOUR. Only a bound an order of magnitude above the hold can
+        // tell *the person let go* from *the patience ran out* — which is why `PATIENCE` and
+        // `HELD_FOR` are set that far apart, exactly as the gate below sets its own two.
+        assert!(
+            took < PATIENCE,
+            "⚠⚠⚠⚠ THE RUN CAME BACK ON THE PATIENCE, NOT ON THE ORDER. {took:?} is past the \
+             {HELD_FOR:?} the hold actually lasted and at the {PATIENCE:?} the document allows a \
+             person, so the park is not watching the hold at all — it is sleeping out its bound \
+             and noticing afterwards. `resume-run` would look ignored for the rest of that hour.",
+        );
+        assert_ne!(
+            loops.state(),
+            AiLoopState::AwaitingHuman,
+            "⚠⚠ AND THE HOLD MUST COME OFF. `resume` is what makes this the one order a person can \
+             take back; a run still parked after the flag dropped is a `cancel` wearing a kinder \
+             word.",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠⚠ **THE TURN'S OWN READ NOTICES A DIALOG THE BARRIER MISSED** — `Over::Asking`, the arm
     /// register item 297 called unreachable through four fixtures.
     ///
@@ -7120,7 +7272,12 @@ mod tests {
                     },
                     event,
                 ),
-                AiLoopState::Working,
+                // ⚠⚠⚠ `Priming` IS THE KEPT SESSION — register item 523. `restarting` is what
+                // REPLACES one (it counts `restarts` on the way in); this state composes the
+                // prompts and sends one, which is what a run that just adopted a new milestone
+                // owes its agent. The claim this control makes is *the session survives*, and it
+                // still reads it: `Restarting` here would be a replacement nobody bought.
+                AiLoopState::Priming,
                 "⚠⚠⚠⚠ THE CONTROL ({event:?}): {} of discardable context against a toll of {} is \
                  not worth a replacement, and the next milestone belongs in the session that \
                  already holds the work. A gate whose two cases both replace is measuring nothing",
@@ -7162,7 +7319,8 @@ mod tests {
                     },
                     event,
                 ),
-                AiLoopState::Working,
+                // ⚠ THE KEPT-SESSION DOOR, which is `priming` since item 523 — see the control above.
+                AiLoopState::Priming,
                 "⚠⚠⚠⚠ ({event:?}) AN UNREADABLE `cold` IS NOT A FREE RESTART. Twenty times nothing \
                  is nothing, so a guard that did not refuse the zero would replace every session \
                  whose record it could not read — item 431's disease arriving through a new door",
@@ -7177,7 +7335,8 @@ mod tests {
                     },
                     event,
                 ),
-                AiLoopState::Working,
+                // ⚠ THE KEPT-SESSION DOOR, which is `priming` since item 523 — see the control above.
+                AiLoopState::Priming,
                 "⚠⚠⚠ ({event:?}) AND AN UNREADABLE `floor` IS NOT A SESSION MADE ENTIRELY OF \
                  DISCARDABLE CONTEXT. {GROWN} would clear the toll of {} on its own, and the part \
                  no restart escapes would have been counted as the part it drops",

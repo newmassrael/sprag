@@ -5732,10 +5732,16 @@ fn hold_run(args: Vec<String>, held: bool) -> io::Result<()> {
     // ⚠ THE SENTENCE SAYS WHAT IS AND IS NOT TRUE YET. A hold takes effect at the run's next pass,
     // not at this return — and a person who read "held" and started editing the pane mid-turn would
     // be typing underneath an agent that is still working.
+    //
+    // ⛔⛔⛔ AND THE WORDS ARE NOT THIS COMMAND'S — register item 522. What stood here said the run
+    // *"stops at its next turn boundary and waits"*, where `ai_loop.scxml` parks it on the very next
+    // pass, mid-turn; a person told to expect a boundary waits for one. The sentence now belongs to
+    // the crate that holds the document that does it ([`sprag_plugin::HOLD_TAKES_EFFECT`]), where a
+    // gate reads BOTH and neither can move alone. This command holds no wording of its own to drift.
     if held {
         println!(
-            "run {id} asked to hold; it stops at its next turn boundary and waits — nothing is \
-             typed at the pane while it does, and `sprag resume-run {id}` sends it on"
+            "run {id} asked to hold; {} — `sprag resume-run {id}` sends it on",
+            sprag_plugin::HOLD_TAKES_EFFECT,
         );
     } else {
         println!("run {id} let go; it takes a fresh turn at its next pass");
