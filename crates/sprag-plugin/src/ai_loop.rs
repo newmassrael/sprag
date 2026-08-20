@@ -2892,11 +2892,20 @@ mod tests {
     /// all* is a run that can only judge itself exhausted, and *never bounded on turns* is an author
     /// saying the run ends some other way.
     ///
-    /// ⚠⚠ **IT DOES NOT HOLD THE DOOR'S WIRING**, and that is measured rather than assumed:
-    /// deleting `.or_else(|| kind.turn_budget())` from `plugins.rs` leaves the entire workspace
+    /// ⚠⚠ **IT DOES NOT HOLD THE DOOR'S WIRING**, and that was measured rather than assumed:
+    /// deleting `.or_else(|| kind.turn_budget())` from `plugins.rs` left the entire workspace
     /// GREEN. What would catch it is an observable of the RESOLVED budget on a run started through
-    /// the wire, and `turn_budget` is crate-private — so the residue is registered rather than
+    /// the wire, and `turn_budget` is crate-private — so the residue was registered rather than
     /// papered over with a gate that re-implements the line it is checking.
+    ///
+    /// ✅ **AND THAT RESIDUE IS PAID (register item 492), so this paragraph is history rather than a
+    /// warning.** The observable it asked for exists: `sprag_host`'s door resolves a `Brief` and
+    /// hands it back (`ai_loop_brief`), which is `pub` and is exactly what the wire produces, so
+    /// `a_kind_documents_judgements_reach_a_run_that_named_none_of_them` holds all EIGHT
+    /// fall-throughs — the budget included. **Re-measured on that round: the same deletion now goes
+    /// red.** ⚠ Kept rather than deleted because the shape it names recurs: a wiring nothing can
+    /// observe is a wiring nothing holds, and the fix was to hand the value back instead of
+    /// consuming it in place.
     ///
     /// ⚠ The cadence is named here for the reason the kind names one: with no budget there is no
     /// number for reflection to borrow, and the driver refuses the pair rather than guessing.
