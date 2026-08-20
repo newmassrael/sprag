@@ -90,6 +90,79 @@ pub const EVENT_TYPE: &str = "AiLoopEvent";
 /// ([`crate::sources`]'s own rule), so it says so rather than dropping the read on the floor.
 #[must_use]
 pub fn data_carrying(scxml: &str) -> BTreeMap<String, BTreeSet<String>> {
+    walked(scxml).reads
+}
+
+/// The `(state, event)` pairs where a BARE raise of a data-carrying event is HARMLESS — the state
+/// declares its own transition for it, that transition reads nothing, and what it enters reads
+/// nothing either.
+///
+/// # ⚠⚠⚠⚠⚠ Why a gate needs this, and why the ledger's plan was wrong without it
+///
+/// Whether a payload is owed is **state-dependent**. `turn.blocked` owes three keys in `working` —
+/// two `cond`s route on them — and owes NOTHING in `reflecting`, which answers it with one
+/// unconditional edge to `awaiting_human`. So `OuterLoop::reflect` handing a bare `turn.blocked` on
+/// through `ended.into()` is CORRECT, and item 515's original plan — *make `advance` refuse every
+/// data-carrying event delivered with `data: None`* — would have refused what the document permits.
+///
+/// ⚠⚠ The static gate over SPELLED sites is deliberately stricter than this: always carrying is
+/// harmless there and simpler to keep. This is for the other half — the indirect sites a text scan
+/// cannot follow — where the driver is right BECAUSE it knows the state, and where the thing worth
+/// watching is the day the document stops tolerating it.
+#[must_use]
+pub fn tolerant(scxml: &str) -> BTreeSet<(String, String)> {
+    let read = walked(scxml);
+    // ⚠⚠⚠⚠⚠ AGGREGATED PER `(state, event)`, NOT PER TRANSITION — and the first version of this
+    // was per transition, which called `judging`/`judge` and `working`/`turn.blocked` TOLERANT.
+    // They are the opposite: each declares several transitions for that event and the conditional
+    // ones are evaluated in document order until one is taken, so a bare raise indexes nil on the
+    // FIRST guard whatever the last unconditional fall-through would have done. One safe edge among
+    // several is not a safe state.
+    let mut safe: BTreeMap<(String, String), bool> = BTreeMap::new();
+    for row in &read.declared {
+        if !read.reads.contains_key(&row.event) {
+            continue;
+        }
+        let clean = !row.reads
+            && read
+                .on_entry
+                .get(&row.target)
+                .is_none_or(BTreeSet::is_empty);
+        let held = safe
+            .entry((row.state.clone(), row.event.clone()))
+            .or_insert(true);
+        *held = *held && clean;
+    }
+    safe.into_iter()
+        .filter(|(_, clean)| *clean)
+        .map(|(pair, _)| pair)
+        .collect()
+}
+
+/// One transition a state declares for an event, and what taking it reads.
+struct Declared {
+    /// The state that declares it.
+    state: String,
+    /// Its `event` descriptor.
+    event: String,
+    /// Where it goes, so entering that state can be asked about too.
+    target: String,
+    /// Whether the transition itself reads `_event.data` — its `cond` or its own content.
+    reads: bool,
+}
+
+/// What one pass over the document found, so the two questions above cannot drift apart.
+struct Walked {
+    /// Every event that reads `_event.data`, with the keys — entry reads already folded in.
+    reads: BTreeMap<String, BTreeSet<String>>,
+    /// Per state, what its `<onentry>` reads.
+    on_entry: BTreeMap<String, BTreeSet<String>>,
+    /// Every transition, by the state that declares it.
+    declared: Vec<Declared>,
+}
+
+/// The single pass. See [`data_carrying`] for what it is reading for.
+fn walked(scxml: &str) -> Walked {
     /// One element still open above the reader, for attributing a read to an event.
     enum Open {
         /// A `<state>`, `<parallel>` or `<final>`, by its id.
@@ -106,6 +179,7 @@ pub fn data_carrying(scxml: &str) -> BTreeMap<String, BTreeSet<String>> {
     let mut reads: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut on_entry: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut into: Vec<(String, String)> = Vec::new();
+    let mut declared: Vec<Declared> = Vec::new();
     let mut stack: Vec<Open> = Vec::new();
     let mut rest = text.as_str();
 
@@ -136,6 +210,21 @@ pub fn data_carrying(scxml: &str) -> BTreeMap<String, BTreeSet<String>> {
                 if !keys.is_empty() {
                     reads.entry(event.clone()).or_default().extend(keys.clone());
                 }
+                // ⚠ WHICH STATE DECLARES IT, and where it goes — the two facts that decide whether
+                // a BARE raise of this event is safe while the machine sits in that state.
+                declared.push(Declared {
+                    state: stack
+                        .iter()
+                        .rev()
+                        .find_map(|above| match above {
+                            Open::State(id) => Some(id.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                    event: event.clone(),
+                    target: attribute(body, "target").unwrap_or_default(),
+                    reads: !keys.is_empty(),
+                });
                 if let Some(target) = attribute(body, "target") {
                     into.push((target, event));
                 }
@@ -146,6 +235,12 @@ pub fn data_carrying(scxml: &str) -> BTreeMap<String, BTreeSet<String>> {
                 match above {
                     Open::Transition(Some(event)) => {
                         reads.entry(event.clone()).or_default().extend(keys.clone());
+                        // ⚠ A READ IN THE TRANSITION'S CONTENT counts as the transition reading —
+                        // `<assign expr="_event.data.text"/>` owes a payload exactly as a `cond`
+                        // does. Transitions do not nest, so the one still open is the last pushed.
+                        if let Some(row) = declared.last_mut() {
+                            row.reads = true;
+                        }
                         break;
                     }
                     Open::Transition(None) => break,
@@ -187,7 +282,11 @@ pub fn data_carrying(scxml: &str) -> BTreeMap<String, BTreeSet<String>> {
             reads.entry(event).or_default().extend(keys.iter().cloned());
         }
     }
-    reads
+    Walked {
+        reads,
+        on_entry,
+        declared,
+    }
 }
 
 /// The variant the code generator spells a document EVENT name as — `turn.done` becomes `TurnDone`.

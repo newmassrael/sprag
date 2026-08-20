@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sprag_gate::loop_shape::DOCUMENT;
-use sprag_gate::payload::{Rust, Spelled, data_carrying, spelled, variant_of_event};
+use sprag_gate::payload::{Rust, Spelled, data_carrying, spelled, tolerant, variant_of_event};
 use sprag_gate::sources::{Source, rust_sources, workspace_root};
 
 /// The events `ai_loop.scxml` reads `_event.data` off — measured 2026-08-20, and PINNED.
@@ -419,6 +419,58 @@ fn no_payload_key_is_spelled_by_a_name_this_workspace_disagrees_about() {
         "⚠⚠⚠⚠⚠ A PAYLOAD KEY IS SPELLED BY A CONTESTED NAME. A claim about what the driver sends \
          would be built on whichever declaration was read last:\n{}",
         guessed.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **THE STATES THAT TOLERATE A BARE RAISE ARE PINNED, BECAUSE THE DRIVER RELIES ON ONE** —
+/// item 515, turned from a note into a mechanism.
+///
+/// # What the driver relies on, measured
+///
+/// Two sites hand an event value on INDIRECTLY, past what a text scan can follow. `pump`'s
+/// `other => other.into()` cannot be data-carrying at all — `TurnDone` and `TurnBlocked` have
+/// explicit arms above it. `OuterLoop::reflect`'s `ended.into()` CAN be `turn.blocked`, which IS
+/// data-carrying, and it is still correct: `reflecting` answers `turn.blocked` with ONE
+/// unconditional edge to `awaiting_human`, so nothing indexes `_event.data` there.
+///
+/// ⚠⚠⚠ **THAT IS A FACT ABOUT THE DOCUMENT, AND THE DOCUMENT CAN CHANGE.** Put a `cond` on
+/// `reflecting`'s `turn.blocked` and the driver's bare raise becomes the exact defect item 507 was
+/// filed for — silently, because no spelled site moved and every other claim here stays green. The
+/// ledger's answer was a sentence saying *reopen 515 if that happens*, which nothing enforces. This
+/// is the enforcement: the tolerant set is pinned, and shrinking it is announced.
+#[test]
+fn the_states_that_tolerate_a_bare_raise_are_the_ones_the_driver_was_written_against() {
+    /// `(state, event)` pairs where a bare raise is harmless — measured 2026-08-21.
+    ///
+    /// ⚠ `reflecting`/`turn.blocked` is the load-bearing one: `OuterLoop::reflect` hands that event
+    /// on with no payload. The rest are pinned because a set that quietly grew or shrank would say
+    /// nothing, which is how this class hides.
+    const TOLERANT: &[(&str, &str)] = &[
+        ("closing", "turn.blocked"),
+        ("closing", "turn.done"),
+        ("reflecting", "turn.blocked"),
+        ("stopping", "turn.blocked"),
+        ("stopping", "turn.done"),
+    ];
+
+    let measured = tolerant(&document());
+    assert_eq!(
+        measured,
+        TOLERANT
+            .iter()
+            .map(|(state, event)| ((*state).to_owned(), (*event).to_owned()))
+            .collect::<BTreeSet<_>>(),
+        "⚠⚠⚠⚠⚠ WHICH STATES TOLERATE A BARE RAISE HAS MOVED. A pair LEAVING this set is the \
+         dangerous direction: the document started reading `_event.data` where it did not, and any \
+         driver site that hands that event on without a payload — `OuterLoop::reflect` does, for \
+         `turn.blocked` — is now asking the datamodel to index nil, which W3C SCXML 3.12.2 drops in \
+         silence. A pair ARRIVING is harmless but still worth a person's eye",
+    );
+    assert!(
+        measured.contains(&("reflecting".to_owned(), "turn.blocked".to_owned())),
+        "⚠⚠⚠⚠⚠ `reflecting` must answer `turn.blocked` without reading `_event.data`, because \
+         `OuterLoop::reflect` hands it on bare through `ended.into()` and no static gate can see \
+         that site. If this is gone, that raise is a live defect — fix the driver, not this pin",
     );
 }
 
