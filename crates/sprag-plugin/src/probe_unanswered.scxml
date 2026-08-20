@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ⚠⚠⚠⚠⚠ WHAT HAPPENS TO AN `error.*` THIS DOCUMENT DOES NOT ANSWER?
+
+  W3C SCXML 3.12.2: an error event goes on the internal queue and is IGNORED
+  when nothing matches it. So a document whose executable content fails keeps
+  running, and a HOST that did not write the document has no way to see that it
+  failed at all.
+
+  ⚠⚠⚠⚠ THIS IS LIVE IN THIS CRATE, MEASURED 2026-08-20: `ai_loop.scxml` and
+  `debt_loop.scxml` carry ZERO `error.*` transitions between them. Every failure
+  their own `<assign>`s, guards and `<send>`s can raise is therefore swallowed —
+  and register item 483's other half is what makes that sharp, because a
+  `<send>` naming a type nobody serves raises exactly this and abandons the rest
+  of its block. The day the loop names an act (item 470 stage 2), an unregistered
+  handler would make the loop do NOTHING, quietly.
+
+  ⚠⚠ SO THIS FILE IS THE OTHER SIDE OF `probe_send_type.scxml`. That one raises
+  `error.execution` and ANSWERS it; this one raises it and does not. Two
+  documents, one axis — whether the document answers — which is what makes a
+  reading of "how many went unanswered" attributable to the document rather than
+  to the engine's mood.
+
+  ⚠ ASKED BY COMPILING AND RUNNING, this file's own convention: whether an
+  undeclared `<assign>` location raises `error.execution` at all is a fact about
+  the engine, and reading the specification is not measuring it.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_unanswered"
+       datamodel="ecmascript"
+       initial="raising">
+
+  <datamodel>
+    <!-- ⚠⚠ THE CONTROL, and it is what separates *the error was ignored* from
+         *the machine stopped*. Register item 483 measured what an error in
+         executable content does to the REST of its block: it abandons it. So
+         this stays 0 while the machine goes on living, and a reader that found
+         it 1 would be looking at an engine that did not raise at all.
+
+         ⚠⚠⚠⚠⚠ MEASURED 2026-08-20, AND IT IS WHY THIS PROBE'S FIRST DRAFT
+         PROVED NOTHING: an `<assign>` to a location this document never
+         declared **is not an error on this engine**. W3C SCXML 5.4 says a
+         failed assignment raises `error.execution`; with the Lua datamodel the
+         location is simply created, `after` read 1, and no error was raised at
+         all. So the raise here is a `<send>` naming a type nobody serves, which
+         item 483 measured raising `error.execution` once per site — the one way
+         this crate has ALREADY proven raises one. -->
+    <data id="after" expr="0"/>
+    <!-- ⚠ Raised in a state the machine ENTERS LATER, so *this document can
+         still assign* is a fact this probe holds rather than an assumption. -->
+    <data id="moved" expr="0"/>
+  </datamodel>
+
+  <state id="raising">
+    <onentry>
+      <!-- ⚠⚠⚠⚠⚠ THE SUBJECT: a `<send>` whose Event I/O Processor type nobody
+           declares and nobody serves. Item 483 measured this raising
+           `error.execution` at entry, once per site, with the named event never
+           arriving. There is deliberately NO `<transition event="error.…">`
+           anywhere in this file — that absence IS the measurement.
+           ⚠ The type is NOT `x-sprag-host`: that one this crate now declares at
+           build time and registers at run time, so it would be SERVED. -->
+      <send type="x-nobody-serves-this" event="never.arrives"/>
+      <assign location="after" expr="after + 1"/>
+    </onentry>
+    <transition event="go" target="living"/>
+  </state>
+
+  <!--
+    ⚠⚠ AND THE MACHINE IS STILL ALIVE AFTERWARDS, which is the half of W3C 3.12.2
+    that makes the silence dangerous rather than merely rude: a run that had
+    stopped would be visible in every reading a host takes. This state proves
+    the swallowed error cost the document nothing it could notice.
+  -->
+  <state id="living">
+    <onentry>
+      <assign location="moved" expr="moved + 1"/>
+    </onentry>
+  </state>
+
+</scxml>

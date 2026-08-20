@@ -70,6 +70,13 @@ const STATECHARTS: &[&str] = &[
     // are registered at run time; both halves are required and the probe holds each on its own.
     // See `probe_send_type.scxml`.
     "probe_send_type",
+    // ⚠⚠ THE FIFTH PROBE: what happens to an `error.*` the document does not ANSWER. W3C SCXML
+    // 3.12.2 ignores it, so a host that did not write the document cannot see its executable
+    // content failing — and `ai_loop.scxml` + `debt_loop.scxml` carry ZERO error transitions
+    // between them (measured 2026-08-20). SCE grew `unhandled_error_events` for exactly this;
+    // consuming it needs a document that raises one and leaves it unanswered, which is this file,
+    // and `probe_send_type` is its control because that one ANSWERS. See `probe_unanswered.scxml`.
+    "probe_unanswered",
 ];
 
 /// The Event I/O Processor / invoker types THIS CRATE serves, declared to codegen so a

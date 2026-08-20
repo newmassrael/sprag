@@ -3961,6 +3961,33 @@ impl OuterLoop {
         }
     }
 
+    /// **HOW MANY `error.*` THIS DOCUMENT RAISED AND NOTHING ANSWERED** — consumed from SCE 2026-08-20.
+    ///
+    /// # ⚠⚠⚠⚠⚠ For this loop it is the ONLY window, because the document answers none of them
+    ///
+    /// W3C SCXML 3.12.2 puts an error event on the internal queue and IGNORES it when nothing
+    /// matches. Measured 2026-08-20: `ai_loop.scxml` and `debt_loop.scxml` carry **zero** `error.*`
+    /// transitions between them — so every failure their own `<assign>`s, guards and `<send>`s can
+    /// raise has always been swallowed, and no reading a driver took could tell a run that worked
+    /// from one whose `onentry` failed on arrival.
+    ///
+    /// ⚠⚠⚠ Item 483 is why this is not theoretical: a `<send>` naming a type nobody serves raises
+    /// exactly this AND abandons the rest of its block. The day this loop names an act (item 470
+    /// stage 2, unblocked the same day this reader arrived), a handler nobody registered would make
+    /// the loop do NOTHING — quietly, with every gate in this crate green.
+    ///
+    /// ⚠⚠ It counts what went UNANSWERED, not what was raised: a document that handles its own
+    /// error reads 0. `probe::tests::an_error_the_document_never_answers_is_still_a_fact_the_host_
+    /// can_read` holds both ends of that, one document each.
+    ///
+    /// ⚠ Not published on the wire and deliberately: a run's account is four ledgers' worth of
+    /// bookkeeping (item 492) and this is a tripwire for the crate's own gates first. What it is
+    /// for is being ZERO on every real run — see the gate of that name.
+    #[must_use]
+    pub fn errors_nobody_answered(&self) -> u32 {
+        self.machine.unhandled_error_events()
+    }
+
     /// **HOW MANY CALLS THE DOCUMENT COUNTS A STANDING INSTRUCTION HAVING TURNED DOWN** — its own
     /// `screened`, incremented on `screen.matched`.
     ///
@@ -12068,6 +12095,88 @@ mod tests {
         (to, because, walked)
     }
 
+    /// ⚠⚠⚠⚠⚠ **A HEALTHY RUN SWALLOWS NO ERROR OF ITS OWN** — the tripwire
+    /// [`OuterLoop::errors_nobody_answered`] exists to be, consumed from SCE 2026-08-20.
+    ///
+    /// # What this can catch that nothing else here can
+    ///
+    /// This document declares no `error.*` transition, so W3C SCXML 3.12.2 makes every error its own
+    /// executable content raises DISAPPEAR: a failed `<assign>`, a guard that could not be
+    /// evaluated, a `<send>` naming a type nobody serves. Every gate in this file reads STATES and
+    /// LINES, and a run that reached the right state with half an `onentry` unexecuted looks exactly
+    /// like one that ran it all — item 483 measured that an error abandons the rest of its block.
+    ///
+    /// ⚠⚠ So this drives a run through its ordinary passes and asserts the count is ZERO. It is not
+    /// a claim about the walk; it is a claim that nothing in the document failed on the way, which
+    /// is the premise every other gate here rests on without being able to check it.
+    ///
+    /// ⚠ Cheap on purpose — one stand-in, a handful of passes, no fixtures. The reading is free
+    /// (a `u32` the engine already counts) and the day it is not zero, whichever gate is running
+    /// says so instead of passing over a swallowed failure.
+    #[test]
+    fn a_healthy_run_swallows_no_error_of_its_own() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = standin_agent(4);
+        let access = crate::testing::supervised(&workspace);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the stand-in answers four prompts".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(4)),
+                reflect_every: Some(2),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        while walked.len() < 12 {
+            match loops.pump(&access, &run) {
+                Ok(Pumped::Moved {
+                    from, raised, to, ..
+                }) => {
+                    walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                }
+                Ok(other) => {
+                    walked.push(format!("{other:?}"));
+                    break;
+                }
+                Err(why) => panic!("the pane must stay readable: {why:?}, walked {walked:?}"),
+            }
+        }
+        let swallowed = loops.errors_nobody_answered();
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        assert_eq!(
+            swallowed, 0,
+            "⚠⚠⚠⚠⚠ THIS DOCUMENT RAISED AN `error.*` AND ANSWERS NONE, so the engine dropped it and \
+             every other gate here would still have passed. Something in the loop's own executable \
+             content failed — a `<send>` to a type nobody serves is the shape item 483 measured, \
+             and it abandons the REST of its block, so read the walk for a state whose `onentry` \
+             only half ran. Walked {walked:?}",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHICH DECISION REPLACED THE SESSION** — register item 445, which is
     /// items 261, 265 and 267's finding at the fourth many-doored state, and register item 477,
     /// which is the same finding INSIDE this gate's own fall-back.
@@ -14479,6 +14588,10 @@ mod tests {
         "probe_parallel",
         "probe_parent",
         "probe_send_type",
+        // ⚠⚠ A PROBE OF THE ENGINE, so this repository's own by the same argument as the four
+        // above: it asks what happens to an `error.*` nobody answers, and the answer is a fact
+        // about SCE rather than a decision another repository would copy.
+        "probe_unanswered",
         "session",
     ];
 

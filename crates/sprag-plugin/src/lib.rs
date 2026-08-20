@@ -118,6 +118,11 @@ pub(crate) mod sm {
         #![allow(unused_imports)]
         include!(concat!(env!("OUT_DIR"), "/probe_send_type_sm.include.rs"));
     }
+
+    pub(crate) mod probe_unanswered_sm {
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/probe_unanswered_sm.include.rs"));
+    }
 }
 
 /// What this crate has PROVEN about the engine it runs on — see [`probe`].

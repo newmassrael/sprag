@@ -328,6 +328,108 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **AN `error.*` NOBODY ANSWERED IS A FACT THE HOST CAN NOW READ** — consuming SCE's
+    /// `unhandled_error_events`, 2026-08-20.
+    ///
+    /// # ⚠⚠⚠⚠ Why this loop needed it, measured
+    ///
+    /// W3C SCXML 3.12.2: an error event goes on the internal queue and is IGNORED when nothing
+    /// matches. **`ai_loop.scxml` and `debt_loop.scxml` carry ZERO `error.*` transitions between
+    /// them**, so every failure their own `<assign>`s, guards and `<send>`s can raise has always
+    /// been swallowed — and no reading a driver took could tell a run that worked from a run whose
+    /// executable content failed on entry.
+    ///
+    /// Item 483 is what makes it sharp rather than theoretical: a `<send>` naming a type nobody
+    /// serves raises exactly this error AND abandons the rest of its block. The day this loop names
+    /// an act (item 470 stage 2, unblocked the same day), an unregistered handler would make the
+    /// loop do NOTHING, quietly, and every gate in this crate would stay green.
+    ///
+    /// # ⚠⚠⚠ Two documents, one axis: whether the document ANSWERS
+    ///
+    /// `probe_unanswered.scxml` raises `error.execution` from an undeclared `<assign>` location and
+    /// declares no error transition anywhere. `probe_send_type.scxml` raises the same error and
+    /// ANSWERS it. So a reading of *how many went unanswered* is attributable to the document
+    /// rather than to the engine — without the control, `1` here could be the engine counting every
+    /// error it ever raised.
+    #[test]
+    fn an_error_the_document_never_answers_is_still_a_fact_the_host_can_read() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(crate::sm::probe_unanswered_sm::ProbeUnansweredPolicy::new(
+            Arc::clone(&lua),
+        ));
+        engine.initialize();
+        for _ in 0..8 {
+            engine.tick();
+        }
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<crate::sm::probe_unanswered_sm::ProbeUnansweredPolicy>,
+                     name: &str| {
+            match engine.policy().script_engine.get_variable(&session, name) {
+                Ok(ScriptValue::Int(held)) => held,
+                other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+            }
+        };
+
+        // ── THE CONTROL FIRST: the failure really happened, and it cost the block ──
+        assert_eq!(
+            count(&engine, "after"),
+            0,
+            "⚠⚠⚠⚠ THE UNDECLARED `<assign>` MUST HAVE FAILED, and item 483's finding is what says \
+             so from out here: an error in executable content abandons the REST of the block. A `1` \
+             means this engine assigned to a location the document never declared, and then this \
+             case is measuring nothing about errors at all",
+        );
+
+        assert_eq!(
+            engine.unhandled_error_events(),
+            1,
+            "⚠⚠⚠⚠⚠ THE SUBJECT: exactly one `error.*` was raised and nothing in the document \
+             matched it, and the HOST can now say so. Zero is the silence this loop has always run \
+             in — W3C 3.12.2 ignores the event, so before this reading existed a document whose \
+             `onentry` failed was indistinguishable from one that worked",
+        );
+        assert!(
+            engine.last_unhandled_error().is_some(),
+            "⚠⚠⚠ and WHICH error it was, because the class is the whole diagnostic: \
+             `error.execution` is the document's own content failing and `error.communication` is a \
+             `<send>` that could not be delivered — one is a bug in the document and the other is a \
+             host that did not answer",
+        );
+
+        // ── AND THE MACHINE IS STILL ALIVE, which is what makes the silence dangerous ──
+        engine.process_event(crate::sm::probe_unanswered_sm::ProbeUnansweredEvent::Go);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        assert_eq!(
+            count(&engine, "moved"),
+            1,
+            "⚠⚠⚠ a run that had STOPPED would be visible in every reading a host takes; this one \
+             went on assigning. That is why the count above is the only thing that could have \
+             reported the failure",
+        );
+
+        // ── THE CONTROL DOCUMENT: the same error, ANSWERED, reads zero ──
+        let mut answers = Engine::new(ProbeSendTypePolicy::new(lua));
+        answers.initialize();
+        for _ in 0..8 {
+            answers.tick();
+        }
+        assert_eq!(
+            answers.unhandled_error_events(),
+            0,
+            "⚠⚠⚠⚠⚠ `probe_send_type.scxml` raises `error.execution` (a `<send>` naming a type \
+             nothing serves) and has a transition for it — so it must read ZERO here. A `1` would \
+             mean this count is counting errors RAISED rather than errors UNANSWERED, and the \
+             assertion above would be about the engine instead of about the document",
+        );
+    }
+
     /// ⚠⚠⚠ **CAN A PARENT FILL ITS CHILD'S DATAMODEL** — the question a composed design rests on,
     /// asked of a real engine rather than of the specification.
     ///
