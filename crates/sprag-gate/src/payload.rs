@@ -354,9 +354,28 @@ impl Rust {
     pub fn of(sources: &[Source]) -> Self {
         let mut strings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for source in sources {
+            // ⚠⚠⚠ A CONSTANT IS RECORDED UNDER BOTH ITS NAMES — `WIRE_KEY` and
+            // `Readiness::WIRE_KEY` — because the bare one is not enough to tell eight of them
+            // apart, and the qualified one is how every payload in this workspace spells it.
+            let mut depth: i32 = 0;
+            let mut owner: Vec<(String, i32)> = Vec::new();
             for (_, line) in &source.code {
+                if let Some(name) = impl_type(line) {
+                    owner.push((name, depth));
+                }
                 if let Some((name, value)) = string_const(line) {
+                    if let Some((declaring, _)) = owner.last() {
+                        strings
+                            .entry(format!("{declaring}::{name}"))
+                            .or_default()
+                            .insert(value.clone());
+                    }
                     strings.entry(name).or_default().insert(value);
+                }
+                depth += i32::try_from(line.matches('{').count()).unwrap_or_default();
+                depth -= i32::try_from(line.matches('}').count()).unwrap_or_default();
+                while owner.last().is_some_and(|(_, opened)| depth <= *opened) {
+                    owner.pop();
                 }
             }
         }
@@ -582,9 +601,14 @@ impl Rust {
                         // means — see [`Rust::one`]. An unresolved `WIRE_KEY` matches no key the
                         // document reads, so the claim goes RED naming it; a guess would go GREEN
                         // on a key nobody wrote.
+                        // ⚠⚠⚠⚠ BOTH NAMES ARE ASKED AND THE ORDER IS NOT WHAT SAVES THIS — measured
+                        // by flipping it, which changed nothing. What saves it is that the BARE
+                        // name accumulates every value it has, so a contested `WIRE_KEY` answers
+                        // `None` and the qualified `Readiness::WIRE_KEY` is what resolves. Deleting
+                        // the qualified registration in [`Rust::of`] is the mutation that reds.
                         keys.insert(
-                            self.one(name)
-                                .or_else(|| self.one(&token))
+                            self.one(&token)
+                                .or_else(|| self.one(name))
                                 .unwrap_or_else(|| token.clone()),
                         );
                     }
@@ -1065,6 +1089,31 @@ fn literal(expr: &str) -> Option<String> {
     Some(quoted.replace("\\\"", "\""))
 }
 
+/// The TYPE an `impl` block is about, so a constant inside it can be named the way payloads name
+/// it — `Raise` for both `impl Raise {` and `impl From<AiLoopEvent> for Raise {`.
+///
+/// ⚠ The type is what a payload spells (`ScreenRule::TEXT_KEY`), never the trait, which is why the
+/// text after ` for ` wins when there is one.
+fn impl_type(line: &str) -> Option<String> {
+    let rest = line
+        .strip_prefix("impl ")
+        .or_else(|| line.strip_prefix("impl<"))?;
+    let rest = if line.starts_with("impl<") {
+        rest.split_once('>')?.1
+    } else {
+        rest
+    };
+    let head = rest.split('{').next()?.trim();
+    let target = head.rsplit(" for ").next()?.trim();
+    let name = target
+        .split(['<', ' ', '\''])
+        .next()?
+        .rsplit("::")
+        .next()?
+        .trim();
+    (!name.is_empty() && name.starts_with(char::is_uppercase)).then(|| name.to_owned())
+}
+
 /// `const NAME: &str = "…";` as `(name, value)`, for a line that is one.
 fn string_const(line: &str) -> Option<(String, String)> {
     let rest = line
@@ -1327,6 +1376,64 @@ mod tests {
              it says so — a claim that read it as empty would be a red about nothing",
         );
         assert!(read.shared("TURN") && !read.shared("json!({})"));
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A CONSTANT RESOLVES THROUGH THE `impl` THAT DECLARES IT**, or eight `WIRE_KEY`s are
+    /// one question with eight answers — item 516's prerequisite, measured in this workspace.
+    #[test]
+    fn a_constant_is_told_apart_by_the_type_that_declares_it() {
+        let rust = "impl Readiness {\n\
+                    pub const WIRE_KEY: &'static str = \"await_person_ms\";\n\
+                    }\n\
+                    impl Turn {\n\
+                    pub const WIRE_KEY: &'static str = \"turn_within_ms\";\n\
+                    }\n\
+                    impl From<AiLoopEvent> for Raise {\n\
+                    pub const WIRE_KEY: &'static str = \"raised\";\n\
+                    }";
+        let sources = [source("a.rs", rust)];
+        let read = Rust::of(&sources);
+
+        assert_eq!(
+            read.keys_of("json!({Readiness::WIRE_KEY: 1, Turn::WIRE_KEY: 2})"),
+            Some(BTreeSet::from([
+                "await_person_ms".to_owned(),
+                "turn_within_ms".to_owned()
+            ])),
+            "⚠⚠⚠⚠⚠ two types declare `WIRE_KEY` and they are DIFFERENT keys — a reader that took \
+             the last path segment would report one of them twice and the claim built on it would \
+             be a confident lie",
+        );
+        assert_eq!(
+            read.keys_of("json!({WIRE_KEY: 1})"),
+            Some(BTreeSet::from(["WIRE_KEY".to_owned()])),
+            "⚠⚠⚠ and the BARE name stays unresolved, because this workspace does not agree what it \
+             means — the token standing is what makes a claim go red naming it rather than pass",
+        );
+        assert!(
+            read.ambiguous().contains_key("WIRE_KEY"),
+            "the bare name is contested and must be reportable as such: {:?}",
+            read.ambiguous(),
+        );
+        assert!(
+            !read.ambiguous().contains_key("Readiness::WIRE_KEY"),
+            "⚠⚠ but the QUALIFIED name is not contested — that is the whole repair",
+        );
+    }
+
+    /// ⚠ `impl Trait for Type` names the TYPE, which is what a payload spells.
+    #[test]
+    fn an_impl_names_the_type_and_not_the_trait_or_its_lifetimes() {
+        assert_eq!(impl_type("impl Raise {"), Some("Raise".to_owned()));
+        assert_eq!(
+            impl_type("impl From<AiLoopEvent> for Raise {"),
+            Some("Raise".to_owned()),
+        );
+        assert_eq!(
+            impl_type("impl<'a> Screened<'a> {"),
+            Some("Screened".to_owned())
+        );
+        assert_eq!(impl_type("let x = 1;"), None);
     }
 
     /// ⚠⚠ `match … { Some(word) => Value::from(word) }` inside a payload holds colons of its own.
