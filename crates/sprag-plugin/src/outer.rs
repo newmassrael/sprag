@@ -1595,21 +1595,28 @@ impl DoneReason {
 /// |---|---|
 /// | there was room and replacing had already paid for itself | nothing — this is the trade working |
 /// | the session had read past its ceiling | the CEILING is the number to change |
-/// | none of those questions could be asked | find out why the record could not be read, or author a ceiling |
+/// | the reading was taken and nobody authored a ceiling | author `context_ceiling` |
+/// | the ceiling is authored and the reading could not be taken | find out why the record reads 0 |
+/// | neither of those questions could be asked | both of the above are owed |
 ///
 /// That is exactly the reading [`Because`]'s own doc exists for, and item 423 priced it one state
 /// over: **32 judgements and 0 declarations looked precisely like ordinary work.** It matters more
 /// here than it did at the two-door version, because a reader watching handovers get more frequent
-/// has three different things they might be looking at and one arrow to look at them with.
+/// has several different things they might be looking at and one arrow to look at them with.
+///
+/// ⚠⚠⚠⚠⚠ **THE LAST THREE ROWS WERE ONE ROW UNTIL REGISTER ITEM 477**, and the merge is what that
+/// item measured: eight of eight exits on a live run carried the identical line, so `reviewing`
+/// had never once decided anything and the two repairs — *author a number* and *the reader of the
+/// record is broken* — were indistinguishable to the person watching.
 ///
 /// # ⚠⚠ Why the fall-back has a word rather than a silence
 ///
-/// [`NobodyCouldSay`](Self::NobodyCouldSay) is the unguarded exit, and *nobody could say* is a fact
-/// a reader can act on where an absent clause is one they must guess at. An edge assigning nothing
+/// The fall-back doors say *nobody could say*, *no ceiling* and *unread*, and each is a fact a
+/// reader can act on where an absent clause is one they must guess at. An edge assigning nothing
 /// would be worse than quiet: `restart_reason` is not cleared on entry, so the run would report the
 /// PREVIOUS replacement's cause on this one — confidently, and wrongly.
 ///
-/// ⚠ The vocabulary is the DOCUMENT's for all three, unlike [`DoneReason`]'s and unlike
+/// ⚠ The vocabulary is the DOCUMENT's for all of them, unlike [`DoneReason`]'s and unlike
 /// [`Ceiling`](crate::driver::Ceiling)'s: every fact behind these words is a number `reviewing`
 /// reads out of its own datamodel, so this type is the transcription and `ai_loop.scxml` is the
 /// authority. See `every_edge_into_restarting_says_why_in_a_word_this_driver_knows`.
@@ -1632,21 +1639,42 @@ pub enum RestartReason {
     /// **The number to change is the ceiling**, and that is the remedy a reader cannot reach when
     /// this door and the one above render one arrow.
     Capacity,
-    /// **NEITHER QUESTION COULD BE ASKED** — the unguarded fall-back, and the behaviour this loop
-    /// had before either guard existed.
+    /// **NEITHER QUESTION COULD BE ASKED** — and it now means what that sentence says: BOTH the
+    /// ceiling and the reading are missing, so both repairs are owed.
     ///
-    /// ⚠⚠ Two readings arrive here and both are honestly *nobody could say*: no ceiling authored
-    /// (`context_ceiling` of 0, a caller who has not said) and a session whose reading could not be
-    /// taken at all (`context` of 0). ⚠ Their remedies differ — author a ceiling, or find out why
-    /// the record cannot be read — and the walk already says the second out loud when it happens
-    /// (register item 431(a)), which is why the merge is registered in the document rather than
-    /// split into a fourth word nothing else distinguishes.
+    /// # ⚠⚠⚠⚠⚠ It used to be the OR, and register item 477 measured what that cost
     ///
-    /// ⚠ **IT IS THE SHIPPED DOCUMENT'S ANSWER.** With no ceiling authored every reflection
-    /// replaces, so this is the word most runs of the template will carry — and that is the point:
-    /// a reader learns the loop is handing over because nobody bounded it, instead of inferring
-    /// from silence that something was measured.
+    /// This arm was the whole unguarded fall-back, taken whenever `context_ceiling` was 0 **or**
+    /// `context` was — two facts with opposite repairs under one sentence. Measured on the live run
+    /// 16 at 97 iterations: **eight out of eight** `reviewing` exits carried the identical line, so
+    /// the state had never once decided anything and no reader could tell which half to go and fix.
+    ///
+    /// ⚠⚠⚠⚠ **THE ARGUMENT FOR MERGING THEM IS KEPT HERE BECAUSE IT SOUNDED RIGHT**: *"their
+    /// remedies differ … and the walk already says the second out loud when it happens (register
+    /// item 431(a)), which is why the merge is registered in the document rather than split into a
+    /// fourth word nothing else distinguishes."* The walk says it somewhere ELSE, on a different
+    /// state's edge, and eight identical lines are what a reader of THIS state actually had.
+    ///
+    /// ⚠ So the word is not renamed and this sentence is not rewritten — [`NoCeiling`](Self::NoCeiling)
+    /// and [`Unread`](Self::Unread) were lifted OUT of it, and what is left is the case the sentence
+    /// was always describing.
     NobodyCouldSay,
+    /// **NOBODY AUTHORED A CEILING** (`context_ceiling` of 0) while the session's reading was taken
+    /// perfectly well. Register item 477.
+    ///
+    /// ⚠ **IT IS THE SHIPPED DOCUMENT'S ANSWER**, so it is the word most runs of the template will
+    /// carry: `context_ceiling` ships at 0 deliberately (*"a caller who has not thought about
+    /// capacity is not given a number somebody guessed for them"*), and until one is authored every
+    /// reflection replaces. **That is a decision, not a fault**, and the remedy is one number.
+    NoCeiling,
+    /// **THIS SESSION'S OWN READING COULD NOT BE TAKEN** (`context` of 0) though a ceiling was
+    /// authored — so the loop is handing over blind. Register item 477, and item 431 is what it
+    /// looks like: a transcript that exists, holds `cache_read_input_tokens: 466013`, and reads 0.
+    ///
+    /// ⚠⚠ **THE REMEDY IS THE OPPOSITE OF ITS SIBLING'S**: nothing here is fixed by authoring a
+    /// number, because the number is authored — what is broken is the reader of the agent's record,
+    /// and a person sent to the ceiling would change a setting that was never the problem.
+    Unread,
     /// **THE PEER WOULD NOT TAKE THE QUESTION**, so the session holding an unsendable draft was
     /// replaced rather than the run being ended — register item 446.
     ///
@@ -1669,10 +1697,12 @@ pub enum RestartReason {
 
 impl RestartReason {
     /// Every arm, so the document's words and the readers below are one list.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::Economics,
         Self::Capacity,
         Self::NobodyCouldSay,
+        Self::NoCeiling,
+        Self::Unread,
         Self::Unasked,
     ];
 
@@ -1686,6 +1716,8 @@ impl RestartReason {
             Self::Economics => "economics",
             Self::Capacity => "capacity",
             Self::NobodyCouldSay => "nobody_could_say",
+            Self::NoCeiling => "no_ceiling",
+            Self::Unread => "unread",
             Self::Unasked => "unasked",
         }
     }
@@ -1714,10 +1746,25 @@ impl RestartReason {
                  change, if these handovers are too frequent, is `context_ceiling`"
             }
             Self::NobodyCouldSay => {
-                "neither question could be asked: no ceiling is authored, or this session's \
+                "neither question could be asked: no ceiling is authored AND this session's \
                  reading could not be taken at all — so the run replaced the session, which is \
-                 what this loop has always done when it cannot see. Author a ceiling, or find out \
-                 why the agent's record could not be read"
+                 what this loop has always done when it cannot see. BOTH repairs are owed: author \
+                 a ceiling, and find out why the agent's record could not be read"
+            }
+            Self::NoCeiling => {
+                "the session's reading was taken and there was no ceiling to judge it against — \
+                 nobody has said what a session here may spend, so every reflection replaces, \
+                 which is what this loop does until somebody bounds it. NOTHING IS BROKEN: the \
+                 number to author is `context_ceiling`, and the shipped document leaves it at 0 \
+                 on purpose. It is authored in the loop's own DOCUMENT and no brief can say it, \
+                 so this is the word every run of the shipped template carries"
+            }
+            Self::Unread => {
+                "the ceiling is authored and this session's OWN READING could not be taken, so \
+                 the loop handed over blind rather than on a measurement. DO NOT TOUCH THE \
+                 CEILING — it was never the problem. Find out why the agent's record read 0: a \
+                 transcript that exists and reports nothing is register item 431, where a 3.4 MB \
+                 record carrying 466,013 tokens was published as `context: 0`"
             }
             Self::Unasked => {
                 "the peer would not take the question: the prompt reached its pane and the submit \
@@ -8747,6 +8794,33 @@ mod tests {
              remedy pointing at the ceiling for a run whose real complaint is an unreadable \
              record. Got {full:?}",
         );
+
+        // 7. ⚠⚠⚠⚠⚠ AND THE FALL-BACK IS SPLIT ON BOTH ENDINGS — register item 477. What is left
+        //    after the guards above is `no ceiling was authored` OR `the reading could not be
+        //    taken`, and those want OPPOSITE repairs: author a number, or go and find out why the
+        //    record reads 0. Measured on the live run 16 at 97 iterations, EIGHT of eight exits
+        //    carried the one sentence naming both — so `reviewing` had decided nothing and nobody
+        //    could tell which half to fix.
+        //
+        //    ⚠ Counted per ENDING for the reason its siblings are: a split written on only one of
+        //    `review.done` / `review.none` would make *did the reviewer find a habit* decide what
+        //    a reader is told, which is the mistake every guard in this state is written to avoid.
+        let neither: Vec<&&str> = replacing
+            .iter()
+            .filter(|edge| edge.contains("context_ceiling &lt;= 0 &amp;&amp; context &lt;= 0"))
+            .collect();
+        let unauthored: Vec<&&str> = replacing
+            .iter()
+            .filter(|edge| edge.contains("cond=\"context_ceiling &lt;= 0\""))
+            .collect();
+        assert_eq!(
+            (neither.len(), unauthored.len()),
+            (2, 2),
+            "⚠⚠⚠⚠⚠ ITEM 477: each review ending needs BOTH single-cause doors above its unguarded \
+             one — the AND door (`nobody_could_say`, which is what that sentence has always said) \
+             and the ceiling-only door (`no_ceiling`). What falls through is `unread`, and it is \
+             the unguarded edge. Got {neither:?} / {unauthored:?}",
+        );
     }
 
     /// ⚠⚠⚠ **EVERY EDGE INTO `reflecting` SAYS WHY, IN A WORD THIS DRIVER HAS AN ARM FOR** —
@@ -11795,40 +11869,50 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHICH OF THREE DECISIONS REPLACED THE SESSION** — register item 445,
-    /// which is items 261, 265 and 267's finding at the fourth many-doored state.
+    /// ⚠⚠⚠⚠⚠ **THE WALK SAYS WHICH DECISION REPLACED THE SESSION** — register item 445, which is
+    /// items 261, 265 and 267's finding at the fourth many-doored state, and register item 477,
+    /// which is the same finding INSIDE this gate's own fall-back.
     ///
     /// # ⚠⚠⚠ What was measured, and why one arrow is not enough here
     ///
-    /// Since register item 424 `reviewing` replaces a session for three reasons and all six of its
-    /// exits to `restarting` wrote one line:
+    /// Since register item 424 `reviewing` replaces a session for several reasons, and its exits to
+    /// `restarting` wrote one line:
     ///
     /// | what happened | what a reader should do |
     /// |---|---|
     /// | replacing had already paid for itself | nothing — the trade is working |
     /// | the session had read past its ceiling | change `context_ceiling` |
-    /// | neither question could be asked | author a ceiling, or find out why the record is unreadable |
+    /// | the reading was taken and no ceiling was authored | author `context_ceiling` |
+    /// | the ceiling is authored and the reading could not be taken | find out why the record reads 0 |
+    /// | neither question could be asked | both of those repairs are owed |
     ///
-    /// **The three remedies are different and the arrow named none of them**, so a person watching
+    /// **The remedies are different and the arrow named none of them**, so a person watching
     /// handovers get more frequent could not tell which they were looking at — item 423's reading
     /// exactly, one state on.
     ///
-    /// # ⚠⚠ Three runs differing in ONE authored number
+    /// ⚠⚠⚠⚠⚠ **THE LAST THREE ROWS WERE ONE ROW AND THIS GATE PASSED**, which is register item 477
+    /// and is the sharper half: a vocabulary gate proves each word is REACHABLE, and it cannot
+    /// notice that one word is standing in for two facts. **On the live run 16 every one of the
+    /// eight `reviewing` exits carried that one word**, so the state had decided nothing in 97
+    /// iterations and every gate here was green.
     ///
-    /// The same peer, the same record, the same brief: only `context_ceiling` moves. That is what
-    /// makes this a gate about the DECISION rather than about three fixtures — the record holds a
-    /// cold start of 7,000, a floor of 38,500 and a last reading of 466,013, so
+    /// # ⚠⚠ Five runs, and only what is under test moves between them
+    ///
+    /// The same peer, the same brief: `context_ceiling` moves, and for the last two the RECORD is a
+    /// path nothing wrote. The readable record holds a cold start of 7,000, a floor of 38,500 and a
+    /// last reading of 466,013, so
     ///
     /// * a **high** ceiling leaves room and the break-even is long past (427,513 discardable
     ///   against a toll of 140,000) — `economics`;
     /// * a **low** ceiling puts the session past it — `capacity`, which outranks;
-    /// * **no** ceiling is the shipped document, where neither question can be asked at all —
-    ///   `nobody_could_say`.
+    /// * **no** ceiling with a good reading is the shipped document — `no_ceiling`;
+    /// * a ceiling with **no reading** is item 431's failure — `unread`;
+    /// * **neither** is the case the sentence *nobody could say* was always describing.
     ///
-    /// ⚠⚠⚠ AND THE THREE COVER THE WHOLE VOCABULARY, asserted rather than assumed, with
+    /// ⚠⚠⚠ AND THE FIVE COVER THE WHOLE VOCABULARY, asserted rather than assumed, with
     /// `every_edge_into_restarting_says_why_in_a_word_this_driver_knows` holding the other end of
-    /// it against the document. ⚠ The three LINES must also differ from one another: naming the
-    /// decision is worth nothing if two of them still render one string, which is what all three
+    /// it against the document. ⚠ The LINES must also differ from one another: naming the
+    /// decision is worth nothing if two of them still render one string, which is what all of them
     /// did before this existed.
     #[test]
     fn the_walk_says_which_decision_replaced_the_session() {
@@ -12078,9 +12162,16 @@ mod tests {
             (to, because, walked)
         }
 
+        // ⚠⚠⚠ A PATH NOTHING WROTE, which is how `context` reads 0 — the same instrument the gate
+        // above this one measures directly (`(held, blind) == (Some(466_013), Some(0))`), so the
+        // two runs below are separated by the reading itself rather than by a number typed here.
+        let missing = home.join("no-record-was-ever-written.jsonl");
+
         let (paid_to, paid, paid_walk) = replaced(&record, ROOMY);
         let (full_to, full, full_walk) = replaced(&record, CRAMPED);
         let (blind_to, blind, blind_walk) = replaced(&record, 0);
+        let (unread_to, unread, unread_walk) = replaced(&missing, ROOMY);
+        let (neither_to, neither, neither_walk) = replaced(&missing, 0);
         let (wedged_to, wedged, wedged_walk) = never_asked(&record);
         let _ = std::fs::remove_dir_all(&home);
 
@@ -12090,14 +12181,17 @@ mod tests {
         //    `None` would then read as *the driver could not name the door* rather than as *there
         //    was no door*.
         assert_eq!(
-            (paid_to, full_to, blind_to),
+            (paid_to, full_to, blind_to, unread_to, neither_to),
             (
+                AiLoopState::Restarting,
+                AiLoopState::Restarting,
                 AiLoopState::Restarting,
                 AiLoopState::Restarting,
                 AiLoopState::Restarting,
             ),
             "⚠⚠⚠ the control: every one of these runs must leave `reviewing` for `restarting`. \
-             Walked {paid_walk:?} / {full_walk:?} / {blind_walk:?}",
+             Walked {paid_walk:?} / {full_walk:?} / {blind_walk:?} / {unread_walk:?} / \
+             {neither_walk:?}",
         );
 
         assert_eq!(
@@ -12117,18 +12211,35 @@ mod tests {
         );
         assert_eq!(
             blind,
+            Some(Because::Restarted(RestartReason::NoCeiling)),
+            "⚠⚠⚠⚠ AND THE FALL-BACK SAYS SO IN A WORD. This run's record was read perfectly well \
+             and nobody authored a ceiling, which is the SHIPPED document — so this is the word \
+             most runs carry, and the remedy is ONE NUMBER. A silence here would leave every one \
+             of them looking like a measured decision. Walked {blind_walk:?}",
+        );
+        assert_eq!(
+            unread,
+            Some(Because::Restarted(RestartReason::Unread)),
+            "⚠⚠⚠⚠⚠ ITEM 477: THE SAME CEILING AS the economic run, and the only thing that moved \
+             is that this session's own record could not be read. A reader sent to `context_ceiling` \
+             here would change a number that was never the problem — the record is (item 431). \
+             This and the run above shared ONE WORD until this gate asked for two. Walked \
+             {unread_walk:?}",
+        );
+        assert_eq!(
+            neither,
             Some(Because::Restarted(RestartReason::NobodyCouldSay)),
-            "⚠⚠⚠⚠ AND THE FALL-BACK SAYS SO IN A WORD. With no ceiling authored neither question \
-             can be asked, and that is the SHIPPED document — so this is the word most runs carry, \
-             and a silence here would leave every one of them looking like a measured decision. \
-             Register item 423's lesson, arriving before the fact. Walked {blind_walk:?}",
+            "⚠⚠⚠⚠ AND *nobody could say* NOW MEANS WHAT ITS SENTENCE SAYS — neither question could \
+             be asked, so BOTH repairs are owed. It used to be the OR of the two runs above, which \
+             is why eight of eight exits on a live run read alike. Walked {neither_walk:?}",
         );
 
-        // ── AND THE THREE LINES MUST DIFFER FROM ONE ANOTHER ──
+        // ── AND EVERY LINE MUST DIFFER FROM EVERY OTHER ──
         //
         // ⚠⚠⚠ Naming the decision is worth nothing if two causes still render one string, which is
-        // exactly what all three did before this gate existed. ⚠ The RENDERED line is compared and
-        // not the arm, because a reader has the line.
+        // exactly what they all did before this gate existed — and what the last three of them went
+        // on doing until register item 477. ⚠ The RENDERED line is compared and not the arm,
+        // because a reader has the line.
         assert_eq!(
             wedged_to,
             AiLoopState::Restarting,
@@ -12145,7 +12256,7 @@ mod tests {
              either. Walked {wedged_walk:?}",
         );
 
-        let lines: Vec<String> = [paid, full, blind, wedged]
+        let lines: Vec<String> = [paid, full, blind, unread, neither, wedged]
             .into_iter()
             .map(|because| {
                 because.map_or_else(|| "(nothing said)".to_string(), |because| because.noted())
@@ -12155,26 +12266,88 @@ mod tests {
         assert_eq!(
             distinct.len(),
             lines.len(),
-            "⚠⚠⚠ THE THREE MUST READ DIFFERENTLY: {lines:?}",
+            "⚠⚠⚠ EVERY ONE MUST READ DIFFERENTLY: {lines:?}",
         );
 
         // ── AND THEY COVER THE WHOLE VOCABULARY ──
         //
         // ⚠⚠ An arm no run here reaches is a word rendered by nobody — `Pumped::Unbuilt`'s finding
         // (register item 260), which this workspace has now paid for twice.
-        let reached: std::collections::BTreeSet<RestartReason> = [paid, full, blind, wedged]
-            .into_iter()
-            .filter_map(|because| match because {
-                Some(Because::Restarted(reason)) => Some(reason),
-                _ => None,
-            })
-            .collect();
+        let reached: std::collections::BTreeSet<RestartReason> =
+            [paid, full, blind, unread, neither, wedged]
+                .into_iter()
+                .filter_map(|because| match because {
+                    Some(Because::Restarted(reason)) => Some(reason),
+                    _ => None,
+                })
+                .collect();
         assert_eq!(
             reached,
             RestartReason::ALL.into_iter().collect(),
             "⚠⚠⚠ every arm of `RestartReason` must be REACHED by a run here, or this gate is \
-             proving three of an unknown number of doors and the register's claim that there are \
-             three is folklore",
+             proving some of an unknown number of doors and the register's count of them is \
+             folklore. ⚠⚠⚠⚠⚠ REGISTER ITEM 477 IS WHAT THIS ASSERTION CANNOT SEE ON ITS OWN: it \
+             was green while one word stood in for two facts, because reachability says nothing \
+             about whether a word is ONE fact",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **NO TWO REASONS MAY SHARE A REMEDY SENTENCE, IN ANY OF THE THREE VOCABULARIES** —
+    /// and the walk gates beside this one CANNOT hold it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Measured, on the round that split `nobody_could_say` (register item 477)
+    ///
+    /// `the_walk_says_which_decision_replaced_the_session` ends by asserting that the runs' lines
+    /// all differ, and that assertion is **vacuous for everything after the word**: `noted()` is
+    /// `format!("{}: {}", word, describe)`, so two arms with IDENTICAL remedies still render two
+    /// different strings. A mutation that gave [`RestartReason::Unread`] its sibling's whole
+    /// description left every gate in this file GREEN.
+    ///
+    /// That is item 477's own defect one level up. The item was *two facts wearing one word*; this
+    /// is *two words wearing one sentence*, which reads to a person as exactly the same failure —
+    /// they act on the sentence, not on the token before the colon.
+    ///
+    /// ⚠⚠ **ALL THREE VOCABULARIES, not just the one that was split.** `ReflectReason`,
+    /// `DoneReason` and [`RestartReason`] are the same shape and are read the same way, and a gate
+    /// written for one of them is the list-with-no-glob this workspace keeps paying for.
+    ///
+    /// ⚠ It asks about the WHOLE vocabulary rather than the arms some run reaches, which is the
+    /// other thing a walk cannot do: an arm no run takes still renders for somebody.
+    #[test]
+    fn no_two_reasons_read_alike_beneath_their_words() {
+        /// One vocabulary's remedy sentences, named so a red says which list is at fault.
+        fn distinct(what: &str, described: Vec<&'static str>) {
+            let unique: std::collections::BTreeSet<&str> = described.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                described.len(),
+                "⚠⚠⚠⚠⚠ two arms of `{what}` render the SAME remedy. A reader acts on the sentence \
+                 and not on the word before the colon, so this is register item 477 with the two \
+                 halves swapped — and the walk gate cannot see it, because the word makes the \
+                 lines differ whatever the sentences say. Got {described:?}",
+            );
+        }
+
+        distinct(
+            "RestartReason",
+            RestartReason::ALL
+                .into_iter()
+                .map(RestartReason::describe)
+                .collect(),
+        );
+        distinct(
+            "ReflectReason",
+            ReflectReason::ALL
+                .into_iter()
+                .map(ReflectReason::describe)
+                .collect(),
+        );
+        distinct(
+            "DoneReason",
+            DoneReason::ALL
+                .into_iter()
+                .map(DoneReason::describe)
+                .collect(),
         );
     }
 

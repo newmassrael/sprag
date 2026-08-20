@@ -3195,12 +3195,14 @@
       honest repair is to measure that side — not to widen this one.
     -->
     <!--
-      ⚠⚠⚠⚠⚠ AND EACH OF THESE THREE DOORS SAYS WHICH ONE IT WAS — register item
-      445. All three replace the session and they disagree about the remedy:
-      *economics* says nothing is wrong, *capacity* says the ceiling is the
-      number to change, and *nobody could say* says go and find out why the
-      record cannot be read. One arrow for three findings is the shape items 261,
-      265, 267 and 423 have each cost a round; see `restart_reason`.
+      ⚠⚠⚠⚠⚠ AND EACH OF THESE DOORS SAYS WHICH ONE IT WAS — register item 445,
+      and register item 477 for the last three of them. They all replace the
+      session and they disagree about the remedy: *economics* says nothing is
+      wrong, *capacity* says the ceiling is the number to change, *no ceiling*
+      says author one, *unread* says go and find out why the record cannot be
+      read, and *nobody could say* says both of those are owed. One arrow for
+      several findings is the shape items 261, 265, 267 and 423 have each cost a
+      round; see `restart_reason`.
     -->
     <transition event="review.done"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
@@ -3229,9 +3231,48 @@
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="restart_reason" expr="'capacity'"/>
     </transition>
-    <transition event="review.done" target="restarting">
+    <!--
+      ⚠⚠⚠⚠⚠ AND THE FALL-BACK IS THREE DOORS, NOT ONE, because the two things
+      that reach it want OPPOSITE repairs and the sentence they shared named
+      both without separating them. Register item 477, measured on a live run at
+      97 iterations: EIGHT out of eight `reviewing` exits carried the identical
+      line, so `reviewing` had never once decided anything, and nobody reading
+      the run could tell which of the two to go and fix.
+
+      The fall-back is reached exactly when the guards above declined, which is
+      `context_ceiling &lt;= 0 || context &lt;= 0`. Those are separate facts:
+
+      * NO CEILING is a caller who has not said what a session may spend. The
+        repair is to author `context_ceiling`, and the reading itself was fine.
+      * UNREAD is a session whose own record could not be taken at all, which is
+        item 431's failure (a transcript that exists and reads 0). The ceiling is
+        already authored; what is broken is the reading.
+
+      ⚠⚠⚠⚠ `nobody_could_say` KEEPS ITS OWN SENTENCE AND NARROWS TO WHAT THAT
+      SENTENCE ALWAYS SAID: *neither question could be asked*. That is the AND,
+      and the edge had been firing on the OR. So the word is not renamed and its
+      description is not rewritten; the two single-cause doors are lifted OUT of
+      it, and a reader who has that word now learns both repairs are owed.
+
+      ⚠ ORDER IS THE MEANING HERE: the both-missing door is written FIRST because
+      a reader told to author a ceiling would author one and come back to an
+      unreadable record on the next round, having been told half of it.
+    -->
+    <transition event="review.done"
+                cond="context_ceiling &lt;= 0 &amp;&amp; context &lt;= 0"
+                target="restarting">
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="restart_reason" expr="'nobody_could_say'"/>
+    </transition>
+    <transition event="review.done"
+                cond="context_ceiling &lt;= 0"
+                target="restarting">
+      <assign location="carried" expr="_event.data.carried"/>
+      <assign location="restart_reason" expr="'no_ceiling'"/>
+    </transition>
+    <transition event="review.done" target="restarting">
+      <assign location="carried" expr="_event.data.carried"/>
+      <assign location="restart_reason" expr="'unread'"/>
     </transition>
     <!--
       ⚠⚠⚠ NOTHING TO CARRY IS THE HEALTHY ANSWER, AND IT MUST CLEAR THE SLOT.
@@ -3248,7 +3289,7 @@
       handover, which is not what either number is about.
     -->
     <!--
-      ⚠⚠ AND THE SAME THREE WORDS ON THE SAME THREE DOORS. A vocabulary written
+      ⚠⚠ AND THE SAME FIVE WORDS ON THE SAME FIVE DOORS. A vocabulary written
       on only one of the two endings would make *did the reviewer find a habit*
       decide what a reader is told about the handover, which is the mistake the
       guards themselves are written to avoid one paragraph up.
@@ -3271,9 +3312,27 @@
       <assign location="carried" expr="''"/>
       <assign location="restart_reason" expr="'capacity'"/>
     </transition>
-    <transition event="review.none" target="restarting">
+    <!--
+      ⚠⚠ THE SAME THREE FALL-BACK DOORS, for the reason the paragraph above the
+      other ending gives: a vocabulary written on only one of the two endings
+      would make *did the reviewer find a habit* decide what a reader is told
+      about the handover. See that ending for why the fall-back is three.
+    -->
+    <transition event="review.none"
+                cond="context_ceiling &lt;= 0 &amp;&amp; context &lt;= 0"
+                target="restarting">
       <assign location="carried" expr="''"/>
       <assign location="restart_reason" expr="'nobody_could_say'"/>
+    </transition>
+    <transition event="review.none"
+                cond="context_ceiling &lt;= 0"
+                target="restarting">
+      <assign location="carried" expr="''"/>
+      <assign location="restart_reason" expr="'no_ceiling'"/>
+    </transition>
+    <transition event="review.none" target="restarting">
+      <assign location="carried" expr="''"/>
+      <assign location="restart_reason" expr="'unread'"/>
     </transition>
     <transition event="cancel" target="cancelled"/>
   </state>
