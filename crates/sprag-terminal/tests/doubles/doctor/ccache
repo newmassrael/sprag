@@ -9,8 +9,10 @@
 #
 # ## Why this file is TRACKED rather than written by the test that uses it
 #
-# Register item 467. A file cannot be executed while any process holds it open
-# for writing (`ETXTBSY`), and Rust's test harness runs its cases on THREADS of
+# Register item 467. On Linux a file cannot be executed while any process holds
+# it open for writing (`ETXTBSY`) -- macOS does not check, and
+# `doubles::exec_of_a_held_writer` is the one place that says which. Rust's test
+# harness runs its cases on THREADS of
 # one process: a sibling case forking to spawn a program inherits this one's
 # open write handle and holds it until its own exec. Item 465 measured the same
 # shape on `sprag-gate` at 10 failures in 30 runs. A file nobody writes cannot

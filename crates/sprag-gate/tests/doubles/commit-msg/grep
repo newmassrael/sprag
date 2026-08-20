@@ -9,8 +9,10 @@
 # ## Why this file is TRACKED rather than written by the test that uses it
 #
 # The suite used to create it and then execute it, and that is `ETXTBSY` waiting
-# to happen. A file cannot be executed while any process holds it open for
-# writing, and Rust's test harness runs cases on THREADS of one process: another
+# to happen. On Linux a file cannot be executed while any process holds it open
+# for writing -- macOS does not check, and `doubles::exec_of_a_held_writer` is
+# the one place that says which.
+# Rust's test harness runs cases on THREADS of one process: another
 # case forking to spawn a program inherits the write handle this one has open,
 # and holds it until its own exec. Close-on-exec does not close that window --
 # it ends it, one exec too late.

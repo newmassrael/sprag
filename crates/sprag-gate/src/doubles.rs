@@ -3,12 +3,12 @@
 //!
 //! # ⚠⚠⚠⚠⚠ Why this module exists: a suite that writes a program cannot reliably run it
 //!
-//! `execve` refuses a file any process holds open for writing, with `ETXTBSY` (`Os { code: 26 }`,
-//! *"Text file busy"*). Rust's test harness runs its cases on THREADS of one process, so a case
-//! that forks to spawn a program inherits every write handle its siblings happen to have open at
-//! that instant and holds each one until its own exec. A case that writes its own double is
-//! therefore racing every other case in the binary, and `O_CLOEXEC` does not close that window —
-//! it ends it one exec too late.
+//! On **Linux**, `execve` refuses a file any process holds open for writing, with `ETXTBSY`
+//! (`Os { code: 26 }`, *"Text file busy"*). Rust's test harness runs its cases on THREADS of one
+//! process, so a case that forks to spawn a program inherits every write handle its siblings
+//! happen to have open at that instant and holds each one until its own exec. A case that writes
+//! its own double is therefore racing every other case in the binary, and `O_CLOEXEC` does not
+//! close that window — it ends it one exec too late.
 //!
 //! Register item 465 measured the shape on one suite: **10 failures in 30 runs before, 0 in 30
 //! after**, every failure `Text file busy` at the same line and every one green again under
@@ -24,6 +24,28 @@
 //!
 //! ⚠ **The remedy is not a retry on `ETXTBSY`.** That is the workaround item 465 refused: a retry
 //! turns a race into a slower race and leaves the next site to find it again.
+//!
+//! # ⚠⚠⚠⚠⚠ The deny is LINUX'S ALONE, so a green macOS job proves nothing about this class
+//!
+//! Linux runs `deny_write_access` on the `open` that exec performs — for a `#!` script as much as
+//! for a binary, because the shebang path opens the script for exec first and the deny is on that
+//! open. **macOS makes no such check anywhere**: both shapes simply RUN, with the write handle
+//! still held. That is measured on this workspace's own fleet rather than read out of a manual
+//! page, and [`exec_of_a_held_writer`](crate::doubles::exec_of_a_held_writer) is the ONE place
+//! that says which platform does which.
+//!
+//! ⚠⚠⚠⚠⚠ **This module used to state the deny as a universal, and item 467's own measurement
+//! asserted the Linux answer on every platform** — so it was red on the macOS job of every push
+//! from `28fb1a6` onward while the prose sites across this tree went on repeating the false
+//! version, none of which any gate can go red for. A kernel
+//! contract is a per-platform fact; spelling one without naming its platform is the same defect
+//! `no_source_spells_a_bin_path_the_other_platform_lacks` exists for, in a different spelling.
+//!
+//! ⚠⚠ The consequence is operational, not academic: **the flake this module prevents cannot happen
+//! on macOS at all**, so a macOS run being green says nothing about whether a suite is racing.
+//! Only the Linux job — and a Linux developer's own sweep — can see it. The rule here stays
+//! uniform across both platforms anyway, because the tree is shared and a double written for the
+//! platform that tolerates it is a defect waiting for the platform that does not.
 //!
 //! # ⚠⚠⚠ And the fixture asserts its own staging
 //!
@@ -238,6 +260,53 @@ pub fn system(name: &str) -> PathBuf {
     )
 }
 
+/// `ETXTBSY` — the errno a refused exec carries, *"Text file busy"*.
+///
+/// Spelled once, here, because a bare `26` in an assertion is the kind of literal that gets read as
+/// a magic number and copied to a site where it means something else.
+pub const TEXT_FILE_BUSY: i32 = 26;
+
+/// What a platform's `execve` does with a file some process is holding open for writing.
+///
+/// This is a KERNEL CONTRACT and the two platforms this workspace's suites run on do not agree
+/// about it, which is the whole reason it is named rather than assumed — see the [module
+/// header](crate::doubles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldWriter {
+    /// The exec is refused with [`TEXT_FILE_BUSY`]. Linux, via `deny_write_access`.
+    Refused,
+    /// The exec is permitted; the platform makes no such check. macOS.
+    Permitted,
+    /// This platform has never been measured here, so nothing is claimed about it.
+    ///
+    /// ⚠ A third variant rather than a guess or a `compile_error!`: a build on a platform nobody
+    /// has measured should still BUILD, and the measurement below is what refuses — loudly, and
+    /// with the instruction to go measure — instead of a `cfg` chain silently handing back
+    /// whichever answer happened to be last in the list.
+    Unmeasured,
+}
+
+/// What THIS platform is expected to do with a file held open for writing, as measured on this
+/// workspace's own fleet.
+///
+/// ⚠⚠⚠⚠⚠ **This is the single source of truth for that fact.** Prose elsewhere in the tree points
+/// here rather than restating it — every site that restated it had to be corrected by hand when
+/// the premise turned out to be per-platform, which is how the macOS red survived as long as it
+/// did. `cfg!` is what makes it a claim the compiler picks per target, and
+/// `this_platform_matches_the_held_writer_contract_it_declares` is what makes the claim FALSIFIABLE
+/// — it stages the window for real and compares, so this going stale in either direction is a red
+/// rather than a comment nobody re-reads.
+#[must_use]
+pub const fn exec_of_a_held_writer() -> HeldWriter {
+    if cfg!(target_os = "linux") {
+        HeldWriter::Refused
+    } else if cfg!(target_os = "macos") {
+        HeldWriter::Permitted
+    } else {
+        HeldWriter::Unmeasured
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,31 +315,54 @@ mod tests {
     ///
     /// Item 467's whole premise is that a file held open for writing cannot be executed, and the
     /// register has been wrong about a premise before. This stages the window deliberately — a
-    /// write handle this test holds, on a file this test wrote — and asserts the refusal.
+    /// write handle this test holds, on a file this test wrote — and compares what the platform
+    /// actually does against what [`exec_of_a_held_writer`] declares it does.
+    ///
+    /// ⚠⚠⚠⚠⚠ **This is the assertion that used to be wrong, and it is worth saying how.** It read
+    /// `.status().unwrap_err()` and required `ETXTBSY` — the LINUX answer, asserted on every
+    /// target. macOS permits the exec, so from `28fb1a6` onward the macOS job was red on a fact
+    /// nobody had measured there. Two defects, not one: the premise was universal when the
+    /// mechanism is per-platform, AND `unwrap_err()` panicked *before* the message could speak, so
+    /// the interesting outcome — permitted — reported `unwrap_err() on an Ok value` and named
+    /// neither the platform nor the shape. Both are fixed here: the outcome is classified first
+    /// and every branch says which shape it was.
     ///
     /// ⚠ **Both shapes**, because eight of the ten sites the item names are `#!/bin/sh` scripts
     /// rather than binaries, and *"the kernel only denies writes to an IMAGE"* would have excused
-    /// them. It does not: the shebang path opens the script for exec first, and the deny is on that
-    /// open. Measured here so the excuse cannot be made from a reading.
+    /// them. On Linux it does not: the shebang path opens the script for exec first, and the deny
+    /// is on that open. Measured here so the excuse cannot be made from a reading — and kept as
+    /// two INDEPENDENT measurements so that a platform which ever split the two is reported as
+    /// splitting them, rather than reported as whichever shape ran first.
     ///
-    /// ⚠ It cannot itself flake: what it asserts is the FAILURE, so a sibling's inherited handle
-    /// only makes the case more true. The success half is deliberately absent for the same reason.
+    /// ⚠ It cannot flake in the direction that matters: a sibling's inherited write handle can
+    /// only make a refusal more likely, never less, so the `Refused` platforms cannot be flaked
+    /// green. On a `Permitted` platform the staging holds regardless — there is no race to lose.
     #[test]
-    fn a_file_held_open_for_writing_cannot_be_executed_and_a_script_is_no_exception() {
+    fn the_held_writer_contract_this_platform_declares_is_what_it_actually_does() {
         use std::io::Write as _;
+
+        let declared = exec_of_a_held_writer();
+        assert_ne!(
+            declared,
+            HeldWriter::Unmeasured,
+            "⚠ this platform's exec-of-a-held-writer contract has never been measured, so \
+             `exec_of_a_held_writer` claims nothing about it. Run this case here, read what it \
+             reports, and add the arm — do NOT guess from a manual page, which is the mistake \
+             that put the universal claim in this module in the first place.",
+        );
 
         let dir = std::env::temp_dir().join(format!("sprag-gate-etxtbsy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory for the staged window");
 
-        for (name, body) in [
+        for (shape, body) in [
             ("script", b"#!/bin/sh\nexit 0\n".to_vec()),
             (
                 "image",
                 std::fs::read(system("true")).expect("a real binary to copy"),
             ),
         ] {
-            let path = dir.join(name);
+            let path = dir.join(shape);
             let mut held = std::fs::File::create(&path).expect("write the file under test");
             held.write_all(&body).expect("its bytes");
             held.flush().expect("its bytes reach the file");
@@ -278,12 +370,37 @@ mod tests {
                 .expect("make it executable");
 
             // The handle is STILL OPEN here, which is the whole staging.
-            let refused = std::process::Command::new(&path).status().unwrap_err();
+            let measured = match std::process::Command::new(&path).status() {
+                Err(why) if why.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    // ⚠ BOTH facts, because they can drift apart: std's classification is what a
+                    // caller would match on, and the number is what item 467's entry and this
+                    // tree's prose name. A platform where they disagree is a thing to know.
+                    assert_eq!(
+                        why.raw_os_error(),
+                        Some(TEXT_FILE_BUSY),
+                        "⚠ this platform refused the {shape} with `ExecutableFileBusy` but errno \
+                         {:?} rather than {TEXT_FILE_BUSY} — std's classification and the number \
+                         this tree spells have come apart, so fix `TEXT_FILE_BUSY` and the prose \
+                         that quotes it together.",
+                        why.raw_os_error(),
+                    );
+                    HeldWriter::Refused
+                }
+                Ok(_) => HeldWriter::Permitted,
+                Err(why) => panic!(
+                    "⚠ executing the {shape} while this process holds it open for writing \
+                     answered {why:?}, which is neither a refusal ({TEXT_FILE_BUSY}, ETXTBSY) nor \
+                     a run. That is a THIRD behaviour this module does not know about — measure \
+                     it and give `HeldWriter` an arm rather than widening this one.",
+                ),
+            };
             assert_eq!(
-                refused.raw_os_error(),
-                Some(26),
-                "⚠ executing the {name} while this process holds it open for writing must be \
-                 ETXTBSY, which is what register item 467 is about — it answered {refused:?}",
+                measured, declared,
+                "⚠ this platform executed the {shape} shape as {measured:?} while \
+                 `exec_of_a_held_writer` declares {declared:?}. The declaration is the tree's \
+                 single source of truth for register item 467's premise and the prose across the \
+                 workspace rests on it, so fix the declaration and that prose together — never \
+                 this assertion alone.",
             );
             drop(held);
         }

@@ -5984,8 +5984,9 @@ fn stand_in_path(state: &Path) -> String {
 /// # ⚠⚠⚠⚠⚠ Why it is linked and not written
 ///
 /// Register item 467. This used to compose the script here and the CLIENT then EXEC'd it, which is
-/// `ETXTBSY` waiting to happen: the kernel refuses to execute a file any process holds open for
-/// writing, and this binary forks from more than one thread. Item 465 measured the same shape on
+/// `ETXTBSY` waiting to happen: the LINUX kernel refuses to execute a file any process holds open
+/// for writing (macOS does not — `sprag_gate::doubles::exec_of_a_held_writer` is where the tree
+/// says which), and this binary forks from more than one thread. Item 465 measured the same shape on
 /// `sprag-gate` at **10 failures in 30 runs, 0 in 30 after**. A file nobody writes cannot be busy.
 ///
 /// ⚠ **The check is spelled out here rather than taken from `sprag_gate::doubles`**, which is the

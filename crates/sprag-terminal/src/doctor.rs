@@ -2231,8 +2231,9 @@ Local storage:
     /// # ⚠⚠⚠⚠⚠ Both stand-ins are TRACKED files, and that is a fix rather than a tidy-up
     ///
     /// This case used to WRITE them and the product then EXECUTED them, which is `ETXTBSY` waiting
-    /// to happen: the kernel refuses to execute a file any process holds open for writing, and this
-    /// harness runs its cases on THREADS of one process — so a sibling forking to spawn a program
+    /// to happen: the LINUX kernel refuses to execute a file any process holds open for writing
+    /// (macOS does not — `sprag_gate::doubles::exec_of_a_held_writer` is where the tree says so),
+    /// and this harness runs its cases on THREADS of one process — so a sibling forking to spawn a program
     /// inherits this case's write handle and holds it until its own exec. `O_CLOEXEC` does not
     /// close that window, it ends it one exec too late. Register item 465 measured the same shape
     /// on `sprag-gate` at **10 failures in 30 runs, 0 in 30 after**; item 467 is the class, and

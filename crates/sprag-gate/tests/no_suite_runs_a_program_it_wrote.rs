@@ -2,7 +2,15 @@
 //!
 //! # ⚠⚠⚠⚠⚠ Why this file exists
 //!
-//! `execve` refuses a file any process holds open for writing, with `ETXTBSY` (*"Text file busy"*).
+//! On **Linux**, `execve` refuses a file any process holds open for writing, with `ETXTBSY`
+//! (*"Text file busy"*). **macOS makes no such check and simply runs it** — so this class is
+//! invisible on half the fleet, and [`sprag_gate::doubles::exec_of_a_held_writer`] is the one
+//! place in the tree that says which platform does which.
+//!
+//! ⚠⚠ **This gate stays uniform across both platforms regardless**, and that is deliberate: the
+//! tree is shared, so a double written for the platform that tolerates it is a defect held in
+//! trust for the platform that does not. A macOS-green suite is not evidence of anything here.
+//!
 //! Rust's test harness runs its cases on THREADS of one process, so a case that forks to spawn a
 //! program inherits every write handle its siblings happen to have open at that instant, and holds
 //! each one until its own exec. `O_CLOEXEC` does not close that window — it ends it one exec too
@@ -69,8 +77,9 @@ const EXEMPT: [(&str, &str); 3] = [
     (
         "crates/sprag-gate/src/doubles.rs",
         "the seam itself: its own test STAGES the ETXTBSY window on purpose, holding the write \
-         handle open and asserting the refusal, which is how this workspace knows the mechanism is \
-         real on the kernel it runs on rather than quoted from a manual page",
+         handle open and comparing what this kernel actually does against the contract \
+         `doubles::exec_of_a_held_writer` declares for it, which is how this workspace knows the \
+         mechanism per platform rather than quoting one manual page at both of them",
     ),
     (
         "crates/sprag-host/src/durability.rs",

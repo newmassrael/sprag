@@ -8,7 +8,8 @@
 # exactly that fixture. This one runs, prints something that would parse, and
 # exits non-zero.
 #
-# TRACKED rather than written by the test: register item 467 -- a file held open
-# for writing cannot be executed, and this harness forks from threads.
+# TRACKED rather than written by the test: register item 467 -- on Linux a file
+# held open for writing cannot be executed, and this harness forks from threads.
+# macOS does not check; `doubles::exec_of_a_held_writer` says which platform does.
 echo '  Cleanups:           999'
 exit 1

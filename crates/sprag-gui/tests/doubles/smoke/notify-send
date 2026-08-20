@@ -22,8 +22,10 @@
 #
 # ## Why this file is TRACKED rather than written by the smoke
 #
-# Register item 467. A file cannot be executed while any process holds it open
-# for writing (`ETXTBSY`), and the smoke both writes this and has the CLIENT
+# Register item 467. On Linux a file cannot be executed while any process holds
+# it open for writing (`ETXTBSY`) -- macOS does not check, and
+# `doubles::exec_of_a_held_writer` is the one place that says which.
+# The smoke both writes this and has the CLIENT
 # exec it while the smoke's own threads are forking. Item 465 measured the shape
 # on `sprag-gate` at 10 failures in 30 runs. A file nobody writes cannot be busy.
 #
