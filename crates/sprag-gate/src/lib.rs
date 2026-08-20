@@ -54,6 +54,13 @@ pub mod feeding;
 /// is where two copies of a rule drift apart.
 pub mod loop_shape;
 
+/// Which of the loop template's numbers a KIND is invited to author, and whether anything can carry
+/// one — item 494.
+///
+/// Beside [`loop_shape`] and for its reason: both read the loop's document against this
+/// workspace's Rust, and item 492 paid one instance of a defect whose CLASS is what this closes.
+pub mod authored;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the

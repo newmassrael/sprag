@@ -205,6 +205,36 @@
     <data id="reflect_every" expr="5"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ HOW MANY TIMES IN A ROW THIS REPOSITORY'S CHECK MAY REFUSE A CLAIM
+      before the run stops buying turns and reflects. TWO, where the template
+      ships three — and this line exists at all because register item 494 built
+      the road the template's own sentence had been promising.
+
+      ⚠⚠⚠⚠ THE ARGUMENT IS THE TEMPLATE'S OWN, TAKEN UP RATHER THAN INVENTED.
+      Item 449 chose three while refusals were MUTE: the agent was not told it
+      had been refused at all, so three was generous — three turns spent
+      answering a question nobody had asked. Item 448 gave every refusal the
+      check's own words, and the template draws the consequence itself: *«an
+      agent that fixes it on the second attempt is the LIKELY case rather than
+      the hopeful one, and three refusals is three INFORMED attempts … a kind
+      that finds it slack now has a fact it did not have then.»* This is a kind
+      that finds it slack, saying so where a kind can.
+
+      ⚠⚠ AND IT IS THIS REPOSITORY'S CHECK THAT MAKES IT SLACK. `milestone_check`
+      above is a whole fresh `claude -p` per claimed milestone; a third informed
+      attempt at persuading it costs another turn of the working agent AND
+      another checker session, to test a hypothesis the second attempt already
+      tested. Two keeps item 428's whole purpose — a refusal still buys one more
+      turn — and bounds it one attempt earlier than a document that cannot know
+      what its checker costs.
+
+      ⚠ NOT ZERO OR ONE. Those reflect on the FIRST refusal, which the template
+      allows and does not recommend, and which would spend a session replacement
+      on the case an agent fixes by reading the check's sentence.
+    -->
+    <data id="reflect_after_refusals" expr="2"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ AND WHO DECIDES A CHECKPOINT WAS REACHED — NOT THE AGENT THAT WORKED
       ON IT. Register item 428, whose mechanism the template shipped and whose
       second half is this line: the slot exists, EMPTY is the template's default,

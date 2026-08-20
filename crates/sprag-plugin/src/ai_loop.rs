@@ -1310,6 +1310,7 @@ mod tests {
             // has its own gate rather than being folded in here.
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             // ⚠ DECLINED, like the two above it: a stand-in peer has no service to fail, so a
             // needle here would be quoting words nothing in these fixtures ever prints. The
@@ -2877,6 +2878,80 @@ mod tests {
              not thought about capacity is not given a number somebody guessed for them. ⚠ A kind \
              document is what changes this, and it is read at the daemon's door rather than here — \
              see `sprag_plugin::kind`'s own gate",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND THE PATIENCE A REFUSING CHECK IS GIVEN CROSSES THE SAME WAY** — register item
+    /// 494, the twin of the gate above it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a twin gate and not one gate over two numbers
+    ///
+    /// Because the DEFECT was a twin and nobody saw the second half. The template says *"it is the
+    /// KIND's to author, like `max_turns` and `reflect_every`"* about exactly two of its `<data>`,
+    /// item 492 measured one of them and built its whole road, and the identical defect stayed
+    /// standing on the other for a further round — reader, field, key and `<assign>` all absent,
+    /// with a `#[cfg(test)]` constant and a `set_variable` in a gate for its only writer. **A
+    /// premise that produces one defect produces the rest of its class**, and a gate per instance
+    /// is what says which instances have actually been paid.
+    ///
+    /// ⚠⚠ The pair-with-a-control shape is its neighbour's and for its reason: a product that
+    /// ignored the field would satisfy the first half alone, and one that always took the caller's
+    /// would satisfy the control.
+    #[test]
+    fn a_callers_refusal_patience_crosses_and_a_declined_one_is_the_documents() {
+        /// A number no document in this tree ships — the template's is 3 and the debt kind's is 2 —
+        /// so *carried* and *defaulted* cannot be the same answer.
+        const NAMED: i64 = 7;
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+
+        let carried = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reflect_after_refusals: Some(NAMED),
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("a caller naming a refusal patience starts a run");
+        assert_eq!(
+            carried.inner.authored_number("reflect_after_refusals"),
+            Some(NAMED),
+            "⚠⚠⚠⚠⚠ ITEM 494: the caller's patience must REACH the datamodel `judging` reads. \
+             `None` here is the defect this item is about — a number the template invites a kind to \
+             author and nothing but a test's own `set_variable` could ever write",
+        );
+
+        // ⚠⚠⚠ THE CONTROL, on the ceiling gate's terms: a product that took the caller's number and
+        // also overwrote a declining caller's with it would pass everything above.
+        let deferred = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reflect_after_refusals: None,
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("a caller declining a patience starts a run too");
+        let documents = deferred
+            .inner
+            .authored_number("reflect_after_refusals")
+            .expect("⚠ the template declares the key, so a declining caller reads a number");
+        assert_ne!(
+            documents, NAMED,
+            "⚠⚠⚠ a declining caller must NOT be handed the last caller's patience — the echo \
+             exists so the document's own number survives, not so a number leaks between runs",
+        );
+        assert_eq!(
+            documents, 3,
+            "⚠⚠ and the TEMPLATE's own number is 3, which item 449 argued and item 448 changed the \
+             ground under: three refusals used to be three turns spent answering a question nobody \
+             had asked, and they are three INFORMED attempts now. ⚠ A kind document is what \
+             changes this — this repository's says 2 — and it is read at the daemon's door rather \
+             than here, so `sprag_plugin::kind`'s own gate holds that half",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

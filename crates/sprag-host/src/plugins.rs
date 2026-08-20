@@ -1518,6 +1518,18 @@ fn ai_loop_brief(
         // that cost at the far end, where `reviewing` took the fall-back eight times
         // out of eight because the number was 0 on every run ever driven.
         context_ceiling: opt_count(map, "context_ceiling")?.or_else(|| kind.context_ceiling()),
+        // ⚠⚠⚠⚠⚠ REGISTER ITEM 494 — the line above's TWIN, and the reason it is a
+        // separate item rather than a detail of 492: the template says the number is
+        // the kind's to author about exactly TWO of its `<data>`, 492 measured the
+        // instance, and the identical defect was still standing one of them up. **A
+        // premise that produces one defect produces the rest of its class**, and the
+        // ratchet in `sprag-gate`'s `authored` module is what closes the class.
+        //
+        // ⚠⚠ Same three-step fall-through as its three neighbours: the caller's
+        // number, then THIS repository's kind document, then the template's own —
+        // resolved in `OuterLoop::brief`, the only place that can read the last.
+        reflect_after_refusals: opt_count(map, "reflect_after_refusals")?
+            .or_else(|| kind.reflect_after_refusals()),
         // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
         // The rules live in the loop template, so a caller who says nothing about
         // screening is not overriding it — and the driver echoes the document's own
@@ -2661,7 +2673,7 @@ mod tests {
     ///
     /// # ⚠⚠⚠⚠⚠ What was green while it was broken
     ///
-    /// Eight of a brief's fields fall back to `debt_loop.scxml`, and **deleting any one of those
+    /// Nine of a brief's fields fall back to `debt_loop.scxml`, and **deleting any one of those
     /// fall-throughs left the entire workspace GREEN.** That was measured for `max_turns` on item
     /// 312's round and written into `sprag_plugin`'s own gate as a registered residue; item 492's
     /// round measured it again for `context_ceiling` and got the same answer. The consequence is
@@ -2751,6 +2763,26 @@ mod tests {
             brief.may_answer.is_some(),
             "⚠⚠⚠ and the standing yesses: an empty consent list met `Do you want to make this \
              edit?` on the first milestone and stood there until a ceiling ended the run",
+        );
+        // ⚠⚠⚠⚠⚠ AND THE CEILING'S TWIN — register item 494, and the reason this gate's CLASS
+        // framing earned its keep: the sentence in the template that sent a reader to
+        // `context_ceiling` says the same thing about this number, and it went a whole further
+        // round with no reader, no field and no key.
+        assert_eq!(
+            brief.reflect_after_refusals,
+            kind.reflect_after_refusals(),
+            "⚠⚠⚠⚠⚠ ITEM 494: how patient to be with a refusing check is this document's judgement \
+             about its own checker — a whole `claude -p` per claimed milestone here — and until the \
+             door carried it, `judging` spent the template's three on every run anybody has ever \
+             driven",
+        );
+        assert_eq!(
+            brief.reflect_after_refusals,
+            Some(2),
+            "⚠⚠ and this repository's document says 2 rather than the template's 3, which is what \
+             makes the line above evidence instead of two `None`s agreeing: item 448 gave every \
+             refusal the check's own words, so the template's own comment says a kind that finds \
+             three slack now has a fact it did not have then",
         );
 
         // ⚠⚠⚠ THE CONTROL. Without it a door that IGNORED every caller and always used the kind's
@@ -4062,10 +4094,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            72,
+            73,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `context_ceiling` (item 492), and \
+             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `reflect_after_refusals` (item \
+             494), and declining it means what declining `context_ceiling` beside it means, one \
+             number over: the caller's, then THIS repository's KIND document, then the template's \
+             own `expr=\"3\"`. ⚠⚠ It is here because the CLASS was swept rather than the instance — \
+             the template claims two of its numbers for the kind, 492 paid one, and the other was \
+             still authorable by nobody. ⚠ Zero is a value a caller may MEAN (reflect on the first \
+             refusal), so there is no decline word beside it. THE OLD SENTENCE FOLLOWS. \
+             THE NEWEST IS `context_ceiling` (item 492), and \
              declining it means what declining `max_turns` means with one more step in the chain: \
              the caller's number, then THIS repository's KIND document, then the template's own \
              `expr=\"0\"`. ⚠⚠ Its arrival is the item itself rather than a detail of it — the kind \
@@ -4133,11 +4172,18 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            117,
+            118,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, TWENTY-NINE to run an AI loop, one to cancel, and ONE TO STAND \
-             A RUN DOWN. ⚠⚠⚠⚠⚠ THE NEWEST IS THE LOOP'S TWENTY-NINTH, `context_ceiling` (item \
+             TEN to answer a pane, THIRTY to run an AI loop, one to cancel, and ONE TO STAND \
+             A RUN DOWN. ⚠⚠⚠⚠⚠ THE NEWEST IS THE LOOP'S THIRTIETH, `reflect_after_refusals` (item \
+             494), and this gate is what makes it more than a declaration for the same reason it \
+             did for its twin: a published argument the host does not READ is a key the surface \
+             swallows while the run reports `ok`. ⚠⚠ The twin is the point — the template claims \
+             exactly two of its numbers for the KIND to author, item 492 built the road for one, \
+             and the identical defect was still standing one `<data>` up with a GATE for its only \
+             writer. THE OLD SENTENCE FOLLOWS. THE NEWEST IS THE LOOP'S TWENTY-NINTH, \
+             `context_ceiling` (item \
              492), and this gate is the one that makes it more than a declaration: a published \
              argument the host does not READ is a key the surface swallows while the run reports \
              `ok`. That is the whole shape of the item — the number existed in the kind's document \

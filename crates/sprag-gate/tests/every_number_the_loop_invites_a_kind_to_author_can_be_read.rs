@@ -1,0 +1,135 @@
+//! A `<data>` the loop template says a KIND may author must have something that carries it — 494.
+//!
+//! # What happened twice, and why the second time earned a gate
+//!
+//! `ai_loop.scxml` writes the sentence *"it is the KIND's to author, like `max_turns` and
+//! `reflect_every`"* beside some of its numbers. Item 492 found one of those sentences pointing at
+//! a road that did not exist: `context_ceiling` had been authored in `debt_loop.scxml` since
+//! 2026-08-18 — argued, dated, measured — and there was no reader, no `Brief` field, no wire key and
+//! no `<assign>`, so **the number was 0 on every run this repository had ever driven**. Item 477
+//! measured the far end at eight `reviewing` exits out of eight taking the fall-back.
+//!
+//! Item 494 is that same defect, one `<data>` up, found the next day by sweeping the CLASS instead
+//! of the instance. **A premise that produces one defect produces the rest of its class**, and 492
+//! had paid the instance while the class stood.
+//!
+//! # ⚠⚠⚠⚠⚠ Why this cannot be a test inside `sprag-plugin`
+//!
+//! The claim is about the TEXT of two documents and one Rust file measured against each other, which
+//! is what this crate is for — [`sprag_gate::loop_shape`]'s reason, one module over. A test in the
+//! plugin could assert that `LoopKind::reflect_after_refusals` returns a number; **nothing there can
+//! notice the number nobody has written a reader for yet**, because there is no symbol to name.
+//!
+//! # ⚠⚠⚠⚠ The pin, and why it is refused from both sides
+//!
+//! [`CLAIMED`] is an equality rather than a floor. A floor rots exactly the way item 453 measured:
+//! rephrase a claim past the needle and the derivation quietly finds one fewer, and a floor never
+//! complains about having room. So:
+//!
+//! * measured ABOVE the pin — the template started claiming a number for a kind. Good, and the road
+//!   for it has to exist in the same commit;
+//! * measured BELOW the pin — either a claim was withdrawn on purpose, or **the needle went blind**.
+//!   The two are indistinguishable from here and both want a person, which is the point.
+
+use sprag_gate::authored::{KIND, claims, read_ids};
+use sprag_gate::loop_shape::DOCUMENT;
+use sprag_gate::sources::{rust_sources, workspace_root};
+
+/// Every `<data>` of `ai_loop.scxml` whose own comment invites a KIND to author it, in document
+/// order — measured 2026-08-20.
+///
+/// ⚠ TWO, and that is the whole shape of item 494: the sentence was already written about both when
+/// item 492 built the road for one of them.
+const CLAIMED: &[&str] = &["reflect_after_refusals", "context_ceiling"];
+
+fn document() -> String {
+    let path = workspace_root().join(DOCUMENT);
+    std::fs::read_to_string(&path).unwrap_or_else(|why| {
+        panic!(
+            "{} is this workspace's loop template: {why}",
+            path.display()
+        )
+    })
+}
+
+/// ⚠⚠⚠⚠⚠ **A NUMBER THE TEMPLATE INVITES A KIND TO AUTHOR MUST HAVE A READER AND A LANDING
+/// PLACE** — the class item 492 paid one instance of.
+///
+/// The two requirements together are exactly *a kind's decision can reach a run*: without a reader
+/// the value cannot leave `debt_loop.scxml`, and without the template's own `<assign>` it cannot
+/// land in the run's datamodel. Either missing makes the sentence a promise the document cannot
+/// keep — and the failure is SILENT, because a `<data>` with a default always reads as a number.
+#[test]
+fn every_number_the_template_claims_for_a_kind_has_a_reader_and_an_assignment() {
+    let scxml = document();
+    let sources = rust_sources();
+    let kind = sources
+        .iter()
+        .find(|source| source.file == KIND)
+        .unwrap_or_else(|| panic!("{KIND} is the Rust that reads a kind's document"));
+    let readable = read_ids(&kind.product);
+
+    let mut unheld = Vec::new();
+    for claimed in claims(&scxml) {
+        if !readable.contains(&claimed.id) {
+            unheld.push(format!(
+                "`{}` — the template says {:?} and NOTHING IN {KIND} READS IT, so no kind can \
+                 act on the invitation",
+                claimed.id, claimed.said,
+            ));
+        }
+        if !sprag_gate::authored::assigned(&scxml, &claimed.id) {
+            unheld.push(format!(
+                "`{}` — the template invites a kind to author it and its own `brief` transition \
+                 never assigns it, so a carried value would be dropped on arrival",
+                claimed.id,
+            ));
+        }
+    }
+
+    assert!(
+        unheld.is_empty(),
+        "⚠⚠⚠⚠⚠ ITEM 494 — A DECISION NO CHANNEL CARRIES IS A DECISION NOBODY MADE. Each line \
+         below is a number this template asks a repository to decide and cannot receive an answer \
+         to. It happened for `context_ceiling` and cost item 477's whole measurement (eight of \
+         eight `reviewing` exits taking the fall-back, on a live 97-iteration run), then happened \
+         again for `reflect_after_refusals` because the round that paid the first one fixed the \
+         INSTANCE. The road is four steps and `sprag_plugin::kind::LoopKind::context_ceiling` is \
+         the worked example: a reader here, a `Brief` field, the `<assign>`, and — where a caller \
+         may override the kind — a wire key.\n{}",
+        unheld.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND WHAT THE TEMPLATE CLAIMS IS PINNED, so a needle that goes blind says so.**
+///
+/// # Why the gate above cannot answer this
+///
+/// Item 470's finding, and it is the sharpest thing that round produced: blinding the needle left
+/// **the ratchet itself green**, because a needle that sees nothing reports no offences. *"Does the
+/// gate pass?"* and *"does the gate still SEE the shape?"* are different questions, and only a
+/// pinned measurement answers the second.
+///
+/// The template already spells the same claim two ways — `IT IS THE KIND'S TO AUTHOR` and `It is
+/// the KIND's to author` — so this is not a hypothetical: one exact phrase was never a safe needle.
+#[test]
+fn what_the_template_claims_for_a_kind_is_what_this_gate_can_still_see() {
+    let found: Vec<String> = claims(&document())
+        .into_iter()
+        .map(|claimed| claimed.id)
+        .collect();
+    let pinned: Vec<String> = CLAIMED.iter().map(|id| (*id).to_owned()).collect();
+
+    assert_eq!(
+        found, pinned,
+        "⚠⚠⚠⚠⚠ EITHER THE TEMPLATE CHANGED OR THIS GATE WENT BLIND, and it cannot tell which.\n\
+         MORE than the pin: a `<data>` acquired the claim. Add the reader, the `<assign>` and the \
+         pin in the SAME commit — the gate beside this one holds the first two.\n\
+         FEWER than the pin: a claim was withdrawn, OR a comment was rephrased past both readings \
+         of the needle (the phrase `kind's to author`, and naming both of `max_turns` and \
+         `reflect_every`). A withdrawal comes with the reader's deletion; a rephrasing is this \
+         gate quietly stopping to work, which is register item 453's whole finding.\n\
+         ⚠ ORDER IS DOCUMENT ORDER, so a `<data>` that moved shows up here too — cheap to fix and \
+         worth knowing.",
+    );
+}

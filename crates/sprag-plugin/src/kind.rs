@@ -194,6 +194,36 @@ impl LoopKind {
         OuterLoop::authored_number_in(&self.script, &self.session, "context_ceiling")
     }
 
+    /// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE A RUN OF THIS KIND'S CLAIM** before it stops
+    /// buying turns and reflects — or [`None`] where this kind says nothing and the template's own
+    /// number stands.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is [`context_ceiling`](Self::context_ceiling)'s twin, found by sweeping the class
+    ///
+    /// Register item 494. The template says *"IT IS THE KIND'S TO AUTHOR, like `max_turns` and
+    /// `reflect_every`"* about exactly TWO of its numbers; item 492 measured the instance and built
+    /// the road for one of them. Sweeping the sentence instead — which is what 492 should have
+    /// started with — found the identical defect still standing one `<data>` up. **A premise that
+    /// produces one defect produces the rest of its class**, and the class is what a ratchet can
+    /// close: `crates/sprag-gate/src/authored.rs` derives the claimed ids from that sentence and
+    /// refuses any this type cannot read, so the third one nobody has written yet cannot happen
+    /// quietly.
+    ///
+    /// ⚠⚠ **WHAT THE MISSING CHANNEL COST IS AN ARGUMENT A KIND COULD NOT MAKE.** Item 449 authored
+    /// the shipped `3` while refusals were MUTE — the agent was not told it had been refused at all
+    /// — so three was three turns spent answering a question nobody had asked. Item 448 gave every
+    /// refusal the check's own words, and the template's own comment draws the consequence: *"a kind
+    /// that finds it slack now has a fact it did not have then"*. It had no way to act on it.
+    ///
+    /// ⚠ **ZERO IS A DECISION HERE**, and it is the template's own reading of it: a reflection on
+    /// the first refusal, *"a choice this document allows and does not recommend"*. So this reads as
+    /// a plain number for [`context_ceiling`](Self::context_ceiling)'s reason — a decline already
+    /// has a spelling and a second one would be two ways to say the same thing.
+    #[must_use]
+    pub fn reflect_after_refusals(&self) -> Option<i64> {
+        OuterLoop::authored_number_in(&self.script, &self.session, "reflect_after_refusals")
+    }
+
     /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this
     /// kind says nothing and the working agent's own word stands.
     ///

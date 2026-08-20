@@ -1445,6 +1445,21 @@ impl PluginGrammar {
         // ⚠ ZERO IS A VALUE A CALLER MAY MEAN — the document's own spelling for *no ceiling* — so
         // there is no decline word beside it, unlike `max_turns`.
         ArgGrammar::open("context_ceiling", "int").optional(),
+        // ⚠⚠⚠⚠⚠ REGISTER ITEM 494 — the key above's TWIN, and the one the template's sentence had
+        // been promising for as long as it has said *"like `max_turns` and `reflect_every`"* about
+        // two numbers. How patient to be with a refusing check was authorable by nobody: no key, no
+        // `Brief` field, no `LoopKind` reader, and its only writer a GATE reaching into the
+        // datamodel by a door no caller had.
+        //
+        // ⚠⚠⚠⚠ NO `WIRE_PROTOCOL` BUMP, on the measurement 492 took rather than on its quotation:
+        // no release, no tag, so no daemon predating this key exists to swallow it. ⚠ The residue
+        // is the same and is stated: the day this form ships, an argument added to it earns the
+        // number by the ordinary rule, because a swallowed patience leaves the run reflecting on
+        // the template's three while its caller believes it authored two.
+        //
+        // ⚠ ZERO IS A VALUE A CALLER MAY MEAN — reflect on the first refusal, which the template
+        // allows and does not recommend — so there is no decline word beside it either.
+        ArgGrammar::open("reflect_after_refusals", "int").optional(),
         // ⚠⚠⚠ REQUIRED, and the conformance sweep is what settled it. It was declared optional and
         // read with `require_str`, which is the exact defect `DONE_WHEN` beside it records from
         // version 25: the wire published an argument as declinable and the daemon refused every
@@ -8565,7 +8580,15 @@ mod tests {
                 // just authored** — a dropped fact rendered as the caller's own omission. That is
                 // exactly the *"something was waiting on that fact"* test `CLIENT_BUILD_PARAM`
                 // states, so the day this form ships, this key earns the number.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? context_ceiling:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                //
+                // ⚠⚠⚠⚠⚠ `reflect_after_refusals` ARRIVED ON THE SAME PROPERTY (register item 494)
+                // AND IT IS THE SAME DEFECT AS ITS NEIGHBOUR RATHER THAN A NEW ONE: the template
+                // claims two of its numbers for the kind and 492 built the road for one. The
+                // measurement is unchanged and re-checkable — no tag, no release — and so is the
+                // residue: the day this form ships, an added argument earns the number, because a
+                // swallowed patience leaves a run reflecting on three while its caller believes it
+                // authored two.
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

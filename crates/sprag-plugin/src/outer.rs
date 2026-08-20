@@ -381,14 +381,14 @@ const REFLECT_REASON: &str = "reflect_reason";
 // nothing left to do. **A constant that exists only for a test is sometimes the shape of a missing
 // channel.**
 
-/// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE BEFORE THE RUN REFLECTS** — the document's own
-/// bound, register item 449.
-///
-/// ⚠ `#[cfg(test)]` because nothing in this driver reads it, the DOCUMENT does, and the only reader
-/// here is the gate that has to author a smaller one than the shipped three to reach the arm in a
-/// bounded number of turns.
-#[cfg(test)]
-const REFLECT_AFTER_REFUSALS: &str = "reflect_after_refusals";
+// ⚠⚠⚠⚠⚠ A `REFLECT_AFTER_REFUSALS` CONSTANT STOOD HERE AND ITS DELETION IS REGISTER ITEM 494's
+// RECEIPT — the same shape, one `<data>` up, as the `CONTEXT_CEILING` note above it. It was
+// `cfg(test)` over a doc that said the DOCUMENT was its reader and the only one here was the gate
+// that had to author a smaller number than the shipped three; the gate beside it went further and
+// said the quiet part out loud — *"it stays a `set_variable` because THIS number has no channel"*.
+// **A defect that writes its own excuse into a doc comment reads as a known limitation**, and the
+// excuse is what item 494 was: `Brief::reflect_after_refusals` is the channel now, so the
+// test-only spelling has nothing left to do.
 
 /// **WHAT AN AGENT WHOSE MILESTONE A CHECK REFUSED IS TOLD** — composed by `disputing`'s `onentry`
 /// out of the document's own four parts and the check's own words, and delivered by
@@ -590,6 +590,32 @@ pub struct Brief {
     /// [`Counted`]: a decline already has a spelling, and a second one would be two ways to say the
     /// same thing. [`None`] is *nobody said*, which is the ordinary meaning of absence here.
     pub context_ceiling: Option<i64>,
+
+    /// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE THIS RUN'S CLAIM** before the loop stops buying
+    /// turns and reflects, or [`None`] to let the kind's document — and then the template's own
+    /// `<data id="reflect_after_refusals">` — decide.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is [`context_ceiling`](Self::context_ceiling)'s twin, item 494
+    ///
+    /// The template says *"IT IS THE KIND'S TO AUTHOR, like `max_turns` and `reflect_every`"* about
+    /// exactly two of its numbers, and item 492 built the channel for one of them. Sweeping the
+    /// CLASS instead of the instance found the identical defect standing one `<data>` up: the
+    /// sentence named a road for this number too and there was none — no reader, no field, no key.
+    /// **A decision no channel carries is a decision nobody made**, for the second time in one
+    /// document.
+    ///
+    /// ⚠⚠ **AND ITS ONLY WRITER WAS A GATE**, which is 492's other finding repeating. A
+    /// `#[cfg(test)]` constant stood in this module so
+    /// `a_claim_refused_to_the_ceiling_reflects_rather_than_buying_another_turn` could
+    /// `set_variable` a smaller number than the shipped three, and its own doc said why: *"it stays
+    /// a `set_variable` because THIS number has no channel"*. **A constant that exists only for a
+    /// test is sometimes the shape of a missing channel** — the constant is gone and that gate
+    /// authors through this field.
+    ///
+    /// ⚠ **ZERO IS A NUMBER A KIND MAY MEAN** — a reflection on the FIRST refusal, which the
+    /// template allows and does not recommend — so this is a plain `Option<i64>` on
+    /// [`context_ceiling`](Self::context_ceiling)'s terms rather than a [`Counted`].
+    pub reflect_after_refusals: Option<i64>,
     /// **STANDING INSTRUCTIONS FOR DIALOGS THIS CALLER HAS ALREADY DECIDED ABOUT** — the authored
     /// `screen_rules`, supplied by somebody who did not edit the file.
     ///
@@ -3302,9 +3328,28 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // ⚠⚠⚠⚠⚠ AND ITS TWIN, ON THE SAME TERMS AND FOR THE SAME REASON — register item 494. The
+        // template says the number is the kind's to author about exactly two of its `<data>`, and
+        // 492 built the road for one; this is the other. Until this line the only writer of it was a
+        // GATE, by `set_variable` straight into the datamodel, which is the same back door 492 found
+        // beneath its own arithmetic.
+        //
+        // ⚠⚠ ECHOED WHEN NOBODY NAMED ONE, like every part beside it: the `<assign>` is
+        // unconditional, so omitting the key would assign nil and delete the author's patience.
+        let Some(refusals) = brief
+            .reflect_after_refusals
+            .or_else(|| self.authored_number("reflect_after_refusals"))
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: "reflect_after_refusals",
+                held: None,
+            };
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "context_ceiling": ceiling,
+            "reflect_after_refusals": refusals,
             crate::consent::Consents::WIRE_KEY: clauses.as_ref().map_or_else(Vec::new, |held| {
                 held.clauses()
                     .iter()
@@ -9584,6 +9629,7 @@ mod tests {
             // clause crosses on the same route and has its own gate rather than riding this one.
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -9703,6 +9749,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -9781,6 +9828,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -9863,6 +9911,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: None,
                 context_ceiling: None,
+                reflect_after_refusals: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -10002,6 +10051,7 @@ mod tests {
             reference: "none".to_string(),
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -10192,6 +10242,7 @@ mod tests {
                 reference: "register item 300".to_string(),
                 closing_rules: None,
                 context_ceiling: None,
+                reflect_after_refusals: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -11053,6 +11104,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: Some(" AND THEN SWEEP.".to_string()),
                 context_ceiling: None,
+                reflect_after_refusals: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -11823,6 +11875,7 @@ mod tests {
                     // **A gate that reaches its subject by a door nobody else has is measuring
                     // itself**, and item 477's eight-of-eight is what that cost in production.
                     context_ceiling: Some(ceiling),
+                    reflect_after_refusals: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -12038,6 +12091,7 @@ mod tests {
                     // `a_session_past_its_ceiling_reflects_without_being_asked` for what it
                     // replaced: a `set_variable` into the datamodel, which is a road no caller had.
                     context_ceiling: Some(ceiling),
+                    reflect_after_refusals: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -12174,6 +12228,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     context_ceiling: None,
+                    reflect_after_refusals: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -12428,11 +12483,17 @@ mod tests {
     /// away in both arms, so the ONE difference is the number this item adds, and the control must
     /// still be buying turns at the pass where the armed run has already reflected.
     ///
-    /// ⚠⚠ The ceiling is authored SMALLER than the shipped three, in the document's own datamodel,
-    /// which is `REFLECT_AFTER_REFUSALS`'s only reader. A gate that waited for the shipped value
-    /// would be asserting about a default it never named. ⚠ It stays a `set_variable` because THIS
-    /// number has no channel — unlike `context_ceiling`, which grew one in item 492, and the same
-    /// question is therefore open about this one.
+    /// ⚠⚠ The ceiling is authored SMALLER than the shipped three, so the arm is reachable inside a
+    /// bounded walk; a gate that waited for the shipped value would be asserting about a default it
+    /// never named.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND IT IS AUTHORED THROUGH THE `Brief` NOW, WHICH IS REGISTER ITEM 494.** This gate
+    /// used to `set_variable` the number straight into the datamodel, and its own doc said why:
+    /// *"it stays a `set_variable` because THIS number has no channel — unlike `context_ceiling`,
+    /// which grew one in item 492, and the same question is therefore open about this one."* Every
+    /// clause was true and the conclusion was the defect. **A gate with a door nobody else has
+    /// measures a decision the product cannot perform** — 492's finding, repeating on the twin the
+    /// same sentence in the template invites.
     #[test]
     fn a_claim_refused_to_the_ceiling_reflects_rather_than_buying_another_turn() {
         /// A checker that denies every claim it is shown, so every judgement refuses.
@@ -12459,14 +12520,6 @@ mod tests {
                 Duration::from_secs(5),
             )
             .expect("the document's datamodel must carry its four authored strings");
-            loops
-                .script
-                .set_variable(
-                    &loops.session,
-                    REFLECT_AFTER_REFUSALS,
-                    ScriptValue::Int(ceiling),
-                )
-                .expect("the document's own refusal ceiling is writable");
             assert_eq!(
                 loops.brief(&Brief {
                     north_star: "the stand-in claims the milestone and a check denies it"
@@ -12475,6 +12528,10 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     context_ceiling: None,
+                    // ⚠⚠⚠ THE NUMBER UNDER TEST, on the road a kind or a caller really uses —
+                    // register item 494. The `set_variable` that used to stand here reached the
+                    // datamodel by a door no caller had.
+                    reflect_after_refusals: Some(ceiling),
                     milestone_check: Some(DENIES.to_string()),
                     service: None,
                     // ⚠⚠ BOTH OTHER ESCAPES ARE OUT OF REACH, which is what makes the arm below
@@ -12624,6 +12681,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     context_ceiling: None,
+                    reflect_after_refusals: None,
                     // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
                     // This used to `set_variable` the slot behind the brief's back, on the reading
                     // that no caller could name one — true of the WIRE and never of a kind. What
@@ -12869,6 +12927,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 context_ceiling: None,
+                reflect_after_refusals: None,
                 milestone_check: check.map(ToOwned::to_owned),
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -13346,6 +13405,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     context_ceiling: None,
+                    reflect_after_refusals: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -13536,6 +13596,7 @@ mod tests {
             reference: "this gate".to_string(),
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -13932,6 +13993,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
@@ -14031,6 +14093,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: None,
                 context_ceiling: None,
+                reflect_after_refusals: None,
                 milestone_check: None,
                 service: Some(outage.clone()),
                 max_turns: Some(Counted::Of(3)),
@@ -14135,6 +14198,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             context_ceiling: None,
+            reflect_after_refusals: None,
             milestone_check: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
@@ -14746,6 +14810,7 @@ mod tests {
                     reference: "register item 9".to_string(),
                     closing_rules: None,
                     context_ceiling: None,
+                    reflect_after_refusals: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -14917,6 +14982,7 @@ mod tests {
                 reference: "register item 452".to_string(),
                 closing_rules: None,
                 context_ceiling: None,
+                reflect_after_refusals: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -15093,6 +15159,7 @@ mod tests {
                     reference: "register item 458".to_string(),
                     closing_rules: None,
                     context_ceiling: None,
+                    reflect_after_refusals: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),

@@ -1642,6 +1642,10 @@ const NOT_A_PANE: &[&str] = &[
     // least pane-like, which is exactly why it is written down: this list exists for numbers that
     // are not ids, and *obviously not a pane* is what nobody bothers to classify.
     "context_ceiling",
+    // ⚠⚠ A COUNT OF REFUSALS — how many times in a row a check may deny a claim before the run
+    // reflects instead of buying another turn (register item 494). It is the smallest number on
+    // this surface and sits beside a `pane` in every call, which is precisely this list's reason.
+    "reflect_after_refusals",
     "max_iterations",
     "max_seconds",
     "max_bytes",
@@ -2178,6 +2182,17 @@ fn argument_help(name: &str) -> &'static str {
              and then the template's `0` — which means NO ceiling, so every reflection replaces the \
              session and the run reports `no_ceiling` when it hands over. ⚠⚠ `0` is a value you \
              may MEAN here: it is how a caller says *do not bound this*."
+        }
+        "reflect_after_refusals" => {
+            "HOW MANY TIMES IN A ROW A CHECK MAY REFUSE THE AGENT'S CLAIM (ai_loop) before the run \
+             stops buying it another turn and reflects instead. It only bites when a `done_when` \
+             checker is in play: a refusal hands the agent the check's own words and one more turn, \
+             and this bounds how many times that can repeat while nothing converges — measured at \
+             nine consecutive refusals over seventeen iterations on a run that only left the state \
+             because a person pressed Escape. ⚠ Leaving it out means this daemon's own loop-kind \
+             document decides, and then the template's `3`. ⚠⚠ `0` and `1` are values you may \
+             MEAN: they reflect on the first refusal, which spends a session replacement on the \
+             case an agent fixes by reading the refusal."
         }
         "agent" => {
             "WHICH PROGRAM IS IN THE PANE (ai_loop) — `claude`, or whatever list_panes reports \
@@ -8736,12 +8751,18 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 17,
+            seen, 18,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
              ready_timeout_ms, await_person_ms, handback_still_ms, turn_within_ms, cols, rows, \
-             max_turns, reflect_every, context_ceiling, max_iterations, \
+             max_turns, reflect_every, context_ceiling, reflect_after_refusals, max_iterations, \
              max_seconds, max_bytes and max_tokens — MERGED across the forms, so the agent form's \
-             readiness pair adds no new name. ⚠⚠⚠⚠⚠ THE NEWEST IS `context_ceiling` (item 492), and \
+             readiness pair adds no new name. ⚠⚠⚠⚠⚠ THE NEWEST IS `reflect_after_refusals` (item \
+             494), and it is `context_ceiling`'s TWIN rather than a new kind of number: the \
+             template claims exactly two of its `<data>` for the KIND to author and item 492 built \
+             the road for one of them, so the same defect was still standing one declaration up. \
+             **A premise that produces one defect produces the rest of its class**, which is why \
+             this round shipped a ratchet over the class and not only this key. THE OLD SENTENCE \
+             FOLLOWS. THE NEWEST IS `context_ceiling` (item 492), and \
              it is the first int here that counts neither panes, nor milliseconds, nor turns: it \
              counts TOKENS a session has read. ⚠ It is also the item's own lesson arriving one \
              surface further out — a wire argument is bookkeeping in FOUR places (the published \

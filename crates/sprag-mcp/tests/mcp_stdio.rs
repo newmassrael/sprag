@@ -3216,9 +3216,17 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
         "write_pane",
         json!({ "pane": "build", "text": "echo alive" }),
     );
-    let read = server.call_tool(
+    // ⚠⚠⚠⚠⚠ WAITED FOR, NOT READ ONCE AND HOPED — and this suite had already written down why,
+    // one gate over: *"`write_pane` returns when the keystrokes are IN; the pane's echo is the
+    // shell's own work and arrives on the shell's schedule, so a `read_pane` on the next line is a
+    // race — measured, as a whole-workspace run where this exact assertion fired with `before`
+    // EMPTY while nothing was wrong with the product at all."* THIS site never got the remedy, and
+    // it fired the same way on 2026-08-20's sweep with `read` empty: **a lesson applied at one site
+    // is not applied to its class.**
+    let read = server.wait_for_tool(
         "read_pane",
         json!({ "pane": "build", "line_breaks": "program" }),
+        "echo alive",
     );
     assert!(
         read.contains("echo alive"),
