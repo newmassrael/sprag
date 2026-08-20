@@ -154,6 +154,26 @@ pub enum Verdict {
     /// finish. The first is about a run that was about to type; the second about one already
     /// waiting.
     PeerGone(PaneId),
+    /// **SOMEBODY HELD THIS RUN AND DID NOT COME BACK** inside the loop document's own
+    /// `hold_within_ms`. Register item 534.
+    ///
+    /// ⚠⚠⚠ NOT [`Blocked`](Self::Blocked), which is the verdict a reader would otherwise be handed
+    /// for *a person is what this run needs*. `blocked` says a question went unanswered and sends
+    /// them hunting for a dialog there is none of. What happened here is that a person came, said
+    /// *wait, let me look*, and then stopped looking — and until this word existed the run said
+    /// `exhausted — iterations`, which sent its reader to raise a step budget that would have bought
+    /// it nothing (register item 9, measured on run 18).
+    ///
+    /// ⚠⚠ **AND IT CARRIES NOTHING, WHICH IS A DECISION.** The obvious payload is the pane, on
+    /// [`PeerGone`](Self::PeerGone)'s precedent — and the [`Driver`](crate::driver::Driver) has
+    /// nowhere to put it: this verdict's ending is `exhausted` against
+    /// [`Ceiling::Hold`](crate::driver::Ceiling::Hold), whose word travels to the wire through
+    /// `Ceiling` itself and survives a restart, where `PeerGone`'s pane admittedly does not. A
+    /// `PaneId` nobody reads is how two spellings of one fact come to differ. ⚠ The residue is
+    /// stated rather than hidden: nothing published names the pane a loop is driving NOW, which a
+    /// run that has replaced its session makes a real gap — and it is a gap for every ending, not
+    /// this one, so it is registered rather than half-closed here.
+    Abandoned,
 }
 
 impl Verdict {
@@ -176,6 +196,7 @@ impl Verdict {
             // older than this build, because `orchestrator` — a form every version has been able to
             // select — is the plugin the 43 hours were actually spent inside.
             Self::PeerGone(_) => "peer_gone",
+            Self::Abandoned => "abandoned",
         }
     }
 
@@ -194,6 +215,7 @@ impl Verdict {
         "exhausted",
         "screened",
         "peer_gone",
+        "abandoned",
     ];
 }
 
@@ -545,6 +567,12 @@ mod tests {
                 bytes: 1,
             }),
             Verdict::PeerGone(PaneId(3)),
+            // ⚠⚠ THE NINTH, and it is the only one on this list a reader can construct without
+            // reaching for anything: it carries nothing (register item 534). The `Driver` has one
+            // typed slot for the ending and this verdict's is `Ceiling::Hold`, which travels
+            // through the closed set and survives a restart — where a `PaneId` here would have
+            // been a value nobody reads.
+            Verdict::Abandoned,
         ]
         .iter()
         .map(Verdict::wire_str)

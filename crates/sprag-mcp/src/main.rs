@@ -1625,6 +1625,14 @@ const NOT_A_PANE: &[&str] = &[
     // it was just given. The same kind of number as the two above and classified for the same
     // reason, spelled through the same one definition.
     sprag_host::wire::PluginGrammar::TURN_WITHIN.name,
+    // ⚠⚠ A CEILING ON AN ORDER, in milliseconds — how long somebody may HOLD this run before it
+    // ends as abandoned (register item 534). The same kind of number as the three above and
+    // classified for the same reason, spelled through the same one definition.
+    //
+    // ⚠ It is the one of the four that is NOT about a person the run expects: a hold binds a run
+    // nobody is watching too, which is why it reaches this list from a form the other three's
+    // siblings do not share.
+    sprag_host::wire::PluginGrammar::HOLD_WITHIN.name,
     "cols",
     "rows",
     "opened_by",
@@ -2041,6 +2049,24 @@ fn argument_help(name: &str) -> &'static str {
              into the gap between their words. Zero is refused for that reason. ⚠ Nothing is \
              typed while the pane is theirs, and when it comes back the run reads whatever they \
              left — a dialog they opened is met by `may_answer` and `await_person_ms` as usual."
+        }
+        "hold_within_ms" => {
+            "HOW LONG SOMEBODY MAY HOLD THIS RUN before it ends as `abandoned`. `hold-run` is the \
+             one order a person can take back — it parks the loop between turns, types nothing, \
+             and spends none of its budget while it waits — and until this bound existed it was \
+             also the one order with no ENDING. Measured: a run held by somebody who then went \
+             home sat on its pane, holding a daemon slot, until a person cancelled it by hand; a \
+             held run's patience is deliberately not spent, `unattended` is refused for it, and \
+             `max_iterations` cannot bound a step that never returns. Leave it out and the loop \
+             document's own four hours stand. ⚠ Set it to how long you would actually leave a run \
+             paused: an afternoon of reading a pane, not a night. When it runs out the run reports \
+             `exhausted` naming the `hold` ceiling, so a reader is told somebody paused it and did \
+             not come back — not that a step budget ran out, which is what a held run used to say. \
+             ⚠ Nothing was typed while it waited and no turn was spent, so the work stands exactly \
+             where the hold found it. ⚠ It needs NO `await_person_ms` beside it, unlike \
+             `handback_still_ms`: a run nobody is watching can still be held, and those are the \
+             runs that used to park for ever. Zero is refused — that would be `cancel` with extra \
+             steps, and there is a verb for that."
         }
         "turn_within_ms" => {
             "HOW LONG ONE TURN MAY TAKE — the bound on `done_when`, and only alongside it. Leave \
@@ -8751,12 +8777,20 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 18,
+            seen, 19,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
-             ready_timeout_ms, await_person_ms, handback_still_ms, turn_within_ms, cols, rows, \
-             max_turns, reflect_every, context_ceiling, reflect_after_refusals, max_iterations, \
-             max_seconds, max_bytes and max_tokens — MERGED across the forms, so the agent form's \
-             readiness pair adds no new name. ⚠⚠⚠⚠⚠ THE NEWEST IS `reflect_after_refusals` (item \
+             ready_timeout_ms, await_person_ms, handback_still_ms, hold_within_ms, turn_within_ms, \
+             cols, rows, max_turns, reflect_every, context_ceiling, reflect_after_refusals, \
+             max_iterations, max_seconds, max_bytes and max_tokens — MERGED across the forms, so \
+             the agent form's readiness pair adds no new name. ⚠⚠⚠⚠⚠ THE NEWEST IS \
+             `hold_within_ms` (item 534), the FIFTH duration on this wire wearing a number's \
+             clothes — and the first that bounds an ORDER rather than a WAIT. The four before it \
+             ask how long to wait for a pane, a person, a person's hand or a turn; this one asks \
+             how long a run may sit PAUSED before it ends as abandoned. ⚠⚠ It is also the first \
+             int here that reaches ONE form only: the ceiling is `ai_loop.scxml`'s `<data>` and \
+             that document is the only thing in this workspace that reads a hold, so declaring it \
+             on the other looping forms would publish an argument they swallow. THE OLD SENTENCE \
+             FOLLOWS. THE ONE BEFORE IT IS `reflect_after_refusals` (item \
              494), and it is `context_ceiling`'s TWIN rather than a new kind of number: the \
              template claims exactly two of its `<data>` for the KIND to author and item 492 built \
              the road for one of them, so the same defect was still standing one declaration up. \

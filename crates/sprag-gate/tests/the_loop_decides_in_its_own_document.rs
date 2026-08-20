@@ -42,6 +42,17 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// no line of Rust naming it. `converged`, `exhausted` and `failed` reaching zero would mean the
 /// loop's ENDINGS are the document's alone.
 const DRIVER_ARMS: &[(&str, usize)] = &[
+    // ⚠⚠⚠⚠ ADDED 2026-08-21 BY ITEM 534, AND THE PIN IS RAISED WITH ITS OWN REASON RATHER THAN
+    // BECAUSE A GATE ASKED. All eight are EFFECT arms in exhaustive matches — is it final, which
+    // verdict does it publish, does it owe a prompt, may a ceiling account for it — and every one of
+    // them exists because the match has no wildcard, which is what made this new final land as
+    // nine compile errors instead of as nine silent defaults.
+    //
+    // ⚠⚠⚠ IT IS EXACTLY `peer_gone`'s AND `held`'s NUMBER, which is the useful fact here: a seventh
+    // ending costs this workspace eight arms, the same as the sixth did, so the price of a new final
+    // is known and flat rather than growing. What would be a REGRESSION is a ninth arm appearing
+    // later — a decision about being abandoned taken in Rust — and that is what this row now catches.
+    ("abandoned", 8),
     ("awaiting_human", 10),
     ("blocked", 8),
     ("cancelled", 9),

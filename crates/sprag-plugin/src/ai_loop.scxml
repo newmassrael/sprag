@@ -1096,6 +1096,46 @@
     <data id="handback_still_ms" expr="15000"/>
 
     <!--
+      ⚠⚠⚠ HOW LONG SOMEBODY MAY HOLD THIS RUN BEFORE IT IS ABANDONED, in
+      milliseconds. Four hours: longer than any session of reading a pane, and
+      shorter than a night.
+
+      ⚠⚠⚠ WHY THE HOLD NEEDS A CEILING OF ITS OWN, MEASURED. `hold` is the one
+      order with a way back, and until this key existed it was the one order with
+      no ENDING. A held run waits on the person letting go and on nothing else:
+      its patience is deliberately not spent while they hold it (see
+      `awaiting_human`), `unattended` is refused for it by the `held` state
+      below, and `max_iterations` cannot bound a step that never returns. So a
+      person who held a run and went home left it parked on a pane, holding a
+      daemon slot, until somebody cancelled it by hand. Register item 534.
+
+      ⚠⚠ IT IS AUTHORED AND NOT DERIVED, and says so the way `await_person_ms`
+      two entries up does. Four hours is a working afternoon rather than a
+      measurement; what would make it right has never been measured, and the
+      honest thing is to say which it is.
+
+      ⚠⚠⚠ IT IS NOT `await_person_ms` REUSED, and the two are different questions
+      asked of the same person. That one is how long a run waits for somebody to
+      deal with a dialog it may not answer; this one is how long a run waits for
+      somebody who has told it to stop and LOOK. A run may be held while nobody
+      is watching at all, which is exactly the case that used to park for ever,
+      so this ceiling cannot live inside the contract that says whether anybody
+      is expected.
+
+      ⚠⚠⚠ THERE IS NO SPELLING FOR *"no ceiling"*, and that is the decision
+      rather than an omission. An unbounded hold has no ending anybody can be
+      told about, and this document already spent a whole final saying what an
+      immortal run costs (see `peer_gone`). A caller who wants a long hold names
+      a long number.
+
+      ⚠⚠ ZERO IS REFUSED rather than read as a bound of zero: *hold this run and
+      end it at once* is `cancel` spelled wrong, and a caller who arrives at zero
+      by arithmetic is the one who needs telling rather than obeying. The driver
+      refuses the brief, the way it refuses an unreadable patience.
+    -->
+    <data id="hold_within_ms" expr="14400000"/>
+
+    <!--
       ⚠⚠⚠ HOW LONG THE BARRIER WAITS FOR THE PANE TO BE READY FOR THIS LOOP'S
       FIRST PROMPT, in milliseconds — three minutes, and the number is a person's
       allowance rather than a fact about any program.
@@ -1862,6 +1902,20 @@
       -->
       <assign location="await_person_ms" expr="_event.data.await_person_ms"/>
       <assign location="handback_still_ms" expr="_event.data.handback_still_ms"/>
+      <!--
+        ⚠⚠⚠ AND HOW LONG A HOLD MAY LAST, ON THE SAME UNCONDITIONAL TERMS — the
+        third number about the same person, and the one that is NOT half of the
+        pair above: `Handback` lives inside `Attended::APerson`, and a hold does
+        not, because a run nobody is watching can still be held. See the
+        `hold_within_ms` entry in the datamodel for why it is its own key rather
+        than the patience reused.
+
+        ⚠⚠ THE DRIVER RE-READS IT WHEN THE HOLD IS ACTUALLY BEING WAITED OUT —
+        `OuterLoop::hold_within`, at the top of the held arm — so a number
+        written here is in force before any hold, and no copy taken at
+        construction can drift from it.
+      -->
+      <assign location="hold_within_ms" expr="_event.data.hold_within_ms"/>
       <!--
         ⚠⚠⚠ AND THE RUN'S TWO OTHER DURATIONS, ON THE SAME UNCONDITIONAL TERMS.
         They are the last two judgements that lived on `AiLoopSpec`: how long to
@@ -3848,6 +3902,34 @@
     -->
     <state id="held">
       <transition event="resume" target="standing"/>
+      <!--
+        ⚠⚠⚠⚠⚠ AND THE HOLD'S OWN ENDING — THE ONE THIS ORDER DID NOT HAVE.
+        Register item 534, which is item 9's residue: the fix that stopped a held
+        run burning its iterations left it burning nothing instead, for ever.
+
+        ⚠⚠⚠ IT IS ON THIS STATE AND NOT ON `awaiting_human`, which is the
+        opposite placement to `unattended` beside it, and the asymmetry is the
+        argument. `unattended` is a fact about the WORK — nobody came to a run
+        that needed somebody — so it belongs where the waiting happens, and it
+        has to ASK this region (`cond="!In('held')"`) whether an order explains
+        the wait. This event is a fact about the ORDER itself, so it belongs
+        here, and being here it needs no guard at all: the state is the
+        condition. A structural answer where the other one needs a written one.
+
+        ⚠⚠ WHAT IT IS NOT. Not `unattended` — somebody DID come, said stop, and
+        then did not come back, and sending a reader to look for a person who is
+        standing right there is precisely what item 470 took that decision out of
+        the driver to prevent. Not `cancelled` — nobody cancelled anything, and a
+        run reported cancelled sends its reader looking for whoever cancelled it.
+        Not `exhausted` — no budget was spent; the run did nothing at all, which
+        is the whole complaint.
+
+        ⚠ THE CEILING IS `hold_within_ms` AND THE DRIVER RAISES THIS when it
+        elapses, for the reason every other ending here is arranged that way: the
+        driver can MEASURE how long an order has stood, and what a run does about
+        it is a judgement, which lives in this file.
+      -->
+      <transition event="abandon" target="abandoned"/>
     </state>
 
     <!--
@@ -3905,4 +3987,33 @@
     event, and a reader of the walk sees which state it came from.
   -->
   <final id="peer_gone"/>
+  <!--
+    ⚠⚠⚠⚠ SOMEBODY HELD THIS RUN AND DID NOT COME BACK.
+
+    A SEVENTH ENDING, on the argument this document has now made three times —
+    for `blocked` (a run that wants an ANSWER is not a run that wants a FIX), for
+    `awaiting_human` (a run that wants NOTHING done is neither) and for
+    `peer_gone` (a run that wants its AGENT back). This one wants something none
+    of the six can ask for: **the person who paused it**. Nothing is broken,
+    nobody asked it a question, no budget ran out, its peer is alive and well,
+    and a person is not merely absent — they were HERE, and they said wait.
+
+    ⚠⚠⚠ WHAT IT COST TO NOT HAVE THIS WORD. Before `hold` had a wait at all a
+    held run spent its whole iteration budget looking at a pane nothing was
+    happening on, and died as `exhausted (iterations)` in 24 minutes telling its
+    reader to raise a number that would have bought nothing (register item 9,
+    measured on run 18). The fix for that gave the hold a real wait — and then
+    the run had no ending at all: patience is not spent while a person holds it,
+    `unattended` is refused for it by `held`, and a bound of `Duration::MAX`
+    answers only a cancel. Register item 534. **Both defects are the same one
+    seen from two sides: an order with no ending.** This is the ending.
+
+    ⚠⚠ AND IT IS REACHED FROM ONE STATE ONLY, which no other final here can say.
+    Every other ending is about the WORK, and the work region can be in several
+    states when it arrives; this one is a property of the `orders` region, whose
+    `held` state is the only place a hold exists. So there is exactly one edge,
+    it needs no guard, and a reader of the walk cannot be told anything but the
+    truth about how the run got here.
+  -->
+  <final id="abandoned"/>
 </scxml>

@@ -496,11 +496,12 @@ impl AiLoop {
         note
     }
 
-    /// Whether `state` is one of the document's six finals.
+    /// Whether `state` is one of the document's seven finals.
     ///
-    /// ⚠ EXHAUSTIVE, so a seventh final added to the document lands here as a variant that no
-    /// longer compiles rather than as a run that pumps a finished machine forever. ⚠⚠ The sixth
-    /// arrived that way: `peer_gone` broke this match on the compile that added it to the file.
+    /// ⚠ EXHAUSTIVE, so an eighth final added to the document lands here as a variant that no
+    /// longer compiles rather than as a run that pumps a finished machine forever. ⚠⚠ The last two
+    /// arrived that way: `peer_gone` broke this match on the compile that added it to the file, and
+    /// `abandoned` broke it and eight others (register item 534).
     const fn is_final(state: AiLoopState) -> bool {
         match state {
             AiLoopState::Converged
@@ -508,6 +509,11 @@ impl AiLoop {
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
+            // ⚠⚠ AN ORDER'S ENDING IS STILL AN ENDING, and this is the only final the document
+            // reaches from the `orders` region rather than from the work. `Self::state` reads the
+            // WORK region, so what puts this variant in front of this function is the parallel
+            // completing — see the document's own note beside `<final id="abandoned"/>`.
+            | AiLoopState::Abandoned
             | AiLoopState::Blocked => true,
             AiLoopState::Idle
             | AiLoopState::Priming
@@ -668,6 +674,22 @@ impl AiLoop {
                     note.push_str(&unfinished);
                 }
                 Verdict::Blocked(self.asking())
+            }
+            // ⚠⚠⚠⚠⚠ THE ONE ENDING THE `orders` REGION REACHES ON ITS OWN — register item 534.
+            // A person said *wait, let me look*, and did not come back inside the document's
+            // `hold_within_ms`. It is beside `blocked` here because the two are the pair a reader
+            // most needs told apart: both are *a person is what this run needs*, and only one of
+            // them means a person was never there.
+            //
+            // ⚠⚠⚠ THE UNFINISHED WORK IS APPENDED, on `blocked`'s and `exhausted`'s terms and for a
+            // sharper version of their reason. A held run stopped mid-goal by definition — the
+            // hold is *between turns* — so whatever the last judged turn left behind is the whole
+            // of what the person who let go needs to read before deciding whether to start again.
+            AiLoopState::Abandoned => {
+                if let Some(unfinished) = self.left_behind() {
+                    note.push_str(&unfinished);
+                }
+                Verdict::Abandoned
             }
             // ⚠⚠⚠ `cancel` IS RAISED ONLY WHEN THE RUN ITSELF HAS ENDED — `watch` answers it for
             // `Reached::RunEnded` and `Over::RunEnded`, both of which mean this run's context was
@@ -1031,6 +1053,13 @@ impl Plugin for AiLoop {
             AiLoopState::Cancelled
             | AiLoopState::Failed
             | AiLoopState::Blocked
+            // ⚠⚠⚠⚠ `abandoned` ANSWERS THE PANE, AND IT IS THE ARM WHERE THE FAIL-SAFE DIRECTION
+            // IS DOING REAL WORK — register item 534. The obvious reading is that hours of holding
+            // means nothing can be mid-turn; the document's own `HOLD_TAKES_EFFECT` refuses it. A
+            // hold PARKS THE LOOP and deliberately leaves the turn its agent is in the middle of
+            // alone, so the last thing this driver knows about that peer is that it was working —
+            // and it has not looked since. An unknown answer must fail towards stopping.
+            | AiLoopState::Abandoned
             | AiLoopState::Idle
             | AiLoopState::Priming
             | AiLoopState::Working
@@ -1246,6 +1275,10 @@ impl Plugin for AiLoop {
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
+            // ⚠⚠ AN ORDER THAT BECAME AN ENDING IS STILL AN ENDING — register item 534. The run is
+            // over, so there is nothing left to ask where it got to; the account a person wants
+            // after a hold expires is the one the last judged turn already wrote.
+            | AiLoopState::Abandoned
             // ⚠ Structure and orders, which a ceiling can no more account for than an ending can.
             | AiLoopState::Running
             | AiLoopState::Work
@@ -1307,6 +1340,19 @@ mod tests {
     /// ⚠⚠⚠ ASKED OF THE PRODUCT rather than typed, so a substrate that changes its own default
     /// moves these gates with it instead of leaving a number here that used to be true.
     const GATE_READY_MS: i64 = crate::readiness::DEFAULT_READY_TIMEOUT.as_millis() as i64;
+
+    /// **THE HOLD CEILING EVERY GATE HERE DECLARES**, in milliseconds — item 534's key, written out
+    /// for the two above's reason.
+    ///
+    /// ⚠⚠⚠ IT IS DELIBERATELY LONGER THAN THE WHOLE SUITE, which is the opposite choice to
+    /// `GATE_TURN_MS`'s and the right one for this key: no gate here holds a run, so a ceiling that
+    /// could elapse would end runs measuring something else — and it would do it by TIME, which is
+    /// the flakiest way for a suite to fail. The gate that DOES hold a run names its own small
+    /// number, which is the arrangement this constant exists to make visible.
+    ///
+    /// ⚠ Zero is refused by the brief, so a fixture cannot spell *"no ceiling"* here even by
+    /// accident — see `OuterLoop::hold_within`.
+    const GATE_HOLD_MS: i64 = 3_600_000;
 
     /// A real script engine, as the daemon's construction site builds one.
     fn engine() -> Arc<dyn IScriptEngine> {
@@ -1416,6 +1462,12 @@ mod tests {
             // this suite 59 tests in. A gate that wants a person says so, three lines down.
             await_person_ms: Some(0),
             handback_still_ms: None,
+            // ⚠⚠ AND THE HOLD CEILING, WRITTEN RATHER THAN INHERITED for the reason above it —
+            // register item 534. The shipped document authors FOUR HOURS, which never fires in a
+            // 74-second suite and would therefore be a number these gates assert nothing about;
+            // naming it here is what lets the one gate that holds a run name a small one and mean
+            // something by it. See `GATE_HOLD_MS`.
+            hold_within_ms: Some(GATE_HOLD_MS),
             // ⚠⚠⚠ AND THE TWO DURATIONS, WRITTEN RATHER THAN INHERITED, for the reason directly
             // above and one more: the shipped document authors THREE MINUTES and HALF AN HOUR,
             // which are a person's allowances for a live `claude` and are a hang in a suite whose
@@ -2209,16 +2261,30 @@ mod tests {
     fn the_question_a_stopped_run_is_asked_names_the_ceiling_that_stopped_it() {
         // ⚠ THE PREMISE OF THE ABSENCE ASSERTIONS BELOW, CHECKED FIRST: a needle that appeared in
         // another ceiling's clause would make *the wrong three are gone* unfalsifiable.
+        //
+        // ⚠⚠⚠ AND THE POPULATION IS THE CEILINGS THAT ASK FOR AN ACCOUNT, WHICH IS ASSERTED RATHER
+        // THAN ASSUMED — register item 534. `Ceiling::Hold` reaches its ending with nobody at the
+        // pane and asks nothing, so it has no clause; skipping it silently would let a LATER
+        // account-asking ceiling be skipped the same way, so the skip is a claim the loop below
+        // checks against `asks_for_an_account` and refuses to make on its own.
         for ceiling in Ceiling::ALL {
-            for other in Ceiling::ALL {
+            let Some(needle) = crate::testing::stop_said(ceiling) else {
                 assert!(
-                    ceiling == other
-                        || !crate::testing::stop_said(ceiling)
-                            .contains(crate::testing::stop_said(other)),
+                    !ceiling.asks_for_an_account(),
+                    "⚠⚠⚠ {ceiling:?} is asked for an account and the fixture has no clause for it, \
+                     so `stopping` composes `nil` into a live agent's prompt — register item 264's \
+                     measured failure, arriving through the door item 534 opened"
+                );
+                continue;
+            };
+            for other in Ceiling::ALL {
+                let Some(theirs) = crate::testing::stop_said(other) else {
+                    continue;
+                };
+                assert!(
+                    ceiling == other || !needle.contains(theirs),
                     "⚠⚠ the fixture's needles must be mutually exclusive, or the assertions below \
-                     cannot tell one ceiling's clause from another: {:?} contains {:?}",
-                    crate::testing::stop_said(ceiling),
-                    crate::testing::stop_said(other),
+                     cannot tell one ceiling's clause from another: {needle:?} contains {theirs:?}",
                 );
             }
         }
@@ -2297,22 +2363,37 @@ mod tests {
                 .authored()
                 .expect("the datamodel must still answer for its prompts")
                 .stop;
+            // ⚠⚠ EVERY ROW HERE DRIVES A CEILING THAT ASKS FOR AN ACCOUNT — the table above holds
+            // only guardrails and the document's budget — so a row whose clause is missing is a
+            // table that grew a ceiling reaching `stopping` without one. Register item 534.
+            let clause = crate::testing::stop_said(ceiling).unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠ this table drives {ceiling:?} into `stopping`, so it MUST have a clause: \
+                     `Ceiling::asks_for_an_account` says {}, and a run asked `nil` is item 264's \
+                     measured failure",
+                    ceiling.asks_for_an_account()
+                )
+            });
             assert!(
-                asked.contains(crate::testing::stop_said(ceiling)),
+                asked.contains(clause),
                 "⚠⚠⚠ REGISTER ITEM 264: a run stopped by its {ceiling:?} ceiling was asked \
                  {asked:?}, which does not name that ceiling. This sentence is TYPED INTO THE \
                  AGENT'S PANE in the turn that asks it what a run picking this up should do first, \
-                 so the agent reasons from whatever it says. Expected the clause \
-                 {:?}",
-                crate::testing::stop_said(ceiling),
+                 so the agent reasons from whatever it says. Expected the clause {clause:?}",
             );
             for other in Ceiling::ALL {
+                // ⚠ A ceiling with no clause cannot be named by a prompt, so there is nothing to
+                // find absent — and skipping it silently is safe here BECAUSE the premise loop at
+                // the top of this test already refused the case where that skip would hide a defect.
+                let Some(theirs) = crate::testing::stop_said(other) else {
+                    continue;
+                };
                 assert!(
-                    other == ceiling || !asked.contains(crate::testing::stop_said(other)),
+                    other == ceiling || !asked.contains(theirs),
                     "⚠⚠⚠ AND IT NAMED A CEILING THAT DID NOT STOP IT. A run stopped by \
                      {ceiling:?} was asked {asked:?}, which carries {other:?}'s clause \
-                     ({:?}) — the exact defect item 264 is about, since the agent cannot check.",
-                    crate::testing::stop_said(other),
+                     ({theirs:?}) — the exact defect item 264 is about, since the agent cannot \
+                     check.",
                 );
             }
 
@@ -2837,6 +2918,194 @@ mod tests {
             "⚠⚠ AND THE HOLD MUST COME OFF. `resume` is what makes this the one order a person can \
              take back; a run still parked after the flag dropped is a `cancel` wearing a kinder \
              word.",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔ **A HOLD NOBODY EVER LIFTS MUST REACH AN ENDING, AND ONE LIFTED IN TIME MUST NOT** —
+    /// register item 534, which is the gate above's own residue and the reason it is a separate
+    /// number rather than a paragraph inside a closed entry.
+    ///
+    /// # What the fix above left behind, measured rather than argued
+    ///
+    /// Item 522 stopped a held run burning its iteration budget, by parking it on the one condition
+    /// that ends a hold: the person letting go. What it did not give it was a way to END if they
+    /// never do. Three facts compose into a run that is immortal:
+    ///
+    /// * a held run's patience is deliberately NOT spent (the gate above asserts exactly that);
+    /// * `unattended` is refused for it by the document's own `cond="!In('held')"`;
+    /// * [`Guardrails::max_duration`] is an `Option`, so a run launched without one has no deadline
+    ///   for `poll_until` to answer — and `max_iterations` cannot bound a step that never returns.
+    ///
+    /// **So before this ceiling existed a run held by somebody who then went home parked on its
+    /// pane, holding a daemon slot, until a person cancelled it by hand.** Worse than the defect it
+    /// replaced in one respect a reader must not lose: the old behaviour at least ENDED, wrongly and
+    /// loudly, at 24 minutes.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the pair is the claim and neither arm is a fact about this machine
+    ///
+    /// Either assertion alone is satisfiable by a driver that is simply wrong in the other
+    /// direction. A `hold` that ends the run the moment it arrives passes the first arm and is a
+    /// `cancel` wearing a kinder word — the exact thing this document spent a whole state refusing.
+    /// A `hold` bounded by `Duration::MAX` passes the second and is the defect. **The two arms differ
+    /// in ONE thing: whether the person comes back inside the ceiling.**
+    ///
+    /// ⚠⚠⚠⚠ AND THE POPULATION IS THE UNATTENDED RUN, WHICH IS THE WHOLE OF ITEM 534. Both arms are
+    /// briefed with nobody watching (`brief_for`'s `await_person_ms: 0`), because that is the shape
+    /// that parked for ever: with a person declared the wait is at least re-taken every hour, and
+    /// with `Attended::NoOne` the bound was `Duration::MAX` outright. A gate that declared a
+    /// supervisor would be measuring the case that was less broken.
+    ///
+    /// ⚠⚠⚠ IT IS DRIVEN THROUGH THE `Driver` AND NOT PUMPED BY HAND, because the ending's WORD is
+    /// half the repayment: a held run used to report `exhausted — iterations`, sending its reader to
+    /// raise a step budget that would have bought it nothing. `Ceiling::Hold` is what makes the
+    /// sentence true, and only a real run produces it.
+    #[test]
+    fn a_hold_nobody_lifts_ends_the_run_and_one_lifted_in_time_does_not() {
+        /// How long the document lets a hold last, in the arm where nobody comes back. Short enough
+        /// to keep the gate cheap, and an order of magnitude above the sub-millisecond passes the
+        /// stand-in takes so the ending is the ceiling's rather than a scheduling accident.
+        const CEILING: Duration = Duration::from_millis(300);
+        /// The ceiling in the arm where somebody DOES come back — far above the hold below, so
+        /// *left because the person let go* and *left because the ceiling fell due* are different
+        /// numbers rather than one number read twice. The gate above's `PATIENCE`/`HELD_FOR` split.
+        const ROOMY: Duration = Duration::from_secs(30);
+        /// How long the person keeps it in that arm. Well inside `ROOMY`.
+        const HELD_FOR: Duration = Duration::from_millis(150);
+
+        // ── ARM ONE: NOBODY EVER COMES BACK ──
+        //
+        // ⚠⚠ HELD FROM THE FIRST STEP, and that is not a shortcut past the *between turns* rule —
+        // it is the driver's own arrangement being used as documented. `hold` is raised on EVERY
+        // held pass precisely because a raise consumed in `idle`, where the document has no word
+        // for being held, was the first draft's defect; so the order lands the moment `working`
+        // exists, with no thread and no race for this gate to lose.
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                hold_within_ms: Some(CEILING.as_millis() as i64),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            // ⚠⚠⚠ `max_duration` IS `None` **ON PURPOSE, AND IT IS THIS ARM'S CONTROL**: a run
+            // WITH a deadline would have ended on it eventually, so a gate that named one could
+            // not tell this ceiling from that one. It is also the shipped shape — `sprag
+            // orchestrate` requires no `max_seconds`, which is exactly why item 534 could happen.
+            //
+            // ⚠⚠⚠⚠ AND `max_iterations` IS SMALL **SO THE MUTATION FAILS FAST**, which is measured
+            // rather than guessed. A correct run parks and ends in under ten passes. Under the
+            // defect this gate exists for — a ceiling re-measured from each pass instead of from
+            // the moment the hold began — every pass waits the whole ceiling out, so a
+            // `max_iterations` of 4,000 turns a red into TWENTY MINUTES of green-looking CI
+            // (measured: `rc=124` at a 400-second timeout). Forty passes bound that to about
+            // twelve seconds and land it as `Exhausted(Iterations)`, which is a different word
+            // from the one asserted and therefore a legible failure rather than a hang.
+            max_iterations: 40,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(
+            &mut loops,
+            &access,
+            &RunContext::uncancellable().held_by(Arc::new(AtomicBool::new(true))),
+        );
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Hold),
+            "⛔⛔⛔⛔ REGISTER ITEM 534: a run held by somebody who never came back did not end as \
+             abandoned. It answered {:?} instead. With no `max_duration` and no patience there is \
+             nothing else left to end it, so a run that reaches here by any other word either \
+             parked for ever (the defect) or was ended by a ceiling that says something false \
+             about why. Walked {walk:?}",
+            outcome.state,
+        );
+        assert_eq!(
+            loops.state(),
+            AiLoopState::Abandoned,
+            "⚠⚠⚠ AND THE DOCUMENT MUST AGREE WITH THE RUN'S WORD, or the two are counting \
+             different things — the `orders` region reached its own final and `Self::state` fell \
+             back to the flattened configuration, which is the mechanism `blocked` already relies \
+             on. Walked {walk:?}",
+        );
+        assert!(
+            Ceiling::Hold.describe().contains("did not come back"),
+            "⚠⚠ AND THE SENTENCE A PERSON READS MUST SAY WHAT HAPPENED. The whole complaint against \
+             the old ending was its prose, not its arithmetic: `exhausted — iterations` is a true \
+             sentence about a step budget and a false one about this run.",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // ── ARM TWO: THE SAME ORDER, TAKEN BACK IN TIME ──
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                hold_within_ms: Some(ROOMY.as_millis() as i64),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let hold = Arc::new(AtomicBool::new(true));
+        let releasing = {
+            let hold = Arc::clone(&hold);
+            std::thread::spawn(move || {
+                std::thread::sleep(HELD_FOR);
+                hold.store(false, Ordering::Release);
+            })
+        };
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 4_000,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(
+            &mut loops,
+            &access,
+            &RunContext::uncancellable().held_by(Arc::clone(&hold)),
+        );
+        releasing.join().expect("the person's own thread");
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⛔⛔⛔⛔ AND A HOLD IS STILL THE ONE ORDER A PERSON CAN TAKE BACK. Held for \
+             {HELD_FOR:?} under a {ROOMY:?} ceiling and let go, this run answered {:?} — so the \
+             ceiling is ending runs whose person DID come back, which makes `hold` a `cancel` that \
+             took the scenic route and undoes the whole reason the order exists. Walked {walk:?}",
+            outcome.state,
+        );
+        assert_ne!(
+            loops.state(),
+            AiLoopState::Abandoned,
+            "⚠⚠ and the document must not be sitting in the ending either",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

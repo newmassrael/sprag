@@ -1499,12 +1499,19 @@ pub(crate) const STOP_ECHO_SLICE: &str = "what you left half-done";
 /// ⚠ Claims about the document's wording, exactly as [`STOP_QUESTION`] is, and held in step by the
 /// same discipline: edited apart from `ai_loop.scxml`, the gate that reads them goes red rather than
 /// quietly stopping being about anything.
-pub(crate) const fn stop_said(ceiling: Ceiling) -> &'static str {
+/// ⚠⚠⚠⚠ AND [`None`] FOR A CEILING THAT ASKS FOR NO ACCOUNT — register item 534. `Ceiling::Hold`
+/// ends a run through the `orders` region with nobody at the pane, so it never enters `stopping` and
+/// the document composes nothing for it. An `Option` is what makes that a fact the compiler carries:
+/// a needle here would be a claim about a clause that does not exist, and an empty string would
+/// satisfy every `contains` in the suite. The class is [`Ceiling::asks_for_an_account`]'s to answer,
+/// and this function agrees with it by construction rather than by a second list.
+pub(crate) const fn stop_said(ceiling: Ceiling) -> Option<&'static str> {
     match ceiling {
-        Ceiling::Turns => "every turn its document budgeted",
-        Ceiling::Iterations => "every step its run was allowed",
-        Ceiling::Cost => "allowed to spend",
-        Ceiling::Duration => "wall-clock time",
+        Ceiling::Turns => Some("every turn its document budgeted"),
+        Ceiling::Iterations => Some("every step its run was allowed"),
+        Ceiling::Cost => Some("allowed to spend"),
+        Ceiling::Duration => Some("wall-clock time"),
+        Ceiling::Hold => None,
     }
 }
 

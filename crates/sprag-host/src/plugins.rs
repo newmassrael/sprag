@@ -1307,6 +1307,31 @@ fn opt_attended(map: &Map<String, Value>) -> Result<Attended, InvokeError> {
 /// mine again the instant they pause"* is not something a caller can mean, since every person pauses
 /// between keystrokes, and one who reached zero by arithmetic would get a run that typed into the
 /// gap between their words.
+/// Read the optional `hold_within_ms` — HOW LONG SOMEBODY MAY HOLD THIS RUN before it ends as
+/// abandoned. Absent (or `null`) is [`None`]: the loop document's own ceiling stands, which is what
+/// *"omitting a duration key means the document decides"* means everywhere else on this form.
+///
+/// ⚠⚠⚠ **IT IS NOT PART OF THE `await_person_ms` / `handback_still_ms` PAIR, AND THAT IS REGISTER
+/// ITEM 534's WHOLE POINT.** Those two are one request about a person who is EXPECTED, and
+/// [`Handback`] living inside [`Attended::APerson`] is what enforces it. A hold is an order, and a
+/// run nobody is watching can be given one — which is exactly the population that used to park for
+/// ever, so a ceiling read through that contract would have been unreachable where it was needed.
+/// It is therefore read alone, and sending it without either of the others is well-formed.
+///
+/// ⚠⚠ **ZERO IS MALFORMED**, [`opt_attended`]'s rule: *"hold this run and end it at once"* is
+/// `cancel` spelled wrong, so the two would be two spellings of one behaviour — and the caller who
+/// reached zero by arithmetic is the one who has to be told. There is deliberately no spelling for
+/// *"no ceiling"*: an unbounded hold is the defect this key closes, not a configuration.
+fn opt_hold_within(map: &Map<String, Value>) -> Result<Option<Duration>, InvokeError> {
+    let Some(within) = opt_millis(map, sprag_plugin::HOLD_WITHIN_KEY)? else {
+        return Ok(None);
+    };
+    if within.is_zero() {
+        return Err(InvokeError::TypeMismatch);
+    }
+    Ok(Some(within))
+}
+
 fn opt_handback(map: &Map<String, Value>) -> Result<Handback, InvokeError> {
     let Some(still) = opt_millis(map, Handback::WIRE_KEY)? else {
         return Ok(Handback::Never);
@@ -1562,6 +1587,18 @@ fn ai_loop_brief(
             .handback()
             .stillness()
             .map(|still| still.as_millis() as i64),
+        // ⚠⚠⚠⚠ AND HOW LONG A HOLD MAY LAST — register item 534, and it is read on its OWN rather
+        // than through `opt_attended` above, which is the whole shape of the item. Those two keys
+        // are one request about somebody EXPECTED, and this is a bound on an order a run nobody is
+        // watching can also be given: item 534's entire population is the unattended runs, the ones
+        // that parked for ever, so routing it through the *is anybody watching* contract would have
+        // put the ceiling exactly where it could not reach.
+        //
+        // ⚠⚠⚠ ZERO IS MALFORMED, on `await_person_ms`'s own rule and refused by the same reader:
+        // *hold this run and end it at once* is `cancel` spelled wrong, and a caller who reached
+        // zero by arithmetic gets told rather than obeyed. ⚠ Absent means THE DOCUMENT DECIDES,
+        // like the two keys above and unlike their pre-item-300 selves.
+        hold_within_ms: opt_hold_within(map)?.map(|held| held.as_millis() as i64),
         // ⚠⚠⚠ AND THE LAST TWO JUDGEMENTS, ON THE SAME ROUTE. Each of them arrived
         // paired with a PREDICATE — `ready_timeout_ms` with `ready_when`,
         // `turn_within_ms` with `done_when` — and register item 300 measured that the
@@ -3019,6 +3056,71 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔ **A HOLD CEILING REACHES THE DOCUMENT, IS REFUSED AT ZERO, AND NEEDS NO PERSON BESIDE
+    /// IT** — register item 534, on the door a caller actually calls.
+    ///
+    /// # ⚠⚠⚠⚠ The third assertion is the one the item is about
+    ///
+    /// The first two are this surface's ordinary rules restated. The third is the whole finding:
+    /// `hold_within_ms` is **well-formed with no `await_person_ms` beside it**, which is the exact
+    /// opposite of `handback_still_ms`'s rule in the gate below. Those two are one request about
+    /// somebody EXPECTED, enforced by [`Handback`] living inside `Attended::APerson` — and a hold is
+    /// an ORDER, which a run nobody is watching can be given. **That population is item 534's
+    /// entire population**: the runs that parked for ever were the unattended ones, so a parser
+    /// that demanded a watching person here would have refused the ceiling exactly where it was
+    /// needed and left the defect standing behind a well-intentioned pairing rule.
+    ///
+    /// ⚠⚠ ZERO IS REFUSED for `await_person_ms`'s reason, sharpened: *hold this run and end it at
+    /// once* is `cancel` spelled wrong, so accepting it would give a caller who reached zero by
+    /// arithmetic a run that dies the first time anybody pauses it to read a pane.
+    ///
+    /// ⚠ AND SILENCE IS SILENCE, which is what lets `ai_loop.scxml` decide — the same answer every
+    /// other optional duration on this form gives since register item 300.
+    #[test]
+    fn a_hold_ceiling_travels_alone_and_a_zero_one_is_refused() {
+        let sent = |body: Value| opt_hold_within(body.as_object().expect("an object"));
+        assert!(
+            matches!(
+                sent(json!({ sprag_plugin::HOLD_WITHIN_KEY: 900_000 })),
+                Ok(Some(within)) if within == Duration::from_millis(900_000),
+            ),
+            "⚠ THE CONTROL: a ceiling a caller sends must reach the document as the number sent, or \
+             the key is decoration",
+        );
+        assert!(
+            matches!(
+                sent(json!({ sprag_plugin::HOLD_WITHIN_KEY: 0 })),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠⚠ AND ZERO IS REFUSED. *Hold this run and end it at once* is `cancel` spelled wrong, \
+             and a caller who arrived at zero by arithmetic must be told rather than handed a run \
+             that dies the first time somebody pauses it",
+        );
+        // ⚠⚠⚠⚠ THE ITEM'S OWN ASSERTION: no person declared, and the request stands.
+        assert!(
+            matches!(
+                sent(json!({ sprag_plugin::HOLD_WITHIN_KEY: 60_000 })),
+                Ok(Some(_)),
+            ),
+            "⛔⛔⛔ REGISTER ITEM 534: a hold ceiling sent WITHOUT `await_person_ms` must be \
+             well-formed. A hold is an order and not a contract about who is watching — and the \
+             runs that parked for ever were precisely the unattended ones, so pairing this key \
+             with a person would refuse the ceiling in the only population that needed it",
+        );
+        assert!(
+            matches!(sent(json!({})), Ok(None)),
+            "⚠⚠ and silence is silence: a caller who names no ceiling defers to `ai_loop.scxml`'s \
+             own, which is what every optional duration on this form has meant since item 300",
+        );
+        assert!(
+            matches!(
+                sent(json!({ sprag_plugin::HOLD_WITHIN_KEY: null })),
+                Ok(None)
+            ),
+            "⚠ and an explicitly declined key is the same as an absent one",
+        );
+    }
+
     /// ⚠⚠⚠ **HALF OF A PAIRED REQUEST IS MALFORMED — `handback_still_ms` WITH NOBODY WATCHING.**
     ///
     /// A caller who sends it alone has plainly asked for a run that waits for a person. There is no
@@ -4107,10 +4209,19 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            73,
+            74,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `reflect_after_refusals` (item \
+             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `hold_within_ms` (item 534), and \
+             declining it means what declining the two duration keys beside it means since item \
+             300: THIS DOCUMENT DECIDES — `ai_loop.scxml`'s own four hours. ⚠⚠ Zero is NOT a value \
+             a caller may mean here, unlike `context_ceiling` and `reflect_after_refusals` below: \
+             *hold this run and end it at once* is `cancel` spelled wrong, so it is refused rather \
+             than obeyed — and that rule is about a VALUE, which no per-argument sweep can see (see \
+             `a_hold_ceiling_travels_alone_and_a_zero_one_is_refused`). ⚠ It is also the one key \
+             here that needs NO person declared beside it, which is the whole of item 534: the runs \
+             that parked for ever were the unattended ones. THE OLD SENTENCE FOLLOWS. THE NEWEST IS \
+             `reflect_after_refusals` (item \
              494), and declining it means what declining `context_ceiling` beside it means, one \
              number over: the caller's, then THIS repository's KIND document, then the template's \
              own `expr=\"3\"`. ⚠⚠ It is here because the CLASS was swept rather than the instance — \
@@ -4185,11 +4296,19 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            118,
+            119,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, THIRTY to run an AI loop, one to cancel, and ONE TO STAND \
-             A RUN DOWN. ⚠⚠⚠⚠⚠ THE NEWEST IS THE LOOP'S THIRTIETH, `reflect_after_refusals` (item \
+             TEN to answer a pane, THIRTY-ONE to run an AI loop, one to cancel, and ONE TO STAND \
+             A RUN DOWN. ⚠⚠⚠⚠⚠ THE NEWEST IS THE LOOP'S THIRTY-FIRST, `hold_within_ms` (item 534), \
+             and this gate is what makes it more than a declaration for its two predecessors' \
+             reason: a published argument the host does not READ is a key the surface swallows \
+             while the run reports `ok`. ⚠⚠ IT IS ON THIS FORM ALONE, unlike the two person keys it \
+             sits beside — the ceiling is a `<data>` in `ai_loop.scxml` and that document is the \
+             only thing in this workspace that reads a hold at all, so declaring it on the other \
+             three LOOPING forms would advertise an argument they swallow, which is the exact \
+             defect this gate exists to catch. THE OLD SENTENCE FOLLOWS. THE LOOP'S THIRTIETH WAS \
+             `reflect_after_refusals` (item \
              494), and this gate is what makes it more than a declaration for the same reason it \
              did for its twin: a published argument the host does not READ is a key the surface \
              swallows while the run reports `ok`. ⚠⚠ The twin is the point — the template claims \

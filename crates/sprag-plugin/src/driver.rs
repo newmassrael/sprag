@@ -151,6 +151,25 @@ pub enum Ceiling {
     ///
     /// [`ai_loop.scxml`]: ../../ai_loop.scxml
     Turns,
+    /// ⚠⚠⚠⚠ **HOW LONG A PERSON MAY HOLD A RUN** — [`ai_loop.scxml`]'s `hold_within_ms`, and the
+    /// SECOND ceiling the [`Driver`] does not own. Register item 534.
+    ///
+    /// [`Turns`](Self::Turns) is a budget the plugin COUNTS; this is one it WAITS OUT, and the two
+    /// are the same type for the reason written there: a caller reading `ceiling` is asking *what
+    /// do I raise to buy this run more room*, and here the answer is a real knob — hold it longer,
+    /// or come back sooner.
+    ///
+    /// ⚠⚠⚠ IT IS WHY THIS RUN'S ENDING IS `exhausted` AND NOT A SEVENTH OUTCOME WORD, on
+    /// `peer_gone`'s test one layer up: does its reader DO something different? A held run's reader
+    /// does what an exhausted run's reader does — decide whether to start it again, with a number
+    /// raised or not. What they must NOT be told is `iterations`, which is what a held run reported
+    /// before this variant existed: a step budget that would have bought it nothing (item 9,
+    /// measured on run 18 — dead in 24 minutes under a document declaring an hour of patience).
+    ///
+    /// ⚠⚠ AND IT SURVIVES A RESTART, which is the payoff of being in this closed set rather than a
+    /// typed pane on the verdict. The durable log writes the word and `outcome_from_words` reads it
+    /// back, so a run abandoned before a daemon died still says so afterwards.
+    Hold,
 }
 }
 
@@ -176,6 +195,37 @@ impl Ceiling {
             Self::Cost => "cost",
             Self::Duration => "duration",
             Self::Turns => "turns",
+            Self::Hold => "hold",
+        }
+    }
+
+    /// **WHETHER A RUN THIS CEILING ENDS IS ASKED WHERE IT GOT TO** — the class `Ceiling::Hold`
+    /// created, made explicit rather than left for a reader to infer. Register item 534.
+    ///
+    /// # ⚠⚠⚠⚠ Why this is a method and not a comment
+    ///
+    /// Four of these five stop a run **mid-work**: the agent is at its pane, the budget ran out
+    /// around it, and `ai_loop.scxml`'s `stopping` state asks it for an account before the run
+    /// ends — which is what `stop_said` composes a per-ceiling sentence for (register item 264).
+    /// [`Hold`](Self::Hold) cannot: the run reached its ending through the `orders` region with
+    /// nobody at the pane, and typing a question at it would break the one promise a hold makes
+    /// (`HOLD_TAKES_EFFECT`: *"nothing further is typed at the pane while it waits"*).
+    ///
+    /// ⚠⚠⚠ **AND THE RATCHET THAT READS `stop_said` NEEDED A POPULATION.** It asserts the document
+    /// authors one clause per ceiling AND no others, so before this method existed a fifth ceiling
+    /// left exactly two options: a clause nothing can ever select (the *"prose with no ceiling"*
+    /// half of that same assertion), or a red nobody could fix without weakening the gate. The
+    /// class is the answer, and putting it in the type means a SIXTH ceiling is asked the question
+    /// instead of inheriting an answer.
+    ///
+    /// ⚠⚠ IT IS ALSO WHY THE MISTAKE CANNOT BE MADE QUIETLY IN EITHER DIRECTION: flip `Hold` to
+    /// `true` and the ratchet demands a clause the document does not have; author that clause and
+    /// the ratchet rejects a key no live ceiling selects.
+    #[must_use]
+    pub const fn asks_for_an_account(self) -> bool {
+        match self {
+            Self::Iterations | Self::Cost | Self::Duration | Self::Turns => true,
+            Self::Hold => false,
         }
     }
 
@@ -207,6 +257,20 @@ impl Ceiling {
             Self::Turns => {
                 "the plugin's own declared budget is spent — no guardrail bounds it, so raising \
                  one buys nothing; the number is in the brief the plugin was given"
+            }
+            // ⚠⚠⚠ IT NAMES NO KNOB EITHER, for `Turns`' reason, AND IT NAMES A SECOND REMEDY THAT
+            // IS NOT A NUMBER AT ALL. This is the only ceiling in the set that a person can spend
+            // by doing nothing, so *come back sooner* is as much the answer as *raise it* — and a
+            // sentence that offered only the number would tell somebody to configure their way out
+            // of having walked away. ⚠ It says what the run DID NOT do, because that is the fact a
+            // reader is most likely to get wrong here: no turn was taken, so nothing was lost to a
+            // budget and the work is exactly where the hold found it.
+            Self::Hold => {
+                "somebody held this run and did not come back inside the plugin's own hold \
+                 ceiling — no guardrail bounds it, so raising one buys nothing; hold it longer in \
+                 the brief the plugin was given, or come back sooner. Nothing was typed at the \
+                 pane while it waited and no turn was spent, so the work stands where the hold \
+                 found it"
             }
         }
     }
@@ -865,6 +929,18 @@ impl Driver {
                         // is already spent, so reporting `cancelled` would tell the reader to
                         // start it again when the answer is to give it more turns.
                         Verdict::Exhausted(ceiling) => self.exhaust(*ceiling),
+                        // ⚠⚠⚠⚠ A HOLD THAT OUTLIVED ITS CEILING TAKES THE SAME ARM AS ANY OTHER
+                        // SPENT BUDGET, and going through `exhaust` rather than beside it is the
+                        // claim — register item 534. `exhaust` is the single site that pairs the
+                        // recorded ceiling with the transition, which is exactly why a fifth source
+                        // of exhaustion must not reach `exhausted` any other way.
+                        //
+                        // ⚠⚠⚠ AND IT IS BELOW `blocked` AND `taken_over` FOR THEIR OWN REASON,
+                        // WHICH BITES HARDEST HERE: a person's hand on the pane outranks this, and
+                        // a hold is precisely the order a person gives before putting it there. A
+                        // run whose reader is told *nobody came back* when somebody is typing in it
+                        // right now is the one sentence this ending must never produce.
+                        Verdict::Abandoned => self.exhaust(Ceiling::Hold),
                         // ⚠⚠ A SCREENED STEP TAKES THE SAME ARM AS AN ANSWERED ONE, and sharing it
                         // is the claim: a step that refused its peer's call and redirected it
                         // continues under exactly the same guardrails as any other, because a

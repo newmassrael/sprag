@@ -215,6 +215,17 @@ pub const HOLD_TAKES_EFFECT: &str = "it parks at its next pass, leaving the turn
                                      while it waits, and waiting spends no part of its iteration \
                                      budget";
 
+/// The datamodel variable holding **HOW LONG A HOLD MAY LAST BEFORE THE RUN IS ABANDONED**, in
+/// milliseconds — spelled once, here, so the driver's reader, the document's `<data>` and the
+/// document's `<assign>` cannot drift.
+///
+/// ⚠⚠⚠ It is NOT part of [`crate::readiness::Attended`], and that is the decision rather than an
+/// oversight: `await_person_ms` and `handback_still_ms` are two halves of one contract about
+/// somebody who is EXPECTED, and a run nobody is watching can still be held. Register item 534's
+/// whole population is the unattended one, so a ceiling living inside that contract would have been
+/// unreachable exactly where it was needed.
+pub const HOLD_WITHIN_KEY: &str = "hold_within_ms";
+
 /// **WHICH EVIDENCE SAYS THIS LOOP'S PROMPT WAS SUBMITTED**, given the contract its caller already
 /// declared for the turn's other end — see [`OuterLoop::submit_lands_when`], where the argument is.
 ///
@@ -717,6 +728,22 @@ pub struct Brief {
     /// than a quiet *never*: every person pauses between keystrokes.
     pub handback_still_ms: Option<i64>,
 
+    /// **HOW LONG SOMEBODY MAY HOLD THIS RUN BEFORE IT IS ABANDONED**, in milliseconds, or [`None`]
+    /// to keep what the document says.
+    ///
+    /// ⚠⚠⚠ THE THIRD NUMBER ABOUT THE SAME PERSON AND NOT THE THIRD PART OF THE PAIR ABOVE. Those
+    /// two are one decision — [`Handback`](crate::readiness::Handback) lives INSIDE
+    /// `Attended::APerson`, so *hand the pane back to a run nobody is watching* cannot be
+    /// constructed — and this is deliberately outside it, because a run nobody is watching CAN be
+    /// held. That is register item 534's entire population: the runs that parked for ever were the
+    /// ones with no person declared.
+    ///
+    /// ⚠⚠ Zero is REFUSED rather than read as a bound of zero, which is the opposite of
+    /// [`ready_timeout_ms`](Self::ready_timeout_ms) one field down. *Hold this run and end it at
+    /// once* is `cancel` spelled wrong, and a caller who arrives at zero by arithmetic — a deadline
+    /// already passed, a config that defaulted — is the one who needs telling rather than obeying.
+    pub hold_within_ms: Option<i64>,
+
     /// **HOW LONG THE BARRIER WAITS FOR THE PANE TO BE READY**, in milliseconds, or [`None`] to keep
     /// what the document says.
     ///
@@ -1183,6 +1210,11 @@ impl Owed {
                 // catch-all for this arm's own rule: an edge that ever did carry it into `working`
                 // would be an order interrupting a turn, and it would fail to compile here first.
                 | AiLoopEvent::StandDown
+                // ⚠⚠⚠ `abandon` IS AN ORDER'S OWN ENDING, so it reaches a FINAL and never `working`
+                // — the two reasons above at once (register item 534). Spelled rather than left to
+                // a catch-all for this arm's rule, and there is a second thing it must never do:
+                // owe a prompt. The ending exists precisely because nobody is there to read one.
+                | AiLoopEvent::Abandon
                 | AiLoopEvent::Null => Self::Nothing,
             },
             AiLoopState::Idle
@@ -1206,6 +1238,10 @@ impl Owed {
             // enforced rather than argued: a prompt owed to a state reached BECAUSE the pane's
             // program exited would be typed straight at the wall this whole round is about.
             | AiLoopState::PeerGone
+            // ⚠⚠ AND NEITHER DOES A RUN NOBODY CAME BACK TO — register item 534. It is the sharpest
+            // case in this list: the state is reached because a person stopped reading, so a prompt
+            // owed here would be typed at a pane on the strength of nobody being at it.
+            | AiLoopState::Abandoned
             // ⚠⚠⚠ THE REGIONS' OWN STATES OWE NOTHING EITHER, and they owe it for a different
             // reason than every other arm here: they are not ARRIVALS a run passes through. The
             // parallel root and the two region roots are structure, and the orders states are what
@@ -1266,6 +1302,9 @@ impl Owed {
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
+            // ⚠ Nor in an order that became an ending: a hold types nothing at the pane by
+            // contract (`HOLD_TAKES_EFFECT`), so its expiry cannot have asked for anything.
+            | AiLoopState::Abandoned
             // ⚠ No account is asked for in a region root or in an order — nobody was spoken to.
             | AiLoopState::Running
             | AiLoopState::Work
@@ -2759,9 +2798,19 @@ pub struct OuterLoop {
     /// a peer that stopped speaking, a dialog nothing could read. Undoing on the order alone would
     /// wave all three on, immediately, and each of them means the opposite.
     ///
-    /// ⚠ False for every run nobody holds, which is every run today — so the two edges cost a pass
-    /// one boolean read until somebody says the word.
-    holding: bool,
+    /// ⚠ [`None`] for every run nobody holds, which is every run today — so the two edges cost a
+    /// pass one option read until somebody says the word.
+    ///
+    /// # ⚠⚠⚠ Why it is an INSTANT and not the boolean it was
+    ///
+    /// A hold has a ceiling (`hold_within_ms`), and a ceiling is measured from a MOMENT. The held
+    /// arm of [`attend`](Self::attend) is re-entered on every pass, so a bound taken there would
+    /// restart with each look and never elapse — register item 534, whose whole finding is that a
+    /// held run had no ending. One field carrying *since when* answers both questions the driver
+    /// asks (is a hold standing, and how long has it stood) where two would be two things to keep
+    /// in step. ⚠⚠ It is set at the TOP of the pass, where the order is read, so the moment
+    /// recorded is the first pass that saw the hold rather than the first that waited it out.
+    holding: Option<Instant>,
     /// **WHEN THIS RUN STARTED WAITING OUT ITS PEER'S SERVICE**, or [`None`] when it is not.
     ///
     /// ⚠⚠ Held on [`awaiting`](Self::awaiting)'s terms and for its reason:
@@ -3050,7 +3099,7 @@ impl OuterLoop {
             done: Completion::new(spec.done_when),
             noticed: None,
             // Nobody has said anything to a run that has not started — see the field.
-            holding: false,
+            holding: None,
             // ⚠⚠⚠ THE CALLER'S CONSENTS AND THEIR ATTENDANT REACH THE BARRIER, and that reverses a
             // decision this constructor used to argue: *"answering a dialog is `screening`'s job,
             // and a consent given to the barrier would answer dialogs one level below the machine
@@ -3257,6 +3306,28 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // ⚠⚠⚠⚠ AND HOW LONG A HOLD MAY LAST, REFUSED ON ITS OWN — register item 534, and it is
+        // refused apart from the pair above for that pair's own stated reason: those two are halves
+        // of one contract about somebody EXPECTED, and this is a bound on an order a run nobody is
+        // watching can also be given. Naming the wrong part in a refusal is what item 264 measured.
+        //
+        // ⚠⚠⚠ **ZERO IS REFUSED HERE AND NOT SILENTLY OBEYED**, which is the one place in this
+        // block where the check is more than `Some`. `authored_number` accepts a zero, and a zero
+        // ceiling turns `hold` into a `cancel` that took the scenic route — so a caller or an author
+        // who arrived at it by arithmetic is told, on `Attended::of`'s precedent one contract over.
+        // ⚠⚠ And this refusal is what makes the held arm's fail-safe safe to state: it ENDS a run
+        // whose ceiling it cannot read, which is only ever reached by a document that got past here.
+        let Some(hold_ms) = brief
+            .hold_within_ms
+            .or_else(|| self.authored_number(HOLD_WITHIN_KEY))
+            .filter(|ms| *ms > 0)
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: HOLD_WITHIN_KEY,
+                held: None,
+            };
+        };
         // ⚠⚠⚠ THE RUN'S TWO OTHER DURATIONS, ON THE SAME TERMS — echoed when the caller named none,
         // because the document's `<assign>` is unconditional and an omitted key would delete an
         // author's number.
@@ -3405,6 +3476,7 @@ impl OuterLoop {
             "reference": brief.reference,
             crate::readiness::Attended::WIRE_KEY: patience_ms,
             crate::readiness::Handback::WIRE_KEY: still_ms,
+            HOLD_WITHIN_KEY: hold_ms,
             crate::readiness::Readiness::WIRE_KEY: ready_ms,
             Turn::WIRE_KEY: turn_ms,
             "max_turns": turns.as_json(),
@@ -3534,6 +3606,11 @@ impl OuterLoop {
         for (part, sent) in [
             ("await_person_ms", brief.await_person_ms),
             ("handback_still_ms", brief.handback_still_ms),
+            // ⚠⚠ THE FIFTH, ADDED WITH THE KEY RATHER THAN AFTER IT — register item 534, and item
+            // 316's finding is why: the four above crossed unverified for as long as nobody added a
+            // fifth, and a brief that reported success on a ceiling the datamodel does not hold is a
+            // run whose hold ends at a number nobody asked for.
+            (HOLD_WITHIN_KEY, brief.hold_within_ms),
             ("ready_timeout_ms", brief.ready_timeout_ms),
             ("turn_within_ms", brief.turn_within_ms),
         ] {
@@ -4130,11 +4207,16 @@ impl OuterLoop {
         // `idle`'s own `start`, holding a run that had not begun in a state where the document has
         // no word for being held. *Between turns* is the document's phrase and this placement is
         // what honours it: the order waits for a turn boundary to exist.
+        // ⚠⚠⚠⚠ **AND THE MOMENT IT STARTED IS RECORDED HERE, WHICH IS WHAT GIVES THE ORDER AN
+        // ENDING** — register item 534. `get_or_insert_with` and not a plain assignment: the arm
+        // runs on EVERY held pass, so writing the clock each time would reset the ceiling the held
+        // arm of `attend` measures against and `abandoned` would be unreachable. ⚠ Cleared on the
+        // way out below, so a hold taken back and given again is a fresh ceiling rather than a
+        // continuation of the first one — a person who came back HAS come back.
         if run.held() {
-            self.holding = true;
+            self.holding.get_or_insert_with(Instant::now);
             self.hold();
-        } else if self.holding {
-            self.holding = false;
+        } else if self.holding.take().is_some() {
             self.let_go();
         }
         // ⚠⚠⚠⚠ **THE DELIVERY EVIDENCE IS EMPTIED HERE AND NOWHERE ELSE** — register item 434.
@@ -4529,14 +4611,21 @@ impl OuterLoop {
             // and a route that silently does nothing is worse than one that is missing.
             AiLoopState::Redirecting => self.redirect(panes, run)?,
 
-            // `is_in_final_state` answered above; these are the same six, and naming them keeps
-            // the match exhaustive without a wildcard that would swallow a seventh. ⚠ The sixth
-            // arrived exactly that way: `peer_gone` broke this match on the compile that added it.
+            // `is_in_final_state` answered above; these are the same seven, and naming them keeps
+            // the match exhaustive without a wildcard that would swallow an eighth. ⚠ The last two
+            // arrived exactly that way: `peer_gone` broke this match on the compile that added it,
+            // and `abandoned` did the same (register item 534).
             state @ (AiLoopState::Converged
             | AiLoopState::Exhausted
             | AiLoopState::Failed
             | AiLoopState::Cancelled
             | AiLoopState::PeerGone
+            // ⚠⚠ THE ONE ENDING THAT IS NOT THE WORK REGION'S, and it belongs in this list all the
+            // same. [`Self::state`] falls back to the flattened configuration once the parallel has
+            // been exited, so what arrives here is `Abandoned` — and what it needs is what every
+            // other ending needs, to be REPORTED rather than driven. Pumping from here would spin a
+            // finished machine.
+            | AiLoopState::Abandoned
             | AiLoopState::Blocked) => return Ok(Pumped::Ended(state)),
             // ⚠⚠⚠ THE REGIONS' OWN STATES, AND REACHING ONE HERE IS A READER BUG RATHER THAN A RUN
             // THAT NEEDS DRIVING. [`Self::state`] reads the WORK region by name, so what it hands
@@ -4637,6 +4726,12 @@ impl OuterLoop {
                 // (`Working --PeerGone--> PeerGone`), and it is the whole of what distinguishes
                 // them. `Because` exists for doors the arrow cannot tell apart.
                 | AiLoopState::PeerGone
+                // ⚠⚠ ONE-DOORED, WHICH IS THE OPPOSITE ARGUMENT TO `peer_gone`'s ABOVE AND THE SAME
+                // ANSWER — register item 534. `abandoned` is reached by exactly one transition, from
+                // exactly one state, for exactly one reason, and the document's own note says the
+                // structure is what guarantees it. `Because` exists for doors the arrow cannot tell
+                // apart, and `Held --Abandon--> Abandoned` is the whole story.
+                | AiLoopState::Abandoned
                 // ⚠ A structural state has no door to distinguish, and an order is not an ending.
                 | AiLoopState::Running
                 | AiLoopState::Work
@@ -5333,19 +5428,55 @@ impl OuterLoop {
             // answers a cancel and the run's own deadline in the same breath, so the two ceilings
             // that still mean something for a held run go on meaning it.
             //
-            // ⚠⚠ **THE BOUND IS THE DOCUMENT'S `await_person_ms`, READ AT THE MOMENT OF USE, AND
-            // IT ENDS NOTHING**: when it elapses the look is simply taken again. So a held run
+            // ⚠⚠ **THE LOOK'S BOUND IS THE DOCUMENT'S `await_person_ms`, READ AT THE MOMENT OF USE,
+            // AND IT ENDS NOTHING**: when it elapses the look is simply taken again. So a held run
             // spends iterations at the rate the document authors for a PERSON — one an hour, on
             // the shipped number — rather than at the rate this machine can spin. ⚠ A document
             // naming no patience at all describes somebody this run will wait for; that wait is
             // bounded by the run's deadline and by a cancel, exactly as every other wait here is.
+            //
+            // ⚠⚠⚠⚠⚠ **AND THE HOLD ITSELF NOW HAS A CEILING, WHICH IS THE ENDING THIS ORDER DID NOT
+            // HAVE** — register item 534, item 9's own residue. What the arithmetic above bought was
+            // a run that spends nothing while it is held; what it left was a run that ends NOTHING
+            // either. A hold answers only the person letting go: its patience is deliberately not
+            // spent (the line above), `unattended` is refused for it by the document's
+            // `cond="!In('held')"`, and `Guardrails::max_duration` is an `Option` — so a run
+            // launched without one had no deadline for `poll_until` to answer and parked until
+            // somebody cancelled it by hand. **Measured before the ceiling existed: `hold_run` on a
+            // run with no `--max_duration` never returned to any ending at all.**
+            //
+            // ⚠⚠⚠ THE CLOCK IS THE PASS-TOP ANCHOR AND NOT THIS ARM'S OWN. `attend` is re-entered
+            // on every held pass, so a moment taken here would restart with each look and the
+            // ceiling would never elapse — the same shape of defect as the iteration burn this arm
+            // was written to fix, one field along.
+            //
+            // ⚠⚠⚠ **A DOCUMENT THIS DRIVER CANNOT READ A CEILING OUT OF ENDS THE RUN RATHER THAN
+            // PARKING IT.** That is the fail-safe direction stated in `driving`'s own comment and
+            // the opposite of what the missing key used to buy: an unbounded hold is precisely the
+            // defect, so *no ceiling I can read* must not be its spelling. `brief` refuses such a
+            // document up front (see `Attended::WIRE_KEY`'s block), which makes this the belt to
+            // that brace rather than the only guard — and a zero is refused there for the same
+            // reason, because *hold this run and end it at once* is `cancel` spelled wrong.
+            let Some(ceiling) = self.hold_within() else {
+                return Ok(AiLoopEvent::Abandon.into());
+            };
+            let held_for = self.holding.map_or(Duration::ZERO, |since| since.elapsed());
+            let Some(left) = ceiling.checked_sub(held_for) else {
+                return Ok(AiLoopEvent::Abandon.into());
+            };
+            // ⚠⚠ THE LOOK IS BOUNDED BY WHICHEVER FALLS DUE FIRST, and taking the minimum is what
+            // makes the ceiling mean the number it says. A patience longer than the remaining
+            // ceiling would overshoot it by the difference — an hour's patience under a
+            // ninety-minute ceiling ends the run at two hours — which is the class of arithmetic
+            // this file has already paid for twice.
             poll_until(
                 run,
                 self.driving
                     .ready
                     .attended()
                     .patience()
-                    .unwrap_or(Duration::MAX),
+                    .unwrap_or(Duration::MAX)
+                    .min(left),
                 || !run.held(),
             );
             return Ok(AiLoopEvent::Null.into());
@@ -6144,6 +6275,30 @@ impl OuterLoop {
     ///
     /// ⚠ A `<data>` spelled as a plain integer can still arrive as a double: the datamodel is
     /// ECMAScript-shaped and its numbers are not typed by how they were written.
+    /// **HOW LONG THIS DOCUMENT LETS SOMEBODY HOLD THIS RUN**, read at the moment the hold is
+    /// actually being waited out — [`None`] for a document holding nothing this can read, or a zero.
+    ///
+    /// ⚠⚠⚠ FLAT, WHERE [`turn_bound`](Self::turn_bound) IS NESTED, AND THE DIFFERENCE IS THE WHOLE
+    /// DECISION: **this key has no spelling for *"no ceiling"*.** An unbounded hold is register item
+    /// 534's defect rather than a configuration, so there is nothing for a second level to carry.
+    /// Both `None`s here have the same remedy and the caller applies it — see the held arm of
+    /// [`attend`](Self::attend), which ENDS the run rather than parking it.
+    ///
+    /// ⚠⚠ ZERO IS NOT A BOUND OF ZERO HERE, which is the opposite reading to
+    /// [`ready_within`](Self::ready_within)'s and for a reason that key does not have: a hold whose
+    /// ceiling is zero is a `cancel` that took the scenic route, and this document already has a
+    /// word for cancelling. It answers `None` so [`brief`](Self::brief) can refuse it, on
+    /// `Attended::of`'s precedent one contract over.
+    ///
+    /// ⚠ Re-read on every held pass rather than held from construction, for `patience`'s reason:
+    /// a brief is applied while the machine is still `idle`, so a caller's number is in force
+    /// before any hold, and a copy taken in `new` would wait out the AUTHOR's afternoon.
+    fn hold_within(&self) -> Option<Duration> {
+        Self::ms_at(&self.script, &self.session, HOLD_WITHIN_KEY)
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis)
+    }
+
     fn ms_at(script: &Arc<dyn IScriptEngine>, session: &str, name: &str) -> Option<u64> {
         match script.get_variable(session, name) {
             Ok(ScriptValue::Int(held)) if held >= 0 => Some(held.unsigned_abs()),
@@ -9674,8 +9829,20 @@ mod tests {
                 !key.is_empty() && key.chars().all(|it| it.is_alphanumeric() || it == '_')
             })
             .collect();
+        // ⚠⚠⚠⚠ THE POPULATION IS THE CEILINGS THAT ASK FOR AN ACCOUNT, AND THE FILTER IS THE WHOLE
+        // OF ITEM 534'S RESIDUE ON THIS GATE. `Ceiling::Hold` ends a run through the `orders`
+        // region with nobody at its pane, so `stopping` is never entered and a clause for it would
+        // be the *"prose nothing can ever select"* this assertion's other half exists to reject —
+        // while leaving it in the population would demand exactly that clause. Neither is a
+        // weakening: the class lives in `Ceiling::asks_for_an_account`, where a SIXTH ceiling has to
+        // answer for itself, and both mistakes are still red here.
+        //
+        // ⚠⚠ MEASURED, so the filter is not vacuous: with `Hold` unfiltered this gate fails with
+        // `hold` missing from the authored set, and with a `hold:` clause authored it fails with
+        // `hold` missing from the known one.
         let known: std::collections::BTreeSet<&str> = crate::driver::Ceiling::ALL
             .iter()
+            .filter(|it| it.asks_for_an_account())
             .map(|it| it.wire_str())
             .collect();
         assert_eq!(
@@ -9854,6 +10021,7 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            hold_within_ms: None,
             // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
             // document before the brief, and a `None` here is what makes the brief echo it back
             // rather than replace it. Saying the number twice would be two places again.
@@ -9971,6 +10139,7 @@ mod tests {
             await_person_ms,
             // ⚠ OMITTED, and the second half of this gate is about exactly that.
             handback_still_ms: None,
+            hold_within_ms: None,
             ready_timeout_ms: None,
             turn_within_ms: None,
         };
@@ -10015,6 +10184,96 @@ mod tests {
         drop((access, quiet));
     }
 
+    /// ⛔⛔⛔ **A HOLD CEILING OF ZERO IS REFUSED, AND A REAL ONE IS TAKEN** — register item 534, and
+    /// the one number on this form whose check is more than *did the caller send something*.
+    ///
+    /// # Why zero cannot be obeyed
+    ///
+    /// A hold whose ceiling is zero ends the run on the pass the order arrives, which is `cancel`
+    /// with extra steps — and `cancel` is a word this product already has. Two spellings of one
+    /// behaviour is the shape [`Attended::of`](crate::readiness::Attended::of) and
+    /// [`Consents::of`](crate::consent::Consents::of) both refuse, for the reason those doc comments
+    /// give: **the caller who arrives at the first by arithmetic** — a deadline already passed, a
+    /// config that defaulted to 0 — **is precisely the one who must be told rather than silently
+    /// given the other.** Here that caller would get a run that dies the first time anybody pauses
+    /// it to read a pane.
+    ///
+    /// ⚠⚠⚠ AND IT IS REFUSED AT THE BRIEF RATHER THAN CLAMPED AT THE WAIT, which is the difference
+    /// between this and a defensive `max(1)`. A clamp leaves the caller believing they configured
+    /// something; the refusal names the key, and `hold_within_ms` is a key a caller can only have
+    /// sent on purpose.
+    ///
+    /// ⚠⚠ THE PAIR IS THE CLAIM, as everywhere else here: *refused* alone is satisfied by a door
+    /// that refuses every value, which would make the ceiling unauthorable — item 492's failure
+    /// exactly, where a number the document owned had no road to it at all.
+    #[test]
+    fn a_hold_ceiling_of_zero_is_refused_and_a_real_one_is_taken() {
+        let honest = || {
+            let (workspace, pane) = quiet_pane();
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let loops = bounded_at(lua, pane, Duration::from_secs(1))
+                .expect("the document's datamodel must carry its four authored strings");
+            (access, loops)
+        };
+        let briefed = |hold_within_ms| Brief {
+            north_star: "n".to_string(),
+            milestone: "m".to_string(),
+            reference: "r".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(3)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+
+        // ── ZERO: TOLD, NOT OBEYED ──
+        let (access, mut loops) = honest();
+        let answer = loops.brief(&briefed(Some(0)));
+        let Briefed::NotHeld { part, held } = answer else {
+            panic!(
+                "⛔⛔⛔ REGISTER ITEM 534: a hold ceiling of ZERO was accepted. Every hold on this \
+                 run now ends it on the pass the order arrives, which is `cancel` spelled as the \
+                 one order a person is promised they can take back. Got {answer:?}",
+            );
+        };
+        assert_eq!(
+            part, HOLD_WITHIN_KEY,
+            "⚠⚠ and the refusal must name THIS key. It is refused apart from \
+             `await_person_ms`/`handback_still_ms` on purpose — those two are one contract about \
+             somebody expected, and a hold binds a run nobody is watching — so naming either of \
+             them would send the caller to rewrite a number that is not the problem (item 264's \
+             cost, one layer up)",
+        );
+        assert_eq!(
+            held, None,
+            "⚠ and it carries no `held`: nothing crossed and came back different — the value was \
+             refused before the event, which is a different sentence from the read-back's",
+        );
+        drop(access);
+
+        // ── AND A REAL CEILING IS TAKEN, or the key is unauthorable ──
+        let (access, mut loops) = honest();
+        assert_eq!(
+            loops.brief(&briefed(Some(1_234))),
+            Briefed::Took,
+            "⛔⛔⛔ A CALLER CANNOT AUTHOR A HOLD CEILING AT ALL. That is item 492's failure rather \
+             than item 534's fix: a number the document owns, with no road from any caller to it. \
+             The read-back is part of this — the brief verifies `hold_within_ms` against the \
+             datamodel, so a missing `<assign>` in `ai_loop.scxml` lands here too",
+        );
+        drop(access);
+    }
+
     #[test]
     fn a_brief_the_datamodel_does_not_hold_exactly_is_refused_rather_than_delivered() {
         let engine = Disagreeing::about(
@@ -10053,6 +10312,7 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            hold_within_ms: None,
             // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
             // document before the brief, and a `None` here is what makes the brief echo it back
             // rather than replace it. Saying the number twice would be two places again.
@@ -10132,6 +10392,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: None,
             }),
@@ -10276,6 +10537,7 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            hold_within_ms: None,
             // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
             // document before the brief, and a `None` here is what makes the brief echo it back
             // rather than replace it. Saying the number twice would be two places again.
@@ -10463,6 +10725,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: Some(BRIEFED.as_millis() as i64),
             }),
@@ -11325,6 +11588,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: None,
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: None,
             }),
@@ -12093,6 +12357,7 @@ mod tests {
                     may_answer: None,
                     await_person_ms: Some(0),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     ready_timeout_ms: None,
                     turn_within_ms: None,
                 }),
@@ -12249,6 +12514,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: None,
             }),
@@ -12335,6 +12601,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: None,
             }),
@@ -12562,6 +12829,7 @@ mod tests {
                     may_answer: None,
                     await_person_ms: Some(0),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     ready_timeout_ms: None,
                     turn_within_ms: None,
                 }),
@@ -13012,6 +13280,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 // ⚠⚠⚠ SHORT, SO A BROKEN RUN FAILS RATHER THAN HANGS. The door under test types
                 // NOTHING on the way to `working` (`Owed::on` lists `review.none` among the silent
@@ -13250,6 +13519,7 @@ mod tests {
                     may_answer: None,
                     await_person_ms: Some(0),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     ready_timeout_ms: None,
                     turn_within_ms: None,
                 }),
@@ -13405,6 +13675,7 @@ mod tests {
                     may_answer: None,
                     await_person_ms: Some(0),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     ready_timeout_ms: None,
                     turn_within_ms: None,
                 }),
@@ -13646,6 +13917,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: None,
             }
@@ -14125,6 +14397,7 @@ mod tests {
                     may_answer: None,
                     await_person_ms: Some(0),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     ready_timeout_ms: None,
                     turn_within_ms: None,
                 }),
@@ -14317,6 +14590,7 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            hold_within_ms: None,
             // ⚠ KEEP WHAT THIS GATE AUTHORED — `bounded_at` wrote the per-turn bound into the
             // document before the brief, and a `None` here is what makes the brief echo it back
             // rather than replace it. Saying the number twice would be two places again.
@@ -14710,6 +14984,7 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            hold_within_ms: None,
             ready_timeout_ms: None,
             turn_within_ms: None,
         };
@@ -14810,6 +15085,7 @@ mod tests {
                 may_answer: None,
                 await_person_ms: Some(0),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: None,
                 turn_within_ms: None,
             }),
@@ -14915,6 +15191,7 @@ mod tests {
             may_answer: None,
             await_person_ms: Some(0),
             handback_still_ms: None,
+            hold_within_ms: None,
             ready_timeout_ms: None,
             turn_within_ms: None,
         };
@@ -15534,6 +15811,7 @@ mod tests {
                     // long before the run is declared unattended and ends.
                     await_person_ms: Some(300),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     ready_timeout_ms: Some(5_000),
                     turn_within_ms: None,
                 }),
@@ -15707,6 +15985,7 @@ mod tests {
                 // default standing, which parked the first draft of this gate for 34 minutes.
                 await_person_ms: Some(1_000),
                 handback_still_ms: None,
+                hold_within_ms: None,
                 ready_timeout_ms: Some(5_000),
                 turn_within_ms: None,
             }),
@@ -15882,6 +16161,7 @@ mod tests {
                     // `unattended` and this gate could not tell the two states apart.
                     await_person_ms: Some(60_000),
                     handback_still_ms: None,
+                    hold_within_ms: None,
                     // ⚠ The barrier passes at once: this run's subject is the END of a turn.
                     ready_timeout_ms: Some(5_000),
                     turn_within_ms: None,

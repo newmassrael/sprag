@@ -1208,6 +1208,45 @@ impl PluginGrammar {
     pub const HANDBACK_STILL: ArgGrammar =
         ArgGrammar::open(sprag_plugin::Handback::WIRE_KEY, "int").optional();
 
+    /// HOW LONG SOMEBODY MAY HOLD THIS RUN, in milliseconds, before it ends as abandoned. Absent is
+    /// *"the loop document decides"* — its own `hold_within_ms`.
+    ///
+    /// # ⚠⚠⚠⚠ The order that had no ending, and what it cost
+    ///
+    /// `hold_run` is the one order a person can take back, and until this key existed it was the one
+    /// order with no way to END. Register item 9 gave a held run a real wait — before which it spent
+    /// its whole step budget looking at a pane where nothing was happening, and died as
+    /// `exhausted — iterations` in twenty-four minutes, telling its reader to raise a number that
+    /// would have bought nothing. Register item 534 is what that fix left behind: the wait answers a
+    /// cancel and the run's own deadline, `Guardrails::max_duration` is optional, and a hold spends
+    /// no patience by design — so a run held by somebody who then went home **parked on its pane,
+    /// holding a daemon slot, until a person cancelled it by hand.**
+    ///
+    /// ⚠⚠⚠ **IT IS NOT THE THIRD PART OF THE PAIR ABOVE, AND THAT IS THE WHOLE POINT.**
+    /// `await_person_ms` and `handback_still_ms` are one request about somebody EXPECTED, enforced
+    /// by [`Handback`](sprag_plugin::Handback) living inside
+    /// [`Attended::APerson`](sprag_plugin::Attended::APerson). A hold is an ORDER, and a run nobody
+    /// is watching can be given one — which is exactly the population that parked. So this key is
+    /// read alone, and sending it with neither of the others is well-formed.
+    ///
+    /// ⚠⚠ **Zero is malformed**, `AWAIT_PERSON`'s rule: *"hold this run and end it at once"* is
+    /// `cancel` spelled wrong, so the two would be two spellings of one behaviour and the caller who
+    /// reached zero by arithmetic would silently get the other. ⚠ There is deliberately no spelling
+    /// for *"no ceiling"*: an unbounded hold is the defect, not a configuration a caller may pick.
+    ///
+    /// ⚠⚠⚠ NO `WIRE_PROTOCOL` BUMP, on the measurement items 492 and 494 took rather than on their
+    /// quotation: this repository has published no release and carries no tag, so no daemon
+    /// predating this key exists to swallow it. ⚠ The residue, stated rather than hidden: the day
+    /// this form ships, an argument added to it earns the number by the ordinary rule — a swallowed
+    /// ceiling would leave a caller believing they had bounded a hold that cannot end.
+    ///
+    /// ⚠ ONLY ON THE `ai_loop` FORM, unlike the two above. The ceiling is a `<data>` in
+    /// `ai_loop.scxml`, and that document is the only thing in this workspace that reads a hold at
+    /// all — the other plugins ignore the order entirely, which is a separate gap and registered as
+    /// one rather than half-closed by publishing a key they would swallow.
+    pub const HOLD_WITHIN: ArgGrammar =
+        ArgGrammar::open(sprag_plugin::HOLD_WITHIN_KEY, "int").optional();
+
     /// The SAME consent, REQUIRED — the `answer` form, whose whole content it is.
     ///
     /// # ⚠⚠⚠ Why the one argument that is optional everywhere else is mandatory here
@@ -1491,6 +1530,10 @@ impl PluginGrammar {
         Self::SCREEN_RULES,
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
+        // ⚠⚠ ON THIS FORM ALONE — register item 534. The ceiling belongs to `ai_loop.scxml`, which
+        // is the only document in this workspace that reads a hold, so publishing it on the three
+        // forms above would be advertising an argument those plugins swallow.
+        Self::HOLD_WITHIN,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -7880,6 +7923,18 @@ mod tests {
             // ⚠ 37: re-stamped with every ANSWER vocabulary unchanged. `report_agent` gained two
             // ARGUMENTS (`asked`, `transcript`) and still answers `{accepted, changed}` — what a
             // caller may SAY grew, and what it is told did not.
+            // ⚠⚠⚠⚠ AND RE-STAMPED AGAIN AT 37 WITH A NINTH VERDICT IN THE LIST — `abandoned`
+            // (register item 534) — which is the FIRST time this pin has taken a new word without
+            // the number. It is R384's escape and not R394's: only `ai_loop` can produce it,
+            // because reading `RunContext::held` is what makes a hold a fact about a run and that
+            // driver is the workspace's only reader. ⚠⚠⚠ The escape's premise has a gate under it
+            // (`the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold`), so the day a second
+            // plugin honours a hold this word becomes `peer_gone`'s case and the number falls due —
+            // said by a red rather than by nobody.
+            // ⚠⚠ A SECOND ANSWER VALUE WIDENED AND THIS PIN CANNOT SEE IT: `ceiling` gained `hold`.
+            // `Ceiling` publishes no `WIRE_WORDS` — its own doc records why — so the widening is
+            // outside this pin by that type's recorded decision rather than by an oversight here.
+            // It rides the same escape for the same reason: no plugin but `ai_loop` reports it.
             37,
             &[
                 "check:pane-isolation",
@@ -7960,6 +8015,36 @@ mod tests {
                 // wedge's preserved stack showed, so an old client is not merely able to receive
                 // the word — it is the likeliest client to.
                 "verdict:peer_gone",
+                // ⚠⚠⚠⚠ THE NINTH VERDICT — somebody held the run and did not come back inside the
+                // loop document's `hold_within_ms` (register item 534). Not `blocked`, which says a
+                // question went unanswered and sends its reader hunting for a dialog there is none
+                // of; not `exhausted — iterations`, which is what a held run actually reported
+                // before this word and which told its reader to raise a step budget that would have
+                // bought it nothing.
+                //
+                // ⚠⚠⚠⚠⚠ **IT COSTS NO NUMBER, ON R384's ESCAPE RATHER THAN R394's, AND THE
+                // DIFFERENCE IS CHECKED RATHER THAN ASSERTED.** `peer_gone` above earned the bump
+                // because `orchestrator` produces it and every version of this wire can select that
+                // form. **No plugin but `ai_loop` can produce this one, and the reason is
+                // structural: a hold is only a fact about a run if something READS
+                // `RunContext::held`, and the outer loop's driver is the only reader in this
+                // workspace.** The other plugins do not ignore the order by policy — they have no
+                // code that can see it.
+                //
+                // ⚠⚠⚠ THAT PREMISE IS A CLAIM WITH A GATE UNDER IT, not a sentence in a comment:
+                // `the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold` in `sprag-gate`
+                // walks the sources for readers of `held()`. The day a second plugin honours a
+                // hold, this word becomes reachable through a form every version can send — which
+                // is exactly `peer_gone`'s situation — and the number falls due. Without the gate
+                // that would be a silent break, since nothing else here can see it.
+                //
+                // ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: R384's escape says *"a plugin no older
+                // client can select"*, and a client built between `ai_loop`'s arrival and today can
+                // select it while lacking this word. That is the same residue `screened` carries and
+                // it is accepted on the same terms — this repository has published no release and
+                // carries no tag, so the population of such clients is the daemons on this
+                // workstation, which are rebuilt from this tree.
+                "verdict:abandoned",
                 // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
                 // needle, write a consent, or fetch a person — so they are words and not prose.
                 "refusal:unreadable",
@@ -8588,7 +8673,28 @@ mod tests {
                 // residue: the day this form ships, an added argument earns the number, because a
                 // swallowed patience leaves a run reflecting on three while its caller believes it
                 // authored two.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                //
+                // ⚠⚠⚠⚠⚠ `hold_within_ms` ARRIVED ON THE SAME PROPERTY (register item 534), AND THE
+                // PROPERTY WAS RE-MEASURED RATHER THAN INHERITED FROM THE PARAGRAPH ABOVE:
+                // **2026-08-21, `git tag` prints nothing and `gh release list` answers nothing** —
+                // still no released daemon, so still no swallow to happen in. Re-run rather than
+                // quoted because the escape is a fact about the world on a DATE, and this workspace
+                // has been caught reading a recorded measurement as a standing one (items 456, 482).
+                //
+                // ⚠⚠⚠⚠ AND THE RESIDUE IS SHARPER HERE THAN FOR THE TWO KEYS ABOVE, in the one way
+                // that matters: a swallowed CEILING ON A HOLD does not leave a run bounded by the
+                // wrong number, it leaves it bounded by NOTHING. The document's own four hours would
+                // still apply, so what a caller loses is only their own tighter bound — but the
+                // caller who sends this key is exactly the one who decided four hours is too long to
+                // leave a pane parked. So the day this form ships, this key earns the number.
+                //
+                // ⚠⚠ IT IS ON THIS FORM ONLY, unlike `await_person_ms`/`handback_still_ms` on the
+                // three forms that loop, and the asymmetry is the point rather than an omission: the
+                // ceiling is `ai_loop.scxml`'s `<data>`, and that document is the only thing here
+                // that reads a hold at all — so publishing it on the other forms would advertise an
+                // argument they swallow, which is what `a_declared_argument_is_one_the_plugin_host_
+                // reads` exists to refuse.
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

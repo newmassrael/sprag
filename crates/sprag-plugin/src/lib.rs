@@ -195,7 +195,7 @@ pub use driver::{
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use outer::{
     AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Counted, HOLD_TAKES_EFFECT,
-    INNER_SESSION_ENDS, NotScreenable, Noticed, OuterLoop, Pumped,
+    HOLD_WITHIN_KEY, INNER_SESSION_ENDS, NotScreenable, Noticed, OuterLoop, Pumped,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Accounting, Cost, Plugin, Step, Verdict};

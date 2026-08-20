@@ -973,6 +973,10 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         ready_timeout_ms: None,
         turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
@@ -1162,6 +1166,10 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         ready_timeout_ms: None,
         turn_within_ms: Some(TURN_BOUND.as_millis() as i64),
     };
@@ -1339,6 +1347,10 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         ready_timeout_ms: None,
         // ⚠⚠⚠⚠ THE ONE THING CHANGED. The neighbour says `TURN_BOUND`, which a one-line reply fits
         // inside with room to spare; this says a bound the same reply cannot fit inside at all.
@@ -1492,6 +1504,10 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
         // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
         // own here would be measuring something no real run gets.
@@ -1713,6 +1729,10 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
         // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
         // own here would be measuring something no real run gets.
@@ -1916,6 +1936,10 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         ready_timeout_ms: None,
         // ⚠⚠ THIS IS ALSO THE ACCOUNT'S WINDOW. The plugin sizes the turn it is granted from the
         // bound declared for a turn — see `Accounting::Within` — so a gate that declared none
@@ -2168,6 +2192,10 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         // that ends at the first dialog it cannot answer rather than waiting out an hour.
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
         // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
         // own here would be measuring something no real run gets.
@@ -2365,6 +2393,10 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
         // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
         // own here would be measuring something no real run gets.
@@ -2592,6 +2624,10 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
         // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
         // own here would be measuring something no real run gets.
@@ -3947,6 +3983,10 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         may_answer: None,
         await_person_ms: Some(0),
         handback_still_ms: None,
+        // ⚠ Item 534's ceiling, left to the document: no live gate here holds a run, so a number
+        // named here would be one these runs assert nothing about — and four hours cannot elapse
+        // inside a live gate's own timeout either way.
+        hold_within_ms: None,
         // ⚠ THE BARRIER'S BOUND IS THE DOCUMENT'S THREE MINUTES, inherited on purpose: a live
         // `claude` cold-starting is exactly what that number was authored for, so a gate naming its
         // own here would be measuring something no real run gets.
