@@ -63,18 +63,40 @@ const STATECHARTS: &[&str] = &[
     "context_review",
     // ⚠⚠ THE FOURTH PROBE, and register item 470's second stage rests entirely on it: can a HOST
     // register its own `<send>` / `<invoke>` TYPE, so a document can name an act this crate carries
-    // out? Compiled here rather than reasoned about, because this list is also the question — a
-    // codegen that REFUSES an unknown type answers it at build time, and that refusal is the
-    // measurement. See `probe_send_type.scxml`.
+    // out? Compiled here rather than reasoned about, because this list is also the question.
+    //
+    // ⚠⚠⚠⚠⚠ THE ANSWER CHANGED WITH THE ENGINE — it was NO at rev `a80b06d0` (item 483, measured
+    // by compiling and running this file) and is YES at `e0fdd46b`, where SCE grew a
+    // host-registrable Event I/O Processor and invoker. The type is DECLARED below and the handlers
+    // are registered at run time; both halves are required and the probe holds each on its own.
+    // See `probe_send_type.scxml`.
     "probe_send_type",
 ];
+
+/// The Event I/O Processor / invoker types THIS CRATE serves, declared to codegen so a
+/// `<send type="…">` naming one emits a dispatch instead of a refusal — W3C SCXML 6.2.5, and
+/// `Engine::register_event_processor` is the other half.
+///
+/// ⚠⚠⚠⚠ **A DECLARATION IS NOT A HANDLER.** A type named here and registered by nobody still
+/// raises `error.execution` at the send, which is the engine's own decision and the right one: an
+/// act nobody performed is one fact, and reporting it as success would be the failure that the
+/// whole registry exists to prevent. `probe::tests` drives BOTH sides of that.
+///
+/// ⚠ Two lists rather than one, because they are two contracts: serving an EVENT is not being able
+/// to run an invoked process with a lifecycle (`done.invoke.<id>`, cancellation on state exit).
+const HOST_TYPES: [&str; 1] = ["x-sprag-host"];
 
 fn main() {
     let sources: Vec<String> = STATECHARTS
         .iter()
         .map(|stem| format!("src/{stem}.scxml"))
         .collect();
-    sce_build::compile_scxml(&sources.iter().map(String::as_str).collect::<Vec<_>>());
+    let declared: Vec<String> = HOST_TYPES.iter().map(|kind| (*kind).to_owned()).collect();
+    sce_build::compile_scxml_with_host_processors(
+        &sources.iter().map(String::as_str).collect::<Vec<_>>(),
+        &declared,
+        &declared,
+    );
 
     // `include!` rejects inner attributes (`#![...]`) and inner doc comments
     // (`//!`) in expansion position, so strip them from every generated file

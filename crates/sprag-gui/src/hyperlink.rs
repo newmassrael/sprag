@@ -79,7 +79,8 @@ use pinion_core::term_grid::HyperlinkId;
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CellMetric, GridBuffer};
 use pinion_core::{
-    NullRepaintSink, PointerButton, PointerButtons, PointerEdge, RawPointerButton, RepaintSink,
+    NullRepaintSink, PointerButton, PointerButtons, PointerEdge, PointerReading, RawPointerButton,
+    RepaintSink,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_vt::MouseProtocol;
@@ -552,8 +553,14 @@ impl External for HyperlinkOracle {
     /// button, any-event tracking) report at the new cell — cell-granular, never per-pixel (xterm's
     /// rule). Always records the last pointer cell (for a press/release report, link or not) and
     /// updates the hovered link (or `None` off a link, for the hover highlight).
-    fn pointer_move(&mut self, x_rel: f32, y_rel: f32) {
-        let cell = self.state.cell_at(x_rel, y_rel);
+    ///
+    /// ⚠⚠ **THE FRACTION, NOT THE PIXELS** — pinion R1727 §5.35 made this one [`PointerReading`]
+    /// carrying both, and its own rule is *read `at` when the divisor is the rectangle itself*.
+    /// It is: a pane's grid spans its whole rect, so the cell is `fraction × (cols, rows)` and the
+    /// pixel size of the rect changes no answer. A consumer that read `px` here would be scaling by
+    /// a number that moves under a live resize.
+    fn pointer_move(&mut self, at: PointerReading) {
+        let cell = self.state.cell_at(at.u(), at.v());
         if cell != self.state.last_cell.get() {
             let proto = self.state.mouse_protocol.get();
             self.state.last_cell.set(cell);
@@ -1041,7 +1048,7 @@ mod tests {
                 state: use_pane_hover(0),
             };
             // Hover the first cell (col 0, row 0) — the link 'A'.
-            oracle.pointer_move(0.01, 0.01);
+            oracle.pointer_move(PointerReading::over_unit((0.01, 0.01)));
             assert!(
                 oracle.state.hovered.get().is_some(),
                 "over a link -> hovered"
@@ -1057,7 +1064,7 @@ mod tests {
                 Some("https://ok")
             );
             // Hover a plain cell (row 2 is blank) — clears the hover, no capture.
-            oracle.pointer_move(0.5, 0.9);
+            oracle.pointer_move(PointerReading::over_unit((0.5, 0.9)));
             assert!(
                 oracle.state.hovered.get().is_none(),
                 "off a link -> no hover"
@@ -1082,7 +1089,7 @@ mod tests {
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(1),
             };
-            oracle.pointer_move(0.01, 0.5); // over 'l'
+            oracle.pointer_move(PointerReading::over_unit((0.01, 0.5))); // over 'l'
             // The router's real-click channel.
             let _ = ExternalIntrospect::invoke(
                 &mut oracle,
@@ -1191,7 +1198,7 @@ mod tests {
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(3),
             };
-            oracle.pointer_move(0.3, 0.0); // a plain cell on row 0 (no link)
+            oracle.pointer_move(PointerReading::over_unit((0.3, 0.0))); // a plain cell on row 0 (no link)
             assert!(
                 oracle.wants_raw_pointer_buttons(),
                 "a tracking pane owns the raw multi-button stream, link or not"
@@ -1242,7 +1249,7 @@ mod tests {
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(4),
             };
-            oracle.pointer_move(0.01, 0.5); // over 'l' (a link cell)
+            oracle.pointer_move(PointerReading::over_unit((0.01, 0.5))); // over 'l' (a link cell)
             let _ = ExternalIntrospect::invoke(
                 &mut oracle,
                 "send",
@@ -1452,7 +1459,7 @@ mod tests {
         Owner::new().run(|| {
             let mut oracle = oracle_at(5, MouseProtocol::ButtonEvent);
             // A bare move (no button) under 1002 reports NOTHING (1002 = drag only, no bare motion).
-            oracle.pointer_move(0.05, 0.05); // ~cell (0,0)
+            oracle.pointer_move(PointerReading::over_unit((0.05, 0.05))); // ~cell (0,0)
             assert!(
                 take_pane_mouse_reports(5).is_empty(),
                 "1002 reports no bare motion"
@@ -1463,7 +1470,7 @@ mod tests {
                 PointerEdge::Down,
                 pinion_core::Modifiers::default(),
             ));
-            oracle.pointer_move(0.95, 0.05); // ~cell (7,0)
+            oracle.pointer_move(PointerReading::over_unit((0.95, 0.05))); // ~cell (7,0)
             let reports = take_pane_mouse_reports(5);
             let drags: Vec<_> = reports
                 .iter()
@@ -1473,7 +1480,7 @@ mod tests {
             assert_eq!(drags[0].button, MouseButton::Left);
             assert_eq!((drags[0].col, drags[0].row), (7, 0), "drag at the new cell");
             // A move within the SAME cell reports nothing (cell-granular, not per-pixel).
-            oracle.pointer_move(0.96, 0.06); // still ~cell (7,0)
+            oracle.pointer_move(PointerReading::over_unit((0.96, 0.06))); // still ~cell (7,0)
             assert!(
                 take_pane_mouse_reports(5)
                     .iter()
@@ -1491,7 +1498,7 @@ mod tests {
         Owner::new().run(|| {
             let mut oracle = oracle_at(6, MouseProtocol::AnyEvent);
             // A bare move to a new cell reports MOTION with no button.
-            oracle.pointer_move(0.5, 0.05); // ~cell (4,0), changed from init (0,0)
+            oracle.pointer_move(PointerReading::over_unit((0.5, 0.05))); // ~cell (4,0), changed from init (0,0)
             let motions: Vec<_> = take_pane_mouse_reports(6)
                 .into_iter()
                 .filter(|r| r.kind == MouseEventKind::Motion)
@@ -1508,7 +1515,7 @@ mod tests {
                 PointerEdge::Down,
                 pinion_core::Modifiers::default(),
             ));
-            oracle.pointer_move(0.95, 0.05); // ~cell (7,0)
+            oracle.pointer_move(PointerReading::over_unit((0.95, 0.05))); // ~cell (7,0)
             let held = take_pane_mouse_reports(6);
             assert!(
                 held.iter()
@@ -1528,13 +1535,13 @@ mod tests {
     fn click_tracking_reports_no_drag_or_motion() {
         Owner::new().run(|| {
             let mut oracle = oracle_at(7, MouseProtocol::Click);
-            oracle.pointer_move(0.1, 0.1);
+            oracle.pointer_move(PointerReading::over_unit((0.1, 0.1)));
             oracle.raw_pointer_button(raw_edge(
                 PointerButton::Left,
                 PointerEdge::Down,
                 pinion_core::Modifiers::default(),
             ));
-            oracle.pointer_move(0.9, 0.1); // a held move
+            oracle.pointer_move(PointerReading::over_unit((0.9, 0.1))); // a held move
             assert!(
                 take_pane_mouse_reports(7)
                     .iter()
@@ -1551,7 +1558,7 @@ mod tests {
     fn right_and_middle_press_release_report_their_button_both_edges() {
         Owner::new().run(|| {
             let mut oracle = oracle_at(9, MouseProtocol::Click);
-            oracle.pointer_move(0.3, 0.3);
+            oracle.pointer_move(PointerReading::over_unit((0.3, 0.3)));
             let mods = pinion_core::Modifiers::default();
             for button in [PointerButton::Right, PointerButton::Middle] {
                 oracle.raw_pointer_button(raw_edge(button, PointerEdge::Down, mods));
@@ -1580,7 +1587,7 @@ mod tests {
     fn a_raw_press_carries_the_modifiers_held_at_that_edge() {
         Owner::new().run(|| {
             let mut oracle = oracle_at(10, MouseProtocol::Click);
-            oracle.pointer_move(0.3, 0.3);
+            oracle.pointer_move(PointerReading::over_unit((0.3, 0.3)));
             let ctrl_shift = pinion_core::Modifiers {
                 ctrl: true,
                 shift: true,
@@ -1609,10 +1616,10 @@ mod tests {
     fn a_right_button_drag_reports_the_right_button() {
         Owner::new().run(|| {
             let mut oracle = oracle_at(11, MouseProtocol::ButtonEvent);
-            oracle.pointer_move(0.05, 0.05); // ~cell (0,0)
+            oracle.pointer_move(PointerReading::over_unit((0.05, 0.05))); // ~cell (0,0)
             let mods = pinion_core::Modifiers::default();
             oracle.raw_pointer_button(raw_edge(PointerButton::Right, PointerEdge::Down, mods));
-            oracle.pointer_move(0.95, 0.05); // ~cell (7,0) — a drag
+            oracle.pointer_move(PointerReading::over_unit((0.95, 0.05))); // ~cell (7,0) — a drag
             let drags: Vec<_> = take_pane_mouse_reports(11)
                 .into_iter()
                 .filter(|r| r.kind == MouseEventKind::Drag)
@@ -1625,7 +1632,7 @@ mod tests {
             );
             // Releasing disarms the drag (held set empties).
             oracle.raw_pointer_button(raw_edge(PointerButton::Right, PointerEdge::Up, mods));
-            oracle.pointer_move(0.5, 0.05); // another cell change, no button held
+            oracle.pointer_move(PointerReading::over_unit((0.5, 0.05))); // another cell change, no button held
             assert!(
                 take_pane_mouse_reports(11)
                     .iter()
@@ -1659,7 +1666,7 @@ mod tests {
         owner.run(|| {
             let mut oracle = oracle_at(8, MouseProtocol::AnyEvent);
             // A bare motion to a new cell queues a report -> must have requested a repaint.
-            oracle.pointer_move(0.5, 0.5);
+            oracle.pointer_move(PointerReading::over_unit((0.5, 0.5)));
         });
         assert!(
             count.load(Ordering::SeqCst) > 0,

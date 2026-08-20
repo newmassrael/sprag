@@ -206,6 +206,128 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **AND WITH A HANDLER REGISTERED, THE ACT REACHES THIS CRATE** — register item 483,
+    /// consumed at the engine rev where it stopped being true.
+    ///
+    /// # What changed, and what did not
+    ///
+    /// The case above is the same document with NOTHING registered, and it still reads a refusal.
+    /// That is not a leftover: SCE's registry has two halves that must agree — the build declares
+    /// the types it serves (`build.rs`'s `HOST_TYPES`, so codegen emits a dispatch rather than a
+    /// refusal) and the run registers a handler for each. **A declared type nobody serves raises
+    /// `error.execution` exactly as an undeclared one does**, because from the document's side an
+    /// act nobody performed is one fact either way.
+    ///
+    /// So the two cases are one axis apart — the registration — and they are what says this crate
+    /// reached the act rather than the engine having started ignoring types.
+    ///
+    /// # ⚠⚠⚠ What this unblocks, stated rather than done
+    ///
+    /// Item 470 stage 2 (*the document names the ACT and this crate carries it out*) was filed
+    /// upstream because no registration point existed. It exists now. The design is still a round's
+    /// work — an act vocabulary, a refusal for one nobody serves, the driver's acts moving out of
+    /// `outer.rs` — and none of it is done here. This case proves the road, and the register entry
+    /// for stage 2 is where the road gets used.
+    #[test]
+    fn a_host_serves_its_own_send_and_invoke_type_once_it_registers_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+
+        // ⚠⚠ REGISTERED BEFORE `initialize`, because the send is in an `onentry` of the INITIAL
+        // state: a handler registered afterwards would be registered after the act it is for.
+        let sends = Arc::new(AtomicUsize::new(0));
+        let invokes = Arc::new(AtomicUsize::new(0));
+        engine.register_event_processor("x-sprag-host", {
+            let sends = Arc::clone(&sends);
+            move |request| {
+                sends.fetch_add(1, Ordering::SeqCst);
+                // ⚠ The document's own event name, handed back — the request/reply shape. A
+                // handler that answered a name of its own would be inventing the document's
+                // vocabulary, which is the thing stage 2 must not do.
+                Some(sce_rust_runtime::host_processor::HostSendResponse {
+                    event_name: request.event_name,
+                    event_data: String::new(),
+                })
+            }
+        });
+        engine.register_invoker("x-sprag-host", {
+            let invokes = Arc::clone(&invokes);
+            move |_event| {
+                invokes.fetch_add(1, Ordering::SeqCst);
+                None
+            }
+        });
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<ProbeSendTypePolicy>, name: &str| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, name)
+        {
+            Ok(ScriptValue::Int(held)) => held,
+            other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+        };
+
+        // ⚠ `tick()` for the same reason the case above uses it: a `<send>` goes through the
+        // scheduler even with no delay, and `step()` runs a macrostep without polling it.
+        for _ in 0..8 {
+            engine.tick();
+        }
+
+        assert_eq!(
+            count(&engine, "plain"),
+            1,
+            "⚠⚠⚠ THE CONTROL, unchanged: the untyped `<send>` beside the typed one must still \
+             deliver, or nothing below is about types",
+        );
+        assert_eq!(
+            sends.load(Ordering::SeqCst),
+            1,
+            "⚠⚠⚠⚠⚠ ITEM 483: the `<send type=\"x-sprag-host\">` must reach THIS CRATE's handler. \
+             Zero means the declaration and the registration did not meet — check that `build.rs` \
+             still declares the type, because a registration for a type the build did not declare \
+             is inert by design",
+        );
+        assert_eq!(
+            count(&engine, "landed"),
+            1,
+            "⚠⚠⚠⚠ and the handler's reply must come back as the event the DOCUMENT named — a \
+             handler that is called but whose answer never lands would make an act look performed \
+             to this crate and refused to the machine",
+        );
+        assert_eq!(
+            count(&engine, "errors"),
+            0,
+            "⚠⚠⚠⚠⚠ AND NO `error.execution`, which is the half that separates *served* from \
+             *ignored*. The case above reads 1 here on the same document with nothing registered.",
+        );
+
+        // ── THE INVOKE SIDE, WHICH IS A SECOND REGISTRY AND SO A SECOND CLAIM ──
+        engine.process_event(ProbeSendTypeEvent::Go);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        assert_eq!(
+            invokes.load(Ordering::SeqCst),
+            1,
+            "⚠⚠⚠⚠ `<invoke type=\"x-sprag-host\">` must reach the invoker this crate registered. \
+             An engine that served the send half and not this one would narrow item 470 stage 2 \
+             rather than open it",
+        );
+        assert_eq!(
+            count(&engine, "errors"),
+            0,
+            "⚠⚠⚠ and the invoke raised no refusal either",
+        );
+    }
+
     /// ⚠⚠⚠ **CAN A PARENT FILL ITS CHILD'S DATAMODEL** — the question a composed design rests on,
     /// asked of a real engine rather than of the specification.
     ///
