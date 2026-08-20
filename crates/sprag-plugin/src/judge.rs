@@ -84,9 +84,15 @@ impl JudgeSpec {
 
     /// The size of the pane a judgement runs in.
     ///
-    /// ⚠ Small on purpose and not tuned: nothing reads this pane as a SCREEN. The reply is taken
-    /// from the pane's full text once the process has exited, so the only thing a width could do
-    /// is wrap a one-word answer.
+    /// ⚠ Small on purpose and not tuned: nothing reads this pane as a SCREEN.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THIS COMMENT USED TO GO ON "so the only thing a width could do is wrap a one-word
+    /// answer", AND THAT SENTENCE COST ITEM 517.** A judge does not always answer in one word — the
+    /// field beside the verdict exists precisely because it answers in paragraphs
+    /// ([`Judgement::explained`]) — and while the reply was read from the pane's full TEXT, this
+    /// width was silently the ceiling on every reason a run could record. It is now read by address
+    /// ([`spoke`]), which is what makes the number back into what it claims to be: a size nothing
+    /// depends on.
     const PANE: (u16, u16) = (80, 24);
 }
 
@@ -255,6 +261,20 @@ pub struct Judgement {
     /// trimmed FIRST, so a judge that puts its reason on the line below the word (`NO\nBecause …`)
     /// is read exactly like one that puts it beside (`NO because …`). Inventing a byte ceiling here
     /// would be a number nobody chose; a line is the unit the reader already has.
+    ///
+    /// # ⚠⚠⚠⚠⚠ AND THAT PARAGRAPH WAS RIGHT ABOUT THE RULE AND WRONG ABOUT THE READER — item 517
+    ///
+    /// *"A number nobody chose"* is exactly what it shipped. The line it took was a rendered ROW,
+    /// off a pane `JudgeSpec::PANE` columns wide, so the rule *one line* meant **the first
+    /// eighty-odd characters, cut mid-word** — a byte ceiling after all, inherited from a pane's
+    /// geometry instead of being chosen, and invisible because nothing in the field said it had been
+    /// cut. Measured on a live loop: four refusals over one criterion, every record of why severed
+    /// at the same broken word.
+    ///
+    /// The rule is unchanged and no ceiling was invented to replace it. What changed is underneath:
+    /// `spoke` reads the pane's LOGICAL lines, so *one line* is now one line **the judge wrote**.
+    /// The boundary is the judge's own newline — stated here, rather than whatever the terminal did
+    /// to fit the sentence on a screen nobody sized for this.
     pub explained: Option<String>,
     /// How long the agent stood blocked waiting for it.
     pub took: Duration,
@@ -337,12 +357,21 @@ pub fn asked_of_another(
     // already treats everything but `Yes` as *no verdict came back* — see
     // [`Over::Silent`](crate::completion::Over::Silent)'s own count of this site.
     let over = Completion::new(DoneWhen::Exits).wait(panes, pane, within, None, run);
-    let reply = panes.pane_full_text(pane).unwrap_or_default();
+    let reply = spoke(panes, pane);
     life.close(pane);
 
     if over != Over::Yes {
         return None;
     }
+    // ⚠⚠⚠⚠⚠ THE ADDRESS COULD NOT ACCOUNT FOR WHAT IT HANDED BACK, SO THERE IS NO VERDICT HERE.
+    //
+    // `lost` means the pane's retained history evicted lines before this read, and `restarted` means
+    // the numbering changed underneath it — in either case the text may not open where the reply
+    // does. That matters more here than almost anywhere: the verdict is the FIRST WORD, so a reply
+    // read with its opening missing does not produce a wrong reason, it produces **a wrong verdict**
+    // — the first word of the middle of a sentence, put through the YES/NO match. Silence is the
+    // safe direction and this function is built on it, so an unaccountable read takes it.
+    let reply = reply?;
     // ⚠⚠ SPLIT ONCE, so the verdict and what follows it are read off the SAME reply at the same
     // moment. Taking the first word here and re-scanning the text for the rest would be two readers
     // of one string, free to disagree about where the word ended.
@@ -396,6 +425,61 @@ pub fn asked_of_another(
         explained,
         took: began.elapsed(),
     })
+}
+
+/// **WHAT THE JUDGE SAID, READ BY ADDRESS** — its pane's logical lines from birth, or [`None`] where
+/// the read could not account for itself.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is not `pane_full_text`, which is what it used to be — register item 517
+///
+/// A pane's full text is the RENDERING, and a rendering is broken at the pane's width. This one is
+/// [`JudgeSpec::PANE`] columns wide, so a judge that explained itself in a sentence longer than that
+/// had its reason **cut mid-word** by the terminal before any rule in this file ran.
+/// [`Judgement::explained`] then took *the first line*, which meant the first eighty-odd characters.
+/// Measured on a live loop: a run was refused four times over one criterion and every record of why
+/// stopped at the same broken word.
+///
+/// This is [`report`](crate::report)'s measurement, and its conclusion, applied one door over — *the
+/// rendering is the degradation; read the address* — and register item 270's argument verbatim:
+/// asking **"is the reason the whole ROW?"** is asking about a width nobody chose. A LOGICAL line is
+/// what the child wrote, and reflow is defined as preserving it.
+///
+/// # ⚠⚠⚠ The cursor is BIRTH, not a mark, and that removes a race rather than a line of code
+///
+/// [`Since::mark`](crate::report::Since::mark) is the right reader when a pane pre-exists its
+/// stimulus — the caller marks, then injects. Here the pane IS the stimulus: it is spawned for this
+/// one question, nothing else ever writes to it, and the child can have printed and exited before
+/// `spawn` returns. A mark taken after that would sit PAST the whole reply and read empty. `0` is
+/// the pane's first line, so *everything this pane has produced* is exactly the judge's answer.
+///
+/// # ⚠⚠ The unfinished line is included, and this is the one caller that has earned it
+///
+/// [`Produced::partial`](crate::report::Produced::partial) is withheld from readers who cannot show
+/// the child has stopped. This one can: [`DoneWhen::Exits`] is what was waited on. So a judge
+/// spelled `printf 'NO because …'` — no trailing newline, which is a whole class of small
+/// checkers — is read, where a line-only reader would have called it silent.
+fn spoke(panes: &dyn PaneAccess, pane: sprag_terminal::PaneId) -> Option<String> {
+    let Some(since) = panes
+        .output_lines()
+        .and_then(|stream| stream.pane_lines_since(pane, 0))
+    else {
+        // ⚠ THE DEGRADATION, named rather than silently equivalent — a host that cannot number its
+        // lines has only the rendering to offer, and this is the behaviour every judgement had
+        // before the address existed. The width defect above is present in this arm and cannot be
+        // fixed from here; what a host owes to escape it is `PaneOutputLines`.
+        return panes.pane_full_text(pane);
+    };
+    if since.lost > 0 || since.restarted {
+        return None;
+    }
+    let mut said = since.lines.join("\n");
+    if !since.partial.is_empty() {
+        if !said.is_empty() {
+            said.push('\n');
+        }
+        said.push_str(&since.partial);
+    }
+    Some(said)
 }
 
 /// The question put to the judge: the author's criterion, the dialog, its options, and **the one
@@ -721,5 +805,88 @@ mod tests {
             "the key that refused is named: {line}"
         );
         assert!(line.contains("Reconsider"), "{line}");
+    }
+
+    /// **REGISTER ITEM 517's GATE: a reason longer than the judge's pane is read back WHOLE.**
+    ///
+    /// # ⚠⚠⚠⚠⚠ The pane is 80 columns, and 80 is a number nobody chose
+    ///
+    /// [`Judgement::explained`] used to be the first LINE of what followed the verdict, defended as
+    /// *"a rule rather than a length"* — a line being the unit the reader already had, where a byte
+    /// ceiling would have been invented. **The line it took was a rendered ROW.** The reply is read
+    /// out of a pane [`JudgeSpec::PANE`] columns wide, so the terminal had already broken the
+    /// sentence at the width, and *the first line of the reply* meant *the first eighty-odd
+    /// characters, cut mid-word*.
+    ///
+    /// This is [`report`](crate::report)'s measurement one door over, and register item 270's
+    /// argument verbatim: asking *"is the reason the whole ROW?"* is asking about a width nobody
+    /// chose. The reader is now the ADDRESS — the pane's own logical lines — so what comes back is
+    /// what the judge WROTE.
+    ///
+    /// ⚠⚠ It is driven through a REAL workspace and a REAL `/bin/sh`, not a stub, because the
+    /// wrapping under test is the terminal's. A fake that handed back an unwrapped string would
+    /// pass with the defect present, which is the only way this gate could be worth writing.
+    #[test]
+    fn a_reason_longer_than_the_judges_pane_is_read_back_whole() {
+        /// The tail of [`REASON`], past the first row of an 80-column pane. Asserted separately so
+        /// a failure says WHICH half arrived.
+        const TAIL: &str = "variations of one yes-or-no act";
+        /// What the judge says after its verdict — one logical line, deliberately longer than the
+        /// pane is wide, ending in [`TAIL`].
+        const REASON: &str = "because the options differ in outcome rather than being \
+                              variations of one yes-or-no act";
+
+        let host = crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+            sprag_terminal::Workspace::new((80, 24)),
+        )));
+        // The fixture, asserted rather than assumed: a reason that fits on one row would make every
+        // claim below true of a case this item is not about.
+        assert!(
+            REASON.len() > usize::from(JudgeSpec::PANE.0),
+            "⚠ the reason must OUTRUN the pane to be evidence: {} chars in {} columns",
+            REASON.len(),
+            JudgeSpec::PANE.0,
+        );
+
+        let judged = judges(
+            &host,
+            &RunContext::uncancellable(),
+            "going ahead would commit a design decision",
+            &question(),
+            &JudgeSpec {
+                argv: vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    format!("printf 'NO {REASON}\\n'"),
+                ],
+                within: Duration::from_secs(20),
+            },
+        );
+        let Some(verdict) = judged else {
+            panic!(
+                "⚠⚠⚠ the judge must reach a verdict at all, or nothing below is about the reason"
+            );
+        };
+        // The CONTROL: the verdict itself is unchanged by any of this. The first-word rule is right
+        // and this gate does not loosen it — a judge that explains itself decides nothing different.
+        assert!(
+            !verdict.holds && verdict.said.eq_ignore_ascii_case("NO"),
+            "⚠⚠ the verdict is still the first word alone: {verdict:?}",
+        );
+
+        let explained = verdict.explained.as_deref().expect(
+            "⚠⚠⚠ a judge that gave a reason must have one recorded — item 461's whole point",
+        );
+        assert!(
+            explained.contains(TAIL),
+            "⚠⚠⚠⚠⚠ THE REASON WAS CUT AT THE PANE'S WIDTH. What a walk carries is what a person \
+             acts on, and a sentence severed mid-word at column {} reads as though the judge \
+             stopped there. Wanted the tail {TAIL:?}; got {explained:?}",
+            JudgeSpec::PANE.0,
+        );
+        assert!(
+            explained.contains(REASON),
+            "⚠⚠⚠⚠ and WHOLE, not merely ending right: {explained:?}",
+        );
     }
 }
