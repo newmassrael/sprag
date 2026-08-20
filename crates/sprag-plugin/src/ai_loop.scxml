@@ -1715,6 +1715,30 @@
     -->
     <data id="unasked_since_taken" expr="0"/>
 
+    <!--
+      WHICH ERROR OF ITS OWN THIS DOCUMENT STOPPED ON, and empty for the runs
+      that raised none — which is every healthy run. Register item 505.
+
+      W3C SCXML 3.12.2 puts an `error.*` on the internal queue and IGNORES it
+      when nothing matches, and W3C 3.8 abandons the REST OF THE BLOCK that
+      raised it. Between them, a document that answers no error runs on with
+      half of an `onentry` executed and NOTHING ANYWHERE SAYS SO. Measured on
+      this file: one <send> naming a type nobody serves, in `priming`, and a
+      real run walked `Priming` to `Working` and then eleven `Working` to
+      `Working` on nothing at all — going nowhere, silently, with every other
+      gate in this crate green.
+
+      So the region answers its own errors now (see the foot of `work`), and
+      this is what the answer WRITES DOWN. The value is the event's own name,
+      because the class is the repair: `error.execution` is this document's
+      content failing and a person edits the file; `error.communication` is a
+      <send> the host did not serve and a person edits the host.
+
+      Read by the driver, in Rust, like `restart_reason` and `reflect_reason`
+      beside it, and never by a `cond` here.
+    -->
+    <data id="fault" expr="''"/>
+
   </datamodel>
 
   <!--
@@ -3661,6 +3685,61 @@
     <assign location="unasked_since_taken" expr="1"/>
   </transition>
   <transition event="prompt.unasked" target="failed"/>
+
+  <!--
+    ⚠⚠⚠⚠⚠ THIS DOCUMENT'S OWN CONTENT FAILED, AND THE RUN STOPS SAYING SO —
+    register item 505, and the one edge in this file whose event the ENGINE
+    raises rather than the driver.
+
+    W3C SCXML 3.12.2: an `error.*` goes on the internal queue and is IGNORED
+    when nothing matches it. W3C 3.8: the error abandons the rest of the block
+    that raised it. Put together, they are the failure this loop ran in until
+    now: a state whose `onentry` composed half a prompt and never sent it, a
+    guard that could not be evaluated so its transition was never taken, a
+    `<send>` naming a type nobody serves — and the machine sitting exactly where
+    it was, with no event, no arrow and no reading anywhere that differs from a
+    healthy run's.
+
+    ⚠⚠⚠⚠⚠ MEASURED BEFORE THIS EDGE EXISTED, by mutation: one unserved-type
+    `<send>` in `priming` and a real run walked from `priming` into `working` on
+    `prompt.sent` and then took ELEVEN eventless `working` to `working` passes.
+    The run went nowhere and every other gate in this crate stayed green.
+
+    ⚠⚠⚠ WHY `failed` AND NOT A RECOVERY. An error in this document's own
+    content is not a condition the run can fix by trying again: the block that
+    failed is the block that would run again. Every OTHER ending this file has
+    is about the world — a peer that would not take a question, a service that
+    went away, a budget spent — and each of those has a remedy the loop can
+    perform. This one says *the instructions themselves did not execute*, and
+    the only party who can act on it is the person who can edit the file or the
+    host. `failed` is how this document says exactly that, and its comment on
+    `prompt.unasked` above says why that is not `awaiting_human`: a condition
+    this document cannot fix by itself is not one it should wake anybody
+    mid-run for. It ends, and the run's account carries the sentence.
+
+    ⚠⚠⚠⚠ AND IT IS THE REGION'S RULE, at the foot of `work` beside
+    `prompt.unasked`, for that item's reason exactly: EVERY state here runs
+    executable content, so every state can meet this, and fourteen copies of one
+    rule is the shape this file warns against on every page. A child that ever
+    needs a different answer says so on itself and wins by depth.
+
+    ⚠⚠ WHY `error.execution` AND NOT `error.*`. The wildcard would read as the
+    careful choice and is a guess about the generator: at the pinned SCE the
+    event enum of this document carries exactly one error variant, and a
+    descriptor naming a class the codegen never mints is a transition nothing
+    can ever take. So the edge names what the machine can actually raise, and a
+    RATCHET reads the generated artefact and this file together — the day the
+    engine mints a second error class, the gate goes red and asks for an edge
+    rather than letting a wildcard silently look after it.
+
+    ⚠ It records the event's own name and nothing else. WHERE it happened is the
+    walk's to say: the run's journal writes the arrow that took it here, naming
+    the state it left on `ErrorExecution`, so the state that failed is already
+    recorded without this document keeping a second copy of it.
+  -->
+  <transition event="error.execution" target="failed">
+    <assign location="fault" expr="_event.name"/>
+  </transition>
 
   </state>
 

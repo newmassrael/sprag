@@ -414,6 +414,11 @@ const DONE_REASON: &str = "done_reason";
 /// [`OuterLoop::restarting_because`]. See the document, and register item 445.
 const RESTART_REASON: &str = "restart_reason";
 
+/// The datamodel variable naming **WHICH ERROR OF ITS OWN THE DOCUMENT STOPPED ON** — assigned by
+/// the `work` region's `error.execution` edge out of `_event.name`, and read back by
+/// [`OuterLoop::fault`]. See the document, and register item 505.
+const FAULT: &str = "fault";
+
 /// **THE LABEL A REFLECTION'S ANSWER OPENS ITS FIRST LINE WITH**, authored in the document beside
 /// the prompt that asks for it — see [`OuterLoop::proposed`].
 ///
@@ -2999,8 +3004,15 @@ impl OuterLoop {
     /// that made `sce-rust-lua` a real dependency of the host.
     #[must_use]
     pub fn new(script: Arc<dyn IScriptEngine>, pane: PaneId, spec: &AiLoopSpec) -> Option<Self> {
-        let mut machine = Engine::new(AiLoopPolicy::new(Arc::clone(&script)));
-        machine.initialize();
+        // ⚠⚠⚠ OPENED THROUGH THE ONE DOOR — register item 505. This document ANSWERS its own
+        // `error.execution` on the `work` region, so an expression that fails while the datamodel
+        // is being initialised lands the machine in `failed` with [`Self::fault`] naming the class,
+        // and the door lets that through: refusing here would swap a sentence a caller can read for
+        // a bare `None`. What the door still catches is the residue no edge covers — an error
+        // raised where nothing could match it — and refusing to start beats starting a run whose
+        // instructions did not execute. `AiLoop::new` is where the answered case becomes a refusal
+        // with the error's own name in it.
+        let machine = crate::document::opened(AiLoopPolicy::new(Arc::clone(&script))).ok()?;
         let session = machine.policy().session_id.clone()?;
         // ⚠ VALIDATION, NOT A SNAPSHOT — the answer is dropped. A machine that does not carry the
         // four strings is one this driver cannot drive and refusing here is what stops a run being
@@ -3963,26 +3975,31 @@ impl OuterLoop {
 
     /// **HOW MANY `error.*` THIS DOCUMENT RAISED AND NOTHING ANSWERED** — consumed from SCE 2026-08-20.
     ///
-    /// # ⚠⚠⚠⚠⚠ For this loop it is the ONLY window, because the document answers none of them
+    /// # ⚠⚠⚠⚠⚠ What it means NOW THAT THE DOCUMENT ANSWERS — register item 505, paid
+    ///
+    /// This doc said *"for this loop it is the ONLY window, because the document answers none of
+    /// them"*, and that sentence was true for one day. `ai_loop.scxml` carries an `error.execution`
+    /// edge on the `work` region, so the ordinary failure — a guard that could not be evaluated, an
+    /// `<assign>` that failed, a `<send>` naming a type nobody serves — is now ANSWERED: the run
+    /// ends `failed`, [`fault`](Self::fault) names the class, and the walk names the state.
+    ///
+    /// ⚠⚠ Which is exactly why this reader did not become redundant. It counts what went
+    /// UNANSWERED, so what is left in it is the residue no edge can cover: an error raised once the
+    /// machine has reached a `<final>` and the region's handler is no longer active. A run can still
+    /// end that way, and this is the only reading that would say so.
     ///
     /// W3C SCXML 3.12.2 puts an error event on the internal queue and IGNORES it when nothing
-    /// matches. Measured 2026-08-20: `ai_loop.scxml` and `debt_loop.scxml` carry **zero** `error.*`
-    /// transitions between them — so every failure their own `<assign>`s, guards and `<send>`s can
-    /// raise has always been swallowed, and no reading a driver took could tell a run that worked
-    /// from one whose `onentry` failed on arrival.
+    /// matches; W3C 3.8 abandons the rest of the block that raised it. Measured 2026-08-20, before
+    /// the edge existed: one `<send>` to an unserved type in `priming` made a real run take eleven
+    /// eventless passes in `working`, going nowhere, with every other gate in this crate green.
     ///
-    /// ⚠⚠⚠ Item 483 is why this is not theoretical: a `<send>` naming a type nobody serves raises
-    /// exactly this AND abandons the rest of its block. The day this loop names an act (item 470
-    /// stage 2, unblocked the same day this reader arrived), a handler nobody registered would make
-    /// the loop do NOTHING — quietly, with every gate in this crate green.
+    /// ⚠⚠ `probe::tests::an_error_the_document_never_answers_is_still_a_fact_the_host_can_read`
+    /// holds both ends of the reading itself — one document that answers, one that does not.
     ///
-    /// ⚠⚠ It counts what went UNANSWERED, not what was raised: a document that handles its own
-    /// error reads 0. `probe::tests::an_error_the_document_never_answers_is_still_a_fact_the_host_
-    /// can_read` holds both ends of that, one document each.
-    ///
-    /// ⚠ Not published on the wire and deliberately: a run's account is four ledgers' worth of
-    /// bookkeeping (item 492) and this is a tripwire for the crate's own gates first. What it is
-    /// for is being ZERO on every real run — see the gate of that name.
+    /// ⚠ Not published as a wire KEY, and deliberately: a run's account is four ledgers' worth of
+    /// bookkeeping (item 492), and a count with no class and no state is not what a person needs.
+    /// What reaches them is a SENTENCE on the run's own journal, out of
+    /// [`swallowed`](Self::swallowed) — see `AiLoop::ended`.
     #[must_use]
     pub fn errors_nobody_answered(&self) -> u32 {
         self.machine.unhandled_error_events()
@@ -4694,6 +4711,81 @@ impl OuterLoop {
     /// [`reflecting_because`](Self::reflecting_because)'s reason.
     fn restarting_because(&self) -> Option<RestartReason> {
         RestartReason::named(&self.text_of(RESTART_REASON)?)
+    }
+
+    /// **WHICH ERROR OF ITS OWN PUT THE MACHINE IN `failed`** — the event name its `error.execution`
+    /// edge assigned, or [`None`] for the runs that raised none, which is every healthy run.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a reading and not something this driver already knew
+    ///
+    /// The event is the ENGINE's, not this driver's: nothing out here raised it, and until register
+    /// item 505 nothing out here could see that it had happened. W3C SCXML 3.12.2 drops an `error.*`
+    /// nothing matches, and W3C 3.8 abandons the rest of the block that raised it — so a state whose
+    /// `onentry` failed halfway left a machine sitting exactly where it was, with no event, no arrow
+    /// and no reading that differed from a healthy run's.
+    ///
+    /// ⚠⚠ Read from the DOCUMENT for `stopping_because`'s reason (private, one screen up), and it
+    /// is sharper here: this driver could name the class off the event it saw the machine take, and
+    /// that would be a SECOND authority on a fact the document has already written down. The edge
+    /// assigns `_event.name`; this reads the same variable back. One authority.
+    ///
+    /// ⚠ WHERE it happened is deliberately not here. The walk already says it — the arrow into
+    /// `failed` names the state the machine left — and a copy out here would be a second record of
+    /// one fact, which is what [`errors_nobody_answered`](Self::errors_nobody_answered) is the
+    /// counterpart of rather than a duplicate of: that counts what NOBODY answered, this names what
+    /// the document DID answer.
+    #[must_use]
+    pub fn fault(&self) -> Option<String> {
+        match self.text_of(FAULT) {
+            Some(error) if !error.is_empty() => Some(error),
+            _ => None,
+        }
+    }
+
+    /// **MAKE THE DOCUMENT'S NEXT EXPRESSION FAIL, THE WAY A BAD EDIT WOULD** — a fixture door, and
+    /// the only way this crate can ask what a run does about its own content failing.
+    ///
+    /// # ⚠⚠⚠ Why a door only a gate uses is the right one HERE
+    ///
+    /// This workspace's rule is that a fixture door which BYPASSES the product measures nothing, and
+    /// register item 492's lesson is sharper still: *a constant that exists only for a test is
+    /// sometimes the shape of a missing channel*. So the question has to be asked — what channel is
+    /// missing? — and the answer is that there must not be one. **No caller can poison a datamodel
+    /// and that is a property worth keeping**: every value a request or a kind can put in this
+    /// document arrives through a typed [`Brief`] field, so a wire that could make an expression fail
+    /// would be a defect rather than a feature. What an author CAN do is edit the file — a
+    /// `<data id="max_turns" expr="'fourty'"/>` is one keystroke away — and that is exactly the
+    /// state this leaves the datamodel in.
+    ///
+    /// ⚠⚠ It bypasses nothing downstream: what runs afterwards is the document's own guard, the
+    /// engine's own error, the region's own `error.execution` edge and the driver's own reporting.
+    /// The poison replaces an AUTHOR, not a mechanism.
+    ///
+    /// ⚠ `ScriptValue::String` rather than a table, and measured before choosing: `+` is
+    /// ECMAScript's and coerces anything (SCE's `_scxml_add` implements ECMA-262 13.15.3), so a
+    /// concatenation cannot be made to fail. A RELATIONAL operator lowers to raw Lua `>=`, which
+    /// raises on a string, and that is the failure a guard meets.
+    #[cfg(test)]
+    pub(crate) fn break_a_clause(&self, name: &str, with: &str) {
+        self.script
+            .set_variable(&self.session, name, ScriptValue::String(with.to_owned()))
+            .expect("a datamodel this run is holding is writable");
+    }
+
+    /// **WHAT THIS RUN'S MACHINE HAS SWALLOWED**, or [`None`] for the runs that swallowed nothing.
+    ///
+    /// The same reading [`crate::document::opened`] refuses a document on, taken mid-run instead of
+    /// at the door — because the document's own `error.execution` edge covers the states it is
+    /// active in and NOT what happens after the machine has left them. An error raised once the run
+    /// has reached a `<final>` has nobody left to answer it, and this is the only window onto that.
+    ///
+    /// ⚠⚠ It also carries the CASCADE, which is the failure adding a handler creates: a handler
+    /// that fails the same way every time answers its own error for ever, and the engine's own doc
+    /// says what that looks like from outside — *"not a hang: a core at 100% forever"*, with a
+    /// configuration that never moves and a supervisor reading it as healthy.
+    #[must_use]
+    pub fn swallowed(&self) -> Option<crate::document::Faulted> {
+        crate::document::faults(&self.machine)
     }
 
     /// **THE REFUSAL THIS LOOP IS HOLDING**, or [`None`] when its notice is anything else — the one

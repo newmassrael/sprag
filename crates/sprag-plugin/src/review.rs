@@ -404,16 +404,25 @@ pub struct ContextReview {
 
 impl ContextReview {
     /// A review over the compiled document, keeping its counts under `state` — or [`None`] when
-    /// the document's script session cannot be opened.
+    /// the document's script session cannot be opened, or when opening it raised an error the
+    /// document itself never got to answer.
     ///
     /// ⚠⚠ `state` is where a BARE `ledger_into` lands, which is the shipped document's; [`None`]
     /// keeps nothing at all. An absolute `ledger_into` is honoured whatever this says. This
     /// module's own `ledger_path` is where the whole argument for a parameter over an ambient read
     /// is written down.
+    ///
+    /// ⚠⚠⚠ **OPENED THROUGH [`crate::document::opened`]** — register item 505. A review whose own
+    /// start-up failed used to come back a working review with an empty datamodel, and the loop
+    /// would then act on habits it never counted. The document answers the errors its four states
+    /// can raise (`_event.data.records` on a `read.done` carrying no data is the reachable one); the
+    /// door answers what is raised before any state can. [`None`] rather than a sentence, because a
+    /// review is optional to the run in a way a kind is not — the loop carries on unreviewed, which
+    /// is the same answer it gives for a record it cannot read.
     #[must_use]
     pub fn new(script: Arc<dyn IScriptEngine>, state: Option<std::path::PathBuf>) -> Option<Self> {
-        let mut machine = Engine::new(ContextReviewPolicy::new(Arc::clone(&script)));
-        machine.initialize();
+        let machine =
+            crate::document::opened(ContextReviewPolicy::new(Arc::clone(&script))).ok()?;
         let session = machine.policy().session_id.clone()?;
         Some(Self {
             state,

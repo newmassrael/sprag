@@ -1629,6 +1629,19 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
                 why.describe(),
             )
         }
+        // ⚠⚠⚠⚠⚠ THE DOCUMENT'S OWN CONTENT DID NOT EXECUTE — register item 505. Every other arm
+        // here names something the CALLER sent; this one names the FILE, and the difference matters
+        // to whoever reads it: nothing the request said can fix a clause that will not evaluate. The
+        // class is carried verbatim because it says who repairs it — `error.execution` is the
+        // document's own content and `error.communication` is a `<send>` this host did not serve.
+        sprag_plugin::NotStarted::Faulted(error) => {
+            format!(
+                "this build's `ai_loop.scxml` raised {error} while its datamodel was being \
+                 initialised, so the document stopped itself before a run began — a clause in it \
+                 could not be evaluated, and no argument of this request can change that. Nothing \
+                 was prompted"
+            )
+        }
         sprag_plugin::NotStarted::Screening(sprag_plugin::NotScreenable::Unreadable) => {
             format!(
                 "this loop's `{}` is not a list of {{{}: …, {}: …}} objects, so nothing could be \

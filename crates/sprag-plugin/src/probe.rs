@@ -379,10 +379,13 @@ mod tests {
         assert_eq!(
             count(&engine, "after"),
             0,
-            "⚠⚠⚠⚠ THE UNDECLARED `<assign>` MUST HAVE FAILED, and item 483's finding is what says \
-             so from out here: an error in executable content abandons the REST of the block. A `1` \
-             means this engine assigned to a location the document never declared, and then this \
-             case is measuring nothing about errors at all",
+            "⚠⚠⚠⚠ THE UNSERVED-TYPE `<send>` MUST HAVE FAILED, and item 483's finding is what says \
+             so from out here: an error in executable content abandons the REST of the block, so the \
+             `<assign>` after it never ran. A `1` means nothing was raised at all, and then this \
+             case is measuring nothing about errors. ⚠ This message named an UNDECLARED `<assign>` \
+             until item 505's round: that was the probe's first draft, and the document's own \
+             comment records why it was replaced — a location this engine has never declared is \
+             simply created, so it raises nothing",
         );
 
         assert_eq!(

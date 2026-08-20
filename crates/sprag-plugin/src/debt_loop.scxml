@@ -377,6 +377,29 @@
     reads it without ever stepping the machine — see the header for why a kind
     with real steps would not change this file's shape but replace it with one
     the driver drives.
+
+    ⚠⚠⚠⚠⚠ WHICH IS WHY THIS DOCUMENT ANSWERS NO ERROR OF ITS OWN, AND SAYS SO
+    HERE RATHER THAN LEAVING A READER TO WONDER — register item 505.
+
+    Every `<data>` above is an expression, and W3C SCXML 5.2/5.3 raises
+    `error.execution` when one of them cannot be evaluated. W3C 3.12.2 then
+    IGNORES that event if nothing matches it, and a document whose only state is
+    `<final>` has nowhere a transition could live: a final state takes none, and
+    there is no other. So a broken clause here would leave the driver reading
+    whatever the datamodel happened to hold — a consent list that came out empty,
+    a standing instruction that is not there — and a run would proceed under
+    decisions its author did not make.
+
+    ⚠⚠⚠ THE ANSWER IS THEREFORE THE DOOR'S, and it exists: `sprag_plugin::
+    document::opened` initialises every driven document and REFUSES one whose
+    start-up raised an error nobody answered, so a kind that cannot evaluate its
+    own clauses stops the run before it starts instead of quietly weakening it.
+    `LoopKind::debt` is opened through it, and `NoKind::Faulted` is the sentence
+    a person reads.
+
+    ⚠ It is the honest split rather than a shortcut: what to DO about a failure
+    is a decision, and this document has no state in which to take one. The
+    template, which has fourteen, answers its own errors on the `work` region.
   -->
   <final id="decided"/>
 </scxml>

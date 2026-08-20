@@ -87,6 +87,20 @@ pub enum NotStarted {
     /// agent ever asks about, and one that says nothing leaves it turned down with nothing to do —
     /// so both are answered here, before a byte is typed, exactly as an unreachable state is.
     Screening(crate::outer::NotScreenable),
+    /// ⚠⚠⚠⚠⚠ **THE DOCUMENT'S OWN CONTENT DID NOT EXECUTE**, and which class of error said so —
+    /// register item 505.
+    ///
+    /// An expression the document cannot evaluate raises `error.execution` while the datamodel is
+    /// being initialised; the `work` region answers it by ending the run, so the machine handed back
+    /// by [`OuterLoop::new`] has already reached `failed`. Refusing HERE rather than letting the
+    /// brief be turned down is the difference between *the clause you wrote did not evaluate* and
+    /// *the machine would not take your brief* — the second is true and sends the reader to the
+    /// wrong file.
+    ///
+    /// ⚠ The payload is the event's own name (`"error.execution"`), read back out of the datamodel
+    /// the edge assigned it to. The class is the repair: this document's content is the author's,
+    /// and a `<send>` nobody served is the host's.
+    Faulted(String),
 }
 
 /// A BOUNDED, CANCELLABLE RUN of `ai_loop.scxml`'s machine against one pane — the door onto
@@ -180,6 +194,16 @@ impl AiLoop {
         // now measures the walk THROUGH it, which is the standing rule for a gate whose defect has
         // been paid.
         let mut inner = OuterLoop::new(script, pane, spec).ok_or(NotStarted::Undrivable)?;
+        // ⚠⚠⚠⚠⚠ THE DOCUMENT'S OWN CONTENT FAILED WHILE IT WAS BEING BUILT — register item 505, and
+        // asked HERE because the answer is already in the machine by the time this line runs. An
+        // expression that cannot be evaluated raises `error.execution` during initialisation, the
+        // `work` region answers it by going to `failed`, and the brief below would then be refused
+        // by a machine that has already ended — reported as `NotStarted::Brief`, which sends a
+        // caller to look at the brief they wrote instead of at the clause that did not evaluate.
+        // The fault is the earlier fact and it is the one worth saying.
+        if let Some(error) = inner.fault() {
+            return Err(NotStarted::Faulted(error));
+        }
         match inner.brief(brief) {
             Briefed::Took => {}
             refused => return Err(NotStarted::Brief(refused)),
@@ -653,7 +677,37 @@ impl AiLoop {
             // stall: it hands the ending to the one authority that can tell a person's stop from a
             // clock running out, which is a distinction this plugin cannot make and must not guess.
             AiLoopState::Cancelled => Verdict::Continue,
+            // ⚠⚠⚠⚠⚠ THE DOCUMENT'S OWN CONTENT FAILED, AND THAT IS THE FIRST THING TO SAY —
+            // register item 505. Asked before the notice below because the two are different
+            // authorities and only one of them can be right about this run: `fault` is written by
+            // the machine's own `error.execution` edge, so a non-empty one means the ENGINE raised
+            // the event and the DOCUMENT answered it. Nothing the driver noticed earlier — a
+            // question on the pane, a peer that went quiet — caused that, and reporting the notice
+            // instead would send a reader to look at the pane over a clause that did not execute.
+            //
+            // ⚠⚠⚠⚠⚠ AND IT CARRIES THE PASS'S OWN LINE, WHICH IS MEASURED RATHER THAN TIDY. The
+            // first draft of this arm said *"the walk's last arrow names the state"* and the walk
+            // does not: a failing step returns `Err`, so the Driver records the FAILURE and the
+            // note this function was handed is dropped on the floor. Worse, the arrow would not
+            // have named the error either — `raised` is what the DRIVER sent in (`Judge`), because
+            // the engine's own `error.execution` never reaches this driver as an event. Measured:
+            // the journal's last line was `Working --TurnDone--> Judging` and the state the guard
+            // failed in appeared nowhere. So the line travels IN the sentence, which is the one
+            // channel a failed run has.
             AiLoopState::Failed => {
+                // ⚠⚠⚠⚠ INSIDE THIS ARM AND NOT BESIDE IT, and item 470's ratchet is what said so:
+                // a guarded second `AiLoopState::Failed` arm is a twelfth state-keyed site in the
+                // driver, and the gate counted it the moment it existed. It is the right answer
+                // rather than an appeasement — `failed` has ONE renderer, and which fact it reads
+                // first is that renderer's own ordering, not a second decision about the state.
+                if let Some(error) = self.inner.fault() {
+                    return Err(PaneError::Undrivable(format!(
+                        "its own content raised {error} and this document answers that by stopping \
+                         — a failed expression, a guard that could not be evaluated or a `<send>` \
+                         naming a type nobody serves, and W3C SCXML 3.8 abandons the rest of the \
+                         block it was in. The pass that ended the run: {note}"
+                    )));
+                }
                 return Err(PaneError::Undrivable(match self.inner.noticed() {
                     Some(Noticed::Undrivable(variable)) => format!(
                         "its datamodel stopped answering for {variable:?}, so the prompt it owed \
@@ -740,6 +794,27 @@ impl AiLoop {
             | AiLoopState::StandingDown
             | AiLoopState::Held => Verdict::Continue,
         };
+        // ⚠⚠⚠⚠⚠ AND WHAT NOTHING ANSWERED REACHES A PERSON HERE — register item 505's residue, on
+        // the one channel that survives the run. The document's `error.execution` edge covers the
+        // states it is active in; a CASCADE — a handler that fails the same way every time — is the
+        // failure that adding the edge created, and an error raised where no state of the document
+        // is left to match it has nobody to answer it. Both are silent everywhere else: W3C SCXML
+        // 3.12.2 drops the first, and the engine cuts the second without the configuration ever
+        // moving. The note is retained in the run's journal and published with it.
+        //
+        // ⚠⚠⚠⚠ MEASURED FIRING, which is the only reason it is trusted. With the region's edge
+        // deleted (mutation, this round) the run came back CONVERGED with three errors swallowed —
+        // a broken `max_turns` guard reporting success — and this note is what said so, in the
+        // journal, on the converging step: *"it raised error.execution and answers no error at all
+        // … (3 in total)"*. ⚠ With the edge in place nothing in today's document can reach it: every
+        // state that runs content is inside the region, so this is the NET under that edge rather
+        // than a live path, and the day a document stops covering itself it is what speaks.
+        if let Some(swallowed) = self.inner.swallowed() {
+            note.push_str(&format!(
+                " — ⚠ SWALLOWED BY THIS RUN'S OWN DOCUMENT: {swallowed}, and no state of it was \
+                 left to answer that"
+            ));
+        }
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
     }
 
@@ -1437,6 +1512,100 @@ mod tests {
              interrupt whatever a person started in it next",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN WHOSE OWN CONTENT FAILS ENDS, AND THE SENTENCE NAMES THE ERROR** — register
+    /// item 505, and the gate the whole item exists for.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The silence this measures the end of
+    ///
+    /// W3C SCXML 3.12.2 puts an `error.*` on the internal queue and IGNORES it when nothing matches;
+    /// W3C 3.8 abandons the rest of the block that raised it. Between them, a document that answered
+    /// no error ran on with half of a state's `onentry` executed and **nothing anywhere said so** —
+    /// measured 2026-08-20 by mutation, where one unserved-type `<send>` in `priming` made a real run
+    /// take eleven eventless passes in `working`, going nowhere, with every other gate in this crate
+    /// green. A person watching had a run that looked like a slow agent.
+    ///
+    /// # ⚠⚠⚠ How a failure is produced without asking the product for one
+    ///
+    /// [`OuterLoop::break_a_clause`] writes a STRING over `max_turns`, which stands in for an author
+    /// editing `<data id="max_turns" expr="'fourty'"/>` into the file — the one party who can put a
+    /// value of the wrong shape in this datamodel, since every caller's road is a typed [`Brief`]
+    /// field. `judging`'s first guard then evaluates `turns >= max_turns`, SCE lowers `>=` to raw Lua
+    /// `>=`, and comparing a number with a string raises. What runs after that is all product: the
+    /// engine's raise, the region's `error.execution` edge, the document's own `fault`, and the
+    /// driver's reporting.
+    ///
+    /// ⚠⚠ THREE CLAIMS, and each fails on its own:
+    ///
+    /// * the run **ENDS** — before this round it sat in `judging` for ever, because a guard that
+    ///   cannot be evaluated takes no transition and raises no event the driver knows;
+    /// * the run's failure **NAMES THE CLASS** (`error.execution`), which is what says who repairs
+    ///   it: the document's own content, not the pane and not the request;
+    /// * the walk **NAMES THE STATE** it happened in, which is the other half of the diagnosis and
+    ///   is deliberately not copied into the datamodel.
+    #[test]
+    fn a_run_whose_own_expression_fails_stops_and_says_which_error_it_was() {
+        let (workspace, pane) = standin_agent(4);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        // ⚠ THE AUTHOR'S BAD EDIT, stood in for. It happens AFTER the brief, because a brief
+        // assigns `max_turns` and would overwrite it — which is itself the honest order: an author's
+        // file is read before a caller's argument, and this is the value the run ends up holding.
+        loops.inner.break_a_clause("max_turns", "fourty");
+
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            // ⚠⚠ THE CONTROL FOR THE WHOLE CLAIM. A run that does NOT answer its own error stalls,
+            // and a stall ends `exhausted — iterations` at this ceiling: the two outcomes are what
+            // this gate tells apart, so the ceiling must be reachable within the clock below.
+            max_iterations: 40,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "⚠⚠⚠⚠⚠ a document whose own guard cannot be evaluated must END the run — and the \
+             control was MEASURED rather than imagined: with the region's `error.execution` edge \
+             deleted, this very run came back `Converged`. The budget guard failed three times, so \
+             `max_turns` never applied at all, and a run under a broken ceiling reported SUCCESS. \
+             That is worse than the stall item 505 was filed about, and it is what this word is \
+             holding the line on. Walked {walk:?}",
+        );
+        let said = format!("{:?}", outcome.failure);
+        assert!(
+            said.contains("error.execution"),
+            "⚠⚠⚠⚠ AND THE SENTENCE MUST NAME THE CLASS. Without it the reader is told a loop was \
+             `Undrivable` and has to guess between a pane that went away, a peer that would not be \
+             asked and a clause that did not evaluate — three unrelated repairs: {said:?}",
+        );
+        assert!(
+            said.contains("stopping"),
+            "⚠⚠ and that this document ANSWERS such an error by stopping, which is the decision the \
+             `.scxml` now carries and the reason the run is over rather than stuck: {said:?}",
+        );
+        assert!(
+            said.contains("Judging"),
+            "⚠⚠⚠ AND IT MUST NAME THE STATE THE ERROR HAPPENED IN. Measured on this gate's first \
+             run: the JOURNAL cannot carry it — a failing step returns `Err`, so the walk line is \
+             dropped, and the line would have named the driver's own `Judge` rather than the \
+             engine's error anyway. The class with no place to look is half a diagnosis: {said:?} \
+             — walked {walk:?}",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **A RUN WHOSE AGENT WRITES SOMEWHERE NOTHING CAN READ SAYS SO, ONCE** — register item
@@ -6377,6 +6546,37 @@ mod tests {
         engine.step();
     }
 
+    /// **WHAT THE DRIVER PUTS ON `turn.done`** — three numbers, and a zero is a record that could
+    /// not be read rather than a small one. `judging`'s `onentry` assigns all three.
+    const TURN: &str = r#"{"context": 0, "cold": 0, "floor": 0}"#;
+
+    /// **WHAT THE DRIVER PUTS ON `judge` AFTER AN ORDINARY TURN** — five keys, every one of them
+    /// `false`, which is `OuterLoop::pump`'s own shape for *the agent worked and declared nothing*.
+    ///
+    /// ⚠ `false` and never `0` or `""`: this datamodel is Lua, where both of those are TRUE.
+    const ORDINARY: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#;
+
+    /// Raise a DATA-CARRYING event the way the driver does, then step.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why fifteen fixtures changed to this in register item 505's round
+    ///
+    /// [`reflected`] above had already written the rule — *a fixture must reach a state by the door
+    /// the product uses* — and fifteen sites in this file were still raising `turn.done` and `judge`
+    /// through `process_event`, which carries **no `_event.data` at all**. `judging`'s `onentry`
+    /// reads three keys off it and every guard in that state reads one, so those raises were asking
+    /// the datamodel to index nil.
+    ///
+    /// **That raised `error.execution` on every one of them, and W3C SCXML 3.12.2 dropped it**: the
+    /// gates ran on a `judging` whose entry block had been ABANDONED after its first assignment
+    /// (W3C 3.8), and stayed green. They were only found when the document grew an edge that answers
+    /// its own errors and seven of them went red at once. ⚠ There is no separate ratchet for this
+    /// class and none is needed: the edge IS the detector, and the next fixture written this way
+    /// fails on the state it lands in.
+    fn carried(engine: &mut Engine<AiLoopPolicy>, event: AiLoopEvent, data: &str) {
+        engine.raise_external(event, data, "");
+        engine.step();
+    }
+
     /// ⚠⚠⚠ **HOW THE MACHINE TELLS ITS DRIVER WHAT TO DO — asked of the ENGINE, because the
     /// answer decides the driver's whole shape and the document cannot settle it.**
     ///
@@ -6530,7 +6730,7 @@ mod tests {
         engine.process_event(AiLoopEvent::Start);
         engine.process_event(AiLoopEvent::PromptSent);
         engine.process_event(AiLoopEvent::PeerSilent);
-        engine.process_event(AiLoopEvent::TurnDone);
+        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Judging,
@@ -6570,7 +6770,7 @@ mod tests {
             let (mut engine, _lua, _session) = started();
             engine.process_event(AiLoopEvent::Start);
             engine.process_event(AiLoopEvent::PromptSent);
-            engine.process_event(AiLoopEvent::TurnDone);
+            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Judging,
@@ -6639,10 +6839,16 @@ mod tests {
         }
 
         /// The walk into `judging`, which four of the six states are reached through.
+        ///
+        /// ⚠⚠ `turn.done` CARRIES ITS THREE NUMBERS, which this walk left empty until register item
+        /// 505: `judging`'s `onentry` reads them off `_event.data`, so an empty payload asked the
+        /// datamodel to index nil, raised `error.execution`, and had the entry block abandoned after
+        /// its first assignment — silently, because nothing answered the error. This gate was one of
+        /// the seven that went red the moment the document did.
         const TO_JUDGING: [(AiLoopEvent, &str); 3] = [
             (AiLoopEvent::Start, ""),
             (AiLoopEvent::PromptSent, ""),
-            (AiLoopEvent::TurnDone, ""),
+            (AiLoopEvent::TurnDone, TURN),
         ];
 
         /// `events`, then one more — spelled as a function because every case below is *reach the
@@ -6768,7 +6974,9 @@ mod tests {
             (AiLoopEvent::SessionReplaced, ""),
             (AiLoopEvent::SessionReady, ""),
             (AiLoopEvent::PromptSent, ""),
-            (AiLoopEvent::TurnDone, ""),
+            // ⚠ CARRYING ITS NUMBERS, for `TO_JUDGING`'s reason: an empty `turn.done` makes
+            // `judging`'s entry index nil and this walk ends `failed` on an error nobody meant.
+            (AiLoopEvent::TurnDone, TURN),
             (AiLoopEvent::Judge, "{\"done\": false}"),
             (AiLoopEvent::PromptUnasked, ""),
         ];
@@ -6830,7 +7038,7 @@ mod tests {
             let (mut engine, lua, session) = started();
             engine.process_event(AiLoopEvent::Start);
             engine.process_event(AiLoopEvent::PromptSent);
-            engine.process_event(AiLoopEvent::TurnDone);
+            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
             engine.raise_external(AiLoopEvent::Judge, "{\"done\": true}", "");
             engine.step();
             assert_eq!(
@@ -7211,7 +7419,7 @@ mod tests {
         let mut turn = 0_u32;
         while engine.get_current_state() == AiLoopState::Working {
             turn += 1;
-            engine.process_event(AiLoopEvent::TurnDone);
+            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Judging,
@@ -7220,7 +7428,7 @@ mod tests {
             // No `_event.data.done`, so the goal-met guard is falsy and the budget
             // guards are what decide. The peer saying the done marker is a
             // different gate; this one is about the two NUMBERS.
-            engine.process_event(AiLoopEvent::Judge);
+            carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
             decisions.push((turn, engine.get_current_state()));
 
             // A reflection that finds nothing to change returns to `working`
@@ -7266,7 +7474,7 @@ mod tests {
             !engine.is_in_final_state(),
             "a run out of turns is asked for its account before it ends: {decisions:?}",
         );
-        engine.process_event(AiLoopEvent::TurnDone);
+        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Exhausted,
@@ -7315,8 +7523,8 @@ mod tests {
                     AiLoopState::Working,
                     "the walk to a spent budget goes through `working`",
                 );
-                engine.process_event(AiLoopEvent::TurnDone);
-                engine.process_event(AiLoopEvent::Judge);
+                carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+                carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
                 if engine.get_current_state() == AiLoopState::Reflecting {
                     reflected(&mut engine, AiLoopEvent::ReflectNone, "");
                 }
@@ -7587,8 +7795,8 @@ mod tests {
 
         // ⚠ THE CONTROL: with nothing screened, a judged turn goes straight back to work. The
         // document ships `reflect_every: 8`, so nothing else can send this turn to `reflecting`.
-        engine.process_event(AiLoopEvent::TurnDone);
-        engine.process_event(AiLoopEvent::Judge);
+        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,
@@ -7597,7 +7805,11 @@ mod tests {
         );
 
         // The peer asks, a rule claims it, and the driver reports what it said.
-        engine.process_event(AiLoopEvent::TurnBlocked);
+        carried(
+            &mut engine,
+            AiLoopEvent::TurnBlocked,
+            r#"{"service": false, "judged": false, "rule": ""}"#,
+        );
         assert_eq!(engine.get_current_state(), AiLoopState::Screening);
         engine.raise_external(
             AiLoopEvent::ScreenMatched,
@@ -7611,8 +7823,8 @@ mod tests {
             "a claimed dialog returns to work — the peer has just been handed its answer",
         );
 
-        engine.process_event(AiLoopEvent::TurnDone);
-        engine.process_event(AiLoopEvent::Judge);
+        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Reflecting,
@@ -7623,8 +7835,8 @@ mod tests {
         // Nothing worth changing — back to work without a restart.
         reflected(&mut engine, AiLoopEvent::ReflectNone, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
-        engine.process_event(AiLoopEvent::TurnDone);
-        engine.process_event(AiLoopEvent::Judge);
+        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,

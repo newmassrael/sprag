@@ -207,6 +207,31 @@
     </transition>
     <transition event="read.none" target="nothing"/>
     <transition event="fail" target="failed"/>
+    <!--
+      ⚠⚠⚠⚠⚠ AND AN ERROR OF THIS DOCUMENT'S OWN ENDS THE REVIEW RATHER THAN
+      VANISHING — register item 505, and here the reachable cause is one line up.
+
+      W3C SCXML 3.12.2 ignores an `error.*` nothing matches, and W3C 3.8 abandons
+      the rest of the block that raised it. The guard above reads
+      `_event.data.records`, so a `read.done` the driver raises WITHOUT data asks
+      Lua to index nil: the guard cannot be evaluated, this transition is never
+      taken, and until this edge existed the machine sat in `reading` for ever
+      while the loop waited on a review that had already failed.
+
+      `failed` is this document's own word for it, exactly as the `fail` edge
+      above uses it, and the parent treats a failed review as no carry, which is
+      the safe direction: a habit nobody found beats a habit invented by a
+      half-executed block.
+
+      ⚠⚠ FOUR COPIES HERE AND ONE IN `ai_loop.scxml`, and the difference is the
+      shape rather than a preference: this document is FLAT, so there is no
+      ancestor to hold the rule, and wrapping the four states in one would add a
+      state to the type the driver matches exhaustively. What keeps the copies
+      honest is the ratchet in `document.rs`, which requires EVERY state that
+      runs executable content to be covered by an edge of its own or an
+      ancestor's, so a fifth state cannot be added without one.
+    -->
+    <transition event="error.execution" target="failed"/>
   </state>
 
   <!--
@@ -228,6 +253,8 @@
     </transition>
     <transition event="count.none" target="nothing"/>
     <transition event="fail" target="failed"/>
+    <!-- The region rule of a flat document, state by state. See `reading`. -->
+    <transition event="error.execution" target="failed"/>
   </state>
 
   <!--
@@ -261,6 +288,8 @@
     </transition>
     <transition event="ask.none" target="nothing"/>
     <transition event="fail" target="failed"/>
+    <!-- The region rule of a flat document, state by state. See `reading`. -->
+    <transition event="error.execution" target="failed"/>
   </state>
 
   <!--
@@ -278,6 +307,8 @@
     <transition event="write.done" target="carried"/>
     <transition event="write.skipped" target="carried"/>
     <transition event="fail" target="failed"/>
+    <!-- The region rule of a flat document, state by state. See `reading`. -->
+    <transition event="error.execution" target="failed"/>
   </state>
 
   <!--

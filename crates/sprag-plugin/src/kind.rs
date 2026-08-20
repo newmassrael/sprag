@@ -72,6 +72,20 @@ pub enum NoKind {
     /// document compiled with `datamodel="null"` reaches this, which is a build-time mistake rather
     /// than an authoring one.
     NoDatamodel,
+    /// ⚠⚠⚠⚠⚠ **A CLAUSE IN THE KIND DOCUMENT COULD NOT BE EVALUATED, AND NOTHING IN IT CAN SAY SO**
+    /// — register item 505.
+    ///
+    /// Every decision in a kind is a `<data>` expression, and W3C SCXML 5.2/5.3 raises
+    /// `error.execution` for one that cannot be evaluated. This document's only state is `<final>`,
+    /// so there is nowhere a transition could answer that — see the document's own note — and W3C
+    /// 3.12.2 then drops the event. What was LEFT was a driver reading whatever the datamodel
+    /// happened to hold: a consent list that came out empty, a standing instruction that is not
+    /// there, and a run proceeding under decisions its author did not make.
+    ///
+    /// ⚠⚠ So the refusal is the door's, and it belongs here rather than in
+    /// [`NoDatamodel`](Self::NoDatamodel): that one says *this was built wrong* and a build fixes
+    /// it; this one says *what you wrote did not evaluate* and the author fixes it.
+    Faulted(crate::document::Faulted),
 }
 
 impl std::fmt::Display for NoKind {
@@ -80,6 +94,13 @@ impl std::fmt::Display for NoKind {
             Self::NoDatamodel => f.write_str(
                 "this loop kind's document opened no script session, so it holds no decisions — a \
                  kind must declare `datamodel=\"ecmascript\"`",
+            ),
+            Self::Faulted(faulted) => write!(
+                f,
+                "this loop kind's document did not evaluate its own decisions: {faulted}. A kind is \
+                 a datamodel with one final state, so nothing in it can answer an error — the \
+                 clause that failed left the driver with whatever the datamodel happened to hold, \
+                 and a run started on that would run under decisions nobody authored",
             ),
         }
     }
@@ -94,12 +115,15 @@ impl LoopKind {
     ///
     /// # Errors
     ///
-    /// [`NoKind::NoDatamodel`] when the document opened no script session.
+    /// [`NoKind::NoDatamodel`] when the document opened no script session, and
+    /// [`NoKind::Faulted`] when initialising it raised an error the document has no state to answer
+    /// — see [`crate::document::opened`], which is the road every driven document is initialised
+    /// through and the only party that can answer for this one.
     pub fn debt(script: Arc<dyn IScriptEngine>) -> Result<Self, NoKind> {
-        let mut machine = Engine::new(crate::sm::debt_loop::DebtLoopPolicy::new(Arc::clone(
-            &script,
-        )));
-        machine.initialize();
+        let machine = crate::document::opened(crate::sm::debt_loop::DebtLoopPolicy::new(
+            Arc::clone(&script),
+        ))
+        .map_err(NoKind::Faulted)?;
         let session = machine
             .policy()
             .session_id
