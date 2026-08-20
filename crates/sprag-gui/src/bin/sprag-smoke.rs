@@ -101,6 +101,12 @@ fn main() -> ExitCode {
             // for the CLIENT to paint the consequence, so it needs the one-pane correspondence that
             // check establishes. It leaves the pane set as it found it (a `cd` moves no pane).
             check_a_sessions_sampled_activity_reaches_its_painted_row(&mut smoke, &mut report);
+            // Beside the two above because it is the same two-ended drive, but it inherits NO
+            // particular pane set and asserts none: it reads both sides until they agree and works
+            // from that, so it survives whatever the checks above leave. It is the only check here
+            // whose act is a pane arriving from OUTSIDE at a live client — every other pane-creation
+            // check drives the client's own split — and it puts the pane set back before it returns.
+            check_a_daemon_side_split_reaches_the_attached_client(&mut smoke, &mut report);
             // The keymap gate, HERE because it splits: after the check above, which needs exactly one
             // pane, and before the one below, which leaves several standing.
             check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
@@ -1644,6 +1650,155 @@ fn check_a_sessions_sampled_activity_reaches_its_painted_row(
     report.check(
         &format!("and a screen reader is told the same thing ({announced:?})"),
         announced.is_some(),
+    );
+}
+
+/// **Register item 513's gate**: a pane created ON THE DAEMON while a client is attached must appear
+/// in that client, without a restart.
+///
+/// ⚠⚠⚠⚠ **EVERY OTHER "a pane appears" CHECK HERE GOES THROUGH THE CLIENT'S OWN ACTION**, which is
+/// the hole this one fills. [`check_a_pane_can_be_created_and_closed`] runs `Split into a new pane`
+/// from the palette — the client splitting for ITSELF, so its own dispatch is what makes the tile —
+/// and [`check_a_client_that_attaches_paints_the_panes_it_joined`] reads a pane set that was already
+/// there when the client attached. Neither can see a pane arriving from OUTSIDE at a client that is
+/// already up, which is the arrangement a person meets whenever something other than their window
+/// makes a pane: an agent, a script, or the debt loop's own supervisor splitting for the pane it is
+/// about to work in.
+///
+/// So the drive is the DAEMON's own `split`, over a second connection, and the reader is the
+/// CLIENT's painted tree — the same two-ended shape as
+/// [`check_an_agents_state_reaches_the_painted_pane_title`], which is where this one's harness comes
+/// from.
+///
+/// ⚠⚠ **IT IS NOT A REGRESSION TEST FOR A DEFECT** — register item 513 filed one here, and it did
+/// not reproduce: measured 2026-08-21 at the pixels, in both launch shapes, an attached client
+/// painted the daemon's new pane every time. What outlived that item is the coverage gap above and
+/// the symptom the item was filed FROM, which is 520.
+///
+/// ⚠⚠⚠ **THE CONTROL IS THE DAEMON'S OWN COUNT.** A client that fails to paint the new pane and a
+/// daemon that failed to make one are the same picture from here, and they are opposite bugs — so
+/// the daemon is asked whether it grew, separately, before the client is judged for not having.
+///
+/// ⚠⚠⚠⚠⚠ **WHAT MAKES THIS CHECK ABLE TO FAIL, MEASURED 2026-08-21 RATHER THAN ARGUED.** Deleting
+/// `Workspace::split`'s own `self.announce()` did NOT turn it red — nor did doing that with a SILENT
+/// child, nor the same pair driven at the pixels with nothing polling the client at all. The reason
+/// is that the wake is over-determined: a split RESIZES the pane it divides, the sibling's emulator
+/// reflows, its `on_dirty` bumps the session's `SceneRevision`, and the client wakes on the bump the
+/// RESIZE paid for. So this check is not a gate on any single announce, and must not be read as one.
+/// What it IS a gate on is the OUTCOME, and the mutation that proves it: slotting only the panes a
+/// client had when it first looked — item 513's title, verbatim — makes the claim below red while
+/// its fixture and its control stay green.
+///
+/// It RESTORES what it found: the pane it made is closed on the daemon again and the client is
+/// waited back down, because this file's check order is load-bearing and several checks below need
+/// exactly one pane.
+fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session to split in", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the daemon takes a second connection to split over", false);
+        return;
+    };
+    // The two sides AGREEING is the fixture, whatever number they agree on — not a fixed count.
+    //
+    // ⚠⚠⚠⚠ **A FIXTURE OF "EXACTLY ONE EACH" WAS TRIED FIRST AND IT MADE THIS CHECK UNFALSIFIABLE.**
+    // Measured 2026-08-21 against the mutation below: a client that never learns a new pane leaves
+    // the sides DISAGREEING by the time this check is reached, so the one-each precondition failed
+    // and the claim underneath it never ran — a red, in the wrong place, saying nothing about the
+    // product. The correspondence this check actually needs is not a count but a MATCH: read the two
+    // sides until they agree, and the tile that appears afterwards is the pane that was made.
+    let ids = daemon_panes(&mut daemon, &session);
+    let agreed = smoke.wait_for(|s| {
+        let painted = s.docked_panes().ok()?;
+        (!ids.is_empty() && painted.len() == ids.len()).then_some(painted)
+    });
+    report.check(
+        &format!(
+            "the two sides agree on the pane set to split from (daemon {ids:?}, client {agreed:?})"
+        ),
+        agreed.is_ok(),
+    );
+    if agreed.is_err() {
+        return;
+    }
+    let Some(&id) = ids.first() else {
+        return;
+    };
+
+    // ── The act: the split happens on the DAEMON, addressed exactly as `rpc.rs` addresses it. The
+    // client is not told and is not asked; whether it finds out is the question.
+    //
+    // ⚠⚠ **THE NEWBORN PANE IS SILENT** — `sleep`, not the user's shell. A shell prints a prompt, a
+    // pane's `on_dirty` bumps its session's `SceneRevision` for that output, and a check driving one
+    // would be partly asserting the CHILD's noise. Removing that leaves fewer things that can wake
+    // the client, which is worth having even though — measured, see the function docs — it is not by
+    // itself enough to isolate any one wake.
+    let split: Result<Value, _> = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::mux_action_path(sprag_host::wire::SPLIT_ACTION),
+            "args": {
+                (sprag_host::wire::SPLIT_PANE_KEY): id,
+                (sprag_host::wire::SPLIT_DIR_KEY): "horizontal",
+                (sprag_host::wire::SPAWN_CMD_KEY): ["sleep", "3600"],
+            },
+            "session": session,
+        }),
+    );
+    report.check(
+        &format!("the daemon takes a split nobody's client asked for ({split:?})"),
+        split.is_ok(),
+    );
+
+    // ── The control. Asked FIRST, because "the client did not paint it" is worth nothing until the
+    // pane is known to exist: a daemon that refused the split paints the same picture from here.
+    let grown = smoke.wait_for(|s| {
+        let now = daemon_panes(&mut daemon, &s.attached_session()?);
+        (now.len() > ids.len()).then_some(now)
+    });
+    report.check(
+        &format!("the DAEMON holds one more pane than it did ({grown:?} was {ids:?})"),
+        grown.is_ok(),
+    );
+    let Ok(after) = grown else {
+        return;
+    };
+
+    // ── The claim. The client is polled, not sampled once: a paint is three processes away from the
+    // split, so a single read could only ever prove "not yet".
+    let painted = smoke.wait_for(|s| {
+        let tiles = s.docked_panes().ok()?;
+        (tiles.len() == after.len()).then_some(tiles)
+    });
+    report.check(
+        &format!(
+            "and the ATTACHED client paints the pane it never asked for ({painted:?} of daemon {after:?})"
+        ),
+        painted.is_ok(),
+    );
+
+    // ── Put back what was found. The pane is closed on the daemon that made it, and the client is
+    // waited back down — a check below needing exactly one pane must not inherit this one's fixture.
+    let Some(&born) = after.iter().find(|new| !ids.contains(new)) else {
+        return;
+    };
+    let closed: Result<Value, _> = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::mux_action_path(sprag_host::wire::CLOSE_ACTION),
+            "args": { "id": born },
+            "session": session,
+        }),
+    );
+    let restored = smoke.wait_for(|s| {
+        let tiles = s.docked_panes().ok()?;
+        (tiles.len() == ids.len()).then_some(tiles)
+    });
+    report.check(
+        &format!("the pane it made is taken away again ({restored:?}, close {closed:?})"),
+        restored.is_ok(),
     );
 }
 
