@@ -119,7 +119,7 @@ pub fn variant_of(id: &str) -> String {
         .collect()
 }
 
-/// The names ONE file can reach the state type through, taken from that file's own `use` lines.
+/// The names ONE file can reach a generated type through, taken from that file's own `use` lines.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Reaching {
     /// Path segments that name the type — `AiLoopState` itself and any `as` alias of it.
@@ -128,7 +128,8 @@ pub struct Reaching {
     pub glob: bool,
 }
 
-/// How `product` reaches [`STATE_TYPE`].
+/// How `product` reaches `generated` — [`STATE_TYPE`] here, and the event type for
+/// [`crate::payload`].
 ///
 /// # ⚠⚠⚠⚠⚠ This is the anti-blindness half, and it is the half a hand-written needle lacks
 ///
@@ -140,23 +141,27 @@ pub struct Reaching {
 ///
 /// Reading the file's own imports means the rename is what TEACHES the needle, rather than what
 /// blinds it.
+///
+/// ⚠ The type is a PARAMETER rather than this module's constant because the same blindness reaches
+/// every generated name a gate needles on: item 507's gate reads `AiLoopEvent` through this, and a
+/// second copy of the import walk is where two copies of a rule drift apart.
 #[must_use]
-pub fn reaching(product: &[(usize, String)]) -> Reaching {
+pub fn reaching(product: &[(usize, String)], generated: &str) -> Reaching {
     let mut found = Reaching::default();
     for (_, line) in product {
-        if !line.contains(STATE_TYPE) {
+        if !line.contains(generated) {
             continue;
         }
         if !line.starts_with("use ") && !line.starts_with("pub use ") {
             // A path used in an expression tells us nothing new; only an import can rename.
-            found.paths.insert(STATE_TYPE.to_owned());
+            found.paths.insert(generated.to_owned());
             continue;
         }
-        found.paths.insert(STATE_TYPE.to_owned());
-        if line.contains(&format!("{STATE_TYPE}::*")) {
+        found.paths.insert(generated.to_owned());
+        if line.contains(&format!("{generated}::*")) {
             found.glob = true;
         }
-        if let Some(alias) = alias_after(line) {
+        if let Some(alias) = alias_after(line, generated) {
             found.paths.insert(alias);
         }
     }
@@ -164,8 +169,8 @@ pub fn reaching(product: &[(usize, String)]) -> Reaching {
 }
 
 /// The identifier in `… AiLoopState as Alias …`, when the line renames the type.
-fn alias_after(line: &str) -> Option<String> {
-    let at = line.find(STATE_TYPE)? + STATE_TYPE.len();
+fn alias_after(line: &str, generated: &str) -> Option<String> {
+    let at = line.find(generated)? + generated.len();
     let rest = line[at..].trim_start();
     let named = rest.strip_prefix("as ")?.trim_start();
     let alias: String = named
@@ -190,7 +195,7 @@ pub fn state_keyed(sources: &[Source], document: &[String]) -> Vec<StateKeyed> {
 
     let mut found = Vec::new();
     for source in sources {
-        let reaching = reaching(&source.product);
+        let reaching = reaching(&source.product, STATE_TYPE);
         if reaching.paths.is_empty() {
             continue;
         }
@@ -378,15 +383,15 @@ mod tests {
     #[test]
     fn an_import_teaches_the_needle_its_own_names() {
         let renamed = source("a.rs", "use crate::sm::ai_loop::AiLoopState as S;");
-        let found = reaching(&renamed.product);
+        let found = reaching(&renamed.product, STATE_TYPE);
         assert!(found.paths.contains("S") && found.paths.contains(STATE_TYPE));
         assert!(!found.glob);
 
         let globbed = source("a.rs", "use crate::sm::ai_loop::AiLoopState::*;");
-        assert!(reaching(&globbed.product).glob);
+        assert!(reaching(&globbed.product, STATE_TYPE).glob);
 
         assert_eq!(
-            reaching(&source("a.rs", "let x = 1;").product),
+            reaching(&source("a.rs", "let x = 1;").product, STATE_TYPE),
             Reaching::default()
         );
     }

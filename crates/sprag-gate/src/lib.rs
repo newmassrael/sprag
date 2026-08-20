@@ -68,6 +68,15 @@ pub mod authored;
 /// author; this pins that a MEASURED one still describes the sessions it was measured on.
 pub mod economics;
 
+/// Whether an event the loop's document reads `_event.data` off is ever raised WITHOUT it —
+/// item 507.
+///
+/// Beside [`economics`] and [`authored`] for their reason, and it is the third face of the same
+/// claim: those two pin what the document is TOLD, this pins that it is told it AT ALL. Fifteen
+/// fixture sites raised `turn.done` and `judge` with no `_event.data`, so `judging`'s entry block
+/// was abandoned on every one of them, and W3C SCXML 3.12.2 dropped the error — green for months.
+pub mod payload;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the
