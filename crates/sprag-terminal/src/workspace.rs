@@ -374,6 +374,61 @@ impl Pane {
     }
 }
 
+/// **WHAT A CALLER DECLARED ABOUT A PANE'S SEAT** — the position in the window — as distinct from
+/// what its OCCUPANT is. Handed to a replacement by
+/// [`Workspace::hand_seat_over`](Workspace::hand_seat_over), which is the only thing that builds one.
+///
+/// Private on purpose: this is not a fact anybody reads, it is the *set* the replacement path must
+/// not be able to get wrong. A public getter would invite a second caller to take three of the four.
+struct Seat {
+    name: Option<crate::PaneName>,
+    opened_by: Option<PaneId>,
+    remote: Option<SshRemote>,
+    grant: Option<crate::share::Grant>,
+}
+
+impl Seat {
+    /// ⚠⚠⚠⚠⚠ **EVERY FIELD OF [`Pane`] IS NAMED BELOW AND THE PATTERN CARRIES NO `..`**, so a field
+    /// added to a pane does not compile until somebody has said whether a replacement inherits it.
+    /// That is the whole reason this walks a destructuring pattern instead of reading four getters:
+    /// register item 478 was one forgotten field, and a list with no glob is a list that decides
+    /// alone. **The compiler is the thing that asks.**
+    ///
+    /// The seven that are NOT the seat's, in the four groups they stay behind for:
+    ///
+    /// * `id` and `pty` ARE the new pane — carrying either would make this a rename, not a
+    ///   replacement;
+    /// * `command_label`, `argv` and `env` come from the spawn the replacement was launched with,
+    ///   which read them off the outgoing pane already (`PaneLifecycle::respawn`), so taking them
+    ///   here would be the same rule written twice;
+    /// * `agent_session` is the OCCUPANT'S OWN IDENTITY and must never follow: a loop replaces its
+    ///   inner session precisely to throw that session away, and an agent handed a name already in
+    ///   use refuses itself at startup. See the [field](Pane::agent_session).
+    /// * `home` is the cgroup the replacement was actually placed in — an answer about this pane,
+    ///   not a request about the seat. The seat's REQUEST is `grant`, and that is carried.
+    fn of(pane: &Pane) -> Self {
+        let Pane {
+            name,
+            opened_by,
+            remote,
+            grant,
+            id: _,
+            pty: _,
+            command_label: _,
+            argv: _,
+            env: _,
+            agent_session: _,
+            home: _,
+        } = pane;
+        Self {
+            name: name.clone(),
+            opened_by: *opened_by,
+            remote: remote.clone(),
+            grant: *grant,
+        }
+    }
+}
+
 /// Read-only metadata describing a pane, for introspection over the
 /// scene-as-data control surface (the host maps this to JSON).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1406,6 +1461,78 @@ impl Workspace {
         }
     }
 
+    /// **HAND EVERYTHING A CALLER DECLARED ABOUT `from`'s SEAT TO `to`** — the pane replacing it —
+    /// answering whether both panes were here to do it with.
+    ///
+    /// A `Seat` is what somebody SAID about this position in the window (what to call it, who
+    /// asked for it, what it may spend, whether it is a remote workspace); the occupant is the
+    /// program that happens to be sitting in it. A replacement changes the occupant, so the seat's
+    /// declarations follow it and the occupant's own facts do not — see `Seat::of`, where the
+    /// split is spelled field by field and the compiler asks about every new one.
+    ///
+    /// ⚠ `Seat` is named in prose and NOT linked, deliberately: it is private, and a public item
+    /// linking to it is `rustdoc::private_intra_doc_links` — an error under this workspace's doc
+    /// gate, which refused this very paragraph the first time it was written.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is ONE operation and not four calls at the call site
+    ///
+    /// Register item 478, measured on a live AI-loop run: after eight session replacements
+    /// `sprag agent inner` answered *"no pane is called \"inner\""* and the run's own agent was an
+    /// unnamed pane. **The name was one of four**, and the replacement dropped all four for the same
+    /// reason — nothing carried them — so a fix that moved the name would have left the three beside
+    /// it, each failing later and separately. The sharpest is the PROVENANCE: a pane nobody claims
+    /// is one the agent surface refuses to close, so a run that replaced its inner session could no
+    /// longer clean it up. Four `set_pane_*` calls at the caller is a list somebody extends by
+    /// forgetting; this is the whole seat, and `Seat::of` is what keeps it whole.
+    ///
+    /// # ⚠⚠⚠ The name MOVES and the other three are COPIED, and the asymmetry is the point
+    ///
+    /// A name is unique daemon-wide, so a moment in which both panes hold it is a moment a lookup
+    /// may resolve to the pane that is about to be closed — the caller's `respawn` closes the old
+    /// pane only after the new one is up, precisely so a failed spawn leaves the run holding
+    /// something. Moving it under this one lock means no reader can ever see two. Provenance, remote
+    /// marker and grant are not unique and nothing is confused by the outgoing pane keeping its copy
+    /// for the moment it has left.
+    ///
+    /// # ⚠⚠ It is a total hand-over, including the absences
+    ///
+    /// `to` ends up with exactly what `from` declared — an unnamed seat's replacement is unnamed,
+    /// and it is not given a name it never had. A caller replacing a pane wants the seat as it was,
+    /// not the union of two.
+    ///
+    /// Answers `false` — and changes nothing at all — when either id is a stranger to this pool, so
+    /// a hand-over to a pane that failed to spawn cannot take the name off the pane that is staying.
+    pub fn hand_seat_over(&mut self, from: PaneId, to: PaneId) -> bool {
+        let Some(seat) = self.pane(from).map(Seat::of) else {
+            return false;
+        };
+        if !self.panes.iter().any(|pane| pane.id == to) {
+            return false;
+        }
+        let Seat {
+            name,
+            opened_by,
+            remote,
+            grant,
+        } = seat;
+        // ⚠ The vacated seat first, so the name it is handing over is never held twice — see above.
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == from) {
+            pane.name = None;
+        }
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == to) {
+            pane.name = name;
+            pane.opened_by = opened_by;
+            pane.remote = remote;
+        }
+        // ⚠⚠ THE GRANT GOES THROUGH ITS OWN DOOR, because recording it is not applying it: a
+        // ceiling copied onto the field and never written to the replacement's cgroup is a limit a
+        // person can read and the kernel is not holding. `set_pane_grant` writes and then records.
+        if let Some(grant) = grant {
+            self.set_pane_grant(to, grant);
+        }
+        true
+    }
+
     /// All panes, in spawn order.
     #[must_use]
     pub fn panes(&self) -> &[Pane] {
@@ -2265,6 +2392,112 @@ mod tests {
             ws.list().iter().filter(|p| p.name.is_some()).count(),
             2,
             "the pool records both; the host is what refuses the second",
+        );
+    }
+
+    /// A seat's declarations reach its replacement — and the NAME is the one that moves, asserted
+    /// while BOTH panes are still live, which is the only moment at which the difference between
+    /// moving and copying exists at all. `PaneLifecycle::respawn` closes the outgoing pane
+    /// immediately afterwards, so a copy would read as a move to every gate that looks later.
+    #[test]
+    fn a_seat_handed_over_moves_its_name_and_copies_the_rest() {
+        let mut ws = Workspace::new((80, 24));
+        let opener = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let leaving = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let arriving = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let name = crate::PaneName::parse("inner").unwrap();
+        let grant = crate::share::Grant {
+            share: crate::share::Share::new(4242).unwrap(),
+            limits: crate::share::Limits::UNCAPPED.with_memory(Some(512 << 20)),
+        };
+        let remote = SshRemote {
+            user: None,
+            host: "pc4".to_string(),
+            port: None,
+        };
+        assert!(ws.set_pane_name(leaving, Some(name.clone())));
+        ws.set_pane_opened_by(leaving, opener);
+        ws.set_pane_remote(leaving, remote.clone());
+        assert!(ws.set_pane_grant(leaving, grant).is_some());
+
+        assert!(ws.hand_seat_over(leaving, arriving), "both panes are here");
+
+        let took = ws.pane(arriving).unwrap();
+        assert_eq!(took.name(), Some(&name), "the name reaches the replacement");
+        assert_eq!(took.opened_by(), Some(opener), "and the provenance");
+        assert_eq!(took.remote(), Some(&remote), "and the remote marker");
+        assert_eq!(
+            ws.pane_grant_or_default(arriving),
+            Some(grant),
+            "and the grant, which is APPLIED and not merely recorded",
+        );
+
+        let vacated = ws.pane(leaving).unwrap();
+        assert_eq!(
+            vacated.name(),
+            None,
+            "⚠⚠⚠ AND THE OUTGOING PANE NO LONGER HOLDS IT: a name is unique daemon-wide, so a copy \
+             leaves a window in which a lookup may reach the pane that is about to be closed",
+        );
+        assert_eq!(
+            vacated.opened_by(),
+            Some(opener),
+            "⚠ while provenance is not unique and nothing is confused by both answering it — a \
+             hand-over that cleared it would be inventing a second rule for no reason",
+        );
+    }
+
+    /// The refusals, and the sharp one is the second: a hand-over that could not land must not have
+    /// taken the name off the pane that is staying. That is the arm a caller meets when the
+    /// replacement failed to spawn.
+    #[test]
+    fn a_seat_is_not_handed_to_or_from_a_pane_this_pool_does_not_hold() {
+        let mut ws = Workspace::new((80, 24));
+        let live = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let name = crate::PaneName::parse("inner").unwrap();
+        assert!(ws.set_pane_name(live, Some(name.clone())));
+
+        assert!(
+            !ws.hand_seat_over(PaneId(4242), live),
+            "a seat nobody holds cannot be handed over",
+        );
+        assert_eq!(
+            ws.pane(live).unwrap().name(),
+            Some(&name),
+            "and that refusal does not touch the pane it was aimed at",
+        );
+
+        assert!(
+            !ws.hand_seat_over(live, PaneId(4242)),
+            "nor can one be handed to a pane this pool does not hold",
+        );
+        assert_eq!(
+            ws.pane(live).unwrap().name(),
+            Some(&name),
+            "⚠⚠⚠⚠ AND THE NAME IS STILL THERE — a replacement that failed to spawn leaves the run \
+             holding the pane it had, and an unnamed one is not what it was holding",
+        );
+    }
+
+    /// The control: a seat nobody declared anything about hands over nothing, and the replacement is
+    /// not given a name, an opener or a ceiling it never had.
+    #[test]
+    fn an_undeclared_seat_hands_over_nothing() {
+        let mut ws = Workspace::new((80, 24));
+        let leaving = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let arriving = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let machine = ws.pane_grant_or_default(arriving);
+
+        assert!(ws.hand_seat_over(leaving, arriving), "both panes are here");
+
+        let took = ws.pane(arriving).unwrap();
+        assert_eq!(took.name(), None, "no name is invented");
+        assert_eq!(took.opened_by(), None, "and no provenance");
+        assert_eq!(took.remote(), None, "and no remote endpoint");
+        assert_eq!(
+            ws.pane_grant_or_default(arriving),
+            machine,
+            "and it keeps following the machine's default rather than being pinned to a copy of it",
         );
     }
 

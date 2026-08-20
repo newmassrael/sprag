@@ -1218,17 +1218,27 @@ pub trait PaneLifecycle {
     /// would leave a run with no pane at all and nothing to report it against; this way a failed
     /// replacement leaves the caller exactly where it was, holding a pane it can still read.
     ///
-    /// # ⚠⚠ What it does NOT carry, stated because each one matters to somebody
+    /// # ⚠⚠⚠ It is the same SEAT as well as the same command
+    ///
+    /// What the caller declared about the pane goes with it — its `name`, its `opened_by`
+    /// PROVENANCE, its resource `grant` and its remote-workspace marker — as one hand-over rather
+    /// than four copies (`Workspace::hand_seat_over`, which is also where the split between a seat's
+    /// declarations and its occupant's own facts is spelled out field by field).
+    ///
+    /// ⚠⚠⚠⚠⚠ **THIS PARAGRAPH USED TO SAY THE OPPOSITE**, and it was a defect wearing a
+    /// documented-limitation's clothes: *"what it does NOT carry … the pane's resource `grant`, its
+    /// `name`, and its `opened_by` PROVENANCE"*. Register item 478 measured what that cost on a live
+    /// run — after eight replacements the loop's own inner pane answered to no name, and every
+    /// watcher holding it by name had lost it. A residue a reader can mistake for a decision is
+    /// worth naming here rather than deleting.
+    ///
+    /// # ⚠⚠ What it still does NOT carry, and each one matters to somebody
     ///
     /// * the new pane's POSITION in a window's layout — it arrives wherever a newly spawned pane
     ///   arrives, so a person watching sees the session they were reading appear somewhere else;
-    /// * the pane's resource `grant`, its `name`, and its `opened_by` PROVENANCE. The last is the
-    ///   sharpest: a replacement is a pane NOBODY CLAIMS, so an agent surface that refuses to close
-    ///   panes its caller did not open will refuse the run's own inner session to the agent that
-    ///   started it.
-    ///
-    /// The four things it does carry are what make it *the same command*; these are what would make it
-    /// *the same pane to everybody else*, and they are registered rather than guessed at.
+    /// * the OCCUPANT's own facts: the agent session id, what it had said, where it was writing.
+    ///   Those are dropped deliberately and by their own gates — a loop replaces its inner session
+    ///   precisely to throw that away.
     ///
     /// # Errors
     ///
@@ -1658,6 +1668,12 @@ impl PaneLifecycle for WorkspacePaneAccess {
             )));
         }
         let fresh = self.spawn_in(&argv, cwd.as_deref(), &env, cols, rows)?;
+        // ⚠⚠⚠ THE SEAT'S OWN DECLARATIONS FOLLOW IT, under ONE lock and BEFORE the close: what the
+        // caller called this pane, who asked for it, what it may spend and whether it is a remote
+        // workspace. `hand_seat_over` is one operation rather than four calls here for the reason it
+        // states — register item 478 is what a forgotten one costs, and the compiler is what keeps
+        // the set whole. Its answer is not read: both panes were just proved to be in this pool.
+        lock(&self.workspace).hand_seat_over(id, fresh);
         // ⚠ The old pane goes only once the new one is up — see the trait's doc. Its answer is
         // deliberately ignored: it existed a moment ago (it was read above), and a caller holding a
         // fresh pane has nothing to do differently if the reap raced somebody else's close.
@@ -2408,6 +2424,125 @@ mod tests {
         assert!(
             life.close(fresh),
             "the pane this gate opened was there to close"
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A REPLACEMENT SITS IN THE SAME SEAT** — everything a CALLER declared about the pane
+    /// follows it, and register item 478 is what happens when one of them does not.
+    ///
+    /// # ⚠⚠⚠⚠ Why this is asserted as a CLASS and not as *the name*
+    ///
+    /// Item 478 was filed against the NAME, measured on a live run: after eight `restarting` cycles
+    /// `sprag agent inner` answered *"no pane is called \"inner\""* and the loop's own agent was an
+    /// unnamed pane 36. But the name is one of FOUR things a caller declares about a seat after the
+    /// spawn, and the other three fail the same way for the same reason — a replacement is a NEW
+    /// pane and nothing carried them. The provenance is the sharpest of the four: a pane nobody
+    /// claims is one the agent surface refuses to close, so a run that replaced its own inner
+    /// session could no longer clean it up.
+    ///
+    /// # ⚠⚠ Each value is chosen so that *carried* and *defaulted* are different answers
+    ///
+    /// `a_respawned_pane_is_the_same_command_in_the_same_world`'s rule, applied to four more facts:
+    /// a weight of `4242` is not `Share::EVEN`, a `512 MiB` ceiling is not `UNCAPPED`, and the
+    /// opener is a pane that exists rather than the `None` every unclaimed pane already answers.
+    ///
+    /// # ⚠⚠⚠⚠ What this gate CANNOT see, measured rather than assumed
+    ///
+    /// Whether the name was MOVED or COPIED. `respawn` closes the outgoing pane before answering, so
+    /// by the time anything here looks there is only one pane left to hold it — a mutation that
+    /// copied instead of moving left this test GREEN. That difference is held one layer down, by
+    /// `sprag_terminal`'s `a_seat_handed_over_moves_its_name_and_copies_the_rest`, which asserts
+    /// while BOTH panes are still live. **A gate that looks after the cleanup cannot tell a move
+    /// from a copy.**
+    #[test]
+    fn a_replacement_keeps_what_the_caller_declared_about_the_seat() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((24, 6))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let spawn = |label: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            lock(&workspace)
+                .spawn(command, label.to_string(), 24, 6)
+                .expect("spawn")
+        };
+        let opener = spawn("opener");
+        let seat = spawn("seat");
+
+        let name = sprag_terminal::PaneName::parse("inner").expect("a legal pane name");
+        let grant = sprag_terminal::share::Grant {
+            share: sprag_terminal::share::Share::new(4242).expect("a legal weight"),
+            limits: sprag_terminal::share::Limits::UNCAPPED.with_memory(Some(512 << 20)),
+        };
+        let remote = sprag_terminal::SshRemote {
+            user: None,
+            host: "pc4".to_string(),
+            port: None,
+        };
+        {
+            let mut pool = lock(&workspace);
+            assert!(
+                pool.set_pane_name(seat, Some(name.clone())),
+                "name the seat"
+            );
+            pool.set_pane_opened_by(seat, opener);
+            pool.set_pane_remote(seat, remote.clone());
+            assert!(
+                pool.set_pane_grant(seat, grant).is_some(),
+                "the pool holds the pane being granted",
+            );
+            assert_eq!(
+                pool.pane_grant_or_default(seat),
+                Some(grant),
+                "⚠ the control: the ORIGINAL seat must hold what was declared, or every comparison \
+                 below is against a fixture that never took",
+            );
+        }
+
+        let life = access
+            .lifecycle()
+            .expect("workspace access exposes lifecycle");
+        let fresh = life.respawn(seat).expect("a live pane can be replaced");
+
+        let pool = lock(&workspace);
+        let replacement = pool.pane(fresh).expect("the replacement is in the pool");
+        assert_eq!(
+            replacement.name(),
+            Some(&name),
+            "⚠⚠⚠⚠⚠ ITEM 478: a name is what the CALLER called this seat, not something the old \
+             occupant earned — every watcher holding the loop's inner pane BY NAME loses it here",
+        );
+        assert_eq!(
+            replacement.opened_by(),
+            Some(opener),
+            "⚠⚠⚠⚠ and the PROVENANCE, which is the sharpest of the four: a replacement nobody \
+             claims is one the agent surface refuses to close, so a run cannot clean up its own \
+             inner session",
+        );
+        assert_eq!(
+            replacement.remote().map(|it| it.host.as_str()),
+            Some("pc4"),
+            "and the remote-workspace marker, or a restore stops reconnecting a seat that IS remote",
+        );
+        assert_eq!(
+            pool.pane_grant_or_default(fresh),
+            Some(grant),
+            "⚠⚠⚠⚠ and the RESOURCE CEILING a person placed on this seat — dropped, the replacement \
+             is the one pane on the machine nobody is holding back",
+        );
+        assert!(
+            pool.pane(seat).is_none(),
+            "the pane it replaced is closed, as the four-facts gate beside this one holds",
+        );
+        assert_eq!(
+            pool.panes()
+                .iter()
+                .filter(|pane| pane.name() == Some(&name))
+                .count(),
+            1,
+            "⚠⚠⚠ and exactly ONE pane answers to that name, which is the invariant a daemon-wide \
+             lookup rests on. ⚠ It is NOT what catches a copy — see this test's doc",
         );
     }
 
