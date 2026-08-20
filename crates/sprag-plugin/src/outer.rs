@@ -1143,6 +1143,7 @@ impl Owed {
             | AiLoopState::Orders
             | AiLoopState::Standing
             | AiLoopState::StandingDown
+            | AiLoopState::Held
             | AiLoopState::Blocked => Self::Nothing,
         }
     }
@@ -1198,6 +1199,7 @@ impl Owed {
             | AiLoopState::Orders
             | AiLoopState::Standing
             | AiLoopState::StandingDown
+            | AiLoopState::Held
             | AiLoopState::Blocked => false,
         }
     }
@@ -1989,11 +1991,20 @@ pub enum Pumped {
     /// WHICH state its run reached, because a run that silently spun in one would report the same
     /// thing as a run that never got there.
     ///
-    /// ⚠⚠⚠ THERE IS ONE LEFT, and its scope cut is declared rather than implied: `awaiting_human`
-    /// waits for a person, and this driver has neither producer (`hold`, `unattended`) for the two
-    /// events that would end that wait. `screening` was built at R384 and
-    /// `reflecting`/`restarting`/`resuming` at R385, so the *"registered debt with named
-    /// prerequisites"* this doc used to list is down to that one.
+    /// ⚠⚠⚠ **THERE ARE NONE LEFT, and this paragraph said there was one for longer than it was
+    /// true.** It named `awaiting_human` and the two producers this driver was missing for it;
+    /// `OuterLoop::hold` has raised the first since register item 9 and `OuterLoop::attend` raises
+    /// the second. `screening` was built at R384 and `reflecting`/`restarting`/`resuming` at R385,
+    /// so the *"registered debt with named prerequisites"* this doc used to list is empty.
+    ///
+    /// ⚠⚠ What reaches here now is the STRUCTURAL set and the orders — the parallel root, the two
+    /// region roots, and what a person said — which no reader should ever hand a driver, and which
+    /// `OuterLoop::state` does not, because it reads the work region by name. They
+    /// are answered rather than ignored for the reason above: a misreading that reported a run as
+    /// spinning is worth telling apart from one that never arrived.
+    ///
+    /// ⚠ **Nothing goes red when a sentence like the one this replaced ages.** It was found by
+    /// reading the code beside it while moving a decision out of this file, not by a gate.
     ///
     /// ⚠⚠ THE CALLER THAT ACTS ON IT is `AiLoop::unbuilt`, and what it does is worth reading beside
     /// this: the answer is not *"unimplemented"* to whoever reads the run — a peer that stopped to
@@ -4341,7 +4352,8 @@ impl OuterLoop {
             | AiLoopState::Work
             | AiLoopState::Orders
             | AiLoopState::Standing
-            | AiLoopState::StandingDown) => return Ok(Pumped::Unbuilt(state)),
+            | AiLoopState::StandingDown
+            | AiLoopState::Held) => return Ok(Pumped::Unbuilt(state)),
         };
         // Kept before `advance` takes the payload: what a consumer reports is the EVENT, and the
         // data is the driver's way of telling the machine a fact it could not read for itself.
@@ -4431,6 +4443,7 @@ impl OuterLoop {
                 | AiLoopState::Orders
                 | AiLoopState::Standing
                 | AiLoopState::StandingDown
+                | AiLoopState::Held
                 | AiLoopState::Blocked => None,
             }
         };
@@ -5003,15 +5016,28 @@ impl OuterLoop {
         // away, and the run did not take it"* is the claim, and ordering these two lines is the
         // whole of it.
         //
-        // ⚠⚠⚠⚠⚠ AND BEFORE EVEN THAT: A RUN SOMEBODY IS DELIBERATELY HOLDING IS NOT ONE NOBODY CAME
-        // TO — register item 9, and the arm that keeps `hold` from being a slower `cancel`.
-        // `unattended` is this state's run-ENDING exit and its whole meaning is *a person was
-        // expected here and did not come*; said about a run a person paused ON PURPOSE it sends
-        // whoever reads it looking for somebody who is standing right there.
+        // ⚠⚠⚠⚠⚠ A RUN SOMEBODY IS DELIBERATELY HOLDING IS NOT ONE NOBODY CAME TO — register item 9,
+        // and the arm that keeps `hold` from being a slower `cancel`. `unattended` is
+        // `awaiting_human`'s run-ENDING exit and its whole meaning is *a person was expected here
+        // and did not come*; said about a run a person paused ON PURPOSE it sends whoever reads it
+        // looking for somebody who is standing right there.
         //
-        // ⚠⚠ AND THEIR PATIENCE IS NOT RUNNING WHILE THEY HOLD IT. The anchor is cleared rather
-        // than left, so a run held for an hour and let go has the caller's whole patience ahead of
-        // it — the alternative spends their declared hour on the minutes they spent reading.
+        // ⚠⚠⚠⚠ **THAT DECISION IS NO LONGER THIS FUNCTION'S** — register item 470's first stage.
+        // It is `cond="!In('held')"` on the document's own `unattended` edge, held by
+        // `ai_loop::tests::a_held_run_refuses_the_unattended_ending_and_takes_it_once_the_hold_is_lifted`.
+        // What lives here is what a document cannot say: **do not WAIT, and do not spend their
+        // patience.** The two used to be one `if` and reading it as the rule was the defect — a
+        // rule that lives only in a driver is one the machine cannot be asked about, and it left
+        // the run's own walk with no record that an ending had been refused or why.
+        //
+        // ⚠⚠⚠ AND THE GUARD CLOSES A WINDOW THIS RETURN CANNOT. The flag is read HERE, at one
+        // instant; the machine processes events at another. A hold arriving between the two meets a
+        // run already ending — which is why the guard is the rule and this is the fast path, not
+        // the other way round.
+        //
+        // ⚠⚠ THEIR PATIENCE IS NOT RUNNING WHILE THEY HOLD IT. The anchor is cleared rather than
+        // left, so a run held for an hour and let go has the caller's whole patience ahead of it —
+        // the alternative spends their declared hour on the minutes they spent reading.
         if run.held() {
             self.awaiting = None;
             return Ok(AiLoopEvent::Null.into());

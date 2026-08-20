@@ -2367,8 +2367,25 @@
     <transition event="resume" target="working">
       <send event="prompt.turn"/>
     </transition>
-    <!-- Nobody came within the driver's patience. This is the run-ending one. -->
-    <transition event="unattended" target="blocked"/>
+    <!--
+      Nobody came within the driver's patience. This is the run-ending one.
+
+      ⚠⚠⚠⚠⚠ UNLESS SOMEBODY IS HOLDING IT, which is what the guard says and
+      register item 470's first stage is. `unattended` means *a person was
+      expected here and did not come*; said about a run a person paused ON
+      PURPOSE it sends whoever reads it looking for somebody standing right
+      there. The order lives in the `orders` region as `held`, so this is one
+      question about the run's own walk rather than a flag in the driver.
+
+      ⚠⚠ NEGATED RATHER THAN NAMING WHAT IS PERMITTED. The set this excludes is
+      one order; the set it permits is the one that grows, and `orders` is
+      documented as the place the next order goes. A guard naming the permitted
+      states would have to be revisited every time one is added, and the way it
+      would fail is by silently refusing an ending nobody was excluding.
+      `not In()` at this engine is measured, not assumed: see
+      `probe::tests::a_cross_region_guard_can_be_negated_and_can_name_a_compound_ancestor`.
+    -->
+    <transition event="unattended" cond="!In('held')" target="blocked"/>
     <transition event="cancel" target="cancelled"/>
     <transition event="fail" target="failed"/>
     <!--
@@ -3560,6 +3577,39 @@
         over.
       -->
       <transition event="stand.down" target="standing_down"/>
+      <!--
+        ⚠⚠⚠ A PERSON IS READING THE PANE. Like `stand.down` this changes nothing
+        about the turn in flight; unlike it, it is the one order that can be
+        taken back, so it has an edge home.
+
+        ⚠⚠ The WORK region takes this same event to `awaiting_human`, which is
+        what parks the loop. This region is what makes the order READABLE: the
+        work region cannot say WHY it is waiting, because a person typing, a
+        peer that stopped speaking and an unreadable dialog all park it in the
+        same state.
+      -->
+      <transition event="hold" target="held"/>
+    </state>
+
+    <!--
+      ⚠⚠⚠⚠⚠ SOMEBODY IS HOLDING THIS RUN ON PURPOSE, and `awaiting_human`'s
+      `unattended` edge reads this state to tell that apart from a run nobody
+      came to. Register item 470's first stage: the decision used to live in the
+      driver as a flag it read before raising the event, and a decision that
+      lives in the driver is one the document cannot be asked about.
+
+      ⚠⚠⚠ AND IT CLOSES A WINDOW THE FLAG COULD NOT. The driver reads the
+      person's flag at one instant and the machine processes the event at
+      another, so a hold that arrives between those two moments used to end the
+      run as unattended anyway. Here the order and the ending are decided in the
+      same queue, in the order they really arrived.
+
+      ⚠ THE WAY BACK IS `resume`, which the work region takes to `working` in
+      the same step. This is the only order with one; see `standing_down` below
+      for why the others do not get it.
+    -->
+    <state id="held">
+      <transition event="resume" target="standing"/>
     </state>
 
     <!--

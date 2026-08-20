@@ -507,10 +507,12 @@ impl AiLoop {
             | AiLoopState::Resuming
             | AiLoopState::Closing
             | AiLoopState::Stopping
-            // ⚠⚠⚠ THE FIVE THE REGIONS ADDED, AND NONE OF THEM IS AN ENDING. Four are structural —
-            // the parallel root, the two region roots — and one is an ORDER a person gave. They are
-            // here because the match is exhaustive on purpose, and the compiler is what made them
-            // arrive rather than a reader noticing later.
+            // ⚠⚠⚠ THE ONES THE REGIONS ADDED, AND NONE OF THEM IS AN ENDING. Some are structural —
+            // the parallel root, the two region roots — and the rest are ORDERS a person gave. They
+            // are here because the match is exhaustive on purpose, and the compiler is what made
+            // them arrive rather than a reader noticing later: `Held` reached every one of these
+            // arms as a build error the moment the document gained it, which is the arrangement
+            // working.
             //
             // ⚠⚠ A DRIVER SHOULD NEVER SEE ANY OF THEM. `OuterLoop::state` reads the WORK region by
             // name, so what it answers is always one of the thirteen above it. Answering `false`
@@ -521,7 +523,8 @@ impl AiLoop {
             | AiLoopState::Work
             | AiLoopState::Orders
             | AiLoopState::Standing
-            | AiLoopState::StandingDown => false,
+            | AiLoopState::StandingDown
+            | AiLoopState::Held => false,
         }
     }
 
@@ -734,7 +737,8 @@ impl AiLoop {
             | AiLoopState::Work
             | AiLoopState::Orders
             | AiLoopState::Standing
-            | AiLoopState::StandingDown => Verdict::Continue,
+            | AiLoopState::StandingDown
+            | AiLoopState::Held => Verdict::Continue,
         };
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
     }
@@ -986,7 +990,8 @@ impl Plugin for AiLoop {
             | AiLoopState::Work
             | AiLoopState::Orders
             | AiLoopState::Standing
-            | AiLoopState::StandingDown => Some(self.inner.pane()),
+            | AiLoopState::StandingDown
+            | AiLoopState::Held => Some(self.inner.pane()),
         }
     }
 
@@ -1172,6 +1177,7 @@ impl Plugin for AiLoop {
             | AiLoopState::Orders
             | AiLoopState::Standing
             | AiLoopState::StandingDown
+            | AiLoopState::Held
             | AiLoopState::Blocked => Accounting::Cannot(format!(
                 "the loop had already ended in {state:?} when its {} ceiling fell due",
                 ceiling.wire_str(),
@@ -6868,6 +6874,98 @@ mod tests {
             "⚠⚠⚠ AND THE WORK REGION MUST NOT HAVE MOVED. That is the entire difference between \
              standing a run down and cancelling it: the turn in flight is untouched. active = \
              {after:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN SOMEBODY IS HOLDING IS NOT A RUN NOBODY CAME TO** — register item 470's first
+    /// stage, driven at the document rather than argued about in the driver.
+    ///
+    /// # What moved, and why it had to
+    ///
+    /// The rule is older than this gate: `OuterLoop::attend` reads the person's hold flag and
+    /// returns before it can raise `Unattended`. That works, and it is in the wrong place. A
+    /// decision that lives in the driver is one the DOCUMENT cannot be asked about — so a second
+    /// driver, or a caller reading the machine to find out what a run will do, gets no answer, and
+    /// the run's own walk never records that the ending was refused or why.
+    ///
+    /// ⚠⚠⚠ **AND THE FLAG CANNOT CLOSE THE WINDOW THE GUARD CLOSES.** The driver reads the flag at
+    /// one instant and the machine processes events at another. A hold that arrives between those
+    /// two moments met a run already ending as unattended. Here the order and the ending are two
+    /// events in one queue, resolved in the order they really arrived — which is a thing a flag
+    /// read outside the machine cannot express at all.
+    ///
+    /// # ⚠⚠ Both halves, because a guard that only ever refuses is a broken edge
+    ///
+    /// The refusal is the interesting direction and the permission is the one that catches a
+    /// mistake in it: a `cond` that evaluated false always — a negation this engine did not
+    /// support, an id that never matched — would look exactly like a working guard from the
+    /// refusing side alone, and would leave `unattended` unable to end ANY run. That is a worse
+    /// defect than the one being fixed, and it is silent, so the lift is driven here too.
+    #[test]
+    fn a_held_run_refuses_the_unattended_ending_and_takes_it_once_the_hold_is_lifted() {
+        let (mut engine, _lua, _session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        engine.process_event(AiLoopEvent::PromptSent);
+
+        let working = engine.get_active_states();
+        assert!(
+            working.contains(&AiLoopState::Working) && working.contains(&AiLoopState::Standing),
+            "the control: a run that nobody has spoken to is working under no orders. \
+             active = {working:?}",
+        );
+
+        // ── THE PERSON HOLDS IT: the work parks AND the order is recorded beside it ──
+        engine.process_event(AiLoopEvent::Hold);
+        let held = engine.get_active_states();
+        assert!(
+            held.contains(&AiLoopState::AwaitingHuman),
+            "the control: `hold` parks the WORK region, which is the half that already existed. \
+             active = {held:?}",
+        );
+        assert!(
+            held.contains(&AiLoopState::Held),
+            "⚠⚠⚠⚠⚠ THE ORDER NEVER REACHED THE ORDERS REGION, so the guard below has nothing to \
+             read and would refuse nothing. `awaiting_human` cannot say WHY it is waiting — a \
+             person typing, a peer gone quiet and an unreadable dialog park a run in the same \
+             state — and this state is the entire difference. active = {held:?}",
+        );
+
+        // ── THE ENDING ARRIVES ANYWAY, AND MUST BE REFUSED ──
+        engine.process_event(AiLoopEvent::Unattended);
+        let after = engine.get_active_states();
+        assert!(
+            !after.contains(&AiLoopState::Blocked),
+            "⚠⚠⚠⚠⚠ A HELD RUN ENDED AS ONE NOBODY CAME TO. `blocked` is `<final>`, so this is not a \
+             wrong label on a live run — the run is OVER, and its reader is sent looking for \
+             somebody who is standing right there reading the pane. active = {after:?}",
+        );
+        assert!(
+            after.contains(&AiLoopState::AwaitingHuman),
+            "⚠⚠⚠ and it must still be WAITING rather than have gone somewhere else quietly: a \
+             guard that refused the edge by moving the run would be a third ending nobody asked \
+             for. active = {after:?}",
+        );
+
+        // ── THE HOLD IS LIFTED, AND THE SAME EVENT MUST NOW END THE RUN ──
+        engine.process_event(AiLoopEvent::Resume);
+        let resumed = engine.get_active_states();
+        assert!(
+            resumed.contains(&AiLoopState::Standing),
+            "⚠⚠⚠⚠ THE ORDER DID NOT COME BACK OFF. `hold` is the one order a person can take back, \
+             and an order with no way home is a slower `cancel` wearing a kinder word. \
+             active = {resumed:?}",
+        );
+
+        engine.process_event(AiLoopEvent::TurnInterrupted);
+        engine.process_event(AiLoopEvent::Unattended);
+        let ended = engine.get_active_states();
+        assert!(
+            ended.contains(&AiLoopState::Blocked),
+            "⚠⚠⚠⚠⚠ `unattended` CANNOT END A RUN AT ALL ANY MORE. Nobody is holding this one — the \
+             order came off two events ago — so the guard evaluated false with nothing to refuse, \
+             which means it is not reading what it thinks it reads. Every run that legitimately \
+             runs out of patience now waits forever, and no test that only holds a run would ever \
+             see it. active = {ended:?}",
         );
     }
 
