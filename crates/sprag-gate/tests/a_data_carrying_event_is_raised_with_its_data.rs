@@ -26,7 +26,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sprag_gate::loop_shape::DOCUMENT;
-use sprag_gate::payload::{Rust, Spelled, data_carrying, spelled, tolerant, variant_of_event};
+use sprag_gate::payload::{
+    Rust, Spelled, data_carrying, indirect, spelled, tolerant, variant_of_event,
+};
 use sprag_gate::sources::{Source, rust_sources, workspace_root};
 
 /// The events `ai_loop.scxml` reads `_event.data` off — measured 2026-08-20, and PINNED.
@@ -471,6 +473,21 @@ fn the_states_that_tolerate_a_bare_raise_are_the_ones_the_driver_was_written_aga
         "⚠⚠⚠⚠⚠ `reflecting` must answer `turn.blocked` without reading `_event.data`, because \
          `OuterLoop::reflect` hands it on bare through `ended.into()` and no static gate can see \
          that site. If this is gone, that raise is a live defect — fix the driver, not this pin",
+    );
+
+    // ⚠⚠⚠⚠ AND THE SITE THAT PIN PROTECTS IS DISCOVERED, NOT REMEMBERED — item 518. A pin whose
+    // subject has been deleted is green forever, guarding nobody, in the voice of a live rule.
+    let sites = indirect(&subject());
+    assert_eq!(
+        sites,
+        [("pumping", "other"), ("reflect", "ended")]
+            .iter()
+            .map(|(func, name)| ((*func).to_owned(), (*name).to_owned()))
+            .collect::<BTreeSet<_>>(),
+        "⚠⚠⚠⚠⚠ THE DRIVER'S INDIRECT HAND-OFFS MOVED. These are the raises no static claim above \
+         can read — the event arrives in a variable — so each one depends on the tolerant set \
+         pinned in this very test. A site GONE means a pin here may now be guarding nobody; a site \
+         ADDED means a new raise nothing checks, and the states it can run in must be tolerant",
     );
 }
 

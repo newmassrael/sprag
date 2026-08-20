@@ -831,6 +831,54 @@ pub fn spelled(
     found
 }
 
+/// Every place the DRIVER hands an event on through a VARIABLE — `(function, the name converted)`.
+///
+/// # ⚠⚠⚠⚠⚠ Why these sites need finding rather than remembering
+///
+/// A raise this gate can read spells its event: `Raise::carrying(AiLoopEvent::TurnDone, …)`. These
+/// do not — `ended.into()` converts whatever `watch` answered, and no text scan can say which event
+/// that is. They are safe today because of what the DOCUMENT does in the states they run in, which
+/// [`tolerant`] pins.
+///
+/// ⚠⚠ But that pin names its driver site in PROSE, so deleting the site would leave the pin green
+/// and guarding nobody — item 453's shape once more. This is the other end of the tie: the sites
+/// are DISCOVERED, so one that stops existing is announced by the same gate that pins what it needs.
+///
+/// Only [`Source::product`] is read: a fixture converting something is not a driver hand-off.
+/// Measured 2026-08-21 — the whole workspace has exactly two, both in the loop's driver.
+#[must_use]
+pub fn indirect(sources: &[Source]) -> BTreeSet<(String, String)> {
+    let mut found = BTreeSet::new();
+    for source in sources {
+        if !source.product.iter().any(|(_, l)| l.contains(EVENT_TYPE)) {
+            continue;
+        }
+        let text = Squeezed::of_lines(&source.product);
+        for (name, _, body) in text.functions() {
+            let mut at = 0;
+            while let Some(hit) = body[at..].find(".into()") {
+                let end = at + hit;
+                let mut start = end;
+                while start > 0 && is_ident(body[..start].chars().next_back().unwrap_or(' ')) {
+                    start -= 1;
+                }
+                let receiver = &body[start..end];
+                // ⚠ A BARE LOWERCASE NAME is a value; `AiLoopEvent::Null.into()` is a spelled raise
+                // and belongs to the claim that CAN read it, not to this one.
+                let qualified = body[..start].ends_with(':') || body[..start].ends_with('.');
+                if !qualified
+                    && !receiver.is_empty()
+                    && receiver.starts_with(|c: char| c.is_lowercase() || c == '_')
+                {
+                    found.insert((name.clone(), receiver.to_owned()));
+                }
+                at = end + ".into()".len();
+            }
+        }
+    }
+    found
+}
+
 /// One source file with every space gone, and the line each character came from.
 ///
 /// ⚠⚠ Squeezed because rustfmt decides by line width whether a call is one line or five, so a
@@ -846,9 +894,15 @@ struct Squeezed {
 impl Squeezed {
     /// `source`'s code with the whitespace out and a line number kept per character.
     fn of(source: &Source) -> Self {
+        Self::of_lines(&source.code)
+    }
+
+    /// The same, over whichever half of a source the caller means — [`Source::code`] for the
+    /// fixtures too, [`Source::product`] for what SHIPS.
+    fn of_lines(lines_of: &[(usize, String)]) -> Self {
         let mut chars = Vec::new();
         let mut lines = Vec::new();
-        for (line, text) in &source.code {
+        for (line, text) in lines_of {
             for char in text.chars().filter(|char| !char.is_whitespace()) {
                 chars.push(char);
                 lines.push(*line);
