@@ -275,6 +275,15 @@ pub struct Judgement {
     /// `spoke` reads the pane's LOGICAL lines, so *one line* is now one line **the judge wrote**.
     /// The boundary is the judge's own newline — stated here, rather than whatever the terminal did
     /// to fit the sentence on a screen nobody sized for this.
+    ///
+    /// ⚠⚠ **THE RESIDUE THAT CREATES, stated rather than left to be discovered**: the 80 columns
+    /// were also, accidentally, the only thing bounding this field, so it is now **as long as the
+    /// judge's line**. A checker that answers in one enormous unbroken line puts that whole string
+    /// where a person reads one. Accepted deliberately and on this crate's own terms — nothing is
+    /// LOST, which is the direction every rule around here fails in, and this crate's `report`
+    /// module answers a bound it could not avoid by REPORTING it rather than by inventing one.
+    /// If a ceiling is ever wanted it has to be chosen, named, and made to say
+    /// so when it bites; inheriting one from a pane is what this item was.
     pub explained: Option<String>,
     /// How long the agent stood blocked waiting for it.
     pub took: Duration,
@@ -887,6 +896,124 @@ mod tests {
         assert!(
             explained.contains(REASON),
             "⚠⚠⚠⚠ and WHOLE, not merely ending right: {explained:?}",
+        );
+    }
+
+    /// **THE TWO ARMS OF [`spoke`] THE GATE ABOVE CANNOT REACH**, both shipped in the same round as
+    /// item 517's fix and neither exercised by a real workspace: a host with no address at all, and
+    /// an address that cannot account for what it handed back.
+    ///
+    /// ⚠⚠⚠ The second is the one worth a test rather than a comment. `lost`/`restarted` answering
+    /// [`None`] is not tidiness — the verdict is the reply's FIRST WORD, so a read whose opening was
+    /// evicted does not yield a short reason, it yields **the first word of the middle of a
+    /// sentence put through the YES/NO match**. That is a fabricated verdict, and the direction this
+    /// whole file is built on is that silence is safer than one of those.
+    ///
+    /// ⚠ [`spoke`] is called directly. Going through [`asked_of_another`] would need a lifecycle to
+    /// spawn into, and every one of these stubs would answer `None` for that reason instead of the
+    /// one under test — the same trap [`AsksNobody`] is shaped to avoid.
+    #[test]
+    fn a_read_that_cannot_account_for_itself_is_no_verdict_and_no_address_is_the_degradation() {
+        /// A host answering one canned [`LinesSince`], or none at all when `numbers` is false.
+        struct Host {
+            numbers: bool,
+            since: sprag_vt::LinesSince,
+        }
+        impl PaneAccess for Host {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(0)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                None
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
+                None
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                None
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some("THE RENDERING".to_owned())
+            }
+            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<Written, PaneError> {
+                Err(PaneError::UnknownPane(PaneId(0)))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                self.numbers.then_some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Host {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                Some(self.since.clone())
+            }
+        }
+        let since = |lost: u64, restarted: bool, partial: &str| sprag_vt::LinesSince {
+            lines: vec!["NO because the judge said so".to_owned()],
+            next: 1,
+            lost,
+            partial: partial.to_owned(),
+            restarted,
+        };
+
+        // ── The CONTROL: an accountable address is read, so the arms below fail for their own
+        // reason and not because this stub cannot be read at all.
+        let whole = Host {
+            numbers: true,
+            since: since(0, false, ""),
+        };
+        assert_eq!(
+            spoke(&whole, PaneId(0)).as_deref(),
+            Some("NO because the judge said so"),
+            "⚠⚠ a clean address is the judge's own lines",
+        );
+
+        // ── AND THE UNFINISHED LINE IS PART OF IT, which is what makes a checker spelled
+        // `printf 'NO …'` — no trailing newline — readable rather than silent.
+        let unfinished = Host {
+            numbers: true,
+            since: sprag_vt::LinesSince {
+                lines: Vec::new(),
+                next: 0,
+                lost: 0,
+                partial: "NO and it never pressed return".to_owned(),
+                restarted: false,
+            },
+        };
+        assert_eq!(
+            spoke(&unfinished, PaneId(0)).as_deref(),
+            Some("NO and it never pressed return"),
+            "⚠⚠⚠ a judge that exits without a newline has still spoken — `DoneWhen::Exits` is what \
+             earns this line, and dropping it would call a whole class of small checkers silent",
+        );
+
+        // ── THE ARMS. An eviction and a renumbering each mean *the text may not open where the
+        // reply does*, and the first word is the verdict.
+        for (what, since) in [
+            ("lines were evicted before the read", since(3, false, "")),
+            ("the addresses restarted underneath", since(0, true, "")),
+        ] {
+            let host = Host {
+                numbers: true,
+                since,
+            };
+            assert_eq!(
+                spoke(&host, PaneId(0)),
+                None,
+                "⚠⚠⚠⚠⚠ {what}: this must be SILENCE, not a verdict read off a decapitated reply",
+            );
+        }
+
+        // ── AND THE DEGRADATION, which is a host that cannot number its lines at all. It gets the
+        // rendering — item 517's defect included — because that is all such a host has to offer,
+        // and the point of naming it is that it is not silently equivalent to the arm above.
+        let blind = Host {
+            numbers: false,
+            since: since(0, false, ""),
+        };
+        assert_eq!(
+            spoke(&blind, PaneId(0)).as_deref(),
+            Some("THE RENDERING"),
+            "⚠⚠ a host with no address still answers — the fallback is a degradation, not a refusal",
         );
     }
 }
