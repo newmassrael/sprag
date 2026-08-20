@@ -1720,7 +1720,9 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::consent::Consent;
-    use crate::testing::{ENTER_BYTE, asking_peer, screen_showing};
+    use crate::testing::{
+        ENTER_BYTE, asking_peer, asking_peer_whose_verdict_never_settles, screen_showing,
+    };
     use sprag_terminal::{CommandBuilder, JobProcess, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -2879,30 +2881,40 @@ mod tests {
     /// message below says so rather than a latency number nobody can interpret.
     #[test]
     fn a_person_who_answers_is_not_waited_out_by_the_supervisors_own_hysteresis() {
-        let (access, pane) = asking_peer("either");
-        let answered_at = std::sync::Mutex::new(None::<Instant>);
+        // ⚠⚠⚠⚠⚠ THE SUPERVISOR HERE NEVER STOPS SAYING `Blocked`, and that is the whole gate.
+        // A wait keyed on the QUESTION comes back the moment the menu leaves the screen; a wait
+        // keyed on the STATE has nothing to come back for, ever. See `peer_settling` — this used
+        // to be a latency measured against a hand-written 100 ms, and macOS spent it (100.219 ms,
+        // register item 487(a)) on a run that had done nothing wrong.
+        let (access, pane) = asking_peer_whose_verdict_never_settles("either");
 
+        // ⚠ The patience is the ONLY clock left, and it is not a threshold: it is how long the
+        // gate is willing to sit before calling a never-returning wait a never-returning wait.
+        let patience = Duration::from_secs(10);
+        let began = Instant::now();
         let reached = std::thread::scope(|watching| {
             watching.spawn(|| {
                 // ⚠ Long enough that `reached` is provably past its screen read and inside
                 // `await_the_person`, which it enters within a millisecond of being called.
                 std::thread::sleep(Duration::from_millis(150));
-                *answered_at.lock().expect("the clock") = Some(Instant::now());
                 let _typed = access
                     .inject(pane, &KeyStroke::text("1"))
                     .expect("the person types");
             });
-            // ⚠ TEN SECONDS of patience. Whatever ends this wait, it is not the bound.
-            watched(None, Duration::from_secs(10))
+            watched(None, patience)
                 .reached(&access, pane, &RunContext::uncancellable())
                 .expect("a blocked peer is not an error")
         });
-        let back_at = Instant::now();
+        let took = began.elapsed();
+        access.lifecycle().expect("lifecycle").close(pane);
 
         let Reached::Attended(attention) = reached else {
             panic!(
-                "⚠⚠ the person answered and the barrier must report that a person did: {reached:?} \
-                 — a `Yes` here means the fixture's own ordering lost and the wait never started",
+                "⚠⚠⚠ THE RUN WAITED OUT THE SUPERVISOR INSTEAD OF THE PERSON. The dialog was \
+                 answered and this supervisor's verdict never settles, so a wait keyed on the \
+                 STATE can only end at its own bound — which is what {reached:?} after {took:?} \
+                 says happened. The real detector's window is SECONDS, so a person who answered \
+                 well inside their patience would be reported as never having come",
             );
         };
         assert_eq!(
@@ -2910,16 +2922,13 @@ mod tests {
             Refusal::NoConsent,
             "and it carries what this run could not answer for itself",
         );
-        let after_the_answer =
-            back_at.duration_since(answered_at.lock().expect("the clock").expect("they typed"));
+        // ⚠⚠ NOT a latency threshold — half the patience the gate itself authored, which no
+        // scheduler on any runner is going to spend on a wait that already had its answer.
         assert!(
-            after_the_answer < Duration::from_millis(100),
-            "⚠⚠⚠ THE RUN WAITED OUT THE SUPERVISOR'S HYSTERESIS INSTEAD OF THE PERSON. It came \
-             back {after_the_answer:?} after the dialog was answered, and a verdict that settles \
-             is the one thing this wait must not key on — the real detector's window is SECONDS, \
-             so a person who answered inside their patience would be reported as never having come",
+            took < patience / 2,
+            "it came back, and it must come back because the QUESTION went rather than because \
+             something else timed out: {took:?} of {patience:?}",
         );
-        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠ **A PATIENCE OF ZERO IS NOT A SPELLING OF `NoOne`.**

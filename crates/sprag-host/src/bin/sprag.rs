@@ -2254,43 +2254,96 @@ fn peer_pid(fd: std::os::fd::RawFd) -> io::Result<libc::pid_t> {
 /// the socket names a SERVER, and the server may be a small part of something much larger that
 /// nobody asked to end.
 ///
-/// So the pid is checked against what it is RUNNING before it is signalled. On Linux that is the
-/// kernel's own answer (`/proc/<pid>/exe`), which nothing but the process itself can change.
+/// So the pid is checked against what it is RUNNING before it is signalled — [`exe_of`], which is
+/// the one place either kernel's spelling of that question lives.
 ///
-/// ⚠ THE RESIDUE, NAMED: on other unixes there is no `/proc`, so the check narrows to *"not this
-/// process"* — enough for the measured failure, not enough for an embedded host in a THIRD process.
-/// That is the same shape as register item 151 (`procfs::signal_ends` answers `None` on macOS), and
-/// it is stated here rather than discovered there.
+/// # ⚠⚠⚠⚠⚠ THE GUARD WAS VACUOUS ON macOS AND THE SUITE SAID SO IN THE ONLY WAY IT COULD
+///
+/// This used to read `/proc/<pid>/exe` on Linux and, on every other unix, narrow to *"the pid is
+/// not THIS process"*. That fallback cannot ever be true of a real invocation: `kill-server` runs
+/// inside the `sprag` CLI's own process and the server is, by construction, a different one — so on
+/// macOS the guard let EVERY pid through, which is the whole hazard it was built for.
+///
+/// It was measured on 2026-08-20 as the third of item 487's macOS reds, and the shape of the
+/// evidence is worth keeping: `sprag-host`'s `cli` target reported
+/// `process didn't exit successfully … (signal: 15, SIGTERM)` with **no failing test anywhere in
+/// the log**, because the harness serving the socket was the thing that got signalled. A suite that
+/// is killed cannot report; the only witness was the exit status.
+///
+/// ⚠⚠ So the platform seam is now [`exe_of`] alone and the contract above it is UNCONDITIONAL —
+/// register item 487's own lesson, which `0b83e8f` learned one file over: a kernel contract names
+/// the platform it is true on, and the code above that name must not have to.
 #[cfg(unix)]
 fn a_daemon(pid: libc::pid_t) -> io::Result<()> {
-    let refuse = |running: String| {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "the process serving that socket (pid {pid}) is {running}, not a `{}` daemon. \
-                 `kill-server` stops a daemon; it will not terminate a process that merely serves a \
-                 host socket, because that process may be doing something else nobody asked to end",
-                sprag_rpc::DAEMON_BIN_NAME,
-            ),
-        ))
-    };
-    #[cfg(target_os = "linux")]
-    {
-        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("the process serving that socket (pid {pid}) is gone"),
-            )
-        })?;
-        if !runs_the_daemon(&exe) {
-            return refuse(format!("{}", exe.display()));
-        }
+    let exe = exe_of(pid)?;
+    if runs_the_daemon(&exe) {
+        return Ok(());
     }
-    #[cfg(not(target_os = "linux"))]
-    if pid == libc::pid_t::try_from(std::process::id()).unwrap_or(0) {
-        return refuse("this very process".to_owned());
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "the process serving that socket (pid {pid}) is {}, not a `{}` daemon. \
+             `kill-server` stops a daemon; it will not terminate a process that merely serves a \
+             host socket, because that process may be doing something else nobody asked to end",
+            exe.display(),
+            sprag_rpc::DAEMON_BIN_NAME,
+        ),
+    ))
+}
+
+/// The one sentence for a pid whose executable this build cannot read — it is GONE, as far as any
+/// decision here is concerned, and a guard that cannot tell must never wave the signal through.
+#[cfg(unix)]
+fn unreadable(pid: libc::pid_t) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("the process serving that socket (pid {pid}) is gone"),
+    )
+}
+
+/// **WHAT `pid` IS RUNNING, AS THE KERNEL ANSWERS IT** — the fact [`a_daemon`] decides on, and the
+/// only line in this file that has to know which unix this is.
+///
+/// Linux publishes it as a symlink nothing but the process itself can change. ⚠ The value can carry
+/// a ` (deleted)` suffix once the binary has been replaced underneath the running process, which is
+/// [`runs_the_daemon`]'s business rather than this function's — see its doc, because that case is
+/// the promotion rather than an edge.
+///
+/// # Errors
+///
+/// When the process is gone, or when this kernel will not say. **Never an `Ok` that means *"I could
+/// not tell"***: that is what made the old macOS arm let every pid through.
+#[cfg(target_os = "linux")]
+fn exe_of(pid: libc::pid_t) -> io::Result<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|_| unreadable(pid))
+}
+
+/// See [`exe_of`] on Linux — the same question, the other kernel's spelling.
+///
+/// Darwin has no `/proc`; `proc_pidpath` is its answer, and it is the reason item 487(c) is a fix
+/// rather than a residue. ⚠ It reports the path the process was EXECUTED from and does not mark a
+/// replaced binary the way Linux does, so the suffix [`runs_the_daemon`] strips simply never
+/// appears here — which costs nothing, because stripping a suffix that is absent is a no-op.
+///
+/// # Errors
+///
+/// When `proc_pidpath` writes nothing — the process is gone, or this caller may not ask about it.
+#[cfg(target_os = "macos")]
+fn exe_of(pid: libc::pid_t) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let room = u32::try_from(path.len()).expect("a path buffer fits in a u32");
+    // SAFETY: `path` is a live buffer of exactly `room` bytes and `proc_pidpath` writes at most
+    // that many into it, returning how many. The pid is a plain integer the kernel validates.
+    let wrote = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), room) };
+    let wrote = usize::try_from(wrote).unwrap_or(0);
+    if wrote == 0 {
+        return Err(unreadable(pid));
     }
-    Ok(())
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        &path[..wrote],
+    )))
 }
 
 /// Whether `exe` — a path read from `/proc/<pid>/exe` — is the sprag daemon.
@@ -9008,6 +9061,68 @@ mod tests {
                  test suite",
             );
         }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE SEAM, MEASURED ON WHATEVER KERNEL THIS IS** — the half the table above cannot
+    /// reach, because every one of its rows is a path a person typed.
+    ///
+    /// [`runs_the_daemon`] was fully gated in both directions and entirely green on macOS while the
+    /// guard around it let every pid through, since nothing there ever CALLED it: the old fallback
+    /// asked *"is this pid my own process?"*, which is false of every real invocation. **A rule can
+    /// be right in a function nothing reaches** — register item 482's finding, one crate over.
+    ///
+    /// So this asks the kernel about a process whose identity is known independently: THIS one.
+    #[test]
+    fn this_kernel_says_what_a_pid_is_running() {
+        let mine = libc::pid_t::try_from(std::process::id()).expect("a pid fits in a pid_t");
+        let read = exe_of(mine).expect("this process is running, whatever else is true");
+        let known = std::env::current_exe().expect("a test binary knows its own path");
+
+        assert_eq!(
+            read.file_name(),
+            known.file_name(),
+            "⚠⚠⚠ this kernel's answer for THIS process ({read:?}) is not the binary running it \
+             ({known:?}), so `a_daemon` is deciding on something other than what a pid is running",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE DEFECT ITSELF — A THIRD PROCESS, WHICH IS THE ONLY SHAPE THAT TELLS THE TWO
+    /// GUARDS APART.** Register item 487(c).
+    ///
+    /// The old guard's non-Linux arm refused only *this very process*, so a gate that asked about
+    /// its own pid passed on both kernels and proved nothing. A CHILD is neither this process nor a
+    /// daemon — and on macOS the old arm waved it straight through, which is `kill-server`
+    /// SIGTERM-ing whatever happens to serve a host socket.
+    ///
+    /// ⚠ The program is asked of the MACHINE rather than spelled (`/bin/sleep` does not exist on
+    /// every unix — register item 472, measured on this same runner).
+    #[test]
+    fn a_third_process_that_is_not_the_daemon_is_refused_however_this_kernel_spells_it() {
+        let mut child = std::process::Command::new(sprag_gate::doubles::system("sleep"))
+            .arg("30")
+            .spawn()
+            .expect("this machine can run its own `sleep`");
+        let pid = libc::pid_t::try_from(child.id()).expect("a pid fits in a pid_t");
+
+        let refused = a_daemon(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let why = refused.expect_err(
+            "⚠⚠⚠⚠⚠ A PROCESS THAT IS NEITHER THIS ONE NOR THE DAEMON WAS WAVED THROUGH, and what \
+             comes next is a SIGTERM. On 2026-08-20 that killed `sprag-host`'s own `cli` harness \
+             on macOS and the suite could not even report it — the exit status was the only witness",
+        );
+        assert_eq!(
+            why.kind(),
+            io::ErrorKind::PermissionDenied,
+            "a refusal to signal is a permission answer, not a lookup failure: {why}",
+        );
+        assert!(
+            why.to_string().contains(sprag_rpc::DAEMON_BIN_NAME),
+            "and it must name what it WAS looking for, so a person can tell this from a daemon \
+             that is merely absent: {why}",
+        );
     }
 
     /// The measured permission dialog, as a blocked run carries it.

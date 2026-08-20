@@ -64,6 +64,84 @@ use sprag_terminal::{CommandBuilder, Hand, PanePtyHandle, Workspace};
 /// filling a tty buffer is not thousands of syscalls.
 const CHUNK: usize = 256;
 
+/// **THE TWO SENTENCES A STOPPED DEVICE HAS, AND THE KERNEL PICKS WHICH** — register item 487(b).
+///
+/// Each row is `(what stopped, what it says about the bytes)`. Both are correct answers to the same
+/// question and both satisfy R396-R399's contract: the caller is told which FACT stopped the write
+/// and how much is owed, rather than handed a bare errno to wrap in a retry loop.
+const REFUSALS: [(&str, &str); 2] = [
+    // The device is still there and is not moving — the queue has stopped draining and this write
+    // is refused rather than parked in it. Linux's line discipline holds the bytes, so this is
+    // what that kernel answers.
+    ("not taking input", "still waiting"),
+    // The device has ENDED and there is nothing left to wait for. Measured on Darwin 2026-08-20:
+    // its master reports the slave's end, the writer thread stops, and every byte still on the
+    // channel is lost with it.
+    ("can take no more input", "lost with it"),
+];
+
+/// Which of [`REFUSALS`] `said` is — empty when it is none of them, more than one when the two have
+/// stopped being distinguishable.
+///
+/// ⚠⚠⚠⚠⚠ Shared by the live arm and by
+/// [`every_sentence_a_stopped_device_has_is_read_and_nothing_else_is`] on purpose: the gate that
+/// judges a REAL refusal and the gate that judges the READER must not be able to disagree about
+/// what the rule is. That is register item 213's duplication, and register item 453's blind needle
+/// is what a second copy of it decays into.
+fn which_refusal(said: &str) -> Vec<&'static str> {
+    REFUSALS
+        .iter()
+        .filter(|(stopped, bytes)| said.contains(stopped) && said.contains(bytes))
+        .map(|(stopped, _)| *stopped)
+        .collect()
+}
+
+/// ⚠⚠⚠⚠⚠ **BOTH SENTENCES, AS THEIR KERNELS REALLY WROTE THEM — and this is the gate that could
+/// have saved a macOS red.** Register item 487(b).
+///
+/// The live arm below can only ever exercise the sentence THIS kernel produces, so on Linux the
+/// Darwin row of [`REFUSALS`] is driven by nothing and could be misspelled for ever without a word.
+/// Here both are read on every platform, from the text the product actually emitted.
+///
+/// ⚠⚠ And the other direction with it: a bare errno, and a sentence that names the device while
+/// saying nothing about the bytes, must fit NOTHING — or the rule has widened into *any complaint
+/// will do* and R396-R399's four rounds are undone.
+#[test]
+fn every_sentence_a_stopped_device_has_is_read_and_nothing_else_is() {
+    // Recorded from the product, not paraphrased: the first from a Linux sweep, the second from
+    // the macOS CI job of 2026-08-20 (`sprag-terminal --test writing_to_a_dead_pane_comes_back`).
+    let real = [
+        "this pane's device is not taking input: 17408 bytes are still waiting and nothing has \
+         gone in for 700.1ms, so these 256 are refused rather than parked inside the device for ever",
+        "this pane's device has ended and can take no more input: these 256 bytes are refused and \
+         the 11264 it never wrote are lost with it",
+    ];
+    for said in real {
+        assert_eq!(
+            which_refusal(said).len(),
+            1,
+            "⚠⚠⚠ this is a sentence the product really hands a caller and the reader must place \
+             it in exactly one row: {said:?}",
+        );
+    }
+
+    // ⚠ DECLINED — none of these tells a caller what stopped and how much is owed.
+    for bare in [
+        "Broken pipe (os error 32)",
+        "Resource temporarily unavailable (os error 11)",
+        // Names the device and nothing else: the shape a well-meaning shortening would produce.
+        "this pane's device stopped",
+        // Half a row is not a row — the bytes clause is what makes the sentence actionable.
+        "this pane's device is not taking input",
+    ] {
+        assert!(
+            which_refusal(bare).is_empty(),
+            "⚠⚠⚠ {bare:?} leaves a caller with nothing but a retry loop, which is the wedge with \
+             an apology in front of it — the reader must not accept it as a refusal",
+        );
+    }
+}
+
 /// The most any arm will write before deciding this pane never pushed back.
 ///
 /// ⚠ For the dead pane's whole-line arm this is a **RED and not a pass**: a pane that swallows a
@@ -348,12 +426,49 @@ fn a_dead_pane_refuses_a_writer_rather_than_keeping_it() {
         "⚠ the writer must have got SOME bytes in before being refused, or control 1 and this \
          measurement disagree about what a dead pane does",
     );
+    // ⚠⚠⚠ AND IT HAS TO SAY WHY. A write that stops working without a sentence is the defect
+    // R396-R399 spent four rounds on: the caller must be told the DEVICE has stopped taking input
+    // and how much is still owed, not handed a bare error to wrap in a retry.
+    //
+    // ⚠⚠⚠⚠⚠ **THERE ARE TWO SENTENCES AND THE KERNEL PICKS, WHICH IS WHY THIS USED TO BE RED ON
+    // macOS FOR NO DEFECT AT ALL** — register item 487(b). This asserted ONE spelling, and Darwin
+    // answers with the other: its master reports the slave's end, the writer thread stops, and the
+    // caller is told *the device has ended* rather than *the device is not taking input*. Both name
+    // the device, both name what is owed, and both are the contract being asked about. The needle
+    // knew one of them and blamed the platform for the difference.
+    //
+    // ⚠⚠ So the rule is a TABLE and the assertion is that EXACTLY ONE row fits — register item
+    // 453's finding in its own words: *nothing tells a needle it has gone narrow*, so the fix is a
+    // rule that enumerates rather than a spelling that happens to hold here.
+    //
+    let fitting = which_refusal(&said);
+    assert_eq!(
+        fitting.len(),
+        1,
+        "⚠⚠⚠ the caller must be told WHICH FACT stopped the write, in one of the sentences this \
+         device has for it, and exactly one of them must fit — {fitting:?} did. It said: {said:?}",
+    );
     assert!(
-        said.contains("not taking input") && said.contains("waiting"),
-        "⚠⚠⚠ AND IT HAS TO SAY WHY. A write that stops working without a sentence is the defect \
-         R396-R399 spent four rounds on: the caller must be told the DEVICE has stopped taking \
-         input and how much is still owed, not handed a bare error to wrap in a retry. It said: \
-         {said:?}",
+        said.contains("this pane's device"),
+        "⚠⚠⚠ and the DEVICE has to be the subject. A caller handed a bare `EIO` or `WouldBlock` \
+         wraps it in a retry loop, which is the wedge with an apology in front of it: {said:?}",
+    );
+    assert!(
+        said.contains(&CHUNK.to_string()),
+        "⚠⚠ and it has to name how much is being refused RIGHT NOW ({CHUNK} bytes), or a caller \
+         cannot tell a refusal of this write from a report about the queue: {said:?}",
+    );
+
+    // ⚠⚠⚠⚠ THE LINUX CONTROL, on this file's own terms — the same shape as the partial-line arm
+    // above. Which sentence arrives is a PROPERTY OF THE KERNEL, so a Linux that started answering
+    // *the device has ended* would mean its line discipline had stopped holding, and the table
+    // above would quietly absorb that. Darwin is deliberately not asserted about: it was measured
+    // giving the other answer and that is not a defect.
+    assert!(
+        !cfg!(target_os = "linux") || fitting == ["not taking input"],
+        "⚠⚠⚠ ON LINUX the device HOLDS, so the refusal must be the one about a queue that has \
+         stopped moving. This kernel answered {fitting:?} instead, which means the premise the \
+         arm above rests on changed underneath it: {said:?}",
     );
 
     // ⚠⚠⚠⚠ **AND IT HAS TO HAVE BEEN QUICK ABOUT IT — the one property the whole repair is FOR,

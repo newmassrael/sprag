@@ -440,6 +440,30 @@ pub(crate) const ENTER_BYTE: &str = "10";
 /// against a question the product would not have parsed — and *"this pane is not asking"* is that
 /// same parser's verdict rather than a `None` a double chose to hand back.
 pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
+    peer_settling(script, FIXTURE_SETTLE)
+}
+
+/// How long this fixture's supervisor goes on calling an answered pane `Blocked`.
+///
+/// ⚠ Far shorter than [`sprag_detect::DEFAULT_SETTLE`], because what is under test is that the
+/// product tolerates a lag AT ALL rather than any particular length of one — and a gate that paid
+/// two seconds per answer would be bought with wall-clock nobody gets back.
+const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
+
+/// [`peer_running`] with the supervisor's hysteresis STATED, for the gates that are about it.
+///
+/// # ⚠⚠⚠⚠⚠ A settle that never expires turns a clock into a question with two answers
+///
+/// Register item 487(a): the barrier's own gate proved *"a person who answers is not waited out by
+/// the supervisor's hysteresis"* by measuring latency against a hand-written **100 ms**, while the
+/// thing it was telling apart sat at [`FIXTURE_SETTLE`]'s 300. That leaves the honest reading one
+/// poll-interval of headroom on a loaded machine, and macOS CI spent it: **100.219 ms**, red, on a
+/// run that had done nothing wrong.
+///
+/// ⚠⚠ **The repair is not a bigger number.** Given a settle that NEVER expires, a wait keyed on the
+/// question comes back at once and a wait keyed on the state never comes back at all — so the gate
+/// stops comparing durations and starts comparing OUTCOMES, which no scheduler can move.
+pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneAccess, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -461,10 +485,8 @@ pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
     // needed. **A double that cannot be wrong in the way the real thing is wrong is a double
     // that asserts your belief.**
     //
-    // ⚠ Far shorter than `sprag_detect::DEFAULT_SETTLE`, because what is under test is that the
-    // product tolerates a lag AT ALL rather than any particular length of one — and a gate that
-    // paid two seconds per answer would be bought with wall-clock nobody gets back.
-    const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
+    // ⚠ How long it settles for is the CALLER's, so a gate about the hysteresis can state one that
+    // never expires — see [`peer_settling`].
     let source = {
         let workspace = Arc::clone(&workspace);
         let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
@@ -476,7 +498,7 @@ pub(crate) fn peer_running(script: String) -> (WorkspacePaneAccess, PaneId) {
                 if asking.is_some() {
                     *seen = Some(std::time::Instant::now());
                 }
-                let settling = seen.is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
+                let settling = seen.is_some_and(|at| at.elapsed() < settle);
                 Some(AgentObservation {
                     state: if asking.is_some() || settling {
                         AgentState::Blocked
@@ -528,6 +550,17 @@ fn awaiting_the_menu(access: &WorkspacePaneAccess, pane: PaneId) {
 /// A pane running [`menu_peer`], already showing its menu.
 pub(crate) fn asking_peer(kind: &str) -> (WorkspacePaneAccess, PaneId) {
     let (access, pane) = peer_running(menu_peer(kind));
+    awaiting_the_menu(&access, pane);
+    (access, pane)
+}
+
+/// [`asking_peer`] whose supervisor's verdict NEVER SETTLES — the pane goes on reading `Blocked`
+/// for the rest of the process once its menu has been seen.
+///
+/// For [`peer_settling`]'s reason: it turns *"did this wait key on the question or on the state?"*
+/// from a duration two runners disagree about into an outcome neither can move.
+pub(crate) fn asking_peer_whose_verdict_never_settles(kind: &str) -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane) = peer_settling(menu_peer(kind), Duration::MAX);
     awaiting_the_menu(&access, pane);
     (access, pane)
 }
@@ -1913,9 +1946,9 @@ done"
 /// goes on reading `Blocked` for that long. A source with no lag hid a live defect from every gate
 /// in this file until an end-to-end run met it.
 pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
-    /// Far shorter than `sprag_detect::DEFAULT_SETTLE`: what is under test is that the product
-    /// tolerates a lag AT ALL, not any particular length of one.
-    const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
+    // ⚠ [`FIXTURE_SETTLE`]'s, rather than a second const of the same length: two spellings of one
+    // number is where two copies of a rule drift apart, and both fixtures are modelling the same
+    // supervisor.
     let source = {
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
