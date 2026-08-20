@@ -171,6 +171,29 @@ impl LoopKind {
         }
     }
 
+    /// **HOW MUCH A SESSION OF THIS KIND MAY HAVE READ** before the next milestone is taken in a
+    /// fresh one — or [`None`] where this kind says nothing and the template's own number stands.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this reader had to exist, measured rather than argued
+    ///
+    /// Register item 492. The template's own comment has always said *"it is the KIND's to author,
+    /// like `max_turns` and `reflect_every`"* — and those two had a reader here while this one had
+    /// none, so **the sentence named a channel that did not exist**. What that cost is item 477's
+    /// measurement: on a live run at 97 iterations, every one of the eight `reviewing` exits took
+    /// the fall-back, because `context_ceiling` was 0 and nothing anywhere could make it anything
+    /// else. **The one decision that state exists to make had never been reachable.**
+    ///
+    /// ⚠⚠ **ZERO IS A DECISION HERE, NOT AN ABSENCE**, and it is the same zero the template
+    /// documents: *no ceiling was authored, so every reflection replaces*. A kind that means that
+    /// writes `0`; a kind that has not thought about capacity declares nothing and inherits the
+    /// template's, which is the same behaviour by a different road. ⚠ That is why this reads as a
+    /// plain number and not as a [`Counted`]: there is already a spelling for *decline*, and adding
+    /// the word `never` beside it would be two spellings of one decision.
+    #[must_use]
+    pub fn context_ceiling(&self) -> Option<i64> {
+        OuterLoop::authored_number_in(&self.script, &self.session, "context_ceiling")
+    }
+
     /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this
     /// kind says nothing and the working agent's own word stands.
     ///
@@ -424,6 +447,45 @@ mod tests {
         assert!(
             cadence >= 1,
             "a cadence of zero or less reflects on every judgement or on none: {cadence}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND IT NAMES A CAPACITY CEILING, WHICH NOTHING READ UNTIL REGISTER ITEM 492** —
+    /// the sharpest shape a missing channel takes: **a number authored, with a dated measurement
+    /// and three paragraphs of reasoning, that no reader existed for.**
+    ///
+    /// # ⚠⚠⚠⚠ What was actually wrong, and it is not what the item was filed as
+    ///
+    /// 492 was filed as *"no caller can author a ceiling"*. Measured before building: this
+    /// document had authored one **since 2026-08-18**, against a dated live measurement of its own
+    /// loop's session. What was missing was every step after the authoring — no reader here, no
+    /// `Brief` field, no wire key, no `<assign>` in the template. So item 477's live finding
+    /// (**eight of eight** `reviewing` exits taking the fall-back) was not a caller who had not
+    /// thought about capacity. **It was a decision that had been made and could not travel.**
+    ///
+    /// ⚠⚠⚠ *A decision no channel carries is a decision nobody made* — `milestone_check`'s own
+    /// finding at a number instead of an argv, and this is the second time this repository has paid
+    /// for it in the same document.
+    ///
+    /// ⚠⚠ The assertion is that a ceiling is READABLE and USABLE, not that it is any particular
+    /// number: the number is this kind's judgement and belongs in its document, and a gate pinning
+    /// it here would be a second place it lives. What must hold is that the arithmetic
+    /// `reviewing` does is possible at all — `context_ceiling > 0` is the guard on every one of
+    /// that state's deciding edges, so a zero here is the whole defect back.
+    #[test]
+    fn the_debt_kind_names_a_capacity_ceiling_and_it_can_be_read() {
+        let kind = debt();
+        let ceiling = kind.context_ceiling().expect(
+            "⚠⚠⚠⚠⚠ ITEM 492: this kind's document authors `context_ceiling` and until this reader \
+             existed nothing could carry it — so `reviewing`'s guards saw 0 on every run this \
+             repository has ever driven, and the state never once decided (item 477 measured eight \
+             of eight)",
+        );
+        assert!(
+            ceiling > 0,
+            "⚠⚠⚠⚠ and it must be a number `reviewing` can decide on. Every deciding edge in that \
+             state is guarded on `context_ceiling > 0` — a zero is not a small ceiling, it is the \
+             fall-back this item exists to get a run out of. Read {ceiling}",
         );
     }
 

@@ -1309,6 +1309,7 @@ mod tests {
             // ⚠ These fixtures measure a BOUNDED run; the declined budget is a kind's decision and
             // has its own gate rather than being folded in here.
             closing_rules: None,
+            context_ceiling: None,
             milestone_check: None,
             // ⚠ DECLINED, like the two above it: a stand-in peer has no service to fail, so a
             // needle here would be quoting words nothing in these fixtures ever prints. The
@@ -2800,6 +2801,82 @@ mod tests {
             named.inner.turn_budget(),
             Some(crate::outer::Counted::Of(3)),
             "a caller's own number must still win over the document's",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A CALLER'S CAPACITY CEILING REACHES THE DATAMODEL, AND A DECLINED ONE IS THE
+    /// DOCUMENT'S OWN** — register item 492, and the arithmetic half `sprag-host`'s door cannot
+    /// make.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this gate is the whole item
+    ///
+    /// `reviewing` guards every deciding edge on `context_ceiling > 0`, and until this round
+    /// **nothing could make that number anything but 0**: the template ships `0` on purpose, the
+    /// kind document had authored `800000` since 2026-08-18 with nobody to read it, and there was
+    /// no `Brief` field, no wire key and no `<assign>`. Item 477's live measurement is the far end
+    /// of that — **eight of eight** `reviewing` exits took the fall-back, which is that state never
+    /// once deciding in 97 iterations.
+    ///
+    /// ⚠⚠⚠ So the assertion is not *the resolution prefers the caller*. It is **the number arrives
+    /// at all**, which is the thing that was never true.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE POINT OF THE PAIR**, exactly as it is for the budget one door up: a
+    /// product that ignored the field and always used the document's would satisfy the first half
+    /// alone, and one that always took the caller's would satisfy the second.
+    #[test]
+    fn a_capacity_ceiling_crosses_from_the_caller_and_a_declined_one_is_the_documents() {
+        /// A number no document in this tree ships, so *carried* and *defaulted* are different
+        /// answers — the fixture rule its neighbours are written under.
+        const NAMED: i64 = 424_242;
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+
+        let carried = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                context_ceiling: Some(NAMED),
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("a caller naming a ceiling starts a run");
+        assert_eq!(
+            carried.inner.authored_number("context_ceiling"),
+            Some(NAMED),
+            "⚠⚠⚠⚠⚠ ITEM 492: the caller's ceiling must REACH the datamodel `reviewing` reads. \
+             `None` here is the defect this item is about — a state guarded on a number nothing \
+             could set",
+        );
+
+        // ⚠⚠⚠ THE CONTROL. Without it a product that took the caller's number and ALSO overwrote a
+        // declining caller's with it would pass everything above.
+        let deferred = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                context_ceiling: None,
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("a caller declining a ceiling starts a run too");
+        let documents = deferred
+            .inner
+            .authored_number("context_ceiling")
+            .expect("⚠ the template declares the key, so a declining caller reads a number");
+        assert_ne!(
+            documents, NAMED,
+            "⚠⚠⚠ a declining caller must NOT be handed the last caller's ceiling — the echo exists \
+             so the document's own number survives, not so a number leaks between runs",
+        );
+        assert_eq!(
+            documents, 0,
+            "⚠⚠ and the TEMPLATE's own number is 0, which is its stated decision: a caller who has \
+             not thought about capacity is not given a number somebody guessed for them. ⚠ A kind \
+             document is what changes this, and it is read at the daemon's door rather than here — \
+             see `sprag_plugin::kind`'s own gate",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

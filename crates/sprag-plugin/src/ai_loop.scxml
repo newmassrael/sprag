@@ -1386,6 +1386,21 @@
       the tool definitions, about 38,500 tokens where this was measured. The
       first request cannot show it, having nothing to read back yet.
 
+      ⚠⚠⚠⚠ AND THAT NUMBER BELONGS TO A POPULATION, WHICH THIS PARAGRAPH DID NOT
+      SAY. The 38,500 is a PLAIN agent session. Measured 2026-08-20 across 25 of
+      THIS repository's own sessions (48 to 2,171 requests each), the same
+      quantity is a median of 24,106 and the toll `cold` is 29,083 — four times
+      the 7,000 the gates' fixture uses. Neither number is wrong; they are
+      different tool sets, and a reader who took either for the other would
+      mis-price the trade by a factor of four.
+
+      ⚠⚠ WHAT THAT DOES TO THE BREAK-EVEN, stated because it is the whole point
+      of the pair: at those measured values a restart pays for itself only past
+      `20 * 29,083 + 24,106` = 605,766 tokens of reading, and only 4 of the 25
+      sessions ever got there. The economic edge is therefore RARE in production
+      and the fixture makes it look ordinary — registered rather than left for
+      somebody to infer.
+
       ⚠⚠ SO THE DISCARDABLE AMOUNT IS `context - floor`, and the trade is that
       against `cold` at twenty to one. `reflecting` composes all of it into the
       prompt AND `reviewing` decides on it: the edge that replaces a session with
@@ -1760,6 +1775,21 @@
       <assign location="reference" expr="_event.data.reference"/>
       <assign location="max_turns" expr="_event.data.max_turns"/>
       <assign location="reflect_every" expr="_event.data.reflect_every"/>
+      <!--
+        ⚠⚠⚠⚠⚠ AND THE CEILING `reviewing` DECIDES ON — register item 492, and it
+        is the line that makes this document's own sentence true. `context_ceiling`
+        says *"it is the KIND's to author, like `max_turns` and `reflect_every`"*,
+        and until this assignment existed there was no road for a kind, a brief or
+        a caller to author it: the number was 0 on every run anybody has ever
+        driven. **A decision no channel carries is a decision nobody made**, and
+        item 477 measured the price at the far end — eight of eight `reviewing`
+        exits taking the fall-back, which is that state never once deciding.
+
+        ⚠⚠ UNCONDITIONAL, like its two neighbours: the driver echoes this
+        document's own number back when nobody named one, so a caller who says
+        nothing cannot delete an author's ceiling.
+      -->
+      <assign location="context_ceiling" expr="_event.data.context_ceiling"/>
       <!--
         ⚠⚠ THE STANDING INSTRUCTIONS TOO, and this assignment is UNCONDITIONAL, which is why the
         driver always sends them: a caller that says nothing about screening has the document's own

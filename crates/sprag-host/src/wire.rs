@@ -1427,6 +1427,24 @@ impl PluginGrammar {
         // to, so declining the key against an older daemon still answers `TypeMismatch`.
         ArgGrammar::open("max_turns", "int").optional(),
         ArgGrammar::open("reflect_every", "int").optional(),
+        // ⚠⚠⚠⚠⚠ REGISTER ITEM 492 — the ceiling `reviewing` decides on, and the argument that makes
+        // the template's own sentence true. It says the number is *"the KIND's to author, like
+        // `max_turns` and `reflect_every`"*, and those two had a road here while this one had none:
+        // no wire key, no `Brief` field, no `LoopKind` reader. Item 477 measured the far end — eight
+        // of eight `reviewing` exits on a live run took the fall-back, because the number was 0 on
+        // every run anybody has ever driven and nothing could make it anything else.
+        //
+        // ⚠⚠⚠⚠ NO `WIRE_PROTOCOL` BUMP, and the reason is MEASURED rather than argued: this
+        // repository has published no release and carries no tag, so no daemon predating this key
+        // exists to swallow it. ⚠ The residue, stated rather than hidden: **the day this ships, this
+        // argument earns the number by the ordinary rule** — an unknown argument is SWALLOWED, so an
+        // old daemon would answer `accepted` while dropping the ceiling, and the run would then
+        // report `no_ceiling`, whose remedy tells the caller to author the number they just
+        // authored. That is a dropped fact rendered as the caller's own omission.
+        //
+        // ⚠ ZERO IS A VALUE A CALLER MAY MEAN — the document's own spelling for *no ceiling* — so
+        // there is no decline word beside it, unlike `max_turns`.
+        ArgGrammar::open("context_ceiling", "int").optional(),
         // ⚠⚠⚠ REQUIRED, and the conformance sweep is what settled it. It was declared optional and
         // read with `require_str`, which is the exact defect `DONE_WHEN` beside it records from
         // version 25: the wire published an argument as declinable and the daemon refused every
@@ -8532,7 +8550,22 @@ mod tests {
                 // happen HERE while no released daemon serves `ai_loop` at all: the whole form is
                 // refused, key and all. ⚠ **THE RESIDUE, STATED: the day this form ships, an
                 // argument added to it earns the number by the ordinary rule.**
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                //
+                // ⚠⚠⚠⚠⚠ `context_ceiling` ARRIVED ON THE SAME PROPERTY (register item 492), AND THE
+                // PROPERTY WAS MEASURED THIS TIME RATHER THAN QUOTED: **2026-08-20, `git tag` is
+                // empty and `gh release list` answers nothing — this repository has never published
+                // a release**, so there is no daemon predating this key for the swallow to happen
+                // in. That is what the pin's own message asks for (*"unless you can say why an
+                // older client is unaffected"*), stated with a date so the next round does not have
+                // to take it on trust.
+                //
+                // ⚠⚠⚠⚠ AND THE RESIDUE IS SHARPER FOR THIS KEY THAN FOR ITS NEIGHBOURS, so it is
+                // written out: a swallowed ceiling does not merely go unread. The run then reports
+                // `no_ceiling`, whose remedy sentence tells the caller to author the number **they
+                // just authored** — a dropped fact rendered as the caller's own omission. That is
+                // exactly the *"something was waiting on that fact"* test `CLIENT_BUILD_PARAM`
+                // states, so the day this form ships, this key earns the number.
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? context_ceiling:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

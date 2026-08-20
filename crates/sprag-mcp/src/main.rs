@@ -1637,6 +1637,11 @@ const NOT_A_PANE: &[&str] = &[
     // ⚠ HOW OFTEN THE LOOP STOPS TO IMPROVE ITS OWN SETUP — the same kind of count as its
     // neighbour above, and not a pane for the same reason.
     "reflect_every",
+    // ⚠⚠ A COUNT OF TOKENS — how much a session may have READ before the next milestone is taken
+    // in a fresh one (register item 492). It is the largest number on this whole surface and the
+    // least pane-like, which is exactly why it is written down: this list exists for numbers that
+    // are not ids, and *obviously not a pane* is what nobody bothers to classify.
+    "context_ceiling",
     "max_iterations",
     "max_seconds",
     "max_bytes",
@@ -2162,6 +2167,17 @@ fn argument_help(name: &str) -> &'static str {
              fixed prefix, which costs more than it saves unless a lot has accumulated to discard. \
              ⚠ A `screen_rules` match restarts the session whatever this says — that is a \
              correctness edge rather than a budget."
+        }
+        "context_ceiling" => {
+            "HOW MUCH THIS SESSION MAY HAVE READ before the next milestone is taken in a fresh one \
+             (ai_loop), in TOKENS of the agent's own accumulated reading. It is a CAPACITY bound \
+             and not a cost knob: splitting one task across sessions is measurably MORE expensive, \
+             because a cache write costs twenty times a cache read and a fresh session re-pays the \
+             fixed prefix. So the number to name is one near the end of the agent's context window, \
+             not a small one. ⚠ Leaving it out means this daemon's own loop-kind document decides, \
+             and then the template's `0` — which means NO ceiling, so every reflection replaces the \
+             session and the run reports `no_ceiling` when it hands over. ⚠⚠ `0` is a value you \
+             may MEAN here: it is how a caller says *do not bound this*."
         }
         "agent" => {
             "WHICH PROGRAM IS IN THE PANE (ai_loop) — `claude`, or whatever list_panes reports \
@@ -8720,12 +8736,18 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 16,
+            seen, 17,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
              ready_timeout_ms, await_person_ms, handback_still_ms, turn_within_ms, cols, rows, \
-             max_turns, reflect_every, max_iterations, \
+             max_turns, reflect_every, context_ceiling, max_iterations, \
              max_seconds, max_bytes and max_tokens — MERGED across the forms, so the agent form's \
-             readiness pair adds no new name. ⚠⚠ THE TWO NEWEST ARE THE `ai_loop` FORM'S, and they \
+             readiness pair adds no new name. ⚠⚠⚠⚠⚠ THE NEWEST IS `context_ceiling` (item 492), and \
+             it is the first int here that counts neither panes, nor milliseconds, nor turns: it \
+             counts TOKENS a session has read. ⚠ It is also the item's own lesson arriving one \
+             surface further out — a wire argument is bookkeeping in FOUR places (the published \
+             shape pin, the daemon's read probe, the declinable sweep, and this tool's two lists), \
+             and the gates are what say so rather than anybody remembering. ⚠⚠ THE TWO BEFORE IT \
+             ARE THE `ai_loop` FORM'S OWN COUNTS, and they \
              are the first ints here that are neither a pane nor a DURATION: they COUNT the inner \
              agent's turns. That is the classification this list exists for — a small number \
              beside a `pane` argument, which nothing but a written decision stops this tool \

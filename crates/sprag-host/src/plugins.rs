@@ -730,10 +730,6 @@ impl PluginsExternal {
             PluginName::AiLoop => {
                 let pane = require_pane_id(map, "pane")?;
                 self.require_pane(pane)?;
-                // ⚠⚠⚠⚠ DECLINABLE SINCE ITEM 312 — see `AI_LOOP_FORM`. A caller who names no budget
-                // is deferring to `ai_loop.scxml`'s own, which is resolved where the document can be
-                // read (`OuterLoop::brief`) and not here, because this door has no datamodel.
-                let max_turns = opt_count(map, "max_turns")?;
                 // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
                 // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
                 // this crate; the manifest carries the argument. It is per RUN and not shared: a
@@ -756,117 +752,13 @@ impl PluginsExternal {
                 // for it.
                 let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
                     .map_err(|why| refused(why.to_string()))?;
-                let kind_consents = kind.consents().map_err(|why| {
-                    refused(format!(
-                        "this repository's loop-kind document holds a consent list this driver \
-                         cannot read ({why:?}); a run cannot start on decisions nobody can check"
-                    ))
-                })?;
-                let kind_rules = kind.screen_rules().map_err(|why| {
-                    refused(format!(
-                        "this repository's loop-kind document holds a rule list this driver cannot \
-                         read ({why:?}); a run cannot start on decisions nobody can check"
-                    ))
-                })?;
-                let brief = Brief {
-                    // ⚠⚠ NO WIRE KEY, DELIBERATELY. What a repository asks its own runs at the end
-                    // is its document's business; a caller that could override it could delete the
-                    // sweep this repository's record says it pays for twice over when it is missing.
-                    closing_rules: kind.closing_rules(),
-                    // ⚠⚠⚠ NO WIRE KEY EITHER, and for the same reason one line up — register item
-                    // 428. What certifies this repository's work is its document's business; a
-                    // caller who could name the checker could delete it by naming nothing, which is
-                    // the self-certification the whole item is about.
-                    milestone_check: kind.milestone_check(),
-                    // ⚠⚠⚠ NO WIRE KEY EITHER, on the two lines above's terms. What this
-                    // repository's peer prints when its SERVICE fails is its document's business,
-                    // and a caller who could name the needle could delete the wait by naming
-                    // nothing — turning a ten-minute outage back into the dead run that paid for
-                    // this. See `ServiceOutage`, whose doc carries the measurement.
-                    service: kind.service_outage(),
-                    north_star: require_str(map, "north_star")?.to_string(),
-                    milestone: require_str(map, "milestone")?.to_string(),
-                    reference: require_str(map, "reference")?.to_string(),
-                    // ⚠⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and only then
-                    // the template's own number. A debt run ends on its work rather than on a turn
-                    // count, and that decision is the kind's to make — it reaches here as
-                    // `Counted::Never` rather than as a number nobody could write.
-                    max_turns: max_turns
-                        .map(sprag_plugin::Counted::Of)
-                        .or_else(|| kind.turn_budget()),
-                    // ⚠⚠ ABSENT STILL MEANS "NEVER, ON THE BUDGET", spelled as the one number that
-                    // makes the budget guard unreachable rather than as a magic zero: `judging`
-                    // tests `turns >= max_turns` BEFORE `turns_since_reflect >= reflect_every`, so
-                    // an equal pair exhausts first.
-                    //
-                    // ⚠⚠⚠⚠ BUT THE `unwrap_or(max_turns)` THAT SAID SO IS NO LONGER HERE — item 312.
-                    // The default IS the budget, and the budget may now be the document's, which
-                    // this door cannot read. So both resolve together in `OuterLoop::brief`, where
-                    // the datamodel is; carrying `None` through is what lets them.
-                    //
-                    // ⚠⚠⚠ IT IS NO LONGER A REFUSAL TO NAME A SMALLER ONE — `reflecting` and the
-                    // session-replace lifecycle behind it are built. The default is kept as it was
-                    // ON PURPOSE rather than moved to the document's `8`: a restart closes a pane a
-                    // person may be reading and opens another, and a caller who has said nothing
-                    // about reflection has not asked for that. What they DO get without asking is a
-                    // reflection when a standing instruction fires, which is the correctness edge
-                    // (item 148) and not a budget — `screened > screened_carried` is not spelled
-                    // here because no caller sets it.
-                    // ⚠⚠⚠ AND THE KIND ANSWERS THIS TOO, which it MUST when it declines the budget:
-                    // the template's default for reflection is *the number that makes the reflect
-                    // guard unreachable*, and that number only exists while there is a budget to
-                    // borrow it from. `OuterLoop::brief` refuses the pair rather than guessing.
-                    reflect_every: opt_count(map, "reflect_every")?
-                        .or_else(|| kind.reflect_every()),
-                    // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
-                    // The rules live in the loop template, so a caller who says nothing about
-                    // screening is not overriding it — and the driver echoes the document's own
-                    // rules back through the brief rather than deleting them.
-                    // ⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and it used to
-                    // mean *"what the template's author wrote"*. The template no longer writes any
-                    // — a standing instruction there is answered on behalf of every repository that
-                    // copies it — so the fallback moved with the values. A caller who says nothing
-                    // about screening is still not overriding anything.
-                    screen_rules: opt_screen_rules(map)?.or(kind_rules),
-                    may_answer: opt_may_answer(map)?.or(kind_consents),
-                    // ⚠⚠⚠ THE SAME TWO KEYS, NOW WRITTEN INTO THE DOCUMENT instead of into the
-                    // spec. `awaiting_human`'s only run-ending exit is *nobody came within the
-                    // patience*, so the patience is the loop DOCUMENT's own data — the argument
-                    // `Brief::screen_rules` already makes, applied to the other half of one state.
-                    //
-                    // ⚠⚠ THE PAIR IS STILL VALIDATED AS A PAIR. `opt_attended` owns *a call that
-                    // sends the stillness alone is malformed*, and reading the two keys separately
-                    // here would have quietly dropped that refusal; the values are taken back OUT
-                    // of what it built rather than parsed a second time.
-                    //
-                    // ⚠⚠⚠ AND OMITTING THEM NOW MEANS *THE DOCUMENT DECIDES*, where it used to mean
-                    // `Attended::NoOne` — a run that ended at the first dialog it could not answer.
-                    // That is the change, stated: a caller who wants that says so by authoring it,
-                    // and the shipped document's own number is what an unspecified run now gets.
-                    await_person_ms: opt_attended(map)?
-                        .patience()
-                        .map(|patience| patience.as_millis() as i64),
-                    handback_still_ms: opt_attended(map)?
-                        .handback()
-                        .stillness()
-                        .map(|still| still.as_millis() as i64),
-                    // ⚠⚠⚠ AND THE LAST TWO JUDGEMENTS, ON THE SAME ROUTE. Each of them arrived
-                    // paired with a PREDICATE — `ready_timeout_ms` with `ready_when`,
-                    // `turn_within_ms` with `done_when` — and register item 300 measured that the
-                    // pair is one fact plus one decision: what makes a pane ready and how a program
-                    // signals a turn is over are read off WHICH PROGRAM is in the pane; three
-                    // minutes and half an hour are read off nobody. **A wire pairing is not evidence
-                    // of a shared owner.** The predicates stay on the spec below; these two write
-                    // `<data>`.
-                    //
-                    // ⚠⚠ THE WIRE FORM IS UNCHANGED — both keys are still accepted, still optional,
-                    // still milliseconds. What changed is where the number lands, and what OMITTING
-                    // one means: it used to be the substrate's default, and it is now *the document
-                    // decides*, which is `await_person_ms`'s change one round earlier.
-                    ready_timeout_ms: opt_millis(map, Readiness::WIRE_KEY)?
-                        .map(|within| within.as_millis() as i64),
-                    turn_within_ms: opt_ai_loop_turn_ms(map)?,
-                };
+                // ⚠⚠⚠⚠⚠ RESOLVED BY A FUNCTION THAT HANDS THE BRIEF BACK — register item 492. It
+                // was a hundred inline lines here, and the eight fall-throughs to the kind document
+                // inside it were held by NOTHING: `sprag_plugin`'s own gate had already measured
+                // that deleting one of them left the whole workspace green, and the ceiling's round
+                // measured it again with the same answer. A `Brief` is the observable that fixes
+                // that, and this is the only call site.
+                let brief = ai_loop_brief(map, &kind)?;
                 // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
                 // loop's first prompt goes into a pane whose program may still be starting — see
                 // `AI_LOOP_FORM`. A caller whose peer needs a different barrier overrides it.
@@ -1519,6 +1411,162 @@ fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeE
         return Ok(None);
     }
     require_count(map, key).map(Some)
+}
+
+/// **WHAT A LOOP RUN IS FOR, RESOLVED FROM THE CALLER'S REQUEST AND THIS REPOSITORY'S KIND** —
+/// every judgement a `Brief` carries, in the one place both roads to it meet.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function and not the inline block it was until register item 492
+///
+/// Eight of a brief's fields fall back to the kind document, and **not one of those fall-throughs
+/// was held by anything.** The residue was registered rather than hidden — `sprag_plugin`'s
+/// `a_declined_budget_crosses_as_a_word_and_the_run_is_not_refused` says it in its own doc:
+/// *"deleting `.or_else(|| kind.turn_budget())` from `plugins.rs` leaves the entire workspace
+/// GREEN. What would catch it is an observable of the RESOLVED budget on a run started through the
+/// wire, and `turn_budget` is crate-private"* — and it was measured again on item 492's round, for
+/// the ceiling, with the same answer.
+///
+/// A `Brief` is that observable. It is `pub` in `sprag_plugin`, it is exactly what the door
+/// resolves, and handing it back instead of consuming it in place is the whole difference between a
+/// wiring nothing checks and one a gate can read. ⚠⚠ **It is not a gate re-implementing the line it
+/// checks**: this IS the line, and the test asks the real function what a real request plus the
+/// real kind document resolve to.
+///
+/// ⚠ The engine and the pane stay with the caller: this resolves JUDGEMENTS, and which pane a run
+/// drives is a binding.
+///
+/// # Errors
+///
+/// [`InvokeError::TypeMismatch`] for a malformed argument, and [`refused`]'s sentence when this
+/// repository's own kind document holds a list this driver cannot read.
+fn ai_loop_brief(
+    map: &Map<String, Value>,
+    kind: &sprag_plugin::kind::LoopKind,
+) -> Result<Brief, InvokeError> {
+    // ⚠⚠⚠⚠ DECLINABLE SINCE ITEM 312 — see `AI_LOOP_FORM`. A caller who names no budget is
+    // deferring to `ai_loop.scxml`'s own, which is resolved where the document can be read
+    // (`OuterLoop::brief`) and not here, because this door has no datamodel.
+    let max_turns = opt_count(map, "max_turns")?;
+    let kind_consents = kind.consents().map_err(|why| {
+        refused(format!(
+            "this repository's loop-kind document holds a consent list this driver \
+                         cannot read ({why:?}); a run cannot start on decisions nobody can check"
+        ))
+    })?;
+    let kind_rules = kind.screen_rules().map_err(|why| {
+        refused(format!(
+            "this repository's loop-kind document holds a rule list this driver cannot \
+                         read ({why:?}); a run cannot start on decisions nobody can check"
+        ))
+    })?;
+    Ok(Brief {
+        // ⚠⚠ NO WIRE KEY, DELIBERATELY. What a repository asks its own runs at the end
+        // is its document's business; a caller that could override it could delete the
+        // sweep this repository's record says it pays for twice over when it is missing.
+        closing_rules: kind.closing_rules(),
+        // ⚠⚠⚠ NO WIRE KEY EITHER, and for the same reason one line up — register item
+        // 428. What certifies this repository's work is its document's business; a
+        // caller who could name the checker could delete it by naming nothing, which is
+        // the self-certification the whole item is about.
+        milestone_check: kind.milestone_check(),
+        // ⚠⚠⚠ NO WIRE KEY EITHER, on the two lines above's terms. What this
+        // repository's peer prints when its SERVICE fails is its document's business,
+        // and a caller who could name the needle could delete the wait by naming
+        // nothing — turning a ten-minute outage back into the dead run that paid for
+        // this. See `ServiceOutage`, whose doc carries the measurement.
+        service: kind.service_outage(),
+        north_star: require_str(map, "north_star")?.to_string(),
+        milestone: require_str(map, "milestone")?.to_string(),
+        reference: require_str(map, "reference")?.to_string(),
+        // ⚠⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and only then
+        // the template's own number. A debt run ends on its work rather than on a turn
+        // count, and that decision is the kind's to make — it reaches here as
+        // `Counted::Never` rather than as a number nobody could write.
+        max_turns: max_turns
+            .map(sprag_plugin::Counted::Of)
+            .or_else(|| kind.turn_budget()),
+        // ⚠⚠ ABSENT STILL MEANS "NEVER, ON THE BUDGET", spelled as the one number that
+        // makes the budget guard unreachable rather than as a magic zero: `judging`
+        // tests `turns >= max_turns` BEFORE `turns_since_reflect >= reflect_every`, so
+        // an equal pair exhausts first.
+        //
+        // ⚠⚠⚠⚠ BUT THE `unwrap_or(max_turns)` THAT SAID SO IS NO LONGER HERE — item 312.
+        // The default IS the budget, and the budget may now be the document's, which
+        // this door cannot read. So both resolve together in `OuterLoop::brief`, where
+        // the datamodel is; carrying `None` through is what lets them.
+        //
+        // ⚠⚠⚠ IT IS NO LONGER A REFUSAL TO NAME A SMALLER ONE — `reflecting` and the
+        // session-replace lifecycle behind it are built. The default is kept as it was
+        // ON PURPOSE rather than moved to the document's `8`: a restart closes a pane a
+        // person may be reading and opens another, and a caller who has said nothing
+        // about reflection has not asked for that. What they DO get without asking is a
+        // reflection when a standing instruction fires, which is the correctness edge
+        // (item 148) and not a budget — `screened > screened_carried` is not spelled
+        // here because no caller sets it.
+        // ⚠⚠⚠ AND THE KIND ANSWERS THIS TOO, which it MUST when it declines the budget:
+        // the template's default for reflection is *the number that makes the reflect
+        // guard unreachable*, and that number only exists while there is a budget to
+        // borrow it from. `OuterLoop::brief` refuses the pair rather than guessing.
+        reflect_every: opt_count(map, "reflect_every")?.or_else(|| kind.reflect_every()),
+        // ⚠⚠⚠⚠⚠ REGISTER ITEM 492, and the same three-step fall-through its two
+        // neighbours have: the caller's number, then THIS repository's kind document,
+        // then the template's own — resolved in `OuterLoop::brief`, which is the only
+        // place that can read the last of those.
+        //
+        // ⚠⚠ Until this line the ceiling had NO road at all. The template's comment
+        // said it was the kind's to author while no kind could; item 477 measured what
+        // that cost at the far end, where `reviewing` took the fall-back eight times
+        // out of eight because the number was 0 on every run ever driven.
+        context_ceiling: opt_count(map, "context_ceiling")?.or_else(|| kind.context_ceiling()),
+        // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
+        // The rules live in the loop template, so a caller who says nothing about
+        // screening is not overriding it — and the driver echoes the document's own
+        // rules back through the brief rather than deleting them.
+        // ⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and it used to
+        // mean *"what the template's author wrote"*. The template no longer writes any
+        // — a standing instruction there is answered on behalf of every repository that
+        // copies it — so the fallback moved with the values. A caller who says nothing
+        // about screening is still not overriding anything.
+        screen_rules: opt_screen_rules(map)?.or(kind_rules),
+        may_answer: opt_may_answer(map)?.or(kind_consents),
+        // ⚠⚠⚠ THE SAME TWO KEYS, NOW WRITTEN INTO THE DOCUMENT instead of into the
+        // spec. `awaiting_human`'s only run-ending exit is *nobody came within the
+        // patience*, so the patience is the loop DOCUMENT's own data — the argument
+        // `Brief::screen_rules` already makes, applied to the other half of one state.
+        //
+        // ⚠⚠ THE PAIR IS STILL VALIDATED AS A PAIR. `opt_attended` owns *a call that
+        // sends the stillness alone is malformed*, and reading the two keys separately
+        // here would have quietly dropped that refusal; the values are taken back OUT
+        // of what it built rather than parsed a second time.
+        //
+        // ⚠⚠⚠ AND OMITTING THEM NOW MEANS *THE DOCUMENT DECIDES*, where it used to mean
+        // `Attended::NoOne` — a run that ended at the first dialog it could not answer.
+        // That is the change, stated: a caller who wants that says so by authoring it,
+        // and the shipped document's own number is what an unspecified run now gets.
+        await_person_ms: opt_attended(map)?
+            .patience()
+            .map(|patience| patience.as_millis() as i64),
+        handback_still_ms: opt_attended(map)?
+            .handback()
+            .stillness()
+            .map(|still| still.as_millis() as i64),
+        // ⚠⚠⚠ AND THE LAST TWO JUDGEMENTS, ON THE SAME ROUTE. Each of them arrived
+        // paired with a PREDICATE — `ready_timeout_ms` with `ready_when`,
+        // `turn_within_ms` with `done_when` — and register item 300 measured that the
+        // pair is one fact plus one decision: what makes a pane ready and how a program
+        // signals a turn is over are read off WHICH PROGRAM is in the pane; three
+        // minutes and half an hour are read off nobody. **A wire pairing is not evidence
+        // of a shared owner.** The predicates stay on the spec below; these two write
+        // `<data>`.
+        //
+        // ⚠⚠ THE WIRE FORM IS UNCHANGED — both keys are still accepted, still optional,
+        // still milliseconds. What changed is where the number lands, and what OMITTING
+        // one means: it used to be the substrate's default, and it is now *the document
+        // decides*, which is `await_person_ms`'s change one round earlier.
+        ready_timeout_ms: opt_millis(map, Readiness::WIRE_KEY)?
+            .map(|within| within.as_millis() as i64),
+        turn_within_ms: opt_ai_loop_turn_ms(map)?,
+    })
 }
 
 /// **WHY A LOOP DID NOT START, IN A SENTENCE THE CALLER CAN ACT ON.**
@@ -2605,6 +2653,116 @@ mod tests {
         assert!(
             lock(&workspace).close(pane).is_some(),
             "the pane this gate opened was there to close",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THIS REPOSITORY'S KIND DOCUMENT REACHES A RUN THAT NAMED NOTHING** — register item
+    /// 492, and the gate that closes a hole the register had already measured and registered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was green while it was broken
+    ///
+    /// Eight of a brief's fields fall back to `debt_loop.scxml`, and **deleting any one of those
+    /// fall-throughs left the entire workspace GREEN.** That was measured for `max_turns` on item
+    /// 312's round and written into `sprag_plugin`'s own gate as a registered residue; item 492's
+    /// round measured it again for `context_ceiling` and got the same answer. The consequence is
+    /// not hypothetical: the kind had authored a ceiling since 2026-08-18, nothing carried it, and
+    /// item 477 measured `reviewing` taking the fall-back **eight times out of eight** on a live
+    /// run — a state that never once decided, with every gate over it passing.
+    ///
+    /// # ⚠⚠⚠ Why this can exist now and could not before
+    ///
+    /// The residue named its own blocker: *"what would catch it is an observable of the RESOLVED
+    /// value on a run started through the wire"*, and the driver's readers are crate-private to
+    /// `sprag_plugin`. `ai_loop_brief` is that observable — the door's own resolution, handed back
+    /// instead of consumed in place. **This asks the real function what a real request plus the real
+    /// kind document resolve to**, which is why it is not a test re-implementing the line it checks.
+    ///
+    /// ⚠⚠ It asserts the AGREEMENT rather than a number: what the kind's document says is that
+    /// document's business, and a number pinned here would be a second place it lives. What must
+    /// hold is that the two are the same value and that it is one `reviewing` can decide on.
+    #[test]
+    fn a_kind_documents_judgements_reach_a_run_that_named_none_of_them() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+
+        // The fixture minus every key the kind is meant to answer, which is the only way to ask
+        // whose value arrived.
+        let mut declining = ai_loop_request(PaneId(1), json!({}));
+        declining
+            .as_object_mut()
+            .expect("an object")
+            .remove("max_turns")
+            .expect("the fixture supplies the key this gate declines");
+        let map = declining.as_object().expect("an object");
+
+        let brief = ai_loop_brief(map, &kind).expect("a well-formed request resolves");
+
+        let ceiling = brief.context_ceiling.expect(
+            "⚠⚠⚠⚠⚠ ITEM 492: a run that named no ceiling must arrive holding THIS REPOSITORY'S — \
+             the kind document has authored one since 2026-08-18 and until the door carried it, \
+             `reviewing` decided on 0 on every run anybody has ever driven",
+        );
+        assert_eq!(
+            Some(ceiling),
+            kind.context_ceiling(),
+            "and it must be the kind's own number rather than one this door invented",
+        );
+        assert!(
+            ceiling > 0,
+            "⚠⚠⚠ and a number `reviewing` can decide on: every deciding edge in that state is \
+             guarded on `context_ceiling > 0`, so a zero is the fall-back this item exists to get a \
+             run out of. Read {ceiling}",
+        );
+
+        // ⚠⚠⚠ AND ITS NEIGHBOURS ON THE SAME ROAD, which is what makes this a CLASS gate rather
+        // than a second copy of the ceiling's. Each of these was equally unheld, and the register's
+        // own measurement was taken against the first of them.
+        assert_eq!(
+            brief.max_turns,
+            kind.turn_budget(),
+            "⚠⚠⚠⚠ the BUDGET is the one the residue was measured on (item 312): a debt run ends on \
+             its work, and that decision is a word in the kind's document that nothing carried",
+        );
+        assert_eq!(
+            brief.reflect_every,
+            kind.reflect_every(),
+            "⚠⚠ and the cadence, which a kind that declines the budget MUST answer or no run of it \
+             starts at all",
+        );
+        assert_eq!(
+            brief.milestone_check,
+            kind.milestone_check(),
+            "⚠⚠⚠ and WHO CERTIFIES A MILESTONE — item 428's second half, where a live run judged \
+             `NOTHING CHECKED THAT CLAIM` while this document named a checker",
+        );
+        assert_eq!(
+            brief.closing_rules,
+            kind.closing_rules(),
+            "and what a run of this kind owes at its ending",
+        );
+        assert_eq!(
+            brief.service.is_some(),
+            kind.service_outage().is_some(),
+            "and what its peer prints when the service fails, which turned a dead run into a wait",
+        );
+        assert!(
+            brief.may_answer.is_some(),
+            "⚠⚠⚠ and the standing yesses: an empty consent list met `Do you want to make this \
+             edit?` on the first milestone and stood there until a ceiling ended the run",
+        );
+
+        // ⚠⚠⚠ THE CONTROL. Without it a door that IGNORED every caller and always used the kind's
+        // values would satisfy every assertion above — which is the opposite defect and just as
+        // silent.
+        let named = ai_loop_request(PaneId(1), json!({ "context_ceiling": 4242 }));
+        let brief = ai_loop_brief(named.as_object().expect("an object"), &kind)
+            .expect("a caller naming a ceiling resolves");
+        assert_eq!(
+            brief.context_ceiling,
+            Some(4242),
+            "a caller's own number must still win over the kind document's",
         );
     }
 
@@ -3904,10 +4062,18 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            71,
+            72,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠⚠ THE NEWEST IS `max_turns`, and it is the one \
+             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `context_ceiling` (item 492), and \
+             declining it means what declining `max_turns` means with one more step in the chain: \
+             the caller's number, then THIS repository's KIND document, then the template's own \
+             `expr=\"0\"`. ⚠⚠ Its arrival is the item itself rather than a detail of it — the kind \
+             document had authored a ceiling since 2026-08-18 and nothing could carry it, so \
+             `reviewing` guarded every deciding edge on a number that was 0 on every run anybody \
+             has ever driven (item 477 measured eight exits out of eight taking the fall-back). \
+             ⚠ Zero is a value a caller may MEAN here, so unlike `max_turns` there is no decline \
+             word beside it. THE OLD SENTENCE FOLLOWS. THE NEWEST IS `max_turns`, and it is the one \
              argument on this surface that has ever moved from REQUIRED to declinable (item 312): \
              the document authors `expr=\"40\"` and, while the key was mandatory, no caller could \
              let it decide — so a judgement the owner's rule puts in the `.scxml` was one the \
@@ -3967,11 +4133,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            116,
+            117,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, TWENTY-EIGHT to run an AI loop, one to cancel, and ONE TO STAND \
-             A RUN DOWN. ⚠⚠⚠ THE NEWEST IS THAT LAST ONE — the second thing anybody can say to a \
+             TEN to answer a pane, TWENTY-NINE to run an AI loop, one to cancel, and ONE TO STAND \
+             A RUN DOWN. ⚠⚠⚠⚠⚠ THE NEWEST IS THE LOOP'S TWENTY-NINTH, `context_ceiling` (item \
+             492), and this gate is the one that makes it more than a declaration: a published \
+             argument the host does not READ is a key the surface swallows while the run reports \
+             `ok`. That is the whole shape of the item — the number existed in the kind's document \
+             since 2026-08-18 and nothing carried it, so `reviewing` decided on 0 for every run \
+             this repository has ever driven. THE OLD SENTENCE FOLLOWS. ⚠⚠⚠ THE NEWEST IS THAT \
+             LAST ONE — the second thing anybody can say to a \
              run, and the first that does not throw the turn in flight away. It takes a run id and \
              nothing else, exactly as `cancel` does, and it is a SEPARATE verb for that reason \
              rather than in spite of it: the two shapes are identical and the outcomes are \
