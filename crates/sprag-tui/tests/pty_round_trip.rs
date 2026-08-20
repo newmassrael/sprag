@@ -1883,10 +1883,30 @@ fn the_session_keys_make_a_session_follow_it_and_kill_the_one_they_landed_on() {
         "the kill key to end the session this client landed on",
         || settled(session_names(&mut conn), &vec![session.clone()]),
     );
-    assert_eq!(
-        tui.liveness(),
-        "running",
-        "and the client is alive on the session that is left, having killed the one it was on",
+    // ⚠⚠⚠⚠⚠ AND THE CLIENT LEAVES, WHICH IS WHAT THE DEFAULT POLICY PROMISES — register item 497.
+    //
+    // This read `assert_eq!(tui.liveness(), "running")` until 2026-08-20, and it was a claim the
+    // product never made: `detach-on-destroy` is unset here, `Frontend::Terminal`'s unset value is
+    // `Detach` — tmux's `on` — and a client whose attached session is destroyed DETACHES. The
+    // assertion passed on Linux because it sampled BEFORE the poll thread had noticed, and CI's
+    // macOS lane read the same client one moment later and reported `EXITED status 0`. **The green
+    // was the flake and the red was the truth**, which is the opposite of how it was filed.
+    //
+    // ⚠⚠ A barrier is what makes the difference visible at all: this waits for the client's own
+    // fate instead of reading it at whatever instant the daemon's list happened to settle. The
+    // status is asserted with it — a detach is ORDERLY, and a client that died some other way
+    // would satisfy *it is gone* while meaning something entirely different.
+    //
+    // ⚠ The SWITCH policies (`next`, `previous`, `off`) are where a client goes to another session
+    // instead. `a_window_kill_that_took_the_session_says_so` is the gate that configures one, and
+    // its own doc says the policy is load-bearing there for exactly this reason.
+    tui.wait_for(
+        "the client to detach from the session it destroyed",
+        || match tui.liveness() {
+            alive if alive == "running" => Err("still attached".to_owned()),
+            gone if gone.contains("(0)") => Ok(()),
+            other => Err(format!("left, but not orderly: {other}")),
+        },
     );
 }
 
@@ -3684,6 +3704,19 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
     });
 
     // 1. THE WIDE CLIENT DID NOT FOLLOW. Its row still marks window 0 as the one it is on.
+    //
+    // ⚠⚠⚠⚠ WAITED FOR ON ITS OWN CLIENT, and it was a bare read until 2026-08-20. The barrier
+    // above is the NARROW client's screen, and one client having repainted says nothing about
+    // when the other will: window 1 is news to the wide client too, and it learns about it on
+    // its own schedule. Measured under a full workspace sweep, this read caught it mid-flight
+    // and reported `[0] 0:0*` — the row from BEFORE window 1 existed, which is the healthy
+    // client one repaint early rather than a client that moved.
+    //
+    // ⚠ It is not weaker than the assertion it replaces: a wide client that had wrongly FOLLOWED
+    // would paint `0:0 1:1*` and never reach this, so the wait ends in a refusal naming the row.
+    wide.wait_for("the wide client's row to list both windows", || {
+        settled(wide.row(STATUS_ROW), &format!("[{session}] 0:0* 1:1"))
+    });
     let wides_row = wide.row(STATUS_ROW);
     assert_eq!(
         wides_row,

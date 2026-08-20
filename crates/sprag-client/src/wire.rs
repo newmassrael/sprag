@@ -4955,6 +4955,7 @@ fn spawn_poll(
                             &lost_session,
                             &quit,
                             &on_change,
+                            conn.socket(),
                         ) {
                             break;
                         }
@@ -5022,6 +5023,7 @@ fn spawn_poll(
                             &lost_session,
                             &quit,
                             &on_change,
+                            conn.socket(),
                         ) {
                             break;
                         }
@@ -5047,6 +5049,7 @@ fn spawn_poll(
                             &lost_session,
                             &quit,
                             &on_change,
+                            conn.socket(),
                         ) {
                             break;
                         }
@@ -5138,6 +5141,7 @@ fn spawn_poll(
                             &lost_session,
                             &quit,
                             &on_change,
+                            conn.socket(),
                         ) {
                             break;
                         }
@@ -5258,11 +5262,25 @@ fn handle_poll_error(
     lost_session: &AtomicBool,
     quit: &Arc<dyn QuitSink>,
     on_change: &Arc<dyn Fn() + Send + Sync>,
+    socket: Option<&Path>,
 ) -> bool {
     let Some(end) = detach_reason(error) else {
         return false; // transient — keep polling
     };
     let stopped = stop.load(Ordering::Acquire);
+    // ⚠⚠⚠⚠⚠ THE ERRNO IS A SYMPTOM, SO ASK — register item 497. A killed session and a dead
+    // daemon are the SAME event on this socket, and which `ErrorKind` the read carries is decided
+    // by how the peer's end was torn down: a refusal the daemon managed to answer with reads
+    // `Other`, a connection reset under the same kill reads `ConnectionReset`, and which of the two
+    // a platform produces is the platform's business. Under a SWITCH policy the difference decides
+    // whether this client LEAVES or moves to another session, so a re-dial answers it with the fact
+    // instead of the symptom: a daemon that accepts is a daemon that is there.
+    let end = match end {
+        PollEnd::HostGone if policy.is_switch() && !stopped && host_answers(socket) => {
+            PollEnd::SessionClosed
+        }
+        other => other,
+    };
     match end {
         PollEnd::SessionClosed if policy.is_switch() && !stopped => {
             // Our session died out of band and a switch policy (any but Detach) wants us to MOVE, not
@@ -5276,6 +5294,27 @@ fn handle_poll_error(
         _ => request_detach(quit, stopped, end.reason(), error),
     }
     true // definitive — break the loop
+}
+
+/// Whether the daemon is still there, asked by RE-DIALLING the socket this client is on.
+///
+/// # ⚠⚠⚠⚠ Why a connect and not a read
+///
+/// The question is *is anything serving this address*, and an accept is the whole answer: nothing
+/// is sent, no handshake is run and no attachment is made, so a probe cannot disturb the session it
+/// is asking about. A daemon that has exited leaves either no socket file or one nothing is bound
+/// to, and both refuse immediately.
+///
+/// ⚠⚠ **[`None`] answers `false`**, which keeps the behaviour a connection that cannot name its
+/// address always had: unable to ask is not the same as *the host is alive*, and the arm that reads
+/// this is the one that decides whether to stay.
+///
+/// ⚠ The timeout is short and is a CEILING rather than a wait: [`HostConn::connect`] retries until
+/// it elapses, and this runs on a path that has already ended — a client deciding whether to leave
+/// should not sit here. Long enough to cross a busy machine's accept queue, short enough that a
+/// person does not read it as a hang.
+fn host_answers(socket: Option<&Path>) -> bool {
+    socket.is_some_and(|path| HostConn::connect(path, Duration::from_millis(250)).is_ok())
 }
 
 /// Ask the shell to end — the tmux detach — unless WE initiated the teardown (`stopped`), in
@@ -6106,16 +6145,46 @@ mod tests {
         path
     }
 
-    /// A connected [`HostConn`] whose server end is already CLOSED. The next `call` on the
-    /// conn reads EOF — the exact wire condition a daemon exiting under a detached client
-    /// produces. The listener + [`SockGuard`] are returned so the caller keeps them alive and
-    /// the socket file is unlinked even on panic.
-    fn a_dead_host_conn(tag: &str) -> (HostConn, UnixListener, SockGuard) {
+    /// A connected [`HostConn`] whose server end is already CLOSED **and whose daemon is GONE** —
+    /// the listener is dropped and the socket file unlinked, so nothing answers that address any
+    /// more. The next `call` on the conn reads EOF.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It used to keep the listener bound, which is a daemon that is STILL THERE
+    ///
+    /// Register item 497. This fixture is named for a host that is gone and modelled one that had
+    /// merely dropped a connection — the two are the same event on the wire, which is the whole
+    /// reason the client could not tell them apart either. Every gate written on it therefore said
+    /// *"a dead host makes the client quit"* while demonstrating a LIVE one, and the client's own
+    /// rule (guess from the `io::ErrorKind`) was green through it.
+    ///
+    /// ⚠ The [`SockGuard`] still comes back so the path is unlinked even on panic — unlinking twice
+    /// is harmless and unlinking never is what leaves a stale socket for the next run.
+    fn a_dead_host_conn(tag: &str) -> (HostConn, SockGuard) {
         let path = sock_path(tag);
         let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         // Accept then drop the server side: the client's next read returns EOF, which is
         // what `HostConn::call` maps to `UnexpectedEof` — the host is gone.
+        let (server, _) = listener.accept().expect("accept the client");
+        drop(server);
+        // ...and the DAEMON with it. Without these two lines the address still accepts, and a
+        // client asking *is anything serving this socket* would be told yes.
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+        (conn, SockGuard(path))
+    }
+
+    /// A connected [`HostConn`] whose server end is closed **while the daemon serves on** — the
+    /// listener stays bound, so the address still accepts.
+    ///
+    /// This is what a client meets when its own SESSION is killed: the daemon tears down that
+    /// client's connection and goes on serving everybody else. Register item 497 measured the
+    /// consequence on macOS, where the torn connection surfaced as a plain dead socket rather than
+    /// as an answered refusal, and the client left a daemon that was still there.
+    fn a_torn_connection_on_a_live_host(tag: &str) -> (HostConn, UnixListener, SockGuard) {
+        let path = sock_path(tag);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         let (server, _) = listener.accept().expect("accept the client");
         drop(server);
         (conn, listener, SockGuard(path))
@@ -6266,7 +6335,7 @@ mod tests {
     /// that exits instead of a window frozen over dead content.
     #[test]
     fn a_dead_host_asks_the_shell_to_quit() {
-        let (conn, _listener, _guard) = a_dead_host_conn("gone");
+        let (conn, _guard) = a_dead_host_conn("gone");
         let quit = Arc::new(RecordingQuit::default());
         let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
         let poll = spawn_poll(
@@ -6706,7 +6775,7 @@ mod tests {
     /// to switch off a daemon that is gone.
     #[test]
     fn a_switch_policy_still_detaches_when_the_whole_host_is_gone() {
-        let (conn, _listener, _guard) = a_dead_host_conn("switch-hostgone");
+        let (conn, _guard) = a_dead_host_conn("switch-hostgone");
         let quit = Arc::new(RecordingQuit::default());
         let lost = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
@@ -6737,6 +6806,76 @@ mod tests {
         assert!(
             !lost.load(Ordering::SeqCst),
             "and it does NOT flag a switch (that is only a session lost while the daemon lives)",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A CLIENT DOES NOT LEAVE A DAEMON THAT IS STILL ANSWERING** — register item 497.
+    ///
+    /// # The defect, and why every gate here was green through it
+    ///
+    /// A killed SESSION and an exited DAEMON are the same event on this socket: a read that fails.
+    /// The client decided between them by the `io::ErrorKind` — `Other` (a refusal the daemon
+    /// managed to answer with) meant *session*, and everything else meant *host gone, quit*. But
+    /// which kind a torn connection carries is decided by HOW the peer's end went down, and that is
+    /// the platform's business, not the event's.
+    ///
+    /// Measured on CI 2026-08-20: `the_session_keys_make_a_session_follow_it_and_kill_the_one_they_
+    /// landed_on` read `EXITED status 0` on macOS and `running` on both Linux lanes, from one
+    /// binary, 100 of its 101 tests passing. An orderly exit is this client's own `request_quit` —
+    /// the `HostGone` arm — reached because the errno said gone while the daemon was serving.
+    ///
+    /// So the decision is now a QUESTION (`host_answers`: re-dial, an accept is the answer), and
+    /// this is the case that separates the two: the connection is torn exactly as in the gate above
+    /// and the LISTENER STAYS BOUND.
+    ///
+    /// ⚠ REVERT-PROOF: delete the `PollEnd::HostGone if … host_answers(socket)` arm and this reads
+    /// `quit == 1` / `lost == false` — the client leaves a daemon it could have re-dialled in a
+    /// quarter of a second.
+    #[test]
+    fn a_switch_policy_stays_when_the_daemon_still_answers() {
+        let (conn, _listener, _guard) = a_torn_connection_on_a_live_host("switch-live-host");
+        let quit = Arc::new(RecordingQuit::default());
+        let lost = Arc::new(AtomicBool::new(false));
+        let repaints = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: our session went
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(PaneCache::default())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
+            {
+                let repaints = Arc::clone(&repaints);
+                Arc::new(move || {
+                    repaints.fetch_add(1, Ordering::SeqCst);
+                })
+            },
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            Arc::new(|| DetachOnDestroy::Next),
+            Arc::clone(&lost),
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            0,
+            "⚠⚠⚠⚠⚠ the daemon still accepts on this socket, so this client's SESSION went and not \
+             its host — it must move, not leave. A `1` here is item 497's macOS reading: an \
+             orderly exit off a guess about an error kind.",
+        );
+        assert!(
+            lost.load(Ordering::SeqCst),
+            "and it flags the lost session for the UI reconcile to switch",
+        );
+        assert!(
+            repaints.load(Ordering::SeqCst) >= 1,
+            "and repaints, so the UI thread wakes to run that reconcile",
         );
     }
 

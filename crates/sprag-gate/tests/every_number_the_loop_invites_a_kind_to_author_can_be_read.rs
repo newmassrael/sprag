@@ -31,7 +31,9 @@
 //! * measured BELOW the pin — either a claim was withdrawn on purpose, or **the needle went blind**.
 //!   The two are indistinguishable from here and both want a person, which is the point.
 
-use sprag_gate::authored::{KIND, claims, read_ids};
+use std::collections::BTreeSet;
+
+use sprag_gate::authored::{READS, claims, kind_sources, read_ids};
 use sprag_gate::loop_shape::DOCUMENT;
 use sprag_gate::sources::{rust_sources, workspace_root};
 
@@ -41,6 +43,15 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// ⚠ TWO, and that is the whole shape of item 494: the sentence was already written about both when
 /// item 492 built the road for one of them.
 const CLAIMED: &[&str] = &["reflect_after_refusals", "context_ceiling"];
+
+/// Every file a kind's numbers are read in — measured 2026-08-20, register item 498(a).
+///
+/// ⚠⚠⚠⚠ It is a PIN and not the search. The search is [`kind_sources`], which finds a file by the
+/// ROAD its readers travel; this says what that search saw on the day it was written, so that
+/// **a second kind arriving is announced** rather than silently vouched for by this one's channels,
+/// and **a needle gone blind is announced** rather than reported as a clean tree. A hardcoded path
+/// used to be the search itself, which is item 470's *a list with no glob decides alone*.
+const KINDS: &[&str] = &["crates/sprag-plugin/src/kind.rs"];
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);
@@ -63,17 +74,30 @@ fn document() -> String {
 fn every_number_the_template_claims_for_a_kind_has_a_reader_and_an_assignment() {
     let scxml = document();
     let sources = rust_sources();
-    let kind = sources
+    let kinds = kind_sources(&sources);
+    assert!(
+        !kinds.is_empty(),
+        "⚠⚠⚠⚠⚠ NOTHING IN THIS WORKSPACE READS A KIND'S DOCUMENT (`{READS}`), so every assertion \
+         below would pass over an empty set and this gate would be green about nothing — register \
+         items 482 and 498(a). Either the road was renamed, in which case teach it here, or the \
+         kind side is gone, in which case the template's invitations are all promises.",
+    );
+    let readable: BTreeSet<String> = kinds
         .iter()
-        .find(|source| source.file == KIND)
-        .unwrap_or_else(|| panic!("{KIND} is the Rust that reads a kind's document"));
-    let readable = read_ids(&kind.product);
+        .flat_map(|file| {
+            let kind = sources
+                .iter()
+                .find(|source| &source.file == file)
+                .expect("the walk that found this file still holds it");
+            read_ids(&kind.product)
+        })
+        .collect();
 
     let mut unheld = Vec::new();
     for claimed in claims(&scxml) {
         if !readable.contains(&claimed.id) {
             unheld.push(format!(
-                "`{}` — the template says {:?} and NOTHING IN {KIND} READS IT, so no kind can \
+                "`{}` — the template says {:?} and NOTHING IN {kinds:?} READS IT, so no kind can \
                  act on the invitation",
                 claimed.id, claimed.said,
             ));
@@ -131,5 +155,41 @@ fn what_the_template_claims_for_a_kind_is_what_this_gate_can_still_see() {
          gate quietly stopping to work, which is register item 453's whole finding.\n\
          ⚠ ORDER IS DOCUMENT ORDER, so a `<data>` that moved shows up here too — cheap to fix and \
          worth knowing.",
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND WHICH FILES THE READERS WERE FOUND IN IS PINNED TOO** — register item 498(a), the
+/// half the gate above cannot answer.
+///
+/// # Why a glob needed a pin of its own
+///
+/// The reader search used to be ONE HARDCODED PATH, and its two failure directions were not
+/// symmetric. A reader that MOVED made the gate call a working channel missing — noisy, and it
+/// announces itself. A SECOND KIND reading its numbers somewhere else made the gate vouch for
+/// channels that kind does not have — **silent**, which is the exact defect item 494 exists to
+/// prevent, arriving through the gate built to prevent it.
+///
+/// The search is now the ROAD (`OuterLoop::authored_…_in`), so a kind in a file nobody has written
+/// yet is found. But a glob answers a question the gate above never asks: *how many subjects are
+/// there?* Its union is green whether it read two kinds or one, so the SET is pinned — a new kind
+/// arriving is a person's decision to make, not a fact for a union to absorb.
+#[test]
+fn which_files_a_kinds_numbers_are_read_in_is_what_this_gate_can_still_see() {
+    let found = kind_sources(&rust_sources());
+    let pinned: Vec<String> = KINDS.iter().map(|file| (*file).to_owned()).collect();
+
+    assert_eq!(
+        found, pinned,
+        "⚠⚠⚠⚠⚠ EITHER THE KIND SIDE CHANGED OR THIS SEARCH WENT BLIND, and it cannot tell which.\n\
+         MORE than the pin: a second kind reads the template's numbers. Every claim the gate \
+         beside this one holds is now a claim about TWO readers, and the union it checks would go \
+         on passing while one of them lacked a channel — check that the new kind reads every \
+         claimed id, then add it here.\n\
+         FEWER than the pin: the readers moved, were deleted, or the accessor family was renamed \
+         past `{READS}`. The first two are a change somebody meant; the third is this search \
+         quietly stopping to work, which is register item 453's finding and the reason this pin \
+         exists rather than a bare count.\n\
+         ⚠ The judge's own crate is never here: it declares no dependencies and cannot hold a \
+         reader, while its text quotes every needle this hunts.",
     );
 }

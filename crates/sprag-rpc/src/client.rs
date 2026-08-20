@@ -36,7 +36,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -1462,6 +1462,20 @@ pub struct HostConn {
     /// daemon is*. Neither is *"it matches"* — see [`BUILD_FIELD`], which is the sentence that keeps
     /// this key off [`WIRE_PROTOCOL`]'s ledger.
     daemon_build: Option<String>,
+    /// WHERE this connection was dialled, when it was dialled by path — so a holder that meets a
+    /// dead connection can ask whether the DAEMON died or only this connection did.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two are the same event on the wire, and telling them apart by errno is unsound
+    ///
+    /// A client whose SESSION is killed and a client whose DAEMON exits both meet a failed read.
+    /// Which `io::ErrorKind` that read carries is decided by how the peer's end was torn down and by
+    /// the platform's socket layer, not by which of the two happened — and the difference matters:
+    /// one means *leave*, the other means *go to another session*. [`socket`](Self::socket) is what
+    /// lets that be ASKED (re-dial: an answer means the daemon is there) instead of guessed.
+    ///
+    /// `None` for a connection wrapped around an already-open stream, which names no address
+    /// anybody could dial again — an honest *cannot ask* rather than a *no*.
+    socket: Option<PathBuf>,
 }
 
 impl HostConn {
@@ -1477,7 +1491,12 @@ impl HostConn {
         let start = Instant::now();
         loop {
             match UnixStream::connect(path) {
-                Ok(stream) => return Self::from_stream(stream),
+                Ok(stream) => {
+                    return Self::from_stream(stream).map(|conn| Self {
+                        socket: Some(path.to_path_buf()),
+                        ..conn
+                    });
+                }
                 Err(error) => {
                     if start.elapsed() >= timeout {
                         return Err(error);
@@ -1499,7 +1518,15 @@ impl HostConn {
             timed_out: false,
             pending: VecDeque::new(),
             daemon_build: None,
+            socket: None,
         })
+    }
+
+    /// The socket this connection was dialled on, or [`None`] where it was wrapped around a stream
+    /// somebody else opened. See the field's own doc for why a holder wants it.
+    #[must_use]
+    pub fn socket(&self) -> Option<&Path> {
+        self.socket.as_deref()
     }
 
     /// Bound how long a [`call`](Self::call) on this connection may wait for its reply, or `None`

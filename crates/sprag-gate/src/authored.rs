@@ -25,11 +25,19 @@
 //! * the CLAIMED ids come from the template's own comments — a `<data>` is invited when the comment
 //!   block immediately above it makes the claim, so a number that acquires the sentence tomorrow is
 //!   watched from the moment it does;
-//! * the READERS come from `kind.rs`'s own shipping code, as string literals in the last-argument
-//!   position of a call, so which accessor a reader reaches through is not part of the needle.
+//! * the READERS come from shipping code, as string literals in the last-argument position of a
+//!   call, so which accessor a reader reaches through is not part of the needle;
+//! * and WHICH FILES to read them from is a glob over the road those accessors travel
+//!   ([`crate::authored::READS`]),
+//!   so a kind in a file nobody has written yet is a subject the day it appears — register item
+//!   498(a), which is what this module named ONE HARDCODED PATH for as long as there was one kind.
 //!
 //! ⚠ A ratchet whose needle is a constant can only ever see the spelling its author thought of —
 //! register item 453, and [`crate::loop_shape`] one file over says it about a different needle.
+//! ⚠⚠ Every derivation here is answered by a PIN in the gate that drives it, because *does it
+//! pass?* and *does it still SEE?* are different questions (item 470) — and a glob has a second
+//! one of its own: **how many subjects were there?** A union is green whether it read two kinds or
+//! one.
 //!
 //! # ⚠⚠⚠⚠ What is required of a claimed id, and what deliberately is not
 //!
@@ -51,11 +59,51 @@
 //! in a comment block that is not the one above the `<data>`. Both are stated rather than implied,
 //! and the pinned equality in this module's gate is what says the derivation has stopped seeing
 //! what it used to see.
+//!
+//! ⚠⚠ **A CLAIM WRITTEN AS TWO SENTENCES IS ALSO UNSEEN** — *"this one is not the template's to
+//! choose. It belongs to the kind, like `max_turns` and `reflect_every`"* makes the claim and no
+//! sentence of it holds both halves. That is the price of bounding the reading by punctuation
+//! instead of by a byte count measured on n = 2 (item 498(b)), and it is the SAFE direction: unseen
+//! shows up as FEWER than the pin, which is a person's question, while the byte count's failure was
+//! a claim that had simply moved too far to be read at all.
 
 use std::collections::BTreeSet;
 
-/// The kind-side document, relative to the workspace root — the Rust that reads one.
-pub const KIND: &str = "crates/sprag-plugin/src/kind.rs";
+use crate::sources::Source;
+
+/// The ROAD a kind's number travels, as the Rust spells it — register item 498(a).
+///
+/// # ⚠⚠⚠⚠ Why the road and not the type, the file or the trait
+///
+/// This module used to name ONE PATH, `crates/sprag-plugin/src/kind.rs`, and *a list with no glob
+/// decides alone* — item 470's own finding, violated one module over from where 470 wrote it down.
+/// Its two failure directions are not symmetric: a reader that MOVES makes the gate call a working
+/// channel missing (noisy, and it announces itself), while a SECOND kind reading its numbers
+/// somewhere else makes the gate vouch for a channel that kind does not have (**silent**, which is
+/// the exact defect item 494 exists to prevent).
+///
+/// `LoopKind` is a struct rather than a trait (measured 2026-08-20: one inherent `impl` in one
+/// file), so a needle on the TYPE would find today's kind and nothing else. What a second kind
+/// type would have in common with this one is the ACCESSOR FAMILY — every reader goes through
+/// `OuterLoop::authored_…_in(script, session, "id")`, which is the road item 492 built and item 494
+/// documented. So that is the needle, and a kind nobody has written yet is discovered by it.
+///
+/// ⚠ Measured over the whole workspace on 2026-08-20: two files hold it, and one of them is this
+/// module's own test table — which [`JUDGE`] is about.
+pub const READS: &str = "OuterLoop::authored_";
+
+/// The judge's own crate, which cannot hold a subject.
+///
+/// # ⚠⚠ It is derivable rather than merely convenient
+///
+/// `sprag-gate` declares NO dependencies by charter, so nothing in it can call `sprag_plugin`'s
+/// accessors — while every needle this module hunts is quoted in its own text, both in prose and in
+/// the tables that prove the derivation still sees. A judge that read itself would find a kind
+/// reader in a crate that cannot compile one.
+///
+/// ⚠ The same idiom, and for the same reason, as `no_suite_runs_a_program_it_wrote`'s exemption of
+/// [`crate::doubles`]: the file that DESCRIBES an offence is not committing it.
+pub const JUDGE: &str = "crates/sprag-gate/";
 
 /// The word every claim contains, lowercased for comparison.
 ///
@@ -71,17 +119,35 @@ pub const AUTHOR: &str = "author";
 /// [`claims`] recognises a claim whose phrasing has changed.
 pub const EXEMPLARS: [&str; 2] = ["max_turns", "reflect_every"];
 
-/// How far either side of the word [`AUTHOR`] the rest of a claim must fall, in bytes of
-/// single-spaced text.
+/// Every Rust source that carries a reader of a kind's document, sorted, judge excluded.
 ///
-/// # ⚠⚠⚠⚠ It is a SENTENCE's width, measured on the two real claims rather than chosen
-///
-/// *"IT IS THE KIND'S TO AUTHOR, like `max_turns` and `reflect_every`: how patient to be with a
-/// checker is a judgement about the work"* — the exemplars land 30 bytes after the word. The other
-/// claim puts them 29 after. A hundred leaves room for a rewording that moves them in front, and
-/// stays far short of the blocks that discuss both numbers for pages: reading those WHOLE claimed
-/// `reflect_prompt` and `max_turns`, which is what this bound exists to have refused.
-pub const WINDOW: usize = 100;
+/// ⚠⚠⚠ The caller must refuse an EMPTY answer and must PIN what this returns. A glob that finds
+/// nothing reports no offences and reads exactly like a clean tree (item 482), and a glob whose
+/// needle has gone blind does the same — *"does the gate pass?"* and *"does the gate still SEE?"*
+/// are different questions, and only a pinned measurement answers the second (item 470).
+#[must_use]
+pub fn kind_sources(sources: &[Source]) -> Vec<String> {
+    let needle: String = READS.chars().filter(|char| !char.is_whitespace()).collect();
+    let mut found: Vec<String> = sources
+        .iter()
+        .filter(|source| !source.file.starts_with(JUDGE))
+        .filter(|source| squeezed(&source.product).contains(&needle))
+        .map(|source| source.file.clone())
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Lines with every space gone — what a needle that spans a formatter's line break has to be read
+/// against. ⚠ It takes the lines rather than a [`Source`] because the caller chooses between what
+/// SHIPS and what proves it, and this module's subject is the shipping road.
+fn squeezed(lines: &[(usize, String)]) -> String {
+    lines
+        .iter()
+        .flat_map(|(_, line)| line.chars().filter(|char| !char.is_whitespace()))
+        .collect()
+}
 
 /// One `<data>` of the template whose own comment says a KIND may author it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,8 +163,8 @@ pub struct Claimed {
 ///
 /// # ⚠⚠⚠⚠⚠ Two readings of one claim, so a rephrasing cannot blind it
 ///
-/// A comment block claims the `<data>` beneath it when, somewhere in it, one [`WINDOW`] of text
-/// holds the word `author` and either
+/// A comment block claims the `<data>` beneath it when ONE SENTENCE of it holds the word `author`
+/// and either
 ///
 /// * the phrase `kind's to author` — what both of today's claims say, in two different cases, which
 ///   is already evidence that one exact spelling is not safe; or
@@ -107,7 +173,7 @@ pub struct Claimed {
 ///
 /// Blinding this needs both to go at once.
 ///
-/// # ⚠⚠⚠⚠⚠ Why a WINDOW and not the whole block, which this gate's first run measured
+/// # ⚠⚠⚠⚠⚠ Why a SENTENCE, and not the whole block or a count of bytes
 ///
 /// Reading the two conditions over the whole block claimed **`reflect_prompt` and `max_turns`**, and
 /// neither is a claim: those blocks run for dozens of lines, discuss both exemplars at length for
@@ -115,9 +181,23 @@ pub struct Claimed {
 /// positive — it is one of the exemplars, so a rule that reads the whole block has every claim
 /// naming it and can never not claim it.
 ///
-/// A claim is one SENTENCE. So the words have to be near each other, and the block is flattened to
-/// single-spaced text first because the template wraps at 80 columns — a line-by-line reading would
-/// go blind the day a claim wraps between `author` and `max_turns`.
+/// **A claim is one SENTENCE**, which this file has said since it was written — and it then bounded
+/// the reading with 100 BYTES either side, a number measured on the only two claims in existence.
+/// Item 498(b): a bound chosen on n = 2 is blind to the third claim by construction, and nothing
+/// could report that — a claim whose exemplars land 120 bytes out is simply never seen, and a
+/// derivation that sees nothing reports no offences.
+///
+/// So the bound is now the sentence itself, taken from the text's own punctuation. It is DERIVED
+/// where the byte count was chosen: a rewording that stretches the claim keeps working, and a
+/// paragraph that mentions both numbers in one breath and `author` in the next is still declined,
+/// which is exactly the shape the byte count was defending against. ⚠ Measured 2026-08-20 against
+/// the real template: the two rules claim the SAME two `<data>`, so this changed the argument
+/// rather than the answer.
+///
+/// ⚠ The block is flattened to single-spaced text first because the template wraps at 80 columns —
+/// a line-by-line reading would go blind the day a claim wraps between `author` and `max_turns`.
+/// ⚠⚠ A sentence ends at `. `, so an abbreviation splits one in two. That is the SAFE direction: a
+/// claim cut in half goes unseen, and unseen is what the pin in this module's gate reports.
 ///
 /// ⚠ And the block must be the one IMMEDIATELY above the declaration: the same sentence is QUOTED
 /// elsewhere in the template — inside the `brief` transition, next to the `<assign>` that made item
@@ -150,41 +230,49 @@ pub fn claims(scxml: &str) -> Vec<Claimed> {
 /// The sentence that makes the claim, or [`None`] where the block makes none.
 ///
 /// The block is flattened to single-spaced text so an 80-column wrap cannot separate words the rule
-/// wants together, and each mention of [`AUTHOR`] is judged on the [`WINDOW`] around it.
+/// wants together, and each SENTENCE of it is judged on its own — see [`claims`] for why the bound
+/// is the punctuation rather than a count of bytes.
+///
+/// ⚠ The sentences are cut from the text AS WRITTEN and lowercased one at a time. Cutting them from
+/// a lowercased copy would be a latent defect rather than a style: `str::to_lowercase` is allowed to
+/// change a string's LENGTH, and this file's subject is a document full of `⚠` and Korean.
 fn claim_in(block: &str) -> Option<String> {
     let flat = block.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lowered = flat.to_lowercase();
     let exemplars: Vec<String> = EXEMPLARS
         .iter()
         .map(|exemplar| exemplar.to_lowercase())
         .collect();
 
-    for (at, _) in lowered.match_indices(AUTHOR) {
-        let from = floor_char_boundary(&lowered, at.saturating_sub(WINDOW));
-        let to = ceil_char_boundary(&lowered, (at + WINDOW).min(lowered.len()));
-        let near = &lowered[from..to];
-        let phrased = near.contains("kind's to author");
-        let compared = exemplars.iter().all(|exemplar| near.contains(exemplar));
+    for (from, to) in sentences(&flat) {
+        let said = &flat[from..to];
+        let lowered = said.to_lowercase();
+        if !lowered.contains(AUTHOR) {
+            continue;
+        }
+        let phrased = lowered.contains("kind's to author");
+        let compared = exemplars.iter().all(|exemplar| lowered.contains(exemplar));
         if phrased || compared {
-            return Some(flat[from..to].trim().to_owned());
+            return Some(said.trim().to_owned());
         }
     }
     None
 }
 
-/// The largest char boundary at or below `at`, so a slice of flattened text never splits a `⚠`.
-fn floor_char_boundary(text: &str, at: usize) -> usize {
-    (0..=at)
-        .rev()
-        .find(|to| text.is_char_boundary(*to))
-        .unwrap_or(0)
-}
-
-/// The smallest char boundary at or above `at`.
-fn ceil_char_boundary(text: &str, at: usize) -> usize {
-    (at..=text.len())
-        .find(|to| text.is_char_boundary(*to))
-        .unwrap_or(text.len())
+/// The half-open range of each sentence in `flat`, the ending `.` included.
+///
+/// ⚠ `. ` is ASCII, so every bound it produces is a char boundary — which is what lets a slice of
+/// this text hold a `⚠` whole.
+fn sentences(flat: &str) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut start = 0;
+    for (at, _) in flat.match_indices(". ") {
+        found.push((start, at + 1));
+        start = at + 2;
+    }
+    if start < flat.len() {
+        found.push((start, flat.len()));
+    }
+    found
 }
 
 /// The value of `name="…"` in `tag`, up to the tag's own `>`.
@@ -344,18 +432,36 @@ mod tests {
             ),
             // ⚠ DECLINED — a claim about ONE exemplar is not the comparison the class draws.
             ("⚠ It is the caller's to author, like `max_turns`.", false),
-            // ⚠⚠⚠⚠⚠ DECLINED — AND THIS ROW IS WHAT HOLDS [`WINDOW`]. The two exemplars and the
-            // word are all here and a long way apart, which is the shape of `reflect_prompt`'s and
-            // `max_turns`'s own blocks: pages about both numbers, with `author` somewhere in them
-            // meaning a PERSON. Widening the bound to the whole block re-claims both of those in
-            // the real template, and without this row the table cannot see that at all — measured,
-            // by widening it and watching these thirty-odd assertions stay green.
+            // ⚠⚠⚠⚠⚠ DECLINED — AND THIS ROW IS WHAT HOLDS THE SENTENCE BOUND. The two exemplars
+            // and the word are all here, in DIFFERENT sentences, which is the shape of
+            // `reflect_prompt`'s and `max_turns`'s own blocks: pages about both numbers, with
+            // `author` somewhere in them meaning a PERSON. Widening the bound to the whole block
+            // re-claims both of those in the real template, and without this row the table cannot
+            // see that at all — measured, by widening it and watching these assertions stay green.
             (
                 "⚠ `judging` tests `max_turns` before `reflect_every`, so an equal pair exhausts \
                  first — and that ordering is why the reflection cadence borrows the budget rather \
                  than standing on a number of its own, which the paragraph below spends a while \
                  on. What the AUTHOR of a copy of this template writes here is their business.",
                 false,
+            ),
+            // ⚠⚠⚠⚠⚠ SEEN — AND THIS ROW IS ITEM 498(b), THE CASE THE OLD BOUND WAS BLIND TO. One
+            // sentence, the claim made plainly, and the exemplars 212 and 228 BYTES past the word
+            // because the author explained themselves on the way. The old rule read 100 bytes
+            // either side, measured on the only two claims that existed (29 and 30 bytes), so a
+            // third claim written like this was never seen — and a derivation that sees nothing
+            // reports no offences.
+            //
+            // ⚠⚠⚠⚠ THE DISTANCES ARE MEASURED, not eyeballed. The first draft of this row put the
+            // exemplars 39 and 55 bytes out, which the OLD rule sees perfectly well: it would have
+            // passed under both rules and proved nothing about either. That is item 494's own
+            // finding — a table of short synthetic rows cannot see a width bound at all.
+            (
+                "⚠ Whoever authors the kind document decides this one, because how patient to be \
+                 with a checker depends on the machine it runs on and on the work in front of it \
+                 rather than on anything this template could know, exactly as `max_turns` and \
+                 `reflect_every` do.",
+                true,
             ),
         ];
 
@@ -398,6 +504,61 @@ mod tests {
         let found = claims(bare);
         assert_eq!(found.len(), 1, "one claim, not two: {found:?}");
         assert_eq!(found[0].id, "claimed");
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE GLOB FINDS A KIND NOBODY HAS WRITTEN YET, AND REFUSES TO FIND THE JUDGE** —
+    /// register item 498(a).
+    ///
+    /// Each row is a source as the walk hands it over. The point of the second one is that a file
+    /// this module has never heard of is discovered by the ROAD its readers travel — which is what
+    /// a hardcoded path could not do, and the direction it failed in was the silent one.
+    #[test]
+    fn a_kind_is_found_by_the_road_its_readers_travel() {
+        let source = |file: &str, body: &str| Source {
+            file: file.to_owned(),
+            code: code(body),
+            product: code(body),
+        };
+        let reads = "pub fn ceiling(&self) -> Option<i64> {\n    \
+                     OuterLoop::authored_number_in(&self.script, &self.session, \"context_ceiling\")\n}";
+
+        let found = kind_sources(&[
+            source("crates/sprag-plugin/src/kind.rs", reads),
+            // ⚠ A SECOND KIND, in a file no constant here names. Before item 498 this one was
+            // invisible and the gate vouched for its channels anyway.
+            source("crates/sprag-plugin/src/review_kind.rs", reads),
+            // ⚠ NOT a kind reader: the wire's own merge, which reads a caller's map and falls back
+            // to the kind. `sprag-host` really does hold this shape (`plugins.rs`), and a rule
+            // that took it for a kind would demand every claimed number of a file whose job is to
+            // let a caller OVERRIDE one.
+            source(
+                "crates/sprag-host/src/plugins.rs",
+                "context_ceiling: opt_count(map, \"context_ceiling\")?.or_else(|| kind.context_ceiling()),",
+            ),
+            // ⚠⚠ THE JUDGE, quoting the needle it hunts — see [`JUDGE`].
+            source(
+                "crates/sprag-gate/src/authored.rs",
+                "pub const READS: &str = \"OuterLoop::authored_\";",
+            ),
+        ]);
+
+        assert_eq!(
+            found,
+            vec![
+                "crates/sprag-plugin/src/kind.rs".to_owned(),
+                "crates/sprag-plugin/src/review_kind.rs".to_owned(),
+            ],
+            "⚠⚠⚠⚠⚠ the glob must find every file a kind's numbers are read in and nothing else. A \
+             judge that read its own text would report a kind reader inside a crate that declares \
+             no dependencies and cannot compile one.",
+        );
+
+        assert!(
+            kind_sources(&[source("crates/sprag-plugin/src/kind.rs", "let x = 1;")]).is_empty(),
+            "⚠⚠⚠ and a tree with no reader at all must come back EMPTY rather than defaulting to \
+             the file this module used to name — the caller refuses that, and an empty answer it \
+             could not see would be item 482's vacuous gate exactly",
+        );
     }
 
     /// ⚠⚠⚠⚠ **THE READER SIDE, BOTH DIRECTIONS.** Every accessor this workspace reaches the
