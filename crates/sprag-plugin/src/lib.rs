@@ -22,29 +22,45 @@ pub(crate) mod sm {
     //! Generated SCE state machines — one submodule per control statechart, each
     //! its own `include!` so the duplicate generated imports (`use
     //! core::time::Duration`, the runtime umbrella) stay isolated per machine.
-    //! Machine-emitted code: blanket-allow rustc + clippy lints.
+    //!
+    //! # ⚠⚠⚠⚠⚠ EACH MACHINE CARRIES ITS OWN AUDITED SUPPRESSION BUDGET — SCE-PR88, consumed
+    //! 2026-08-20
+    //!
+    //! These modules used to blanket-allow `warnings, clippy::all, clippy::pedantic,
+    //! clippy::nursery`, because `build.rs` stripped the machines' own `#![allow(…)]` lines to make
+    //! them `include!`-able. The engine now writes an INDEX beside each machine
+    //! (`<stem>_sm.include.rs`, a `#[path]` module plus a re-export), so the machine is compiled as
+    //! a file with the budget SCE measured per fixture. **Measured on consumption: with the blanket
+    //! gone, workspace clippy reports nothing from any machine** — the blanket had been covering
+    //! nothing it needed to cover.
+    //!
+    //! ⚠⚠ One narrow lint stays, and it belongs to the INDEX rather than to the machine: the
+    //! generated `pub use <stem>_sm::*;` is an unused import wherever this crate's only consumer of
+    //! that machine is a test. It is `unused_imports` alone — a named lint over two generated
+    //! lines, not a budget over a machine — and the honest repair is upstream carrying it on the
+    //! line it emits.
 
     pub(crate) mod orchestration {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/orchestration_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/orchestration_sm.include.rs"));
     }
 
     pub(crate) mod session {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/session_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/session_sm.include.rs"));
     }
 
     pub(crate) mod ai_loop {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/ai_loop_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/ai_loop_sm.include.rs"));
     }
 
     // ⚠⚠ THE DECISIONS ONE LOOP KIND RUNS UNDER. It invokes nothing and nothing invokes it — the
     // driver holds it beside the template and reads its datamodel — so the `<stem>_sm` naming
     // contract below does not bind it, and it is named for its document like the three above.
     pub(crate) mod debt_loop {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/debt_loop_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/debt_loop_sm.include.rs"));
     }
 
     // ⚠⚠⚠ THE `<invoke>` PROBE, and its MODULE NAMES ARE A CONTRACT rather than a preference: the
@@ -54,13 +70,21 @@ pub(crate) mod sm {
     // convention. See `probe_parent.scxml` for what is being asked and why it is asked before
     // anything is built on it.
     pub(crate) mod probe_child_sm {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/probe_child_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/probe_child_sm.include.rs"));
     }
 
     pub(crate) mod probe_parent_sm {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/probe_parent_sm.rs"));
+        #![allow(unused_imports)]
+        // ⚠⚠⚠⚠ THE INDEX PUTS THE MACHINE ONE LEVEL DEEPER, AND A PARENT NAMES ITS CHILD BY
+        // `super::` — SCE-PR88's consumption, 2026-08-20. The generated parent reaches its invoked
+        // child as `super::probe_child_sm::ProbeChildPolicy`; while the machine was `include!`d
+        // directly, `super` was this `sm` module and the sibling was right there. Including the
+        // `.include.rs` index adds `mod probe_parent_sm` inside this one, so `super` became THIS
+        // module — and the sibling had to be nameable from here. One `use` is that, and it is the
+        // whole cost of keeping the machine's own suppression budget.
+        use super::probe_child_sm;
+        include!(concat!(env!("OUT_DIR"), "/probe_parent_sm.include.rs"));
     }
 
     // ⚠⚠ THE `<parallel>` PROBE. It invokes nothing, so the naming rule above does not bind it —
@@ -68,22 +92,22 @@ pub(crate) mod sm {
     // as a child the day one exists, and renaming a module later is the kind of edit that is
     // remembered as a preference rather than a contract.
     pub(crate) mod probe_parallel_sm {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/probe_parallel_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/probe_parallel_sm.include.rs"));
     }
 
     // ⚠⚠ THE `<data>`-WITH-NO-VALUE PROBE. Same standing as the two above: whether an id a document
     // declares and leaves empty is readable, and safe to guard on, is a fact about THIS generator at
     // the pinned rev — and a wrong answer is a loop that exhausts on its first judged turn.
     pub(crate) mod probe_absent_sm {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/probe_absent_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/probe_absent_sm.include.rs"));
     }
 
     // ⚠ `<stem>_sm` because `ai_loop.scxml` will reach it as a child — see the note above.
     pub(crate) mod context_review_sm {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/context_review_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/context_review_sm.include.rs"));
     }
 
     // ⚠⚠ THE CUSTOM-`type` PROBE — whether a host can name an act the document asks for. It is
@@ -91,8 +115,8 @@ pub(crate) mod sm {
     // the pinned rev, and register item 470's second stage is a design or a filed request depending
     // on the answer.
     pub(crate) mod probe_send_type_sm {
-        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-        include!(concat!(env!("OUT_DIR"), "/probe_send_type_sm.rs"));
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/probe_send_type_sm.include.rs"));
     }
 }
 

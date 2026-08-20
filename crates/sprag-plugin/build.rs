@@ -31,9 +31,8 @@
 //! `ai_loop.rs` are what will say so, since they drive a real engine rather than
 //! asserting over the generated text.
 
-use std::path::Path;
-
-/// The control statecharts, by file stem (the generated file is `<stem>_sm.rs`).
+/// The control statecharts, by file stem (the generated file is `<stem>_sm.rs`, and what `lib.rs`
+/// includes is the engine's own `<stem>_sm.include.rs` index beside it — SCE-PR88).
 const STATECHARTS: &[&str] = &[
     "orchestration",
     "session",
@@ -98,21 +97,20 @@ fn main() {
         &declared,
     );
 
-    // `include!` rejects inner attributes (`#![...]`) and inner doc comments
-    // (`//!`) in expansion position, so strip them from every generated file
-    // (the pinion-core/build.rs post-processing pattern), one per statechart.
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR set by cargo");
-    for stem in STATECHARTS {
-        let generated = Path::new(&out_dir).join(format!("{stem}_sm.rs"));
-        let cleaned: String = std::fs::read_to_string(&generated)
-            .expect("read generated state machine")
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim_start();
-                !trimmed.starts_with("#![") && !trimmed.starts_with("//!")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(&generated, cleaned).expect("write cleaned state machine");
-    }
+    // ⚠⚠⚠⚠⚠ NOTHING IS POST-PROCESSED HERE ANY MORE — SCE-PR88, consumed 2026-08-20.
+    //
+    // This loop used to strip every `#![…]` and `//!` from each generated machine, because
+    // `include!` refuses both in expansion position. That worked and it threw away what SCE had
+    // measured per fixture: an audited suppression budget, replaced by a blanket
+    // `#![allow(warnings, clippy::all, …)]` in the consuming module. `pinion-core/build.rs` carried
+    // the byte-identical predicate, arrived at independently — two consumers, one folk contract.
+    //
+    // The engine now writes the other half itself: `{stem}_sm.include.rs`, a two-line index
+    // (`#[path = "…"] mod {stem}_sm; pub use {stem}_sm::*;`) naming the machine ABSOLUTELY. A
+    // consumer cannot write that line — a built-in attribute takes a string literal, so
+    // `#[path = concat!(env!("OUT_DIR"), …)]` does not expand — which is why `build.rs` is where it
+    // had to come from. `lib.rs` includes the index; the machine keeps its budget.
+    //
+    // ⚠ `sce-build`'s own doc says it in as many words: **"Do not strip lines from
+    // `{name}_sm.rs`."** Stripping is now a defect rather than a workaround.
 }
