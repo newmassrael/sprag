@@ -317,8 +317,21 @@ pub struct Rust {
     /// `X` of `impl From<AiLoopEvent> for X`.
     envelope: Option<String>,
     /// Every `const NAME: &str = "…";` in the workspace, for resolving a payload or a key spelled
-    /// as a name.
-    strings: BTreeMap<String, String>,
+    /// as a name — as name to the DISTINCT VALUES that name has in this workspace.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A set, not a value, because the same name is eight different keys here
+    ///
+    /// A payload writes its keys as `Readiness::WIRE_KEY`, and a reader that resolved that by the
+    /// LAST PATH SEGMENT would be choosing between **eight distinct `WIRE_KEY` constants** —
+    /// `may_answer`, `hand`, `screen_rules`, `handback_still_ms`, `await_person_ms`,
+    /// `ready_timeout_ms`, `turn_within_ms`, `match` — three of which live in `readiness.rs` alone.
+    /// Whichever file was read last would win, and the claim built on it would be a confident lie.
+    ///
+    /// ⚠⚠ So an ambiguous name resolves to NOTHING ([`Rust::one`]) and the token is left standing,
+    /// which makes a claim about it go RED naming the token rather than pass on a guess. Measured
+    /// 2026-08-21: no constant the gate resolves TODAY is ambiguous, so this is a hazard being
+    /// closed before item 516 walks into it, not a defect being repaired.
+    strings: BTreeMap<String, BTreeSet<String>>,
     /// Function bodies by name, for a payload spelled as a call.
     bodies: BTreeMap<String, Vec<String>>,
 }
@@ -339,11 +352,11 @@ impl Rust {
     /// gate, so a rename upstream is announced rather than absorbed.
     #[must_use]
     pub fn of(sources: &[Source]) -> Self {
-        let mut strings = BTreeMap::new();
+        let mut strings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for source in sources {
             for (_, line) in &source.code {
                 if let Some((name, value)) = string_const(line) {
-                    strings.insert(name, value);
+                    strings.entry(name).or_default().insert(value);
                 }
             }
         }
@@ -470,8 +483,8 @@ impl Rust {
         if let Some(json) = literal(expr) {
             return Some(self.object_keys(&json));
         }
-        if let Some(named) = self.strings.get(expr) {
-            return Some(self.object_keys(named));
+        if let Some(named) = self.one(expr) {
+            return Some(self.object_keys(&named));
         }
         let called = expr
             .strip_prefix("self.")
@@ -497,6 +510,34 @@ impl Rust {
     #[must_use]
     pub fn shared(&self, payload: &str) -> bool {
         self.strings.contains_key(payload)
+    }
+
+    /// What `name` spells, when this workspace agrees about it — [`None`] when it is declared
+    /// nowhere, and [`None`] when it is declared TWICE WITH DIFFERENT VALUES.
+    ///
+    /// ⚠⚠⚠ The second case is the whole point. *A probe that cannot tell must never read as clean*
+    /// ([`crate::sources`]'s rule), and the alternative here is worse than unclean: picking one of
+    /// two values would put a key nobody wrote into a claim about what the driver sends.
+    fn one(&self, name: &str) -> Option<String> {
+        let values = self.strings.get(name)?;
+        match values.len() {
+            1 => values.iter().next().cloned(),
+            _ => None,
+        }
+    }
+
+    /// Every constant name this workspace declares more than once with DIFFERENT values.
+    ///
+    /// ⚠⚠ Exposed so a gate can refuse a payload that spells one, rather than this reader silently
+    /// declining to resolve it — a key left unresolved is a key that cannot match, and a claim that
+    /// went red without saying WHY would send the next reader hunting the wrong thing.
+    #[must_use]
+    pub fn ambiguous(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.strings
+            .iter()
+            .filter(|(_, values)| values.len() > 1)
+            .map(|(name, values)| (name.clone(), values.clone()))
+            .collect()
     }
 
     /// The top-level keys of a squeezed `{…}` object, names resolved through the workspace's
@@ -537,9 +578,15 @@ impl Rust {
                     }
                     let token: String = chars[start..at].iter().collect();
                     if let Some(name) = token.rsplit("::").next().filter(|name| !name.is_empty()) {
-                        keys.insert(self.strings.get(name).cloned().unwrap_or_else(|| {
-                            self.strings.get(&token).cloned().unwrap_or(token.clone())
-                        }));
+                        // ⚠⚠⚠ THE TOKEN STANDS when the workspace does not agree what the name
+                        // means — see [`Rust::one`]. An unresolved `WIRE_KEY` matches no key the
+                        // document reads, so the claim goes RED naming it; a guess would go GREEN
+                        // on a key nobody wrote.
+                        keys.insert(
+                            self.one(name)
+                                .or_else(|| self.one(&token))
+                                .unwrap_or_else(|| token.clone()),
+                        );
                     }
                 }
                 _ => {}

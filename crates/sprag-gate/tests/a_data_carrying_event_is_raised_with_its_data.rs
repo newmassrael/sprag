@@ -95,6 +95,21 @@ fn measured() -> (BTreeMap<String, BTreeSet<String>>, Rust, Vec<Spelled>) {
     (carrying, rust, sites)
 }
 
+/// Whether `text` names `name` as a WHOLE identifier rather than as part of a longer one.
+///
+/// ⚠⚠⚠⚠ Measured on this gate's own first run: a plain `contains` reported `KEY` inside `TEXT_KEY`
+/// and `MARKER` inside `REFERENCE_MARKER`, so it accused two payloads that spell nothing contested.
+/// Item 498's rule — *the subject is a glob, the boundary is punctuation* — and a needle without
+/// boundaries decides alone.
+fn spells(text: &str, name: &str) -> bool {
+    let ident = |char: char| char.is_alphanumeric() || char == '_';
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + name.len()..].chars().next();
+        !before.is_some_and(ident) && !after.is_some_and(ident)
+    })
+}
+
 /// Every key the DRIVER puts on each event, taken from the payloads its shipping code writes down.
 fn drivers_keys(sites: &[Spelled], rust: &Rust) -> BTreeMap<String, BTreeSet<String>> {
     let mut keys: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -352,6 +367,58 @@ fn a_payload_a_fixture_shares_under_a_name_is_the_drivers_own() {
          payload in two files is what item 507's repayment left behind, and this is what holds \
          them together:\n{}",
         wrong.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **NO KEY IN A PAYLOAD THIS GATE READS IS SPELLED BY A NAME THE WORKSPACE DISAGREES
+/// ABOUT** — the hazard item 516 would otherwise walk straight into, measured 2026-08-21.
+///
+/// # Why this exists before the payload that needs it
+///
+/// The driver writes a payload's keys as constants: `{MILESTONE: …, STANDING: …}`,
+/// `{ScreenRule::TEXT_KEY: &said}`. [`Rust::keys_of`] resolves those, and a resolver keyed on the
+/// LAST PATH SEGMENT is choosing blind whenever two types declare the same constant name — this
+/// workspace has **eight distinct `WIRE_KEY`s** (`may_answer`, `hand`, `screen_rules`,
+/// `handback_still_ms`, `await_person_ms`, `ready_timeout_ms`, `turn_within_ms`, `match`), three of
+/// them in one file, and `brief`'s payload spells three of them.
+///
+/// ⚠⚠ Measured: nothing the gate resolves TODAY is ambiguous — every one is either unique or has
+/// the same value at both declarations (`TEXT_KEY` is `"text"` in `screen.rs` and in `judge.rs`).
+/// So this is a hazard closed BEFORE it bites rather than a defect repaired after. The day a
+/// payload starts spelling a contested name, this says so by name instead of the claim above
+/// passing on a key nobody wrote.
+#[test]
+fn no_payload_key_is_spelled_by_a_name_this_workspace_disagrees_about() {
+    let (_, rust, sites) = measured();
+    let contested = rust.ambiguous();
+    assert!(
+        !contested.is_empty(),
+        "⚠⚠⚠ this workspace declares the same constant name with two different values in several \
+         places, and finding NONE means the reader stopped seeing constants at all — which would \
+         make this gate, and every key claim above it, vacuous",
+    );
+
+    let mut guessed = Vec::new();
+    for site in &sites {
+        let Some(payload) = site.payload.as_deref() else {
+            continue;
+        };
+        for (name, values) in &contested {
+            if spells(payload, name) {
+                guessed.push(format!(
+                    "  {}:{} spells `{name}` in `{}`'s payload, and this workspace declares it as \
+                     {values:?} — the gate cannot tell which, so the key it reports would be a \
+                     guess. Resolve it through the `impl` that declares it, or rename one",
+                    site.file, site.line, site.event,
+                ));
+            }
+        }
+    }
+    assert!(
+        guessed.is_empty(),
+        "⚠⚠⚠⚠⚠ A PAYLOAD KEY IS SPELLED BY A CONTESTED NAME. A claim about what the driver sends \
+         would be built on whichever declaration was read last:\n{}",
+        guessed.join("\n"),
     );
 }
 
