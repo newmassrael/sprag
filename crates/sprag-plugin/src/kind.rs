@@ -390,6 +390,86 @@ mod tests {
         }
     }
 
+    /// ⚠⚠⚠⚠⚠ **AND EVERY CLAUSE MUST RESOLVE ON A DIALOG THE CURRENT AGENT ACTUALLY DRAWS** —
+    /// register item 525, and the gate whose absence cost a live run five hours.
+    ///
+    /// # What was measured
+    ///
+    /// `debt_loop.scxml` authorised an edit by naming *"allow all edits during this session"* — text
+    /// only one option carried, chosen carefully for exactly that reason. **The current `claude`
+    /// build does not carry it at all**: captured 2026-08-21 from a real agent in a real pane
+    /// ([`CLAUDE_EDIT_DIALOG_NOW`](crate::testing::CLAUDE_EDIT_DIALOG_NOW)), option 2 now reads
+    /// *"Yes, and switch to accept edits (auto-approve file edits and common file commands) for this
+    /// session"*. The clause matched NOTHING, and no gate anywhere compared it against a dialog.
+    ///
+    /// ⚠⚠⚠ **THE GATE THAT EXISTED WAS ABOUT A CLAUSE NOBODY SHIPS.**
+    /// `consent::tests::one_clause_covers_every_dialog_a_live_agent_raised_while_working` runs a
+    /// HAND-WRITTEN clause against the captures and is a fine test of `covers` — but the clauses
+    /// that arm an unattended run are the KIND's, and they went unchecked. *A rule nothing measures
+    /// against reality is a rule that stops being true silently.*
+    ///
+    /// ⚠⚠ It asserts EXACTLY ONE option, which is both halves of the danger: zero is a clause that
+    /// authorises nothing (this incident), and two is a clause that authorises neither
+    /// ([`Refusal::Ambiguous`](crate::consent::Refusal::Ambiguous), the case the document already
+    /// reasoned about). ⚠ Only the dialogs a clause CLAIMS are asked of it — a clause about `Bash
+    /// command` has nothing to say about an edit dialog, and demanding otherwise would make the gate
+    /// wrong rather than strict.
+    #[test]
+    fn every_clause_the_kind_authors_resolves_on_a_dialog_this_agent_really_draws() {
+        let kind = debt();
+        let held = kind
+            .consents()
+            .expect("the kind's clause list must be readable")
+            .expect("a debt run answers dialogs, so the list is not absent");
+
+        let mut claimed = 0_usize;
+        for (label, rows) in crate::testing::CLAUDE_DIALOGS_NOW {
+            let question = crate::testing::parsed_dialog(rows).unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠ {label}: the SHIPPING parser must read a dialog captured from the agent \
+                     this repository runs today — a miss here is the detector going stale against \
+                     the program it is written for",
+                )
+            });
+            for clause in held.clauses() {
+                if !question
+                    .asked
+                    .iter()
+                    .any(|line| line.contains(clause.asked()))
+                {
+                    continue;
+                }
+                claimed += 1;
+                let chose = clause.covers(&question).unwrap_or_else(|why| {
+                    panic!(
+                        "⚠⚠⚠⚠⚠ {label}: THIS KIND'S OWN CLAUSE CLAIMS THIS DIALOG AND RESOLVES TO \
+                         NOTHING ({why:?}). An unattended debt run meets this dialog on its first \
+                         edit; a clause that answers nothing leaves it standing there — measured \
+                         2026-08-21 at five hours and twenty minutes. Re-take the needle against \
+                         the capture beside this gate, and if the wording moved again, RE-CAPTURE \
+                         rather than guessing. Clause {clause:?}, options {:?}",
+                        question
+                            .choices
+                            .iter()
+                            .map(|choice| choice.label.as_str())
+                            .collect::<Vec<_>>(),
+                    )
+                });
+                assert!(
+                    chose.label.contains(clause.answer()),
+                    "the option this clause resolved to must be the one carrying its words: \
+                     {chose:?}",
+                );
+            }
+        }
+        assert!(
+            claimed > 0,
+            "⚠⚠⚠⚠ VACUOUS: not one clause claimed one captured dialog, so this gate asserted \
+             nothing at all. Either the captures stopped matching what the kind is about, or the \
+             kind stopped naming the dialogs it must answer — both are the failure this exists for",
+        );
+    }
+
     /// **AND THE STANDING INSTRUCTION, IN THE AUTHOR'S OWN LANGUAGE** — the half that only a
     /// repository can write, which is why it left the template.
     ///

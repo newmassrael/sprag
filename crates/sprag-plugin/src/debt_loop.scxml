@@ -86,11 +86,28 @@
       by two options in each, so it names neither — `Consents` answers nothing
       at all when a needle reaches two. Each needle below is text only ONE
       option carries.
+
+      ⚠⚠⚠⚠⚠ AND A NEEDLE CAN GO STALE — THE EDIT ONE DID, AND IT COST FIVE HOURS
+      AND TWENTY MINUTES (register item 525). This clause used to name `allow all
+      edits during this session`, which was the second option's wording when it
+      was written and is carried by NO option in the current `claude`: that
+      button now reads `Yes, and switch to accept edits (auto-approve file edits
+      and common file commands) for this session`. A needle that reaches ZERO
+      options is the same as no clause at all, and an unattended run met the
+      dialog on its first edit and stood there.
+
+      ⚠⚠⚠ THE REPAIR IS NOT THE STRING, IT IS THE GATE. `kind.rs`'s
+      `every_clause_the_kind_authors_resolves_on_a_dialog_this_agent_really_draws`
+      now resolves EVERY clause here against a dialog captured from a real agent
+      (`testing::CLAUDE_EDIT_DIALOG_NOW`, taken 2026-08-21), so the next wording
+      change is a red test rather than a run that stops at 3am. ⚠ The needle
+      quotes the HEAD of that option because the label wraps across two rows on a
+      100-column pane, and the tail sits past the fold.
     -->
     <data id="may_answer"
           expr="[
             { asked: 'Do you want to make this edit',
-              answer: 'allow all edits during this session' },
+              answer: 'switch to accept edits' },
             { asked: 'Bash command',
               answer: 'do not ask again' }
           ]"/>

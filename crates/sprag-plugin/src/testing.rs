@@ -1636,11 +1636,64 @@ pub(crate) const CLAUDE_BASH_DIALOG: &[&str] = &[
 ];
 
 /// Every working-agent dialog this crate has captured, with the label the probe that took it used.
+///
+/// ⚠⚠⚠⚠⚠ **THESE ARE PHOTOGRAPHS OF ONE BUILD, AND THE BUILD MOVED** — see
+/// [`CLAUDE_DIALOGS_NOW`]. They stay exactly as taken, because what they are FOR is the parser: a
+/// reader that stops reading an old capture has gone stale against a program somebody may still be
+/// running. What they must NOT be used for any more is deciding whether a CONSENT covers a dialog,
+/// which is a claim about the build in front of us.
 pub(crate) const CLAUDE_WORKING_DIALOGS: &[(&str, &[&str])] = &[
     ("write", CLAUDE_WRITE_DIALOG),
     ("edit", CLAUDE_EDIT_DIALOG),
     ("bash", CLAUDE_BASH_DIALOG),
 ];
+
+/// **THE EDIT DIALOG AS THE CURRENT `claude` DRAWS IT** — captured 2026-08-21 from a real
+/// `claude --permission-mode default` in a sprag pane, and the reason register item 525 exists.
+///
+/// # ⚠⚠⚠⚠⚠ What changed, and what it cost while nobody was looking
+///
+/// Option 2 used to read *"Yes, allow all edits during this session"* ([`CLAUDE_EDIT_DIALOG`],
+/// above, still true of the build it was taken from). It now reads *"Yes, and switch to accept
+/// edits (auto-approve file edits and common file commands) for this session"*. `debt_loop.scxml`
+/// authorises a debt run by naming text only ONE option carries — and the text it named stopped
+/// being carried by ANY option, so the clause matched nothing.
+///
+/// ⚠⚠⚠ A needle matching NOTHING is [`Refusal::NotOffered`](crate::consent::Refusal::NotOffered)
+/// and the loop stops loudly for a person — which is the designed behaviour and is fine. What was
+/// NOT fine is that no gate compared the kind's own clauses against a real dialog, so the drift was
+/// invisible until an unattended run met it.
+///
+/// ⚠⚠ **THE SECOND OPTION WRAPS**, and it is kept wrapped because that is what the pane holds: the
+/// label continues on the next row (`commands) for this session (shift+tab)`). A needle aimed at
+/// the tail of that label is aimed at a row boundary — which is why the clause quotes the head.
+pub(crate) const CLAUDE_EDIT_DIALOG_NOW: &[&str] = &[
+    "● Update(SEED.txt)",
+    RULE,
+    " Edit file",
+    " SEED.txt",
+    DOTS,
+    " 1  one",
+    " 2 -two",
+    " 2 +three",
+    DOTS,
+    " Do you want to make this edit to SEED.txt?",
+    " ❯ 1. Yes",
+    "   2. Yes, and switch to accept edits (auto-approve file edits and common file",
+    "      commands) for this session (shift+tab)",
+    "   3. No",
+    "",
+    " Esc to cancel · Tab to amend",
+];
+
+/// **THE DIALOGS THE BUILD IN FRONT OF US DRAWS** — what a CONSENT is judged against.
+///
+/// Separate from [`CLAUDE_WORKING_DIALOGS`] on purpose, and the split is the lesson of item 525: a
+/// capture is a photograph of one build, so *the parser must read every photograph ever taken* and
+/// *the consent must match the one we are running against* are two different claims about two
+/// different sets. Folding them into one list would force a choice between a parser that forgets
+/// old builds and a consent gate that passes on a dialog nobody sees any more.
+pub(crate) const CLAUDE_DIALOGS_NOW: &[(&str, &[&str])] = &[("edit", CLAUDE_EDIT_DIALOG_NOW)];
 
 /// Replay a captured screen through the SHIPPING parser and hand back what it read.
 ///

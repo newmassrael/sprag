@@ -41,6 +41,15 @@ use crate::{AgentState, Manifest, Ruleset, Verdict};
 /// are published on sight, so the state a person is waiting for is never delayed by it.
 pub const DEFAULT_SETTLE: Duration = Duration::from_secs(2);
 
+/// The rule a verdict names when an UNANSWERED DIALOG overruled a report older than it — register
+/// item 524.
+///
+/// It is published beside the reporter's own `source`, never instead of it: a reader is owed both
+/// halves — *who claimed the pane* and *what beat their claim*. ⚠ Spelled once, here, because it
+/// travels to the wire and a gate compares it; a string literal at the site would be a second
+/// definition of a published word.
+pub const DIALOG_OUTRANKS_REPORT: &str = "dialog-outranks-report";
+
 /// How long a candidate state must hold before [`Tracker`] publishes it.
 ///
 /// # One parameter, where the design named two
@@ -271,6 +280,14 @@ pub struct Tracker {
 /// to be judged against, plus what decides when THIS one is over.
 #[derive(Debug)]
 struct Reported {
+    /// **WHAT THIS REPORT ITSELF CLAIMED** — kept here since the day a NEWER screen fact could
+    /// overrule it (register item 524).
+    ///
+    /// It used to live only in `published`, and that was true for as long as nothing could publish
+    /// over a standing report. An unanswered dialog now can, so the report's own claim has to
+    /// survive being overruled — otherwise the moment the dialog is answered there is nothing left
+    /// to fall back to and the pane would stay `blocked` until the next report happened to arrive.
+    state: AgentState,
     /// The reporter's name, as it will appear on the wire. Compared against the next report's so a
     /// replay from the SAME speaker is refused while a new speaker is heard.
     source: String,
@@ -559,13 +576,44 @@ impl Tracker {
         } else {
             self.seen = Some(Seen::of(screen, title, revision));
         }
-        // A REPORTED pane is not evaluated at all: the rules would produce a candidate that must
-        // lose, so running them would buy nothing and pay for every pattern of every manifest on a
-        // path served per client wake. The memory above is still refreshed, and that is what keeps a
-        // reported pane CHEAP rather than merely overruled — with the screen and the ruleset both
-        // recorded as seen, the pane is neither stale nor quiescence-skipped-with-a-lie, so it owes
-        // nothing until it reports again or is released.
-        if self.reported.is_some() {
+        // ⚠⚠⚠⚠⚠ A REPORTED PANE IS STILL NOT EVALUATED BY THE RULES — but ONE fact on the screen
+        // outranks a report older than it, and that fact is an unanswered dialog. Register item 524.
+        //
+        // What this rule cost before it existed, measured on a live run: an agent stood at a
+        // permission dialog for **five hours and twenty minutes** while every surface said
+        // `working`. The daemon HAD the fact three ways — the hook maps `Notification` to `Blocked`,
+        // the attention ledger counted the ask, and the screen itself was a menu — and *a report
+        // outranks the screen* beat all three, because the rule had **no clock**: it compared
+        // authorities and never asked which was NEWER.
+        //
+        // ⚠⚠⚠ The recency is structural rather than a stored timestamp, and that is why no clock is
+        // needed here: this line is past the unchanged-skip, so the screen being read HAS MOVED
+        // since the last look, and a report that arrived before it is by construction the older
+        // fact. A report that arrives after this look wins the ordinary way — `report` publishes on
+        // the spot.
+        //
+        // ⚠⚠ COST, stated: this is [`question`], which reads the bottom [`DIALOG_WINDOW`] logical
+        // lines and looks for a numbered choice run — bounded, and nothing like running every
+        // pattern of every manifest, which is what the skip above exists to avoid.
+        //
+        // ⚠ It goes through [`consider`] like any other screen candidate rather than publishing on
+        // the spot, so the settle window still guards it: a dialog glimpsed in one sample between
+        // repaints is not yet an answer a person is owed.
+        if let Some(held) = &self.reported {
+            let asking = crate::question(screen, crate::DIALOG_WINDOW).is_some();
+            let candidate = Verdict {
+                state: if asking {
+                    AgentState::Blocked
+                } else {
+                    held.state
+                },
+                agent: self.identity.clone(),
+                // ⚠ NAMED, so a reader can tell this apart from both an ordinary scrape and a plain
+                // report: the wire then carries `source` (who reported) AND this rule (what
+                // overruled them), which is the whole diagnosis in one line.
+                rule: asking.then(|| DIALOG_OUTRANKS_REPORT.to_owned()),
+            };
+            self.consider(candidate, now);
             return &self.published;
         }
         // A look re-derived the answer, so whatever owed one is served.
@@ -685,6 +733,7 @@ impl Tracker {
         // leaves what stands.
         let carried = self.reported.take();
         self.reported = Some(Reported {
+            state,
             source,
             seq,
             owner,
@@ -1821,10 +1870,20 @@ mod tests {
         );
     }
 
-    /// While a report stands the screen cannot overrule it; a release gives the pane straight back.
+    /// While a report stands an ORDINARY screen cannot overrule it; a release gives the pane back.
     ///
-    /// The screen here says something LOUD — a dialog, which is published on sight and never waits —
-    /// so the report is winning against the strongest evidence the scrape has.
+    /// # ⚠⚠⚠⚠⚠ This test used to paint a DIALOG here, and that was the defect (register item 524)
+    ///
+    /// Its screen was the loudest thing the scrape has — a choice list — and it asserted the report
+    /// won anyway, in the words *"the screen argued blocked and the report still owns the pane"*.
+    /// **That is the state a live run sat in for five hours and twenty minutes**: an agent at a
+    /// permission dialog, published `working`, with the daemon holding the fact three ways.
+    ///
+    /// The general claim is still true and is what this keeps: a report outranks an INFERENCE. What
+    /// it may not outrank is a newer dialog, which is
+    /// [`a_dialog_outranks_a_report_older_than_it`](fn@a_dialog_outranks_a_report_older_than_it)'s
+    /// subject — so this one now argues with a screen the rules read as `idle`, which is an
+    /// inference and exactly the thing a report exists to beat.
     #[test]
     fn a_report_outranks_the_screen_until_it_is_released() {
         let rules = Ruleset::new(vec![claude()]);
@@ -1866,20 +1925,24 @@ mod tests {
             "a report that does not repeat the name leaves the pane the agent it already was",
         );
         // Repaint so the quiescence gate cannot be what holds the answer still: the screen HAS moved,
-        // and the report still wins.
-        repaint(&mut em, DIALOG);
+        // and the report still wins. ⚠ Back to the FOOTER — an at-rest screen the rules infer from —
+        // because a dialog is the one screen a report may not outrank (item 524).
+        repaint(&mut em, CLAUDE_FOOTER);
         tracker.observe(
             em.screen(),
-            Some("✳ x"),
+            Some("⠂ x"),
             &rules,
             base + Duration::from_secs(10),
         );
         assert_eq!(
             tracker.verdict().state,
             AgentState::Idle,
-            "the screen argued blocked and the report still owns the pane",
+            "the screen inferred something and the report still owns the pane",
         );
 
+        // And the dialog is back for the release half: what the pane goes back to being is the
+        // screen's answer, which here is the loud one.
+        repaint(&mut em, DIALOG);
         assert!(tracker.release_report(), "a report was in force");
         assert!(
             !tracker.release_report(),
@@ -1896,6 +1959,100 @@ mod tests {
             tracker.verdict().state,
             AgentState::Blocked,
             "released, the pane is the screen's again",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AN UNANSWERED DIALOG OUTRANKS A REPORT OLDER THAN IT** — register item 524, and the
+    /// five hours and twenty minutes that bought it.
+    ///
+    /// # What was measured, and why the old rule could not see it
+    ///
+    /// A live `ai_loop` run stood at *"Do you want to make this edit to spec.rs?"* from 23:12 to
+    /// 04:33 while every surface said `working` and the run's cost never moved. The daemon HELD the
+    /// fact three ways — the hook maps `Notification` to `Blocked`, the attention ledger counted the
+    /// ask, and the screen itself was a menu — and *a report outranks the screen* beat all three,
+    /// **because that rule had no clock**. It compared authorities and never asked which was newer.
+    ///
+    /// # The three claims here, and each fails on its own
+    ///
+    /// * a dialog painted AFTER a `working` report publishes `blocked` — the run's five hours;
+    /// * the verdict NAMES what overruled the reporter ([`DIALOG_OUTRANKS_REPORT`]) while
+    ///   [`Tracker::reported_source`] still names the reporter, so a reader gets both halves;
+    /// * and when the dialog is answered the pane goes back to the REPORT's own claim rather than
+    ///   sticking on `blocked` — which is the whole reason `Reported` had to start keeping `state`.
+    #[test]
+    fn a_dialog_outranks_a_report_older_than_it() {
+        let rules = Ruleset::new(vec![claude()]);
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("⠂ x"), &rules, base);
+        tracker.report(Report {
+            state: AgentState::Working,
+            agent: Some("claude".to_owned()),
+            source: "hook:claude".to_owned(),
+            seq: Some(4),
+            owner: None,
+            asked: None,
+            said: None,
+            noticed: None,
+            transcript: None,
+            build: None,
+        });
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Working,
+            "the control: the report is in force and says the agent is working",
+        );
+
+        // ── THE DIALOG ARRIVES AFTER THE REPORT ──
+        repaint(&mut em, DIALOG);
+        tracker.observe(
+            em.screen(),
+            Some("✳ x"),
+            &rules,
+            base + Duration::from_millis(100),
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Blocked,
+            "⚠⚠⚠⚠⚠ A QUESTION IS ON THE SCREEN AND NOBODY HAS ANSWERED IT. `working` here is the \
+             five-hour reading: the run goes on looking, the cost never moves, and no surface says \
+             a person is needed. A report is an authority about the PAST — this screen is now",
+        );
+        assert_eq!(
+            tracker.verdict().rule.as_deref(),
+            Some(DIALOG_OUTRANKS_REPORT),
+            "⚠⚠⚠ and the verdict must say WHAT beat the reporter, or a reader sees `blocked` from a \
+             pane that is also `source=hook:claude` and cannot tell which authority spoke",
+        );
+        assert_eq!(
+            tracker.reported_source(),
+            Some("hook:claude"),
+            "⚠⚠ the report is OVERRULED, not released: the reporter still owns everything else it \
+             states, and a release is a decision somebody takes on purpose",
+        );
+
+        // ── AND THE ANSWER GIVES THE PANE BACK TO THE REPORTER ──
+        repaint(&mut em, CLAUDE_FOOTER);
+        tracker.observe(
+            em.screen(),
+            Some("⠂ x"),
+            &rules,
+            base + Duration::from_secs(30),
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Working,
+            "⚠⚠⚠⚠ THE DIALOG IS GONE, SO THE REPORT IS THE BEST FACT AGAIN. Sticking on `blocked` \
+             would trade a five-hour silence for a permanent false alarm — and the screen alone \
+             would say `idle` here, which is the inference the report exists to beat",
+        );
+        assert_eq!(
+            tracker.verdict().rule,
+            None,
+            "and nothing overruled anybody this time, so no rule is named",
         );
     }
 
