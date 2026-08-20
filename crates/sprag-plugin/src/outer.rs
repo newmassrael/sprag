@@ -5879,24 +5879,14 @@ impl OuterLoop {
     /// held together by a gate.
     pub(crate) const NEVER: &'static str = "never";
 
-    /// **AUTHORED TEXT UNDER `name`**, or [`None`] where the document holds nothing a reader would
-    /// take as a sentence — an id it does not declare, or one it declares EMPTY.
-    ///
-    /// ⚠ An empty string reads as [`None`] here and that is the right reading for this use: the
-    /// template ships `''` for the slots a kind may fill, and *declared but empty* is exactly *this
-    /// document adds nothing*. It is the opposite polarity to [`authored_count`](Self::authored_count),
-    /// where empty had to be distinguishable from silent — because there the value carries a
-    /// DECISION and here it carries only text to append.
-    pub(crate) fn authored_text_in(
-        script: &Arc<dyn IScriptEngine>,
-        session: &str,
-        name: &str,
-    ) -> Option<String> {
-        match script.get_variable(session, name) {
-            Ok(ScriptValue::String(held)) if !held.is_empty() => Some(held),
-            _ => None,
-        }
-    }
+    // ⚠⚠⚠ `authored_text_in` STOOD HERE AND IS GONE — SCE PR-86 R-86.4, consumed 2026-08-20.
+    // Its one caller (`LoopKind::closing_rules`) now reads the generated accessor, which is the
+    // document's own name checked by the compiler. What it must NOT lose is the POLARITY this
+    // function carried: *declared but EMPTY is this document adds nothing*, because the template
+    // ships `''` for the slots a kind may fill. That decision is a consumer's and not codegen's,
+    // so it moved to the reader rather than dying with the function — see `LoopKind::closing_rules`.
+    // ⚠ It is the opposite polarity to `authored_count`, where empty must stay distinguishable
+    // from silent, because there the value carries a DECISION and here only text to append.
 
     /// **HOW MANY TURNS THIS RUN MAY TAKE, AS THE DATAMODEL NOW HOLDS IT** — the caller's number
     /// once a brief has been taken, and the document's own before one has.

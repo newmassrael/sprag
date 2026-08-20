@@ -143,7 +143,13 @@ impl LoopKind {
     /// every ending, the repository adds what only it can know it wants.
     #[must_use]
     pub fn closing_rules(&self) -> Option<String> {
-        OuterLoop::authored_text_in(&self.script, &self.session, "closing_rules")
+        // ⚠ EMPTY READS AS NOTHING, which the generated accessor does not decide: the template
+        // ships `''` for the slots a kind may fill, so *declared but empty* is *this document adds
+        // nothing*. That polarity belongs to this reader, not to codegen.
+        self.machine
+            .policy()
+            .closing_rules()
+            .filter(|said| !said.is_empty())
     }
 
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
@@ -152,6 +158,16 @@ impl LoopKind {
     /// ⚠⚠ [`Counted::Never`] is a DECISION and not an absence — a debt run's job is a list nobody
     /// has finished, so it ends on its work rather than on a count. See this kind's document for
     /// what that costs and why the spelling is a word.
+    /// ⚠⚠⚠⚠ **AND THIS ONE KEEPS THE INTERPRETING READER while its neighbours moved to the
+    /// generated accessors** — SCE PR-86's R-86.4, consumed 2026-08-20 where it fits and not where
+    /// it does not.
+    ///
+    /// The codegen emits `pub fn max_turns(&self) -> Option<String>` for THIS document, because
+    /// this document authors the word. [`Counted`] is a UNION — a word or a number — and no
+    /// accessor typed from one document's literal can carry it: a kind that wrote `7` would get an
+    /// `Option<i64>` accessor and this call would stop compiling. The others moved precisely
+    /// because their contract IS one type; this one's contract is the union, so the reader that
+    /// implements the union stays.
     #[must_use]
     pub fn turn_budget(&self) -> Option<Counted> {
         OuterLoop::authored_count_in(&self.script, &self.session, "max_turns")
@@ -165,10 +181,7 @@ impl LoopKind {
     /// naming a cadence asks for a loop that runs for ever and never improves itself.
     #[must_use]
     pub fn reflect_every(&self) -> Option<i64> {
-        match OuterLoop::authored_count_in(&self.script, &self.session, "reflect_every") {
-            Some(Counted::Of(cadence)) => Some(cadence),
-            _ => None,
-        }
+        self.machine.policy().reflect_every()
     }
 
     /// **HOW MUCH A SESSION OF THIS KIND MAY HAVE READ** before the next milestone is taken in a
@@ -191,7 +204,7 @@ impl LoopKind {
     /// the word `never` beside it would be two spellings of one decision.
     #[must_use]
     pub fn context_ceiling(&self) -> Option<i64> {
-        OuterLoop::authored_number_in(&self.script, &self.session, "context_ceiling")
+        self.machine.policy().context_ceiling()
     }
 
     /// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE A RUN OF THIS KIND'S CLAIM** before it stops
@@ -221,7 +234,7 @@ impl LoopKind {
     /// has a spelling and a second one would be two ways to say the same thing.
     #[must_use]
     pub fn reflect_after_refusals(&self) -> Option<i64> {
-        OuterLoop::authored_number_in(&self.script, &self.session, "reflect_after_refusals")
+        self.machine.policy().reflect_after_refusals()
     }
 
     /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this

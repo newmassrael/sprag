@@ -90,6 +90,18 @@ use crate::sources::Source;
 ///
 /// ⚠ Measured over the whole workspace on 2026-08-20: two files hold it, and one of them is this
 /// module's own test table — which [`JUDGE`] is about.
+///
+/// # ⚠⚠⚠ This road is now one of TWO, and only this one discovers a FILE
+///
+/// [`read_ids`] learned the generated-accessor road the same day (`policy().context_ceiling()`,
+/// SCE PR-86 R-86.4), and four kind-side readers moved onto it. Discovery stayed here on purpose:
+/// `policy().` is written all over this workspace's tests about things that are not `<data>` at
+/// all, so globbing FILES by it would collect subjects that read nothing.
+///
+/// ⚠⚠ The residue, stated: the day the LAST `OuterLoop::authored_…` reader migrates, this glob
+/// finds no file and the gate refuses — **loudly, not silently**, which is the direction that
+/// keeps it a question for a person rather than a green about nothing (item 482). The repair then
+/// is to discover by the claimed ids themselves, which the template already publishes.
 pub const READS: &str = "OuterLoop::authored_";
 
 /// The judge's own crate, which cannot hold a subject.
@@ -296,6 +308,22 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
 /// common is the shape of the call: **the id is the last argument, as a literal**. Needling on that
 /// means a new accessor teaches this rather than blinding it.
 ///
+/// # ⚠⚠⚠⚠⚠ AND THERE IS A SECOND ROAD NOW, where the id is the METHOD and not an argument
+///
+/// SCE's codegen emits a read accessor per `<data>` — `policy().context_ceiling()` — and consuming
+/// that (PR-86 R-86.4, 2026-08-20) is what a kind-side reader should do wherever the id has ONE
+/// type: the document's own names become the compiler's, so a renamed `<data>` stops the build
+/// instead of reading nothing. **Migrating four readers to it took this derivation to zero for two
+/// claimed ids and the gate went red** — correctly, because from the old needle's side the readers
+/// really had gone.
+///
+/// So both roads count, and a UNION is not a weakening here: the question is *can this kind's
+/// decision leave its document*, and either spelling answers yes. ⚠ The accessor road cannot be
+/// needled by the RECEIVER (`self.machine.policy()` today, something else tomorrow), so it is
+/// needled by `policy().` — the one thing a generated read must go through.
+///
+/// ⚠⚠ An id read by BOTH roads appears once: this is a set.
+///
 /// ⚠ Whitespace is squeezed out first because rustfmt decides where these calls break, and
 /// `session, "id")` and `session,\n    "id",\n)` are the same call written two ways.
 ///
@@ -328,8 +356,28 @@ pub fn read_ids(code: &[(usize, String)]) -> BTreeSet<String> {
         }
         found.insert(rest[..end].to_owned());
     }
+    // ── THE SECOND ROAD: a generated accessor, where the id IS the method name ──
+    for (at, _) in squeezed.match_indices(ACCESSOR) {
+        let rest = &squeezed[at + ACCESSOR.len()..];
+        let end = rest
+            .find(|char: char| !char.is_ascii_alphanumeric() && char != '_')
+            .unwrap_or(rest.len());
+        // ⚠ A CALL, not a field: `policy().session_id` is a struct member and names no `<data>`.
+        // Requiring the parentheses is what keeps this from reading the generated policy's own
+        // bookkeeping as a datamodel read.
+        if end > 0 && rest[end..].starts_with("()") {
+            found.insert(rest[..end].to_owned());
+        }
+    }
     found
 }
+
+/// The one thing a generated `<data>` read goes through, squeezed — see [`read_ids`]'s second road.
+///
+/// ⚠ The RECEIVER is deliberately not part of it: today it is `self.machine.policy()`, tomorrow a
+/// borrow held somewhere else, and a needle that spelled the receiver would go blind on a
+/// refactor that changed nothing about whether the id is read.
+pub const ACCESSOR: &str = "policy().";
 
 /// Whether the call whose argument list contains `at` is a MACRO invocation.
 ///
@@ -580,6 +628,27 @@ mod tests {
                 "self.script.get_variable(&self.session, \"milestone_check\")",
                 &["milestone_check"],
             ),
+            // ⚠⚠⚠⚠⚠ THE SECOND ROAD — a generated accessor, where the id is the METHOD. Consuming
+            // SCE PR-86 R-86.4 moved four kind-side readers onto this shape, and the derivation
+            // that only knew the first road reported those ids as unread.
+            (
+                "self.machine.policy().context_ceiling()",
+                &["context_ceiling"],
+            ),
+            // ⚠ THE RECEIVER IS NOT PART OF THE NEEDLE: a reader that held the policy some other
+            // way reads the same `<data>`, and a needle spelling `self.machine` would go blind on a
+            // refactor that changed nothing.
+            (
+                "kind.policy().reflect_after_refusals()",
+                &["reflect_after_refusals"],
+            ),
+            // ⚠⚠ DECLINED — a FIELD of the generated policy is not a `<data>` read. `session_id` is
+            // the policy's own bookkeeping and appears in this workspace's tests constantly; a rule
+            // that took it for a datamodel id would invent a claim nobody made.
+            ("engine.policy().session_id", &[]),
+            // ⚠ DECLINED — and this is the same trap one letter over: a method call on something
+            // that is not a policy names no id.
+            ("run.context().context_ceiling()", &[]),
             // ⚠ Broken over lines by the formatter, trailing comma and all — the same call.
             (
                 "OuterLoop::authored_text_in(\n&self.script,\n&self.session,\n\"closing_rules\",\n)",
