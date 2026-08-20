@@ -66,6 +66,18 @@
          `In()` cannot read across regions here, and standing orders have to be a
          boolean instead of a state. -->
     <data id="noticed" expr="0"/>
+    <!-- ⚠⚠⚠⚠ Question 7's answer: how many times a NEGATED cross region guard
+         fired. `ai_loop`'s hold order needs *fire unless somebody is holding
+         this run*, and NO cond in that document has ever spelled a negation of
+         any kind. Zero while the sibling rests means the negation never became
+         true when it should have; a rise after the order means it stayed true
+         when it should not have. Both readings are needed, so this is counted
+         at two moments rather than asserted once. -->
+    <data id="quiet" expr="0"/>
+    <!-- ⚠⚠⚠⚠ Question 8's answer: how many times a guard naming a COMPOUND
+         ANCESTOR fired. Zero means `In()` matches only the leaf a region rests
+         on, which withdraws the positive spelling of question 7's guard. -->
+    <data id="nested" expr="0"/>
   </datamodel>
 
   <parallel id="both">
@@ -120,6 +132,48 @@
         </transition>
         <transition event="tick" target="counting">
           <assign location="ticks" expr="ticks + 1"/>
+        </transition>
+        <!--
+          ⚠⚠⚠⚠ QUESTION 7: does a NEGATED cross region guard evaluate?
+
+          Register item 470's first stage needs `unattended` to fire UNLESS a
+          person is holding the run, which is the negation of question 6's
+          predicate. `ai_loop` declares `datamodel="ecmascript"` and is driven
+          by a Lua script engine, and every cond it carries today is a
+          conjunction, a comparison or a bare read. **Not one of them is a
+          negation**, so `!` at this engine is the same kind of promise every
+          probe here opens with: true of the language named on the document,
+          unmeasured on the thing that actually evaluates it.
+
+          ⚠ A NO withdraws the obvious spelling and sends the guard to question
+          8's shape instead, which is why the two are asked together.
+
+          ⚠⚠ It carries its own event rather than another `tick` arrow: a
+          second guarded arrow on `tick` would consume the event that the plain
+          arrow below is there to prove was delivered, and question 6's control
+          would go silent for a reason that had nothing to do with it.
+        -->
+        <transition event="ask_quiet" cond="!In('alerted')" target="counting">
+          <assign location="quiet" expr="quiet + 1"/>
+        </transition>
+        <!--
+          ⚠⚠⚠⚠ QUESTION 8: does `In()` match a COMPOUND ANCESTOR, or only the
+          leaf its region is resting on?
+
+          `watching` is region B's compound parent and is active for as long as
+          the region is, whichever child holds it. If this fires, a guard can
+          name an umbrella state positively and the order it must exclude can
+          be placed OUTSIDE that umbrella. That is the shape item 470's guard
+          takes if question 7 answers no, and it is the better shape anyway
+          when the excluded set is one order and the permitted set keeps
+          growing.
+
+          ⚠ If it does NOT fire, `In()` is a leaf predicate here, every guard
+          has to enumerate leaves, and a guard that enumerates leaves is a list
+          that ages in silence every time an order is added beside it.
+        -->
+        <transition event="ask_nested" cond="In('watching')" target="counting">
+          <assign location="nested" expr="nested + 1"/>
         </transition>
         <!--
           ⚠⚠⚠ QUESTION 5's DOOR: region A can finish while region B never will.

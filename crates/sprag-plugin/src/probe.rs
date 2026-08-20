@@ -484,6 +484,128 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **CAN A CROSS-REGION GUARD BE NEGATED, AND CAN IT NAME A COMPOUND ANCESTOR** — the two
+    /// questions register item 470's first stage rests on, asked before the loop's contract is
+    /// edited.
+    ///
+    /// # What rests on the answer
+    ///
+    /// Item 470 moves one decision out of the driver and into the document: *a run a person is
+    /// deliberately holding is not a run nobody came to*, which today lives in Rust as
+    /// `if run.held() { … }` in `OuterLoop::attend`. In the document it is a guard on
+    /// `awaiting_human`'s `unattended` edge, and the obvious spelling is `!In('held')`.
+    ///
+    /// ⚠⚠⚠ **`ai_loop.scxml` says `datamodel="ecmascript"` and a `LuaEngine` is what evaluates
+    /// it.** Every cond that document carries today is a conjunction, a comparison or a bare read —
+    /// `_event.data.done && In('standing_down')` is the closest thing to this one — and **not one
+    /// of them is a negation**. So `!` is exactly the shape this module exists for: promised by the
+    /// language named on the document, unmeasured on the thing that runs it. The guard would have
+    /// been written, the suite would have passed on every path that does not hold a run, and a
+    /// negation that silently evaluated false would read as *a held run ends as unattended* — the
+    /// defect item 470 is removing, restored by the fix for it.
+    ///
+    /// # ⚠⚠ Why the ancestor question is asked in the same breath
+    ///
+    /// Because it is the FALLBACK, and a probe that answers only *no* leaves the next round where
+    /// this one started. If `In()` matches a compound ancestor, the guard can be written
+    /// positively — the orders that permit the edge go inside an umbrella state, the hold order
+    /// sits outside it, and the guard names the umbrella.
+    ///
+    /// ⚠⚠ **Both answered yes, and item 470 took the NEGATION** — which is worth writing down
+    /// because the umbrella looks like the tidier shape and is not, here. The set this guard
+    /// EXCLUDES is one order and the set it permits is the one that keeps growing: `orders` holds
+    /// `standing` and `standing_down` today and is documented as the place the next order goes.
+    /// `!In('held')` names the exclusion and needs nothing of an order added beside it; the
+    /// umbrella needs every future order to be placed inside it, and an order added outside it
+    /// would silently stop `unattended` from ever firing. The tidier-looking spelling is the one
+    /// that ages.
+    ///
+    /// ⚠ Both are counted at TWO moments, before the order and after it. A guard asserted only
+    /// where it should be true cannot tell a working predicate from one that is always true, which
+    /// is the vacuous control this workspace keeps paying for.
+    #[test]
+    fn a_cross_region_guard_can_be_negated_and_can_name_a_compound_ancestor() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeParallelPolicy::new(lua));
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<ProbeParallelPolicy>, name: &str| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, name)
+        {
+            Ok(ScriptValue::Int(held)) => held,
+            other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+        };
+        let ask = |engine: &mut Engine<ProbeParallelPolicy>, what: ProbeParallelEvent| {
+            engine.raise(sce_rust_runtime::EventWithMetadata::new(what));
+            engine.step();
+        };
+
+        // ── WHILE THE SIBLING RESTS: the negation must be TRUE and the ancestor must match ──
+        ask(&mut engine, ProbeParallelEvent::AskQuiet);
+        assert_eq!(
+            count(&engine, "quiet"),
+            1,
+            "⚠⚠⚠⚠⚠ `!In()` DOES NOT EVALUATE AT THIS ENGINE. The sibling region is resting, so \
+             `!In('alerted')` is true and the arrow had to fire. It did not — so register item \
+             470's guard cannot be spelled as a negation, and `unattended` has to be guarded \
+             positively on a compound ancestor instead (the assertion below says whether that is \
+             available). Record it and take the other shape",
+        );
+        ask(&mut engine, ProbeParallelEvent::AskNested);
+        assert_eq!(
+            count(&engine, "nested"),
+            1,
+            "⚠⚠⚠⚠⚠ `In()` MATCHES ONLY LEAVES HERE. `watching` is the compound parent of the \
+             region that is active, so a guard naming it had to fire. It did not — so an umbrella \
+             state cannot carry item 470's guard, and every such guard has to enumerate the leaves \
+             that permit the edge, which is a list that ages every time an order is added beside it",
+        );
+
+        // ── THE ORDER ARRIVES IN THE OTHER REGION ──
+        engine.raise(sce_rust_runtime::EventWithMetadata::new(
+            ProbeParallelEvent::Alert,
+        ));
+        engine.step();
+        let active = engine.get_active_states();
+        assert!(
+            active.contains(&ProbeParallelState::Alerted),
+            "the control: the order must have moved the orders region. active = {active:?}",
+        );
+
+        // ── AND NOW THE NEGATION MUST GO FALSE, WHICH IS THE HALF THAT MAKES IT A GUARD ──
+        ask(&mut engine, ProbeParallelEvent::AskQuiet);
+        assert_eq!(
+            count(&engine, "quiet"),
+            1,
+            "⚠⚠⚠⚠⚠ `!In('alerted')` IS STILL TRUE WITH THE ORDER STANDING. A predicate that never \
+             goes false is not a guard — it is a transition with extra words, and item 470's edge \
+             would end a held run exactly as it does today while looking like it could not",
+        );
+        assert_eq!(
+            count(&engine, "nested"),
+            1,
+            "the control: nothing else moved this while the negation was being read",
+        );
+
+        // ⚠ And the ancestor is STILL matched, now that the region rests on its other child —
+        // which is what makes it an umbrella rather than an alias for one leaf.
+        ask(&mut engine, ProbeParallelEvent::AskNested);
+        assert_eq!(
+            count(&engine, "nested"),
+            2,
+            "⚠⚠⚠⚠ `In('watching')` STOPPED MATCHING WHEN THE REGION CHANGED CHILD, so it was never \
+             an ancestor match at all — it agreed with the initial leaf and nothing more. A guard \
+             built on it would silently narrow to one order the moment a second arrived",
+        );
+    }
+
     /// ⚠⚠⚠⚠ **THE DRIVER'S OWN READER, DRIVEN AGAINST A MACHINE THAT HAS REGIONS** — the gate that
     /// holds `OuterLoop::state`'s change, because the loop's own document cannot exercise it yet.
     ///
