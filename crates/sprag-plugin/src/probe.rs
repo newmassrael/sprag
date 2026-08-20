@@ -48,6 +48,21 @@
 //! ⚠ And one consequence to weigh before building it: the generated child is a CONCRETE TYPE chosen
 //! at codegen, so `srcexpr` cannot select a kind at runtime. A template that invokes its decisions
 //! names ONE filename, and every repository adopting it supplies a document of that name.
+//!
+//! # ⚠⚠⚠⚠ A HOST CANNOT NAME ITS OWN `<send>` OR `<invoke>` TYPE — measured, and it refutes another
+//!
+//! Register item 470's second stage would have let the document say `<send type="sprag">` and this
+//! crate carry the act out, so that what a run DOES stopped being a `match` in `outer.rs`. The type
+//! registry is closed at the pinned engine: an unknown `type` compiles, then raises
+//! `error.execution` when the state is entered, and takes the rest of that executable block with
+//! it. There is no registration point — the one send-side hook is bound to a type the engine
+//! already knows, and the invoke side has none.
+//!
+//! ⚠⚠ **The build says nothing**, which is the part worth carrying past this round: a document
+//! naming a type nobody implements is green on every compile and in every test that does not enter
+//! the state. So stage 2 is an upstream request rather than a design, and acts stay in the driver
+//! while the document keeps saying WHICH act. Stage 1's guard is untouched by this — a `cond` is
+//! the datamodel's and needs no registry.
 
 #[cfg(test)]
 mod tests {
@@ -58,6 +73,138 @@ mod tests {
     use crate::sm::probe_parallel_sm::{
         ProbeParallelEvent, ProbeParallelPolicy, ProbeParallelState,
     };
+    use crate::sm::probe_send_type_sm::{ProbeSendTypeEvent, ProbeSendTypePolicy};
+
+    /// ⚠⚠⚠⚠⚠ **A HOST CANNOT REGISTER ITS OWN `<send>` OR `<invoke>` TYPE — measured, and it
+    /// refutes register item 470's second stage as a design.**
+    ///
+    /// # What was being decided
+    ///
+    /// Stage 1 moved one DECISION into the document. Stage 2 would have moved the ACTS: the
+    /// document says `<send type="sprag" event="…"/>`, this crate registers a handler for that
+    /// type, and what a run does stops being a `match` in `outer.rs` at all. Every part of that
+    /// rests on one question nobody had asked the engine.
+    ///
+    /// # ⚠⚠⚠⚠ The answer, in the order it matters
+    ///
+    /// 1. **Codegen ACCEPTS an unknown type.** `probe_send_type.scxml` carries
+    ///    `type="x-sprag-host"` on both a `<send>` and an `<invoke>`, it is in `build.rs`'s list,
+    ///    and the crate builds. **So the build says nothing**, which is the sharp half: a document
+    ///    naming a type no one implements is green on every compile and green in every test that
+    ///    does not enter the state.
+    /// 2. **The runtime refuses it** — `error.execution`, once per site, at the moment the state is
+    ///    entered.
+    /// 3. **The named event never arrives.** That is the difference between *refused* and
+    ///    *ignored*: an engine that dropped the `type` and delivered internally would let a
+    ///    document call for an act nobody carries out and look like it worked.
+    /// 4. **And the failure takes the rest of the block with it** — see the fixture's own note. An
+    ///    unsupported `type` is an error in executable content, so every action after it in that
+    ///    `onentry` is abandoned. A document that put a custom send first would lose the work
+    ///    beside it, not just the send.
+    ///
+    /// ⚠ There is no registration point to reach for. The pinned runtime's one send-side extension
+    /// is `Engine::set_http_send_callback`, which is bound to `BasicHTTPEventProcessor` — a type
+    /// the engine already knows — and there is no invoke-side equivalent at all.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE CONTROL IS THE ONLY REASON ANY OF THAT IS TRUE
+    ///
+    /// This case reached a WRONG finding twice before the control let it through, and both are
+    /// worth carrying because both looked exactly like the answer:
+    ///
+    /// - **One `step()` read as *refused*.** The `error.execution` had been processed and the
+    ///   control send had not, so `landed == 0` beside `plain == 0` looked like the typed send
+    ///   being rejected. It was a queue that had not been drained. `tick()` polls the scheduler;
+    ///   `step()` runs a macrostep without it, and a `<send>` goes through the scheduler even
+    ///   with no delay.
+    /// - **The control ordered FIRST never ran**, because of finding 4 above — so `plain == 0`
+    ///   read as *`<send>` does not deliver in this fixture at all*, which would have made the
+    ///   whole probe unanswerable. Running the control ALONE is what separated the two, and the
+    ///   order in the document is now load-bearing.
+    ///
+    /// ⚠⚠ Neither mistake was visible from the passing side. Had the control been left out — or
+    /// left as the untyped `<send>` it started as, which distinguishes nothing — this case would
+    /// have asserted `landed == 0` and recorded a true conclusion on evidence that did not support
+    /// it.
+    ///
+    /// # ⚠⚠ What this costs, stated rather than implied
+    ///
+    /// Item 470 stage 2 is not a design at the pinned rev; it is a request filed upstream, which is
+    /// this workspace's rule for an SCE gap. Acts stay in the driver, and the document keeps saying
+    /// WHICH act rather than carrying it. Stage 1's guard is unaffected — a `cond` is evaluated by
+    /// the datamodel and needs no registry.
+    #[test]
+    fn a_host_cannot_register_its_own_send_or_invoke_type() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<ProbeSendTypePolicy>, name: &str| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, name)
+        {
+            Ok(ScriptValue::Int(held)) => held,
+            other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+        };
+
+        // ⚠⚠⚠ STEPPED TO QUIESCENCE RATHER THAN ONCE, and the control below is what taught this
+        // case that it had to be. One `step()` had already processed the `error.execution` while
+        // the untyped send was still queued — so a single step read as *the typed send was refused
+        // and the plain one never arrived*, which is exactly the false reading the control exists
+        // to catch. It caught it here, on the first run, before any of it was written down.
+        //
+        // ⚠⚠ `tick()` RATHER THAN `step()`, and that is the second thing the control taught. A
+        // `<send>` goes through the SCHEDULER even with no delay, and `step()` runs a macrostep
+        // without polling it — so an untyped send sat there while the `error.execution` raised
+        // beside it had already been processed.
+        for _ in 0..8 {
+            engine.tick();
+        }
+
+        // ── THE CONTROL FIRST: `<send>` DELIVERS IN THIS DOCUMENT AT ALL ──
+        assert_eq!(
+            count(&engine, "plain"),
+            1,
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, SO THIS PROBE ANSWERS NOTHING. The untyped `<send>` beside \
+             the typed one did not come back either — so `landed` being zero below would mean \
+             *`<send>` does not deliver here*, which is a fact about this fixture and not about \
+             types. Fix the fixture before reading anything else in this case",
+        );
+
+        // ── THE TYPED SEND: REFUSED, AND REFUSED RATHER THAN IGNORED ──
+        assert_eq!(
+            count(&engine, "errors"),
+            1,
+            "⚠⚠⚠⚠ a `<send>` carrying a type nothing implements must raise `error.execution` — \
+             W3C SCXML 6.2. It did not, so this engine is doing something with the type that is \
+             neither supporting it nor refusing it, and item 470 stage 2 needs to know WHAT before \
+             anything is built on it",
+        );
+        assert_eq!(
+            count(&engine, "landed"),
+            0,
+            "⚠⚠⚠⚠⚠ THE TYPE WAS IGNORED RATHER THAN REFUSED, which is the dangerous answer and the \
+             one this case exists to tell apart. The event arrived internally, so a document could \
+             name an act NOBODY carries out and every test would pass — the send would look \
+             delivered because it was, to the wrong place",
+        );
+
+        // ── AND THE INVOKE SIDE IS A SECOND REGISTRY, SO IT IS ASKED SEPARATELY ──
+        engine.process_event(ProbeSendTypeEvent::Go);
+        assert_eq!(
+            count(&engine, "errors"),
+            2,
+            "⚠⚠⚠⚠ `<invoke>` PICKS AN INVOKER AND `<send>` PICKS AN EVENT I/O PROCESSOR — two \
+             registries, and this asks the second. A host that could reach this one and not the \
+             other would change item 470 stage 2 from refused to narrowed, which is a different \
+             answer and worth a round",
+        );
+    }
 
     /// ⚠⚠⚠ **CAN A PARENT FILL ITS CHILD'S DATAMODEL** — the question a composed design rests on,
     /// asked of a real engine rather than of the specification.

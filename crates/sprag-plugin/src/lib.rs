@@ -85,6 +85,15 @@ pub(crate) mod sm {
         #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
         include!(concat!(env!("OUT_DIR"), "/context_review_sm.rs"));
     }
+
+    // ⚠⚠ THE CUSTOM-`type` PROBE — whether a host can name an act the document asks for. It is
+    // compiled here for the same reason as the three above: the question is about THIS generator at
+    // the pinned rev, and register item 470's second stage is a design or a filed request depending
+    // on the answer.
+    pub(crate) mod probe_send_type_sm {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/probe_send_type_sm.rs"));
+    }
 }
 
 /// What this crate has PROVEN about the engine it runs on — see [`probe`].

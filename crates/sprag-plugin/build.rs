@@ -61,6 +61,12 @@ const STATECHARTS: &[&str] = &[
     "probe_absent",
     // ⚠⚠ WHAT A RUN LEARNED ABOUT ITS OWN SESSIONS — a child machine, and inert until it is here.
     "context_review",
+    // ⚠⚠ THE FOURTH PROBE, and register item 470's second stage rests entirely on it: can a HOST
+    // register its own `<send>` / `<invoke>` TYPE, so a document can name an act this crate carries
+    // out? Compiled here rather than reasoned about, because this list is also the question — a
+    // codegen that REFUSES an unknown type answers it at build time, and that refusal is the
+    // measurement. See `probe_send_type.scxml`.
+    "probe_send_type",
 ];
 
 fn main() {

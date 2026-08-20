@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ⚠⚠⚠⚠⚠ CAN A HOST REGISTER ITS OWN `<send>` / `<invoke>` TYPE?
+
+  Register item 470's SECOND stage rests entirely on this. The first stage moved
+  one decision into the document; the second would move the ACTS there too, by
+  letting the document say `<send type="sprag">` and having this crate's driver
+  be what carries it out. If a host cannot introduce a type, that design is not
+  available at the pinned engine and the driver stays the place acts live.
+
+  ⚠⚠⚠ ASKED BY COMPILING AND RUNNING, because everything else about it is a
+  fact about somewhere else. W3C SCXML 6.2 says a `type` the platform does not
+  support raises `error.execution`, and a conforming engine is therefore ALLOWED
+  to support more; SCE's own tree carries `sce:mesh-rpc` as a type its codegen
+  knows, which proves the set can hold more than the standard two and says
+  nothing about whether a CONSUMER can add to it.
+
+  ⚠⚠ A NO IS THE USEFUL ANSWER TOO, and this file is written expecting one: it
+  is the difference between item 470 stage 2 being a design and being a request
+  filed upstream. What it must not do is leave the question answered by reading.
+
+  This document is deliberately SMALL and its states are stable: what is being
+  measured is what the engine does at ONE entry, not a topology.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_send_type"
+       datamodel="ecmascript"
+       initial="sending">
+
+  <datamodel>
+    <!-- How many `error.execution` events arrived. W3C SCXML 6.2's answer for a
+         type the platform does not support. -->
+    <data id="errors" expr="0"/>
+    <!-- Whether the event a custom typed `<send>` names ever came back. If a
+         host could register the type and did not, this stays 0 and `errors`
+         rises; if the engine ignored the type and delivered it internally, this
+         rises and the type meant nothing. The two are different answers. -->
+    <data id="landed" expr="0"/>
+    <!-- ⚠⚠⚠⚠⚠ THE CONTROL, AND WITHOUT IT THIS DOCUMENT PROVES NOTHING. A
+         `landed` of zero has two readings: the typed send was refused, or
+         `<send>` does not deliver in this document at all. This is a send with
+         NO type in the SAME state and the same entry, so it separates them. -->
+    <data id="plain" expr="0"/>
+  </datamodel>
+
+  <!--
+    ⚠ THE TRANSITIONS HERE ARE TARGETLESS ON PURPOSE. W3C SCXML 3.13: a
+    transition with no `target` runs its content and changes no state, so
+    recording an arrival cannot re-enter this state and re-run the `<send>` in
+    its `onentry`. A self transition would have made this document a loop that
+    sends forever.
+  -->
+  <state id="sending">
+    <onentry>
+      <!-- ⚠ The control: same state, same entry, and the type W3C SCXML 6.2
+           NAMES as the one every engine supports. Comparing against a send with
+           no `type` at all was the first attempt and it was the wrong control,
+           because it does not distinguish *this type is unsupported* from
+           *`<send>` does nothing here*. This one does. -->
+      <send type="http://www.w3.org/TR/scxml/#SCXMLEventProcessor"
+            event="reached.plain"/>
+      <!--
+        ⚠⚠⚠⚠⚠ THE TYPED SEND IS LAST, AND THE ORDER IS A MEASUREMENT RATHER
+        THAN A STYLE. With it FIRST the control never ran at all: an error in
+        executable content abandons the REST OF THE BLOCK, so `plain` stayed 0
+        and the single `error.execution` could have come from either send. The
+        first version of this file read that as *the control does not deliver*
+        and was one edit away from recording the wrong finding.
+      -->
+      <send type="x-sprag-host" event="reached.host"/>
+    </onentry>
+    <transition event="error.execution">
+      <assign location="errors" expr="errors + 1"/>
+    </transition>
+    <transition event="reached.host">
+      <assign location="landed" expr="landed + 1"/>
+    </transition>
+    <transition event="reached.plain">
+      <assign location="plain" expr="plain + 1"/>
+    </transition>
+    <transition event="go" target="invoking"/>
+  </state>
+
+  <!--
+    ⚠⚠ THE OTHER HALF, and it is a separate question rather than the same one
+    twice. `<send>` picks an Event I/O Processor and `<invoke>` picks an
+    invoker; SCE's codegen has a path for `sce:mesh-rpc` on the invoke side and
+    `BasicHTTPEventProcessor` on the send side, which are two different
+    registries. A host might be able to reach one and not the other.
+  -->
+  <state id="invoking">
+    <invoke type="x-sprag-host"/>
+    <transition event="error.execution">
+      <assign location="errors" expr="errors + 1"/>
+    </transition>
+  </state>
+
+</scxml>

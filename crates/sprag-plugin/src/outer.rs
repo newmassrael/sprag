@@ -14038,7 +14038,7 @@ mod tests {
 
     /// This repository's OWN documents: the substrate (`orchestration` is the Driver's run
     /// lifecycle, `session` an endpoint's), what a run learned about its sessions
-    /// (`context_review`), and the three probes. Nobody copies these into another repository, so
+    /// (`context_review`), and the probes. Nobody copies these into another repository, so
     /// naming sprag's work in them is not contamination — it is the subject.
     ///
     /// ⚠ `debt_loop` and its siblings belong HERE when they exist. The whole point of the split is
@@ -14054,6 +14054,7 @@ mod tests {
         "probe_child",
         "probe_parallel",
         "probe_parent",
+        "probe_send_type",
         "session",
     ];
 
