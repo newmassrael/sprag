@@ -505,6 +505,9 @@ impl Rust {
         if let Some(named) = self.one(expr) {
             return Some(self.object_keys(&named));
         }
+        if let Some(bound) = self.bound(expr) {
+            return Some(bound);
+        }
         let called = expr
             .strip_prefix("self.")
             .unwrap_or(expr)
@@ -518,6 +521,48 @@ impl Rust {
             .find(|body| body.contains("json!({"))?;
         let at = body.find("json!({")? + "json!(".len();
         Some(self.object_keys(&balanced(body, at)))
+    }
+
+    /// The keys of a payload handed over as a LOCAL BINDING — `let payload = json!({…})` a few
+    /// lines above the raise, which is how the widest payload in this document is written.
+    ///
+    /// # ⚠⚠⚠⚠ Why this refuses a name bound more than once
+    ///
+    /// `brief` is raised as `raise_external(AiLoopEvent::Brief, &payload.to_string(), "")` and the
+    /// object is built just above it — the eighteen `<data>` names the document reads. Following
+    /// the binding is the only way a gate ever sees them.
+    ///
+    /// ⚠ But `payload` is an ordinary name: measured 2026-08-21, **one** binding of it exists in the
+    /// files this reader scans and **fourteen** exist workspace-wide. A follower that took the first
+    /// one it found would be the same confident lie the constants were — so two bindings that do
+    /// not agree answer [`None`], and the claim goes unread rather than wrong.
+    fn bound(&self, name: &str) -> Option<BTreeSet<String>> {
+        if name.is_empty() || !name.chars().all(is_ident) {
+            return None;
+        }
+        let mut found: Option<BTreeSet<String>> = None;
+        for bodies in self.bodies.values() {
+            for body in bodies {
+                for lead in [format!("let{name}="), format!("letmut{name}=")] {
+                    let Some(at) = body.find(&lead) else { continue };
+                    let value = &body[at + lead.len()..];
+                    let opens = ["serde_json::json!({", "json!({"]
+                        .into_iter()
+                        .find(|start| value.starts_with(start))?;
+                    let object = balanced(
+                        body,
+                        at + lead.len() + opens.len() - 1, // at the `{`
+                    );
+                    let keys = self.object_keys(&object);
+                    match &found {
+                        Some(already) if *already != keys => return None,
+                        Some(_) => {}
+                        None => found = Some(keys),
+                    }
+                }
+            }
+        }
+        found
     }
 
     /// Whether `payload` is a name this workspace SHARES rather than one site's own literal.
@@ -596,6 +641,18 @@ impl Rust {
                         start -= 1;
                     }
                     let token: String = chars[start..at].iter().collect();
+                    // ⚠⚠⚠⚠ THE DECLARING TYPE IS THE LAST TWO SEGMENTS, not the whole path: this
+                    // payload spells `crate::readiness::Readiness::WIRE_KEY` while the declaration
+                    // is registered as `Readiness::WIRE_KEY`. Measured — the first version of this
+                    // reader resolved fourteen of `brief`'s eighteen keys and left these four
+                    // standing as their own paths, which is what a `use`-shortened spelling and a
+                    // fully-qualified one look like side by side in one object.
+                    let segments: Vec<&str> = token.split("::").collect();
+                    let declared = if segments.len() >= 2 {
+                        segments[segments.len() - 2..].join("::")
+                    } else {
+                        String::new()
+                    };
                     if let Some(name) = token.rsplit("::").next().filter(|name| !name.is_empty()) {
                         // ⚠⚠⚠ THE TOKEN STANDS when the workspace does not agree what the name
                         // means — see [`Rust::one`]. An unresolved `WIRE_KEY` matches no key the
@@ -608,6 +665,7 @@ impl Rust {
                         // the qualified registration in [`Rust::of`] is the mutation that reds.
                         keys.insert(
                             self.one(&token)
+                                .or_else(|| self.one(&declared))
                                 .or_else(|| self.one(name))
                                 .unwrap_or_else(|| token.clone()),
                         );
