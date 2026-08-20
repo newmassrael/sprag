@@ -805,7 +805,7 @@ impl Emulator {
                     return None;
                 }
                 let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-                for px in bytes.chunks_exact(3) {
+                for px in bytes.as_chunks::<3>().0 {
                     rgba.extend_from_slice(px);
                     rgba.push(255); // RGB -> RGBA: opaque alpha.
                 }
@@ -3638,7 +3638,7 @@ fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     match info.color_type {
         png::ColorType::Rgba => return Some((width, height, buf)),
         png::ColorType::Rgb => {
-            for c in buf.chunks_exact(3) {
+            for c in buf.as_chunks::<3>().0 {
                 rgba.extend_from_slice(c);
                 rgba.push(255);
             }
@@ -3649,7 +3649,7 @@ fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             }
         }
         png::ColorType::GrayscaleAlpha => {
-            for ga in buf.chunks_exact(2) {
+            for ga in buf.as_chunks::<2>().0 {
                 rgba.extend_from_slice(&[ga[0], ga[0], ga[0], ga[1]]);
             }
         }

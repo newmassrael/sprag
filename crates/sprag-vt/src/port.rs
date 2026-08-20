@@ -2691,9 +2691,7 @@ impl Screen {
     /// advanced) would otherwise keep the stale colours, bumping every row's generation forces the
     /// re-colour to reach the display. No cells change, so this is the damage peer of an `OSC 4` set.
     pub(crate) fn mark_all_dirty(&mut self, generation: u64) {
-        for g in &mut self.generations {
-            *g = generation;
-        }
+        self.generations.fill(generation);
     }
 
     /// Write a cell and bump the owning row's damage generation.

@@ -39,6 +39,16 @@ pub(crate) mod sm {
     //! that machine is a test. It is `unused_imports` alone — a named lint over two generated
     //! lines, not a budget over a machine — and the honest repair is upstream carrying it on the
     //! line it emits.
+    //!
+    //! ⚠⚠⚠⚠ **A SECOND ONE JOINED IT 2026-08-21, AND IT ARRIVED WITHOUT ANY CODE CHANGING.** The
+    //! local toolchain moved to 1.98.0, whose clippy added `drain_collect`, and every generated
+    //! machine that invokes a child drains `pending_invokes` into a `Vec`. **A suppression budget
+    //! SCE measured at one toolchain does not stay measured** — this is the second named lint the
+    //! index carries for the generator, on the same terms as the first, and it is owed upstream in
+    //! the same way. ⚠ It is added only where it FIRES: a machine with no `<invoke>` has no drain,
+    //! so a blanket here would be back to covering nothing.
+    //! ⚠⚠⚠ Neither `cargo test` nor the remote build sees this — the build machines run 1.88, and
+    //! the hook's clippy is LOCAL, so the toolchains disagree about what is green.
 
     pub(crate) mod orchestration {
         #![allow(unused_imports)]
@@ -76,6 +86,9 @@ pub(crate) mod sm {
 
     pub(crate) mod probe_parent_sm {
         #![allow(unused_imports)]
+        // The generator's `pending_invokes.drain(..).collect()` — see the module docs. Named, not
+        // blanket, and owed upstream.
+        #![allow(clippy::drain_collect)]
         // ⚠⚠⚠⚠ THE INDEX PUTS THE MACHINE ONE LEVEL DEEPER, AND A PARENT NAMES ITS CHILD BY
         // `super::` — SCE-PR88's consumption, 2026-08-20. The generated parent reaches its invoked
         // child as `super::probe_child_sm::ProbeChildPolicy`; while the machine was `include!`d
@@ -116,6 +129,8 @@ pub(crate) mod sm {
     // on the answer.
     pub(crate) mod probe_send_type_sm {
         #![allow(unused_imports)]
+        // The generator's `pending_invokes.drain(..).collect()` — see the module docs.
+        #![allow(clippy::drain_collect)]
         include!(concat!(env!("OUT_DIR"), "/probe_send_type_sm.include.rs"));
     }
 
