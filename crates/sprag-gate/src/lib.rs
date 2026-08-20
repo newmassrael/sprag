@@ -47,6 +47,13 @@ pub mod doubles;
 /// them, and a rule kept in one of them is a rule the next one does not get.
 pub mod feeding;
 
+/// Where the debt-repayment loop's DECISIONS live, so a regression cannot be silent — item 470.
+///
+/// Here rather than in `sprag-plugin` for [`sources`]'s reason: the claim is about the TEXT of this
+/// workspace's Rust measured against a document, the walk is the same walk, and a second copy of it
+/// is where two copies of a rule drift apart.
+pub mod loop_shape;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the
