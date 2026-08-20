@@ -47,8 +47,12 @@ pub(crate) mod sm {
     //! index carries for the generator, on the same terms as the first, and it is owed upstream in
     //! the same way. ⚠ It is added only where it FIRES: a machine with no `<invoke>` has no drain,
     //! so a blanket here would be back to covering nothing.
-    //! ⚠⚠⚠ Neither `cargo test` nor the remote build sees this — the build machines run 1.88, and
-    //! the hook's clippy is LOCAL, so the toolchains disagree about what is green.
+    //! ⚠⚠⚠ Neither `cargo test` nor the remote build sees this, and the gap is ONE RELEASE rather
+    //! than a stale fleet: measured 2026-08-21, pc2/pc3/pc4 all answer `cargo 1.97.1` while this
+    //! machine — the only one the hook's clippy runs on — answers `1.98.0`. So the remote build is
+    //! not a second opinion about lints; it is the same opinion one release behind, and CI's rolling
+    //! stable reaches 1.98 on its own clock. ⚠ An earlier draft of this note said 1.88, inferred
+    //! from `cargo +1.88.0` succeeding there — which proves a toolchain is INSTALLED, not default.
 
     pub(crate) mod orchestration {
         #![allow(unused_imports)]
