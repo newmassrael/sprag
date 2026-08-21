@@ -77,6 +77,14 @@ pub mod economics;
 /// was abandoned on every one of them, and W3C SCXML 3.12.2 dropped the error — green for months.
 pub mod payload;
 
+/// Whether every party that WRITES an input event names its fields from one place — item 559.
+///
+/// Beside [`payload`] and for its reason: the claim is that a RENAME cannot leave a writer behind,
+/// which is a fact about the workspace's text rather than about any one crate, and a rule kept in
+/// one crate is a rule the next writer does not get. A running daemon cannot answer it — it can
+/// only say that today's spelling works, which is exactly what let the split ship green.
+pub mod vocabulary;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the

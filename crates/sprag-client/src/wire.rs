@@ -3803,14 +3803,12 @@ impl HostClient for WireHost {
     }
 
     fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool {
-        let args = json!({
-            "key": key,
-            "ctrl": mods.ctrl,
-            "alt": mods.alt,
-            "shift": mods.shift,
-            "super": mods.sup,
-            sprag_terminal::Hand::WIRE_KEY: sprag_terminal::Hand::APerson.word(),
-        });
+        // ⚠⚠⚠ THE FIELD NAMES ARE THE WIRE'S, NOT THIS CRATE'S — register item 559. They were an
+        // object literal here while the parser and the grammar went through `sprag_host::wire`'s
+        // constants, so a rename would have reached the daemon and left this client sending a key
+        // the daemon refuses — at run time, on the surface a person types through, with every
+        // suite green.
+        let args = sprag_host::wire::keystroke_args(key, mods, Some(sprag_terminal::Hand::APerson));
         self.request(
             "scene/invoke",
             invoke(&pane_input_path(id.0, KEY_ACTION), args),
@@ -4456,19 +4454,22 @@ fn parse_child_exit(value: &Value) -> Option<PaneExit> {
 /// carried: a mouse report has no encoding for the logo key (host-side `parse_mouse_args` fixes it
 /// to `false`).
 fn mouse_wire_args(event: MouseInput) -> Value {
-    json!({
-        // ⚠ THE TYPE'S OWN SPELLING, not this crate's. Both words used to be emitted by a local
-        // match here — documented as the "producer twin" of the host's parser — so one vocabulary
-        // had two hand-written definitions in two crates and a rename on either side would have made
-        // a button unsendable with both suites green. `MouseButton::wire_str` says the rest.
-        "button": event.button.wire_str(),
-        "kind": event.kind.wire_str(),
-        "col": event.col,
-        "row": event.row,
-        "ctrl": event.mods.ctrl,
-        "alt": event.mods.alt,
-        "shift": event.mods.shift,
-    })
+    // ⚠ THE TYPE'S OWN SPELLING, not this crate's. Both words used to be emitted by a local match
+    // here — documented as the "producer twin" of the host's parser — so one vocabulary had two
+    // hand-written definitions in two crates and a rename on either side would have made a button
+    // unsendable with both suites green. `MouseButton::wire_str` says the rest.
+    //
+    // ⚠⚠⚠ AND THE FOUR FIELD NAMES AROUND THOSE WORDS ARE NOW THE WIRE'S TOO — register item 559.
+    // The button and the kind were single-sourced; `button`/`kind`/`col`/`row` themselves were not,
+    // and had no constants anywhere until that item. The two halves of one report were spelled by
+    // two different rules.
+    sprag_host::wire::mouse_args(
+        event.button.wire_str(),
+        event.kind.wire_str(),
+        event.col,
+        event.row,
+        event.mods,
+    )
 }
 
 /// Parse a pane's `notification` wire value (`{title, body, seq}`, or absent/`null`) into a

@@ -358,7 +358,16 @@ pub(crate) mod grammar {
         // where it is writing. **A window neither reports an agent nor reads one's report** — it
         // draws the verdict the daemon publishes — so this pin moves for a fifth cause it takes no
         // part in. Five for five, which is the rate the pin's own argument was built from.
-        37,
+        // ⚠⚠⚠⚠⚠ THE SIXTH, and the first that is a WITHDRAWAL: register item 567 removed the
+        // `recent_input` pane slot and put `recent_input_has.<needle>` in its place, so a read
+        // cannot carry home input the terminal was told not to echo. **A window neither reads a
+        // pane's echo trail nor asks the question that replaced it** — the barrier that does is the
+        // run driver's — so this pin moves for a sixth cause it takes no part in. Six for six.
+        // ⚠⚠⚠⚠ AND IT WENT RED ONE ROUND LATE, which is a fact about the SWEEP rather than about
+        // this pin: `--workspace --exclude sprag-gui` is one half and `-p sprag-gui --bins` is the
+        // other, and item 567's round ran only the first. The pin did its job the moment it was
+        // asked; nothing asked it. Register item 575.
+        38,
         &[
             (
                 "the command palette",

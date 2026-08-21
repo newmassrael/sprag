@@ -121,9 +121,101 @@ pub const ALT_FIELD: &str = "alt";
 /// A keystroke's field naming whether SHIFT was held.
 pub const SHIFT_FIELD: &str = "shift";
 /// A keystroke's field naming whether the LOGO key was held — `super` on the wire (the W3C
-/// spelling) and `sup` on [`Modifiers`](sprag_input::Modifiers), which is why this is written out
-/// rather than derived from the field it fills.
+/// spelling) and `sup` on [`Modifiers`], which is why this is written out rather than derived from
+/// the field it fills.
 pub const SUPER_FIELD: &str = "super";
+/// A MOUSE REPORT's field naming WHICH BUTTON — a [`MouseButton`](sprag_input::MouseButton) word.
+///
+/// ⚠ These four had no constants at all until register item 559, while the keystroke's six did.
+/// That is the half-done state the item is about: a reader of `wire.rs` sees a single-sourced
+/// vocabulary and concludes a rename is safe.
+pub const MOUSE_BUTTON_FIELD: &str = "button";
+/// A mouse report's field naming WHAT HAPPENED — press, release, drag or wheel.
+pub const MOUSE_KIND_FIELD: &str = "kind";
+/// A mouse report's field naming the COLUMN, zero-based from the pane's left edge.
+pub const MOUSE_COL_FIELD: &str = "col";
+/// A mouse report's field naming the ROW, zero-based from the pane's top edge.
+pub const MOUSE_ROW_FIELD: &str = "row";
+
+/// The modifiers a keystroke or a mouse report carries, re-exported so a WRITER needs only this
+/// module — register item 559.
+///
+/// ⚠ A door that cannot be opened without a second dependency is a door callers walk around, and
+/// walking around this one is precisely the defect: `sprag-mcp` names `sprag-host` and not
+/// `sprag-input`, so requiring the argument's home crate would have left the agent surface spelling
+/// its own field names for the sake of a struct.
+pub use sprag_input::Modifiers;
+
+/// **THE ONE PLACE A KEYSTROKE REQUEST IS BUILT** — [`KEY_ACTION`]'s arguments, from the key and
+/// the modifiers that were held. Register item 559.
+///
+/// # ⚠⚠⚠⚠⚠ Why a constructor and not six constants a caller assembles
+///
+/// The constants alone left the vocabulary HALF single-sourced, which is worse than not at all: the
+/// parser and the grammar went through them and **four writers did not** — the display client, the
+/// agent surface's send-keys, its Enter-after-text, and the CLI. `wire.rs` then reads as though the
+/// names have one home, so *renaming one is safe* becomes the natural conclusion and it is false. A
+/// rename reaches the daemon, the grammar and the driver, and leaves those four sending a key the
+/// daemon refuses — **a refused keystroke at run time on the surface a person types through**, with
+/// every suite green, because each suite renames both of its own halves together.
+///
+/// A constructor makes the compiler carry them instead: there is one object literal on this side of
+/// the wire, and a field that moves moves here.
+///
+/// ⚠⚠ **The four writers did not agree even before the rename.** Measured 2026-08-22: the CLI sent
+/// no [`SUPER_FIELD`] at all (`parse_key_token` answers three modifiers), the agent surface's
+/// Enter sent no modifiers at all, and only the display client sent a [`Hand`](sprag_terminal::Hand)
+/// . Going through here makes every writer send the same shape — `super: false` where the caller has
+/// no logo key, which is what the parser already read an absent key as.
+///
+/// ⚠ `hand` is `Option` rather than defaulted because the two answers are different facts: a
+/// display client says A PERSON typed this, and a surface that cannot know must not claim it.
+#[must_use]
+pub fn keystroke_args(
+    key: &str,
+    mods: sprag_input::Modifiers,
+    hand: Option<sprag_terminal::Hand>,
+) -> Value {
+    let mut args = Map::new();
+    args.insert(KEY_FIELD.to_owned(), Value::from(key));
+    args.insert(CTRL_FIELD.to_owned(), Value::from(mods.ctrl));
+    args.insert(ALT_FIELD.to_owned(), Value::from(mods.alt));
+    args.insert(SHIFT_FIELD.to_owned(), Value::from(mods.shift));
+    args.insert(SUPER_FIELD.to_owned(), Value::from(mods.sup));
+    if let Some(hand) = hand {
+        args.insert(
+            sprag_terminal::Hand::WIRE_KEY.to_owned(),
+            Value::from(hand.word()),
+        );
+    }
+    Value::Object(args)
+}
+
+/// **THE ONE PLACE A MOUSE REPORT IS BUILT** — [`MOUSE_ACTION`]'s arguments. Register item 559.
+///
+/// Beside [`keystroke_args`] and for its reason. The `button` and `kind` words are the TYPES' own
+/// spellings ([`MouseButton::wire_str`](sprag_input::MouseButton::wire_str)) rather than this
+/// function's, which is a rule this report already followed — what it did not have was one home for
+/// the four FIELD names around them.
+#[must_use]
+pub fn mouse_args(
+    button: &str,
+    kind: &str,
+    col: u16,
+    row: u16,
+    mods: sprag_input::Modifiers,
+) -> Value {
+    let mut args = Map::new();
+    args.insert(MOUSE_BUTTON_FIELD.to_owned(), Value::from(button));
+    args.insert(MOUSE_KIND_FIELD.to_owned(), Value::from(kind));
+    args.insert(MOUSE_COL_FIELD.to_owned(), Value::from(col));
+    args.insert(MOUSE_ROW_FIELD.to_owned(), Value::from(row));
+    args.insert(CTRL_FIELD.to_owned(), Value::from(mods.ctrl));
+    args.insert(ALT_FIELD.to_owned(), Value::from(mods.alt));
+    args.insert(SHIFT_FIELD.to_owned(), Value::from(mods.shift));
+    Value::Object(args)
+}
+
 /// The answer key EVERY pane-input action that writes bytes carries when what it just wrote
 /// MEANT a signal and this pane's terminal will raise none — a list of
 /// `{`[`key`](UNSIGNALLED_WHICH_KEY)`, `[`because`](UNSIGNALLED_WHY_KEY)`}`, one per distinct key,

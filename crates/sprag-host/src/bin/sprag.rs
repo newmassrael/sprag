@@ -6894,9 +6894,22 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
         } else {
             let (key, mods) = parse_key_token(token)?;
             let (ctrl, alt, shift) = mods;
+            // ⚠⚠⚠ THE WIRE NAMES ITS OWN FIELDS — register item 559. This literal was the FOURTH
+            // writer, and the item's own filing named only three: a scan found it. ⚠ It also sent
+            // no `super`, because `parse_key_token` answers three modifiers — the constructor now
+            // sends `false`, which is what the parser already read an absent key as.
             (
                 KEY_ACTION,
-                json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift }),
+                sprag_host::wire::keystroke_args(
+                    &key,
+                    sprag_input::Modifiers {
+                        ctrl,
+                        alt,
+                        shift,
+                        sup: false,
+                    },
+                    None,
+                ),
             )
         };
         let answer = invoke_action(

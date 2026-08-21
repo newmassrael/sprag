@@ -5495,7 +5495,13 @@ fn tool_write_pane(args: &Value) -> Result<String, String> {
             "scene/invoke",
             with_args(
                 pane_params(&pane, pane_input_path(id, KEY_ACTION)),
-                json!({ "key": "Enter" }),
+                // ⚠ Register item 559: a bare Enter is still a keystroke request, and it was the
+                // one writer that named the field while carrying no modifier at all.
+                sprag_host::wire::keystroke_args(
+                    "Enter",
+                    sprag_host::wire::Modifiers::default(),
+                    None,
+                ),
             ),
         )?;
     }
@@ -7085,7 +7091,19 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
             "scene/invoke",
             with_args(
                 pane_params(&pane, pane_input_path(id, KEY_ACTION)),
-                json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift, "super": sup }),
+                // ⚠⚠⚠ THE WIRE NAMES ITS OWN FIELDS — register item 559. This was the agent
+                // surface's own spelling of all five, beside a parser and a grammar that had gone
+                // through the constants since stage 1c.
+                sprag_host::wire::keystroke_args(
+                    key,
+                    sprag_host::wire::Modifiers {
+                        ctrl,
+                        alt,
+                        shift,
+                        sup,
+                    },
+                    None,
+                ),
             ),
         )?;
         caveats.push_str(&unsignalled_sentence(&answer));
