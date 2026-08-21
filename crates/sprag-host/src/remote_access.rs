@@ -20,7 +20,7 @@
 //!
 //! # What a remote surface answers, and what it still does not
 //!
-//! **FIVE ARE SERVED** (register item 557), and each one is a production path of the loop's:
+//! **SIX ARE SERVED** (register item 557), and each one is a production path of the loop's:
 //!
 //! * `supervision` — what the agent in a pane is doing. Five reads in `outer.rs`.
 //! * `lifecycle` — open, REPLACE and close panes. The loop's whole session rollover.
@@ -28,13 +28,17 @@
 //! * `terminal_modes` — who echoes, and whether a `Ctrl-D` ends the input. `deliver`'s verdict.
 //! * `foreground_job` — who owns the pane's terminal. TWO consumers: the predicate
 //!   `ReadyWhen::Runs` decides on, and the diagnosis a barrier that never cleared owes its caller.
+//! * `output_lines` — what the pane has said SINCE a cursor, with what was evicted unread. The read
+//!   a relay is; no whole-output address can be one.
 //!
-//! ⚠⚠⚠⚠ **Two remain [`None`]**: `output_lines` and `raw_capture` (with `hands` and
-//! `job_control`). Each absence is safe by that surface's OWN documentation — a host with no job
+//! **THAT IS EVERY SURFACE THE LOOP READS ON A PRODUCTION PATH.**
+//!
+//! ⚠⚠⚠⚠ **Three remain [`None`]**, and none of them is a loop read: `raw_capture`, `hands` and
+//! `job_control`. Each absence is safe by that surface's OWN documentation — a host with no job
 //! control must report that it could not stop the work rather than write `0x03` and hope. **They are
 //! `None` because this build cannot ask those questions over the wire yet, not because a remote
-//! driver does not want them** — they are the rest of item 557, and every one of them has a consumer
-//! that already handles the absence.
+//! driver does not want them**, and every one of them has a consumer that already handles the
+//! absence.
 //!
 //! ⚠⚠⚠⚠⚠ **The echo trail is the one read here that is NOT about the screen, and that is the point.**
 //! A pseudoterminal echoes its input, so a barrier matching a marker against the grid cannot tell
@@ -61,19 +65,21 @@ use std::sync::Mutex;
 use serde_json::{Value, json};
 use sprag_plugin::{
     AgentObservation, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneInputEcho,
-    PaneLifecycle, PaneRow, PaneSupervision, PaneTerminalModes, Written,
+    PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT};
 use sprag_terminal::{JobProcess, PaneEcho, PaneEndOfInput, PaneId};
+use sprag_vt::LinesSince;
 
 use crate::external::lock;
 use crate::wire::{
     AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, FULL_LINES_SLOT, FULL_TEXT_SLOT,
-    INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, PANE_ECHO_SLOT,
-    PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT,
-    PEER_GONE_REFUSAL, RECENT_INPUT_SLOT, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
-    SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY,
-    SUPER_FIELD, agent_slot_for, mux_action_path, pane_input_path, refusal, unknown_action,
+    INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, LINES_KEY, LINES_LOST_KEY,
+    LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT,
+    PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
+    RECENT_INPUT_SLOT, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD,
+    agent_slot_for, lines_since_at, mux_action_path, pane_input_path, refusal, unknown_action,
     unknown_slot,
 };
 
@@ -331,6 +337,16 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **WHAT A PANE HAS SAID SINCE A READER'S CURSOR** — register item 557, and the read a RELAY
+    /// is.
+    ///
+    /// ⚠⚠ Served rather than left to the trait's default. That default re-reads the pane's WHOLE
+    /// output and slices it, which loses the two facts only the pane can supply: what was evicted
+    /// unread, and whether the numbering the cursor came from still exists.
+    fn output_lines(&self) -> Option<&dyn PaneOutputLines> {
+        Some(self)
+    }
+
     /// **WHO OWNS A PANE'S TERMINAL** — register item 557, and the surface `ReadyWhen::Runs` is.
     ///
     /// ⚠ Always `Some`; the per-pane `None` carries the absence, which is *nothing owns that
@@ -468,6 +484,42 @@ impl PaneInputEcho for RemotePaneAccess {
         self.read_pane(id, RECENT_INPUT_SLOT)?
             .as_str()
             .map(str::to_owned)
+    }
+}
+
+/// **WHAT A PANE HAS SAID SINCE A CURSOR, READ OVER THE SOCKET** — register item 557.
+impl PaneOutputLines for RemotePaneAccess {
+    /// The lines after `cursor`, or [`None`] for a pane this daemon does not hold.
+    ///
+    /// ⚠⚠⚠ **A MISSING FIELD IS ITS OWN SAFE VALUE, NOT A REFUSAL, AND THE TWO COUNTERS ARE NOT
+    /// SAFE IN THE SAME DIRECTION.** `lost` defaults to ZERO — *nothing was evicted* — which is
+    /// what a reader from a daemon too old to count it should assume, because the alternative would
+    /// have every step report a gap that never happened. `next` defaults to the CURSOR the caller
+    /// passed, so a reader whose answer lost that field re-reads rather than skips: an address that
+    /// answered zero would rewind the relay to the beginning of the pane on every step.
+    fn pane_lines_since(&self, id: PaneId, cursor: u64) -> Option<LinesSince> {
+        let answer = self.read_pane(id, &lines_since_at(cursor))?;
+        Some(LinesSince {
+            lines: answer[LINES_KEY]
+                .as_array()
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .filter_map(|line| line.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            next: answer[LINES_NEXT_KEY].as_u64().unwrap_or(cursor),
+            lost: answer[LINES_LOST_KEY].as_u64().unwrap_or(0),
+            partial: answer[LINES_PARTIAL_KEY]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            // ⚠ ABSENT is `false` — *the numbering still holds* — which is the reading that makes a
+            // reader carry on rather than restart. A `true` invented here would throw away a cursor
+            // that was perfectly good and re-deliver everything the pane retains.
+            restarted: answer[LINES_RESTARTED_KEY].as_bool().unwrap_or(false),
+        })
     }
 }
 

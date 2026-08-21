@@ -377,6 +377,53 @@ pub const PANE_END_OF_INPUT_SLOT: &str = "end_of_input";
 /// sampler, which is why both exist.
 pub const PANE_FOREGROUND_SLOT: &str = "foreground";
 
+/// The arguments of [`LINES_SINCE_FIELD`] — the CURSOR a reader last held. `Open`, for
+/// [`FIND_ARGS`]'s reason one step along: a cursor is a number the reader carries, and a value ahead
+/// of what the pane has produced is answerable (it yields nothing) rather than out of range.
+const LINES_SINCE_ARGS: &[SchemaArg] = &[SchemaArg::open("cursor", "int")];
+
+/// The pane-input external query FAMILY: **THE COMPLETE LOGICAL LINES THIS PANE HAS PRODUCED SINCE A
+/// READER'S CURSOR** — `lines_since.<cursor>` — as
+/// `{lines, next, lost, partial, restarted}`. Register item 557.
+///
+/// # ⚠⚠⚠⚠⚠ Why a relay cannot be built on any screen address
+///
+/// [`FULL_LINES_SLOT`] answers *everything this pane has ever said*, so a reader following a running
+/// program would re-read its whole history on every step and have no way to tell what is NEW. This
+/// family answers *what has it said SINCE*, and carries three facts a re-read cannot reconstruct:
+///
+/// * [`LINES_LOST_KEY`] — how many complete lines were evicted before this reader asked. **A silent
+///   gap in a relay is indistinguishable from a quiet source**, which is the confusion this
+///   repository has already paid for in other shapes.
+/// * [`LINES_PARTIAL_KEY`] — the line the pane is STILL WRITING, kept OUT of `lines` and NOT counted
+///   by `next`, so a reader that ignores it loses nothing and one that takes it is handed the line
+///   again, whole, when the child ends it. ⚠ It is final only when the child has EXITED — and that
+///   is [`PANE_EOF_SLOT`]'s to say, which is why the two addresses are read together.
+/// * [`LINES_RESTARTED_KEY`] — the numbering this cursor came from no longer exists (the program
+///   entered the alternate screen, which installs a fresh sequence from zero). Before that fact
+///   existed every such read answered EMPTY with `lost: 0`, and an agent's completion marker was
+///   invisible to the thing waiting for it (register item 366).
+pub const LINES_SINCE_FIELD: SchemaField =
+    SchemaField::parametric("lines_since.<cursor>", "object", LINES_SINCE_ARGS);
+
+/// The [`LINES_SINCE_FIELD`] address for a reader holding `cursor`.
+#[must_use]
+pub fn lines_since_at(cursor: u64) -> String {
+    format!("lines_since.{cursor}")
+}
+
+/// [`LINES_SINCE_FIELD`]'s key carrying the COMPLETE logical lines, oldest first.
+pub const LINES_KEY: &str = "lines";
+/// [`LINES_SINCE_FIELD`]'s key carrying the cursor to pass next time.
+pub const LINES_NEXT_KEY: &str = "next";
+/// [`LINES_SINCE_FIELD`]'s key carrying how many complete lines were evicted unread.
+pub const LINES_LOST_KEY: &str = "lost";
+/// [`LINES_SINCE_FIELD`]'s key carrying the line still being written — see the family's own doc for
+/// why a consumer must earn the right to use it.
+pub const LINES_PARTIAL_KEY: &str = "partial";
+/// [`LINES_SINCE_FIELD`]'s key saying the cursor's numbering is gone and the lines start over.
+pub const LINES_RESTARTED_KEY: &str = "restarted";
+
 /// The pane-input external query slot: **THE VISIBLE SCREEN, COLLAPSED** — every row's share of its
 /// logical line joined with nothing between them, which is the read a marker or a sentinel is
 /// matched against.
@@ -761,6 +808,12 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // `stat`-sized reads, no table walk) rather than through the sampler beside it, because a
     // barrier asks this every 10 ms and the sampler pays a full pass over the process table.
     SchemaField::new(PANE_FOREGROUND_SLOT, "object"),
+    // ⚠⚠⚠⚠⚠ Register item 557 — WHAT THIS PANE HAS SAID SINCE A READER'S CURSOR. Every other read
+    // on this surface answers about the pane's WHOLE output or its CURRENT screen; a relay needs
+    // *what is new*, and needs to be told when a gap was evicted underneath it (a silent gap and a
+    // quiet source are otherwise the same answer).
+    LINES_SINCE_FIELD,
+    empty_member_of(&LINES_SINCE_FIELD),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
@@ -9758,6 +9811,10 @@ mod tests {
             "kill_window",
             "last_command",
             "layout",
+            // ⚠⚠ ADDED at register item 557, family and empty member together: what a pane has said
+            // SINCE a reader's cursor, which no whole-output address can answer.
+            "lines_since.",
+            "lines_since.<cursor>",
             "links",
             "mouse",
             "move_pane",

@@ -7188,3 +7188,127 @@ fn a_remote_barrier_asks_who_holds_the_pane_and_names_it_when_it_gives_up() {
 
     let _ = std::fs::remove_file(&sock);
 }
+
+/// ⛔⛔⛔⛔ **A DRIVER OUTSIDE THIS PROCESS FOLLOWS A PANE'S OUTPUT, AND IS TOLD WHAT IT MISSED** —
+/// register item 557's `output_lines` surface, and the last of the six.
+///
+/// # ⚠⚠⚠⚠⚠ Why no screen address can be a relay
+///
+/// `full_lines` answers *everything this pane has ever said*. A reader following a running program
+/// would re-read the whole history every step and could not tell what is NEW — and worse, could not
+/// tell what it had MISSED. This family answers *since a cursor*, and carries three facts a re-read
+/// cannot reconstruct:
+///
+/// * **`lost`** — complete lines evicted before this reader asked. **A silent gap in a relay is
+///   indistinguishable from a quiet source**, and a reader that cannot tell them apart reports the
+///   peer said nothing when it said something nobody kept.
+/// * **`partial`** — the line still being written, kept OUT of `lines` and NOT counted by `next`, so
+///   a reader that ignores it loses nothing and one that takes it is handed the line again, whole.
+/// * **`next`** — where to resume. It is the field whose ABSENCE is most dangerous, which is why the
+///   client defaults it to the cursor it passed rather than to zero: a relay that rewound to the
+///   beginning of the pane every step would re-deliver the peer's whole history as if it were new.
+///
+/// # ⚠⚠⚠ The claim is a WALK, not one read
+///
+/// One read proves the JSON. Two reads in sequence, with the second using the `next` the first
+/// answered, prove the thing the address is FOR: the second must carry what the pane said between
+/// them and must NOT carry what the first already delivered.
+#[test]
+fn a_remote_driver_follows_a_panes_output_from_a_cursor_and_does_not_re_read_it() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sh"], "cols": 60, "rows": 12 }));
+
+    let output = remote.output_lines().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a remote driver has no way to follow a pane's output. It \
+             then falls back to re-reading the whole history each step, which cannot say what is \
+             new and cannot say what was lost."
+        )
+    });
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains('$'))),
+        "the shell never printed a prompt, so the walk below would start mid-boot",
+    );
+
+    // ── SOMETHING COMPLETE BEFORE THE CURSOR, so the "must not come back" arm below has something
+    // to be about. ⚠⚠⚠⚠ WITHOUT THIS THE ARM IS VACUOUS AND SAYS SO TO NOBODY: a shell's prompt
+    // sits on the PARTIAL line, never in `lines`, so the first version of this gate skipped that
+    // assertion entirely — and the mutation that makes the address ignore its cursor passed.
+    let mut before = KeyStroke::text("printf 'ZERO\\n'");
+    before.push(KeyStroke::named("Enter"));
+    let _first_write = remote
+        .inject(pane, &before)
+        .expect("the driver asks the shell to print a line before the cursor is taken");
+    assert!(
+        wait_until(Duration::from_secs(10), || output
+            .pane_lines_since(pane, 0)
+            .is_some_and(|since| since.lines.iter().any(|line| line == "ZERO"))),
+        "the pane never printed the line the cursor is taken after. Read {:?}",
+        output.pane_lines_since(pane, 0),
+    );
+
+    // ── THE FIRST READ SETS THE CURSOR ─────────────────────────────────────────────────────────
+    let first = output
+        .pane_lines_since(pane, 0)
+        .expect("the pane answers its lines from the beginning");
+    assert!(
+        first.lines.iter().any(|line| line == "ZERO"),
+        "⚠⚠⚠⚠ THE FIXTURE'S PREMISE, ASSERTED: this read must actually HOLD the line the second \
+         one is forbidden to repeat. It is stated because the first draft of this gate assumed a \
+         shell prompt would be here — it is not, it is on the `partial` line — and the arm below \
+         silently measured nothing. Got {:?}",
+        first.lines,
+    );
+    assert_eq!(
+        first.lost, 0,
+        "⚠⚠ nothing can have been evicted from a pane this young — a non-zero `lost` here would \
+         mean the client is inventing the field rather than reading it. Got {first:?}",
+    );
+
+    // ── THEN THE PANE SAYS SOMETHING, AND ONLY THAT MUST COME BACK ─────────────────────────────
+    let mut says = KeyStroke::text("printf 'ONE\\nTWO\\n'");
+    says.push(KeyStroke::named("Enter"));
+    let _typed = remote
+        .inject(pane, &says)
+        .expect("the driver asks the shell to print two lines");
+
+    let resumed = first.next;
+    assert!(
+        wait_until(Duration::from_secs(10), || output
+            .pane_lines_since(pane, resumed)
+            .is_some_and(|since| since.lines.iter().any(|line| line == "TWO"))),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: the pane's NEW output never reached the driver at the cursor \
+         the previous read handed it. A relay that cannot resume is a relay that re-reads, and a \
+         re-reading relay cannot tell what the peer just said from what it said an hour ago. \
+         Read {:?}",
+        output.pane_lines_since(pane, resumed),
+    );
+
+    let second = output
+        .pane_lines_since(pane, resumed)
+        .expect("the pane answers from the resumed cursor");
+    assert!(
+        second.next > resumed,
+        "⚠⚠⚠ the cursor must ADVANCE, or the next step re-reads these lines for ever. Got {} from \
+         {resumed}",
+        second.next,
+    );
+    // ⚠⚠⚠⚠ THE NON-VACUITY OF THE WHOLE WALK, and it is an UNCONDITIONAL assertion because a
+    // conditional one is how this arm was vacuous the first time. An address that ignored the
+    // cursor and answered the pane's whole history satisfies every assertion above — it contains
+    // `TWO`, after all — and fails only here.
+    assert!(
+        !second.lines.iter().any(|line| line == "ZERO"),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: a line the FIRST read already delivered came back in the \
+         second. The cursor is then decorative and this address is `full_lines` wearing a \
+         different name — which is exactly the re-read the family exists to replace, and a relay \
+         built on it would report the peer's whole history as new on every step. Got {:?}",
+        second.lines,
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}

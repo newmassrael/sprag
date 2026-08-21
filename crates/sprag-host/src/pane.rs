@@ -69,11 +69,12 @@ use crate::wire::{
     ACTION_GRAMMAR_SLOT, ALT_FIELD, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION,
     CLIPBOARD_WRITE_SLOT, CTRL_FIELD, CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT,
     FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
-    INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINKS_SLOT,
-    MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
-    PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT,
-    RECENT_INPUT_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
-    SUPER_FIELD, TEXT_ACTION,
+    INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
+    LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
+    LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
+    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL,
+    PROMPT_MARKS_SLOT, RECENT_INPUT_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
+    SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -628,6 +629,29 @@ impl SpragPaneExternal {
         // a client that re-queries as the user types cannot wake the waiters it is parked beside
         // (the R152 lesson `cells` was moved off an invoke for). The needle rides the path verbatim;
         // an EMPTY one is not a needle, which is the caller's to fix.
+        // ⚠⚠⚠⚠⚠ WHAT THIS PANE HAS SAID SINCE A READER'S CURSOR — register item 557, and the read a
+        // RELAY is. `full_lines` beside it answers the pane's whole history, so a reader following a
+        // running program would re-read everything each step and could not tell what is new. This
+        // one also carries the three facts a re-read cannot reconstruct: what was EVICTED unread,
+        // what is still being WRITTEN, and whether the numbering the cursor came from still exists.
+        //
+        // ⚠⚠ The cursor is parsed with the SAME rule `cells.<offset>` uses (`007` is not `7`
+        // spelled twice), so the two families refuse a malformed argument identically.
+        if let Some(arg) = path.strip_prefix(LINES_SINCE_FIELD.literal_prefix()) {
+            let Some(cursor) = cells_offset(arg) else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            let since = self
+                .pty
+                .with_screen(|screen| screen.lines_since(cursor as u64));
+            return Some(Ok(IntrospectValue::Json(json!({
+                LINES_KEY: since.lines,
+                LINES_NEXT_KEY: since.next,
+                LINES_LOST_KEY: since.lost,
+                LINES_PARTIAL_KEY: since.partial,
+                LINES_RESTARTED_KEY: since.restarted,
+            }))));
+        }
         if let Some(needle) = path.strip_prefix(FIND_FIELD.literal_prefix()) {
             if needle.is_empty() {
                 return Some(Err(ReadRefusal::QueryTypeMismatch));
