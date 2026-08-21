@@ -898,11 +898,12 @@ impl PluginsExternal {
             opened_by,
             opened_by_session,
             state,
-            handle,
+            // ⚠⚠⚠ THE REGISTRY IS TOLD *A RUN*, NOT *A THREAD AND THREE FLAGS* — register item
+            // 544's stage 2. This is the one place in the product that knows the driver is
+            // in-process, which is exactly where that knowledge should end up once a run's driver
+            // can be another process. See `sprag_host::runs::RunHandle`.
+            run: Box::new(crate::runs::ThreadRun::new(cancel, order, hold, handle)),
             progress,
-            cancel,
-            order,
-            hold,
         })
     }
 }

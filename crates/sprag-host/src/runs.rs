@@ -75,6 +75,164 @@ pub enum RunState {
     Interrupted,
 }
 
+/// **WHAT A PERSON CAN SAY TO A RUN** — the three orders as MESSAGES, rather than as flags a caller
+/// reaches in and sets.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a type and not three method names — register item 544
+///
+/// The registry's orders were three `Arc<AtomicBool>` stores, which is only expressible when the
+/// thing being ordered is A THREAD IN THIS PROCESS. Item 544's direction is that a run's driver
+/// stops living inside the terminal multiplexer, and the moment it does, *"set this bool"* has no
+/// meaning — the order has to TRAVEL. Naming the orders makes the set of them closed and makes each
+/// one a value that can be carried somewhere, which is the whole difference between a registry that
+/// is a container of threads and one that is a DIRECTORY.
+///
+/// ⚠⚠⚠ THE THREE ARE DELIBERATELY NOT COLLAPSIBLE, and `RunRecord`'s own fields already argued it:
+/// [`Cancel`](Self::Cancel) loses the turn in flight, [`StandDown`](Self::StandDown) banks the
+/// milestone and then stops, and those are exactly the two outcomes a person raising one is choosing
+/// between. [`Hold`](Self::Hold) is a third because it is the only TWO-WAY one — a level somebody
+/// raises and lowers — where the other two are latches that must be, since an un-ordering racing a
+/// milestone would make a run's ending depend on which message arrived first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunOrder {
+    /// Stop now and lose the turn in flight — `RunRegistry::cancel`.
+    Cancel,
+    /// Finish what you are doing and then stop — `RunRegistry::stand_down`. One-way.
+    StandDown,
+    /// Halt between turns (`true`), or let go again (`false`) — `RunRegistry::hold`.
+    Hold(bool),
+}
+
+/// **A RUN AS THE REGISTRY KNOWS IT** — the seam that lets [`RunRegistry`] be a DIRECTORY of runs
+/// instead of a container of threads.
+///
+/// # ⚠⚠⚠⚠⚠ The fusion this exists to unpick — register item 544
+///
+/// A run is a SUPERVISOR: it holds a statechart and drives a pane, and its natural lifetime is the
+/// work. The daemon is a terminal multiplexer: it owns PTYs and panes, and its natural lifetime is
+/// weeks. They share one process today, and the consequence is a sentence nobody would design on
+/// purpose — **changing how an AI loop reflects requires restarting the thing that holds your
+/// PTYs.** Moving the driver out needs the registry to stop knowing HOW a run is driven, and this
+/// trait is that boundary: everything the registry does to a run it does through these four
+/// questions, none of which mentions a thread.
+///
+/// ⚠⚠⚠ **IT HAS TWO IMPLEMENTATIONS IN THIS FILE ALREADY, AND THAT IS THE POINT.** [`ThreadRun`] is
+/// today's in-process worker; [`EndedRun`] is a run restored from a dead daemon's log, which has no
+/// driver at all. The second one is not a test fixture — it is what `RunRegistry::restore` builds,
+/// and it replaces three fresh `AtomicBool`s whose own doc admitted there was *"nothing on the other
+/// end of them"*. A seam exercised only by tests is a seam nothing keeps honest.
+///
+/// ⚠⚠ REAPING IS PART OF IT because a directory that could deliver orders but still had to reach
+/// for a `JoinHandle` would be a container of threads wearing a trait. `reapable` and `reap` are how
+/// a run's driver is found to have stopped and collected, whatever kind of driver it was.
+pub trait RunHandle: Send + Sync {
+    /// Deliver `order` to this run. Delivery is best-effort and says nothing about when the run acts
+    /// — the registry's callers are told only whether the run EXISTS, which is a fact about the
+    /// directory rather than about the driver.
+    fn deliver(&self, order: RunOrder);
+
+    /// Whether a driver has stopped and is waiting to be collected — non-blocking. `false` once
+    /// [`reap`](Self::reap) has taken it, and `false` for a run that never had one.
+    fn reapable(&self) -> bool;
+
+    /// Collect the stopped driver, reporting why it died badly if it did. Called only when
+    /// [`reapable`](Self::reapable) says there is one, and at most once.
+    fn reap(&mut self) -> Option<String>;
+
+    /// Whether a driver of this run is still uncollected — what a shutdown's bounded join waits on.
+    fn outstanding(&self) -> bool;
+}
+
+/// A run driven by **A THREAD IN THIS PROCESS** — the only kind that exists today, and the one
+/// register item 544 is about moving out.
+///
+/// The three flags are shared with the worker's `RunContext`, so an order delivered here is seen at
+/// the driver's next loop top or wait poll. That sharing is why they are handed in rather than made
+/// here: the same `Arc`s go to the worker at spawn.
+pub struct ThreadRun {
+    cancel: Arc<AtomicBool>,
+    stand_down: Arc<AtomicBool>,
+    hold: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ThreadRun {
+    /// Take the worker and the three flags it is already sharing.
+    #[must_use]
+    pub fn new(
+        cancel: Arc<AtomicBool>,
+        stand_down: Arc<AtomicBool>,
+        hold: Arc<AtomicBool>,
+        handle: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            cancel,
+            stand_down,
+            hold,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl RunHandle for ThreadRun {
+    fn deliver(&self, order: RunOrder) {
+        // ⚠ ONE `match`, so a fourth order cannot be added without this arm being written. That is
+        // the ratchet a trio of `store` calls at three call sites did not have.
+        match order {
+            RunOrder::Cancel => self.cancel.store(true, Ordering::Release),
+            RunOrder::StandDown => self.stand_down.store(true, Ordering::Release),
+            RunOrder::Hold(held) => self.hold.store(held, Ordering::Release),
+        }
+    }
+
+    fn reapable(&self) -> bool {
+        self.handle.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
+    fn reap(&mut self) -> Option<String> {
+        let handle = self.handle.take()?;
+        handle
+            .join()
+            .err()
+            .map(|_| "plugin run panicked".to_string())
+    }
+
+    fn outstanding(&self) -> bool {
+        self.handle.is_some()
+    }
+}
+
+/// A run **WITH NO DRIVER LEFT** — what a predecessor daemon's log restores to.
+///
+/// # ⚠⚠⚠ It replaces three flags whose own doc said nothing read them
+///
+/// `RunRegistry::restore` used to mint a fresh `AtomicBool` for each order, and each carried a
+/// comment explaining that setting it did nothing: *"the worker that would have read it died with
+/// its daemon"*. Three write-only flags are a lie the type system was not being asked to catch, and
+/// the registry's `cancel` had to document that it *"finds it and returns true having done
+/// nothing"*. This says the same thing as a TYPE: the run is in the directory, orders to it are
+/// accepted and go nowhere, and there is no driver to reap.
+///
+/// ⚠ The registry still answers `true` for it, which is unchanged and correct — the caller asked
+/// whether the run exists, and it does.
+pub struct EndedRun;
+
+impl RunHandle for EndedRun {
+    fn deliver(&self, _order: RunOrder) {}
+
+    fn reapable(&self) -> bool {
+        false
+    }
+
+    fn reap(&mut self) -> Option<String> {
+        None
+    }
+
+    fn outstanding(&self) -> bool {
+        false
+    }
+}
+
 struct RunRecord {
     id: RunId,
     label: String,
@@ -114,34 +272,17 @@ struct RunRecord {
     /// exactly as they do one layer down where the host chooses between `argv` and `agent_session`.
     opened_by_session: Option<String>,
     state: Arc<Mutex<RunState>>,
-    handle: Option<JoinHandle<()>>,
+    /// **THE RUN ITSELF, AS THIS DIRECTORY KNOWS IT** — a [`RunHandle`], which is deliberately not a
+    /// thread. See that trait for the fusion it exists to unpick (register item 544); the three
+    /// order flags and the `JoinHandle` that used to sit here are [`ThreadRun`]'s private business
+    /// now, and a restored run is an [`EndedRun`] rather than three flags nothing reads.
+    run: Box<dyn RunHandle>,
     /// WHAT THE RUN HAS SPENT SO FAR, shared with the `Driver` that is spending it.
     ///
     /// The counters were readable only in the terminal `Outcome`, so a client watching a long run
     /// could not tell progress from stuck and could not see spend until it was spent — see
     /// [`sprag_plugin::Progress`].
     progress: ProgressCell,
-    /// The run's cancel flag, shared with its `WorkspacePaneAccess`; setting it
-    /// makes the worker's Driver/plugin stop at its next check.
-    cancel: Arc<AtomicBool>,
-    /// **THE RUN'S STAND-DOWN FLAG**, shared with the `RunContext` its worker drives through.
-    ///
-    /// ⚠⚠⚠ A SECOND FLAG AND NOT A SECOND MEANING FOR THE FIRST. Cancel says *stop now and lose the
-    /// turn*; this says *finish what you are doing and then stop*. One flag for both would make the
-    /// run that banked its milestone and the run that lost it look identical from here, and those
-    /// are exactly the two outcomes the person raising one is choosing between.
-    order: Arc<AtomicBool>,
-    /// **THE RUN'S HOLD FLAG**, shared with the `RunContext` its worker drives through — the third
-    /// thing a person can say to a run, and the only one they can take back.
-    ///
-    /// ⚠⚠⚠ A THIRD FLAG BECAUSE IT IS TWO-WAY. `order` above is one-way on purpose: an un-ordering
-    /// racing a milestone would make a run's ending depend on which message arrived first. A hold
-    /// has a way back by construction — the document's `resume` — and folding it into `order` would
-    /// hand the irreversible order an undo.
-    ///
-    /// ⚠ It ends nothing. A held run is WAITING, and a person who wanted it over reaches for one of
-    /// the other two. See `sprag_plugin::RunContext::held`.
-    hold: Arc<AtomicBool>,
     /// WHICH BUILD DROVE THIS RUN — [`crate::wire::BUILD`] for a run this daemon started, the dead
     /// daemon's for one taken from a predecessor's log, and [`None`] for a log written before this
     /// field existed.
@@ -207,18 +348,12 @@ pub struct NewRun {
     pub opened_by_session: Option<String>,
     /// Where the worker writes its terminal state.
     pub state: Arc<Mutex<RunState>>,
-    /// The worker itself.
-    pub handle: JoinHandle<()>,
+    /// **THE RUN ITSELF** — a [`RunHandle`], and deliberately not a thread plus three flags. A
+    /// caller spawning an in-process worker hands a [`ThreadRun`]; see that trait for why the
+    /// registry is not allowed to know which kind it got (register item 544).
+    pub run: Box<dyn RunHandle>,
     /// Where the driver writes what it has spent so far.
     pub progress: ProgressCell,
-    /// The flag that asks the run to stop at its next check.
-    pub cancel: Arc<AtomicBool>,
-    /// The flag that asks the run to finish its milestone and then stop — see `RunRecord::order`
-    /// for why it is not the one above.
-    pub order: Arc<AtomicBool>,
-    /// The flag that HALTS the run between turns and lets it go again — see `RunRecord::hold` for
-    /// why it is neither of the two above.
-    pub hold: Arc<AtomicBool>,
 }
 
 /// ONE RUN AS IT SURVIVES ITS DAEMON — the durable mirror of a live run record.
@@ -357,11 +492,8 @@ impl RunRegistry {
             opened_by: run.opened_by,
             opened_by_session: run.opened_by_session,
             state: run.state,
-            handle: Some(run.handle),
+            run: run.run,
             progress: run.progress,
-            cancel: run.cancel,
-            order: run.order,
-            hold: run.hold,
             // ⚠ STAMPED HERE AND NOWHERE ELSE ON THIS PATH — see `RunRecord::build`. The worker
             // about to run is inside THIS image, so this image is the only honest answer, and it
             // is read from the constant the same binary published at `client/hello`.
@@ -374,9 +506,24 @@ impl RunRegistry {
     /// The worker observes it at its next loop-top / wait-poll and ends
     /// [`crate::runs::RunState`]'s outcome as cancelled.
     pub fn cancel(&self, id: RunId) -> bool {
+        self.order(id, RunOrder::Cancel)
+    }
+
+    /// **FORWARD `order` TO RUN `id`**, returning whether such a run exists — the ONE place this
+    /// directory turns a caller's word into something delivered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the three public orders funnel through here — register item 544
+    ///
+    /// They used to be three near-identical bodies that each found the record and stored into a
+    /// flag on it, which quietly made *"order a run"* mean *"reach into a thread's memory"*. A run
+    /// whose driver is another PROCESS cannot be ordered that way at all, so the lookup and the
+    /// delivery are separated: **finding the run is the directory's job, and knowing what delivery
+    /// means is [`RunHandle`]'s.** The boolean is unchanged and still answers the only question the
+    /// registry can answer — whether there is such a run — never whether the driver has acted.
+    fn order(&self, id: RunId, order: RunOrder) -> bool {
         match self.runs.iter().find(|record| record.id == id) {
             Some(record) => {
-                record.cancel.store(true, Ordering::Release);
+                record.run.deliver(order);
                 true
             }
             None => false,
@@ -395,13 +542,7 @@ impl RunRegistry {
     /// *stand down, no wait, carry on* racing a milestone would make a run's ending depend on which
     /// message arrived first.
     pub fn stand_down(&self, id: RunId) -> bool {
-        match self.runs.iter().find(|record| record.id == id) {
-            Some(record) => {
-                record.order.store(true, Ordering::Release);
-                true
-            }
-            None => false,
-        }
+        self.order(id, RunOrder::StandDown)
     }
 
     /// **HALT RUN `id` BETWEEN TURNS, OR LET IT GO AGAIN**, returning whether such a run exists.
@@ -422,20 +563,14 @@ impl RunRegistry {
     /// stops at `awaiting_human` — which sends nothing, so the pane stays exactly as the person
     /// found it — and their declared patience does not run while they hold it.
     pub fn hold(&self, id: RunId, held: bool) -> bool {
-        match self.runs.iter().find(|record| record.id == id) {
-            Some(record) => {
-                record.hold.store(held, Ordering::Release);
-                true
-            }
-            None => false,
-        }
+        self.order(id, RunOrder::Hold(held))
     }
 
     /// Raise every run's cancel flag — used on host shutdown so in-flight runs abort promptly
     /// instead of being waited out and detached by [`join_all_within`](Self::join_all_within).
     pub fn cancel_all(&self) {
         for record in &self.runs {
-            record.cancel.store(true, Ordering::Release);
+            record.run.deliver(RunOrder::Cancel);
         }
     }
 
@@ -444,11 +579,10 @@ impl RunRegistry {
     /// reading the registry so finished threads are reaped, not leaked.
     pub fn sweep(&mut self) {
         for record in &mut self.runs {
-            if record.handle.as_ref().is_some_and(JoinHandle::is_finished) {
-                let handle = record.handle.take().expect("just checked Some");
-                if handle.join().is_err() {
-                    *lock(&record.state) = RunState::Panicked("plugin run panicked".to_string());
-                }
+            if record.run.reapable()
+                && let Some(why) = record.run.reap()
+            {
+                *lock(&record.state) = RunState::Panicked(why);
             }
         }
     }
@@ -532,8 +666,11 @@ impl RunRegistry {
     ///    ([`reserve`](Self::reserve)); a successor that started from zero would mint ids that
     ///    already name a run in its own list.
     ///
-    /// A restored run has no thread and no cancel flag: `cancel` finds it and returns true having
-    /// done nothing, which is the honest answer for a run that is already over.
+    /// A restored run has no driver, and since register item 544's stage 2 it says so as a TYPE:
+    /// its [`RunHandle`] is an [`EndedRun`], which accepts every order and delivers none. `cancel`
+    /// still finds it and returns `true` — the honest answer to *does this run exist* for a run that
+    /// is already over — but nothing here mints a flag whose own comment has to explain that setting
+    /// it does nothing.
     pub fn restore(&mut self, log: &RunLog) {
         if log.version != RUN_LOG_VERSION {
             return; // a format this build cannot read is worse than no record at all
@@ -587,7 +724,14 @@ impl RunRegistry {
                 opened_by: None,
                 opened_by_session: saved.opened_by_session.clone(),
                 state: Arc::new(Mutex::new(state)),
-                handle: None,
+                // ⚠⚠⚠ A RESTORED RUN HAS NO DRIVER, AND THAT IS NOW SAID BY A TYPE — see
+                // `EndedRun`. Three fresh `AtomicBool`s used to sit here, each with a comment
+                // explaining that setting it did nothing because *"the worker that would have read
+                // it died with its daemon"*: a hold is a level somebody is CURRENTLY holding and
+                // nobody can be holding a run that is not moving, and persisting an order would let
+                // a restart resurrect an instruction nobody could act on. Those sentences were
+                // right and were the only thing enforcing them.
+                run: Box::new(EndedRun),
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
                     cost,
@@ -602,18 +746,6 @@ impl RunRegistry {
                     // ⚠ Nor the count of calls it refused, for the same reason.
                     screened: 0,
                 })),
-                cancel: Arc::new(AtomicBool::new(false)),
-                // ⚠ A RESTORED RUN CANNOT BE STOOD DOWN, and the flag is fresh rather than
-                // persisted because there is nothing on the other end of it: the worker that would
-                // have read it died with its daemon, and the run is `Interrupted` by construction.
-                // Persisting an order would let a restart resurrect an instruction nobody could act
-                // on.
-                order: Arc::new(AtomicBool::new(false)),
-                // ⚠ NOR CAN A RESTORED RUN BE HELD, for the line above's reason exactly: a hold is
-                // an instruction to a worker, and this run's worker died with its daemon. Held state
-                // is even less persistable than an order — it is a level somebody is CURRENTLY
-                // holding, and nobody can be holding a run that is not moving.
-                hold: Arc::new(AtomicBool::new(false)),
                 // ⚠⚠⚠ AND THIS ONE IS TAKEN FROM THE LOG RATHER THAN STAMPED, which is the
                 // opposite decision to every field above and the reason the field exists. The rest
                 // of this record is about a run that is over, so inventing a value would assert
@@ -684,14 +816,14 @@ impl RunRegistry {
             self.sweep();
             // ⚠ ASKED, not collected: the answer is built once, on the way out, rather than
             // allocated on each of the thousand passes a full deadline takes.
-            if !self.runs.iter().any(|record| record.handle.is_some()) {
+            if !self.runs.iter().any(|record| record.run.outstanding()) {
                 return Vec::new();
             }
             if Instant::now() >= deadline {
                 let outstanding: Vec<RunId> = self
                     .runs
                     .iter()
-                    .filter(|record| record.handle.is_some())
+                    .filter(|record| record.run.outstanding())
                     .map(|record| record.id)
                     .collect();
                 for id in &outstanding {
@@ -813,11 +945,13 @@ mod tests {
                 opened_by: Some(7),
                 opened_by_session: None,
                 state,
-                handle,
+                run: Box::new(ThreadRun::new(
+                    cancel,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(AtomicBool::new(false)),
+                    handle,
+                )),
                 progress: ProgressCell::default(),
-                cancel,
-                order: Arc::new(AtomicBool::new(false)),
-                hold: Arc::new(AtomicBool::new(false)),
             }),
             RunId(0),
             "a reserved id is the id the record carries",
@@ -891,10 +1025,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
         });
-        NewRun {
-            cancel,
-            ..parked_run(id, "obedient".to_string(), handle)
-        }
+        parked_run_with(id, "obedient".to_string(), handle, cancel)
     }
 
     /// A run whose worker returns after `delay` — a healthy one, slow enough that the FIRST sweep
@@ -982,17 +1113,30 @@ mod tests {
     }
 
     fn parked_run(id: RunId, label: String, handle: JoinHandle<()>) -> NewRun {
+        parked_run_with(id, label, handle, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// [`parked_run`] whose worker is already sharing `cancel` — what a fixture needs when the
+    /// thing under test is whether an order REACHES the flag the worker reads.
+    fn parked_run_with(
+        id: RunId,
+        label: String,
+        handle: JoinHandle<()>,
+        cancel: Arc<AtomicBool>,
+    ) -> NewRun {
         NewRun {
             id,
             label,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
-            handle,
+            run: Box::new(ThreadRun::new(
+                cancel,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                handle,
+            )),
             progress: ProgressCell::default(),
-            cancel: Arc::new(AtomicBool::new(false)),
-            order: Arc::new(AtomicBool::new(false)),
-            hold: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1373,6 +1517,268 @@ mod tests {
             waited < within * 2,
             "two wedged runs cost {waited:?} against a {within:?} deadline — either the wait is \
              spent per worker, or it asks less often than the deadline it was given",
+        );
+    }
+
+    /// A run whose driver is **NOT A THREAD IN THIS PROCESS** — it records what it is told.
+    ///
+    /// ⚠⚠⚠ This is what makes the three gates below measure FORWARDING rather than storing. A
+    /// registry that reached into a `RunRecord`'s own flags — which is what it did before register
+    /// item 544's stage 2 — could not reach this at all, so its list stays empty and every gate
+    /// reds. The recorder deliberately implements the OTHER three methods as *no driver*, which is
+    /// [`EndedRun`]'s answer and the shape a directory entry takes when the driving lives elsewhere.
+    struct RecordingRun(Arc<Mutex<Vec<RunOrder>>>);
+
+    impl RunHandle for RecordingRun {
+        fn deliver(&self, order: RunOrder) {
+            lock(&self.0).push(order);
+        }
+        fn reapable(&self) -> bool {
+            false
+        }
+        fn reap(&mut self) -> Option<String> {
+            None
+        }
+        fn outstanding(&self) -> bool {
+            false
+        }
+    }
+
+    /// WHAT THE RUN HAS BEEN TOLD, as a VALUE — the only way the gates below read the recorder.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A gate that locks inside an assertion HANGS INSTEAD OF FAILING
+    ///
+    /// `assert_eq!`'s format arguments are evaluated **only on the failing path**, so
+    /// `assert_eq!(*lock(&log), want, "… {:?}", lock(&log))` is invisible while the gate is green
+    /// and deadlocks against its own still-live guard the moment it has something to say. Measured
+    /// 2026-08-21: a mutation that should have gone red in a second sat there for **93 minutes**,
+    /// and **a mutation whose red is a HANG is a half gate** — a class this register already
+    /// carries (item 534). Snapshotting first makes the trap unsayable rather than merely avoided.
+    fn heard(log: &Arc<Mutex<Vec<RunOrder>>>) -> Vec<RunOrder> {
+        lock(log).clone()
+    }
+
+    /// A registry holding one run of id `0` that is not a thread, plus the log it writes to.
+    fn a_directory_holding_a_run_that_is_not_a_thread() -> (RunRegistry, Arc<Mutex<Vec<RunOrder>>>)
+    {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(NewRun {
+            id,
+            label: "elsewhere".to_string(),
+            opened_by: None,
+            opened_by_session: None,
+            state: Arc::new(Mutex::new(RunState::Running)),
+            run: Box::new(RecordingRun(Arc::clone(&log))),
+            progress: ProgressCell::default(),
+        });
+        (registry, log)
+    }
+
+    /// ⛔⛔⛔⛔ **A CANCEL IS FORWARDED TO THE RUN, NOT STORED INTO IT** — register item 544's
+    /// stage 2, and the first of one gate per order.
+    ///
+    /// # Why "forwarded" is the whole claim
+    ///
+    /// A run is a SUPERVISOR whose natural lifetime is the work; the daemon is a terminal
+    /// multiplexer whose natural lifetime is weeks. They share one process, and the price is that
+    /// **changing how an AI loop reflects requires restarting the thing that holds your PTYs.** The
+    /// registry's orders were `Arc<AtomicBool>` stores reaching into a worker's memory, which is
+    /// only sayable about a thread — so the registry could not have held a run driven from
+    /// anywhere else even in principle. This asserts it now can: the run under test has no thread,
+    /// no flags and nothing to reap, and the order still arrives.
+    ///
+    /// ⚠⚠ **AND THAT THE DIRECTORY STILL ANSWERS ONLY WHAT IT KNOWS.** The boolean means *there is
+    /// such a run*, never *the driver acted* — an unknown id is `false` and nothing is delivered.
+    #[test]
+    fn a_cancel_is_forwarded_to_a_run_whose_driver_is_not_a_thread() {
+        let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
+
+        assert!(registry.cancel(RunId(0)), "the run is in the directory");
+        let told = heard(&log);
+        assert_eq!(
+            told,
+            vec![RunOrder::Cancel],
+            "⛔⛔⛔⛔ REGISTER ITEM 544: a cancel must be DELIVERED to the run. {told:?} — an empty \
+             list means the registry reached for a flag of its own instead, which is the fusion \
+             this stage exists to undo, because a driver in another process has no flag here",
+        );
+
+        assert!(
+            !registry.cancel(RunId(41)),
+            "a run this directory does not hold must answer `false`",
+        );
+        let told = heard(&log);
+        assert_eq!(
+            told.len(),
+            1,
+            "⚠⚠ an order aimed at a run that does not exist must reach nobody — a directory that \
+             delivered to the wrong entry would cancel a stranger's work. Got {told:?}",
+        );
+
+        // ⚠⚠⚠ AND SHUTDOWN'S BROADCAST GOES THE SAME WAY. `cancel_all` is what `Drop` uses so no
+        // worker outlives the registry; had it kept storing into flags, every run driven from
+        // elsewhere would have been left running by a daemon that believed it had stopped them.
+        registry.cancel_all();
+        let told = heard(&log);
+        assert_eq!(
+            told,
+            vec![RunOrder::Cancel, RunOrder::Cancel],
+            "shutdown's broadcast must reach a run whose driver is not a thread. Got {told:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A STAND-DOWN IS FORWARDED, AND IT IS NOT A CANCEL** — register item 544's stage 2,
+    /// the second gate per order.
+    ///
+    /// ⚠⚠⚠ The pair of assertions is the claim. Cancel loses the turn in flight; stand-down banks
+    /// the milestone and then stops, and **those are exactly the two outcomes the person raising
+    /// one is choosing between** — so an implementation that forwarded either as the other would be
+    /// wrong in the one way that matters, while passing any gate that only asked *did something
+    /// arrive*.
+    #[test]
+    fn a_stand_down_is_forwarded_and_is_not_a_cancel() {
+        let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
+
+        assert!(registry.stand_down(RunId(0)), "the run is in the directory");
+        let told = heard(&log);
+        assert_eq!(
+            told,
+            vec![RunOrder::StandDown],
+            "⛔⛔⛔⛔ REGISTER ITEM 544: a stand-down must be DELIVERED, and as itself. {told:?} \
+             instead means the two orders collapsed — the run that banked its milestone and the \
+             run that lost it become indistinguishable from here",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A HOLD AND ITS RELEASE ARE FORWARDED AS THE TWO-WAY ORDER THEY ARE** — register
+    /// item 544's stage 2, the third gate per order.
+    ///
+    /// ⚠⚠⚠ **THE RELEASE IS THE HALF A LATCH CANNOT CARRY**, which is why this order takes an
+    /// argument where its two neighbours take none. Those are one-way on purpose: an un-ordering
+    /// racing a milestone would make a run's ending depend on which message arrived first. A hold is
+    /// a LEVEL a person raises and lowers, so a message type that could not say *lower it* would
+    /// have quietly turned the one order a person can take back into one they cannot.
+    #[test]
+    fn a_hold_and_its_release_are_forwarded_as_the_two_way_order_they_are() {
+        let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
+
+        assert!(registry.hold(RunId(0), true), "the run is in the directory");
+        assert!(registry.hold(RunId(0), false), "and it is still there");
+        let told = heard(&log);
+        assert_eq!(
+            told,
+            vec![RunOrder::Hold(true), RunOrder::Hold(false)],
+            "⛔⛔⛔⛔ REGISTER ITEM 544: both halves of a hold must be DELIVERED, and they must be \
+             distinguishable. {told:?} instead means a person who asked to read something can stop \
+             a run but never let it go again",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND WHERE THE ORDERS DO REACH FLAGS, EACH REACHES ITS OWN** — the in-process half of
+    /// the three gates above, which a recorder cannot see.
+    ///
+    /// The gates above prove the registry FORWARDS; this proves [`ThreadRun`] does not then pour
+    /// three distinct orders into one flag. Both halves are needed and neither implies the other:
+    /// a `deliver` whose arms all stored into `cancel` would pass every recorder gate written, and
+    /// a registry that stored directly would pass this one.
+    ///
+    /// ⚠ Each order is checked against ALL THREE flags, so a mapping that moved a neighbour as well
+    /// is red too — which is the failure a `match` with a copy-pasted arm actually makes.
+    #[test]
+    fn each_order_reaches_its_own_flag_and_leaves_its_neighbours_alone() {
+        let read = |flags: &[&Arc<AtomicBool>]| -> Vec<bool> {
+            flags.iter().map(|f| f.load(Ordering::Acquire)).collect()
+        };
+        let build = || {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let stand = Arc::new(AtomicBool::new(false));
+            let hold = Arc::new(AtomicBool::new(false));
+            let run = ThreadRun::new(
+                Arc::clone(&cancel),
+                Arc::clone(&stand),
+                Arc::clone(&hold),
+                std::thread::spawn(|| {}),
+            );
+            (run, cancel, stand, hold)
+        };
+
+        let (run, cancel, stand, hold) = build();
+        run.deliver(RunOrder::Cancel);
+        assert_eq!(
+            read(&[&cancel, &stand, &hold]),
+            vec![true, false, false],
+            "a cancel must raise the cancel flag and only that one",
+        );
+
+        let (run, cancel, stand, hold) = build();
+        run.deliver(RunOrder::StandDown);
+        assert_eq!(
+            read(&[&cancel, &stand, &hold]),
+            vec![false, true, false],
+            "a stand-down must raise the stand-down flag and only that one — pouring it into \
+             `cancel` would lose the milestone the order exists to bank",
+        );
+
+        let (run, cancel, stand, hold) = build();
+        run.deliver(RunOrder::Hold(true));
+        assert_eq!(
+            read(&[&cancel, &stand, &hold]),
+            vec![false, false, true],
+            "a hold must raise the hold flag and only that one",
+        );
+        run.deliver(RunOrder::Hold(false));
+        assert_eq!(
+            read(&[&cancel, &stand, &hold]),
+            vec![false, false, false],
+            "⚠⚠⚠ and a release must LOWER it: a hold stored as a latch (`store(true)` whatever it \
+             was told) leaves a run held for ever by a person who already let go",
+        );
+    }
+
+    /// ⚠⚠⚠ **A RESTORED RUN HAS NO DRIVER, AND SAYS SO AS A TYPE RATHER THAN AS THREE FLAGS NOBODY
+    /// READS** — the second production implementation of [`RunHandle`], and the reason the seam is
+    /// not a test fixture with a trait around it.
+    ///
+    /// Before this, `restore` minted a fresh `AtomicBool` per order, each carrying a comment saying
+    /// that setting it did nothing because the worker that would have read it died with its daemon.
+    /// Three write-only flags are a claim only prose was enforcing. What must stay true is the
+    /// OBSERVABLE half: the run is in the directory, so an order aimed at it answers `true`, and it
+    /// holds nothing a shutdown has to wait for.
+    #[test]
+    fn a_restored_run_accepts_every_order_and_keeps_no_driver() {
+        let mut registry = RunRegistry::default();
+        registry.restore(&RunLog {
+            version: RUN_LOG_VERSION,
+            runs: vec![PersistedRun {
+                id: 4,
+                label: "from a dead daemon".to_string(),
+                iterations: 3,
+                cost: None,
+                unit: None,
+                finished: false,
+                outcome: None,
+                ceiling: None,
+                output: None,
+                build: None,
+                opened_by_session: None,
+            }],
+        });
+
+        assert!(
+            registry.cancel(RunId(4))
+                && registry.stand_down(RunId(4))
+                && registry.hold(RunId(4), true),
+            "⚠⚠ every order must still find a restored run — the boolean answers *does this run \
+             exist*, and it does",
+        );
+        assert!(
+            registry
+                .join_all_within(Duration::from_millis(0))
+                .is_empty(),
+            "⚠⚠⚠ a run with no driver must not be something a shutdown waits for, or every \
+             restart would pay the join deadline for runs that ended with the daemon before it",
         );
     }
 }
