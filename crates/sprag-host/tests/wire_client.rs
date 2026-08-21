@@ -32,7 +32,8 @@ use sprag_host::wire::{
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_plugin::{
-    Delivered, Delivery, KeyStroke, PaneAccess, PaneError, RunContext, Written, deliver,
+    Attended, Delivered, Delivery, KeyStroke, PaneAccess, PaneError, Reached, Readiness, ReadyWhen,
+    RunContext, Written, deliver,
 };
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
@@ -6847,6 +6848,156 @@ fn a_remote_driver_replaces_a_pane_and_the_new_one_is_the_same_program_in_the_sa
         "⚠⚠⚠⚠ replacing a pane nobody holds must REFUSE with the reason. A fabricated id here \
          would hand a driver a pane that does not exist, and its next act is to type into it. \
          Got {ghost:?}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **A BARRIER DRIVEN FROM ANOTHER PROCESS DOES NOT CONVERGE ON THE DRIVER'S OWN
+/// KEYSTROKE** — register item 557's `input_echo` surface, driven through the loop's REAL consumer.
+///
+/// # ⚠⚠⚠⚠⚠ The defect, which is a race rather than a wrong answer
+///
+/// A pseudoterminal ECHOES what is written into it, and on the grid that echo is ordinary output.
+/// So `ReadyWhen::Prints("MARK")` matching the screen cannot tell *the program printed MARK* from
+/// *the driver typed MARK and the terminal handed it back* — and which one it sees depends on
+/// whether the echo landed before the barrier armed. The same call therefore converges or feeds the
+/// shell depending on scheduling. `Readiness` refuses a marker that is in the pane's ECHO TRAIL,
+/// and until this address existed a remote driver read that trail as EMPTY: every marker was
+/// accepted, and the refusal that makes the answer deterministic was silently not running.
+///
+/// # ⚠⚠⚠ Why this drives `Readiness` rather than asserting the string
+///
+/// The address answering the right text proves the wire. It does not prove that the LOOP's barrier
+/// is the thing consuming it — and item 557's claim is about the loop. So this constructs the same
+/// `Readiness` an `ai_loop` run does and calls `reached` with the REMOTE surface, twice:
+///
+/// * **REFUSED** where the marker is on the screen because the driver typed it — with the screen
+///   read back at that instant, so the refusal is not satisfied by a pane that shows nothing.
+/// * **ACCEPTED** where a second marker was PRINTED by the shell and never typed — the control that
+///   keeps the first arm from passing on a barrier that simply never clears.
+#[test]
+fn a_remote_barrier_refuses_the_marker_the_driver_typed_and_takes_the_one_the_shell_printed() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sh"], "cols": 60, "rows": 12 }));
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains('$'))),
+        "the shell never printed a prompt, so nothing below is measuring a settled pane. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    // ── ARM FIRST. `Prints` counts occurrences AGAINST the count at arming, so a barrier armed
+    // after the text is on screen is a barrier that can never clear — this workspace's own
+    // longest-running flake, recorded in `Reached::RunEnded`'s doc.
+    let run = RunContext::uncancellable();
+    let mut typed_barrier = Readiness::new(
+        Some(ReadyWhen::Prints("TYPEDMARK".to_owned())),
+        Some(Duration::from_millis(1500)),
+        None,
+        Attended::NoOne,
+    );
+    let armed = typed_barrier.reached(&remote, pane, &run);
+    assert!(
+        matches!(
+            armed,
+            Err(PaneError::NeverReady {
+                already_showing: false,
+                ..
+            })
+        ),
+        "the barrier must NOT be down before anything was typed, and its baseline must record that \
+         the marker was NOT already showing — otherwise the refusal below is about a latch, or \
+         about a count that was poisoned at arming. Got {armed:?}",
+    );
+
+    // ── THE DRIVER TYPES THE MARKER, AND THE TERMINAL HANDS IT BACK ────────────────────────────
+    // No Enter: the shell never runs it, so every occurrence on that screen is the ECHO and
+    // nothing else. That is what makes this arm about the trail rather than about output.
+    assert_eq!(
+        remote
+            .inject(pane, &KeyStroke::text("TYPEDMARK"))
+            .map(Written::bytes),
+        Ok(9),
+        "the WHOLE marker reached the pseudoterminal — a partial write would put a different \
+         string on the screen and the refusal below would be about the wrong text",
+    );
+    assert!(
+        wait_until(Duration::from_secs(5), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains("TYPEDMARK"))),
+        "⚠⚠⚠ THE NON-VACUITY: the marker must actually BE on the screen, or the refusal below is \
+         satisfied by a pane that shows nothing and proves nothing. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    let verdict = typed_barrier.reached(&remote, pane, &run);
+    assert!(
+        matches!(verdict, Err(PaneError::NeverReady { .. })),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: the barrier took the driver's OWN KEYSTROKE for the program's \
+         output. The marker is on that screen only because a pty echoes what is written into it, \
+         and the read that tells the two apart is the pane's echo trail — which a remote driver \
+         could not ask for until this address existed, so it read EMPTY and every marker was \
+         accepted. That is not a wrong answer, it is a RACE: the same call converges or feeds the \
+         shell depending on whether the echo landed first. Got {verdict:?}",
+    );
+
+    // ── THE CONTROL: A MARKER THE SHELL PRINTS AND NOBODY TYPED ────────────────────────────────
+    // The command is spelled so that the TYPED text does not contain the marker while the OUTPUT
+    // does — `printf 'SAID%s\n' MARK` — which is the only way one pane can carry both arms.
+    let mut printed_barrier = Readiness::new(
+        Some(ReadyWhen::Prints("SAIDMARK".to_owned())),
+        Some(Duration::from_secs(4)),
+        None,
+        Attended::NoOne,
+    );
+    // ⚠⚠⚠ ARMED BEFORE THE COMMAND RUNS, for the reason the first barrier states: the baseline is
+    // taken on the FIRST `reached`, so arming after the output is on screen is a barrier that can
+    // never clear. Asserting `already_showing: false` here is what proves the baseline is honest.
+    let printed_arm = printed_barrier.reached(&remote, pane, &run);
+    assert!(
+        matches!(
+            printed_arm,
+            Err(PaneError::NeverReady {
+                already_showing: false,
+                ..
+            })
+        ),
+        "the control's marker must not be on screen before its command runs: {printed_arm:?}",
+    );
+    // ⚠ The two counts below are not the claim (the byte count has its own gate), so they are bound
+    // rather than asserted — but bound, never dropped: `Written` is `#[must_use]` because a write
+    // whose size nobody read is a run charging itself from a guess.
+    let _cleared = remote
+        .inject(
+            pane,
+            &[KeyStroke {
+                key: "u".to_owned(),
+                mods: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                },
+            }],
+        )
+        .expect("clear the composed line so the marker above is not submitted");
+    let mut printing = KeyStroke::text("printf 'SAID%s\\n' MARK");
+    printing.push(KeyStroke::named("Enter"));
+    let _ran = remote
+        .inject(pane, &printing)
+        .expect("the driver runs a command whose OUTPUT carries a marker it never typed");
+
+    let reached = printed_barrier.reached(&remote, pane, &run);
+    assert_eq!(
+        reached,
+        Ok(Reached::Yes),
+        "⚠⚠⚠⚠ THE CONTROL: a marker the SHELL printed must clear the barrier. Without this arm \
+         the refusal above passes on a barrier that never clears at all — and an `input_echo` \
+         hard-wired to answer the whole SCREEN would fail exactly here, because it would report \
+         the program's own output as something somebody typed. The pane was showing:\n{}",
+        remote.pane_collapsed(pane).unwrap_or_default(),
     );
 
     let _ = std::fs::remove_file(&sock);

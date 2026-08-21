@@ -71,8 +71,8 @@ use crate::wire::{
     FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINKS_SLOT,
     MOUSE_ACTION, PANE_EOF_SLOT, PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL,
-    PROMPT_MARKS_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
-    SUPER_FIELD, TEXT_ACTION,
+    PROMPT_MARKS_SLOT, RECENT_INPUT_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
+    SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -727,6 +727,17 @@ impl SpragPaneExternal {
             // this one is what `ai_loop.scxml`'s `peer_gone` — and the 43-hour wedge behind it —
             // stands on. See `PANE_EOF_SLOT`.
             PANE_EOF_SLOT => Some(IntrospectValue::Bool(self.pty.is_eof())),
+            // ⚠⚠⚠⚠⚠ WHAT WAS WRITTEN INTO THIS PANE — register item 557, and the one read on this
+            // surface that is NOT about the screen. A pseudoterminal echoes its input, so a driver
+            // matching a marker against the grid cannot tell the program saying it from its own
+            // keystroke coming back; `ReadyWhen::Prints` refuses a marker that is in this trail,
+            // and that refusal is the difference between a barrier and a race.
+            //
+            // ⚠⚠⚠ The same `echo_trail` the in-process `PaneAccess` reads, deliberately: a second
+            // record of what was typed would be a second answer to drift from, and this one decides
+            // whether a run converges. It is the PANE's memory rather than any writer's, which is
+            // what makes it answer about a display client's keystrokes too.
+            RECENT_INPUT_SLOT => Some(IntrospectValue::Text(self.pty.echo_trail())),
             // The last command sliced from the OSC 133 marks (scrollback + visible). `Null`
             // (present-but-empty) when no command has run under shell integration — the
             // agent then falls back to `full_text`, exactly as a malformed `cells.<off>` is

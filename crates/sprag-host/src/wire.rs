@@ -283,6 +283,36 @@ pub const FULL_LINES_SLOT: &str = "full_lines";
 /// answers it has always read.
 pub const PANE_EOF_SLOT: &str = "eof";
 
+/// The pane-input external query slot: **WHAT HAS RECENTLY BEEN WRITTEN INTO THIS PANE**, as text —
+/// the pane's own echo trail ([`ECHO_TRAIL_CAP`](sprag_terminal::ECHO_TRAIL_CAP) bytes), and
+/// register item 557.
+///
+/// # ⚠⚠⚠⚠⚠ Why a driver must be able to ask it: a barrier that converges on its own typing
+///
+/// A pseudoterminal ECHOES what is written into it, and on the grid that echo is ordinary output.
+/// So a run waiting for a marker to be PRINTED cannot tell the program saying it from its own
+/// keystroke coming back — the same call converges or feeds the shell depending on whether the echo
+/// landed before the barrier armed. `ReadyWhen::Prints` refuses a marker that is in this trail, and
+/// that refusal is what makes the answer deterministic rather than a race.
+///
+/// ⚠⚠ It is the PANE that remembers, which is the only reason the question is answerable at all: a
+/// driver knows what IT typed, and a pane also takes keystrokes from a display client and from
+/// anybody else holding the socket. A driver comparing against its own record would be right about
+/// its own writes and blind to everyone else's.
+///
+/// ⚠ SCREEN-INDEPENDENT, and that is the discriminator: the trail holds what was WRITTEN, never what
+/// the pane SHOWS. Input the terminal does not echo (a password prompt) is in it and not on the
+/// screen; output no one typed is on the screen and not in it.
+///
+/// # ⚠⚠⚠⚠ What publishing it widens, stated rather than left to be discovered
+///
+/// Any client holding this socket can already inject keys, spawn processes and read every pane's
+/// screen — the socket is the trust boundary, not this address. What it adds is **passive capture of
+/// input the terminal never echoed**, which a screen read could not reach. See the register's
+/// residue: the narrower shape is an address that answers the QUESTION (does the trail contain this
+/// needle) rather than serving the trail.
+pub const RECENT_INPUT_SLOT: &str = "recent_input";
+
 /// The pane-input external query slot: **THE VISIBLE SCREEN, COLLAPSED** — every row's share of its
 /// logical line joined with nothing between them, which is the read a marker or a sentinel is
 /// matched against.
@@ -651,6 +681,11 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The four above say what the pane HOLDS; this says
     // whether anything more is coming, which reading the text cannot answer.
     SchemaField::new(PANE_EOF_SLOT, "bool"),
+    // ⚠⚠⚠⚠⚠ Register item 557 — see `RECENT_INPUT_SLOT`. Every slot above is what the pane SHOWS;
+    // this is what was written INTO it, and the two must not be derived from each other. A pty
+    // echoes input, so a driver reading its marker off the screen cannot tell the program saying it
+    // from its own keystroke coming back — which is a race, not a barrier.
+    SchemaField::new(RECENT_INPUT_SLOT, "string"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
@@ -9662,6 +9697,9 @@ mod tests {
             "project.",
             "project.<pane>",
             "prompt_marks",
+            // ⚠⚠ ADDED at register item 557: what was written INTO a pane, which no screen address
+            // can answer. A name added, so the number stands.
+            "recent_input",
             "regex.",
             "regex.<pattern>",
             "rename_pane",
