@@ -1574,10 +1574,38 @@ fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, repor
     let Ok(painted) = one_each else {
         return;
     };
-    let ([id], [_index]) = (ids.as_slice(), painted.as_slice()) else {
+    let ([id], [index]) = (ids.as_slice(), painted.as_slice()) else {
         return;
     };
-    let id = *id;
+    let (id, index) = (*id, *index);
+
+    // ⚠⚠⚠⚠⚠ THE PRECONDITION IS ASKED FIRST, AND A GRID TOO NARROW IS NOT A FAILURE — item 576.
+    // The detector below reads a MENU off this pane's screen, and a menu that wrapped is not the
+    // menu it matches. Two machines measured an eleven-column pane here and reported *sprag did not
+    // paint the state*; the boot pane on the same machine measures seventy-seven, so it is not the
+    // font. Whatever narrows a lone pane, this check cannot put its question to that pane — and
+    // saying so is the honest answer, where a red would blame the product and a green would claim
+    // coverage nobody has.
+    //
+    // ⚠⚠ BOTH claims below are named, not just the one the `return` lands on. This function makes
+    // two — the painted title and the screen reader's string — and a precondition that silently
+    // took the second with it would be the very thing this word exists to stop: a skip nobody can
+    // see reads as coverage.
+    let cols = grid_columns(smoke, index);
+    if cols < MENU_COLUMNS {
+        let why = format!(
+            "this pane is {cols} column(s) wide and the agent screen the detector reads needs \
+             {MENU_COLUMNS}, so the menu arrives WRAPPED and no verdict can be published from it \
+             (register item 576: the grid a machine measures is not sprag's answer)"
+        );
+        report.unmet(&format!(
+            "a blocked agent's state is PAINTED beside its pane's title — {why}"
+        ));
+        report.unmet(&format!(
+            "and a screen reader is told the same thing — {why}"
+        ));
+        return;
+    }
 
     // The title is not painted before the pane says anything — asserted, because a check whose
     // "after" state was already true before the drive proves nothing about the drive.
@@ -1996,7 +2024,7 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         // way for one build here and the grid check caught it on the first run.
         watch.absorb(smoke.watch_frames(from, |s| {
             s.pane_rows(index)
-                .is_ok_and(|rows| rows.iter().any(|row| row.contains(&line)))
+                .is_ok_and(|rows| grid_shows(&rows, &line))
         }));
         if !watch.arrived {
             break;
@@ -2004,8 +2032,22 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     }
     // Non-vacuity, and it comes first: frames that shaped nothing while nothing arrived are not
     // evidence about a grid, they are evidence that the pane never printed.
+    //
+    // ⚠⚠⚠⚠⚠ THE FAILURE SAYS WHAT IT SAW — register item 576. It used to print only the ANSWER of
+    // the drive (`Ok(Null)`, which is what a text write always answers), so a red said *the line
+    // never reached the grid* and nothing about whether the pane had printed it, painted something
+    // else, or was empty. Two machines then failed it identically while CI passed, and the report
+    // could not tell those apart. **A symptom report is «what looked like that», not «it failed».**
+    let seen = smoke.pane_rows(index);
     report.check(
-        &format!("the novel output reached the PAINTED grid ({printed:?})"),
+        &format!(
+            "the novel output reached the PAINTED grid (drive {printed:?}, painted rows {:?})",
+            seen.as_ref().map(|rows| rows
+                .iter()
+                .filter(|row| !row.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>())
+        ),
         watch.arrived,
     );
     report.check(
@@ -5193,6 +5235,59 @@ fn pane_line(i: impl std::fmt::Display) -> String {
     format!("zqxjvw\u{03a8}{i}\u{4e03}\u{516b}\u{4e5d}")
 }
 
+/// How many columns this pane's PAINTED grid actually has — the widest row it shows.
+///
+/// Measured rather than derived from the window and the cell: a lone pane has been observed at
+/// eleven columns in a window whose boot pane measured seventy-seven (register item 576), so the
+/// arithmetic and the paint disagree and only one of them is what a check reads.
+fn grid_columns(smoke: &mut Smoke, index: usize) -> usize {
+    smoke
+        .pane_rows(index)
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+/// The narrowest grid on which an agent's menu arrives unwrapped, so a detector can read it.
+///
+/// The screen driven below is `❯ 1. Yes` / `  2. No` / `? for shortcuts` under a title — sixteen
+/// columns for the longest line, and the phrase painted beside the title is twenty-one. Named here
+/// rather than spelled at the check so the number a skip reports is the number the claim needs.
+const MENU_COLUMNS: usize = 21;
+
+/// Whether `needle` is on this pane's PAINTED grid, asked of the CONTENT rather than of any one row.
+///
+/// # ⚠⚠⚠⚠⚠ A row is where the terminal WRAPPED, and that is a fact about the machine
+///
+/// Register item 576. This used to be `rows.iter().any(|row| row.contains(needle))`, and it failed
+/// on two machines while passing on CI: **the pane was eleven columns wide there.** The probe that
+/// finally said so printed the grid — `"bu038:~$ ec"`, `"ho zqxjvw…0"`, `"七八九"` — the line
+/// PRESENT and split across three rows. A gate only one machine in the world can satisfy is a gate
+/// that gets bypassed, so the predicate stopped depending on the width.
+///
+/// ⚠ **WHY that pane is eleven columns is register item 577 and is NOT explained here.** The font
+/// was the obvious answer and it is measured false: the same run's own font gate reports the boot
+/// pane at seventy-seven columns in the same 960-pixel window. A doc that offered the font as the
+/// reason would be a defect wearing an explanation, which is what this register keeps re-filing.
+///
+/// ⚠⚠ So the rows are re-joined with their padding removed, which undoes the wrap. This is the same
+/// lesson item 568 taught with `full_text` versus `full_lines`, met a third time: **a CONTENT
+/// question must never be asked of a row.**
+///
+/// ⚠ The join can also glue two genuinely separate lines together, so a needle that spans one would
+/// be a false positive. That is acceptable HERE and is not a general rule: [`pane_line`] mints a
+/// single novel token with no spaces, so there is no boundary inside it to span.
+fn grid_shows(rows: &[String], needle: &str) -> bool {
+    rows.iter()
+        .map(|row| row.trim_end())
+        .collect::<String>()
+        .contains(needle)
+}
+
 /// Which panes the DAEMON says `session`'s current window holds, by id.
 ///
 /// Asked of the daemon's own scene rather than derived from the client's tile indices: the ids are
@@ -6702,6 +6797,7 @@ impl FrameWatch {
 struct Report {
     passed: usize,
     failed: Vec<String>,
+    unmet: Vec<String>,
 }
 
 impl Report {
@@ -6715,11 +6811,38 @@ impl Report {
         }
     }
 
+    /// A claim this machine could not put the question to — the THIRD answer, and it is neither of
+    /// the other two.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a skip has to be its own word — register item 576
+    ///
+    /// Three checks here judge text painted BESIDE a pane, and they need a grid wide enough to show
+    /// it. Two machines measured an eleven-column pane and reported *sprag did not paint it*, which
+    /// is false — the text was there, wrapped — and CI, whose grid was wide enough, passed. **A
+    /// precondition reported as a failure is a lie about the product, and reported as a pass is a
+    /// lie about the coverage.** This repository's own rule is that two absences must not collapse
+    /// into one word, and this is that rule applied to a report.
+    ///
+    /// ⚠ It is PRINTED and counted, never silent: a skip nobody can see reads as coverage. It does
+    /// NOT contribute to the exit code, because the machine's grid is not sprag's defect.
+    fn unmet(&mut self, what: &str) {
+        println!("  SKIP  {what}");
+        self.unmet.push(what.to_owned());
+    }
+
     /// The summary, and the process exit code: the number of failures, so `sprag-smoke && …` works.
     fn finish(self) -> ExitCode {
-        println!("\n{} passed, {} failed", self.passed, self.failed.len());
+        println!(
+            "\n{} passed, {} failed, {} not asked",
+            self.passed,
+            self.failed.len(),
+            self.unmet.len(),
+        );
         for failure in &self.failed {
             println!("  FAILED: {failure}");
+        }
+        for skipped in &self.unmet {
+            println!("  NOT ASKED: {skipped}");
         }
         ExitCode::from(u8::try_from(self.failed.len()).unwrap_or(u8::MAX))
     }
