@@ -80,8 +80,8 @@ use crate::wire::{
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
     PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RECENT_INPUT_SLOT, RESPAWN_ACTION,
     SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY,
-    SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, lines_since_at,
-    mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
+    SPAWN_COLS_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for,
+    lines_since_at, mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -180,6 +180,41 @@ impl RemotePaneAccess {
     pub fn readopt(&self) {
         *lock(&self.adopted) = None;
         self.changed.store(false, Ordering::Release);
+    }
+
+    /// **THE PANE CARRYING `name` ON THE DAEMON THAT IS THERE NOW** — the read a driver re-adopts
+    /// with. Register item 544, stage 1e.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A NAME is the only address that survives a restart; an id is not
+    ///
+    /// Pane ids are minted from a counter, so *pane 3* means whatever the daemon holding the socket
+    /// says it means — and after a restart that is a different sentence. A NAME is given by whoever
+    /// asked for the pane and is unique across the registry, so *the pane I called `inner`* is a
+    /// question with one answer before and after. That is why a run names the pane it drives.
+    ///
+    /// # ⚠⚠⚠ It reads THROUGH the latch, deliberately
+    ///
+    /// Every other read on this surface answers [`None`] once
+    /// [`world_changed`](Self::world_changed) is set, because a pane id means nothing then. This one
+    /// is the question a caller asks PRECISELY at that moment, so refusing it would leave the latch
+    /// with no way out but blind faith. ⚠ It answers about the new daemon and says so by
+    /// construction: the id it returns is the NEW daemon's.
+    ///
+    /// ⚠⚠ `None` where no pane carries the name — which after a restart means *the world did not
+    /// come back*, and is a run's cue to end rather than to type.
+    #[must_use]
+    pub fn pane_named(&self, name: &str) -> Option<PaneId> {
+        let listing = lock(&self.conn)
+            .try_call(
+                QUERY_METHOD,
+                json!({ PATH_PARAM: mux_action_path(PANES_SLOT) }),
+            )
+            .ok()?;
+        listing.as_array()?.iter().find_map(|entry| {
+            (entry[SPAWN_NAME_KEY].as_str() == Some(name))
+                .then(|| entry[PANE_SUMMARY_ID_KEY].as_u64().map(PaneId))
+                .flatten()
+        })
     }
 
     /// Redial the socket this connection names, answering whether the SAME daemon is there.

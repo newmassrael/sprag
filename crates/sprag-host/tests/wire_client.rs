@@ -23,11 +23,11 @@ use sprag_host::wire::{
     CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, FULL_LINES_SLOT,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
     MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_EOF_SLOT, PANE_SUMMARY_ID_KEY,
-    PANES_SLOT, PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
-    SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, agent_slot_for, cells_slot_at,
-    pane_processes_at, project_slot_for,
+    PANES_SLOT, PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT,
+    SCREEN_ROWS_SLOT, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, agent_slot_for,
+    cells_slot_at, pane_processes_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -7335,6 +7335,16 @@ fn a_remote_driver_follows_a_panes_output_from_a_cursor_and_does_not_re_read_it(
     let _ = std::fs::remove_file(&sock);
 }
 
+/// The NAME the restart gate's run knows its pane by — the one address that survives a daemon.
+const DRIVEN: &str = "inner-session";
+
+/// A test-side connection to `sock` — the first one dies with the daemon it was made to, so a gate
+/// that outlives a restart needs another.
+fn setup_at(sock: &Path) -> HostConn {
+    HostConn::connect(sock, Duration::from_secs(5))
+        .expect("connect to the daemon that is there now")
+}
+
 /// Spawn a `sprag-term` on a socket path the CALLER names — what a restart needs, because the whole
 /// point is that the second daemon takes the FIRST one's address.
 ///
@@ -7388,7 +7398,7 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let first = spawn_host_at(&sock, &["cat"]);
-    let (remote, _setup) = remote_driver(&sock);
+    let (remote, mut setup) = remote_driver(&sock);
 
     // ⚠⚠⚠⚠⚠ THE BOOT PANE, and it is the fixture's whole force. Both daemons mint their ids from a
     // counter that starts at zero, so this id exists on the REPLACEMENT too — running the same
@@ -7399,6 +7409,17 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
         .pane_ids()
         .first()
         .expect("the daemon's boot pane is there to drive");
+    // ...and it is NAMED, because a name is what a run re-adopts by. A restore brings the name
+    // back; the id is whatever the new daemon's counter says.
+    setup
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(RENAME_PANE_ACTION),
+                "args": { "pane": pane.0, "name": DRIVEN },
+            }),
+        )
+        .expect("name the pane this run drives");
 
     // ── IT IS DRIVING, and the surface has adopted a daemon ────────────────────────────────────
     assert_eq!(
@@ -7431,6 +7452,23 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
         HostConn::connect(&sock, Duration::from_millis(200)).is_ok()
     });
     assert!(reachable, "the replacement daemon never bound {sock:?}");
+    // ⚠⚠⚠ THE REPLACEMENT CARRIES THE NAME, which is what a daemon RESTORING its snapshot does —
+    // panes come back under the addresses a person gave them. Done here explicitly rather than
+    // through the durability ring so the gate is about the DRIVER's re-adoption and not about
+    // whether a snapshot happened to be written in the second the test had.
+    let mut fresh = setup_at(&sock);
+    let born = *pane_ids(&mut fresh)
+        .first()
+        .expect("the replacement daemon has a boot pane of its own");
+    fresh
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(RENAME_PANE_ACTION),
+                "args": { "pane": born, "name": DRIVEN },
+            }),
+        )
+        .expect("the restored world carries the name the run knows");
 
     // ── THE DRIVER NOTICES, AND STOPS ──────────────────────────────────────────────────────────
     assert!(
@@ -7488,7 +7526,14 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
          {refused:?}",
     );
 
-    // ── AND THE DRIVER CAN TAKE THE NEW WORLD ON PURPOSE ───────────────────────────────────────
+    // ── AND THE DRIVER RE-ADOPTS BY NAME, WHICH IS THE ONLY ADDRESS THAT SURVIVED ──────────────
+    // ⚠⚠⚠⚠⚠ THE ID IS NOT RE-USED. A driver that carried its pane NUMBER across would be doing the
+    // very thing the latch just stopped. It asks the new daemon for the pane it CALLED something —
+    // the address a person gave and a restore brings back — and only then says the world is its
+    // own. That order is the whole re-adoption: look, recognise, then drive.
+    let renamed = remote
+        .pane_named(DRIVEN)
+        .expect("the replacement daemon holds the pane this run was driving, by its name");
     remote.readopt();
     assert!(
         !remote.world_changed(),
@@ -7497,10 +7542,17 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
     );
     assert_eq!(
         remote
-            .inject(pane, &KeyStroke::text("again"))
+            .inject(renamed, &KeyStroke::text("again"))
             .map(Written::bytes),
         Ok(5),
-        "⚠⚠⚠ after re-adopting, the surface drives the daemon that is there now — the run \
-         continues rather than ending because its host was restarted",
+        "⚠⚠⚠ after re-adopting, the surface drives the pane it recognised on the daemon that is \
+         there now — the WORK continues across a restart, which is what item 544 is for",
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_collapsed(renamed)
+            .is_some_and(|screen| screen.contains("again"))),
+        "⚠⚠ and it really reached that pane: the pty echoed it back. Read {:?}",
+        remote.pane_collapsed(renamed),
     );
 }
