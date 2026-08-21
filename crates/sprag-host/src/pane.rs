@@ -66,11 +66,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
-    ACTION_GRAMMAR_SLOT, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
-    CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT,
-    IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_EOF_SLOT,
-    PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT,
-    SCREEN_ROWS_SLOT, TEXT_ACTION,
+    ACTION_GRAMMAR_SLOT, ALT_FIELD, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION,
+    CLIPBOARD_WRITE_SLOT, CTRL_FIELD, CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT,
+    FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
+    INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINKS_SLOT,
+    MOUSE_ACTION, PANE_EOF_SLOT, PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL,
+    PROMPT_MARKS_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -221,6 +223,43 @@ fn injected(pty: &PanePtyHandle, written: &[u8]) -> IntrospectValue {
     unsignalled(pty, written).map_or(IntrospectValue::Null, IntrospectValue::Json)
 }
 
+/// The [`INJECT_ACTION`] answer: [`INJECTED_BYTES_KEY`], plus the caveat every writing action
+/// carries when what it wrote MEANT a signal this pane will raise none.
+///
+/// ⚠ ALWAYS an object, where [`injected`] answers `null` on the quiet path. The count is not a
+/// caveat — it is the answer — so there is nothing for its absence to mean, and a driver charging
+/// its run for what it typed reads one shape every time. The caveat keeps its own rule: absent
+/// when there is nothing to say.
+fn injected_batch(pty: &PanePtyHandle, written: &[u8]) -> IntrospectValue {
+    let mut answer = serde_json::Map::new();
+    answer.insert(INJECTED_BYTES_KEY.to_owned(), json!(written.len()));
+    if let Some(Value::Object(caveat)) = unsignalled(pty, written) {
+        answer.extend(caveat);
+    }
+    IntrospectValue::Json(Value::Object(answer))
+}
+
+/// Parse an [`INJECT_ACTION`] call's args into the strokes to write, in order.
+///
+/// # One keystroke vocabulary, read by one parser
+///
+/// Every element goes through [`parse_key_args`] — the same function the `key` action reads a
+/// keystroke with — so a batch is not a second spelling of the keystroke form and cannot come to
+/// admit a different one. A suppressed edge (a `state` of `up`) drops out of the batch, which is
+/// what it does at the single-keystroke door too: accepted, and injecting nothing.
+fn parse_inject_args(args: &IntrospectValue) -> Result<Vec<(String, Modifiers)>, InvokeError> {
+    let IntrospectValue::Json(Value::Object(map)) = args else {
+        return Err(InvokeError::TypeMismatch);
+    };
+    let Some(Value::Array(strokes)) = map.get(INJECT_STROKES_KEY) else {
+        return Err(InvokeError::TypeMismatch);
+    };
+    strokes
+        .iter()
+        .filter_map(|stroke| parse_key_args(&IntrospectValue::Json(stroke.clone())).transpose())
+        .collect()
+}
+
 /// Write literal UTF-8 `text` to `pty` (no key-encoding) — the IME-commit /
 /// paste seam. Empty text is a no-op success. `true` on success; `false` on a
 /// write failure. The text->PTY SSOT shared by [`SpragPaneExternal`]'s `text`
@@ -362,6 +401,48 @@ impl SpragPaneExternal {
         send_key(&self.pty, &key, mods, parse_hand(args)?)
             .map(|written| injected(&self.pty, &written))
             .map_err(refused)
+    }
+
+    /// Write a whole keystroke BATCH as one PTY write and answer what it wrote — [`INJECT_ACTION`],
+    /// the door a run driver types through. See that constant for why it is a verb of its own.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The refusal comes BEFORE the write, which is the whole of it
+    ///
+    /// Asked after the write this function returns the identical refusal to a caller and every gate
+    /// over it stays green — and the bytes are already in a queue that will never drain, so the walk
+    /// to the 16,896-byte wall is exactly as long as it was. That is not a hypothetical: it is the
+    /// in-process door's own recorded mutation, and the reason its guard is the first statement in
+    /// the function rather than a check on the way out.
+    ///
+    /// ⚠⚠ **AND IT IS THE DAEMON'S GUARD, NOT THE DRIVER'S.** A remote driver could ask
+    /// [`PANE_EOF_SLOT`] itself and refuse before calling — and would then be deciding on a fact it
+    /// read a round trip ago, about a child that can exit in between. The party that holds the
+    /// atomic is the party that can answer it AT the write, so the refusal lives here and a driver
+    /// maps the word back to its own typed error.
+    ///
+    /// ⚠ A batch with no strokes writes nothing and answers zero bytes rather than refusing: it is
+    /// a well-formed request whose answer is *nothing was written*, which is what an empty list
+    /// means. The suppressed key-up edges of a faithful client collapse to exactly that.
+    fn inject_strokes(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let strokes = parse_inject_args(args)?;
+        if self.pty.is_eof() {
+            return Err(refused(PEER_GONE_REFUSAL));
+        }
+        // ONE WRITE, which is the second thing this door has that a loop over `key` has not: the
+        // strokes are encoded under the modes read at this instant and handed to the terminal in a
+        // single write, so a program reading its input takes the whole prompt in one read.
+        let mut bytes = Vec::new();
+        for (key, mods) in strokes {
+            let encoded = sprag_input::encode(&key, mods, self.pty.input_modes())
+                .ok_or_else(|| refused(KeyUnsent::Unencodable))?;
+            bytes.extend_from_slice(&encoded);
+        }
+        // ⚠⚠ A PROGRAM, always — see [`INJECT_ACTION`]. There is no hand to parse.
+        if bytes.is_empty() || self.pty.write(&bytes, Hand::AProgram).is_ok() {
+            Ok(injected_batch(&self.pty, &bytes))
+        } else {
+            Err(refused(NOT_WRITTEN))
+        }
     }
 
     /// Write a `text` action's literal UTF-8 to the PTY — **not** key-encoded.
@@ -680,7 +761,7 @@ impl SpragPaneExternal {
             // in the pane list grows (the payload can be a whole paste, so it is not carried per
             // poll). `Null` (present-but-empty) when the child has written no clipboard — the
             // client then has nothing to apply, exactly as a malformed `cells.<off>` is `Null`.
-            // HOW TO CALL THIS SURFACE'S SIX VERBS. Answered from the surface a client already holds
+            // HOW TO CALL THIS SURFACE'S VERBS. Answered from the surface a client already holds
             // a path to, so the address it asked scopes the answer — see `ACTION_GRAMMAR_SLOT`. The
             // table is a `const`, so this costs one walk of it per ask and nothing per frame.
             ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(ActionGrammar::answer(PANE_GRAMMAR))),
@@ -771,6 +852,7 @@ impl ExternalIntrospect for SpragPaneExternal {
             TEXT_ACTION => self.inject_text(&args),
             PASTE_ACTION => self.inject_paste(&args),
             CLIPBOARD_ANSWER_ACTION => self.answer_clipboard(&args),
+            INJECT_ACTION => self.inject_strokes(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -890,7 +972,7 @@ fn parse_key_args(args: &IntrospectValue) -> Result<Option<(String, Modifiers)>,
         }
         IntrospectValue::Json(Value::Object(map)) => {
             let key = map
-                .get("key")
+                .get(KEY_FIELD)
                 .and_then(Value::as_str)
                 .filter(|k| !k.is_empty())
                 .ok_or(InvokeError::TypeMismatch)?;
@@ -899,10 +981,10 @@ fn parse_key_args(args: &IntrospectValue) -> Result<Option<(String, Modifiers)>,
             // had no definition the pane surface could publish. ⚠ A `state` PRESENT at the wrong
             // JSON type is refused rather than read as a press: `and_then(Value::as_str)` folded
             // `{"state": 4}` into the `None` arm, so a malformed edge was injected as a keystroke.
-            let edge = if declined(map, "state") {
+            let edge = if declined(map, KEY_STATE_FIELD) {
                 KeyEdge::Down
             } else {
-                match &map["state"] {
+                match &map[KEY_STATE_FIELD] {
                     Value::String(word) => {
                         KeyEdge::from_wire(word).ok_or(InvokeError::TypeMismatch)?
                     }
@@ -991,14 +1073,18 @@ fn parse_modifier_flags(
         }
     };
     Ok(Modifiers {
-        ctrl: flag("ctrl")?,
-        alt: flag("alt")?,
-        shift: flag("shift")?,
+        ctrl: flag(CTRL_FIELD)?,
+        alt: flag(ALT_FIELD)?,
+        shift: flag(SHIFT_FIELD)?,
         // A mouse report has no encoding for the logo key, so that action does not read the key at
         // all — and a surface that does not read a key does not publish one either. Spelled as an
         // `if` rather than `with_super && flag(..)?` so it is visible that the flag is not READ
         // there, instead of being read and discarded.
-        sup: if with_super { flag("super")? } else { false },
+        sup: if with_super {
+            flag(SUPER_FIELD)?
+        } else {
+            false
+        },
     })
 }
 
@@ -1631,13 +1717,13 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            22,
-            "one call per published word: the two key edges, the eight mouse buttons, the four \
-             pointer edges, the two clipboard selections, and the TWO HANDS on each of the three \
-             verbs that write. ⚠⚠ The six newest are the vocabulary that made a person visible at \
-             all: this surface is where both frontends' keyboards land, so `program` had been the \
-             only answer it could give and a person's keystroke was indistinguishable from an \
-             agent's",
+            24,
+            "one call per published word: the key edges wherever a keystroke is declared, the \
+             eight mouse buttons, the four pointer edges, the two clipboard selections, and the \
+             TWO HANDS on each verb that writes AND takes one. ⚠⚠ The newest two are the key \
+             edges NESTED inside `inject`'s batch (register item 544) — the same closed set `key` \
+             publishes, reached at a second place, and this probe walks into a nested element \
+             where the value-space PIN does not",
         );
     }
 
@@ -1652,10 +1738,11 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            7,
+            8,
             "one probe per open string argument of every form: a key name in each of `key`'s two \
-             forms, the literal text in each of `text`'s and `paste`'s two, and a clipboard answer's \
-             text — every one of them a value the caller invents",
+             forms and again inside `inject`'s batch element, the literal text in each of `text`'s \
+             and `paste`'s two, and a clipboard answer's text — every one of them a value the \
+             caller invents",
         );
     }
 
@@ -1678,12 +1765,12 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            11,
+            16,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
-             declined. ⚠⚠ The newest THREE are `hand` on the three verbs that WRITE, and its \
-             declinability is the whole default: an absent hand is a PROGRAM, which is every \
-             existing caller's behaviour unchanged and the half nobody can claim by silence",
+             declined. ⚠⚠ The newest FIVE are the declinable fields of one stroke inside \
+             `inject`'s batch (register item 544): an edge and four modifiers, each of which a \
+             driver assembling strokes in code will leave out for most of them",
         );
     }
 
@@ -1696,14 +1783,14 @@ mod tests {
                 &mut |action, args| external.invoke(action, args)
             )
             .count_or_panic(),
-            25,
+            32,
             "one probe per declared argument of every FORM: EIGHT across `key`'s two forms, THREE \
              each for `text` and `paste`, seven for a mouse report, one focus edge, and three for a \
-             clipboard answer. ⚠⚠ The newest THREE are `hand` on each verb that WRITES — whose \
-             keystrokes these are. It is on the object forms only (a bare string has nowhere to \
-             carry it) and on none of the verbs that do not write: `mouse` and `focus` are a \
-             program by a decision written at their own call sites, and a clipboard answer is a \
-             device replying",
+             clipboard answer. ⚠⚠ The newest SEVEN are `inject`'s (register item 544): the batch \
+             itself and the six fields of one stroke inside it. ⚠ That the NESTED six are probed \
+             is what makes this pin worth its count here — the driver's door would otherwise be \
+             one declared argument with six undriven ones inside it, which is precisely the shape \
+             this claim exists to refuse",
         );
     }
 
@@ -1863,7 +1950,12 @@ mod tests {
             .filter(|field| field.channel == pinion_core::external::SchemaChannel::Invoke)
             .map(|field| field.path)
             .collect();
-        assert_eq!(declared.len(), 6, "this surface declares six verbs");
+        assert_eq!(
+            declared.len(),
+            7,
+            "the verbs this surface declares — the display client's, plus the run driver's own \
+             `inject` (register item 544)",
+        );
         for verb in declared {
             assert_ne!(
                 external.invoke(verb, IntrospectValue::Null),
@@ -1902,12 +1994,13 @@ mod tests {
             [
                 CLIPBOARD_ANSWER_ACTION,
                 FOCUS_ACTION,
+                INJECT_ACTION,
                 KEY_ACTION,
                 MOUSE_ACTION,
                 PASTE_ACTION,
                 TEXT_ACTION
             ],
-            "the six verbs this surface serves, and not the multiplexer's",
+            "the verbs this surface serves, and not the multiplexer's",
         );
 
         // `key`'s two forms, with the shapes that make them two — the fact no array of arguments

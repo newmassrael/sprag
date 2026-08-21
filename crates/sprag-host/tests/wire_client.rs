@@ -10,12 +10,13 @@
 //! (`CARGO_BIN_EXE_sprag-term`), so a break in the wire ABI fails in CI, not by hand.
 
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
+use sprag_host::remote_access::RemotePaneAccess;
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
@@ -29,10 +30,15 @@ use sprag_host::wire::{
     project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
+use sprag_input::Modifiers;
+use sprag_plugin::{
+    Delivered, Delivery, KeyStroke, PaneAccess, PaneError, RunContext, Written, deliver,
+};
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
     EVENTS_WAIT_METHOD, HostConn, PROTOCOL_FIELD, PROTOCOL_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
 };
+use sprag_terminal::PaneId;
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
 /// assertion never leaks a `sprag-term` — and unlinks its socket, so it leaks no file either.
@@ -5832,8 +5838,17 @@ fn a_client_can_drive_a_pane_from_its_published_grammar() {
     published.sort_unstable();
     assert_eq!(
         published,
-        ["clipboard_answer", "focus", "key", "mouse", "paste", "text"],
-        "the six verbs a pane's input surface serves, over the real wire: {grammar}",
+        [
+            "clipboard_answer",
+            "focus",
+            "inject",
+            "key",
+            "mouse",
+            "paste",
+            "text"
+        ],
+        "the verbs a pane's input surface serves, over the real wire — the display client's, plus \
+         the run driver's own `inject` (register item 544): {grammar}",
     );
 
     // ── The SCALAR form, which is the half no in-crate gate can prove ────────────────────────────
@@ -6131,6 +6146,354 @@ fn a_pane_serves_its_screen_at_two_addresses_a_driver_cannot_derive_from_each_ot
         "⚠⚠⚠ both screen addresses must answer about the SCREEN: a line that scrolled off is \
          `full_text`'s to report, and a driver told otherwise re-reads output it has already \
          acted on. Got {collapsed:?} / {rows:?}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// Spawn a pane over the wire, answering its id — the setup every stage-1 gate below shares.
+///
+/// ⚠ On a connection of the TEST's, never the driver's. What the driver did, it did through
+/// [`PaneAccess`] alone, and a setup call on its own connection would blur that.
+fn spawn_pane(conn: &mut HostConn, args: Value) -> PaneId {
+    PaneId(
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": args }),
+        )
+        .expect("spawn a pane over the socket")
+        .as_u64()
+        .expect("spawn returns the new pane id"),
+    )
+}
+
+/// A driver's own surface over a real daemon's socket, plus a test-side connection for setup.
+fn remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
+    let setup = HostConn::connect(sock, Duration::from_secs(5)).expect("the test's own connection");
+    let driving =
+        HostConn::connect(sock, Duration::from_secs(5)).expect("the driver's own connection");
+    (RemotePaneAccess::over(driving), setup)
+}
+
+/// ⛔⛔⛔⛔ **THE FUNCTION EVERY PLUGIN TYPES THROUGH DRIVES A REAL PANE FROM ANOTHER PROCESS** —
+/// register item 544, stage 1, and the claim the whole item is for.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is the gate and not a unit test of the client
+///
+/// The item's defect is that **two things with different natural lifetimes share one process**: a
+/// multiplexer that owns pseudoterminals for weeks, and a run supervisor whose life is the work.
+/// Because the driver is compiled into the daemon, *"change how a loop reflects"* has meant
+/// *"restart the thing holding your PTYs"*. Nothing about that is settled by a client that answers
+/// the right JSON — it is settled by **the plugin layer's own typing function, unchanged, driving a
+/// pane it cannot reach any other way.** So this test runs `sprag_plugin::deliver` in the TEST
+/// process against a `sprag-term` in another one, and the shell in that pane runs what it was told.
+///
+/// # ⚠⚠⚠ The three things asserted, and why each is separate
+///
+/// * **THE SHELL RAN IT.** `ran-42` cannot appear from an echo: the text typed is
+///   `echo ran-$((21+21))`, so the arithmetic is the SHELL's and nothing but a submit that landed
+///   produces it. That is the delivery's whole contract — text on the screen, then Enter, then a
+///   program that acted.
+/// * **THE BYTE COUNT CROSSED THE WIRE.** Exactly the text plus one for Enter. A door that answered
+///   no count, or a client that fabricated one, would leave a run charging its own cost from a
+///   guess — and this is the only address on this wire that answers what a write actually wrote.
+/// * **THE ECHO QUESTION IS UNANSWERED, AND SAID SO.** `OnScreenOnly { echo: None }` is the honest
+///   verdict for a host that cannot ask a pane's terminal about its modes; a remote driver that
+///   reported `Confirmed` would be claiming the PROGRAM took the text on evidence it never had.
+///   The absence is the stage's own residue, named here rather than left to be discovered.
+///
+/// ⚠ The barrier is the pane's own prompt, read through the driver's surface. Not a sleep, and not
+/// `has_painted`: that reads a per-row damage GENERATION, which this wire deliberately does not
+/// publish — so a remote driver waits for what it can see, which is what the loop's own
+/// readiness contract does too.
+#[test]
+fn the_door_every_plugin_types_through_drives_a_real_pane_from_another_process() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sh"] }));
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains('$'))),
+        "⚠⚠ the shell never printed a prompt through the driver's own surface, so nothing below \
+         would be measuring a delivery — it would be measuring a race. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    let text = "echo ran-$((21+21))";
+    let delivered = deliver(
+        &remote,
+        &RunContext::uncancellable(),
+        pane,
+        text,
+        &Delivery::new(),
+    )
+    .expect("a delivery through the remote surface");
+
+    let Delivered::OnScreenOnly {
+        attempts,
+        written,
+        echo,
+    } = delivered
+    else {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 544: `deliver` over the wire answered {delivered:?}. A driver \
+             outside the daemon must reach the same verdict the in-process one does — the text \
+             read back off a screen it changed, then the submit. Anything else means this seam \
+             cannot carry the loop."
+        );
+    };
+    assert_eq!(
+        attempts, 1,
+        "the first injection was not confirmed, so the byte count below is a sum over retries \
+         rather than the write this gate is about",
+    );
+    assert_eq!(
+        written.bytes(),
+        text.len() as u64 + 1,
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the door must answer WHAT IT WROTE — {} bytes of text and one \
+         for Enter. A remote driver cannot compute this for itself: what a stroke becomes is the \
+         encoder's answer under the pane's LIVE input modes, which the program may change between \
+         any read and any write, so the count is the writer's to report or it is a guess.",
+        text.len(),
+    );
+    assert!(
+        echo.is_none(),
+        "⚠⚠⚠ a remote surface cannot ask a pane's terminal who echoes, so the honest verdict \
+         carries no answer. An echo reported here would be a claim about modes nothing read: got \
+         {echo:?}",
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_full_text(pane)
+            .is_some_and(|out| out.contains("ran-42"))),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the shell never ran the command. `ran-42` is arithmetic only \
+         the SHELL performs — the typed line reads `{text}` — so its absence means the submit did \
+         not land, and a driver in another process cannot yet do the one thing a driver is for. \
+         Read {:?}",
+        remote.pane_full_text(pane),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **THE REMOTE DOOR REFUSES A PANE WHOSE CHILD HAS GONE, AND THE LIVE PANE BESIDE IT TAKES
+/// THE WRITE** — register item 544, stage 1, and the refusal that keeps a remote driver out of the
+/// wedge that held a build machine for 43 hours.
+///
+/// # ⚠⚠⚠⚠⚠ Why a remote driver needs this more than an in-process one
+///
+/// A pseudoterminal whose child has exited is not a hole, it is a wall with a queue: it takes
+/// 16,896 bytes and then blocks for ever. The in-process door reads the pane's own EOF atomic and
+/// refuses before writing; a driver that reached the pane through the display client's `key` verb
+/// would have no such door and would type its stimulus every step, patiently, all the way there.
+///
+/// # ⚠⚠⚠ The pair is the claim, and the third arm is the one a skew would break
+///
+/// * The DEAD pane must refuse, and refuse **as the typed cause** — `PeerGone`, not some other
+///   error. A driver that read *some other error* would retry, which is the march.
+/// * The LIVE pane, on the same daemon and the same connection, must take the write and say how
+///   much. Without it, a door hard-wired to refuse would pass.
+/// * A pane NOBODY KNOWS must answer `UnknownPane` and not the daemon-skew sentence. Both arrive as
+///   one JSON-RPC fault with one payload word, and only the pane list tells them apart — so this
+///   arm is what holds that discrimination in place.
+#[test]
+fn a_remote_door_refuses_a_pane_whose_child_has_gone_and_the_live_one_beside_it_is_written_to() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+
+    let living = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
+    let dying = spawn_pane(&mut setup, json!({ "cmd": ["true"] }));
+
+    assert_eq!(
+        remote
+            .inject(living, &KeyStroke::text("ping"))
+            .map(Written::bytes),
+        Ok(4),
+        "⚠⚠⚠ THE CONTROL: a pane running `cat` takes the write, and the door says how many bytes \
+         it put on the pseudoterminal. A refusal here would report every pane dead, which reads to \
+         a driver as *stop typing* — a loop that refuses to work at a perfectly good peer.",
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(5), || remote.pane_eof(dying)
+            == Some(true)),
+        "the pane whose child exits at once never reported EOF through the driver's own surface, \
+         so the refusal below would be measuring nothing",
+    );
+    assert_eq!(
+        remote.inject(dying, &KeyStroke::text("x")),
+        Err(PaneError::PeerGone(dying)),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: typing into a pane whose child has EXITED must be refused, and \
+         refused as PeerGone. A remote driver handed anything else has one remedy — try again — \
+         and the write it retries is the one that fills a dead pty's buffer and blocks for ever.",
+    );
+
+    assert_eq!(
+        remote.inject(PaneId(4242), &KeyStroke::text("x")),
+        Err(PaneError::UnknownPane(PaneId(4242))),
+        "⚠⚠⚠ a pane nobody knows and a daemon too old to have this door arrive as the SAME fault \
+         with the SAME payload word. Telling them apart is what the pane list is for here, and \
+         getting it wrong tells an operator to restart a daemon that is perfectly current.",
+    );
+
+    assert!(
+        remote.inject(living, &KeyStroke::text("g")).is_ok(),
+        "⚠⚠⚠ the door must answer about the pane it NAMES: one child exiting has been read as \
+         every pane being gone",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **A DRIVER OUTSIDE THE DAEMON READS A WRAPPED PANE THE FOUR WAYS IT READS ONE INSIDE** —
+/// register item 544, stage 1, and the client half of stage 1b's argument.
+///
+/// # ⚠⚠⚠⚠⚠ Every one of the four is a DIFFERENT answer about the same output
+///
+/// One pane, five columns wide, printing `OLD`, `GO`, then `TOOL UP` — so the last line wraps after
+/// the SPACE and `OLD` scrolls into the scrollback. What each read must answer, and what a client
+/// that derived it from a neighbour would answer instead:
+///
+/// * `pane_collapsed` — each row's SHARE of its logical line, so `GOTOOL UP`. Joining the rendered
+///   rows drops the space the wrap sat on and answers `GOTOOLUP`; a barrier waiting for `TOOL UP`
+///   then never clears, and **the width is not the driver's to choose** — whichever display client
+///   attached decides it.
+/// * `pane_rows` — what each row RENDERS, trailing blanks trimmed: `GO`, `TOOL`, `UP`. Serving the
+///   shares here would make the two reads one answer twice.
+/// * `pane_full_lines` — the LOGICAL lines the child wrote: `OLD`, `GO`, `TOOL UP`. ⚠ The trait's
+///   own default splits the RENDERED text instead, which answers FOUR lines and breaks `TOOL UP`
+///   in half. That default is a documented degradation for a host that cannot answer the content
+///   question; this one can, so taking the default would be a rendering published as content.
+/// * `pane_full_text` — the rendered whole, scrollback included, which is the only one of the four
+///   that still holds `OLD`. It is also this gate's NON-VACUITY: without it, "the screen reads have
+///   scrolled past `OLD`" is satisfied by a pane that never scrolled at all.
+///
+/// ⚠⚠ And the rows' `generation` is ZERO, asserted rather than ignored. A damage generation is a
+/// PAINT signal that a resize or a palette change stamps while no program writes a byte; four
+/// plugins in this workspace read it as *what did the peer produce* and each reported something
+/// false. So the wire does not carry it, and this surface says so in the value rather than
+/// inventing one.
+#[test]
+fn a_remote_surface_reads_a_wrapped_pane_the_four_ways_a_driver_reads_it() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(
+        &mut setup,
+        json!({
+            "cmd": ["sh", "-c", "printf 'OLD\\nGO\\nTOOL UP'"],
+            "cols": 5,
+            "rows": 3,
+        }),
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(5), || remote.pane_eof(pane)
+            == Some(true)),
+        "the printing child never reached EOF, so nothing below is reading a settled screen",
+    );
+
+    let rows = remote.pane_rows(pane).expect("the pane's rows");
+    assert_eq!(
+        rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>(),
+        vec!["GO".to_owned(), "TOOL".to_owned(), "UP".to_owned()],
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the rows a remote driver reads must be what each row RENDERS",
+    );
+    assert!(
+        rows.iter().all(|row| row.generation == 0),
+        "⚠⚠⚠ the paint generation is deliberately not published, so a remote row must not carry \
+         one. A number invented here hands a driver the mistake four plugins already made — \
+         reading a repaint as the peer having produced something. Got {rows:?}",
+    );
+    assert_eq!(
+        remote.pane_collapsed(pane).as_deref(),
+        Some("GOTOOL UP"),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the collapsed screen must join each row's SHARE of its logical \
+         line, so a marker the terminal wrapped still matches. Deriving it from the rows answers \
+         `GOTOOLUP`, and the barrier never clears.",
+    );
+    assert_eq!(
+        remote.pane_full_lines(pane),
+        Some(vec![
+            "OLD".to_owned(),
+            "GO".to_owned(),
+            "TOOL UP".to_owned()
+        ]),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the logical lines must be READ, not derived. The trait's \
+         default splits the rendered text and answers four lines with `TOOL UP` broken in half — \
+         which makes every marker this driver matches depend on somebody else's window width.",
+    );
+    let full = remote.pane_full_text(pane).unwrap_or_default();
+    assert!(
+        full.contains("OLD"),
+        "the pane never scrolled, so the screen-scoped assertions above measure nothing. \
+         `full_text` read {full:?}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **A MODIFIED KEYSTROKE CROSSES THE WIRE AS THE CHORD IT IS** — register item 544, stage 1.
+///
+/// # ⚠⚠⚠ The pair is the claim, because a dropped modifier is a SUCCESSFUL write of the wrong byte
+///
+/// `a` and `C-a` are one byte each and both are accepted, so nothing about the answer distinguishes
+/// them: a client that lost the modifier reports the same count for both. What separates them is
+/// the pane's own echo — `a` for the character, `^A` for the control byte the line discipline
+/// renders. So the bare stroke goes first and the chord after it, and the screen has to show both.
+///
+/// ⚠ Every modifier is spelled on every stroke this surface sends (`false` included), which is why
+/// one chord holds the claim for the form rather than for one flag: a form assembled per-stroke
+/// from whichever flags happened to be set is the shape where the fifth one is forgotten.
+#[test]
+fn a_modified_keystroke_reaches_a_pane_as_the_chord_it_is() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
+
+    assert_eq!(
+        remote
+            .inject(pane, &KeyStroke::text("a"))
+            .map(Written::bytes),
+        Ok(1),
+        "the bare character is one byte on the pseudoterminal",
+    );
+    assert!(
+        wait_until(Duration::from_secs(5), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains('a'))),
+        "⚠⚠ THE CONTROL: the pane never echoed the plain character, so the chord below would be \
+         measuring a pane that echoes nothing. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    assert_eq!(
+        remote
+            .inject(
+                pane,
+                &[KeyStroke {
+                    key: "a".to_owned(),
+                    mods: Modifiers {
+                        ctrl: true,
+                        ..Modifiers::default()
+                    },
+                }],
+            )
+            .map(Written::bytes),
+        Ok(1),
+        "⚠⚠⚠ THE CHORD COSTS THE SAME ONE BYTE AS THE CHARACTER, which is why the count cannot \
+         tell them apart and the pane's own echo is the only witness",
+    );
+    assert!(
+        wait_until(Duration::from_secs(5), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains("^A"))),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the pane never received the CONTROL byte — a client that drops \
+         a modifier writes the plain character instead, successfully, and reports the same byte \
+         count for both. Read {:?}",
+        remote.pane_collapsed(pane),
     );
 
     let _ = std::fs::remove_file(&sock);

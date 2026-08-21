@@ -4801,7 +4801,7 @@ fn show_grammar(args: Vec<String>) -> io::Result<()> {
         GrammarSurface::Mux => mux_action_path(ACTION_GRAMMAR_SLOT),
         GrammarSurface::Plugins => sprag_host::wire::plugins_path(ACTION_GRAMMAR_SLOT),
         GrammarSurface::PaneInput => {
-            // ANY pane: every pane's input surface serves the same six verbs, so the first one this
+            // ANY pane: every pane's input surface serves the same verbs, so the first one this
             // session holds answers the question, and making the caller name one would suggest the
             // answer differs per pane. A session with no panes cannot answer it at all, and says so.
             let pane = *pane_ids(&mut conn, session.as_deref())?

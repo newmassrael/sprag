@@ -49,6 +49,81 @@ pub const TEXT_ACTION: &str = "text";
 /// bracketed — typed / IME-committed text never is. The bracketing decision lives at the PTY
 /// boundary (which holds the authoritative mode), so a display client just forwards the raw text.
 pub const PASTE_ACTION: &str = "paste";
+/// The pane-input external invoke action a RUN DRIVER types through: a whole keystroke BATCH as one
+/// write, refused with [`PEER_GONE_REFUSAL`] before it writes anything when the pane's child has
+/// left, and answering [`INJECTED_BYTES_KEY`] — the count the same door returns in-process as
+/// `sprag_plugin::Written`.
+///
+/// # Why this is its own verb and not [`KEY_ACTION`] called once per stroke
+///
+/// [`KEY_ACTION`] is a DISPLAY CLIENT's door: one keystroke as a person made it, stamped with
+/// whichever [`Hand`](sprag_terminal::Hand) the caller names. `PaneAccess::inject` is a PLUGIN's
+/// door, and three of its properties cannot be had by calling the display one N times:
+///
+/// * **ONE WRITE.** The in-process door concatenates every stroke's bytes and writes once, so the
+///   program on the far side takes the prompt in one read; N writes are N chances for a program
+///   that is still starting up to read half of it and throw that half away.
+/// * **THE REFUSAL.** A pseudoterminal whose child has exited accepts a bounded number of bytes
+///   and then blocks FOR EVER holding the pane's writer lock. The in-process door asks
+///   [`PANE_EOF_SLOT`]'s own fact BEFORE writing and refuses, which is what stops a run walking
+///   into the wedge that held a build machine for 43 hours. A driver typing through
+///   [`KEY_ACTION`] has no such door, and this register's own measurement is that the driver is
+///   exactly the caller who cannot afford to find out by writing.
+/// * **THE COUNT.** What a stroke becomes is the encoder's answer under the pane's LIVE input
+///   modes, and the modes are the program's to change at any moment — the same reason
+///   [`UNSIGNALLED_KEY`] is answered by the write rather than read from a slot first. So the count
+///   is answered here, by the party that wrote, or it is a guess about a terminal that need not
+///   still exist.
+///
+/// # A PROGRAM, always — which is why there is no hand to name
+///
+/// Every caller of this door is a run driving a pane rather than somebody at a keyboard, so the
+/// write is stamped [`Hand::AProgram`](sprag_terminal::Hand::AProgram) and no argument can say
+/// otherwise. It is what lets a run ask whether a PERSON has reached into the pane it is driving:
+/// a driver that stamped its own injections as a person's would trip its own interruption check on
+/// the next step. A client that means a person's keystroke has [`KEY_ACTION`] and [`TEXT_ACTION`],
+/// which take a hand and answer no count.
+pub const INJECT_ACTION: &str = "inject";
+/// The [`INJECT_ACTION`] argument holding the strokes to write, in order — an ARRAY of exactly what
+/// [`KEY_ACTION`] takes, scalar or object form per element, so the keystroke vocabulary has one
+/// definition and a batch is not a second spelling of it.
+pub const INJECT_STROKES_KEY: &str = "keys";
+/// The [`INJECT_ACTION`] answer member counting the bytes that reached the pane's pseudoterminal.
+///
+/// A count with a name, and the name is the contract — the wire form of what
+/// `sprag_plugin::Written` says in its own docs: the kernel took these bytes, which is not the same
+/// fact as the program on the other end having read them.
+pub const INJECTED_BYTES_KEY: &str = "bytes";
+/// The [`INJECT_ACTION`] refusal reason for a pane whose child has exited — the wire's word for
+/// what `sprag_plugin::PaneError::PeerGone` is in-process.
+///
+/// ⚠ A CONSTANT because both sides read it: the daemon refuses with it and a remote driver maps it
+/// back to the typed refusal. A sentence spelled twice is a sentence that drifts, and the second
+/// spelling would fail OPEN — an unrecognised refusal reads as some other error, and the remedy for
+/// *some other error* is to try again, which is the wedge.
+pub const PEER_GONE_REFUSAL: &str = "the pane's child has exited, so nothing will read what is \
+                                    written into it and the write would fill its buffer and block";
+/// A KEYSTROKE's field on this wire: which key. Named here because three parties spell it —
+/// the parser that reads it, the grammar that publishes it, and now a client that WRITES it.
+///
+/// ⚠ The names below were string literals in each of those places until a client existed. Two
+/// spellings of one vocabulary is the drift this repository keeps paying for, and a keystroke field
+/// misspelled by a driver is not a compile error anywhere: it is a refused injection at run time,
+/// on the surface a run uses every step.
+pub const KEY_FIELD: &str = "key";
+/// A keystroke's field naming which EDGE it is (a [`KeyEdge`](sprag_input::KeyEdge) word). Absent
+/// means the press; the release is accepted and injects nothing.
+pub const KEY_STATE_FIELD: &str = "state";
+/// A keystroke's field naming whether CONTROL was held.
+pub const CTRL_FIELD: &str = "ctrl";
+/// A keystroke's field naming whether ALT was held.
+pub const ALT_FIELD: &str = "alt";
+/// A keystroke's field naming whether SHIFT was held.
+pub const SHIFT_FIELD: &str = "shift";
+/// A keystroke's field naming whether the LOGO key was held — `super` on the wire (the W3C
+/// spelling) and `sup` on [`Modifiers`](sprag_input::Modifiers), which is why this is written out
+/// rather than derived from the field it fills.
+pub const SUPER_FIELD: &str = "super";
 /// The answer key EVERY pane-input action that writes bytes carries when what it just wrote
 /// MEANT a signal and this pane's terminal will raise none — a list of
 /// `{`[`key`](UNSIGNALLED_WHICH_KEY)`, `[`because`](UNSIGNALLED_WHY_KEY)`}`, one per distinct key,
@@ -557,6 +632,11 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::action(TEXT_ACTION, "action"),
     SchemaField::action(FOCUS_ACTION, "action"),
     SchemaField::action(PASTE_ACTION, "action"),
+    // ⚠⚠⚠ Register item 544, stage 1c — see `INJECT_ACTION`. The verbs above are a DISPLAY
+    // client's; this one is the door a RUN DRIVER types through, and it is a verb of its own
+    // because one write, a refusal before writing, and an answered byte count are three things
+    // calling `key` per stroke cannot give it.
+    SchemaField::action(INJECT_ACTION, "action"),
     CELLS_FIELD,
     empty_member_of(&CELLS_FIELD),
     SchemaField::new(FRAMES_SLOT, "int"),
@@ -582,7 +662,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     empty_member_of(&IMAGE_DATA_FIELD),
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::action(CLIPBOARD_ANSWER_ACTION, "action"),
-    // HOW TO CALL THE SIX VERBS ABOVE — this surface's own [`PANE_GRAMMAR`]. A client that
+    // HOW TO CALL EVERY VERB ABOVE — this surface's own [`PANE_GRAMMAR`]. A client that
     // holds a pane's path can ask that pane what its input verbs take, which is the read that made
     // every argument on this surface folklore until R353.
     SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
@@ -1729,17 +1809,39 @@ impl PaneGrammar {
             // The two words that lived as string literals inside `parse_key_args`. An absent `state`
             // means `down`, which is why it is optional — and `up` is ACCEPTED and injects nothing,
             // so a client that faithfully reports both halves of a keystroke is not refused.
-            ArgGrammar::one_of("state", "string", &sprag_input::KeyEdge::WIRE_WORDS).optional(),
-            ArgGrammar::open("ctrl", "bool").optional(),
-            ArgGrammar::open("alt", "bool").optional(),
-            ArgGrammar::open("shift", "bool").optional(),
-            // The logo key. Named `super` on the wire (the W3C spelling) and `sup` on
-            // [`Modifiers`](sprag_input::Modifiers), which is why the key is written here rather than
-            // derived from the field.
-            ArgGrammar::open("super", "bool").optional(),
+            ArgGrammar::one_of(KEY_STATE_FIELD, "string", &sprag_input::KeyEdge::WIRE_WORDS)
+                .optional(),
+            ArgGrammar::open(CTRL_FIELD, "bool").optional(),
+            ArgGrammar::open(ALT_FIELD, "bool").optional(),
+            ArgGrammar::open(SHIFT_FIELD, "bool").optional(),
+            ArgGrammar::open(SUPER_FIELD, "bool").optional(),
             Self::HAND_ARG.optional(),
         ]),
     ];
+
+    /// ONE STROKE inside an [`INJECT_ACTION`] batch — [`KEY`](Self::KEY)'s object form without the
+    /// hand, because that door is a program's by construction and has no hand to name.
+    ///
+    /// ⚠ The OBJECT form only. `key` also takes a bare string, and a batch deliberately does not:
+    /// the elements of a list a driver assembles are built by code, not typed, and an undeclared
+    /// leniency is a behaviour no gate can see.
+    const STROKE_FIELDS: &'static [ArgGrammar] = &[
+        Self::KEY_ARG,
+        ArgGrammar::one_of(KEY_STATE_FIELD, "string", &sprag_input::KeyEdge::WIRE_WORDS).optional(),
+        ArgGrammar::open(CTRL_FIELD, "bool").optional(),
+        ArgGrammar::open(ALT_FIELD, "bool").optional(),
+        ArgGrammar::open(SHIFT_FIELD, "bool").optional(),
+        ArgGrammar::open(SUPER_FIELD, "bool").optional(),
+    ];
+
+    /// [`INJECT_ACTION`] — the strokes a run driver types, in order, as ONE write.
+    ///
+    /// ⚠ One form and no scalar spelling: the argument IS a list, and there is no shorter way to
+    /// say a list.
+    pub const INJECT: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::nested_list(
+        INJECT_STROKES_KEY,
+        Self::STROKE_FIELDS,
+    )])];
 
     /// The literal UTF-8 a `text` or `paste` action writes.
     const TEXT_ARG: ArgGrammar = ArgGrammar::open("text", "string");
@@ -2255,7 +2357,7 @@ pub const MUX_GRAMMAR: &[ActionGrammar] = &[
     },
 ];
 
-/// Every PANE-INPUT verb, all six of them — what [`PANE_SCHEMA`]'s surface serves.
+/// Every PANE-INPUT verb — what [`PANE_SCHEMA`]'s surface serves.
 ///
 /// # The surface an agent uses most was the one that said nothing
 ///
@@ -2297,6 +2399,11 @@ pub const PANE_GRAMMAR: &[ActionGrammar] = &[
     ActionGrammar {
         action: CLIPBOARD_ANSWER_ACTION,
         forms: PaneGrammar::CLIPBOARD_ANSWER,
+        from_ask: false,
+    },
+    ActionGrammar {
+        action: INJECT_ACTION,
+        forms: PaneGrammar::INJECT,
         from_ask: false,
     },
 ];
@@ -3966,6 +4073,14 @@ pub const RENAME_PANE_ACTION: &str = "rename_pane";
 pub const GRANT_PANE_ACTION: &str = "grant_pane";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
+/// The member of a [`PANES_SLOT`] entry that is an ADDRESS: the pane's id, which is what a client
+/// puts back into [`pane_input_path`] to read or drive that pane.
+///
+/// ⚠ Named, where its neighbours in the entry are literals, because it is the only one a READER
+/// hands to a WRITER. The others describe the pane to a person; a client that misspells one shows
+/// something wrong, and a client that misspells this one addresses nothing — and the listing it
+/// walked looked perfectly well-formed on the way past.
+pub const PANE_SUMMARY_ID_KEY: &str = "id";
 
 /// The arguments of [`PROJECT_FIELD`] — one pane `id`, `Open` (a pane id is minted by the host and
 /// never bounded by a list this schema publishes, the same reason [`IMAGE_DATA_ARGS`] is open).
@@ -8426,11 +8541,25 @@ mod tests {
                 "sprag_workspace/sprag_mux/stop_job:signal=interrupt,terminate,kill",
                 "sprag_workspace/sprag_mux/swap_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/zoom_pane:",
-                // A PANE'S INPUT, all six verbs. `key`'s `state` and `clipboard_answer`'s `sel` were
+                // A PANE'S INPUT, every verb. `key`'s `state` and `clipboard_answer`'s `sel` were
                 // string literals inside the parsers; `mouse`'s two were spelled once per SIDE of the
                 // wire, in two crates, with nothing comparing the lists.
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer:sel=c,p",
                 "sprag_workspace/pane_<id>/sprag_input/focus:",
+                // ⚠⚠⚠ REGISTER ITEM 544: the door a RUN DRIVER types through, and it publishes NO
+                // closed vocabulary of its own — its one argument is a LIST of keystrokes. ⚠ The
+                // keystroke's own `state` words ARE a closed set, and they are NESTED, which this
+                // pin does not walk: it reads each form's top-level arguments. A named blind spot
+                // rather than a discovered one — `run`'s nested `ready_when` has been in it since
+                // R359b — and the words are the same set `key` beside it already publishes, so the
+                // union of what a client may say has not widened; only the number of places it may
+                // say it. The SHAPE pin below is what sees the nesting.
+                // ⚠⚠ THE NUMBER STANDS, and the reason is not the same as R342's. An added
+                // ARGUMENT on an existing verb earns a bump here (R373) because an older daemon
+                // SWALLOWS a key it does not know and answers `ok`. An added VERB cannot do that:
+                // a daemon without `inject` refuses the path, so a driver learns at the door and
+                // says so — which is exactly what its client-side mapping is for.
+                "sprag_workspace/pane_<id>/sprag_input/inject:",
                 "sprag_workspace/pane_<id>/sprag_input/key:hand=person,program state=down,up",
                 "sprag_workspace/pane_<id>/sprag_input/mouse:button=left,middle,right,wheelup,\
                  wheeldown,wheelleft,wheelright,none kind=press,release,drag,motion",
@@ -8668,6 +8797,14 @@ mod tests {
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
+                // ⚠⚠⚠ REGISTER ITEM 544: a NEW address with a shape of its own, so no existing call
+                // changed and `WIRE_PROTOCOL` stands — `hold_run`'s own entry below records the
+                // same reasoning for the same reason.
+                // ⚠⚠ ONE FORM AND NO SCALAR, unlike `key` beside it: the argument IS a list, and a
+                // list has no shorter spelling. The element shape is `key`'s object form MINUS the
+                // hand, which is not an omission — this door is a program's by construction, so
+                // there is no hand for a caller to name.
+                "sprag_workspace/pane_<id>/sprag_input/inject[object]:keys:array{key:string,state:string?,ctrl:bool?,alt:bool?,shift:bool?,super:bool?}",
                 "sprag_workspace/pane_<id>/sprag_input/key[object]:key:string state:string? ctrl:bool? alt:bool? shift:bool? super:bool? hand:string?",
                 "sprag_workspace/pane_<id>/sprag_input/key[scalar]:key:string",
                 "sprag_workspace/pane_<id>/sprag_input/mouse[object]:button:string kind:string col:int row:int ctrl:bool? alt:bool? shift:bool?",
@@ -9322,6 +9459,12 @@ mod tests {
             "hold_run",
             "image_data.",
             "image_data.<id>",
+            // ⚠⚠⚠ THE NUMBER STANDS, on this pin's own rule (*"a name ADDED leaves an older
+            // client's requests working"*) and on `FULL_LINES_SLOT`'s written form of it. Register
+            // item 544, stage 1c: `inject` is the door a RUN DRIVER types through, ADDED beside the
+            // display client's `key` / `text` / `paste`, which answer exactly what they answered
+            // before. No existing address moved and no existing answer changed shape.
+            "inject",
             "join_pane",
             "key",
             "kill_session",
@@ -9784,11 +9927,13 @@ mod tests {
                 SURFACES,
             )
             .count_or_panic(),
-            39,
-            "the whole write half of this crate's wire: twenty-nine multiplexer verbs, a pane's six, \
-             and the plugin host's FOUR — run, cancel, stand_down and hold_run. ⚠ The last two are \
-             the second and third things anybody can say to a run in flight: one lets it keep the \
-             turn it is in the middle of, and the other is the only order a person can take back",
+            40,
+            "the whole write half of this crate's wire: the multiplexer's verbs, the pane's, and \
+             the plugin host's FOUR — run, cancel, stand_down and hold_run. ⚠ The newest is the \
+             pane's `inject`, the door a RUN DRIVER types through (register item 544): a batch as \
+             one write, refused before writing at a pane whose child has gone, and answering what \
+             it wrote. It is a verb ADDED, so an older client — which never calls it — is \
+             unaffected and `WIRE_PROTOCOL` stands",
         );
     }
 

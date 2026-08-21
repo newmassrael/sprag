@@ -83,13 +83,13 @@ use crate::wire::{
     GLOBAL_COMMANDS_SLOT, GRANT_PANE_ACTION, GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
     MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
-    PANE_RESOURCES_FIELD, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire, PaneResourcesWire,
-    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION,
-    SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
-    WindowRef, ZOOM_PANE_ACTION,
+    PANE_RESOURCES_FIELD, PANE_SUMMARY_ID_KEY, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire,
+    PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION,
+    RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
+    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -2765,7 +2765,11 @@ impl WorkspaceExternal {
                     .iter()
                     .map(|p| {
                         let mut entry = serde_json::json!({
-                            "id": p.id,
+                            // ⚠ THE ONE KEY IN THIS ENTRY THAT IS AN ADDRESS — see
+                            // `PANE_SUMMARY_ID_KEY`. Every other key here describes the pane;
+                            // this one is what a client puts back into `pane_input_path` to
+                            // reach it, so it is the one spelling a reader shares with a writer.
+                            PANE_SUMMARY_ID_KEY: p.id,
                             "cols": p.cols,
                             "rows": p.rows,
                             "command": p.command_label,

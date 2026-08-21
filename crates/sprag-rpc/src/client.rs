@@ -1916,6 +1916,20 @@ pub const UNKNOWN_SLOT_FAULT: &str = "UnknownIntrospectPath";
 /// [`ACTION_REFUSED`].
 pub const UNKNOWN_ACTION_FAULT: &str = "UnknownInvokePath";
 
+/// The `data` a daemon attaches when the path reaches NO EXTERNAL AT ALL.
+///
+/// **pinion's own word, matched and never invented**, exactly like its two neighbours — and the
+/// third member of a discrimination that reads as one fault to anybody who does not know all three.
+/// [`UNKNOWN_ACTION_FAULT`] says *the surface is there and has no such verb* (an older daemon);
+/// this says *there is no surface at that path at all*. For a PANE-addressed call the difference is
+/// the whole answer: the pane is gone, which is a fact about the workspace, where the other is a
+/// fact about the build and its remedy is a restart.
+///
+/// ⚠ Found by a gate rather than by reading: a driver's injection into a pane nobody knows was
+/// mapped to *this daemon does not perform that action* — telling an operator to restart a daemon
+/// that was perfectly current (register item 544, stage 1c).
+pub const NO_EXTERNAL_FAULT: &str = "NoExternalAtPath";
+
 /// The `data` a daemon OLDER than PINION-PR82 attaches to a refusal it cannot explain.
 ///
 /// pinion's own word again, matched and never invented: before R1564 every refused action published
