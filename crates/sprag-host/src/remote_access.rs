@@ -99,9 +99,20 @@ const ARGS_PARAM: &str = "args";
 ///
 /// The trait reads through `&self` and a call needs `&mut HostConn`, so the connection lives behind
 /// a mutex and each read or injection holds it for exactly its own round trip. That is a decision
-/// rather than a workaround: a driver's step is bounded by an AI turn — seconds to minutes — and a
-/// round trip is sub-millisecond, so serialising them costs nothing measurable and buys the one
-/// property a shared connection needs, which is that two answers cannot interleave on the wire.
+/// rather than a workaround, and the cost of it is **measured rather than asserted** (register item
+/// 565): **55 µs per `supervision()` call, 2026-08-22, on the build machine (32 cores, 125 GB)**, so
+/// the five such reads `outer.rs` makes per step cost **277 µs** against a step bounded by an AI
+/// turn — seconds to minutes. Serialising them buys the one property a shared connection needs,
+/// which is that two answers cannot interleave on the wire.
+///
+/// ⚠⚠ The number is there because the sentence used to say *"sub-millisecond, so it costs nothing
+/// measurable"* with no date, no figure and no instrument — which is what this repository calls
+/// UNMEASURED, about the path a run walks every step. The measurement AGREED with the claim; what
+/// it also does is make the claim able to go red, which
+/// `a_remote_supervision_read_costs_what_its_documentation_claims` now does at a 20 ms tripwire.
+///
+/// ⚠ It is measured, not cached. A cache would be justified by a cost this is not — and now there
+/// is a number to say so rather than an instinct.
 ///
 /// ⚠ It is NOT a claim that two DRIVERS may share one of these. Nothing here stops that and nothing
 /// here makes it safe: the pane a run is driving is guarded by whose run it is, one surface up.
@@ -573,9 +584,12 @@ impl PaneAccess for RemotePaneAccess {
     /// reading. That is the SAFE direction and it is deliberate: *this build cannot supervise* sends
     /// the run to a person, where the other reading would have it decide a turn had ended.
     ///
-    /// ⚠ One round trip per call, at a supervisor's cadence rather than a frame's. It is asked
-    /// rather than cached because a daemon is a process that can be replaced under this connection,
-    /// and a capability remembered from a handshake would outlive the thing it described.
+    /// ⚠ One round trip per call — **55 µs, measured 2026-08-22** (register item 565, and this
+    /// type's own documentation for the figure). It is asked rather than cached because a daemon is
+    /// a process that can be replaced under this connection, and a capability remembered from a
+    /// handshake would outlive the thing it described. ⚠⚠ Stage 1d gave this surface a way to NOTICE
+    /// that replacement, so a cache could now be invalidated correctly — the measurement is what
+    /// says it is not worth building.
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
         // ⚠⚠⚠⚠⚠ A DAEMON WHOSE VOCABULARY IS AHEAD OF THIS BUILD CANNOT BE SUPERVISED FROM HERE —
         // register item 564. This surface can still READ the verdicts; what it cannot do is

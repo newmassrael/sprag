@@ -7765,3 +7765,58 @@ fn a_state_word_this_build_cannot_spell_stops_the_driver_claiming_to_supervise()
 
     let _ = std::fs::remove_file(&upstream);
 }
+
+/// **WHAT A REMOTE DRIVER'S ROUND TRIP ACTUALLY COSTS** — register item 565, and a number with a
+/// date rather than a sentence.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists: the claim was written and never measured
+///
+/// `RemotePaneAccess` asks the daemon on every `supervision()` call rather than caching, and its own
+/// documentation defends that with *"a round trip is sub-millisecond, so serialising them costs
+/// nothing measurable"*. **No date, no number, no instrument** — which is precisely what this
+/// repository calls UNMEASURED, and it was being said about the path a run walks every step
+/// (`outer.rs` asks `supervision` on five of them).
+///
+/// # ⚠⚠⚠ What is asserted, and why the bound is loose on purpose
+///
+/// The measurement is the point; the assertion is a TRIPWIRE. A unix-socket round trip on this
+/// fleet is tens of microseconds, and the bound here is **20 ms per call** — three orders of
+/// magnitude of headroom, so it cannot flake on a loaded box and cannot pass a regression that
+/// turned a socket read into something with a sleep or a retry in it. ⚠ A tight bound would be a
+/// timing assertion in a suite that runs at thirty-one threads, which is a flake with extra steps.
+///
+/// ⚠⚠ It PRINTS the per-call figure, because the number is what a person reads back. An assertion
+/// that only says *"under the bound"* answers the tripwire's question and never the item's.
+#[test]
+fn a_remote_supervision_read_costs_what_its_documentation_claims() {
+    let (_host, sock) = spawn_host();
+    let (remote, _setup) = remote_driver(&sock);
+    // Adopt first, so the ONE-OFF cost of learning the daemon's identity is not averaged into the
+    // per-call figure this is about.
+    let _ = remote.supervision();
+
+    const CALLS: u32 = 200;
+    let began = Instant::now();
+    for _ in 0..CALLS {
+        assert!(
+            remote.supervision().is_some(),
+            "the daemon supervises throughout, or the loop below is timing a refusal",
+        );
+    }
+    let each = began.elapsed() / CALLS;
+    println!(
+        "REGISTER ITEM 565 — supervision() over a real socket: {each:?} per call, \
+         {CALLS} calls in {:?}. A step that asks it five times therefore pays {:?}.",
+        began.elapsed(),
+        each * 5,
+    );
+    assert!(
+        each < Duration::from_millis(20),
+        "⛔⛔⛔⛔ REGISTER ITEM 565: a remote supervision read took {each:?}. The bound is a \
+         TRIPWIRE at three orders of magnitude above a unix-socket round trip, so passing it is \
+         not the claim — what fails it is a read that grew a sleep, a retry or a second round \
+         trip. `outer.rs` asks this five times per step.",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
