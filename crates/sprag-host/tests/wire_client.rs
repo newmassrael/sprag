@@ -7687,3 +7687,81 @@ fn a_real_run_driven_from_another_process_outlives_the_daemon_it_drives() {
          lifetimes» means when it is true rather than asserted. Got {again:?}",
     );
 }
+
+/// ⛔⛔⛔⛔ **A STATE WORD THIS BUILD CANNOT SPELL IS A SKEW, NOT A SHELL** — register item 564.
+///
+/// # ⚠⚠⚠⚠⚠ The collapse, and why it goes live on an ordinary day
+///
+/// `pane_agent_state` answering [`None`] means *this pane is not an agent — carry on*. Until this
+/// item, a verdict carrying a state word this driver's vocabulary did not hold produced the SAME
+/// `None`, so a supervisor would conclude *"a shell"* about a pane running an agent it had never
+/// heard of, and drive straight past it.
+///
+/// It needs no exotic setup to happen: the daemon and the driver are separate processes, a
+/// `cargo build` replaces one and not the other, and a newer daemon publishing a fifth state is
+/// exactly the case item 412 records as the ORDINARY state after any rebuild here.
+///
+/// # ⚠⚠⚠ The fixture is the only one that can stage it, and this repository already owned it
+///
+/// No `cargo build` can produce this skew — the vocabulary has ONE definition, so this build cannot
+/// make a daemon say a word it cannot read. `sprag_peer::OldDaemon::proxying` with
+/// `Missing::answering` is the tool: a REAL daemon behind it, every byte its own, and one key of one
+/// reply rewritten. ⚠ `agent.<pane>` is the only address on this wire whose `result` is an object
+/// with a top-level `state`, so the edit reaches that verdict and nothing else.
+#[test]
+fn a_state_word_this_build_cannot_spell_stops_the_driver_claiming_to_supervise() {
+    let (_host, upstream) = spawn_host();
+    let ahead = sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        &upstream,
+        // A word from a daemon one build ahead. It is not in `AgentState`'s vocabulary and this
+        // build has no way to invent it.
+        sprag_peer::Missing::answering(&[("state", json!("dreaming"))]),
+    );
+    let (remote, mut setup) = remote_driver(ahead.sock());
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
+    setup
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(REPORT_AGENT_ACTION),
+                "args": { "id": pane.0, "source": "hook:claude", "state": "working" },
+            }),
+        )
+        .expect("a real report, so the daemon really has a verdict to rewrite");
+
+    // ── THE CONTROL: this surface CAN supervise before it meets the word ───────────────────────
+    let supervisor = remote
+        .supervision()
+        .expect("the daemon supervises, and nothing has gone wrong yet");
+    assert!(
+        remote.unspellable_state().is_none(),
+        "nothing has been read yet, so a latch here would fire on a daemon that never spoke",
+    );
+
+    // ── THE READ MEETS A WORD FROM THE FUTURE ─────────────────────────────────────────────────
+    let seen = supervisor.pane_agent_state(pane);
+    assert!(
+        seen.is_none(),
+        "⚠⚠⚠ a verdict this build cannot read must not be turned into one it can — a fallback \
+         variant would have a supervisor act on a state nobody published. Got {seen:?}",
+    );
+    assert_eq!(
+        remote.unspellable_state().as_deref(),
+        Some("dreaming"),
+        "⛔⛔⛔⛔ REGISTER ITEM 564: the surface must KEEP the word, verbatim. It is the only thing \
+         that tells a person WHICH build is ahead, and a skew reported as a shrug sends them \
+         looking at the pane instead of at the two binaries",
+    );
+
+    // ── AND THE WHOLE SURFACE STOPS CLAIMING TO LOOK ──────────────────────────────────────────
+    assert!(
+        remote.supervision().is_none(),
+        "⛔⛔⛔⛔ REGISTER ITEM 564, AND THE COLLAPSE THIS CLOSES: a driver that met a verdict it \
+         could not read must answer *ask a person, nothing here can look* — NOT *this pane is a \
+         shell*. The second is what it used to say, and it makes a supervisor drive straight past \
+         a pane running an agent it has never heard of",
+    );
+
+    let _ = std::fs::remove_file(&upstream);
+}

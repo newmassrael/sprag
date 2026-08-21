@@ -116,6 +116,9 @@ pub struct RemotePaneAccess {
     adopted: Mutex<Option<String>>,
     /// LATCHED once a redial reached a DIFFERENT daemon — see [`world_changed`](Self::world_changed).
     changed: AtomicBool,
+    /// The agent state word this daemon published that this build cannot spell, once one has been
+    /// met — see [`unspellable_state`](Self::unspellable_state). Register item 564.
+    unspellable: Mutex<Option<String>>,
 }
 
 /// How long a redial waits for the socket to accept.
@@ -139,7 +142,20 @@ impl RemotePaneAccess {
             conn: Mutex::new(conn),
             adopted: Mutex::new(None),
             changed: AtomicBool::new(false),
+            unspellable: Mutex::new(None),
         }
+    }
+
+    /// **THE AGENT STATE WORD THIS DAEMON SPOKE THAT THIS BUILD CANNOT SPELL**, once one has been
+    /// met — register item 564, and the sentence a person needs to see.
+    ///
+    /// ⚠⚠⚠ It is a SKEW, not an absence: the daemon is ahead of this driver, and the word is carried
+    /// verbatim so whoever reads it can tell WHICH build to look at. While it is set,
+    /// [`supervision`](PaneAccess::supervision) answers [`None`] — *ask a person, nothing here can
+    /// look* — rather than letting every claimed pane read as a shell.
+    #[must_use]
+    pub fn unspellable_state(&self) -> Option<String> {
+        lock(&self.unspellable).clone()
     }
 
     /// **WHETHER THE DAEMON UNDER THIS SURFACE HAS BEEN REPLACED** — register item 544, stage 1d.
@@ -561,6 +577,14 @@ impl PaneAccess for RemotePaneAccess {
     /// rather than cached because a daemon is a process that can be replaced under this connection,
     /// and a capability remembered from a handshake would outlive the thing it described.
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
+        // ⚠⚠⚠⚠⚠ A DAEMON WHOSE VOCABULARY IS AHEAD OF THIS BUILD CANNOT BE SUPERVISED FROM HERE —
+        // register item 564. This surface can still READ the verdicts; what it cannot do is
+        // understand them, and *"I looked and it is a shell"* about a pane running an agent this
+        // driver has never heard of is the worst answer available. `None` here is the honest one:
+        // ask a person.
+        if self.unspellable_state().is_some() {
+            return None;
+        }
         self.read(&mux_action_path(AGENT_SUPERVISION_SLOT))?
             .as_bool()?
             .then_some(self as &dyn PaneSupervision)
@@ -779,6 +803,31 @@ impl PaneSupervision for RemotePaneAccess {
     /// edit apart rather than one round apart. A state word this build does not know reads as
     /// absent rather than as a guess — see that function.
     fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
-        crate::agent::verdict_of(&self.read(&mux_action_path(&agent_slot_for(id.0)))?)
+        let answer = self.read(&mux_action_path(&agent_slot_for(id.0)))?;
+        match crate::agent::verdict_of(&answer) {
+            crate::agent::Verdict::Seen(seen) => Some(*seen),
+            crate::agent::Verdict::NotAnAgent => None,
+            // ⚠⚠⚠⚠⚠ A WORD THIS BUILD CANNOT SPELL TAKES THE WHOLE SURFACE DOWN, register item 564.
+            // Answering `None` alone would say *this pane is a shell* about a pane running an agent
+            // this driver has never heard of. The honest instruction is the one
+            // `PaneAccess::supervision` answering `None` carries — **ask a person** — so the skew
+            // latches and [`supervision`](PaneAccess::supervision) stops claiming to look.
+            //
+            // ⚠⚠ The caller that is mid-step gets this one `None` first, because the trait has no
+            // error channel here. That is one step read as *not an agent*, which makes a supervisor
+            // skip a pane rather than act wrongly on it; from the next step the answer is the
+            // stronger and correct one. See the register's residue.
+            crate::agent::Verdict::Unspellable(word) => {
+                tracing::warn!(
+                    target: "sprag_host",
+                    %word,
+                    pane = id.0,
+                    "the daemon published an agent state this build cannot spell, so this driver \
+                     can no longer claim to supervise — the two are different builds"
+                );
+                *lock(&self.unspellable) = Some(word);
+                None
+            }
+        }
     }
 }

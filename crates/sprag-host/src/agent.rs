@@ -366,26 +366,48 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
     value
 }
 
-/// [`verdict_json`] read back into the observation a supervisor acts on, or [`None`] for anything
-/// that is not a verdict — a `null` (*this pane is not an agent*), or a word this build's
-/// vocabulary does not hold.
+/// WHAT A READER LEARNS FROM THE VERDICT AT AN ADDRESS — three answers, because two of them used to
+/// be one and the collapse was register item 564.
 ///
-/// # ⚠⚠⚠⚠ A state this build cannot spell is an ABSENCE, never a guess
+/// # ⚠⚠⚠⚠⚠ *Not an agent* and *a word I cannot spell* are not the same fact
 ///
-/// [`sprag_detect::AgentState::from_wire`] refuses a word it does not know, and that is carried
-/// through: a newer daemon publishing a fifth state would otherwise be read as whichever variant a
-/// fallback picked, and a supervisor would act on a verdict nobody made. *I cannot see that pane*
-/// is the safe reading, and it is the one every other absence on this wire already means.
+/// A `null` means the daemon looked and no manifest claims that pane: **carry on, it is a shell.**
+/// A state word this build's vocabulary does not hold means the daemon is AHEAD of this driver:
+/// nothing here can say what that pane is doing, and the honest instruction is **ask a person** —
+/// the same one [`PaneAccess::supervision`](sprag_plugin::PaneAccess::supervision) answering `None`
+/// carries. Reading the second as the first is how a supervisor concludes *"a shell"* about a pane
+/// running an agent it has never heard of, and it goes live the day a daemon and a driver are
+/// different builds — which is the ordinary state after any rebuild here (register item 412).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// The daemon looked and no manifest claims this pane. **Carry on.**
+    NotAnAgent,
+    /// A verdict this build can read.
+    Seen(Box<sprag_plugin::AgentObservation>),
+    /// A verdict in a word this build does not know, carried VERBATIM so a person can be told which
+    /// one. **A skew, not an absence.**
+    Unspellable(String),
+}
+
+/// [`verdict_json`] read back — see [`Verdict`] for why the answer has three arms.
 ///
 /// ⚠⚠ The authority is DERIVED from which of the two evidence keys is present, exactly as the
 /// in-process source derives it: a reported verdict carries [`AGENT_SOURCE_KEY`](crate::wire) and a
 /// scraped one carries [`AGENT_RULE_KEY`](crate::wire). A shape carrying neither is a scrape whose
 /// rule went unnamed, which is what `Scraped { rule: None }` means.
 #[must_use]
-pub fn verdict_of(value: &serde_json::Value) -> Option<sprag_plugin::AgentObservation> {
-    let state = sprag_detect::AgentState::from_wire(value[crate::wire::AGENT_STATE_KEY].as_str()?)?;
+pub fn verdict_of(value: &serde_json::Value) -> Verdict {
+    let Some(word) = value[crate::wire::AGENT_STATE_KEY].as_str() else {
+        // No state at all — a `null`, or a shape carrying no verdict. Not an agent.
+        return Verdict::NotAnAgent;
+    };
+    let Some(state) = sprag_detect::AgentState::from_wire(word) else {
+        // ⚠⚠⚠⚠⚠ NEVER a fallback variant. A supervisor handed a guessed state would act on a
+        // verdict nobody made; handed the WORD, a person can see which build is ahead.
+        return Verdict::Unspellable(word.to_owned());
+    };
     let text = |key: &str| value[key].as_str().map(str::to_owned);
-    Some(sprag_plugin::AgentObservation {
+    Verdict::Seen(Box::new(sprag_plugin::AgentObservation {
         state,
         agent: text(crate::wire::AGENT_NAME_KEY),
         authority: match text(crate::wire::AGENT_SOURCE_KEY) {
@@ -408,7 +430,7 @@ pub fn verdict_of(value: &serde_json::Value) -> Option<sprag_plugin::AgentObserv
         said: text(crate::wire::AGENT_SAID_KEY),
         noticed: text(crate::wire::AGENT_NOTICED_KEY),
         transcript: text(crate::wire::AGENT_TRANSCRIPT_KEY),
-    })
+    }))
 }
 
 /// Every pane's agent-state memory, plus the one ruleset they are all evaluated against.
