@@ -7915,6 +7915,16 @@ mod tests {
         fn execute_script(&self, session_id: &str, script: &str) -> ScriptResult<ScriptValue> {
             self.inner.execute_script(session_id, script)
         }
+        /// ⚠ DELEGATED like every other method here, and that is the right answer rather than a
+        /// convenient one. SCE requires this method with no default precisely so a new engine
+        /// cannot inherit the previous engine's grammar in silence — but this type is not a new
+        /// engine, it is Lua with ONE variable lied about, so the language a value must be spelled
+        /// in is still `inner`'s. Answering anything else here would make the fixture disagree with
+        /// the engine about syntax as well as about that variable, and the gates using it are
+        /// about the latter alone.
+        fn to_script_literal(&self, value: &ScriptValue) -> String {
+            self.inner.to_script_literal(value)
+        }
         fn evaluate_expression(&self, session_id: &str, expr: &str) -> ScriptResult<ScriptValue> {
             self.inner.evaluate_expression(session_id, expr)
         }
