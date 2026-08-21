@@ -176,6 +176,37 @@ pub const FULL_TEXT_SLOT: &str = "full_text";
 /// changed value did"*), and [`FULL_TEXT_SLOT`] is untouched, so every existing client keeps the
 /// answer it has always read.
 pub const FULL_LINES_SLOT: &str = "full_lines";
+
+/// The pane-input external query slot: **WHETHER THIS PANE'S CHILD HAS EXITED** — `true` once the
+/// reader loop has reached EOF and every byte the child produced has been applied to the screen.
+///
+/// # ⚠⚠⚠⚠⚠ Why an address of its own, and why it is the first one a REMOTE DRIVER needs
+///
+/// Register item 544: the AI loop's driver runs INSIDE the daemon, which is why changing a loop
+/// document means restarting the thing that owns your PTYs. Moving it out needs every read it
+/// depends on to be askable from another process — and this was the one with no address at all.
+/// `full_text`, `full_lines`, `cells.<offset>` and `panes` have been published for a long time;
+/// **the pane's EOF has only ever been an in-process atomic load**
+/// (`PaneAccess::pane_eof` → `pty().is_eof()`).
+///
+/// ⚠⚠⚠⚠ **AND IT IS THE READ WHOSE ABSENCE COSTS THE MOST, MEASURED RATHER THAN RANKED.** It is
+/// what `ai_loop.scxml`'s `peer_gone` ending rests on, and that final exists because of a wall this
+/// workspace hit for real: a pseudoterminal whose child is dead takes 16,896 bytes of
+/// newline-terminated input and then blocks FOR EVER, holding the pane's writer lock, and a driver
+/// that types its stimulus every step walks there in about 29 minutes at a pace nothing about it
+/// looks wrong. **One run held a build machine for 43 hours that way.** A driver that cannot ask
+/// this question is a driver that walks into that wall again — so publishing it is not a
+/// convenience, it is the precondition for the driver being allowed to live anywhere else.
+///
+/// ⚠⚠ IT IS THE RACE-FREE ANSWER and not a guess from the screen, which is the whole reason
+/// `PaneAccess` states it separately from the text: *no more output is coming* AND *everything the
+/// child wrote is already applied*. A remote reader that inferred it from a quiet pane would be
+/// answering *"nothing arrived lately"*, which is what a thinking peer looks like too.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump — [`FULL_LINES_SLOT`]'s own rule, one
+/// entry up — and nothing that already answers is touched, so every existing client keeps the
+/// answers it has always read.
+pub const PANE_EOF_SLOT: &str = "eof";
 sprag_vt::closed_set! {
     /// WHOSE LINE BREAKS a pane read reports — the choice between [`FULL_TEXT_SLOT`] and
     /// [`FULL_LINES_SLOT`], named so a caller says which they mean instead of guessing.
@@ -481,6 +512,9 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
     SchemaField::new(FULL_TEXT_SLOT, "string"),
     SchemaField::new(FULL_LINES_SLOT, "array"),
+    // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The two above say what the pane HOLDS; this says
+    // whether anything more is coming, which reading the text cannot answer.
+    SchemaField::new(PANE_EOF_SLOT, "bool"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
@@ -9193,6 +9227,23 @@ mod tests {
             "doctor.",
             "doctor.<window_ms>",
             "drop_file",
+            // ⚠⚠⚠⚠ REGISTER ITEM 544 — a pane's EOF, published so a driver in ANOTHER PROCESS can
+            // ask it. It is the first stage of moving the AI loop's driver out of the daemon, and
+            // it was the ONE read that had no address at all: `full_text`, `full_lines`,
+            // `cells.<offset>` and `panes` have been served for a long time, while *has the child
+            // gone* was an in-process atomic load nobody noticed was unreachable.
+            //
+            // ⚠⚠⚠ THE NUMBER STANDS, on this pin's own rule (*"a name ADDED leaves an older
+            // client's requests working"*) and on `FULL_LINES_SLOT`'s written form of it. Nothing
+            // that already answers is touched and no value's meaning moved; a client that has never
+            // heard of this address goes on reading exactly what it read before.
+            //
+            // ⚠⚠ WHAT IT WOULD HAVE COST TO SKIP IT, so a later reader does not read this as a
+            // convenience: `ai_loop.scxml`'s `peer_gone` stands on this fact, and that ending was
+            // written because a dead pane's pseudoterminal takes 16,896 bytes and then blocks for
+            // ever — one run held a build machine for 43 hours. A remote driver that could not ask
+            // would have kept typing.
+            "eof",
             "events.",
             "events.<since>",
             "find.",

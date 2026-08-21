@@ -68,8 +68,8 @@ use base64::engine::general_purpose::STANDARD;
 use crate::wire::{
     ACTION_GRAMMAR_SLOT, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
     CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT,
-    IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_GRAMMAR,
-    PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
+    IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_EOF_SLOT,
+    PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -618,6 +618,16 @@ impl SpragPaneExternal {
             FULL_LINES_SLOT => Some(IntrospectValue::Json(json!(
                 self.pty.with_screen(Screen::full_lines)
             ))),
+            // ⚠⚠⚠⚠⚠ WHETHER THIS PANE'S CHILD HAS EXITED — register item 544, and the read a
+            // driver living OUTSIDE this process could not previously ask at all. The two slots
+            // above say what the pane HOLDS; this says whether anything more is coming, which no
+            // amount of reading the text can answer (a dead pane and a thinking one look the same).
+            //
+            // ⚠⚠⚠ It is the same atomic load `PaneAccess::pane_eof` does in-process, deliberately:
+            // a second way of deciding *has the child gone* is a second answer to drift from, and
+            // this one is what `ai_loop.scxml`'s `peer_gone` — and the 43-hour wedge behind it —
+            // stands on. See `PANE_EOF_SLOT`.
+            PANE_EOF_SLOT => Some(IntrospectValue::Bool(self.pty.is_eof())),
             // The last command sliced from the OSC 133 marks (scrollback + visible). `Null`
             // (present-but-empty) when no command has run under shell integration — the
             // agent then falls back to `full_text`, exactly as a malformed `cells.<off>` is

@@ -1267,6 +1267,7 @@ impl PanePty {
             hands: Arc::clone(&self.hands),
             raw_output: Arc::clone(&self.raw_output),
             clipboard_answered: Arc::clone(&self.clipboard_answered),
+            eof: Arc::clone(&self.eof),
         }
     }
 
@@ -1370,12 +1371,34 @@ pub struct PanePtyHandle {
     /// Shared OSC 52 answered-query high-water mark — see [`PanePty::clipboard_answered`]. The
     /// host answers a read query through this handle, so the exactly-once arbitration lives here.
     clipboard_answered: Arc<AtomicU64>,
+    /// Shared with the owning [`PanePty`] — see [`PanePty::is_eof`]. Register item 544.
+    ///
+    /// ⚠⚠⚠ THE HANDLE IS THE READER'S VIEW, AND *HAS THE CHILD GONE* IS A READ. It was the one
+    /// such fact the owner kept to itself, which was invisible while every reader of it lived in
+    /// the same process as the owner. The moment a driver is asked to live somewhere else, the
+    /// question has to be answerable through the handle the host serves its addresses from — see
+    /// `sprag_host::wire::PANE_EOF_SLOT`.
+    ///
+    /// ⚠⚠ THE SAME `Arc<AtomicBool>` AND NOT A COPY, which is the whole reason this is a share
+    /// rather than a snapshot: the flag is set ONCE by the reader thread when it has applied every
+    /// byte the child produced, and a handle holding a duplicate would answer *"still running"*
+    /// for ever after. There is one fact and one place it lives.
+    eof: Arc<AtomicBool>,
 }
 
 impl PanePtyHandle {
     /// Read the current authoritative screen under the emulator lock.
     pub fn with_screen<R>(&self, f: impl FnOnce(&Screen) -> R) -> R {
         f(lock(&self.emulator).screen())
+    }
+
+    /// Whether the child has closed the pseudoterminal — [`PanePty::is_eof`] asked through the
+    /// handle, reading the same flag rather than a second one. Register item 544.
+    ///
+    /// ⚠ It is a READ and not a poll: the flag is set once, so a `true` here never goes back.
+    #[must_use]
+    pub fn is_eof(&self) -> bool {
+        self.eof.load(Ordering::Acquire)
     }
 
     /// Read the current screen AND the live colour [`Palette`] together under one emulator lock —

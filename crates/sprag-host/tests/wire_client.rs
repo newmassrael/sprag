@@ -21,11 +21,11 @@ use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
     CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, FULL_LINES_SLOT,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
-    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
-    pane_processes_at, project_slot_for,
+    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_EOF_SLOT, PANES_SLOT,
+    PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    cells_slot_at, pane_processes_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -5928,4 +5928,93 @@ fn a_client_can_drive_a_pane_from_its_published_grammar() {
         .is_err(),
         "a `state` outside the published vocabulary must be refused",
     );
+}
+
+/// ⛔⛔⛔⛔ **A CLIENT OUTSIDE THIS PROCESS CAN ASK WHETHER A PANE'S CHILD HAS GONE** — register item
+/// 544's first stage, and the read that had no address at all.
+///
+/// # Why this one read, out of the six a driver needs
+///
+/// Item 544's direction is to move the AI loop's driver OUT of the daemon, so that changing a loop
+/// document stops meaning *restart the thing that owns your PTYs*. Everything else the driver reads
+/// was already published — `full_text`, `full_lines`, `cells.<offset>`, the pane list, the input
+/// actions, the event journal. **`PaneAccess::pane_eof` was not**: it has only ever been an
+/// in-process atomic load, which nothing noticed while every reader lived in the daemon.
+///
+/// ⚠⚠⚠⚠⚠ **AND ITS ABSENCE IS THE EXPENSIVE ONE, MEASURED RATHER THAN RANKED.** It is what
+/// `ai_loop.scxml`'s `peer_gone` stands on, and that ending exists because a pseudoterminal whose
+/// child is dead takes 16,896 bytes and then blocks FOR EVER holding the pane's writer lock — a
+/// driver typing its stimulus every step walks there in ~29 minutes, and **one run held a build
+/// machine for 43 hours that way.** A remote driver that could not ask this would walk into the
+/// same wall, so this address is the precondition for the driver being allowed to live elsewhere.
+///
+/// # ⚠⚠⚠ Why the pair is the claim
+///
+/// A slot hard-wired to `true` passes *the dead pane reads true*, and a slot hard-wired to `false`
+/// passes *the live pane reads false*. **The two panes are the same host, the same connection and
+/// the same instant**, differing only in whether their child has exited — which is the one thing
+/// this address is about. ⚠ And the live pane is asserted FIRST and AGAIN after the other has
+/// died, so a slot that answered about *some* pane rather than *this* one is red too.
+#[test]
+fn a_pane_whose_child_has_exited_says_so_at_an_address_a_remote_driver_can_ask() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    let eof = |conn: &mut HostConn, pane: u64| -> Option<bool> {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(pane, PANE_EOF_SLOT) }),
+        )
+        .ok()
+        .and_then(|value| value.as_bool())
+    };
+
+    // ── A PANE WHOSE CHILD STAYS: `cat` holds its pseudoterminal open ──
+    let living = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a pane whose child stays")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+    assert_eq!(
+        eof(&mut conn, living),
+        Some(false),
+        "⚠⚠⚠ THE CONTROL: a pane running `cat` has NOT reached EOF, and the address must say so. \
+         A slot answering `true` here would report every pane dead — which reads to a driver as \
+         *stop typing*, i.e. a loop that refuses to work at a perfectly good peer.",
+    );
+
+    // ── AND ONE WHOSE CHILD LEAVES ──
+    let dying = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["true"] } }),
+        )
+        .expect("spawn a pane whose child exits at once")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+    assert!(
+        wait_until(Duration::from_secs(5), || eof(&mut conn, dying)
+            == Some(true)),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: a pane whose child has EXITED never said so at \
+         {PANE_EOF_SLOT:?}. A driver in another process therefore cannot tell a dead peer from a \
+         thinking one — the two look identical in the pane's text — and the only remedy left to it \
+         is to keep typing, which is the 43-hour wedge `peer_gone` exists to prevent. Got {:?}",
+        eof(&mut conn, dying),
+    );
+
+    // ⚠⚠ AND THE LIVE PANE IS STILL LIVE, asked in the same breath as the dead one. Without this
+    // the assertions above are satisfied by an address that answers about the HOST rather than
+    // about the pane it names — which is the failure a per-pane slot exists to make impossible.
+    assert_eq!(
+        eof(&mut conn, living),
+        Some(false),
+        "⚠⚠⚠ the address must answer about the pane it NAMES: one child exiting has been read as \
+         every pane reaching EOF",
+    );
+
+    let _ = std::fs::remove_file(&sock);
 }
