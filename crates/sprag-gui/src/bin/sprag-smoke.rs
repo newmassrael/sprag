@@ -63,6 +63,10 @@ fn main() -> ExitCode {
     let mut report = Report::default();
     match Smoke::boot() {
         Ok(mut smoke) => {
+            // FIRST, and it earns the place: it asserts a DISTANCE on a counter every later check
+            // moves, so it needs a client whose deliveries nobody else has been opening in between.
+            // It leaves no pane, window or focus state behind — three arrow keys at a focused pane.
+            check_a_burst_of_keys_arrives_as_one_delivery(&mut smoke, &mut report);
             check_the_palette_opens_over_rpc(&mut smoke, &mut report);
             check_a_command_runs_from_a_palette_row(&mut smoke, &mut report);
             check_the_sole_docked_pane_locks_its_tear_off(&mut smoke, &mut report);
@@ -223,13 +227,108 @@ fn main() -> ExitCode {
 ///
 /// The reason recorded here used to be that synthetic key input does not drain headless. **That is no
 /// longer true and was measured false this round** — [`check_the_gui_follows_the_users_keymap`] drives
-/// `scene/key` and reaches `apply_key`, which is how the keymap gate works at all. What remains true
+/// `scene/key` and reaches `apply_key_press`, which is how the keymap gate works at all. What remains true
 /// is narrower and still enough: a chord is a KEY, so driving the palette that way would assert the
 /// chord table rather than the palette, and the verb is the surface an agent has either way.
 ///
 /// The neighbouring claim about POINTER input ([`check_an_agents_read_costs_no_scene_rederive`]) rests
 /// on the same inbox and is therefore doubtful too — but it was not measured here, and it is left
 /// standing rather than quietly reworded.
+/// ⛔⛔⛔⛔ **THREE KEYS SENT IN ONE REQUEST ARRIVE AS ONE DELIVERY, AND THREE REQUESTS ARRIVE AS
+/// THREE** — PINION-PR84's wire half (pinion R1757), driven against a REAL windowed client.
+///
+/// # ⚠⚠⚠⚠⚠ Why this check exists at all, which is not the same as why the burst exists
+///
+/// The fix PR-84 asked for is that a keystroke is dated at its ARRIVAL rather than at the moment
+/// this client got round to it. **That fix was unverifiable from outside until this wire landed**:
+/// `scene/key` took one key per request and one drain is one delivery, so two keys an agent sent
+/// were ALWAYS separate deliveries — a binding that depends on *"these arrived together"* could not
+/// be reproduced over the wire at all, and the only way to exercise a repeat window was to sleep.
+///
+/// # ⚠⚠⚠ The pair is the claim, and the second half is what makes the first non-vacuous
+///
+/// A counter that never moves satisfies *"the burst opened one"* only by accident of arithmetic —
+/// `after - before == 1` fails on a stuck counter, but a counter stuck at any value would also make
+/// the burst indistinguishable from three sends if only one direction were asserted. So the same
+/// three keys go BOTH ways in the same check, at the same client, seconds apart: **one request
+/// advances it by one, three requests advance it by three.** That difference is the whole fact.
+///
+/// ⚠ It asserts nothing about what the keys DID. `ArrowLeft` at a focused pane may be swallowed,
+/// may reach the pty, may move a selection — and none of that is this check's business. Arrival is
+/// a fact about the platform handover, and keeping the two apart is why the axis is its own.
+fn check_a_burst_of_keys_arrives_as_one_delivery(smoke: &mut Smoke, report: &mut Report) {
+    let Some(pane) = smoke.focus_first_pane() else {
+        report.check("a pane can be focused to receive a key burst", false);
+        return;
+    };
+    let Ok(idle_a) = smoke.key_deliveries_opened() else {
+        report.check(
+            "this client answers key_delivery.opened (pinion R1757 or later)",
+            false,
+        );
+        return;
+    };
+
+    // ⚠⚠⚠⚠⚠ THE COST OF ONE KEY IS MEASURED FIRST, AND THAT IS NOT CEREMONY — IT IS THE ONLY
+    // SOUND SHAPE AGAINST THIS CLIENT.
+    //
+    // Upstream's stated way to confirm a burst is *"read either side of the call; it advances by
+    // exactly one"*. **That protocol does not hold here, measured rather than doubted**: two reads
+    // of `scene/input_state` BACK TO BACK, with nothing at all between them, advance the ordinal by
+    // one — the READ itself opens a delivery — and one `scene/key` request advances it by two.
+    // Filed as register item 561, with the numbers.
+    //
+    // Both costs are CONSTANTS, so they can be MEASURED and subtracted rather than assumed away.
+    // The read's own cost is taken first, back to back with nothing between; every window below
+    // then closes with exactly one read, so what remains after subtracting it is what the REQUESTS
+    // in that window opened. ⚠ The first draft of this check skipped that subtraction and asserted
+    // `3 x unit` for the three-request arm — which is wrong by two reads, and the arm said so.
+    let read_cost = smoke.key_deliveries_opened().unwrap_or(idle_a) - idle_a;
+    let base = smoke.key_deliveries_opened().unwrap_or(idle_a);
+
+    let one_key = smoke.press(pane, "ArrowLeft", false).is_ok();
+    let after_one = smoke.key_deliveries_opened().unwrap_or(base);
+    let unit = after_one.saturating_sub(base + read_cost);
+    report.check(
+        &format!(
+            "one key in one request is accepted and costs a measurable unit \
+             ({unit}, with the read's own {read_cost} taken off)"
+        ),
+        one_key && unit > 0,
+    );
+
+    let burst = smoke.press_burst(pane, &["ArrowLeft", "ArrowLeft", "ArrowLeft"]);
+    report.check(
+        &format!("a burst of three named keys is accepted in one request ({burst:?})"),
+        burst.is_ok(),
+    );
+    let after_burst = smoke.key_deliveries_opened().unwrap_or(after_one);
+    let burst_cost = after_burst.saturating_sub(after_one + read_cost);
+    report.check(
+        &format!(
+            "THREE keys in one request arrive TOGETHER — the same cost as ONE key in one request \
+             ({burst_cost} vs {unit})"
+        ),
+        burst_cost == unit,
+    );
+
+    // ⚠⚠⚠ THE CONTROL, and without it the claim above is satisfied by a counter that answers the
+    // same number for everything: the same three keys sent as THREE requests must cost three times
+    // the unit. That is the honest difference — they did not arrive together because they were not
+    // sent together — and it is what says this axis can tell the two apart at all.
+    let separate = (0..3).all(|_| smoke.press(pane, "ArrowLeft", false).is_ok());
+    report.check("three separate key requests are accepted", separate);
+    let after_separate = smoke.key_deliveries_opened().unwrap_or(after_burst);
+    let separate_cost = after_separate.saturating_sub(after_burst + read_cost);
+    report.check(
+        &format!(
+            "three keys in THREE requests arrive SEPARATELY — three times the unit \
+             ({separate_cost} vs {unit} x 3)"
+        ),
+        separate_cost == unit * 3,
+    );
+}
+
 fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
     // `is_ok_and`, not `map_or(true, ..)`: this is the assertion an unreadable tree used to PASS
     // for the wrong reason, because "no palette node" and "no answer" were the same value.
@@ -5591,8 +5690,31 @@ impl Smoke {
         std::fs::write(dir.join("config.toml"), text).map_err(|error| format!("config: {error}"))
     }
 
+    /// How many keystroke DELIVERIES this client's runtime has opened — `scene/input_state`'s
+    /// `key_delivery.opened` (pinion R1757, PINION-PR84's wire half).
+    ///
+    /// ⚠ An ORDINAL, so the question it answers is a DISTANCE: read it either side of a request and
+    /// the difference says how many deliveries that request opened. One is *"they arrived
+    /// together"*; three is *"they did not"*, which is the honest answer for three separate sends.
+    fn key_deliveries_opened(&mut self) -> Result<u64, String> {
+        self.call("scene/input_state", json!({}))?["key_delivery"]["opened"]
+            .as_u64()
+            .ok_or_else(|| "input_state answered no key_delivery.opened".to_owned())
+    }
+
+    /// Send several named keys in ONE request — the burst form of `scene/key`.
+    ///
+    /// ⚠ The keys are named (`ArrowLeft`), which is the whole point: a burst of CHARACTERS was
+    /// always possible through `scene/type`, and the keys a repeat window is actually bound to are
+    /// the named ones.
+    fn press_burst(&mut self, pane: usize, keys: &[&str]) -> Result<(), String> {
+        let path = format!("sprag_gui.pane.{pane}");
+        self.call("scene/key", json!({ "path": path, "keys": keys }))
+            .map(|_| ())
+    }
+
     /// Hold `mods` down, press `key`, and let go — one keystroke through the shell's own keyboard
-    /// gate, landing in `apply_key` exactly as a physical one does.
+    /// gate, landing in `apply_key_press` exactly as a physical one does.
     ///
     /// The modifiers are a SEPARATE call because `scene/key` carries none: the substrate holds a
     /// modifier state that `scene/modifiers` writes, and `apply_key` is handed whatever is held at the

@@ -2558,6 +2558,21 @@ impl Keymap {
     ///
     /// `now` is a parameter rather than a call inside here so a repeat window can be tested by
     /// passing an instant instead of sleeping through one.
+    ///
+    /// # ⚠⚠⚠⚠⚠ `now` IS THE KEYSTROKE'S ARRIVAL, NOT THE CALLER'S CLOCK
+    ///
+    /// A repeat window is a statement about the USER's timeline, so it is judged against the moment
+    /// the keystroke arrived. A caller that passes `Instant::now()` dates the key at the moment IT
+    /// got round to the key — later by however long the previous keystroke's work took — so the
+    /// window silently shrinks by exactly the amount of work the client is doing. Measured on
+    /// `sprag-tui` before its fix: **3 failures in 6 runs at 2x CPU oversubscription, down to 0**,
+    /// with the dropped presses reaching the terminal underneath as raw escapes.
+    ///
+    /// **Both frontends now hand over an arrival**: the terminal from the READ the key came out of,
+    /// the GUI from `KeyPress::arrival.at()` (PINION-PR84, delivered at pinion `b1c366cf`). The
+    /// parameter's name is `now` for the arithmetic it does; what a caller must put in it is the
+    /// keystroke's own moment. Held by
+    /// `neither_frontend_dates_a_keystroke_by_its_own_clock`.
     #[must_use]
     pub fn route(&self, mode: PrefixMode, now: Instant, name: &str, mods: Modifiers) -> Routed {
         if mode.armed(now) {
@@ -2680,6 +2695,68 @@ impl Routed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔ **NEITHER FRONTEND DATES A KEYSTROKE BY ITS OWN CLOCK** — the ratchet over
+    /// [`Keymap::route`]'s `now`, read in BOTH callers' source in one breath.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a source ratchet and not a behaviour test
+    ///
+    /// The defect is invisible to every behaviour test that is not under load: passing
+    /// `Instant::now()` here is CORRECT-looking and only wrong by the handler's own latency, so it
+    /// reproduces as a flake on a busy machine and as nothing at all on an idle one. That is
+    /// exactly how it survived in the GUI for as long as it did — and how it would come back, in
+    /// one line, the next time somebody adds a keyboard route without the arrival in hand.
+    ///
+    /// ⚠⚠⚠⚠ **AND IT IS A CLASS, NOT AN INSTANCE.** The rule is not *this call site is right today*
+    /// but *no call site of this function may read a clock*, which is why the assertion is over the
+    /// SOURCE of every caller rather than over the two lines that exist now.
+    ///
+    /// # ⚠⚠⚠ Both frontends, in one test, because that is the fact
+    ///
+    /// One product, one binding, one user's table — and for a long time TWO clocks, which the
+    /// register carried as an open item until upstream delivered the arrival. A gate per frontend
+    /// would pass while the pair disagreed; this one cannot, and it goes red from EITHER side.
+    ///
+    /// ⚠⚠ It reads the other crates' sources by path, which couples this crate's tests to their
+    /// layout. That coupling is the point: a file that moves takes this red with it, which is a
+    /// person's five minutes, where a frontend quietly re-reading a clock is a user's dropped
+    /// keystrokes on the machine where they can least afford them.
+    #[test]
+    fn neither_frontend_dates_a_keystroke_by_its_own_clock() {
+        // The GUI reaches the keymap through `ClientKeys::route`, which takes the arrival from
+        // `KeyPress::arrival.at()`; the terminal calls `Keymap::route` directly with the instant
+        // its input read handed over.
+        const GUI: &str = include_str!("../../sprag-gui/src/keys.rs");
+        const TUI: &str = include_str!("../../sprag-tui/src/bin/sprag-tui.rs");
+
+        for (frontend, source) in [("sprag-gui", GUI), ("sprag-tui", TUI)] {
+            let offending: Vec<&str> = source
+                .lines()
+                .map(str::trim)
+                // A doc comment ABOUT the defect is how this repository keeps the reason visible,
+                // and a ratchet that could not tell one from the defect would forbid explaining it.
+                .filter(|line| !line.starts_with("//"))
+                .filter(|line| line.contains(".route(") && line.contains("Instant::now()"))
+                .collect();
+            assert!(
+                offending.is_empty(),
+                "⛔⛔⛔⛔ {frontend} DATES A KEYSTROKE BY ITS OWN CLOCK. `Keymap::route`'s `now` is \
+                 the moment the key ARRIVED — `Instant::now()` at the routing layer is the moment \
+                 this client got round to it, so the repeat window shrinks by however long the \
+                 previous keystroke's work took. Measured: 3 failures in 6 runs at 2x CPU \
+                 oversubscription. Take the arrival from the input layer (the terminal's read, or \
+                 `KeyPress::arrival.at()`) and pass it down. Offending: {offending:?}",
+            );
+        }
+
+        // ⚠⚠⚠ NON-VACUITY, asserted rather than assumed: both files must actually REACH the
+        // keymap, or the loop above is a claim about two files that stopped routing keys — which
+        // is how a ratchet goes green by losing its subject.
+        assert!(
+            GUI.contains(".route(") && TUI.contains("keymap.route("),
+            "both frontends still route keys through the keymap, or this ratchet has no subject",
+        );
+    }
 
     /// The modifier prefixes are tmux's, read from its manual: `C-` or `^` for Ctrl, `S-` for
     /// Shift, `M-` for Alt. `Super-` is sprag's own fourth.

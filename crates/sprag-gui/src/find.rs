@@ -538,9 +538,7 @@ const REGEX_LABEL: &str = "Regex";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TerminalViewer;
     use crate::terminal::seed_terminal;
-    use pinion_core::WidgetCore;
     use pinion_core::scene::ContainerNode;
     use sprag_host::Host;
     use sprag_terminal::{CommandBuilder, PanePtyHandle};
@@ -591,7 +589,8 @@ mod tests {
     }
 
     /// The whole find bar over a REAL pane: open -> search -> navigate -> close, driven through the
-    /// same entry points the shell drives (`TerminalViewer::apply_key`).
+    /// same entry point the shell drives (`TerminalViewer::apply_key_press`, reached through
+    /// [`crate::input::press_key`]).
     ///
     /// This is the slice's vertical: `SlotView::pane_find` -> `Host::pane_find` -> `Screen::find`,
     /// then the logical-line answer mapped back onto the visible grid as a highlight span. The pane
@@ -642,7 +641,7 @@ mod tests {
 
             // Enter steps to the next match; the pane is unaffected (the key belongs to the bar).
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
-            assert!(TerminalViewer::apply_key(
+            assert!(crate::input::press_key(
                 &mut scene,
                 Some(FIND_FIELD_TAG),
                 "Enter",
@@ -660,7 +659,7 @@ mod tests {
             );
 
             // Escape closes: no pane, no matches, nothing left to highlight.
-            assert!(TerminalViewer::apply_key(
+            assert!(crate::input::press_key(
                 &mut scene,
                 Some(FIND_FIELD_TAG),
                 "Escape",
@@ -824,7 +823,7 @@ mod tests {
                 shift: true,
                 ..Modifiers::default()
             };
-            assert!(TerminalViewer::apply_key(
+            assert!(crate::input::press_key(
                 &mut scene,
                 Some(pane_tag(0)),
                 "F",
@@ -833,7 +832,7 @@ mod tests {
             assert_eq!(use_find_pane().get(), Some(0), "the chord opens the bar");
 
             assert!(
-                TerminalViewer::apply_key(
+                crate::input::press_key(
                     &mut scene,
                     Some(FIND_FIELD_TAG),
                     "x",
@@ -956,7 +955,7 @@ mod tests {
 
             // Alt+R is the same toggle from the keyboard, and it re-queries.
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
-            assert!(TerminalViewer::apply_key(
+            assert!(crate::input::press_key(
                 &mut scene,
                 Some(FIND_FIELD_TAG),
                 "r",

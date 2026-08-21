@@ -9,6 +9,10 @@ use crate::keys::use_client_keys;
 use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
+// The keystroke-construction vocabulary, needed only by the non-runtime entry below — see
+// `press_key_at`'s own note on why that entry is `#[cfg(test)]` in this tree.
+#[cfg(test)]
+use pinion_core::{KeyArrival, KeyBatch, KeyPress, WidgetCore as _};
 use sprag_host::keymap::SelectWindowBind;
 use sprag_host::keymap::{BoundAction, Routed, SwitchClientAsk};
 use sprag_host::report::Report;
@@ -654,12 +658,71 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
 /// own paint scene. An unencodable key returns `false`, so it falls through rather
 /// than injecting nothing. Returning `true` for the encodable keys swallows
 /// Escape/Tab from the shell's quit/traverse defaults so a full-screen TUI receives them.
+/// Drive the ONE keyboard entry ([`crate::TerminalViewer::apply_key_press`]) from a caller that is
+/// not the runtime, dating the keystroke at `arrival`.
+///
+/// # ⚠⚠⚠ Not a second door — the same door, addressed
+///
+/// It builds a real [`KeyPress`] and calls the real hook, so everything a keystroke passes through
+/// in production passes through here: the repeat policy, the prefix take, the focus gate. What it
+/// exists for is that only the RUNTIME can open a platform delivery, and a caller that is not the
+/// runtime still has to be able to say WHEN its keystroke arrived — which is what
+/// [`KeyArrival::new`] is published for, and what makes a repeat window testable without sleeping.
+///
+/// ⚠⚠ `#[cfg(test)]`, said plainly: in THIS tree the only callers that are not the runtime are the
+/// tests. It is not a test double — a production non-runtime caller would use exactly this shape —
+/// but claiming a production home it does not have would be a compiled lie, and `-D warnings` would
+/// catch it as dead code anyway.
+#[cfg(test)]
+pub(crate) fn press_key_at(
+    scene: &mut Scene,
+    focused: Option<&str>,
+    key: &str,
+    modifiers: Modifiers,
+    repeat: bool,
+    arrival: std::time::Instant,
+) -> bool {
+    crate::TerminalViewer::apply_key_press(
+        scene,
+        focused,
+        &KeyPress::new(
+            key,
+            modifiers,
+            repeat,
+            KeyArrival::new(arrival, KeyBatch::initial()),
+        ),
+    )
+}
+
+/// [`press_key_at`] for a caller with no opinion about the clock: a fresh press, arriving now.
+///
+/// ⚠ `Instant::now()` is right HERE and was wrong in `ClientKeys::route`, and the difference is who
+/// is speaking. A caller synthesising a keystroke IS its origin, so now IS its arrival; the routing
+/// layer is not, and reading a clock there dated the key at its own latency instead.
+#[cfg(test)]
+pub(crate) fn press_key(
+    scene: &mut Scene,
+    focused: Option<&str>,
+    key: &str,
+    modifiers: Modifiers,
+) -> bool {
+    press_key_at(
+        scene,
+        focused,
+        key,
+        modifiers,
+        false,
+        std::time::Instant::now(),
+    )
+}
+
 pub(crate) fn route_key(
     scene: &mut Scene,
     focused: Option<&str>,
     key: &str,
     modifiers: Modifiers,
     repeat: bool,
+    arrival: std::time::Instant,
 ) -> bool {
     // The user's prefix mode is taken out HERE, in the first statement, before anything looks at what
     // the key is or where it is going. The mode is ONE KEY LONG whatever that key turns out to be, and
@@ -760,7 +823,7 @@ pub(crate) fn route_key(
     // space and the reserved `Ctrl+Shift+*` space are disjoint until a user puts one on top of the
     // other, and then that is what they asked for. A root binding a user puts ON one of those chords
     // takes it, which is the same answer and the same reason.
-    match use_client_keys().route(prefixed, key, to_input_mods(modifiers)) {
+    match use_client_keys().route(prefixed, arrival, key, to_input_mods(modifiers)) {
         // The repeat window rides on `Routed::next`, which `ClientKeys::route` already stored — a
         // caller reading `again` here would be a second author of the mode transition.
         Routed::Act { action, again } => {
@@ -1109,7 +1172,7 @@ mod tests {
     /// Deliver one keystroke to pane `pane` through the full public path.
     fn press(pane: usize, key: &str, mods: Modifiers) -> bool {
         let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
-        TerminalViewer::apply_key(&mut scene, Some(pane_tag(pane)), key, mods)
+        press_key(&mut scene, Some(pane_tag(pane)), key, mods)
     }
 
     /// **THE SLICE: the GUI acts on the user's own prefix table.** `prefix = "C-a"` in a file this
@@ -1207,8 +1270,17 @@ mod tests {
             // through a pane count, because both of those act on the arrangement.
             let keys = use_client_keys();
             let armed = sprag_host::keymap::PrefixMode::AfterPrefix;
-            let bare = keys.route(armed, "ArrowLeft", sprag_input::Modifiers::default());
-            let with_shift = keys.route(armed, "ArrowLeft", to_input_mods(shifted));
+            // ⚠ ONE arrival for both, which is the point of taking it as an argument: the two
+            // routings differ ONLY in the modifier, so a clock read inside `route` would have made
+            // them differ in the instant too — and a repeat window is judged on the instant.
+            let arrived = Instant::now();
+            let bare = keys.route(
+                armed,
+                arrived,
+                "ArrowLeft",
+                sprag_input::Modifiers::default(),
+            );
+            let with_shift = keys.route(armed, arrived, "ArrowLeft", to_input_mods(shifted));
             assert_ne!(
                 bare, with_shift,
                 "a NAMED key's shift is a modifier a user really holds, and still tells two \
@@ -1335,7 +1407,7 @@ mod tests {
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             // Whether the FIELD consumed it is `find`'s business; the claim here is only that the
             // keymap did not.
-            let _ = TerminalViewer::apply_key(
+            let _ = press_key(
                 &mut scene,
                 Some(crate::find::FIND_FIELD_TAG),
                 "F5",
@@ -1405,12 +1477,7 @@ mod tests {
             // A keystroke with NO focus: `route_key` falls through to the shell default without
             // resolving a pane. It still ends the mode.
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
-            assert!(!TerminalViewer::apply_key(
-                &mut scene,
-                None,
-                "x",
-                Modifiers::default()
-            ));
+            assert!(!press_key(&mut scene, None, "x", Modifiers::default()));
             assert!(press(0, "d", Modifiers::default()));
             assert_eq!(
                 quits.load(std::sync::atomic::Ordering::SeqCst),
@@ -1742,7 +1809,7 @@ mod tests {
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             // Focus pane 1: each key routes to pane 1's PTY only.
             for ch in ["h", "i"] {
-                assert!(TerminalViewer::apply_key(
+                assert!(press_key(
                     &mut scene,
                     Some(pane_tag(1)),
                     ch,
@@ -1769,18 +1836,13 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
-            assert!(!TerminalViewer::apply_key(
+            assert!(!press_key(
                 &mut scene,
                 Some("sprag_gui"),
                 "x",
                 Modifiers::default()
             ));
-            assert!(!TerminalViewer::apply_key(
-                &mut scene,
-                None,
-                "x",
-                Modifiers::default()
-            ));
+            assert!(!press_key(&mut scene, None, "x", Modifiers::default()));
         });
     }
 
@@ -1823,13 +1885,13 @@ mod tests {
 
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             // A pane holds focus throughout: these keys would otherwise be PTY bytes.
-            assert!(TerminalViewer::apply_key(
+            assert!(press_key(
                 &mut scene,
                 Some(pane_tag(0)),
                 "ArrowRight",
                 Modifiers::default()
             ));
-            assert!(TerminalViewer::apply_key(
+            assert!(press_key(
                 &mut scene,
                 Some(pane_tag(0)),
                 "Enter",
@@ -2199,24 +2261,14 @@ mod tests {
             };
             let _ = pinion_core::focus_request::drain(); // clear any stale request
             // Ctrl+PageDown from pane 0 requests focus on the next pane.
-            assert!(TerminalViewer::apply_key(
-                &mut scene,
-                Some(pane_tag(0)),
-                "PageDown",
-                ctrl
-            ));
+            assert!(press_key(&mut scene, Some(pane_tag(0)), "PageDown", ctrl));
             assert_eq!(
                 pinion_core::focus_request::drain().as_deref(),
                 Some(pane_tag(1)),
                 "Ctrl+PageDown cycles focus to the next pane",
             );
             // Ctrl+PageUp from pane 0 wraps backward to the last pane (pane 1 of 2).
-            assert!(TerminalViewer::apply_key(
-                &mut scene,
-                Some(pane_tag(0)),
-                "PageUp",
-                ctrl
-            ));
+            assert!(press_key(&mut scene, Some(pane_tag(0)), "PageUp", ctrl));
             assert_eq!(
                 pinion_core::focus_request::drain().as_deref(),
                 Some(pane_tag(1)),
@@ -2244,7 +2296,7 @@ mod tests {
                 ..Modifiers::default()
             };
             // Undock the focused pane (handled, not to the PTY).
-            assert!(TerminalViewer::apply_key(
+            assert!(press_key(
                 &mut scene,
                 Some(pane_tag(0)),
                 "Enter",
@@ -2256,7 +2308,7 @@ mod tests {
                 "the focused pane undocked into its own window"
             );
             // The same chord docks it back.
-            assert!(TerminalViewer::apply_key(
+            assert!(press_key(
                 &mut scene,
                 Some(pane_tag(0)),
                 "Enter",
@@ -2294,36 +2346,39 @@ mod tests {
 
             // An OS auto-repeat re-send of the dock chord is dropped: no-op, no window.
             assert!(
-                !TerminalViewer::apply_key_repeat(
+                !press_key_at(
                     &mut scene,
                     Some(pane_tag(0)),
                     "Enter",
                     ctrl_shift,
-                    true
+                    true,
+                    Instant::now()
                 ),
                 "a held dock chord's auto-repeat is a no-op",
             );
             assert_eq!(windows.get().len(), 1, "auto-repeat did not undock");
 
             // The leading press (repeat = false) toggles once.
-            assert!(TerminalViewer::apply_key_repeat(
+            assert!(press_key_at(
                 &mut scene,
                 Some(pane_tag(0)),
                 "Enter",
                 ctrl_shift,
-                false
+                false,
+                Instant::now()
             ));
             assert_eq!(windows.get().len(), 2, "the leading press undocked once");
 
             // A scrollback chord is continuous — a held Shift+PageUp keeps scrolling
             // (NOT dropped), so only the discrete chords are repeat-gated.
             assert!(
-                TerminalViewer::apply_key_repeat(
+                press_key_at(
                     &mut scene,
                     Some(pane_tag(0)),
                     "PageUp",
                     shift,
-                    true
+                    true,
+                    Instant::now()
                 ),
                 "scrollback repeats on a held key",
             );
@@ -2390,18 +2445,13 @@ mod tests {
                 shift: true,
                 ..Modifiers::default()
             };
-            assert!(TerminalViewer::apply_key(
-                &mut scene,
-                Some(pane_tag(0)),
-                "PageUp",
-                shift
-            ));
+            assert!(press_key(&mut scene, Some(pane_tag(0)), "PageUp", shift));
             // Pause partway up history (offset_y 3 of a 10-row depth), then a typed
             // key snaps to the live bottom (offset_y == max).
             let scroll = use_pane_scroll(0);
             scroll.set_max(0, 10);
             scroll.scroll_to(0, 3);
-            assert!(TerminalViewer::apply_key(
+            assert!(press_key(
                 &mut scene,
                 Some(pane_tag(0)),
                 "a",

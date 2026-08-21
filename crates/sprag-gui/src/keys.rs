@@ -103,36 +103,42 @@ impl ClientKeys {
     ///
     /// A broken save KEEPS the last good table and records the reason for the palette. Swapping in
     /// the defaults would take a user's own bindings away because they typo'd a line in an editor.
-    /// The clock is read HERE rather than inside the keymap so a repeat window can be tested by
-    /// passing an instant. This is the whole of what `-r` costs the event loop: no timer, no thread,
-    /// no tick — nothing observes a window closing except the next keystroke.
+    /// The clock is PASSED IN rather than read inside the keymap, so a repeat window can be tested
+    /// by handing it an instant. This is the whole of what `-r` costs the event loop: no timer, no
+    /// thread, no tick — nothing observes a window closing except the next keystroke.
     ///
-    /// ⚠ **THIS CLOCK IS THIS CLIENT'S, NOT THE PERSON'S — and that is PINION-PR84, filed and open.**
+    /// ⚠⚠⚠⚠⚠ **THE CLOCK IS THE KEYSTROKE'S OWN, AND IT IS THE CALLER'S TO HAND OVER** — this is
+    /// PINION-PR84, **delivered** (pinion `b1c366cf`; the hook landed upstream at R1658).
+    ///
     /// A repeat window is a statement about the user's own timeline, so it has to be judged against
-    /// the moment the keystroke ARRIVED; `Instant::now()` here is the moment this client got round
-    /// to it, which is later by however long the previous key's blocking round trip to the daemon
-    /// took ([`SlotView::resize_toward`](crate::slotview::SlotView::resize_toward) and its peers).
-    /// `sprag-tui` measured that as a user-facing defect and fixed it — 3 failures in 6 runs at 2x
-    /// CPU oversubscription, down to 0 — by dating each keystroke at the read it came out of.
+    /// the moment the keystroke ARRIVED. `Instant::now()` HERE — which is what this function read
+    /// until PR-84 landed — is the moment this client got round to the key, later by however long
+    /// the previous key's blocking round trip to the daemon took
+    /// ([`SlotView::resize_toward`](crate::slotview::SlotView::resize_toward) and its peers). So the
+    /// window shrank by exactly the amount of work the client was doing.
     ///
-    /// **This frontend cannot do the same**: `pinion_core::event::KeyEvent` carries a key code and
-    /// nothing else, there is no event time anywhere on the dispatch path, and the event queue
-    /// cannot be drained by the embedder, so not even "these two arrived together" is knowable. The
-    /// line changes to pass an arrival instant the moment PR-84 is delivered; until then the two
-    /// frontends judge one user's table by two clocks, which is the cost this comment exists to
-    /// keep visible rather than to justify.
+    /// **Both frontends now date a keystroke at its arrival, by the same rule and for the same
+    /// reason**: `sprag-tui` from the read it came out of, and this one from
+    /// `KeyPress::arrival.at()`, which pinion stamps as it OPENS the platform delivery — before any
+    /// handler runs. Measured on the terminal side before its fix: **3 failures in 6 runs at 2x CPU
+    /// oversubscription, down to 0.**
+    ///
+    /// ⚠ `arrival` is not when the person pressed the key — winit exposes no platform timestamp,
+    /// and upstream named the type `arrival` rather than `time` to say so. What it removes is the
+    /// part that was OURS: the handler's own latency.
+    ///
+    /// ⚠⚠ Taking it as an argument (rather than reading a clock in here) is also what makes a
+    /// repeat window TESTABLE without sleeping: a test hands a known arrival, which is exactly what
+    /// [`KeyArrival::new`](pinion_core::KeyArrival::new) exists for.
     pub(crate) fn route(
         &self,
         mode: PrefixMode,
+        arrival: Instant,
         name: &str,
         mods: sprag_input::Modifiers,
     ) -> Routed {
         self.reread();
-        let routed = self
-            .file
-            .borrow()
-            .keymap()
-            .route(mode, Instant::now(), name, mods);
+        let routed = self.file.borrow().keymap().route(mode, arrival, name, mods);
         self.mode.set(routed.next());
         routed
     }

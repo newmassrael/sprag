@@ -278,7 +278,7 @@ use pinion_core::external::{DropPoint, External, IntrospectValue};
 use pinion_core::intent::Intent;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::widget_core::{ExtraExternal, PrimarySurface};
-use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
+use pinion_core::{CompositionEvent, Frame, KeyPress, Modifiers, Scene, WidgetCore};
 use pinion_shell::{
     ShellConfig, SizeStrategy, WidgetView, WindowChromeStyle, WindowPolicy, WindowSpec,
     vello_renderer_impl,
@@ -616,52 +616,51 @@ impl WidgetCore for TerminalViewer {
     /// [`route_key`] (the roving-tabindex focus gate + the focused pane's
     /// `invoke("key", ...)` wire + the focus-cycle / scrollback / dock-toggle chords).
     ///
-    /// This is the `repeat == false` entry — the RPC `scene/key` injection and any
-    /// single-activation caller (a synthesised key is never an OS auto-repeat). The
-    /// live shell drives the repeat-aware sibling [`Self::apply_key_repeat`] instead.
-    fn apply_key(
-        _scene: &mut Scene,
-        focused: Option<&str>,
-        key: &str,
-        modifiers: Modifiers,
-    ) -> bool {
+    /// # ⚠⚠⚠⚠⚠ THE ONE KEYBOARD ENTRY, AND WHY IT CARRIES AN ARRIVAL
+    ///
+    /// This replaced `apply_key` + `apply_key_repeat` when PINION-PR84 was delivered
+    /// (pinion `b1c366cf`, upstream R1658 for the hook and R1757 for the wire half). Every
+    /// dispatch path funnels through here — the winit keyboard arm, the RPC `scene/key`
+    /// injection, the a11y activation synthesis — so there is ONE place a keystroke's clock
+    /// is read and one place the repeat policy is applied.
+    ///
+    /// **`press.arrival.at()` is stamped as the runtime OPENS the platform delivery**, before
+    /// any handler runs. That is the whole of what a repeat window needs: `Instant::now()`
+    /// here would date the keystroke at the moment this client GOT ROUND to it, which is
+    /// later by however long the previous key's blocking round trip to the daemon took — so
+    /// the window shrank by exactly the amount of work the client was doing. Measured, on the
+    /// terminal frontend before it was fixed the same way: **2 presses lost out of 3 from a
+    /// 500 ms window at 2x CPU oversubscription**, with the dropped presses reaching the
+    /// terminal underneath as raw escapes.
+    ///
+    /// ⚠ `arrival.at()` is the ARRIVAL and not the person's keypress — no portable windowing
+    /// layer offers that, and the name upstream chose says so. It is what the window is owed
+    /// all the same, because the defect was never the platform's latency; it was ours.
+    ///
+    /// ⚠⚠ The `repeat` flag rides the same struct rather than a second hook, which is the
+    /// lesson `apply_key` -> `apply_key_repeat` taught upstream: a keystroke's next fact
+    /// arrives as a FIELD ([`KeyPress`] is `#[non_exhaustive]`), so this entry point does not
+    /// grow a third time.
+    fn apply_key_press(_scene: &mut Scene, focused: Option<&str>, press: &KeyPress<'_>) -> bool {
         diag::key_in(
-            "apply_key",
-            key,
-            modifiers.ctrl,
-            modifiers.shift,
-            false,
+            "apply_key_press",
+            press.key,
+            press.modifiers.ctrl,
+            press.modifiers.shift,
+            press.repeat,
             focused,
         );
         // The scene is threaded through for ONE route: a find-bar edit, which pinion delivers
         // through the field External. Every other route is a client SEND to the host (route_key ->
         // Host::send_key), not a mutation of the GUI's own scene (topology B).
-        route_key(_scene, focused, key, modifiers, false)
-    }
-
-    /// Repeat-aware key dispatch (pinion R1071 / PINION-PR27) — the variant the live
-    /// shell drives, carrying the platform `KeyEvent.repeat` flag. Both this and
-    /// [`Self::apply_key`] are thin delegates to [`route_key`], which OWNS the repeat
-    /// policy: a held DISCRETE window chord (dock-toggle / focus-cycle) acts once per
-    /// press, not on every OS auto-repeat — without this a held `Ctrl+Shift+Enter`
-    /// dock-then-undocked in the multi-window state. Scrollback chords and PTY keys
-    /// still repeat (continuous).
-    fn apply_key_repeat(
-        _scene: &mut Scene,
-        focused: Option<&str>,
-        key: &str,
-        modifiers: Modifiers,
-        repeat: bool,
-    ) -> bool {
-        diag::key_in(
-            "apply_key_repeat",
-            key,
-            modifiers.ctrl,
-            modifiers.shift,
-            repeat,
+        route_key(
+            _scene,
             focused,
-        );
-        route_key(_scene, focused, key, modifiers, repeat)
+            press.key,
+            press.modifiers,
+            press.repeat,
+            press.arrival.at(),
+        )
     }
 
     /// Route committed IME text to the focused pane's PTY — delegates to
