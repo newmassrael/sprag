@@ -6241,39 +6241,22 @@ fn the_door_every_plugin_types_through_drives_a_real_pane_from_another_process()
     // echoes the characters ITSELF — so macOS answered `ByTheProgram`, `deliver` answered
     // `Confirmed`, and BOTH were right.
     //
-    // So the claim this gate actually owns is the DERIVATION: whichever mode the pane is in, the
-    // verdict must be the one that mode implies. A verdict that disagreed with the reading would be
-    // `deliver` guessing — which is the whole defect item 557 removed.
+    // ⚠⚠⚠⚠⚠ AND THE MODE IS NOT RE-READ HERE TO CHECK THE VERDICT AGAINST IT, WHICH THE FIRST FIX
+    // DID. `deliver` reads the mode at one instant; a second read is a second instant, and a
+    // readline shell FLIPS the discipline between its prompt and running a command — so the
+    // comparison would be of two values taken at different moments, which is this workspace's own
+    // recorded trap (items 368, 429). **Measured, not feared**: with the `ByTheTerminal` assertion
+    // in place this gate failed on two macOS runs and passed on a third with IDENTICAL code.
+    //
+    // The mode-to-verdict derivation is `deliver`'s OWN gate's claim, over a fixture that declares
+    // the mode instead of hosting a shell that changes it. What THIS gate owns is stage 1c's: the
+    // plugin layer's typing function drives a real pane from another process. So it asserts the two
+    // verdicts that are honest, the count, and — the part no mode can fake — that the shell RAN it.
     let (attempts, written) = match delivered {
         Delivered::OnScreenOnly {
-            attempts,
-            written,
-            echo,
-        } => {
-            assert_eq!(
-                echo,
-                Some(sprag_terminal::PaneEcho::ByTheTerminal),
-                "⛔⛔⛔⛔ REGISTER ITEM 557: `OnScreenOnly` is the verdict for a pane whose TERMINAL \
-                 put the text there — a weaker fact than it looks (measured: a confirmed delivery \
-                 into a pane running `sleep 60`, in 20 ms, over a peer that never read a byte). \
-                 Reaching it on any other reading means the verdict was not derived from the \
-                 reading. Got {echo:?}",
-            );
-            (attempts, written)
+            attempts, written, ..
         }
-        Delivered::Confirmed { attempts, written } => {
-            assert_eq!(
-                remote
-                    .terminal_modes()
-                    .and_then(|modes| modes.pane_echo(pane)),
-                Some(sprag_terminal::PaneEcho::ByTheProgram),
-                "⛔⛔⛔⛔ REGISTER ITEM 557: `Confirmed` claims the PROGRAM printed the text, which \
-                 is only true where the terminal is not echoing. Reaching it over a pane whose \
-                 terminal echoes would be the strong verdict on the weak evidence — exactly what \
-                 the modes address exists to prevent",
-            );
-            (attempts, written)
-        }
+        | Delivered::Confirmed { attempts, written } => (attempts, written),
         other => panic!(
             "⛔⛔⛔⛔ REGISTER ITEM 544: `deliver` over the wire answered {other:?}. A driver \
              outside the daemon must reach the same verdict the in-process one does — the text \
