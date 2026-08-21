@@ -69,7 +69,8 @@ use crate::wire::{
     ACTION_GRAMMAR_SLOT, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
     CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT,
     IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_EOF_SLOT,
-    PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
+    PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT,
+    SCREEN_ROWS_SLOT, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -617,6 +618,23 @@ impl SpragPaneExternal {
             // say whether the program or the terminal put it there.
             FULL_LINES_SLOT => Some(IntrospectValue::Json(json!(
                 self.pty.with_screen(Screen::full_lines)
+            ))),
+            // ⚠⚠⚠⚠⚠ THE VISIBLE SCREEN, the two ways a driver reads it — register item 544's stage
+            // 1b. The two slots above are the pane's WHOLE output; these are the screen, and they
+            // are TWO because neither derives from the other: `screen_rows` trims each row's
+            // trailing blanks (what a person sees on that row) and `screen_collapsed` joins each
+            // row's SHARE of its logical line (what the child printed, wrap taken back out).
+            // Joining the trimmed rows — the derivation a remote client would write for itself —
+            // drops the space a wrap sat on, and the width belongs to whichever display attached.
+            //
+            // ⚠⚠⚠ Both read the same `Screen` methods `PaneAccess::pane_collapsed` and
+            // `pane_rows` read in-process, deliberately: a second join is a second answer to drift
+            // from, and this one decides whether a marker matches.
+            SCREEN_COLLAPSED_SLOT => Some(IntrospectValue::Text(
+                self.pty.with_screen(Screen::collapsed_text),
+            )),
+            SCREEN_ROWS_SLOT => Some(IntrospectValue::Json(json!(
+                self.pty.with_screen(Screen::row_texts)
             ))),
             // ⚠⚠⚠⚠⚠ WHETHER THIS PANE'S CHILD HAS EXITED — register item 544, and the read a
             // driver living OUTSIDE this process could not previously ask at all. The two slots

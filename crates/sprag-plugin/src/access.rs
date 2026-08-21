@@ -1699,9 +1699,10 @@ fn lock(workspace: &Mutex<Workspace>) -> MutexGuard<'_, Workspace> {
 /// [`Screen::row_text`] so capture and the emulator's scrollback never drift.
 fn read_rows(screen: &Screen) -> Vec<PaneRow> {
     (0..screen.rows())
-        .map(|row| PaneRow {
+        .zip(screen.row_texts())
+        .map(|(row, text)| PaneRow {
             generation: screen.row_generation(row).unwrap_or(0),
-            text: screen.row_text(row),
+            text,
         })
         .collect()
 }
@@ -1724,11 +1725,11 @@ fn read_rows(screen: &Screen) -> Vec<PaneRow> {
 /// hang depending on somebody else's window.
 ///
 /// [`Screen::row_share_text`] is the reader that exists for exactly this, and it is what
-/// [`Screen::lines_since`] already joins. One rule, one place.
+/// [`Screen::lines_since`] already joins. One rule, one place — and since register item 544 that
+/// place is [`Screen::collapsed_text`], because the wire's `screen_collapsed` address answers this
+/// same question for a driver living OUTSIDE the daemon and a second join would be a second answer.
 fn read_collapsed(screen: &Screen) -> String {
-    (0..screen.rows())
-        .map(|row| screen.row_share_text(row))
-        .collect()
+    screen.collapsed_text()
 }
 
 #[cfg(test)]

@@ -1896,6 +1896,21 @@ impl Screen {
         cells_text(&self.row_cells(row))
     }
 
+    /// The WHOLE VISIBLE SCREEN as one [`Self::row_text`] per row, top to bottom — what a person
+    /// sees, row by row, with the scrollback left out.
+    ///
+    /// # ⚠⚠ Why the loop lives here rather than at each caller
+    ///
+    /// Two processes now answer this question about the same pane: `PaneAccess::pane_rows`
+    /// in-process, and the wire's `screen_rows` address for a driver living outside the daemon
+    /// (register item 544). *Which* rows and *what a row's text is* are one decision, and a second
+    /// copy of it is a second answer to drift from — the mistake this file already records for
+    /// [`Self::row_text`] versus [`Self::row_share_text`], where the two joins differ by a space.
+    #[must_use]
+    pub fn row_texts(&self) -> Vec<String> {
+        (0..self.rows()).map(|row| self.row_text(row)).collect()
+    }
+
     /// A row's share of its LOGICAL line, as text — [`Self::row_text`] for a row a line ends on,
     /// and only the cells that belong to the line for a row it soft-wraps out of.
     ///
@@ -1915,6 +1930,30 @@ impl Screen {
             text.push_str(&cell.cluster);
         }
         text
+    }
+
+    /// The whole visible screen COLLAPSED: every row's share of its logical line, joined with
+    /// nothing between them, so a sentinel the terminal wrapped across rows still matches.
+    ///
+    /// # ⚠⚠⚠ Why this is not [`Self::row_texts`] joined, which is the join everybody writes
+    ///
+    /// [`Self::row_text`] trims a continuing row's trailing blanks — which are INTERIOR to the line
+    /// — and keeps the pad a wide cluster left at the margin, which is not in the line at all.
+    /// Measured: a pane five columns wide printing `TOOL UP` wraps after the SPACE, so the rows are
+    /// `"TOOL "` and `"UP"`; trimmed and joined they read `"TOOLUP"`, and a barrier waiting for
+    /// `TOOL UP` never clears. **The width is not the caller's to choose** — a client attaching at
+    /// another size decides it — so the same program and the same marker hang or pass depending on
+    /// somebody else's window.
+    ///
+    /// [`Self::row_share_text`] is the reader that exists for exactly this, and this is the one
+    /// place the join over it is written: `PaneAccess::pane_collapsed` in-process and the wire's
+    /// `screen_collapsed` address (register item 544) both read through here, so a driver outside
+    /// the daemon cannot be given a differently-wrong screen from one inside it.
+    #[must_use]
+    pub fn collapsed_text(&self) -> String {
+        (0..self.rows())
+            .map(|row| self.row_share_text(row))
+            .collect()
     }
 
     /// A row's share of its logical line, as CELLS — `line_cells` over one live row, and the one

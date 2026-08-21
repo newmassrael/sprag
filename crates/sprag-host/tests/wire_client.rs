@@ -23,9 +23,10 @@ use sprag_host::wire::{
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
     MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_EOF_SLOT, PANES_SLOT,
     PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at, pane_processes_at, project_slot_for,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
+    SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, pane_processes_at,
+    project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -6014,6 +6015,122 @@ fn a_pane_whose_child_has_exited_says_so_at_an_address_a_remote_driver_can_ask()
         Some(false),
         "⚠⚠⚠ the address must answer about the pane it NAMES: one child exiting has been read as \
          every pane reaching EOF",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **A CLIENT OUTSIDE THIS PROCESS CAN READ A PANE'S SCREEN THE TWO WAYS THE DRIVER READS
+/// IT** — register item 544's stage 1b, and the pair whose absence forces a remote driver to
+/// RE-DERIVE one of them and get the wrap wrong.
+///
+/// # ⚠⚠⚠⚠⚠ Why re-derivation is the defect, measured rather than argued
+///
+/// `cells.<offset>` has always been published, so a remote driver *could* rebuild the screen. What
+/// it cannot rebuild is WHICH JOIN. `PaneAccess::pane_collapsed` joins each row's SHARE of its
+/// logical line (`Screen::row_share_text`); `PaneAccess::pane_rows` reports each row's RENDERED
+/// text (`Screen::row_text`), trailing blanks trimmed. **The obvious re-derivation — join the row
+/// texts — is the one this repository has already paid for**: a pane five columns wide printing
+/// `TOOL UP` wraps after the SPACE, so its rows are `"TOOL "` and `"UP"`; trimmed and joined they
+/// read `"TOOLUP"`, and a barrier waiting for `TOOL UP` never clears. The width is not the driver's
+/// to choose — whichever client attached decides it — so the same run, the same program and the
+/// same marker hang or pass depending on somebody else's window.
+///
+/// # ⚠⚠⚠ Why the three reads are ONE claim, asked of one pane in one breath
+///
+/// * `screen_collapsed` must read `"GOTOOL UP"` — the interior space SURVIVES. A slot that joined
+///   the rendered rows answers `"GOTOOLUP"` and is red.
+/// * `screen_rows` must read `["GO", "TOOL", "UP"]` — the wrapped row is TRIMMED. A slot that
+///   served the shares answers `"TOOL "` and is red, which is the same mutation from the other side.
+/// * Neither may hold `"OLD"`, **which `full_text` at the same instant must hold** — otherwise the
+///   screen-only claim is vacuous, satisfied by a pane that simply never scrolled.
+///
+/// ⚠⚠ The generation is deliberately NOT published. `PaneRow::generation` is a PAINT signal, and
+/// this workspace has already recorded all four plugins that read it as *what did the peer produce*
+/// being wrong — a resize or an OSC palette change stamps every row while no program writes a byte.
+/// A remote answer carrying it would hand a driver that mistake pre-made.
+///
+/// ⚠ The barrier is stage 1a's own address: the pane's child prints and EXITS, and `eof` is true
+/// only once every byte it wrote has been applied to the screen. No sleep, no echo, no resize race.
+#[test]
+fn a_pane_serves_its_screen_at_two_addresses_a_driver_cannot_derive_from_each_other() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // Five columns wide and three rows tall, printing `OLD`, `GO`, then `TOOL UP`. The last line
+    // wraps after the space, which scrolls `OLD` off the screen and into the scrollback — so one
+    // pane carries the wrap claim AND the screen-versus-scrollback claim.
+    let pane = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SPAWN_ACTION),
+                "args": {
+                    "cmd": ["sh", "-c", "printf 'OLD\\nGO\\nTOOL UP'"],
+                    "cols": 5,
+                    "rows": 3,
+                },
+            }),
+        )
+        .expect("spawn a five-column pane that prints and exits")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+
+    let slot = |conn: &mut HostConn, name: &str| -> Option<Value> {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(pane, name) }),
+        )
+        .ok()
+    };
+
+    assert!(
+        wait_until(Duration::from_secs(5), || slot(&mut conn, PANE_EOF_SLOT)
+            .and_then(|value| value.as_bool())
+            == Some(true)),
+        "the printing child never reached EOF, so nothing below is reading a settled screen",
+    );
+
+    let collapsed = slot(&mut conn, SCREEN_COLLAPSED_SLOT)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let rows: Vec<String> = slot(&mut conn, SCREEN_ROWS_SLOT)
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let full = slot(&mut conn, FULL_TEXT_SLOT)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+
+    assert_eq!(
+        collapsed, "GOTOOL UP",
+        "⛔⛔⛔⛔ REGISTER ITEM 544: {SCREEN_COLLAPSED_SLOT:?} must join each row's SHARE of its \
+         logical line, so a marker the terminal wrapped still matches. Joining the RENDERED rows \
+         instead drops the space the wrap sat on and answers `GOTOOLUP` — the join a remote driver \
+         would write for itself, and the reason this address exists rather than being derivable",
+    );
+    assert_eq!(
+        rows,
+        vec!["GO".to_owned(), "TOOL".to_owned(), "UP".to_owned()],
+        "⛔⛔⛔⛔ REGISTER ITEM 544: {SCREEN_ROWS_SLOT:?} must report what each row RENDERS, \
+         trailing blanks trimmed — what a person sees on that row. Serving the line shares here \
+         would answer `TOOL ` and make the two addresses the same answer twice, which is the \
+         re-derivation this pair exists to make impossible",
+    );
+
+    // ⚠⚠⚠ AND THE SCREEN-ONLY CLAIM, WITH ITS OWN NON-VACUITY PROOF: the scrolled-off line is
+    // still readable at `full_text`, so "neither screen address holds it" is a statement about
+    // SCOPE and not about a pane that happened to print little enough to fit.
+    assert!(
+        full.contains("OLD"),
+        "the pane never scrolled, so the screen-only assertions below measure nothing. \
+         {FULL_TEXT_SLOT:?} read {full:?}",
+    );
+    assert!(
+        !collapsed.contains("OLD") && !rows.iter().any(|row| row.contains("OLD")),
+        "⚠⚠⚠ both screen addresses must answer about the SCREEN: a line that scrolled off is \
+         `full_text`'s to report, and a driver told otherwise re-reads output it has already \
+         acted on. Got {collapsed:?} / {rows:?}",
     );
 
     let _ = std::fs::remove_file(&sock);

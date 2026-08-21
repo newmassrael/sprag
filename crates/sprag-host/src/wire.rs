@@ -207,6 +207,57 @@ pub const FULL_LINES_SLOT: &str = "full_lines";
 /// entry up — and nothing that already answers is touched, so every existing client keeps the
 /// answers it has always read.
 pub const PANE_EOF_SLOT: &str = "eof";
+
+/// The pane-input external query slot: **THE VISIBLE SCREEN, COLLAPSED** — every row's share of its
+/// logical line joined with nothing between them, which is the read a marker or a sentinel is
+/// matched against.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is an address and not something a client derives from [`CELLS_FIELD`]
+///
+/// Register item 544, stage 1b. A remote driver holding the cell grid *can* rebuild the screen; what
+/// it cannot rebuild is WHICH JOIN, and the obvious one is the one this repository has already paid
+/// for. [`SCREEN_ROWS_SLOT`] reports what each row RENDERS — trailing blanks trimmed, because that
+/// is what a person sees — and those cannot be concatenated: the trimmed blanks are INTERIOR to a
+/// wrapped line. Measured, in [`sprag_vt::Screen::collapsed_text`]'s own doc: a pane five columns
+/// wide printing `TOOL UP` wraps after the SPACE, so its rows read `"TOOL "` and `"UP"`, and joined
+/// after trimming they read **`"TOOLUP"`** — a barrier waiting for `TOOL UP` never clears.
+///
+/// ⚠⚠⚠⚠ **AND THE WIDTH IS NOT THE DRIVER'S TO CHOOSE.** Whichever display client attached decides
+/// it, so a driver that re-derived this would hang or pass on the same program depending on somebody
+/// else's window size — a failure with no symptom at the driver and no fix from the driver. The
+/// daemon holds the wrap flags; publishing the answer is the only place the question can be settled.
+///
+/// ⚠⚠ SCREEN ONLY, and deliberately not a narrower [`FULL_TEXT_SLOT`]: a line that has scrolled off
+/// is `full_text`'s to report. A driver told otherwise re-reads output it has already acted on.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump — [`FULL_LINES_SLOT`]'s written rule,
+/// and [`PANE_EOF_SLOT`] took the same route one entry up.
+pub const SCREEN_COLLAPSED_SLOT: &str = "screen_collapsed";
+
+/// The pane-input external query slot: **THE VISIBLE SCREEN, ROW BY ROW** — one string per row, top
+/// to bottom, each trailing-trimmed, which is what a person sees on that row.
+///
+/// # ⚠⚠⚠ The other half of [`SCREEN_COLLAPSED_SLOT`]'s pair, and why both are published
+///
+/// Register item 544, stage 1b. The two answer different questions about one screen: this one is
+/// POSITIONAL (which row holds what — a menu's third line, a prompt's column), the other is
+/// CONTENT (what the child printed, with the terminal's line breaks taken back out). A driver needs
+/// both, neither derives from the other, and the derivation a client would attempt is wrong in a way
+/// nothing at the client could reveal. See the entry above for the measurement.
+///
+/// # ⚠⚠ Why the row's GENERATION is not here
+///
+/// [`sprag_plugin::access::PaneRow`] carries one, and this address deliberately does not publish it.
+/// A damage generation is a PAINT signal — a resize (which is what a client ATTACHING does) or an
+/// OSC palette change stamps every row while no program produces a byte — and this workspace has
+/// already recorded all four in-process plugins that read it as *what did the peer produce* being
+/// wrong, from cosmetic to dangerous. Publishing it beside the text would hand a remote driver that
+/// mistake pre-made, with the wire's authority on it. A genuine paint question gets a genuine
+/// address when one is asked for.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump, for the reason written on
+/// [`FULL_LINES_SLOT`].
+pub const SCREEN_ROWS_SLOT: &str = "screen_rows";
 sprag_vt::closed_set! {
     /// WHOSE LINE BREAKS a pane read reports — the choice between [`FULL_TEXT_SLOT`] and
     /// [`FULL_LINES_SLOT`], named so a caller says which they mean instead of guessing.
@@ -512,7 +563,12 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
     SchemaField::new(FULL_TEXT_SLOT, "string"),
     SchemaField::new(FULL_LINES_SLOT, "array"),
-    // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The two above say what the pane HOLDS; this says
+    // ⚠⚠⚠ Register item 544, stage 1b — see `SCREEN_COLLAPSED_SLOT`. The two above are the pane's
+    // WHOLE output; these two are the VISIBLE SCREEN, and they are two because the join a client
+    // would write to get one from the other drops the space a wrap sat on.
+    SchemaField::new(SCREEN_COLLAPSED_SLOT, "string"),
+    SchemaField::new(SCREEN_ROWS_SLOT, "array"),
+    // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The four above say what the pane HOLDS; this says
     // whether anything more is coming, which reading the text cannot answer.
     SchemaField::new(PANE_EOF_SLOT, "bool"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
@@ -9306,6 +9362,16 @@ mod tests {
             "resize_window",
             "run",
             "runs",
+            // ⚠⚠⚠ ADDED at register item 544's stage 1b: the VISIBLE SCREEN, published the two ways
+            // a driver reads it, so a driver living outside this daemon does not have to re-derive
+            // one from the other — and get the wrap wrong, which is what joining the trimmed rows
+            // does to a marker the terminal broke across two of them.
+            //
+            // ⚠⚠ THE NUMBER STANDS, on this pin's own rule (*"a name ADDED leaves an older client's
+            // requests working"*): nothing that already answers is touched and no value's meaning
+            // moved. `full_text` and `full_lines` go on saying exactly what they said.
+            "screen_collapsed",
+            "screen_rows",
             "select_pane",
             "select_window",
             "session",
