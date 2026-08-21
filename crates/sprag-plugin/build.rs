@@ -98,6 +98,7 @@ fn main() {
         .map(|stem| format!("src/{stem}.scxml"))
         .collect();
     let declared: Vec<String> = HOST_TYPES.iter().map(|kind| (*kind).to_owned()).collect();
+    stamp_fingerprint(&sources);
     sce_build::compile_scxml_with_host_processors(
         &sources.iter().map(String::as_str).collect::<Vec<_>>(),
         &declared,
@@ -120,4 +121,55 @@ fn main() {
     //
     // ⚠ `sce-build`'s own doc says it in as many words: **"Do not strip lines from
     // `{name}_sm.rs`."** Stripping is now a defect rather than a workaround.
+}
+
+/// ⚠⚠⚠⚠⚠ **WHICH DOCUMENTS THIS BINARY WAS COMPILED FROM**, as one word, emitted as
+/// `SPRAG_STATECHARTS_FINGERPRINT` for `crate::STATECHARTS_FINGERPRINT` to bake in.
+///
+/// # Why a run's recorded position is a TRAP without this — register items 543 and 544
+///
+/// A run that persists *"it was in `reflecting`"* has written down a name whose meaning lives in a
+/// document. Restart into a build whose `ai_loop.scxml` changed and that name may mean a different
+/// state, or none — and **the restart that motivates persisting a run at all is a document
+/// change**, so the dangerous case is the common one rather than the rare one. Item 544 states the
+/// remedy as a structural property: a changed document makes a NEW run, deliberately. That is only
+/// enforceable if the record says which documents its words came from.
+///
+/// ⚠⚠⚠⚠ **IT IS NOT `wire::BUILD`, AND THE DIFFERENCE IS THE WHOLE VALUE.** A build stamp changes
+/// when ANY file in the tree does, so at that granularity every promotion discards every run —
+/// which is exactly the cost item 543 was filed to remove (*"a restart that resumes runs is a
+/// promotion nobody has to schedule around"*). This changes only when a `.scxml` does.
+///
+/// ⚠⚠ FNV-1a, WRITTEN OUT, and deliberately not `DefaultHasher`: that one's output is explicitly
+/// not stable across Rust releases, so the same document built by two toolchains would fingerprint
+/// differently and each upgrade would silently discard every run — the failure this exists to
+/// prevent, reintroduced by the hash. The bytes in, the number out, decided here and nowhere else.
+///
+/// ⚠ Content, not paths or timestamps: a document that MOVED is the same document, and one whose
+/// mtime changed under an unchanged body has not changed.
+fn stamp_fingerprint(sources: &[String]) {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = OFFSET;
+    for path in sources {
+        // ⚠ THE STEM IS HASHED TOO, so two documents swapping bodies is a change. Concatenation
+        // alone would report the pair unmoved.
+        let body = std::fs::read(path)
+            .unwrap_or_else(|why| panic!("statechart source {path} must be readable: {why}"));
+        for byte in path.as_bytes().iter().chain(body.iter()) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        println!("cargo:rerun-if-changed={path}");
+    }
+    println!("cargo:rustc-env=SPRAG_STATECHARTS_FINGERPRINT={hash:016x}");
+    // ⚠⚠⚠ WHAT WENT INTO IT, so the crate's own gate can RECOMPUTE the number instead of trusting
+    // it. A fingerprint nothing checks is a constant, and a constant compared against itself would
+    // report every document unchanged for ever — which is precisely the skew it exists to catch,
+    // wearing its own name. Emitted rather than re-listed in the test: one list, one place.
+    println!(
+        "cargo:rustc-env=SPRAG_STATECHART_SOURCES={}",
+        sources.join(",")
+    );
 }

@@ -147,6 +147,28 @@ pub(crate) mod sm {
 /// What this crate has PROVEN about the engine it runs on — see [`probe`].
 mod probe;
 
+/// ⚠⚠⚠⚠⚠ **WHICH STATECHART DOCUMENTS THIS BINARY WAS COMPILED FROM** — one word, baked at build
+/// time by `build.rs`'s `stamp_fingerprint` over the `.scxml` SOURCES.
+///
+/// # What it is FOR, and why a persisted run is a trap without it
+///
+/// Register items 543 and 544. A run that records where it had got to has written down a state
+/// NAME, and a name's meaning lives in a document. The restart that motivates persisting a run at
+/// all is *the loop document changed* — so reading `reflecting` back against a build whose
+/// `ai_loop.scxml` moved is the COMMON case, not the rare one. Recorded beside the position, this
+/// makes the skew a fact a reader can see instead of one it cannot: same fingerprint, same words;
+/// different fingerprint, **a different run**, which is 544's structural answer stated as data.
+///
+/// ⚠⚠⚠ **IT IS NOT THE BUILD STAMP.** `sprag_host::wire::BUILD` moves when any file in the tree
+/// does, so at that granularity every promotion discards every run — the cost item 543 exists to
+/// remove. This moves only when a statechart does, which is the only thing that can invalidate a
+/// state word.
+///
+/// ⚠ Compared for EQUALITY only. It is an identity, never an ordering: nothing here can say
+/// whether one document is newer than another, and a fingerprint that invited the question would be
+/// answering something it does not know.
+pub const STATECHARTS_FINGERPRINT: &str = env!("SPRAG_STATECHARTS_FINGERPRINT");
+
 pub mod access;
 pub mod agent;
 pub mod ai_loop;

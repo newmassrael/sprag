@@ -413,6 +413,85 @@ pub struct PersistedRun {
     /// throw away every run record the running daemon holds to gain a key nothing needs told twice.
     #[serde(default)]
     pub opened_by_session: Option<String>,
+    /// ⚠⚠⚠⚠⚠ **WHERE THE RUN HAD GOT TO** — `Progress::at`, the plugin's own machine position, in
+    /// the document's own word. [`None`] for a run that never completed a step, one whose plugin
+    /// walks no statechart, or a log written before this field existed.
+    ///
+    /// # The one thing an interrupted run could never say — register item 543
+    ///
+    /// A run that outlives its daemon comes back [`RunState::Interrupted`] carrying its counters,
+    /// so a reader learns HOW FAR it got and never WHERE it stopped. The position did exist, as a
+    /// sentence inside a step note — in a journal bounded to sixty-four steps and **deliberately
+    /// not persisted**. So the question a person actually asks of a killed run (*was it mid-turn,
+    /// or waiting on me?*) had no answer at all, and `awaiting_human` and `working` were the same
+    /// record.
+    ///
+    /// ⚠⚠⚠ **IT IS MEANINGLESS WITHOUT [`document`](Self::document) AND MUST NEVER BE READ ALONE.**
+    /// A state name's meaning lives in a `.scxml`, and the restart this record exists for is
+    /// usually a document change — see that field.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move: `build`'s argument verbatim, an optional field with a
+    /// default reads in both directions.
+    #[serde(default)]
+    pub at: Option<String>,
+    /// ⚠⚠⚠⚠⚠ **WHICH STATECHART DOCUMENTS [`at`](Self::at)'s WORD CAME FROM** —
+    /// `sprag_plugin::STATECHARTS_FINGERPRINT` as the writing daemon knew it. [`None`] for a run
+    /// with no recorded position, or a log written before this field existed.
+    ///
+    /// # ⚠⚠⚠⚠ Why the pair travels together — register item 544
+    ///
+    /// Item 544 says the version skew must be **structurally impossible**, and this is that
+    /// sentence as data. `reflecting` is not a fact; it is a fact *about a document*. Restart into a
+    /// build whose `ai_loop.scxml` changed and the same word can name a different state or none —
+    /// and because the restart that motivates persisting a run is usually a document change, the
+    /// dangerous reading is the COMMON one. A reader that compares this against its own build's
+    /// fingerprint can tell *this position is in my document* from *this position belongs to a
+    /// document I do not have*, which is the difference between resuming a run and inventing one.
+    ///
+    /// ⚠⚠ **NOT [`build`](Self::build), which is present and cannot do this job.** A build stamp
+    /// moves when any file in the tree does, so it would call every promotion a document change —
+    /// and removing exactly that cost is why item 543 was filed.
+    ///
+    /// ⚠ Compared for EQUALITY only; it is an identity and never an ordering.
+    #[serde(default)]
+    pub document: Option<String>,
+}
+
+impl PersistedRun {
+    /// ⚠⚠⚠⚠⚠ **WHERE THIS RUN STOPPED, IF THAT WORD STILL MEANS ANYTHING HERE** — the recorded
+    /// position, but only when it came from the documents THIS build compiled.
+    ///
+    /// # Why the comparison lives here and not at each reader — register items 543 and 544
+    ///
+    /// [`at`](Self::at) and [`document`](Self::document) are two halves of one fact, and a reader
+    /// handed both must remember to check the second before believing the first. That is a rule
+    /// prose can state and nothing can enforce, and this file already carries what happens then:
+    /// three flags whose comments explained that nothing read them. **One place decides, and what
+    /// it hands back is either a word a reader may trust or nothing at all** — so a caller cannot
+    /// hold a position it has not earned the right to read.
+    ///
+    /// ⚠⚠⚠ **A DIFFERENT FINGERPRINT IS NOT AN ERROR, IT IS A DIFFERENT RUN.** Item 544's answer
+    /// to version skew is structural rather than defensive: nothing migrates a configuration
+    /// between documents, nothing guesses which state the old word corresponds to, and a changed
+    /// document therefore ends a run rather than resuming a fiction of it. `None` here is that
+    /// decision, taken by construction.
+    ///
+    /// ⚠⚠ **IT IS NOT A CLAIM THAT THE RUN CAN BE RE-ENTERED**, and the difference is measured
+    /// rather than hedged: SCE at the pinned rev exposes `get_active_states` and no way to ENTER at
+    /// one, so nothing anywhere can resume a machine today (checked at `e0fdd46` and against a
+    /// newer local clone; the C++ core's "restore" is SCXML history states, a different thing).
+    /// This answers the question that IS answerable — *is this position readable in my
+    /// vocabulary?* — which is what a person asking *where did my run stop* needs, and what the
+    /// re-entry will need first when it exists.
+    #[must_use]
+    pub fn resumable_here(&self) -> Option<&str> {
+        // ⚠ BOTH must be present. A position with no document is a word from an unknown
+        // vocabulary — older logs carry exactly that — and treating it as local would be the skew
+        // this pair exists to prevent, arrived at by an absence instead of by a mismatch.
+        let at = self.at.as_deref()?;
+        let document = self.document.as_deref()?;
+        (document == sprag_plugin::STATECHARTS_FINGERPRINT).then_some(at)
+    }
 }
 
 /// The versioned file a daemon leaves behind for its successor.
@@ -621,6 +700,17 @@ impl RunRegistry {
                         output,
                         build: run.build.clone(),
                         opened_by_session: run.opened_by_session.clone(),
+                        // ⚠⚠⚠ WHERE IT WAS, AND WHOSE WORD THAT IS — register items 543 and 544,
+                        // written as a PAIR because either alone misleads. The fingerprint is
+                        // stamped from THIS image, which is the only honest answer: it is the
+                        // build whose documents produced the word beside it. A run with no
+                        // recorded position records no document either, so a reader never sees a
+                        // fingerprint vouching for nothing.
+                        at: run.progress.at.map(str::to_owned),
+                        document: run
+                            .progress
+                            .at
+                            .map(|_| sprag_plugin::STATECHARTS_FINGERPRINT.to_owned()),
                     }
                 })
                 .collect(),
@@ -745,6 +835,16 @@ impl RunRegistry {
                     answered: 0,
                     // ⚠ Nor the count of calls it refused, for the same reason.
                     screened: 0,
+                    // ⚠⚠⚠⚠⚠ AND THE POSITION IS NOT RESTORED INTO THE LIVE CELL, WHICH IS THE
+                    // POINT OF THE FINGERPRINT RATHER THAN A GAP IN IT — register items 543, 544.
+                    // `Progress::at` is `&'static str`: a word from THIS binary's documents. The
+                    // saved one is a `String` from the DEAD daemon's, and the two are only the
+                    // same fact when the fingerprints agree — which is a question for a reader
+                    // holding both, not an assumption to bake in here by leaking a stale word
+                    // into a live cell that everything treats as *where this run is now*.
+                    // `PersistedRun::at` keeps the record; `resumable_here` is where the two are
+                    // compared, once, by something that can see both.
+                    at: None,
                 })),
                 // ⚠⚠⚠ AND THIS ONE IS TAKEN FROM THE LOG RATHER THAN STAMPED, which is the
                 // opposite decision to every field above and the reason the field exists. The rest
@@ -1366,6 +1466,8 @@ mod tests {
                 output: None,
                 build: None,
                 opened_by_session: Some(A_CONVERSATION.to_owned()),
+                at: None,
+                document: None,
             }],
         };
         let on_disk = serde_json::to_string(&log).expect("the run log encodes");
@@ -1517,6 +1619,101 @@ mod tests {
             waited < within * 2,
             "two wedged runs cost {waited:?} against a {within:?} deadline — either the wait is \
              spent per worker, or it asks less often than the deadline it was given",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A RUN THAT OUTLIVED ITS DAEMON SAYS WHERE IT STOPPED, AND WHOSE WORD THAT IS** —
+    /// register item 543, stage 3a, and the fact that had no channel at all.
+    ///
+    /// # What it could not say before
+    ///
+    /// An interrupted run came back with its counters, so a reader learned HOW FAR it got and never
+    /// WHERE it stopped — `awaiting_human` and `working` were the same record, which is the
+    /// difference between *waiting on me* and *killed mid-turn*. The position did exist: the loop
+    /// writes `working --judged--> judging` into a step note. **That is a human sentence, in a
+    /// journal bounded to sixty-four steps, that is deliberately not persisted** — unreadable by
+    /// any program, truncated for a long run, and gone at exactly the moment it is wanted.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the pair is the claim, and why the second half is the one with teeth
+    ///
+    /// A state name is a fact ABOUT A DOCUMENT. The restart that motivates persisting a run at all
+    /// is *the loop document changed*, so reading the word back against a different `ai_loop.scxml`
+    /// is the COMMON case rather than the rare one — item 544's version skew, in the place it would
+    /// actually happen. So the record carries the fingerprint of the documents the word came from,
+    /// and [`PersistedRun::resumable_here`] is the ONE place the two are compared: **a foreign
+    /// document yields no word at all**, which is 544's *a changed document is a new run* as data
+    /// rather than as a rule somebody has to remember.
+    #[test]
+    fn a_run_that_outlived_its_daemon_says_where_it_stopped_only_in_its_own_documents_words() {
+        let saved = |at: Option<&str>, document: Option<&str>| PersistedRun {
+            id: 7,
+            label: "a loop that was interrupted".to_string(),
+            iterations: 12,
+            cost: None,
+            unit: None,
+            finished: false,
+            outcome: None,
+            ceiling: None,
+            output: None,
+            build: None,
+            opened_by_session: None,
+            at: at.map(str::to_owned),
+            document: document.map(str::to_owned),
+        };
+
+        // ── THE WORD SURVIVES THE ROUND TRIP THROUGH THE FILE, which is the whole point: this is
+        // read by a SUCCESSOR daemon, so anything that did not encode would be a field that works
+        // only in the process that never needed it.
+        let log = RunLog {
+            version: RUN_LOG_VERSION,
+            runs: vec![saved(
+                Some("awaiting_human"),
+                Some(sprag_plugin::STATECHARTS_FINGERPRINT),
+            )],
+        };
+        let on_disk = serde_json::to_string(&log).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        assert_eq!(
+            read_back.runs[0].resumable_here(),
+            Some("awaiting_human"),
+            "⛔⛔⛔⛔ REGISTER ITEM 543: a run recorded by this build's documents must hand its \
+             position back after the round trip. Without it an interrupted run can still only say \
+             how far it got, and *waiting on me* is indistinguishable from *killed mid-turn*",
+        );
+
+        // ── AND A POSITION FROM SOMEBODY ELSE'S DOCUMENT IS NOT HANDED BACK AT ALL ──
+        assert_eq!(
+            saved(Some("awaiting_human"), Some("0000000000000000")).resumable_here(),
+            None,
+            "⛔⛔⛔⛔ REGISTER ITEM 544: a word from documents this build did not compile must not \
+             be readable as a position. `awaiting_human` may name a different state, or none — and \
+             the restart this record exists for is USUALLY a document change, so this is the \
+             common reading rather than the rare one",
+        );
+
+        // ⚠⚠⚠ AND AN OLDER LOG — one written before either field existed — is the same refusal
+        // arrived at by an ABSENCE rather than by a mismatch. A position with no document names a
+        // vocabulary nobody can check, and treating that as local is the skew read backwards.
+        assert_eq!(
+            saved(Some("awaiting_human"), None).resumable_here(),
+            None,
+            "⚠⚠⚠ a position with no document must not be trusted as this build's",
+        );
+        assert_eq!(
+            saved(None, Some(sprag_plugin::STATECHARTS_FINGERPRINT)).resumable_here(),
+            None,
+            "⚠⚠ and a fingerprint vouching for no position must answer nothing rather than \
+             something empty",
+        );
+
+        // ⚠⚠ THE CONTROL THAT KEEPS THE FIRST ASSERTION FROM BEING VACUOUS: the two fingerprints
+        // compared above must actually differ, or `resumable_here` would pass by answering the
+        // same way to everything.
+        assert_ne!(
+            sprag_plugin::STATECHARTS_FINGERPRINT,
+            "0000000000000000",
+            "this build's documents must have a fingerprint of their own, or the comparison above \
+             measured nothing",
         );
     }
 
@@ -1763,6 +1960,8 @@ mod tests {
                 output: None,
                 build: None,
                 opened_by_session: None,
+                at: None,
+                document: None,
             }],
         });
 

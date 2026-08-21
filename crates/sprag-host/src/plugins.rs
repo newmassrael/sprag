@@ -2271,6 +2271,8 @@ mod tests {
                 output: None,
                 build: None,
                 opened_by_session: Some(RESUMED.to_owned()),
+                at: None,
+                document: None,
             }],
         };
 

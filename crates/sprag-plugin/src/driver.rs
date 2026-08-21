@@ -513,6 +513,9 @@ pub struct Driver {
     progress: Option<ProgressCell>,
     /// What each step did, bounded to the last [`JOURNAL_LIMIT`].
     journal: Vec<StepRecord>,
+    /// **WHERE THE PLUGIN'S OWN MACHINE IS** — [`Plugin::at`]'s last answer, asked once per
+    /// completed step. [`None`] before the first step and for a plugin that walks no statechart.
+    at: Option<&'static str>,
     /// WHETHER THE RUN WAS CUT SHORT — ended by a cancel or a passed deadline rather than by its
     /// own logic. [`Driver::ended_from_outside`] is the only writer, so this cannot disagree with
     /// the decision that was actually taken.
@@ -614,6 +617,27 @@ pub struct Progress {
     /// one whose standing rule is too broad, and this count is the only thing that says so while
     /// there is still time to stop it.
     pub screened: u32,
+    /// ⚠⚠⚠⚠⚠ **WHERE THE RUN IS** — the plugin's own machine position, from [`Plugin::at`].
+    ///
+    /// # The fact that existed only as prose — register item 543
+    ///
+    /// Every other field here is a NUMBER, and numbers answer *how much* while nobody could ask
+    /// *where*. The loop does write its position down — `working --judged--> judging` — but into a
+    /// step's [`note`](crate::plugin::Step::note), which is **a human sentence inside a journal
+    /// bounded to the last [`JOURNAL_LIMIT`] steps and not persisted at all**. So the answer was
+    /// unreadable by any program, truncated for a long run, and gone at the next restart, which is
+    /// exactly when it is wanted: a run that comes back `Interrupted` could say how far it got and
+    /// never where it stopped.
+    ///
+    /// ⚠⚠ **A LEVEL, like everything else in this cell** ([`ProgressCell`]'s own rule): the CURRENT
+    /// position, not a history. A reader that looks twice and sees the same word has learned that
+    /// the run has not moved — which is what *"progress or stuck?"* actually asks, and which the
+    /// counters answer only for a run that is spending something.
+    ///
+    /// ⚠ The words belong to a document, so anything that RECORDS one must record
+    /// [`STATECHARTS_FINGERPRINT`](crate::STATECHARTS_FINGERPRINT) beside it. `None` before the
+    /// first step completes, and for a plugin that walks no statechart.
+    pub at: Option<&'static str>,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -665,6 +689,7 @@ impl Driver {
             failure: None,
             progress: None,
             journal: Vec::new(),
+            at: None,
             cut_short: false,
             stopped: None,
             exhausted_by: None,
@@ -702,6 +727,7 @@ impl Driver {
                 journal: self.journal.clone(),
                 answered: self.answered,
                 screened: self.screened,
+                at: self.at,
             };
         }
     }
@@ -859,6 +885,13 @@ impl Driver {
                         self.screened += 1;
                     }
                     self.record(&step);
+                    // ⚠⚠⚠⚠⚠ WHERE THE PLUGIN IS, ASKED AT THE ONE PLACE A STEP COMPLETES — register
+                    // item 543. This is why `Plugin::at` is a question rather than a field on
+                    // `Step`: a per-step field can be forgotten at any of the twenty-odd sites that
+                    // build one, and a forgotten one does not read as absent, it reads as *still
+                    // where it last said*. Asked here, after the step and before the publish, it
+                    // cannot be missed and cannot be stale.
+                    self.at = plugin.at();
                     self.publish();
                     let decided = match &step.verdict {
                         // A step that saw the goal SAW IT. A stop or a deadline arriving in the

@@ -434,6 +434,38 @@ pub trait Plugin {
         None
     }
 
+    /// ⚠⚠⚠⚠⚠ **WHERE THIS PLUGIN'S OWN MACHINE IS RIGHT NOW** — a state name from the document it
+    /// was built with, or [`None`] for a plugin that walks no statechart.
+    ///
+    /// # Why the Driver ASKS instead of each step CARRYING it — register item 543
+    ///
+    /// Where a run has got to exists today only as PROSE: `ai_loop` writes `working --judged-->
+    /// judging` into a step's [`note`](Step::note), which is a human sentence in a journal that is
+    /// **bounded to the last [`JOURNAL_LIMIT`] steps and is not persisted at all**. So the one fact
+    /// a person needs after a restart — *where was it?* — is unreadable by anything, and gone.
+    ///
+    /// ⚠⚠⚠⚠ **AND A FIELD ON [`Step`] WOULD HAVE BEEN THE WRONG SHAPE**, measured rather than
+    /// preferred: this crate builds a `Step` at more than twenty sites, so a per-step field is a
+    /// fact that can be FORGOTTEN at any one of them — and a forgotten one does not read as absent,
+    /// it reads as *still where it last said*, which is the worst answer available. Asked here, it
+    /// has ONE call site in the Driver and cannot be missed.
+    ///
+    /// ⚠⚠ `'static` because these names come from a document COMPILED INTO THIS BINARY. That is
+    /// what makes them safe to persist: the fingerprint recorded beside them
+    /// ([`STATECHARTS_FINGERPRINT`](crate::STATECHARTS_FINGERPRINT)) says which documents they are
+    /// names from, so a successor daemon can never read a state word against a document that no
+    /// longer has it.
+    ///
+    /// ⚠ The [`Driver`] records it and never reads it, exactly as it treats
+    /// [`captured`](Self::captured) and [`Step::note`] — where a plugin is, is the plugin's
+    /// business.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    /// [`JOURNAL_LIMIT`]: crate::driver::JOURNAL_LIMIT
+    fn at(&self) -> Option<&'static str> {
+        None
+    }
+
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
     ///
     /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and

@@ -174,6 +174,85 @@ mod tests {
     /// directory existed — and this workspace has eight of them.
     const GENERATED: &str = env!("OUT_DIR");
 
+    /// ⛔⛔⛔⛔ **THE DOCUMENT FINGERPRINT IS THE DOCUMENTS, RECOMPUTED RATHER THAN TRUSTED** —
+    /// register items 543 and 544.
+    ///
+    /// # Why this gate is the one holding the whole skew guard up
+    ///
+    /// A run that outlived its daemon records where it stopped, and a state name means something
+    /// only against the document it came from. `PersistedRun::resumable_here` therefore hands the
+    /// position back only when the recorded fingerprint equals this build's — which is item 544's
+    /// *a changed document is a NEW run* expressed as data. **All of that is a comparison of one
+    /// constant with another, and if the constant does not MOVE when a `.scxml` does, it reports
+    /// every document unchanged for ever** — the exact skew it is named after, wearing its own
+    /// name, with every gate around it green.
+    ///
+    /// ⚠⚠⚠ So this recomputes the number from the files, deliberately duplicating `build.rs`'s
+    /// arithmetic — this module's own rule one gate down, that *"the runtime's copy is what the
+    /// ENGINE uses; a gate that called it would be asking the subject to mark its own work."* The
+    /// two spellings must agree, and a `build.rs` that stopped hashing content — emitting a
+    /// version, a constant, a build stamp — disagrees at once.
+    ///
+    /// ⚠⚠ The source LIST comes from `build.rs` too, so the gate cannot pass by hashing a
+    /// different set of files than the one the binary was compiled from.
+    #[test]
+    fn the_statechart_fingerprint_is_the_documents_it_names() {
+        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        let sources: Vec<&str> = env!("SPRAG_STATECHART_SOURCES").split(',').collect();
+        assert!(
+            sources.len() > 1 && sources.iter().any(|path| path.ends_with("ai_loop.scxml")),
+            "⚠⚠ the gate must be hashing the shipped documents, `ai_loop.scxml` among them: \
+             {sources:?}",
+        );
+
+        let mut hash = OFFSET;
+        for path in &sources {
+            let full = format!("{}/{path}", env!("CARGO_MANIFEST_DIR"));
+            let body = std::fs::read(&full).unwrap_or_else(|why| panic!("read {full}: {why}"));
+            for byte in path.as_bytes().iter().chain(body.iter()) {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+        }
+
+        assert_eq!(
+            format!("{hash:016x}"),
+            crate::STATECHARTS_FINGERPRINT,
+            "⛔⛔⛔⛔ REGISTER ITEM 544: the baked fingerprint must be the CONTENT of the documents \
+             this binary compiled. A number that does not follow the files cannot tell a changed \
+             `ai_loop.scxml` from an unchanged one — so every interrupted run's recorded position \
+             would be read back as though it were in this build's vocabulary, which is the version \
+             skew the pair exists to make structurally impossible",
+        );
+
+        // ⚠⚠⚠ AND IT IS SENSITIVE TO A ONE-BYTE EDIT, proved rather than assumed: the assertion
+        // above is satisfied by any function of the bytes, INCLUDING a bad one that collides
+        // everything to the same value. Re-running the same arithmetic over the same files with a
+        // single byte flipped must land somewhere else.
+        let mut nudged = OFFSET;
+        for (index, path) in sources.iter().enumerate() {
+            let full = format!("{}/{path}", env!("CARGO_MANIFEST_DIR"));
+            let mut body = std::fs::read(&full).unwrap_or_else(|why| panic!("read {full}: {why}"));
+            if index == 0
+                && let Some(first) = body.first_mut()
+            {
+                *first = first.wrapping_add(1);
+            }
+            for byte in path.as_bytes().iter().chain(body.iter()) {
+                nudged ^= u64::from(*byte);
+                nudged = nudged.wrapping_mul(PRIME);
+            }
+        }
+        assert_ne!(
+            format!("{nudged:016x}"),
+            crate::STATECHARTS_FINGERPRINT,
+            "⚠⚠⚠ a one-byte change to a document must change the fingerprint, or the comparison \
+             above is satisfied by a constant and nothing is being tracked",
+        );
+    }
+
     /// **HOW A DOCUMENT'S MACHINE IS INITIALISED**, as the shipping code does it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Road {
