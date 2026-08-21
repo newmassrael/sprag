@@ -799,6 +799,13 @@ impl InlineGrammar {
             &[ArgGrammar::open("id", "int").optional()],
         )];
 
+    /// [`RESPAWN_ACTION`] — the pane to replace. REQUIRED, unlike [`CLOSE`](Self::CLOSE)'s optional
+    /// `id`: closing the active pane is what a person's keystroke means, and replacing "whichever
+    /// pane happens to be active" is not a thing any caller means. A driver names the pane its run
+    /// is holding.
+    pub const RESPAWN: &'static [CallForm] =
+        &[CallForm::object(&[ArgGrammar::open(SPLIT_PANE_KEY, "int")])];
+
     /// [`STOP_JOB_ACTION`] — a pane, and WHICH stop to deliver to its job. Absent `signal` asks for
     /// the one a person's `Ctrl-C` means, because that is what *"stop this"* means to everybody who
     /// is not thinking about signals — and the harder two must be typed out on purpose.
@@ -2310,6 +2317,11 @@ pub const MUX_GRAMMAR: &[ActionGrammar] = &[
         from_ask: false,
     },
     ActionGrammar {
+        action: RESPAWN_ACTION,
+        forms: InlineGrammar::RESPAWN,
+        from_ask: false,
+    },
+    ActionGrammar {
         action: STOP_JOB_ACTION,
         forms: InlineGrammar::STOP_JOB,
         from_ask: false,
@@ -2554,6 +2566,10 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::action(SPAWN_ACTION, "action"),
     SchemaField::action(SPLIT_ACTION, "action"),
     SchemaField::action(CLOSE_ACTION, "action"),
+    // ⚠⚠⚠⚠⚠ Register item 557 — see `RESPAWN_ACTION`. The two verbs above could be composed into
+    // this one and the composition would lose the pane's WORLD, its SEAT and the order that keeps a
+    // failed spawn from having destroyed the session it was replacing.
+    SchemaField::action(RESPAWN_ACTION, "action"),
     SchemaField::action(RESIZE_ACTION, "action"),
     SchemaField::action(RENAME_PANE_ACTION, "action"),
     SchemaField::action(STOP_JOB_ACTION, "action"),
@@ -3992,6 +4008,37 @@ pub const SPLIT_ACTION: &str = "split";
 /// A severed connection therefore reads as success — the `server_gone` arm every kill verb in
 /// `sprag` already had.
 pub const CLOSE_ACTION: &str = "close";
+
+/// The mux control external action: **REPLACE A PANE WITH A FRESH ONE RUNNING THE SAME THING IN THE
+/// SAME PLACE** — `{pane}` → the new pane's id — register item 557, and the verb a run driven from
+/// another process rolls its inner session with.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a VERB and not `close` + `spawn`, which is the composition a client would write
+///
+/// It is stage 1b's lesson on the acting side. A remote driver holding [`SPAWN_ACTION`] and
+/// [`CLOSE_ACTION`] *could* assemble a replacement, and what it cannot assemble is the four things
+/// that are not in either call:
+///
+/// * **The same WORLD.** The argv, the environment, the working directory and the size are read off
+///   the outgoing pane. A caller that passed argv alone would start the same PROGRAM in a different
+///   world — and `live_agent` blanks nine `CLAUDE_CODE_*` variables at birth, so a replacement that
+///   dropped them would silently be a NESTED agent session and every reading after it would be of a
+///   different program.
+/// * **The SEAT**, handed over as ONE operation: what the caller named the pane, who asked for it,
+///   what it may spend, and whether it is a remote workspace. Register item 478 is what a forgotten
+///   one of those costs, and a client composing the verbs would forget them one at a time.
+/// * **THE ORDER.** The old pane is closed only after the new one exists, so a spawn that fails
+///   leaves the run holding the pane it had. A client that closed first and then failed to spawn
+///   would have destroyed the session it was trying to preserve.
+/// * **The refusal that is a real case**: a pane with no recorded argv (restored from a snapshot
+///   taken before argv capture existed) says so, rather than being handed a shell somebody invented.
+///
+/// ⚠⚠ The daemon does not re-implement any of it. This action runs
+/// [`PaneLifecycle::respawn`](sprag_plugin::PaneLifecycle::respawn) on the scope's own workspace,
+/// with the daemon's birth hooks wired in — so the in-process caller and the wire caller cannot come
+/// to replace a pane differently.
+pub const RESPAWN_ACTION: &str = "respawn";
+
 /// The key carrying [`Ended`](sprag_terminal::Ended)'s word in the answer of [`CLOSE_ACTION`],
 /// [`KILL_WINDOW_ACTION`] and [`KILL_SESSION_ACTION`].
 ///
@@ -8639,6 +8686,10 @@ mod tests {
                 "sprag_workspace/sprag_mux/resize:",
                 "sprag_workspace/sprag_mux/resize_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/resize_window:from=largest,smallest,latest",
+                // ⚠ R557: `respawn` publishes NO closed vocabulary — its one argument is a pane id,
+                // which is minted by the host and bounded by no list. A line with an empty right
+                // side is this pin recording that, not an omission.
+                "sprag_workspace/sprag_mux/respawn:",
                 "sprag_workspace/sprag_mux/select_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/select_window:relative=next,previous",
                 "sprag_workspace/sprag_mux/set_floating:",
@@ -8944,6 +8995,11 @@ mod tests {
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? cols:int rows:int",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? from:string",
+                // ⚠⚠ R557: ONE REQUIRED ARGUMENT, where `close` above takes an optional one. The
+                // asymmetry is the decision: closing the active pane is what a person's keystroke
+                // means, and replacing "whichever pane happens to be active" is not a thing any
+                // caller means. A form ADDED, so `WIRE_PROTOCOL` stands.
+                "sprag_workspace/sprag_mux/respawn[object]:pane:int",
                 "sprag_workspace/sprag_mux/select_pane[object]:dir:string from:int?",
                 "sprag_workspace/sprag_mux/select_pane[object]:pane:int",
                 "sprag_workspace/sprag_mux/select_window[object]:relative:string",
@@ -9616,6 +9672,9 @@ mod tests {
             "report_agent",
             "resize_pane",
             "resize_window",
+            // ⚠⚠ ADDED at register item 557: the verb a run rolls its inner session with. A name
+            // added, so the number stands — an old client that never asks is unaffected.
+            "respawn",
             "run",
             "runs",
             // ⚠⚠⚠ ADDED at register item 544's stage 1b: the VISIBLE SCREEN, published the two ways
@@ -10040,13 +10099,14 @@ mod tests {
                 SURFACES,
             )
             .count_or_panic(),
-            40,
+            41,
             "the whole write half of this crate's wire: the multiplexer's verbs, the pane's, and \
              the plugin host's FOUR — run, cancel, stand_down and hold_run. ⚠ The newest is the \
-             pane's `inject`, the door a RUN DRIVER types through (register item 544): a batch as \
-             one write, refused before writing at a pane whose child has gone, and answering what \
-             it wrote. It is a verb ADDED, so an older client — which never calls it — is \
-             unaffected and `WIRE_PROTOCOL` stands",
+             mux's `respawn`, the act a RUN DRIVER rolls its inner session with (register item \
+             557): the SAME program in the SAME world and the SAME seat, which the `close` + \
+             `spawn` a client would compose loses three ways. Before it came the pane's `inject`. \
+             Both are verbs ADDED, so an older client — which never calls either — is unaffected \
+             and `WIRE_PROTOCOL` stands",
         );
     }
 

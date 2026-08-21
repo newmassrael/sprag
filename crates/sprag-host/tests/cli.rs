@@ -9286,10 +9286,12 @@ fn the_cli_prints_how_to_call_the_verbs_the_daemon_publishes() {
         .collect();
     assert_eq!(
         verbs.len(),
-        28,
-        "the multiplexer publishes twenty-eight of its twenty-nine verbs — `resize` and \
-         `grant_pane` were exempted as NESTED values and are flat (R355b), leaving `set_layout`'s \
-         arrangement tree as the only one whose reason survived being re-derived: {verbs:?}",
+        29,
+        "the multiplexer publishes all but ONE of its verbs — `resize` and `grant_pane` were \
+         exempted as NESTED values and are flat (R355b), leaving `set_layout`'s arrangement tree \
+         as the only one whose reason survived being re-derived. ⚠ The newest is `respawn` (item \
+         557), and it publishing here is the point: a driver outside the daemon learns to spell \
+         the verb that rolls its session from the daemon rather than from folklore: {verbs:?}",
     );
 }
 

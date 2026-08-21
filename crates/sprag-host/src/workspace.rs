@@ -86,10 +86,11 @@ use crate::wire::{
     NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANE_RESOURCES_FIELD, PANE_SUMMARY_ID_KEY, PANES_SLOT,
     PROJECT_FIELD, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
-    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, RESPAWN_ACTION, ResizeAsk, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION, SWAP_PANE_ACTION,
+    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef,
+    ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -2191,6 +2192,58 @@ impl WorkspaceExternal {
         }
     }
 
+    /// `respawn {pane}` action: replace `pane` with a fresh one running the same thing in the same
+    /// place, answering the new pane's id — see [`RESPAWN_ACTION`], and register item 557.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It RUNS the in-process verb rather than re-stating it
+    ///
+    /// Everything a replacement has to carry — the outgoing pane's argv, environment, working
+    /// directory and size; the seat handed over as one operation; the old pane closed only AFTER
+    /// the new one exists — lives in [`sprag_plugin::PaneLifecycle::respawn`], and a second
+    /// spelling here would be a second answer to drift from on a path whose whole point is that
+    /// nothing is lost. So this builds the same [`sprag_plugin::WorkspacePaneAccess`] over the
+    /// SCOPE's workspace and calls it.
+    ///
+    /// ⚠⚠ **The daemon's birth hooks are wired in**, and they are not decoration: without them the
+    /// replacement would not feed the reaper when it exits, and its attention would reach nobody —
+    /// so a pane replaced over the wire would be a pane the daemon had stopped watching. They are
+    /// the same two this surface's own `spawn` passes, minted the way the plugin host mints them.
+    ///
+    /// ⚠ The pane is REQUIRED here where `close` lets it default to the active one: replacing
+    /// whichever pane happens to be active is not a thing any caller means.
+    fn respawn(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let pane = match map.get(crate::wire::SPLIT_PANE_KEY) {
+            Some(value) => value
+                .as_u64()
+                .map(PaneId)
+                .ok_or(InvokeError::TypeMismatch)?,
+            None => {
+                return Err(refused(
+                    "respawn names the pane to replace: it has no active-pane default",
+                ));
+            }
+        };
+        let access = sprag_plugin::WorkspacePaneAccess::new(Arc::clone(self.workspace()))
+            .with_pane_exit(self.on_pane_exit.clone())
+            .with_attention(self.attention.as_ref().map(|router| {
+                let router = Arc::clone(router);
+                Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
+            }));
+        let fresh = sprag_plugin::PaneLifecycle::respawn(&access, pane).map_err(|error| {
+            // The refusals this door can meet are the caller's — a pane nobody holds, or one with
+            // no recorded command to re-run — so they reach the caller as its own sentence rather
+            // than as a type mismatch.
+            refused(error.to_string())
+        })?;
+        // A pane was born and another died, so the set changed twice: wake parked waiters once,
+        // after both, exactly as `spawn` does for its one birth.
+        self.announce();
+        Ok(IntrospectValue::Int(
+            i64::try_from(fresh.0).unwrap_or(i64::MAX),
+        ))
+    }
+
     /// `rename_window {window?, name}` action: rename a window of THIS request's session — tmux
     /// `rename-window`. `window` absent ⇒ the current one; `name` is the new name (required).
     fn rename_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
@@ -3252,6 +3305,7 @@ impl WorkspaceExternal {
             RESIZE_PANE_ACTION => self.resize_pane(&args),
             ZOOM_PANE_ACTION => self.zoom_pane(&args),
             DROP_FILE_ACTION => self.drop_file(&args),
+            RESPAWN_ACTION => self.respawn(&args),
             REPORT_AGENT_ACTION => self.report_agent(&args),
             RELEASE_AGENT_ACTION => self.release_agent(&args),
             DISPLAY_MESSAGE_ACTION => self.display_message(&args),
@@ -9089,13 +9143,15 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            107,
+            108,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb: 31 across the seven ask-backed verbs and 67 across the \
-             twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \
-             values and flat all along; the 65th is `report_agent`'s `build`, item 412, the 66th is \
-             its `said` — what the agent answered, item 441 — and the 67th its `noticed`, why the \
-             agent says it wants a person, item 452)",
+             per form rather than per verb. The newest is `respawn`'s `pane` (item 557), the one \
+             argument of the verb a run rolls its inner session with; before it came \
+             `report_agent`'s `build` (item 412), `said` (441) and `noticed` (452). \
+             ⚠ THE PER-HALF SPLIT THIS SENTENCE USED TO GIVE — «31 ask-backed and 67 inline» — WAS \
+             ALREADY WRONG WHEN IT SAID 107: the two do not add up to the number beside them, and \
+             nobody noticed because only the number is asserted. Removed rather than re-guessed; \
+             a split nobody measures is prose no test can turn red",
         );
     }
 

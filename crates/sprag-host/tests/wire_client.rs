@@ -6715,3 +6715,139 @@ fn a_remote_driver_reads_a_pane_agent_verdict_and_a_plain_pane_is_a_different_ab
 
     let _ = std::fs::remove_file(&sock);
 }
+
+/// ⛔⛔⛔⛔ **A DRIVER OUTSIDE THIS PROCESS ROLLS A PANE'S SESSION, AND THE REPLACEMENT IS THE SAME
+/// PROGRAM IN THE SAME WORLD AND THE SAME SEAT** — register item 557's `lifecycle` surface, and the
+/// act `outer.rs::replace` is.
+///
+/// # ⚠⚠⚠⚠⚠ Why `respawn` is a VERB and not the composition a client would obviously write
+///
+/// This is stage 1b's lesson on the ACTING side. A remote driver has `spawn` and `close`, so it
+/// *could* assemble a replacement — and the assembly loses four things that are in neither call:
+///
+/// * **The WORLD.** argv, environment, working directory and SIZE are read off the outgoing pane. A
+///   client that passed argv alone starts the same PROGRAM somewhere else, at somebody else's size.
+/// * **The SEAT** — the name a person gave the pane, who opened it, what it may spend — handed over
+///   as ONE operation. Register item 478 is what a forgotten declaration costs, and a composition
+///   forgets them one at a time.
+/// * **THE ORDER**: the old pane dies only once the new one exists, so a failed spawn leaves the run
+///   holding the pane it had rather than having destroyed the session it was preserving.
+/// * **The refusal that is a real case**: a pane with no recorded argv says so instead of being
+///   handed an invented shell.
+///
+/// # ⚠⚠⚠ What each assertion below would catch on its own
+///
+/// The pane is born 33x7, in a directory that is NOT the daemon's, under a name, running a program
+/// that prints its own working directory. So a replacement assembled from `spawn` answers 80x24, in
+/// the daemon's directory, unnamed — three separate reds — and one that never re-ran the command
+/// prints nothing at all.
+#[test]
+fn a_remote_driver_replaces_a_pane_and_the_new_one_is_the_same_program_in_the_same_seat() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+
+    // A directory that is NOT the daemon's, so "the replacement kept the cwd" is a claim about the
+    // PANE rather than about whatever the host happens to be standing in.
+    let elsewhere = std::env::temp_dir();
+    let home = elsewhere.canonicalize().unwrap_or(elsewhere);
+    let home = home.to_string_lossy().into_owned();
+    let old = spawn_pane(
+        &mut setup,
+        json!({
+            "cmd": ["sh", "-c", "pwd; cat"],
+            "cwd": home,
+            "cols": 33,
+            "rows": 7,
+            "name": "inner-session",
+        }),
+    );
+
+    let lifecycle = remote.lifecycle().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a remote driver reports that this host CANNOT OPEN PANES. \
+             `outer.rs::replace` turns that into *a loop cannot replace its inner session*, which \
+             ends every run driven from outside the daemon at its first session rollover."
+        )
+    });
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_full_text(old)
+            .is_some_and(|out| out.contains(&home))),
+        "the original never printed its working directory, so the comparison below would have \
+         nothing to compare. Read {:?}",
+        remote.pane_full_text(old),
+    );
+
+    // ── THE REPLACEMENT ────────────────────────────────────────────────────────────────────────
+    let fresh = lifecycle.respawn(old).unwrap_or_else(|error| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a driver in another process could not replace a pane — \
+             {error:?}. Nothing it holds can substitute: `close` then `spawn` starts the same \
+             program in a different world and drops the seat, and doing it in that order destroys \
+             the session on a spawn that fails."
+        )
+    });
+    assert_ne!(
+        fresh, old,
+        "a replacement is a NEW pane; answering the old id would tell a driver its rollover \
+         happened when nothing had moved",
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_full_text(fresh)
+            .is_some_and(|out| out.contains(&home))),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: the replacement did not re-run the pane's OWN command in the \
+         pane's OWN directory. `pwd` printing anything else means the world was rebuilt from what \
+         the caller knew rather than from what the pane was — and a caller knows the argv at best, \
+         never the cwd or the environment. Read {:?}",
+        remote.pane_full_text(fresh),
+    );
+
+    // ── THE SEAT, AND THE SIZE, READ OFF THE DAEMON'S OWN LISTING ──────────────────────────────
+    let listed = setup
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list on the test's own connection");
+    let entries: Vec<Value> = listed.as_array().cloned().unwrap_or_default();
+    let entry = entries
+        .iter()
+        .find(|entry| entry[PANE_SUMMARY_ID_KEY].as_u64() == Some(fresh.0))
+        .unwrap_or_else(|| panic!("the replacement is on the daemon's list: {entries:?}"));
+    assert_eq!(
+        entry["name"].as_str(),
+        Some("inner-session"),
+        "⛔⛔⛔⛔ REGISTER ITEM 478, over the wire: the SEAT must follow the replacement. A name is \
+         how everything else addresses this pane — a person, a sibling agent, the run's own \
+         records — so a rollover that dropped it would leave a live session nothing could reach by \
+         the only name it was ever known by. Entry: {entry}",
+    );
+    assert_eq!(
+        (entry["cols"].as_u64(), entry["rows"].as_u64()),
+        (Some(33), Some(7)),
+        "⚠⚠⚠⚠ the replacement must be the same SIZE. A spawn-shaped composition answers the \
+         daemon's default (80x24) here, and a program re-wrapped at a width nobody chose is the \
+         defect stage 1b measured from the reading side. Entry: {entry}",
+    );
+
+    // ── AND THE OUTGOING PANE IS GONE, WHICH IS WHAT MAKES IT A REPLACEMENT ────────────────────
+    assert!(
+        !remote.pane_ids().contains(&old),
+        "⚠⚠⚠ the pane that was replaced must be reaped: two live panes running one session is not \
+         a rollover, it is a fork — and the run would go on typing into whichever it still holds",
+    );
+
+    // ── THE REFUSAL, WHICH IS A REAL CASE AND NOT A DEFENSIVE ONE ─────────────────────────────
+    let ghost = lifecycle.respawn(old);
+    assert!(
+        matches!(ghost, Err(PaneError::Spawn(_))),
+        "⚠⚠⚠⚠ replacing a pane nobody holds must REFUSE with the reason. A fabricated id here \
+         would hand a driver a pane that does not exist, and its next act is to type into it. \
+         Got {ghost:?}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
