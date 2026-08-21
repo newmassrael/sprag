@@ -32,8 +32,9 @@ use sprag_host::wire::{
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_plugin::{
-    Attended, Delivered, Delivery, KeyStroke, PaneAccess, PaneError, Reached, Readiness, ReadyWhen,
-    RunContext, Written, deliver,
+    Attended, Delivered, Delivery, Driver, Guardrails, KeyStroke, OrchestrationSpec, Orchestrator,
+    OutcomeState, PaneAccess, PaneError, Reached, Readiness, ReadyWhen, RunContext, Written,
+    deliver,
 };
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
@@ -7554,5 +7555,135 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
             .is_some_and(|screen| screen.contains("again"))),
         "⚠⚠ and it really reached that pane: the pty echoed it back. Read {:?}",
         remote.pane_collapsed(renamed),
+    );
+}
+
+/// ⛔⛔⛔⛔ **A REAL RUN, DRIVEN BY THE REAL `Driver` FROM ANOTHER PROCESS, AND IT OUTLIVES THE
+/// DAEMON IT DRIVES** — register item 544, stage 1's own claim.
+///
+/// # ⚠⚠⚠⚠⚠ What this is a gate for, in the item's own words
+///
+/// *"Two things with different natural lifetimes share one process."* The multiplexer owns
+/// pseudoterminals for weeks; a run supervises for hours. Because the driver was compiled into the
+/// daemon, *"change how a loop reflects"* meant *"restart the thing holding your PTYs"*. Nothing
+/// about that is settled by a client that answers the right JSON — it is settled by **the shipped
+/// `Driver`, stepping a shipped plugin, over a `PaneAccess` whose answers come off a socket.**
+///
+/// # ⚠⚠⚠⚠⚠ AND «THE RUN CONTINUES» IS THE WRONG BAR — the item's «done when» was wrong
+///
+/// A run CANNOT cross a restart and should not. `Readiness` latches facts about ONE pane (a marker
+/// count taken on a screen that no longer exists, a hands watermark, a `seen` flag), and the
+/// daemon's own restore marks every inherited run `INTERRUPTED` *because the process that would
+/// have read it died*. What must survive is **THE WORK**: run one ends, the DRIVER re-adopts by
+/// name, and run two takes the pane — which is the same ruling the item already makes about a
+/// changed document (*"a changed document is a NEW run, deliberately"*).
+///
+/// So this gate asserts the three things that are actually the claim:
+///
+/// * **Run one converges** against a real pane over the wire — the shipped Driver, the shipped
+///   `Orchestrator`, no in-process access anywhere.
+/// * **The daemon is replaced, and the driver survives it** — the process running the Driver is
+///   still there, and its surface says the world changed rather than typing into a stranger.
+/// * **Run two converges too**, on the pane re-adopted BY NAME. The driver outlived its host.
+#[test]
+fn a_real_run_driven_from_another_process_outlives_the_daemon_it_drives() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let first = spawn_host_at(&sock, &["sh"]);
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = *remote
+        .pane_ids()
+        .first()
+        .expect("the daemon's boot pane is there to drive");
+    setup
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(RENAME_PANE_ACTION),
+                "args": { "pane": pane.0, "name": DRIVEN },
+            }),
+        )
+        .expect("name the pane this run drives");
+
+    // The stimulus is arithmetic the SHELL performs, so the sentinel cannot appear from an echo —
+    // `deliver`'s own discriminator, reused because it is the only one a screen cannot fake.
+    let spec = || OrchestrationSpec {
+        stimulus: "echo run-$((6*7))".to_owned(),
+        sentinel: Some("run-42".to_owned()),
+        ready_when: None,
+        ready_within: None,
+        may_answer: None,
+        attended: Attended::NoOne,
+        turn: None,
+    };
+    let rails = Guardrails {
+        max_iterations: 4,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(20)),
+    };
+
+    // ── RUN ONE: the shipped Driver, over the socket ───────────────────────────────────────────
+    let mut first_run = Orchestrator::new(pane, spec());
+    let outcome = Driver::new(rails).run(&mut first_run, &remote, &RunContext::uncancellable());
+    assert_eq!(
+        outcome.state,
+        OutcomeState::Converged,
+        "⛔⛔⛔⛔ REGISTER ITEM 544: a real run driven from ANOTHER PROCESS did not converge \
+         against a real pane. This is the claim the whole item is for — the shipped `Driver` \
+         stepping a shipped plugin over a `PaneAccess` whose answers come off a socket — and \
+         nothing about a client that returns the right JSON settles it. Got {outcome:?}",
+    );
+
+    // ── THE DAEMON IS REPLACED UNDER THE DRIVER ────────────────────────────────────────────────
+    drop(first);
+    // ⚠⚠⚠⚠⚠ THE REPLACEMENT'S BOOT PANE RUNS `cat`, NOT `sh`, AND THAT IS THE FIXTURE'S WHOLE
+    // FORCE. A driver that carried its old pane NUMBER across would land on it — `cat` echoes the
+    // stimulus and performs no arithmetic, so the sentinel never appears and run two cannot
+    // converge. The pane the run means is a SHELL spawned after it, under a DIFFERENT id, carrying
+    // the NAME. ⚠ The first version of this gate gave both daemons a `sh` boot pane, so the old id
+    // and the re-adopted one were the same number and pointed at equivalent programs: the
+    // re-adoption was decorative and the mutation that removed it passed.
+    let _second = spawn_host_at(&sock, &["cat"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || HostConn::connect(
+            &sock,
+            Duration::from_millis(200)
+        )
+        .is_ok()),
+        "the replacement daemon never bound {sock:?}",
+    );
+    let mut fresh = setup_at(&sock);
+    let born = spawn_pane(&mut fresh, json!({ "cmd": ["sh"], "name": DRIVEN }));
+    assert_ne!(
+        born, pane,
+        "⚠⚠⚠⚠ THE FIXTURE'S PREMISE: the pane carrying the name on the NEW daemon must have a \
+         different id from the one this run started with, or re-adopting by name is the same \
+         answer as carrying the number and this gate proves nothing about either",
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let _ = remote.pane_collapsed(pane);
+            remote.world_changed()
+        }),
+        "⛔⛔⛔⛔ REGISTER ITEM 544: the driver did not notice its daemon being replaced, so its \
+         next run would type into whatever the new daemon minted under the same id",
+    );
+
+    // ── RUN TWO: re-adopted BY NAME, on the daemon that is there now ───────────────────────────
+    let readopted = remote
+        .pane_named(DRIVEN)
+        .expect("the replacement world carries the pane this driver knows, by name");
+    remote.readopt();
+    let mut second_run = Orchestrator::new(readopted, spec());
+    let again = Driver::new(rails).run(&mut second_run, &remote, &RunContext::uncancellable());
+    assert_eq!(
+        again.state,
+        OutcomeState::Converged,
+        "⛔⛔⛔⛔ REGISTER ITEM 544, AND THE WHOLE POINT OF UNFUSING: the DRIVER outlived the daemon \
+         it was driving. Run one converged, the host was replaced underneath it, and run two \
+         converged on the pane this process re-adopted by NAME — without the driver's own process \
+         ever restarting. That is what «the multiplexer and the supervisor have different \
+         lifetimes» means when it is true rather than asserted. Got {again:?}",
     );
 }
