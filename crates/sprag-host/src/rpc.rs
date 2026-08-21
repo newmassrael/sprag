@@ -4934,6 +4934,12 @@ mod tests {
                 // ⚠⚠ This gate is what found it: the slot was first written into the SCOPED match,
                 // where it compiled and passed its own end-to-end gate.
                 "agent_supervision",
+                // ⚠⚠⚠ R544 stage 1d: WHICH RUNNING DAEMON IS ANSWERING, and it belongs here for a
+                // reason of its own — *am I still talking to the daemon I adopted* is exactly the
+                // question a client asks when the session it was using has gone. A dead scope
+                // refusing it would leave a reconnecting driver unable to tell a restored world
+                // from a stranger's, which is the whole thing the address prevents.
+                "instance",
                 // R352 — HOW TO CALL THE VERBS. Registry-subject for the strongest reason on this
                 // list: its subject is the WIRE, so no session can be wrong about it, and a client
                 // whose session has gone is exactly the one that may need to look a verb up.

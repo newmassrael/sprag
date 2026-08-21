@@ -61,6 +61,7 @@
 
 use std::io;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use sprag_plugin::{
@@ -73,14 +74,14 @@ use sprag_vt::LinesSince;
 
 use crate::external::lock;
 use crate::wire::{
-    AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, FULL_LINES_SLOT, FULL_TEXT_SLOT,
-    INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, LINES_KEY, LINES_LOST_KEY,
-    LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT,
-    PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
-    RECENT_INPUT_SLOT, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
-    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD,
-    agent_slot_for, lines_since_at, mux_action_path, pane_input_path, refusal, unknown_action,
-    unknown_slot,
+    AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, DAEMON_INSTANCE_SLOT,
+    FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
+    KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
+    PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
+    PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RECENT_INPUT_SLOT, RESPAWN_ACTION,
+    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY,
+    SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, lines_since_at,
+    mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -106,7 +107,23 @@ const ARGS_PARAM: &str = "args";
 /// here makes it safe: the pane a run is driving is guarded by whose run it is, one surface up.
 pub struct RemotePaneAccess {
     conn: Mutex<HostConn>,
+    /// WHICH DAEMON this surface adopted, learned on its first successful call and never changed
+    /// afterwards — see [`DAEMON_INSTANCE_SLOT`] and [`world_changed`](Self::world_changed).
+    ///
+    /// ⚠ `None` on a daemon too old to publish the address. A surface that cannot learn the
+    /// identity cannot notice it changing, so it never latches: the honest degradation, and the
+    /// behaviour every build before stage 1d had.
+    adopted: Mutex<Option<String>>,
+    /// LATCHED once a redial reached a DIFFERENT daemon — see [`world_changed`](Self::world_changed).
+    changed: AtomicBool,
 }
+
+/// How long a redial waits for the socket to accept.
+///
+/// ⚠ Short on purpose. A daemon that is coming back binds within milliseconds of starting; a longer
+/// wait would park a driver's step on a host that is not coming back at all, which is the shape a
+/// run's own ceilings exist to prevent.
+const REDIAL_WITHIN: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl RemotePaneAccess {
     /// Drive panes through `conn`.
@@ -120,6 +137,107 @@ impl RemotePaneAccess {
     pub const fn over(conn: HostConn) -> Self {
         Self {
             conn: Mutex::new(conn),
+            adopted: Mutex::new(None),
+            changed: AtomicBool::new(false),
+        }
+    }
+
+    /// **WHETHER THE DAEMON UNDER THIS SURFACE HAS BEEN REPLACED** — register item 544, stage 1d.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this latches instead of being handled quietly
+    ///
+    /// A socket is an ADDRESS, not an identity. When the daemon behind it dies and another takes the
+    /// same path, a client that merely redialled would go on using the pane ids it holds — and pane
+    /// ids are minted from a counter that starts at ZERO, so a fresh daemon's own boot pane **is
+    /// pane 0**. A driver holding pane 0 would type its stimulus into a stranger's shell and be told
+    /// it succeeded every time.
+    ///
+    /// So a redial that reaches a different [`DAEMON_INSTANCE_SLOT`] latches this, and from then on
+    /// every read answers [`None`] — *I cannot see that pane*, which is the reading every consumer
+    /// of this trait already stops on. ⚠ The run is not lost: the world may well be the same one,
+    /// restored under the same ids. But that is a judgement about EVIDENCE (has my pane come back,
+    /// under the name I gave it?) and it belongs to the driver, which is why it must be told rather
+    /// than carried past. See [`readopt`](Self::readopt).
+    #[must_use]
+    pub fn world_changed(&self) -> bool {
+        self.changed.load(Ordering::Acquire)
+    }
+
+    /// The daemon instance this surface adopted, or [`None`] where it never learned one.
+    #[must_use]
+    pub fn adopted_instance(&self) -> Option<String> {
+        lock(&self.adopted).clone()
+    }
+
+    /// **ADOPT THE DAEMON THAT IS THERE NOW AND DRIVE AGAIN** — what a driver calls once it has
+    /// re-established, on its own evidence, that the panes it holds are the ones it means.
+    ///
+    /// ⚠⚠ It takes no argument and makes no check, deliberately: this type cannot know what the
+    /// caller was driving or how it would recognise it again. A run identifies its pane by the NAME
+    /// it gave it — the one address that survives a restore — and calling this is the driver saying
+    /// *I have looked, and it is mine*. A surface that re-adopted itself would be inventing that
+    /// judgement.
+    pub fn readopt(&self) {
+        *lock(&self.adopted) = None;
+        self.changed.store(false, Ordering::Release);
+    }
+
+    /// Redial the socket this connection names, answering whether the SAME daemon is there.
+    ///
+    /// ⚠⚠⚠ A connection built from a bare stream knows no path, so it cannot redial at all — and
+    /// that answers `false` rather than pretending. `HostConn::socket` is what separates the two.
+    fn recover(&self) -> bool {
+        let mut conn = lock(&self.conn);
+        let Some(path) = conn.socket().map(std::path::Path::to_path_buf) else {
+            return false;
+        };
+        let Ok(fresh) = HostConn::connect(&path, REDIAL_WITHIN) else {
+            return false;
+        };
+        *conn = fresh;
+        // ⚠⚠ THE IDENTITY IS COMPARED AGAINST WHAT WAS ADOPTED, and an unknown on EITHER side is
+        // not a match: a daemon that will not say which it is cannot be shown to be the same one.
+        let now = Self::instance_of(&mut conn);
+        let adopted = lock(&self.adopted).clone();
+        match (adopted, now) {
+            (Some(before), Some(after)) if before == after => true,
+            (None, _) => {
+                // Nothing was adopted yet, so nothing can be said to have changed. The next
+                // successful call adopts whatever is there.
+                true
+            }
+            _ => {
+                self.changed.store(true, Ordering::Release);
+                false
+            }
+        }
+    }
+
+    /// Read [`DAEMON_INSTANCE_SLOT`] on an already-held connection.
+    fn instance_of(conn: &mut HostConn) -> Option<String> {
+        conn.try_call(
+            QUERY_METHOD,
+            json!({ PATH_PARAM: mux_action_path(DAEMON_INSTANCE_SLOT) }),
+        )
+        .ok()?
+        .as_str()
+        .map(str::to_owned)
+    }
+
+    /// Learn which daemon this is, the first time anything succeeds.
+    ///
+    /// ⚠ ONE extra round trip for the life of the surface, not one per call: the slot is read only
+    /// while nothing has been adopted. A daemon too old to answer leaves it unadopted, which is what
+    /// makes [`world_changed`](Self::world_changed) stay false there rather than fire on every
+    /// redial.
+    fn adopt(&self) {
+        if lock(&self.adopted).is_some() {
+            return;
+        }
+        let learned = Self::instance_of(&mut lock(&self.conn));
+        let mut adopted = lock(&self.adopted);
+        if adopted.is_none() {
+            *adopted = learned;
         }
     }
 
@@ -133,13 +251,26 @@ impl RemotePaneAccess {
     /// pane stops rather than types. ⚠ They are not the same fact and a supervisor wants them
     /// apart — see the register's residue for this stage.
     fn read(&self, path: &str) -> Option<Value> {
+        // ⚠⚠⚠⚠⚠ A SURFACE WHOSE DAEMON WAS REPLACED SEES NOTHING until its caller re-adopts. This
+        // is the FIRST statement rather than a late check because every answer below would
+        // otherwise be about a world the caller never chose — see `world_changed`.
+        if self.world_changed() {
+            return None;
+        }
+        // ⚠⚠⚠⚠⚠ ADOPTED BEFORE ANYTHING IS DRIVEN, AND FROM BOTH DOORS. The first draft adopted
+        // only on a successful READ, and the gate caught what that means: a driver whose first act
+        // is an INJECTION never learns which daemon it is talking to, so it can never notice one
+        // being replaced — the whole property, silently absent for exactly the caller that types
+        // first. You adopt, then you drive; the order is the claim.
+        self.adopt();
         // ⚠⚠⚠⚠⚠ THE ANSWER IS TAKEN AS A VALUE AND THE LOCK IS GONE BEFORE IT IS EXAMINED. A
         // `match lock(..).try_call(..)` holds the guard for the whole match — the scrutinee's
         // temporaries live that long — so any arm that came to ask this surface a second question
         // would deadlock, and only on the path that has something to say. This workspace has
         // measured that exact shape twice (a format argument that re-locked, evaluated only when
         // the assertion failed: green for as long as it passed, a 93-minute hang the moment it
-        // did not). Structure, not vigilance.
+        // did not). Structure, not vigilance. ⚠ The recovery arm below is exactly such a second
+        // question, which is why this shape is load-bearing rather than stylistic.
         let outcome = lock(&self.conn).try_call(QUERY_METHOD, json!({ PATH_PARAM: path }));
         match outcome {
             Ok(value) if value.is_null() => None,
@@ -154,7 +285,19 @@ impl RemotePaneAccess {
             }
             Err(CallError::Transport(error)) => {
                 tracing::debug!(target: "sprag_host", %error, %path, "a remote read did not complete");
-                None
+                // ⚠⚠⚠ A READ MAY BE ASKED AGAIN — it changes nothing, so a transient socket failure
+                // costs a round trip rather than a step. It is asked again ONLY where the daemon
+                // that answered is the one this surface adopted; a different daemon latches instead
+                // and this returns the `None` every consumer stops on.
+                if !self.recover() {
+                    return None;
+                }
+                let retried = lock(&self.conn).try_call(QUERY_METHOD, json!({ PATH_PARAM: path }));
+                match retried {
+                    Ok(value) if value.is_null() => None,
+                    Ok(value) => Some(value),
+                    Err(_) => None,
+                }
             }
         }
     }
@@ -396,7 +539,29 @@ impl PaneAccess for RemotePaneAccess {
         // that came to ask this surface a second question would deadlock under a guard still held
         // by the scrutinee, and only ever on the path that has something to report. A draft of
         // this one did exactly that — it read the pane list to tell a gone pane from a skew.
+        // ⚠⚠⚠⚠⚠ A SURFACE WHOSE DAEMON WAS REPLACED WRITES NOTHING. The read side answers `None`
+        // and a driver stops; this one has to REFUSE, because "I cannot see it" and "I typed into
+        // something" are not interchangeable when the something might be a stranger's shell.
+        if self.world_changed() {
+            return Err(PaneError::Write(format!(
+                "the daemon behind this connection was replaced, so {path} names a pane this \
+                 driver never adopted"
+            )));
+        }
+        // ⚠⚠ ADOPTED HERE TOO — see `read`. A run whose first act is to type is the caller this
+        // property exists for, and it is the one the read-only adoption forgot.
+        self.adopt();
         let outcome = lock(&self.conn).try_call(INVOKE_METHOD, args);
+        // ⚠⚠⚠⚠⚠ A TRANSPORT FAILURE ON A WRITE IS NEVER RETRIED, and that is the difference between
+        // this door and the read above. A read changes nothing, so asking again costs a round trip.
+        // A write that failed in transit is a write whose FATE IS UNKNOWN — the daemon may have
+        // taken every byte and died before answering — and typing a run's stimulus a second time is
+        // how a peer is asked its question twice. So this recovers the CONNECTION (the next step
+        // has somewhere to go) and reports the failure to the caller, which is whose judgement the
+        // second attempt is.
+        if matches!(outcome, Err(CallError::Transport(_))) {
+            let _ = self.recover();
+        }
         let answer = outcome.map_err(|error| Self::injection_failed(id, &path, error))?;
         answer[INJECTED_BYTES_KEY]
             .as_u64()

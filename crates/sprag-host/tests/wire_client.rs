@@ -7334,3 +7334,173 @@ fn a_remote_driver_follows_a_panes_output_from_a_cursor_and_does_not_re_read_it(
 
     let _ = std::fs::remove_file(&sock);
 }
+
+/// Spawn a `sprag-term` on a socket path the CALLER names — what a restart needs, because the whole
+/// point is that the second daemon takes the FIRST one's address.
+///
+/// ⚠⚠⚠⚠⚠ IT RETURNS THE GUARD, NOT A BARE `Child`, AND THAT IS NOT TIDINESS. [`HostChild`]'s own
+/// doc says why in words: *"a panicking assertion never leaks a `sprag-term`"*. The first draft of
+/// this helper returned the `Child`; the gate's first run panicked at its second assertion, both
+/// daemons outlived the test binary, and the REMOTE build session they were holding open looked
+/// like a seventeen-minute hang. The test had already finished in 0.04 s.
+///
+/// ⚠ It does not unlink the path first: the caller owns the ordering, and a restart gate needs the
+/// old socket gone only after the old daemon is dead.
+fn spawn_host_at(sock: &Path, program_and_args: &[&str]) -> HostChild {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sprag-term"));
+    command
+        .arg("--size")
+        .arg("40x6")
+        .arg("--")
+        .args(program_and_args)
+        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .env("SPRAG_HOST_RPC", "1")
+        .stdin(Stdio::null());
+    let child = command
+        .spawn()
+        .expect("spawn a sprag-term at a named socket");
+    HostChild(child, sock.to_path_buf())
+}
+
+/// ⛔⛔⛔⛔ **A DRIVER DOES NOT GO ON TYPING INTO A DAEMON THAT IS NOT THE ONE IT ADOPTED** —
+/// register item 544, stage 1d, and the property every later stage stands on.
+///
+/// # ⚠⚠⚠⚠⚠ A socket is an ADDRESS, not an identity
+///
+/// When a daemon dies and another takes the same path, a client that merely redialled would carry
+/// its pane ids across — and **pane ids are minted from a counter that starts at zero**, so a fresh
+/// daemon's own boot pane IS pane 0. A driver holding pane 0 would type its run's stimulus into a
+/// stranger's shell and be told it succeeded every time. Nothing on this wire could tell the two
+/// apart before stage 1d: `build` names the BINARY, and two daemons started from one binary share
+/// it.
+///
+/// # ⚠⚠⚠ What the gate holds, and why the third arm is the one that matters
+///
+/// * The surface really was driving before the restart — otherwise the refusal after it proves
+///   nothing.
+/// * After the restart it REFUSES: reads answer `None` (*I cannot see that pane* — what every
+///   consumer of this trait already stops on) and the write door refuses in words.
+/// * ⚠⚠⚠⚠ And the run is NOT lost: `readopt` — the driver saying *I have looked, and it is mine* —
+///   puts it back to work against the daemon that is there now. A surface that could only latch
+///   would have traded a silent corruption for a permanent stop.
+#[test]
+fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_to() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let first = spawn_host_at(&sock, &["cat"]);
+    let (remote, _setup) = remote_driver(&sock);
+
+    // ⚠⚠⚠⚠⚠ THE BOOT PANE, and it is the fixture's whole force. Both daemons mint their ids from a
+    // counter that starts at zero, so this id exists on the REPLACEMENT too — running the same
+    // `cat`, owned by nobody this driver ever met. A gate that drove a pane it SPAWNED would be
+    // refused by the new daemon for the wrong reason (it never minted that id), and the danger the
+    // latch exists for would be described in prose and demonstrated by nothing.
+    let pane = *remote
+        .pane_ids()
+        .first()
+        .expect("the daemon's boot pane is there to drive");
+
+    // ── IT IS DRIVING, and the surface has adopted a daemon ────────────────────────────────────
+    assert_eq!(
+        remote
+            .inject(pane, &KeyStroke::text("live"))
+            .map(Written::bytes),
+        Ok(4),
+        "⚠⚠ THE CONTROL: the driver must really be driving before the restart, or the refusal \
+         below is about a surface that never worked",
+    );
+    let adopted = remote.adopted_instance();
+    assert!(
+        adopted.is_some(),
+        "⛔⛔⛔⛔ REGISTER ITEM 544 stage 1d: the surface learned no daemon identity, so it has \
+         nothing to compare a redial against and cannot tell a restored world from a stranger's",
+    );
+    assert!(
+        !remote.world_changed(),
+        "nothing has been replaced yet, so a latch here would refuse a daemon that never moved",
+    );
+
+    // ── THE DAEMON IS REPLACED AT THE SAME ADDRESS ─────────────────────────────────────────────
+    // Dropping the guard kills it AND unlinks the socket, which is the ordering a replacement
+    // needs: the address must be free before the next daemon binds it.
+    drop(first);
+    let _second = spawn_host_at(&sock, &["cat"]);
+    // The new daemon has to be accepting before the driver's next read, or the read fails for
+    // "nobody is listening" rather than for the reason this gate is about.
+    let reachable = wait_until(Duration::from_secs(10), || {
+        HostConn::connect(&sock, Duration::from_millis(200)).is_ok()
+    });
+    assert!(reachable, "the replacement daemon never bound {sock:?}");
+
+    // ── THE DRIVER NOTICES, AND STOPS ──────────────────────────────────────────────────────────
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let _ = remote.pane_collapsed(pane);
+            remote.world_changed()
+        }),
+        "⛔⛔⛔⛔ REGISTER ITEM 544 stage 1d: the driver's surface reconnected to a DIFFERENT daemon \
+         and said nothing. Its pane ids now name whatever the new daemon minted — a fresh daemon's \
+         boot pane is pane 0 — so the next injection is a run's stimulus typed into a stranger's \
+         shell, reported as a success.",
+    );
+    assert_eq!(
+        remote.pane_collapsed(pane),
+        None,
+        "⚠⚠⚠ a surface whose world changed must see NOTHING: `None` is *I cannot see that pane*, \
+         which is the answer every consumer of this trait already stops on",
+    );
+    // ⚠⚠⚠⚠⚠ AND THE NEW DAEMON REALLY DOES HOLD THIS ID — asserted, so the refusal below is
+    // measured against a write that WOULD have landed. Without the latch this injection succeeds:
+    // the run's stimulus goes into a `cat` nobody here started, and the door reports how many bytes
+    // it wrote.
+    let stranger = HostConn::connect(&sock, Duration::from_secs(5))
+        .ok()
+        .and_then(|mut fresh| {
+            fresh
+                .call(
+                    "scene/query",
+                    json!({ "path": mux_action_path(PANES_SLOT) }),
+                )
+                .ok()
+        })
+        .map(|panes| {
+            panes
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry[PANE_SUMMARY_ID_KEY].as_u64())
+                .any(|id| id == pane.0)
+        });
+    assert_eq!(
+        stranger,
+        Some(true),
+        "⚠⚠⚠⚠ THE FIXTURE'S PREMISE: the replacement daemon must ALSO hold this pane id, or the \
+         refusal below is about a write that would have failed anyway and the gate demonstrates \
+         nothing. Both daemons mint from a counter that starts at zero, so the boot pane is the id \
+         they share",
+    );
+    let refused = remote.inject(pane, &KeyStroke::text("no"));
+    assert!(
+        matches!(refused, Err(PaneError::Write(_))),
+        "⛔⛔⛔⛔ REGISTER ITEM 544 stage 1d: the write door must REFUSE. *I cannot see it* and *I \
+         typed into something* are not interchangeable when the something may be a stranger's \
+         shell — and the assertion above has just established that this id NAMES one. Got \
+         {refused:?}",
+    );
+
+    // ── AND THE DRIVER CAN TAKE THE NEW WORLD ON PURPOSE ───────────────────────────────────────
+    remote.readopt();
+    assert!(
+        !remote.world_changed(),
+        "⚠⚠⚠⚠ a latch that could not be cleared would trade a silent corruption for a permanent \
+         stop — the driver has looked and said the world is its own",
+    );
+    assert_eq!(
+        remote
+            .inject(pane, &KeyStroke::text("again"))
+            .map(Written::bytes),
+        Ok(5),
+        "⚠⚠⚠ after re-adopting, the surface drives the daemon that is there now — the run \
+         continues rather than ending because its host was restarted",
+    );
+}

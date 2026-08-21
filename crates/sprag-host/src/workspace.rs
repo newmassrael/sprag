@@ -325,6 +325,14 @@ impl RegistryView<'_> {
             // compiled and passed its own gate. `every_declared_read_is_measured_for_whether_it_
             // needs_the_readers_session` is what said otherwise, by measuring rather than reading.
             AGENT_SUPERVISION_SLOT => Some(IntrospectValue::Bool(self.agents.is_some())),
+            // ⚠⚠⚠⚠⚠ WHICH RUNNING DAEMON THIS IS — register item 544 stage 1d, and UNSCOPED for the
+            // slot above's reason plus its own: *am I still talking to the daemon I adopted* is
+            // exactly what a client asks when the session it was using has gone. Refusing it on a
+            // dead scope would leave a reconnecting driver unable to tell a restored world from a
+            // stranger's. See `DAEMON_INSTANCE_SLOT`.
+            crate::wire::DAEMON_INSTANCE_SLOT => Some(IntrospectValue::Text(
+                crate::wire::daemon_instance().to_owned(),
+            )),
             // HOW TO CALL THE VERBS THIS SURFACE PUBLISHES. Unscoped for the strongest reason on
             // this door: its subject is the WIRE, so it is the same answer for every session, every
             // client and every request — a fact about the daemon's vocabulary rather than about

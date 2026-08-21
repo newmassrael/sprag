@@ -2781,6 +2781,11 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     // pane is not an agent* are opposite instructions to a supervisor, and one address answering
     // both is how a driver concludes "no agents here" about a host that never looked.
     SchemaField::new(AGENT_SUPERVISION_SLOT, "bool"),
+    // ⚠⚠⚠⚠⚠ WHICH RUNNING DAEMON THIS IS — register item 544, stage 1d. A build says which BINARY
+    // answers and two daemons from one binary share it; this says which PROCESS, which is what a
+    // client that redialled a socket needs in order to know whether its pane ids still mean
+    // anything. See `DAEMON_INSTANCE_SLOT`.
+    SchemaField::new(DAEMON_INSTANCE_SLOT, "string"),
     SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
     // ⚠⚠⚠ R372: `PROJECT_FIELD` NOW HAS ITS EMPTY MEMBER, AND THE NOTE THAT USED TO STAND HERE
     // WAS READING A DEFECT AS A DESIGN. It said this was *"the one parametric family of the eleven
@@ -4412,6 +4417,46 @@ pub const AGENT_MANIFESTS_SLOT: &str = "agent_manifests";
 /// [`AGENT_FIELD`]: a daemon with no detector still has panes, and every one of them would otherwise
 /// have to answer the host's question over again.
 pub const AGENT_SUPERVISION_SLOT: &str = "agent_supervision";
+
+/// The mux control external query slot: **WHICH RUNNING DAEMON THIS IS** — a token minted once at
+/// boot, the same for every request this process serves and different for every other process.
+/// Register item 544, stage 1d.
+///
+/// # ⚠⚠⚠⚠⚠ Why a BUILD is not enough, and what a client gets wrong without this
+///
+/// [`sprag_rpc::BUILD_FIELD`] says which binary is answering. **Two daemons started
+/// from the same binary share it**, so a client that reconnects to a socket cannot tell *the daemon
+/// I was talking to* from *a different daemon that has taken the same address*.
+///
+/// That distinction is not academic for a driver living in another process. Pane ids are minted
+/// from a counter that starts at ZERO, so a freshly booted daemon's own boot pane **is pane 0** — a
+/// driver holding pane 0 that silently redialled would go on typing into a stranger's shell,
+/// reporting success the whole way. The daemon that RESTORED a snapshot brings the same panes back
+/// under the same ids and is safe to carry on with; the one that booted empty is not, and nothing
+/// on this wire could tell them apart.
+///
+/// # What the token is, and what it deliberately is not
+///
+/// The process id and the moment it booted. It is an IDENTITY, not a version and not a clock: a
+/// client may compare it for equality and must read nothing else into it. ⚠ It is not a secret and
+/// not a capability — any client that can reach this socket can already do everything.
+pub const DAEMON_INSTANCE_SLOT: &str = "instance";
+
+/// **WHICH RUNNING DAEMON THIS PROCESS IS** — [`DAEMON_INSTANCE_SLOT`]'s value, minted once.
+///
+/// ⚠ A `OnceLock` per PROCESS, which is exactly what the address means. A daemon that served a
+/// request an hour ago and one serving now answer the same token; a daemon that has been restarted
+/// cannot, because the process id and the boot moment together are not repeatable.
+#[must_use]
+pub fn daemon_instance() -> &'static str {
+    static INSTANCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let booted = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        format!("{}-{booted}", std::process::id())
+    })
+}
 
 /// The arguments of [`AGENT_FIELD`] — one pane `id`, `Open` for [`PROJECT_FIELD`]'s reason (a pane
 /// id is minted by the host and never bounded by a list this schema publishes).
@@ -9799,6 +9844,9 @@ mod tests {
             "hold_run",
             "image_data.",
             "image_data.<id>",
+            // ⚠⚠ ADDED at register item 544 stage 1d: which running daemon is answering, which a
+            // build cannot say. A name added, so the number stands.
+            "instance",
             // ⚠⚠⚠ THE NUMBER STANDS, on this pin's own rule (*"a name ADDED leaves an older
             // client's requests working"*) and on `FULL_LINES_SLOT`'s written form of it. Register
             // item 544, stage 1c: `inject` is the door a RUN DRIVER types through, ADDED beside the
