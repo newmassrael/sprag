@@ -70,9 +70,10 @@ use crate::wire::{
     CLIPBOARD_WRITE_SLOT, CTRL_FIELD, CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT,
     FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINKS_SLOT,
-    MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_GRAMMAR, PANE_SCHEMA,
-    PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_SLOT, REGEX_FIELD,
-    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
+    PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT,
+    RECENT_INPUT_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -749,6 +750,21 @@ impl SpragPaneExternal {
             PANE_ECHO_SLOT => Some(self.pty.echo().map_or(IntrospectValue::Null, |echo| {
                 IntrospectValue::Text(echo.wire_str().to_owned())
             })),
+            // ⚠⚠⚠⚠ WHO OWNS THIS PANE'S TERMINAL — register item 557, through the same
+            // `foreground_leader_of` the in-process reader calls. `Null` covers both honest
+            // absences that function already has: nothing owns the terminal (the child exited, or
+            // the leader was reaped while its group lives on), and no process table at all.
+            //
+            // ⚠⚠ NOT the sampler beside it. That answers about every pane and pays a full `/proc`
+            // pass; a readiness barrier asks THIS about ONE pane every 10 ms, which is two
+            // `stat`-sized reads because a process group's id is its leader's pid.
+            PANE_FOREGROUND_SLOT => Some(
+                self.pty
+                    .pid()
+                    .and_then(sprag_terminal::foreground_leader_of)
+                    .and_then(|leader| serde_json::to_value(leader).ok())
+                    .map_or(IntrospectValue::Null, IntrospectValue::Json),
+            ),
             PANE_END_OF_INPUT_SLOT => Some(
                 self.pty
                     .end_of_input()

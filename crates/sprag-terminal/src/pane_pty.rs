@@ -1268,6 +1268,11 @@ impl PanePty {
             raw_output: Arc::clone(&self.raw_output),
             clipboard_answered: Arc::clone(&self.clipboard_answered),
             eof: Arc::clone(&self.eof),
+            pid: self.pid,
+            // ⚠⚠⚠ THE SAME `Arc` THE OWNER REAPS INTO, never a copy — see `PanePtyHandle::pid`.
+            // The reap is what makes the pid safe to inspect, so a handle holding a snapshot of it
+            // would hand out a stale pid for ever after the child was waited for.
+            exit: Arc::clone(&self.exit),
         }
     }
 
@@ -1384,6 +1389,14 @@ pub struct PanePtyHandle {
     /// byte the child produced, and a handle holding a duplicate would answer *"still running"*
     /// for ever after. There is one fact and one place it lives.
     eof: Arc<AtomicBool>,
+    /// The child's pid, copied at birth — see [`PanePtyHandle::pid`]. Register item 557.
+    ///
+    /// ⚠ A COPY here where [`eof`](Self::eof) beside it had to be a SHARE, and the difference is
+    /// the fact rather than the style: a pane's pid never changes, so there is nothing to observe.
+    /// What makes it safe to USE changes, and that is the `Arc` below.
+    pid: Option<u32>,
+    /// Shared with the owning [`PanePty`] — the reap gate [`PanePtyHandle::pid`] stands on.
+    exit: SharedExit,
 }
 
 impl PanePtyHandle {
@@ -1399,6 +1412,25 @@ impl PanePtyHandle {
     #[must_use]
     pub fn is_eof(&self) -> bool {
         self.eof.load(Ordering::Acquire)
+    }
+
+    /// The child's pid, or `None` once it has been reaped — [`PanePty::pid`] asked through the
+    /// handle, **with the same reap gate and for the same safety reason.** Register item 557.
+    ///
+    /// ⚠⚠⚠ THE GATE IS NOT TIDINESS. Every consumer of this pid inspects `/proc` with it, and a pid
+    /// that has been waited for is free to be recycled onto an unrelated process — at which point
+    /// the walk reads a stranger's job. The reader thread is the only reaper and publishes the exit
+    /// status as it reaps, so *"the status is known"* is exactly *"the pid may now be stale"*.
+    ///
+    /// ⚠⚠ It is on the HANDLE because *who owns this pane's terminal* became a remote read
+    /// (`sprag_host::wire::PANE_FOREGROUND_SLOT`), and the host serves its addresses from here.
+    /// [`is_eof`](Self::is_eof) took the same route one item earlier, for the same reason.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        if lock(&self.exit).is_some() {
+            return None;
+        }
+        self.pid
     }
 
     /// Read the current screen AND the live colour [`Palette`] together under one emulator lock —

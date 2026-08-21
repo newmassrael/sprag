@@ -7106,3 +7106,85 @@ fn a_remote_driver_reads_who_echoes_and_whether_ctrl_d_ends_the_input() {
 
     let _ = std::fs::remove_file(&sock);
 }
+
+/// ⛔⛔⛔⛔ **A REMOTE BARRIER KNOWS WHO HAS THE PANE, AND SAYS SO WHEN IT GIVES UP** — register
+/// item 557's `foreground_job` surface, driven through its two production consumers at once.
+///
+/// # ⚠⚠⚠⚠⚠ The two things this one address decides
+///
+/// * **THE PREDICATE.** `ReadyWhen::Runs(name)` asks *is the thing I launched the thing that owns
+///   my pane* — the one readiness kind that does not depend on what a program chose to print. A
+///   driver without this address cannot use it at all: it is false for every pane, for ever.
+/// * **THE DIAGNOSIS.** When a barrier gives up, `PaneError::NeverReady` carries what the pane was
+///   doing INSTEAD. With no surface that is `PaneDoing::Unknown` — *this host has no view of the
+///   process table at all* — which is a sentence about the HOST offered for a failure about the
+///   PANE. The person reading it goes looking for a broken platform.
+///
+/// ⚠⚠ The two arms are asked of ONE pane in one breath, so a slot that answered a fixed leader
+/// would clear the barrier AND name the same thing in the refusal, and only the pair separates
+/// them: the barrier waits for `sleep` while `sh` holds the terminal, then the refusal must NAME
+/// `sh`.
+#[test]
+fn a_remote_barrier_asks_who_holds_the_pane_and_names_it_when_it_gives_up() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sh"] }));
+
+    let jobs = remote.foreground_job().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a remote driver has no way to ask who owns a pane's \
+             terminal. `ReadyWhen::Runs` is then false for every pane for ever, and every barrier \
+             that gives up blames the platform."
+        )
+    });
+
+    // ── THE PREDICATE: the shell really is what holds this pane ────────────────────────────────
+    assert!(
+        wait_until(Duration::from_secs(10), || jobs
+            .pane_foreground_leader(pane)
+            .is_some_and(|leader| leader.name.contains("sh"))),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: the pane's foreground leader must reach a remote driver. This \
+         is the fact `ReadyWhen::Runs` decides on, and it is the only readiness kind that does not \
+         depend on what the program chose to print. Got {:?}",
+        jobs.pane_foreground_leader(pane),
+    );
+
+    let run = RunContext::uncancellable();
+    let mut runs = Readiness::new(
+        Some(ReadyWhen::Runs("sh".to_owned())),
+        Some(Duration::from_secs(5)),
+        None,
+        Attended::NoOne,
+    );
+    assert_eq!(
+        runs.reached(&remote, pane, &run),
+        Ok(Reached::Yes),
+        "⚠⚠⚠⚠ the barrier the address exists for must actually CLEAR over the wire — the read \
+         above proves the JSON and this proves the consumer",
+    );
+
+    // ── THE DIAGNOSIS: a barrier that gives up must name what it saw instead ───────────────────
+    // Waiting for a program nobody launched, so the refusal is guaranteed — and the pane is held by
+    // a shell the whole time, which is the fact the refusal has to carry.
+    let mut never = Readiness::new(
+        Some(ReadyWhen::Runs("no-such-program".to_owned())),
+        Some(Duration::from_millis(800)),
+        None,
+        Attended::NoOne,
+    );
+    let refused = never.reached(&remote, pane, &run);
+    let Err(PaneError::NeverReady { instead, .. }) = refused else {
+        panic!("the barrier for a program nobody launched must refuse: {refused:?}");
+    };
+    let named = instead.leader().map(|leader| leader.to_string());
+    assert!(
+        named.as_deref().is_some_and(|name| name.contains("sh")),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: the refusal must say WHAT THE PANE WAS DOING INSTEAD. Without \
+         this address it reads `Unknown` — *this host has no view of the process table at all* — \
+         which is a sentence about the HOST handed to somebody debugging a failure about the PANE, \
+         and it sends them looking for a broken platform. A gate that cannot say what it saw \
+         cannot be debugged. Got {instead:?}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}

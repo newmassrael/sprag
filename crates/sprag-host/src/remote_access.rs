@@ -20,15 +20,17 @@
 //!
 //! # What a remote surface answers, and what it still does not
 //!
-//! **SUPERVISION, LIFECYCLE, INPUT ECHO and TERMINAL MODES are served** (register item 557): a
-//! driver can ask what the agent in a pane is doing, open/replace/close panes, read what has been
-//! written INTO a pane, and ask the kernel who echoes and whether a `Ctrl-D` ends the input. Each is
-//! a production path of the loop's — five reads in `outer.rs` for the first, its whole session
-//! rollover for the second, `ReadyWhen::Prints` for the third, and `deliver`'s verdict for the
-//! fourth.
+//! **FIVE ARE SERVED** (register item 557), and each one is a production path of the loop's:
 //!
-//! ⚠⚠⚠⚠ **Three remain [`None`]**: `foreground_job`, `output_lines` and `raw_capture` (with `hands`
-//! and `job_control`). Each absence is safe by that surface's OWN documentation — a host with no job
+//! * `supervision` — what the agent in a pane is doing. Five reads in `outer.rs`.
+//! * `lifecycle` — open, REPLACE and close panes. The loop's whole session rollover.
+//! * `input_echo` — what was written INTO a pane. `ReadyWhen::Prints`' refusal.
+//! * `terminal_modes` — who echoes, and whether a `Ctrl-D` ends the input. `deliver`'s verdict.
+//! * `foreground_job` — who owns the pane's terminal. TWO consumers: the predicate
+//!   `ReadyWhen::Runs` decides on, and the diagnosis a barrier that never cleared owes its caller.
+//!
+//! ⚠⚠⚠⚠ **Two remain [`None`]**: `output_lines` and `raw_capture` (with `hands` and
+//! `job_control`). Each absence is safe by that surface's OWN documentation — a host with no job
 //! control must report that it could not stop the work rather than write `0x03` and hope. **They are
 //! `None` because this build cannot ask those questions over the wire yet, not because a remote
 //! driver does not want them** — they are the rest of item 557, and every one of them has a consumer
@@ -58,20 +60,21 @@ use std::sync::Mutex;
 
 use serde_json::{Value, json};
 use sprag_plugin::{
-    AgentObservation, KeyStroke, PaneAccess, PaneError, PaneInputEcho, PaneLifecycle, PaneRow,
-    PaneSupervision, PaneTerminalModes, Written,
+    AgentObservation, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneInputEcho,
+    PaneLifecycle, PaneRow, PaneSupervision, PaneTerminalModes, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT};
-use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
+use sprag_terminal::{JobProcess, PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::external::lock;
 use crate::wire::{
     AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, FULL_LINES_SLOT, FULL_TEXT_SLOT,
     INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, PANE_ECHO_SLOT,
-    PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
-    RECENT_INPUT_SLOT, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
-    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD,
-    agent_slot_for, mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
+    PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT,
+    PEER_GONE_REFUSAL, RECENT_INPUT_SLOT, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
+    SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY,
+    SUPER_FIELD, agent_slot_for, mux_action_path, pane_input_path, refusal, unknown_action,
+    unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -328,6 +331,15 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **WHO OWNS A PANE'S TERMINAL** — register item 557, and the surface `ReadyWhen::Runs` is.
+    ///
+    /// ⚠ Always `Some`; the per-pane `None` carries the absence, which is *nothing owns that
+    /// terminal* or *this host has no process table*. That second one is a real platform fact and
+    /// the reason `PaneDoing` has three arms rather than two.
+    fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
+        Some(self)
+    }
+
     /// **WHAT A PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT** — register item 557.
     ///
     /// ⚠ Always `Some`, and the per-pane `None`s carry the real absence: *this host could not read
@@ -456,6 +468,21 @@ impl PaneInputEcho for RemotePaneAccess {
         self.read_pane(id, RECENT_INPUT_SLOT)?
             .as_str()
             .map(str::to_owned)
+    }
+}
+
+/// **THE LEADER OF THE JOB THAT OWNS A PANE'S TERMINAL, READ OVER THE SOCKET** — register item 557.
+impl PaneForegroundJob for RemotePaneAccess {
+    /// The foreground leader, or [`None`] when nothing owns the terminal (its child exited, or the
+    /// leader was reaped while its group lives on) and when the host has no process table at all.
+    ///
+    /// ⚠⚠ Those two absences are ONE `None` here, and that is the trait's own shape rather than a
+    /// loss this seam introduces — the in-process reader collapses them identically, because
+    /// `foreground_leader_of` does. What a caller CAN tell apart is *no leader* from *no surface*,
+    /// which is why [`foreground_job`](PaneAccess::foreground_job) answering `Some` matters:
+    /// `PaneDoing::Nothing` and `PaneDoing::Unknown` are built from exactly that distinction.
+    fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess> {
+        serde_json::from_value(self.read_pane(id, PANE_FOREGROUND_SLOT)?).ok()
     }
 }
 

@@ -351,6 +351,32 @@ pub const PANE_ECHO_SLOT: &str = "echo";
 /// cause that is the TERMINAL's mode and was knowable before the wait began.
 pub const PANE_END_OF_INPUT_SLOT: &str = "end_of_input";
 
+/// The pane-input external query slot: **THE LEADER OF THE JOB THAT OWNS THIS PANE'S TERMINAL** —
+/// [`JobProcess`](sprag_terminal::JobProcess) as `{pid, name, argv}`, and `null` when nothing owns
+/// it or this host has no view of the process table. Register item 557.
+///
+/// # ⚠⚠⚠⚠⚠ It answers two questions no screen read can
+///
+/// * *Is the thing I launched the thing that has my pane?* — `ReadyWhen::Runs` is exactly this
+///   predicate, and it is the readiness kind that does not depend on what a program chose to print.
+/// * *What was it doing instead?* — the DIAGNOSIS in a `NeverReady` refusal
+///   ([`PaneDoing`](sprag_plugin::PaneDoing)). Without this address a remote driver's barrier can
+///   only say `Unknown`, which is *this host has no view of the process table at all* — a sentence
+///   about the HOST offered for a failure that is about the PANE. A gate that cannot say what it saw
+///   cannot be debugged.
+///
+/// # ⚠⚠ Read at the ask, and why it is not the sampler
+///
+/// `pane_processes.<max_age_ms>` answers *what is every pane running* and pays a full pass over the
+/// process table to do it — the right cost once per client poll, the wrong cost for a PREDICATE a
+/// barrier asks every 10 ms. This reads the LEADER only, in two `stat`-sized reads and no walk: a
+/// process group's id IS its leader's pid.
+///
+/// ⚠ **It therefore does not name every member of the job.** `less` in `cargo build | less` is a
+/// member, not the leader, and nothing here will say so — a caller who needs membership wants the
+/// sampler, which is why both exist.
+pub const PANE_FOREGROUND_SLOT: &str = "foreground";
+
 /// The pane-input external query slot: **THE VISIBLE SCREEN, COLLAPSED** — every row's share of its
 /// logical line joined with nothing between them, which is the read a marker or a sentinel is
 /// matched against.
@@ -730,6 +756,11 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // why they are read when asked and never cached at a pane's birth.
     SchemaField::new(PANE_ECHO_SLOT, "string"),
     SchemaField::new(PANE_END_OF_INPUT_SLOT, "string"),
+    // ⚠⚠⚠⚠ Register item 557 — WHO OWNS THIS PANE'S TERMINAL. The predicate `ReadyWhen::Runs` is,
+    // and the diagnosis a barrier that never cleared owes its caller. Read at the ask (two
+    // `stat`-sized reads, no table walk) rather than through the sampler beside it, because a
+    // barrier asks this every 10 ms and the sampler pays a full pass over the process table.
+    SchemaField::new(PANE_FOREGROUND_SLOT, "object"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
@@ -9695,6 +9726,9 @@ mod tests {
             "find.",
             "find.<needle>",
             "focus",
+            // ⚠⚠ ADDED at register item 557: the leader of the job that owns a pane's terminal —
+            // `ReadyWhen::Runs`' predicate, and the diagnosis a barrier owes when it never clears.
+            "foreground",
             "frames",
             "full_lines",
             "full_text",
