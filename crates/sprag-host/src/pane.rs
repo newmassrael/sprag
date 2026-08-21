@@ -70,9 +70,9 @@ use crate::wire::{
     CLIPBOARD_WRITE_SLOT, CTRL_FIELD, CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT,
     FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINKS_SLOT,
-    MOUSE_ACTION, PANE_EOF_SLOT, PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL,
-    PROMPT_MARKS_SLOT, RECENT_INPUT_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
-    SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_GRAMMAR, PANE_SCHEMA,
+    PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_SLOT, REGEX_FIELD,
+    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -738,6 +738,24 @@ impl SpragPaneExternal {
             // whether a run converges. It is the PANE's memory rather than any writer's, which is
             // what makes it answer about a display client's keystrokes too.
             RECENT_INPUT_SLOT => Some(IntrospectValue::Text(self.pty.echo_trail())),
+            // ⚠⚠⚠⚠⚠ WHAT THIS PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT — register item
+            // 557. Read from the KERNEL at the moment of asking, never cached at the pane's birth:
+            // both are the program's to change and every interactive agent changes them, so a value
+            // taken at birth says the opposite of the truth for exactly the panes a loop drives.
+            //
+            // ⚠⚠ `Null` where the mode cannot be read, which is what the in-process reader answers
+            // too — and it is NOT the other word. A driver told "the program owns the screen" on no
+            // evidence would report a delivery confirmed by an echo it mistook for output.
+            PANE_ECHO_SLOT => Some(self.pty.echo().map_or(IntrospectValue::Null, |echo| {
+                IntrospectValue::Text(echo.wire_str().to_owned())
+            })),
+            PANE_END_OF_INPUT_SLOT => Some(
+                self.pty
+                    .end_of_input()
+                    .map_or(IntrospectValue::Null, |end| {
+                        IntrospectValue::Text(end.wire_str().to_owned())
+                    }),
+            ),
             // The last command sliced from the OSC 133 marks (scrollback + visible). `Null`
             // (present-but-empty) when no command has run under shell integration — the
             // agent then falls back to `full_text`, exactly as a malformed `cells.<off>` is

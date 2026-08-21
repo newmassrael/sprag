@@ -313,6 +313,44 @@ pub const PANE_EOF_SLOT: &str = "eof";
 /// needle) rather than serving the trail.
 pub const RECENT_INPUT_SLOT: &str = "recent_input";
 
+/// The pane-input external query slot: **WHO PUTS THIS PANE'S OWN INPUT BACK ON ITS SCREEN** —
+/// [`PaneEcho`](sprag_terminal::PaneEcho)'s word, and `null` where this host cannot read the mode.
+/// Register item 557.
+///
+/// # ⚠⚠⚠⚠⚠ Why a driver that confirms by LOOKING AT THE SCREEN needs it
+///
+/// With `terminal` the line discipline paints every byte the instant it reaches the device —
+/// **before the program has read one and whether or not it ever will.** A read-back that finds the
+/// text has learned that the TERMINAL is alive and nothing about the peer: measured, a confirmed
+/// delivery into a pane running `sleep 60`, in 20 ms, over a peer that never read a byte. With
+/// `program` the program has taken its terminal off echo, so anything on that screen was printed BY
+/// IT — which is the evidence the read-back actually wanted.
+///
+/// ⚠⚠ Read from the KERNEL at the moment of asking (`termios`' `ECHO`, through the pane's own
+/// device), never assumed and never cached: it is the program's to change at any moment, and every
+/// interactive agent does change it.
+///
+/// ⚠ A `null` is *this host could not read the mode*, which is what an in-process reader gets too.
+/// It is not `program`: a driver told the program owns the screen on no evidence would report a
+/// delivery confirmed by an echo it mistook for output.
+pub const PANE_ECHO_SLOT: &str = "echo";
+
+/// The pane-input external query slot: **WHETHER A `Ctrl-D` WRITTEN HERE ENDS THE PROGRAM'S INPUT**
+/// — [`PaneEndOfInput`](sprag_terminal::PaneEndOfInput)'s word, `null` where the mode cannot be
+/// read. Register item 557.
+///
+/// # ⚠⚠⚠⚠ The measured failure this exists for
+///
+/// End-of-input is not a character: it is a CONDITION the line discipline raises when it sees the
+/// EOF character, **and only in canonical mode**. A program that took its terminal raw — every
+/// full-screen agent, every editor — gets `0x04` as an ordinary byte. So a caller that ends a
+/// question with `Ctrl-D` and then waits for the peer to finish is, on a raw pane, waiting for
+/// something it never asked for. Measured on `stty raw -echo; exec cat`: the run spent its whole
+/// reply timeout, converged, published the peer's ECHO of the prompt as the model's answer, and
+/// explained itself with *"the peer had not finished"* — a sentence about the PEER's speed for a
+/// cause that is the TERMINAL's mode and was knowable before the wait began.
+pub const PANE_END_OF_INPUT_SLOT: &str = "end_of_input";
+
 /// The pane-input external query slot: **THE VISIBLE SCREEN, COLLAPSED** — every row's share of its
 /// logical line joined with nothing between them, which is the read a marker or a sentinel is
 /// matched against.
@@ -686,6 +724,12 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // echoes input, so a driver reading its marker off the screen cannot tell the program saying it
     // from its own keystroke coming back — which is a race, not a barrier.
     SchemaField::new(RECENT_INPUT_SLOT, "string"),
+    // ⚠⚠⚠⚠⚠ Register item 557 — the TERMINAL's own two answers, read from the kernel rather than
+    // guessed. They decide what a screen read-back is worth (`echo`) and whether a `Ctrl-D` will do
+    // anything at all (`end_of_input`); both are the PROGRAM's to change at any moment, which is
+    // why they are read when asked and never cached at a pane's birth.
+    SchemaField::new(PANE_ECHO_SLOT, "string"),
+    SchemaField::new(PANE_END_OF_INPUT_SLOT, "string"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
@@ -9624,6 +9668,11 @@ mod tests {
             "doctor.",
             "doctor.<window_ms>",
             "drop_file",
+            // ⚠⚠ ADDED at register item 557: what the TERMINAL does with what is written into a
+            // pane — who echoes it, and whether a `Ctrl-D` ends the program's input at all. Two
+            // names added, so the number stands.
+            "echo",
+            "end_of_input",
             // ⚠⚠⚠⚠ REGISTER ITEM 544 — a pane's EOF, published so a driver in ANOTHER PROCESS can
             // ask it. It is the first stage of moving the AI loop's driver out of the daemon, and
             // it was the ONE read that had no address at all: `full_text`, `full_lines`,

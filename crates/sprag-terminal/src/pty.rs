@@ -80,6 +80,7 @@ pub enum Joined {
     Refused(io::Error),
 }
 
+sprag_vt::closed_set! {
 /// Who puts a pane's own input back on its screen.
 ///
 /// # ⚠⚠⚠ Why a caller must be able to ask
@@ -107,7 +108,28 @@ pub enum PaneEcho {
     /// Echo is off: what appears on this pane was printed by the program running in it.
     ByTheProgram,
 }
+}
 
+impl PaneEcho {
+    /// This answer's WORD on the wire — the one place the variant → name mapping lives, so no
+    /// surface spells a variant itself ([`SignalKey::wire_str`]'s rule).
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::ByTheTerminal => "terminal",
+            Self::ByTheProgram => "program",
+        }
+    }
+
+    /// The answer a word names, or `None` for a word no surface publishes. DERIVED from
+    /// [`ALL`](Self::ALL), so what a reader may parse and what a surface publishes cannot drift.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|echo| echo.wire_str() == word)
+    }
+}
+
+sprag_vt::closed_set! {
 /// Whether a `Ctrl-D` written into a pane will END the program's input, or arrive as a byte.
 ///
 /// # ⚠⚠⚠ Why a caller must be able to ask
@@ -130,6 +152,25 @@ pub enum PaneEndOfInput {
     EndsTheInput,
     /// Raw mode: it is delivered as an ordinary byte, and what it means is the program's business.
     IsJustAByte,
+}
+}
+
+impl PaneEndOfInput {
+    /// This answer's WORD on the wire — [`PaneEcho::wire_str`]'s rule, one enum along.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::EndsTheInput => "ends_the_input",
+            Self::IsJustAByte => "just_a_byte",
+        }
+    }
+
+    /// The answer a word names, or `None` for a word no surface publishes — DERIVED from
+    /// [`ALL`](Self::ALL).
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|end| end.wire_str() == word)
+    }
 }
 
 sprag_vt::closed_set! {

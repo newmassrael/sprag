@@ -20,18 +20,19 @@
 //!
 //! # What a remote surface answers, and what it still does not
 //!
-//! **SUPERVISION, LIFECYCLE and INPUT ECHO are served** (register item 557): a driver can ask what
-//! the agent in a pane is doing, open/replace/close panes, and read what has been written INTO a
-//! pane. Those are three the loop's production paths turn on — five reads in `outer.rs` for the
-//! first, its whole session rollover for the second, and `ReadyWhen::Prints` for the third.
+//! **SUPERVISION, LIFECYCLE, INPUT ECHO and TERMINAL MODES are served** (register item 557): a
+//! driver can ask what the agent in a pane is doing, open/replace/close panes, read what has been
+//! written INTO a pane, and ask the kernel who echoes and whether a `Ctrl-D` ends the input. Each is
+//! a production path of the loop's — five reads in `outer.rs` for the first, its whole session
+//! rollover for the second, `ReadyWhen::Prints` for the third, and `deliver`'s verdict for the
+//! fourth.
 //!
-//! ⚠⚠⚠⚠ **Four remain [`None`]**: `terminal_modes`, `foreground_job`, `output_lines` and
-//! `raw_capture` (with `hands` and `job_control`). Each absence is safe by that surface's OWN
-//! documentation — a host that cannot tell echo from output makes its consumer degrade in the safe
-//! direction, and one with no job control must report that it could not stop the work rather than
-//! write `0x03` and hope. **They are `None` because this build cannot ask those questions over the
-//! wire yet, not because a remote driver does not want them** — they are the rest of item 557, and
-//! every one of them has a consumer that already handles the absence.
+//! ⚠⚠⚠⚠ **Three remain [`None`]**: `foreground_job`, `output_lines` and `raw_capture` (with `hands`
+//! and `job_control`). Each absence is safe by that surface's OWN documentation — a host with no job
+//! control must report that it could not stop the work rather than write `0x03` and hope. **They are
+//! `None` because this build cannot ask those questions over the wire yet, not because a remote
+//! driver does not want them** — they are the rest of item 557, and every one of them has a consumer
+//! that already handles the absence.
 //!
 //! ⚠⚠⚠⚠⚠ **The echo trail is the one read here that is NOT about the screen, and that is the point.**
 //! A pseudoterminal echoes its input, so a barrier matching a marker against the grid cannot tell
@@ -58,19 +59,19 @@ use std::sync::Mutex;
 use serde_json::{Value, json};
 use sprag_plugin::{
     AgentObservation, KeyStroke, PaneAccess, PaneError, PaneInputEcho, PaneLifecycle, PaneRow,
-    PaneSupervision, Written,
+    PaneSupervision, PaneTerminalModes, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT};
-use sprag_terminal::PaneId;
+use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::external::lock;
 use crate::wire::{
     AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, FULL_LINES_SLOT, FULL_TEXT_SLOT,
-    INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, PANE_EOF_SLOT,
-    PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RECENT_INPUT_SLOT, RESPAWN_ACTION,
-    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY,
-    SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, mux_action_path,
-    pane_input_path, refusal, unknown_action, unknown_slot,
+    INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, PANE_ECHO_SLOT,
+    PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
+    RECENT_INPUT_SLOT, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD,
+    agent_slot_for, mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -327,6 +328,14 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **WHAT A PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT** — register item 557.
+    ///
+    /// ⚠ Always `Some`, and the per-pane `None`s carry the real absence: *this host could not read
+    /// the mode*. Collapsing the two would tell a caller that no pane on this daemon has a terminal.
+    fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+        Some(self)
+    }
+
     /// **WHETHER THE DAEMON ON THE OTHER END SUPERVISES AT ALL** — register item 557, and one of the
     /// two absences a supervisor must never see collapsed.
     ///
@@ -447,6 +456,28 @@ impl PaneInputEcho for RemotePaneAccess {
         self.read_pane(id, RECENT_INPUT_SLOT)?
             .as_str()
             .map(str::to_owned)
+    }
+}
+
+/// **THE KERNEL'S TWO ANSWERS ABOUT A PANE'S TERMINAL, READ OVER THE SOCKET** — register item 557.
+///
+/// ⚠⚠⚠ Both are read at the moment of asking and neither is cached. They are the PROGRAM's to
+/// change at any instant — every interactive agent takes its terminal raw on startup — so a value a
+/// driver remembered from a previous step would be a statement about a mode that has since moved.
+impl PaneTerminalModes for RemotePaneAccess {
+    /// Who echoes this pane's input, or [`None`] where the mode could not be read.
+    ///
+    /// ⚠⚠ A word this build does not know reads as `None`, never as the other word:
+    /// [`PaneEcho::from_wire`] refuses what it cannot spell, and a driver told *the program owns
+    /// the screen* on no evidence would report a delivery confirmed by an echo it took for output.
+    fn pane_echo(&self, id: PaneId) -> Option<PaneEcho> {
+        PaneEcho::from_wire(self.read_pane(id, PANE_ECHO_SLOT)?.as_str()?)
+    }
+
+    /// Whether a `Ctrl-D` written here ends the program's input, or [`None`] where the mode could
+    /// not be read — [`pane_echo`](Self::pane_echo)'s rule for an unknown word applies here too.
+    fn pane_end_of_input(&self, id: PaneId) -> Option<PaneEndOfInput> {
+        PaneEndOfInput::from_wire(self.read_pane(id, PANE_END_OF_INPUT_SLOT)?.as_str()?)
     }
 }
 

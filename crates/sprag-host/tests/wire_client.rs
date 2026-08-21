@@ -39,7 +39,7 @@ use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
     EVENTS_WAIT_METHOD, HostConn, PROTOCOL_FIELD, PROTOCOL_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
 };
-use sprag_terminal::PaneId;
+use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
 /// assertion never leaks a `sprag-term` — and unlinks its socket, so it leaks no file either.
@@ -6259,11 +6259,19 @@ fn the_door_every_plugin_types_through_drives_a_real_pane_from_another_process()
          any read and any write, so the count is the writer's to report or it is a guess.",
         text.len(),
     );
-    assert!(
-        echo.is_none(),
-        "⚠⚠⚠ a remote surface cannot ask a pane's terminal who echoes, so the honest verdict \
-         carries no answer. An echo reported here would be a claim about modes nothing read: got \
-         {echo:?}",
+    // ⚠⚠⚠⚠⚠ THIS ARM USED TO ASSERT `echo.is_none()` — *"a remote surface cannot ask a pane's
+    // terminal who echoes, so the honest verdict carries no answer"* — and item 557 is where that
+    // stopped being true. It is the same claim from the other side: the verdict must carry what was
+    // READ and never a guess, and the read now exists. A `None` here would mean the modes address
+    // stopped answering for a pane whose mode this daemon can read perfectly well.
+    assert_eq!(
+        echo,
+        Some(sprag_terminal::PaneEcho::ByTheTerminal),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: `deliver` over the wire must say WHO put the text on that \
+         screen. A shell echoes, so this delivery was confirmed by the TERMINAL rather than by the \
+         program — which is a weaker fact than it looks (measured: a confirmed delivery into a \
+         pane running `sleep 60`, in 20 ms, over a peer that never read a byte) and exactly the \
+         thing a caller must be told rather than left to assume. Got {echo:?}",
     );
 
     assert!(
@@ -6998,6 +7006,102 @@ fn a_remote_barrier_refuses_the_marker_the_driver_typed_and_takes_the_one_the_sh
          hard-wired to answer the whole SCREEN would fail exactly here, because it would report \
          the program's own output as something somebody typed. The pane was showing:\n{}",
         remote.pane_collapsed(pane).unwrap_or_default(),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **A DRIVER OUTSIDE THIS PROCESS READS THE KERNEL'S TWO ANSWERS ABOUT A PANE'S TERMINAL**
+/// — register item 557's `terminal_modes` surface, and the two facts every screen-based confirmation
+/// silently assumes.
+///
+/// # ⚠⚠⚠⚠⚠ Each answer has a MEASURED failure behind it, not a hypothesis
+///
+/// * **`echo`** decides what a read-back is WORTH. With the terminal echoing, the line discipline
+///   paints every byte the instant it reaches the device — before the program has read one, and
+///   whether or not it ever will. Measured: a delivery confirmed into a pane running `sleep 60`, in
+///   20 ms, over a peer that never read a byte. A driver that cannot ask this reports *the peer took
+///   it* on evidence about the TERMINAL.
+/// * **`end_of_input`** decides whether a `Ctrl-D` will do anything at all. It is a CONDITION the
+///   line discipline raises, and only in canonical mode; a program that took its terminal raw gets
+///   `0x04` as an ordinary byte. Measured on `stty raw -echo; exec cat`: the run spent its whole
+///   reply timeout, converged, published the peer's ECHO of the prompt as the model's answer, and
+///   blamed *"the peer had not finished"* — a sentence about the peer's speed for a cause that was
+///   the terminal's mode and knowable before the wait began.
+///
+/// # ⚠⚠⚠ The PAIR is the claim, on one host and one connection
+///
+/// A shell pane answers `ByTheTerminal` / `EndsTheInput`; a pane that has taken its terminal RAW
+/// answers `ByTheProgram` / `IsJustAByte`. Either slot hard-wired to one word passes for one of
+/// them and fails for the other, and both are asked in the same breath — so an address answering
+/// about the HOST rather than about the pane it names is red too.
+#[test]
+fn a_remote_driver_reads_who_echoes_and_whether_ctrl_d_ends_the_input() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+
+    // CANONICAL: a shell, which echoes and whose line discipline turns the EOF character into
+    // end-of-input.
+    let cooked = spawn_pane(&mut setup, json!({ "cmd": ["sh"] }));
+    // RAW: the pane takes its own terminal off echo and out of canonical mode before `cat` runs —
+    // which is what every full-screen agent does on startup, done here in one line.
+    let raw = spawn_pane(
+        &mut setup,
+        json!({ "cmd": ["sh", "-c", "stty raw -echo; exec cat"] }),
+    );
+
+    let modes = remote.terminal_modes().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a remote driver reports that NO PANE on this daemon has a \
+             terminal whose modes can be read. Every screen-based confirmation it makes is then an \
+             assumption, and `deliver` must answer `echo: None` for a pane whose mode the daemon \
+             can read perfectly well."
+        )
+    });
+
+    assert!(
+        wait_until(Duration::from_secs(10), || modes.pane_echo(cooked)
+            == Some(PaneEcho::ByTheTerminal)),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: a shell's terminal ECHOES, and a driver that cannot learn that \
+         will read its own keystroke coming back as the peer's output — a delivery confirmed in \
+         20 ms over a peer that never read a byte. Got {:?}",
+        modes.pane_echo(cooked),
+    );
+    assert_eq!(
+        modes.pane_end_of_input(cooked),
+        Some(PaneEndOfInput::EndsTheInput),
+        "a shell is in CANONICAL mode, so the EOF character becomes end-of-input and a caller that \
+         ends its question with Ctrl-D is asking for something that will happen",
+    );
+
+    // ── AND THE RAW PANE, IN THE SAME BREATH ───────────────────────────────────────────────────
+    assert!(
+        wait_until(Duration::from_secs(10), || modes.pane_echo(raw)
+            == Some(PaneEcho::ByTheProgram)),
+        "⚠⚠⚠⚠ THE OTHER HALF OF THE PAIR: a pane whose program took its terminal off echo must say \
+         so. Without this arm a slot hard-wired to `terminal` passes — and a driver told the \
+         terminal echoes would DISCOUNT output the program actually printed. Got {:?}",
+        modes.pane_echo(raw),
+    );
+    assert_eq!(
+        modes.pane_end_of_input(raw),
+        Some(PaneEndOfInput::IsJustAByte),
+        "⛔⛔⛔⛔ REGISTER ITEM 557: on a RAW pane a `Ctrl-D` is an ordinary byte, and a run that \
+         waited for an end-of-input it never caused spent its whole timeout and then blamed the \
+         peer. This is the read that lets it know before the wait rather than after it",
+    );
+
+    // ⚠⚠ AND THE COOKED PANE IS STILL COOKED, asked after the raw one — without this, both
+    // assertions above are satisfied by an address that answers about whichever pane was asked
+    // LAST, which is the failure a per-pane slot exists to make impossible.
+    assert_eq!(
+        (modes.pane_echo(cooked), modes.pane_end_of_input(cooked)),
+        (
+            Some(PaneEcho::ByTheTerminal),
+            Some(PaneEndOfInput::EndsTheInput)
+        ),
+        "the addresses must answer about the pane they NAME: one pane going raw has been read as \
+         every pane going raw",
     );
 
     let _ = std::fs::remove_file(&sock);
