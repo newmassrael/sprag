@@ -283,9 +283,13 @@ pub const FULL_LINES_SLOT: &str = "full_lines";
 /// answers it has always read.
 pub const PANE_EOF_SLOT: &str = "eof";
 
-/// The pane-input external query slot: **WHAT HAS RECENTLY BEEN WRITTEN INTO THIS PANE**, as text —
-/// the pane's own echo trail ([`ECHO_TRAIL_CAP`](sprag_terminal::ECHO_TRAIL_CAP) bytes), and
-/// register item 557.
+/// The arguments of [`RECENT_INPUT_FIELD`] — one `needle`, `Open`, for the same reason
+/// [`FIND_ARGS`] is: the needle is a marker the CALLER invents, so there is no domain to enumerate.
+const RECENT_INPUT_ARGS: &[SchemaArg] = &[SchemaArg::open("needle", "string")];
+
+/// The pane-input external query FAMILY: **WAS THIS NEEDLE RECENTLY WRITTEN INTO THIS PANE** —
+/// `recent_input_has.<needle>`, answering a bool against the pane's own echo trail
+/// ([`ECHO_TRAIL_CAP`](sprag_terminal::ECHO_TRAIL_CAP) bytes). Register items 557 and 567.
 ///
 /// # ⚠⚠⚠⚠⚠ Why a driver must be able to ask it: a barrier that converges on its own typing
 ///
@@ -304,14 +308,32 @@ pub const PANE_EOF_SLOT: &str = "eof";
 /// the pane SHOWS. Input the terminal does not echo (a password prompt) is in it and not on the
 /// screen; output no one typed is on the screen and not in it.
 ///
-/// # ⚠⚠⚠⚠ What publishing it widens, stated rather than left to be discovered
+/// # ⚠⚠⚠⚠⚠ Why it answers a QUESTION and not the trail — register item 567
 ///
 /// Any client holding this socket can already inject keys, spawn processes and read every pane's
-/// screen — the socket is the trust boundary, not this address. What it adds is **passive capture of
-/// input the terminal never echoed**, which a screen read could not reach. See the register's
-/// residue: the narrower shape is an address that answers the QUESTION (does the trail contain this
-/// needle) rather than serving the trail.
-pub const RECENT_INPUT_SLOT: &str = "recent_input";
+/// screen — the socket is the trust boundary, not this address. What SERVING THE TRAIL added was the
+/// one class of text a wire read can reach that a screen read cannot: **input the terminal was told
+/// not to echo.** A password typed at a `sudo` or `ssh` prompt is in the trail and is nowhere on the
+/// grid, so a client that only READS could harvest it.
+///
+/// The consumer never wanted the trail. `ReadyWhen::Prints` asks one thing — *is my marker in what
+/// was typed* — and a bool serves that identically while carrying nothing home. The needle is the
+/// caller's own marker, which it already holds; the pane's other bytes stay in the pane.
+///
+/// ⚠⚠ **NOT ADDITIVE**: this REPLACES the `recent_input` slot, which answered the whole trail as a
+/// string. Every published address is a promise, and withdrawing one is the kind of change
+/// [`WIRE_PROTOCOL`] exists to number — see its own entry for this bump.
+///
+/// ⚠ An EMPTY needle is a malformed member and answers `Null`, the taxonomy [`FIND_FIELD`] and
+/// [`REGEX_FIELD`] already share: an address with no argument is not a question.
+pub const RECENT_INPUT_FIELD: SchemaField =
+    SchemaField::parametric("recent_input_has.<needle>", "bool", RECENT_INPUT_ARGS);
+
+/// The [`RECENT_INPUT_FIELD`] address asking whether `needle` was recently written into the pane.
+#[must_use]
+pub fn recent_input_has(needle: &str) -> String {
+    format!("{}{needle}", RECENT_INPUT_FIELD.literal_prefix())
+}
 
 /// The pane-input external query slot: **WHO PUTS THIS PANE'S OWN INPUT BACK ON ITS SCREEN** —
 /// [`PaneEcho`](sprag_terminal::PaneEcho)'s word, and `null` where this host cannot read the mode.
@@ -792,11 +814,14 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The four above say what the pane HOLDS; this says
     // whether anything more is coming, which reading the text cannot answer.
     SchemaField::new(PANE_EOF_SLOT, "bool"),
-    // ⚠⚠⚠⚠⚠ Register item 557 — see `RECENT_INPUT_SLOT`. Every slot above is what the pane SHOWS;
-    // this is what was written INTO it, and the two must not be derived from each other. A pty
-    // echoes input, so a driver reading its marker off the screen cannot tell the program saying it
-    // from its own keystroke coming back — which is a race, not a barrier.
-    SchemaField::new(RECENT_INPUT_SLOT, "string"),
+    // ⚠⚠⚠⚠⚠ Register items 557 and 567 — see `RECENT_INPUT_FIELD`. Every slot above is what the
+    // pane SHOWS; this is about what was written INTO it, and the two must not be derived from each
+    // other. A pty echoes input, so a driver reading its marker off the screen cannot tell the
+    // program saying it from its own keystroke coming back — which is a race, not a barrier. ⚠ It
+    // is a QUESTION rather than the trail, because the trail is the one thing a wire read reaches
+    // that a screen read cannot: input the terminal was told not to echo.
+    RECENT_INPUT_FIELD,
+    empty_member_of(&RECENT_INPUT_FIELD),
     // ⚠⚠⚠⚠⚠ Register item 557 — the TERMINAL's own two answers, read from the kernel rather than
     // guessed. They decide what a screen read-back is worth (`echo`) and whether a `Ctrl-D` will do
     // anything at all (`end_of_input`); both are the PROGRAM's to change at any moment, which is
@@ -8501,7 +8526,10 @@ mod tests {
             // `Ceiling` publishes no `WIRE_WORDS` — its own doc records why — so the widening is
             // outside this pin by that type's recorded decision rather than by an oversight here.
             // It rides the same escape for the same reason: no plugin but `ai_loop` reports it.
-            37,
+            // ⚠ 38: re-stamped with every ANSWER value space unchanged. Register item 567 WITHDREW
+            // an address and added a parametric one; what `recent_input_has.<needle>` answers is a
+            // bool, which is not an enum and has no arm to widen. The surface pin is the subject.
+            38,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -8863,7 +8891,10 @@ mod tests {
             // `report_agent` gained are OPEN strings — a prompt and a path — so no closed word list
             // moved; a vocabulary pin cannot see them, which is why the shape pin is the one that
             // does.
-            37,
+            // ⚠ 38: re-stamped with every published REQUEST vocabulary unchanged, for the same
+            // reason one number up. Register item 567's `needle` is an OPEN string — a marker the
+            // caller invents, like `find`'s and `regex`'s — so there is no closed list to move.
+            38,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -9158,7 +9189,14 @@ mod tests {
             // ⚠⚠ 37: re-stamped BECAUSE AN ARGUMENT SHAPE MOVED — the first of these four re-stamps
             // that this pin is the SUBJECT of rather than a bystander to. `report_agent` gained
             // `asked` and `transcript`, both optional strings, and the list above carries them.
-            37,
+            // ⚠⚠⚠ 38: re-stamped with every published argument shape unchanged, AND THAT IS THIS
+            // PIN'S OWN BLIND SPOT RATHER THAN A QUIET ROUND. Register item 567 added
+            // `recent_input_has.<needle>`, whose `needle` is a declared argument with a declared
+            // type — and this pin walks the arguments of ACTION FORMS, never a query family's. The
+            // same is true of `find.<needle>`, `regex.<pattern>` and `cells.<offset>`, which have
+            // ridden here undeclared since before this pin existed. ⚠ The surface pin is what
+            // catches a parametric family, by its `<placeholder>` template.
+            38,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -9763,7 +9801,12 @@ mod tests {
         // ⚠ 37: re-stamped with the SURFACE unchanged — no address was added or removed. What moved
         // is inside a form (`report_agent`'s two new arguments), which this pin does not walk; the
         // shape pin is the one that saw it.
-        37,
+        // ⚠⚠⚠⚠⚠ 38 — REGISTER ITEM 567, AND AN ADDRESS WAS **WITHDRAWN**, which is the rare half of
+        // this pin's own instruction. `recent_input` served a pane's whole echo trail as a string
+        // and is GONE; `recent_input_has.<needle>` (and its empty member) answer the one question
+        // the trail ever had a reader for. A client that asked the old address now gets nothing,
+        // and that is exactly what the number is for. See `WIRE_PROTOCOL`'s entry for 38.
+        38,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -9886,8 +9929,12 @@ mod tests {
             "project.<pane>",
             "prompt_marks",
             // ⚠⚠ ADDED at register item 557: what was written INTO a pane, which no screen address
-            // can answer. A name added, so the number stands.
-            "recent_input",
+            // can answer. ⚠⚠⚠⚠⚠ NARROWED at register item 567, and the old name is WITHDRAWN: the
+            // trail is the one text a wire read reaches that a screen read cannot — input the
+            // terminal was told not to echo — so the address answers the QUESTION its only reader
+            // ever asked. A name removed, so the number rose.
+            "recent_input_has.",
+            "recent_input_has.<needle>",
             "regex.",
             "regex.<pattern>",
             "rename_pane",

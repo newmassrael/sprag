@@ -3950,7 +3950,7 @@ mod tests {
                 .first()
                 .and_then(|last| {
                     access
-                        .input_echo()
+                        .input_trail()
                         .and_then(|echo| echo.pane_recent_input(*last))
                 })
                 .unwrap_or_default();
@@ -4196,7 +4196,7 @@ mod tests {
         // because its peer is at rest.
         let live = access.pane_ids();
         let typed = access
-            .input_echo()
+            .input_trail()
             .and_then(|echo| echo.pane_recent_input(*live.first().expect("a surviving pane")))
             .unwrap_or_default();
         let authored = loops.authored().expect("the datamodel still answers");

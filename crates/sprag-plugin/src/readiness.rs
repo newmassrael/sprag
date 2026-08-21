@@ -1520,10 +1520,6 @@ impl Readiness {
                 // ⚠ Absent the capability the discount cannot be applied, and the fallback is the
                 // arming count alone — weaker, and the reason `input_echo` returning `None` is
                 // documented as a degradation rather than a default.
-                let typed = panes
-                    .input_echo()
-                    .and_then(|echo| echo.pane_recent_input(pane))
-                    .unwrap_or_default();
                 // ⚠⚠ A MARKER THAT IS IN WHAT WAS TYPED AT THE PANE IS NOT EVIDENCE, EVER. The pty
                 // echoes input, and on the grid that echo is ordinary output — so the marker has
                 // two possible authors and nothing on the screen says which. Refusing it here is
@@ -1534,7 +1530,19 @@ impl Readiness {
                 // ⚠ Checked against the MARKER rather than by dropping echoing ROWS. Dropping rows
                 // depends on where the terminal happened to wrap and on whether a prompt shares
                 // the line, which is the same non-determinism one step further in.
-                if typed.contains(marker.as_str()) {
+                //
+                // ⚠⚠⚠ THE PANE IS ASKED ABOUT THE MARKER, NOT FOR ITS TRAIL — register item 567.
+                // This is the only production reader the trail ever had, and it always asked one
+                // question. Fetching the text to answer it carried home every other byte written
+                // into that pane, including what the terminal was told not to echo. The `false`
+                // fallback is the SAME degradation the missing capability had: absent an answer the
+                // discount is not applied and the arming count alone decides, which is weaker but
+                // never wrong in the unsafe direction.
+                let typed_it = panes
+                    .input_echo()
+                    .and_then(|echo| echo.pane_recent_input_has(pane, marker.as_str()))
+                    .unwrap_or(false);
+                if typed_it {
                     return false;
                 }
                 // ⚠⚠ MORE OCCURRENCES THAN WHEN THE BARRIER ARMED — counted over the whole

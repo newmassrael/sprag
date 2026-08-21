@@ -854,7 +854,7 @@ mod tests {
         );
 
         let typed = access
-            .input_echo()
+            .input_trail()
             .and_then(|echo| echo.pane_recent_input(pane))
             .unwrap_or_default();
         assert_eq!(
@@ -948,7 +948,7 @@ mod tests {
         );
 
         let typed = access
-            .input_echo()
+            .input_trail()
             .and_then(|echo| echo.pane_recent_input(pane))
             .unwrap_or_default();
         assert!(

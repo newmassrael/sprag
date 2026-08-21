@@ -73,7 +73,7 @@ use crate::wire::{
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
     LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
     PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL,
-    PROMPT_MARKS_SLOT, RECENT_INPUT_SLOT, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
+    PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
     SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
@@ -652,6 +652,29 @@ impl SpragPaneExternal {
                 LINES_RESTARTED_KEY: since.restarted,
             }))));
         }
+        // ⚠⚠⚠⚠⚠ WAS THIS NEEDLE WRITTEN INTO THIS PANE — register items 557 and 567, and the one
+        // read on this surface that is NOT about the screen. A pseudoterminal echoes its input, so a
+        // driver matching a marker against the grid cannot tell the program saying it from its own
+        // keystroke coming back; `ReadyWhen::Prints` refuses a marker that is in this trail, and
+        // that refusal is the difference between a barrier and a race.
+        //
+        // ⚠⚠⚠ It answers the QUESTION and never the trail. The trail holds input the terminal was
+        // told not to echo — a password at a `sudo` prompt — which is nowhere on the grid, so
+        // serving it here was the only way a read-only client could harvest one. The one production
+        // consumer always asked about a marker it already held.
+        //
+        // ⚠⚠ The same `echo_trail` the in-process `PaneAccess` reads, deliberately: a second record
+        // of what was typed would be a second answer to drift from, and this one decides whether a
+        // run converges. It is the PANE's memory rather than any writer's, which is what makes it
+        // answer about a display client's keystrokes too.
+        if let Some(needle) = path.strip_prefix(RECENT_INPUT_FIELD.literal_prefix()) {
+            if needle.is_empty() {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            }
+            return Some(Ok(IntrospectValue::Bool(
+                self.pty.echo_trail().contains(needle),
+            )));
+        }
         if let Some(needle) = path.strip_prefix(FIND_FIELD.literal_prefix()) {
             if needle.is_empty() {
                 return Some(Err(ReadRefusal::QueryTypeMismatch));
@@ -752,17 +775,6 @@ impl SpragPaneExternal {
             // this one is what `ai_loop.scxml`'s `peer_gone` — and the 43-hour wedge behind it —
             // stands on. See `PANE_EOF_SLOT`.
             PANE_EOF_SLOT => Some(IntrospectValue::Bool(self.pty.is_eof())),
-            // ⚠⚠⚠⚠⚠ WHAT WAS WRITTEN INTO THIS PANE — register item 557, and the one read on this
-            // surface that is NOT about the screen. A pseudoterminal echoes its input, so a driver
-            // matching a marker against the grid cannot tell the program saying it from its own
-            // keystroke coming back; `ReadyWhen::Prints` refuses a marker that is in this trail,
-            // and that refusal is the difference between a barrier and a race.
-            //
-            // ⚠⚠⚠ The same `echo_trail` the in-process `PaneAccess` reads, deliberately: a second
-            // record of what was typed would be a second answer to drift from, and this one decides
-            // whether a run converges. It is the PANE's memory rather than any writer's, which is
-            // what makes it answer about a display client's keystrokes too.
-            RECENT_INPUT_SLOT => Some(IntrospectValue::Text(self.pty.echo_trail())),
             // ⚠⚠⚠⚠⚠ WHAT THIS PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT — register item
             // 557. Read from the KERNEL at the moment of asking, never cached at the pane's birth:
             // both are the program's to change and every interactive agent changes them, so a value

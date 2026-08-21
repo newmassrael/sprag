@@ -78,10 +78,10 @@ use crate::wire::{
     FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
     KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
-    PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RECENT_INPUT_SLOT, RESPAWN_ACTION,
-    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY,
-    SPAWN_COLS_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for,
-    lines_since_at, mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
+    PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT,
+    SCREEN_ROWS_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_NAME_KEY,
+    SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, lines_since_at, mux_action_path,
+    pane_input_path, recent_input_has, refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -718,10 +718,15 @@ impl PaneInputEcho for RemotePaneAccess {
     /// here and nothing on the grid, and output nobody typed is on the grid and not in here. A
     /// client that tried to satisfy this from the screen would answer *the marker was typed* about
     /// text the program printed, which inverts the very refusal this read exists for.
-    fn pane_recent_input(&self, id: PaneId) -> Option<String> {
-        self.read_pane(id, RECENT_INPUT_SLOT)?
-            .as_str()
-            .map(str::to_owned)
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT ASKS AND DOES NOT FETCH** — register item 567. This surface is the one that
+    /// crosses a socket, so it is the one where a trail could reach a reader who is not the writer.
+    /// The needle goes out, a `bool` comes back, and the pane's other bytes never leave the daemon.
+    /// `RemotePaneAccess` therefore offers no [`PaneInputTrail`](sprag_plugin::PaneInputTrail) at
+    /// all: `input_trail()` keeps the trait's `None`, which on `PaneAccess` means what it always
+    /// means — *this surface does not have that capability* — rather than *the trail is empty*.
+    fn pane_recent_input_has(&self, id: PaneId, needle: &str) -> Option<bool> {
+        self.read_pane(id, &recent_input_has(needle))?.as_bool()
     }
 }
 

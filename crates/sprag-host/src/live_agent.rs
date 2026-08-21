@@ -2434,7 +2434,7 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         .collect();
     let typed = live
         .access
-        .input_echo()
+        .input_trail()
         .and_then(|echo| echo.pane_recent_input(live.pane))
         .unwrap_or_default();
 
@@ -2676,7 +2676,7 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
     let ended_on = live_panes.first().copied().unwrap_or(started_on);
     let typed_fresh = live
         .access
-        .input_echo()
+        .input_trail()
         .and_then(|echo| echo.pane_recent_input(ended_on))
         .unwrap_or_default();
     let (fresh_argv, fresh_cwd) = {

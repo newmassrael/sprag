@@ -198,9 +198,9 @@ pub(crate) mod testing;
 
 pub use access::{
     AgentObservation, AgentStateSource, Authority, JobLeader, KeyStroke, PaneAccess, PaneDoing,
-    PaneError, PaneForegroundJob, PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle,
-    PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes, RowTrail,
-    Signalled, WorkspacePaneAccess, Written,
+    PaneError, PaneForegroundJob, PaneHands, PaneInputEcho, PaneInputTrail, PaneJobControl,
+    PaneLifecycle, PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes,
+    RowTrail, Signalled, WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
 pub use ai_loop::{AiLoop, NotStarted};

@@ -1008,7 +1008,27 @@ impl ScopeAsk {
 ///   binary is hardlinked to `target/debug/sprag`, so building this silences every live agent's
 ///   reporter until the daemon is restarted — a hook refused at `client/hello` leaves the last
 ///   `working` true for ever. Build and restart are one act, not two.
-pub const WIRE_PROTOCOL: u32 = 37;
+///
+/// * **38 — AN ADDRESS WAS WITHDRAWN, WHICH IS THE HALF OF THIS NUMBER'S JOB THAT RARELY COMES UP.**
+///   Register item 567. `recent_input` served a pane's whole **echo trail** as a string; it is gone,
+///   and `recent_input_has.<needle>` answers a bool in its place. A client that asks the old address
+///   is answered nothing — the first REMOVAL on this wire rather than an addition, so an older
+///   client genuinely breaks and the number must say so.
+///
+///   ⚠⚠⚠⚠⚠ **WHY THE TRAIL COULD NOT STAY PUBLISHED.** Anything holding this socket can already
+///   inject keys, spawn processes and read every screen — the socket is the trust boundary, and no
+///   read grants a privilege a writer did not have. What the trail added is the one class of text a
+///   wire read reaches that a SCREEN read cannot: **input the terminal was told not to echo.** A
+///   password typed at a `sudo` or `ssh` prompt is in the trail and is nowhere on the grid, so a
+///   client that only READS could harvest it.
+///
+///   ⚠⚠ **AND NOTHING WANTED THE TRAIL.** Measured with the compiler rather than argued: removing
+///   the trail method from `PaneInputEcho` produced exactly ONE error outside tests —
+///   `ReadyWhen::Prints`' refusal, which asks *is my marker in what was typed* about a marker the
+///   caller already holds. Every other reader is a gate running in the same process as the panes,
+///   and those keep the trail through `PaneInputTrail`, a capability a remote surface declines
+///   outright rather than answers emptily.
+pub const WIRE_PROTOCOL: u32 = 38;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).

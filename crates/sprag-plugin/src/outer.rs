@@ -8190,7 +8190,7 @@ mod tests {
             let published = Arc::new(Mutex::new(0_u64));
             let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
                 let submitted = reader
-                    .input_echo()
+                    .input_trail()
                     .and_then(|echo| echo.pane_recent_input(id))
                     .is_some_and(|typed| typed.contains('\r'));
                 let mut seq = published.lock().expect("the published verdict");
@@ -8407,7 +8407,7 @@ mod tests {
             let published = Arc::new(Mutex::new(0_u64));
             let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
                 let typed = reader
-                    .input_echo()
+                    .input_trail()
                     .and_then(|echo| echo.pane_recent_input(id))
                     .unwrap_or_default();
                 let submitted = typed.contains('\r');
@@ -14795,7 +14795,7 @@ mod tests {
 
         // The peer really did receive three prompts: two turns and the closing report.
         let typed = access
-            .input_echo()
+            .input_trail()
             .and_then(|echo| echo.pane_recent_input(pane))
             .unwrap_or_default();
         assert!(

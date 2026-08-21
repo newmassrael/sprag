@@ -27,7 +27,7 @@ use sprag_host::wire::{
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT,
     SCREEN_ROWS_SLOT, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
     SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, agent_slot_for,
-    cells_slot_at, pane_processes_at, project_slot_for,
+    cells_slot_at, pane_processes_at, project_slot_for, recent_input_has,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -7944,6 +7944,166 @@ fn a_replacement_that_cannot_be_born_leaves_the_run_holding_the_pane_it_had() {
          answering. A name that outlives the process behind it is worse than a clean refusal — the \
          caller reads «my session survived» off a row nothing is running. Read {:?}",
         remote.pane_full_lines(pane),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **NO ADDRESS THIS DAEMON PUBLISHES FOR A PANE HANDS BACK INPUT THE TERMINAL REFUSED TO
+/// ECHO** — register item 567, and the one thing a wire read can reach that a screen read cannot.
+///
+/// # ⚠⚠⚠⚠⚠ What the exposure is, stated exactly
+///
+/// A client holding this socket can already inject keys, spawn processes and read every screen —
+/// **the socket is the trust boundary and no read here grants a privilege it did not have.** What
+/// the echo trail adds is the one class of text that is not on the grid by construction: **input the
+/// terminal was told not to echo.** A password typed at a `sudo` or `ssh` prompt is in what sprag
+/// remembers writing and is nowhere on the screen, so a client that only READS can harvest it where
+/// before it could not.
+///
+/// # ⚠⚠⚠ Why this reads the SCHEMA rather than a list of slots
+///
+/// A hand-written list of addresses to check decides alone: the day a seventh pane surface is
+/// published, the list still says six and the gate is green about a wire it no longer describes.
+/// So the population is [`sprag_host::wire::PANE_SCHEMA`] itself — every field the daemon DECLARES
+/// as a read — and a new address joins this gate by existing. ⚠ The parametric families are named
+/// and skipped rather than silently dropped: each takes an argument this gate has no value for, and
+/// a skip nobody can see reads as coverage.
+///
+/// # ⚠⚠ The control is the half that makes the silence mean something
+///
+/// A secret that never arrived is absent from every address for an uninteresting reason. So the
+/// program under the pane REPORTS what it received — its length — and the gate waits for that
+/// number before it asks anything. `got:7` on the screen and `hunter2` nowhere is the claim; `got:0`
+/// would mean the fixture, not the wire, is what kept the secret.
+#[test]
+fn no_published_pane_address_hands_back_input_the_terminal_did_not_echo() {
+    const SECRET: &str = "hunter2";
+    let (_host, sock) = spawn_host();
+    let mut conn = setup_at(&sock);
+
+    // ⚠ `stty -echo` FIRST, then the readiness marker: when `ready` reaches the screen the terminal
+    // has already stopped echoing, so nothing typed after it can arrive on the grid by accident.
+    let pane = spawn_pane(
+        &mut conn,
+        json!({
+            "cmd": ["sh", "-c", "stty -echo; printf 'ready\\n'; read secret; printf 'got:%s\\n' \"${#secret}\""],
+        }),
+    );
+
+    let screen = |conn: &mut HostConn| -> String {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(pane.0, FULL_TEXT_SLOT) }),
+        )
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+    };
+
+    assert!(
+        wait_until(Duration::from_secs(10), || screen(&mut conn)
+            .contains("ready")),
+        "the fixture never reached its read, so nothing below would be about a terminal that \
+         refuses to echo. Read {:?}",
+        screen(&mut conn),
+    );
+
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": pane_input_path(pane.0, TEXT_ACTION),
+            "args": { "text": format!("{SECRET}\n") },
+        }),
+    )
+    .expect("type the secret into the pane");
+
+    // ── THE CONTROL: the secret ARRIVED, and the program says so in a word that is not the secret
+    assert!(
+        wait_until(Duration::from_secs(10), || screen(&mut conn)
+            .contains(&format!("got:{}", SECRET.len()))),
+        "⚠⚠ the program never reported receiving the secret, so «it is nowhere» below would be a \
+         claim about a secret that was never delivered. Read {:?}",
+        screen(&mut conn),
+    );
+    assert!(
+        !screen(&mut conn).contains(SECRET),
+        "⚠⚠ the terminal ECHOED it after all, so this pane is not the fixture this gate needs — \
+         the whole question is about text a screen read cannot reach. Read {:?}",
+        screen(&mut conn),
+    );
+
+    // ── EVERY DECLARED READ, FROM THE SCHEMA ITSELF ────────────────────────────────────────────
+    let mut asked = 0_u32;
+    let mut skipped: Vec<&str> = Vec::new();
+    for field in sprag_host::wire::PANE_SCHEMA {
+        if field.channel != pinion_core::external::SchemaChannel::Read {
+            continue;
+        }
+        if !field.args.is_empty() {
+            skipped.push(field.path);
+            continue;
+        }
+        let answer = conn
+            .call(
+                "scene/query",
+                json!({ "path": pane_input_path(pane.0, field.path) }),
+            )
+            .unwrap_or(Value::Null);
+        asked += 1;
+        assert!(
+            !answer.to_string().contains(SECRET),
+            "⛔⛔⛔⛔ REGISTER ITEM 567: the pane address `{}` handed a read-only client input the \
+             terminal REFUSED TO ECHO. The secret is not on this pane's screen and it is in this \
+             answer, which is exactly the class of text a wire read must not reach — a password at \
+             a `sudo` or `ssh` prompt is the shipping case. Answered {answer}",
+            field.path,
+        );
+    }
+    println!(
+        "REGISTER ITEM 567 — asked {asked} declared pane read(s); parametric families skipped for \
+         want of an argument: {skipped:?}"
+    );
+    assert!(
+        asked >= 5,
+        "⚠⚠⚠ only {asked} declared reads were asked, which is too few for this to be a sweep of \
+         the pane surface. The population is `PANE_SCHEMA` and it does not shrink — a number this \
+         small means the filter above stopped matching the schema rather than that the wire got \
+         smaller",
+    );
+
+    // ── AND THE ONE FAMILY THE SWEEP CANNOT REACH IS ASKED BY HAND ────────────────────────────
+    //
+    // ⚠⚠⚠⚠⚠ `recent_input_has.<needle>` is skipped above for want of an argument — and it is the
+    // exact address this item is about, so a sweep that only skipped it would be green about a
+    // regression that served the trail here instead of a bool. It is asked with the SECRET itself,
+    // which is the strongest form: the daemon still remembers, the answer is `true`, and `true` is
+    // three characters that are not `hunter2`.
+    let knows = conn
+        .call(
+            "scene/query",
+            json!({ "path": pane_input_path(pane.0, &recent_input_has(SECRET)) }),
+        )
+        .expect("the question is served");
+    assert_eq!(
+        knows,
+        json!(true),
+        "⛔⛔⛔⛔ REGISTER ITEM 567: the address must answer the QUESTION as a bool. A `{knows}` \
+         here is either a trail wearing a new name — the whole exposure, moved rather than closed \
+         — or a pane that stopped recording, which silently disarms `ReadyWhen::Prints`' refusal \
+         and puts the barrier back on a race",
+    );
+    let absent = conn
+        .call(
+            "scene/query",
+            json!({ "path": pane_input_path(pane.0, &recent_input_has("never-typed-here")) }),
+        )
+        .expect("the question is served for a needle nobody typed");
+    assert_eq!(
+        absent,
+        json!(false),
+        "⚠⚠⚠ a needle nobody typed must answer `false`, or the `true` above is a constant and this \
+         address answers nothing at all",
     );
 
     let _ = std::fs::remove_file(&sock);

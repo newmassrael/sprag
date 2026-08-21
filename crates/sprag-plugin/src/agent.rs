@@ -1210,7 +1210,7 @@ mod tests {
         // ahead of this one would mask the reason with a symptom. Each claim gets to be the one
         // that fails for its own mutation.
         let typed = access
-            .input_echo()
+            .input_trail()
             .and_then(|echo| echo.pane_recent_input(pane))
             .unwrap_or_default();
         assert_eq!(
@@ -1688,7 +1688,7 @@ mod tests {
             // What the PANE remembers being written into it — the only record of whether the
             // Ctrl-D was ever sent, and it is the pane's rather than this run's.
             let typed = access
-                .input_echo()
+                .input_trail()
                 .and_then(|echo| echo.pane_recent_input(pane))
                 .unwrap_or_default();
             access.lifecycle().expect("lifecycle").close(pane);
@@ -1937,7 +1937,7 @@ mod tests {
         // THE WITHHELD SUBMIT. Everything written into the pane is in its trail, and a run that had
         // pressed Enter would have put a carriage return there.
         let trail = access
-            .input_echo()
+            .input_trail()
             .expect("this host records a trail")
             .pane_recent_input(pane)
             .expect("a live pane");

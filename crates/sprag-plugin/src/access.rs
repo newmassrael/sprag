@@ -679,6 +679,16 @@ pub trait PaneAccess {
         None
     }
 
+    /// The pane's *echo trail* as TEXT — see [`PaneInputTrail`], and register item 567 for why it
+    /// is separate from the question [`input_echo`](PaneAccess::input_echo) answers.
+    ///
+    /// ⚠⚠ `None` by default, and a surface that reaches its panes over a SOCKET is expected to keep
+    /// it that way: the trail carries input the terminal refused to echo, which is the one thing a
+    /// remote read can reach that a screen read cannot.
+    fn input_trail(&self) -> Option<&dyn PaneInputTrail> {
+        None
+    }
+
     /// What this pane's TERMINAL does with what is written into it — see [`PaneTerminalModes`].
     /// `None` by default, on the same terms as the other sub-surfaces: a host that cannot ask its
     /// device says so rather than guessing.
@@ -894,6 +904,53 @@ impl std::fmt::Display for Signalled {
 /// [`Orchestrator::reaction`]: crate::orchestrator::Orchestrator
 /// [`Pipe::shown`]: crate::pipe::Pipe
 pub trait PaneInputEcho {
+    /// Whether `needle` appears in the text recently written into `id`, or `None` for a pane nobody
+    /// knows.
+    ///
+    /// Compared against SCREEN TEXT by every consumer, and the screen is text — so the trail behind
+    /// this is bounded and lossy-UTF-8 by construction, and the comparison is plain substring
+    /// containment rather than anything a pattern language would add.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a QUESTION and not the trail it used to hand back
+    ///
+    /// Register item 567. This surface is reachable over sprag's socket, and the trail is the one
+    /// class of text a wire read can get that a SCREEN read cannot: **input the terminal was told
+    /// not to echo.** A password typed at a `sudo` or `ssh` prompt is in what sprag remembers
+    /// writing and is nowhere on the grid, so a client that only READS could harvest it.
+    ///
+    /// The consumer never wanted the trail. [`ReadyWhen::Prints`]
+    /// asks exactly one thing — *is my marker in what was typed* — so an answer of `bool` serves it
+    /// identically and carries nothing home. The needle is the CALLER'S own marker, which it
+    /// already holds; the pane's other bytes stay in the pane.
+    ///
+    /// ⚠⚠ The trail itself did not stop existing: [`PaneInputTrail`] still offers it to a host that
+    /// holds the panes IN ITS OWN PROCESS, where there is no wire to cross. What changed is that a
+    /// remote surface offers that capability not at all, rather than offering it emptily.
+    fn pane_recent_input_has(&self, id: PaneId, needle: &str) -> Option<bool>;
+}
+
+/// Pane *echo trail*: the whole text recently written into a pane. Reached via
+/// [`PaneAccess::input_trail`].
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a capability of its own and not a second method on [`PaneInputEcho`]
+///
+/// Register item 567. Every consumer that matches a marker asks [`PaneInputEcho`]'s question and is
+/// served by a `bool`; the callers here want the TEXT, and they are diagnostics and gates running in
+/// the same process as the panes. Splitting them means the surface that crosses a socket can decline
+/// this capability outright — `input_trail()` answering `None`, which on [`PaneAccess`] has one
+/// settled meaning: *this surface does not have that*.
+///
+/// ⚠⚠ The alternative — one trait with both, and the remote implementation answering `None` from
+/// the trail method — is the shape item 557 spent a round removing. A capability that is present
+/// and always empty makes a caller distinguish *nothing was typed* from *this surface will not say*,
+/// which are different instructions wearing one word.
+///
+/// # ⚠ What it is NOT
+///
+/// Not an audit log and not a security boundary. Anything holding a `&dyn PaneAccess` in-process can
+/// already read every screen and write to every pane; this changes what crosses a WIRE, which is the
+/// only place a reader can be less privileged than a writer.
+pub trait PaneInputTrail {
     /// The text recently written into `id`, or `None` for a pane nobody knows.
     ///
     /// Bounded and lossy-UTF-8 by construction — it is compared against SCREEN TEXT, and the
@@ -1474,6 +1531,13 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self)
     }
 
+    /// ⚠ Offered because this surface HOLDS the panes: there is no wire between it and the trail,
+    /// so nothing crosses that a caller could not already read off the pty. Register item 567 is
+    /// about the surface that does have a wire, and that one declines this.
+    fn input_trail(&self) -> Option<&dyn PaneInputTrail> {
+        Some(self)
+    }
+
     fn hands(&self) -> Option<&dyn PaneHands> {
         Some(self)
     }
@@ -1510,6 +1574,12 @@ impl PaneSupervision for WorkspacePaneAccess {
 }
 
 impl PaneInputEcho for WorkspacePaneAccess {
+    fn pane_recent_input_has(&self, id: PaneId, needle: &str) -> Option<bool> {
+        Some(self.handle(id)?.echo_trail().contains(needle))
+    }
+}
+
+impl PaneInputTrail for WorkspacePaneAccess {
     fn pane_recent_input(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.echo_trail())
     }
@@ -2211,7 +2281,7 @@ mod tests {
         // trail is written inside `write_input`, one line before the `write(2)` that would have
         // parked — so an empty trail is the pseudoterminal's own evidence that nothing was sent.
         let trail = access
-            .input_echo()
+            .input_trail()
             .expect("this host records a trail")
             .pane_recent_input(dead);
         assert_eq!(
@@ -2255,7 +2325,7 @@ mod tests {
             .expect("⚠⚠⚠ a PERSON's keystroke must still reach this pane — see the doc's residue");
         assert_eq!(
             access
-                .input_echo()
+                .input_trail()
                 .expect("this host records a trail")
                 .pane_recent_input(dead)
                 .as_deref(),
@@ -2275,7 +2345,7 @@ mod tests {
              same keys: {} bytes\n",
             dead.0,
             access
-                .input_echo()
+                .input_trail()
                 .expect("recorded")
                 .pane_recent_input(dead),
             written.bytes(),
@@ -2294,7 +2364,7 @@ mod tests {
         let access = WorkspacePaneAccess::new(workspace);
         assert_eq!(
             access
-                .input_echo()
+                .input_trail()
                 .expect("this host records a trail")
                 .pane_recent_input(pane)
                 .as_deref(),
@@ -2305,7 +2375,7 @@ mod tests {
         typed.push(KeyStroke::named("Enter"));
         let _written = access.inject(pane, &typed).expect("write");
         let trail = access
-            .input_echo()
+            .input_trail()
             .expect("this host records a trail")
             .pane_recent_input(pane)
             .expect("a live pane has a trail");
@@ -2316,7 +2386,7 @@ mod tests {
         );
         assert!(
             access
-                .input_echo()
+                .input_trail()
                 .expect("recorded")
                 .pane_recent_input(PaneId(9999))
                 .is_none(),
