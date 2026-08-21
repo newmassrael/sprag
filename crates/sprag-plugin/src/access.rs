@@ -1218,6 +1218,19 @@ pub trait PaneLifecycle {
     /// would leave a run with no pane at all and nothing to report it against; this way a failed
     /// replacement leaves the caller exactly where it was, holding a pane it can still read.
     ///
+    /// ⚠⚠⚠⚠⚠ **THAT WAS PROSE NOTHING COULD CONTRADICT UNTIL 2026-08-22** — register item 566.
+    /// Every gate in the workspace exercised the path where the spawn SUCCEEDS, so swapping the two
+    /// statements passed all of them. The gate that can now contradict it is
+    /// `a_replacement_that_cannot_be_born_leaves_the_run_holding_the_pane_it_had`
+    /// (`sprag-host/tests/wire_client.rs`): it drives the failing path against a real daemon and
+    /// holds that the named pane is still there and still answering.
+    ///
+    /// ⚠⚠ The item filed the failure as UNREACHABLE — *the replacement re-runs the argv the pane is
+    /// currently running, so the program exists by construction*. It exists at spawn time; nothing
+    /// says it exists now. A pane started from a path that is later unlinked keeps running (the
+    /// kernel holds the inode) and cannot be re-exec'd, which is what an upgrade or a swept temp
+    /// directory does to a session that has been open since before them.
+    ///
     /// # ⚠⚠⚠ It is the same SEAT as well as the same command
     ///
     /// What the caller declared about the pane goes with it — its `name`, its `opened_by`

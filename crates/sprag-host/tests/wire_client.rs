@@ -7820,3 +7820,131 @@ fn a_remote_supervision_read_costs_what_its_documentation_claims() {
 
     let _ = std::fs::remove_file(&sock);
 }
+
+/// ⛔⛔⛔⛔ **A REPLACEMENT THAT CANNOT BE BORN LEAVES THE RUN HOLDING THE PANE IT HAD** — register
+/// item 566, and the one property that makes a session rollover safe to ATTEMPT at all.
+///
+/// # ⚠⚠⚠⚠⚠ Why this was ungated, and what that cost
+///
+/// [`sprag_plugin::PaneLifecycle::respawn`] spawns the replacement BEFORE closing the outgoing pane,
+/// so a spawn that fails leaves the caller with the pane it started with. Every other gate in this
+/// workspace exercises the path where the spawn SUCCEEDS — so **reversing the two statements passed
+/// all of them.** The order was a claim the documentation made and nothing could contradict, on the
+/// path whose entire purpose is that nothing is lost.
+///
+/// # ⚠⚠⚠ The seam: a pane that is ALIVE and whose argv cannot be run again
+///
+/// The item filed this as unreachable, reasoning that the replacement re-runs the argv the pane is
+/// *currently* running, so the program exists by construction. **It existed at spawn time. Nothing
+/// says it exists now.** The fixture is a copy of `cat` under a name this test owns: the pane is
+/// spawned from it, the file is unlinked, and the running pane does not notice — the kernel holds
+/// the inode for as long as the process does. The pane is live, named and echoing, and its argv
+/// cannot be exec'd a second time.
+///
+/// ⚠⚠ That is not a contrived state. It is what an upgrade, a `cargo build`, or a swept temp
+/// directory does to a pane that has been open since before them — which is the ordinary condition
+/// of the long-lived session a rollover is FOR.
+///
+/// # ⚠⚠ What each half catches on its own
+///
+/// * **The refusal.** An `Ok` here would mean a replacement was announced that is not running
+///   anything, and the outgoing pane closed against it — a worse loss than the refusal, because the
+///   caller would believe the rollover happened.
+/// * **The pane is still there afterwards, by NAME and by ECHO.** The name alone can pass on a
+///   listing row a closed pane left behind; the echo is what says the PROGRAM is still alive. ⚠ The
+///   echo comes from the terminal because the program is `cat`, which leaves the line discipline
+///   alone — item 568's fixture, for item 568's reason.
+#[test]
+fn a_replacement_that_cannot_be_born_leaves_the_run_holding_the_pane_it_had() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+
+    let source = ["/bin/cat", "/usr/bin/cat"]
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .expect("every platform this suite runs on has a `cat` to copy");
+    let victim = std::env::temp_dir().join(format!("sprag-566-{}", std::process::id()));
+    let _ = std::fs::remove_file(&victim);
+    std::fs::copy(source, &victim).expect("copy `cat` under a name this test owns");
+
+    let pane = spawn_pane(
+        &mut setup,
+        json!({ "cmd": [victim.to_string_lossy()], "name": DRIVEN }),
+    );
+
+    let echoed = |what: &str| {
+        remote
+            .pane_full_lines(pane)
+            .unwrap_or_default()
+            .iter()
+            .any(|line| line.contains(what))
+    };
+    let say = |what: &str| {
+        deliver(
+            &remote,
+            &RunContext::uncancellable(),
+            pane,
+            what,
+            &Delivery::new(),
+        )
+    };
+
+    // ── THE CONTROL: the pane is alive and answering BEFORE anything is taken away ─────────────
+    say("alive-before").expect("the fixture pane takes a delivery");
+    assert!(
+        wait_until(Duration::from_secs(10), || echoed("alive-before")),
+        "⚠⚠ the fixture pane never echoed, so «still there» below would be a claim about a pane \
+         that was never alive — which passes for the wrong reason. Read {:?}",
+        remote.pane_full_lines(pane),
+    );
+
+    // The program the pane is running stops existing on disk. The pane does not notice.
+    std::fs::remove_file(&victim).expect("unlink the program the pane was started from");
+
+    let lifecycle = remote.lifecycle().expect("this host opens panes");
+    let refusal = lifecycle.respawn(pane).err().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 566: `respawn` answered Ok for a pane whose argv no longer \
+             exists. Either a replacement was announced that is running nothing, or the spawn \
+             failure was swallowed — and in both readings the outgoing pane was closed against a \
+             pane that cannot serve. A rollover that cannot happen must SAY so."
+        )
+    });
+
+    println!("REGISTER ITEM 566 — the refusal a dead argv produces: {refusal}");
+
+    // ⚠⚠⚠⚠⚠ THE REFUSAL IS ATTRIBUTED, IN THE SAME BREATH, OR THIS GATE IS ABOUT NOTHING. A
+    // `respawn` that refused for a bookkeeping reason — an id nobody holds, a pane with no recorded
+    // argv — would satisfy every assertion below while never reaching the spawn, so the order this
+    // item is about would still be ungated. A pane running the SAME program from a path that still
+    // exists must roll over, against the same daemon, moments later.
+    let control = spawn_pane(&mut setup, json!({ "cmd": [source] }));
+    lifecycle.respawn(control).unwrap_or_else(|error| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 566: this daemon cannot replace a pane AT ALL — {error}. The \
+             refusal above is then a fact about `respawn` rather than about an argv that cannot be \
+             run, and the order the gate is for was never exercised."
+        )
+    });
+
+    // ── THE CLAIM: the caller still holds what it had ─────────────────────────────────────────
+    assert_eq!(
+        remote.pane_named(DRIVEN),
+        Some(pane),
+        "⛔⛔⛔⛔ REGISTER ITEM 566: the spawn failed ({refusal}) and the pane the caller named is \
+         GONE. That is the loss the order exists to prevent: `respawn` must spawn before it \
+         closes, so a rollover that cannot happen costs an error rather than the session it was \
+         preserving. A run meeting this loses the work in that pane and has nothing to re-adopt.",
+    );
+
+    say("alive-after").expect("the pane the caller still holds takes a delivery");
+    assert!(
+        wait_until(Duration::from_secs(10), || echoed("alive-after")),
+        "⛔⛔⛔⛔ REGISTER ITEM 566: the pane is on the daemon's listing but its PROGRAM is not \
+         answering. A name that outlives the process behind it is worse than a clean refusal — the \
+         caller reads «my session survived» off a row nothing is running. Read {:?}",
+        remote.pane_full_lines(pane),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
