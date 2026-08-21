@@ -78,15 +78,15 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
-    DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DOCTOR_FIELD, DROP_FILE_ACTION, EVENTS_FIELD,
-    GLOBAL_COMMANDS_SLOT, GRANT_PANE_ACTION, GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
-    MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
-    PANE_RESOURCES_FIELD, PANE_SUMMARY_ID_KEY, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire,
-    PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION,
-    RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    AGENT_FIELD, AGENT_MANIFESTS_SLOT, AGENT_SUPERVISION_SLOT, ActivityWire, BREAK_PANE_ACTION,
+    CLIENTS_SLOT, CLOSE_ACTION, DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DOCTOR_FIELD,
+    DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRANT_PANE_ACTION, GRID_WORK_SLOT,
+    JOIN_PANE_ACTION, JoinAsk, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANE_RESOURCES_FIELD, PANE_SUMMARY_ID_KEY, PANES_SLOT,
+    PROJECT_FIELD, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
     SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
     TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
@@ -312,6 +312,18 @@ impl RegistryView<'_> {
             // for a stronger reason: the ruleset is the DAEMON's, one list for every session it
             // serves, so scoping this answer would name a session for a fact no session owns.
             AGENT_MANIFESTS_SLOT => Some(agent_manifests_value(self.agents)),
+            // ⚠⚠⚠⚠⚠ WHETHER THIS DAEMON SUPERVISES AT ALL — register item 557. UNSCOPED for the
+            // slot above's reason exactly: a detector is the DAEMON's, one for every session it
+            // serves. ⚠ And this is the door a reader whose own session has GONE must still reach:
+            // *can anything here answer about an agent* is precisely what a supervisor asks when
+            // the rest of its world stops answering, and refusing it would make a lost session read
+            // as a host that cannot look — the collapse this address exists to prevent, arriving by
+            // the one route the address itself could not see.
+            //
+            // ⚠⚠ It was first written into the SCOPED match beside the per-pane verdict, where it
+            // compiled and passed its own gate. `every_declared_read_is_measured_for_whether_it_
+            // needs_the_readers_session` is what said otherwise, by measuring rather than reading.
+            AGENT_SUPERVISION_SLOT => Some(IntrospectValue::Bool(self.agents.is_some())),
             // HOW TO CALL THE VERBS THIS SURFACE PUBLISHES. Unscoped for the strongest reason on
             // this door: its subject is the WIRE, so it is the same answer for every session, every
             // client and every request — a fact about the daemon's vocabulary rather than about
@@ -2941,80 +2953,15 @@ impl WorkspaceExternal {
                         // cannot be debugged, and this is `explain`'s whole content), and `seq` moves
                         // on a published CHANGE so a client tells "still blocked" from "blocked again"
                         // without diffing strings — `notification_seq`'s treatment exactly.
+                        //
+                        // ⚠⚠⚠⚠⚠ THE OBJECT IS BUILT IN ONE PLACE, and this site stopped being that
+                        // place at register item 557: the verdict now has an ADDRESS of its own
+                        // (`crate::wire::AGENT_FIELD`), and two literals answering the same question
+                        // would differ first in whichever key one of them forgot. See
+                        // `crate::agent::verdict_json` for what is always present and what is
+                        // additive — and for its reader, which sits beside it.
                         if let Some(facts) = agents.as_ref().and_then(|map| map.get(&p.id)) {
-                            let mut value = serde_json::json!({
-                                "state": facts.state,
-                                "seq": facts.seq,
-                                // ⚠⚠⚠ HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED, beside how many
-                                // times its verdict moved — register item 441. They are two facts
-                                // that move for two reasons, and a supervisor needs the second:
-                                // `seq` cannot say whether a peer took the prompt just typed at it,
-                                // because a submit into an already-`working` pane publishes nothing.
-                                // ⚠ NOT additive-by-absence like its neighbours below: it is always
-                                // present, because ZERO is a real and useful answer (*nothing has
-                                // ever been asked here*) and an absent key would be read as the
-                                // pre-441 wire rather than as that.
-                                "asked_seq": facts.asked_seq,
-                                // ⚠⚠⚠ AND HOW MANY ANSWERS IT HAS STATED — the other end of the
-                                // same turn, always present for the same reason: zero is the real
-                                // answer *this pane's agent has never stated one*, and a reader
-                                // that met an absent key could not tell that from an old daemon.
-                                "said_seq": facts.said_seq,
-                            });
-                            if let Some(name) = &facts.agent {
-                                value["name"] = serde_json::json!(name);
-                            }
-                            if let Some(rule) = &facts.rule {
-                                value["rule"] = serde_json::json!(rule);
-                            }
-                            // WHO said so, for a verdict that was REPORTED rather than inferred. The
-                            // counterpart of `rule` for the other kind of evidence: a reported verdict
-                            // carries no rule and a scraped one carries no source, so a reader never
-                            // has to guess which authority answered.
-                            if let Some(source) = &facts.source {
-                                value["source"] = serde_json::json!(source);
-                            }
-                            // WHICH BUILD that reporter is, when it said. Beside `source` because it
-                            // is the same kind of fact about the same authority — who answered, and
-                            // whether they are this daemon's own image. Additive on `source`'s
-                            // terms, and ABSENT means the reporter did not say rather than that it
-                            // matches (`crate::wire::AGENT_BUILD_KEY`).
-                            if let Some(build) = &facts.reporter_build {
-                                value[crate::wire::AGENT_BUILD_KEY] = serde_json::json!(build);
-                            }
-                            // WHAT THE PANE IS ASKING — the question itself, its options, and which
-                            // one a bare Enter would take. ADDITIVE on the same terms as every key
-                            // beside it: present only on a pane this look found `blocked` AND whose
-                            // menu this build could read, so every other pane is byte-identical to
-                            // the pre-R367 wire shape.
-                            //
-                            // ⚠⚠ Its ABSENCE on a `blocked` pane is a claim too, and the one a
-                            // reader must not mistake: this daemon looked and could not read a menu
-                            // there. The remedy is a person, exactly as it is for a run
-                            // (`Refusal::Unreadable`) — but a pane carries no `why` beside it,
-                            // because a pane was given no consent and refused nothing.
-                            //
-                            // Until this key existed, an agent that saw a sibling go `blocked` had
-                            // to `read_pane` and re-derive a menu this daemon had already parsed —
-                            // for the RUN surface, on the same screen, in the same instant.
-                            if let Some(question) = &facts.asking {
-                                value[crate::wire::ASKING_KEY] =
-                                    crate::agent::question_json(question);
-                            }
-                            // ⚠⚠⚠ AND WHY THE PEER SAYS IT WANTS ONE, which is what the paragraph
-                            // above admits `asking`'s absence cannot say. The two are additive on
-                            // identical terms and are NOT alternatives: a pane can carry a menu this
-                            // build parsed AND the sentence the agent raised it with, and a pane can
-                            // carry the sentence with no menu at all — which is the case that used to
-                            // publish nothing but the word `blocked`.
-                            //
-                            // ⚠⚠ ABSENT means *the reporter did not say*, never *the peer wants
-                            // nothing*: every pane read off the screen answers absent, as does every
-                            // reporter older than `crate::wire::AGENT_NOTICED_KEY`.
-                            if let Some(noticed) = &facts.noticed {
-                                value[crate::wire::AGENT_NOTICED_KEY] = serde_json::json!(noticed);
-                            }
-                            entry["agent"] = value;
+                            entry["agent"] = crate::agent::verdict_json(facts);
                         }
                         entry
                     })
@@ -3148,6 +3095,20 @@ impl WorkspaceExternal {
                 return Some(Err(ReadRefusal::QueryTypeMismatch));
             };
             return Some(Ok(project_value(self.workspace(), PaneId(pane))));
+        }
+        // ⚠⚠⚠⚠ WHAT THE AGENT IN ONE PANE IS DOING — register item 557, and on this surface for the
+        // family above's reason: the answer needs the registry's ruleset and per-pane memory, which
+        // a pane external does not hold. A driver supervising one pane had to fetch every pane's
+        // entry to read one verdict, and then find its pane in that list.
+        if let Some(arg) = path.strip_prefix(AGENT_FIELD.literal_prefix()) {
+            let Ok(pane) = arg.parse::<u64>() else {
+                return Some(Err(ReadRefusal::QueryTypeMismatch));
+            };
+            return Some(Ok(verdict_value(
+                self.workspace(),
+                self.agents.as_deref(),
+                PaneId(pane),
+            )));
         }
         None
     }
@@ -3297,6 +3258,61 @@ impl WorkspaceExternal {
             _ => Err(InvokeError::UnknownPath),
         }
     }
+}
+
+/// The [`AGENT_FIELD`] answer for one pane: what the agent in it is doing, or `Null` for a pane no
+/// manifest claims — register item 557.
+///
+/// # ⚠⚠⚠⚠⚠ A `Null` here is *"not an agent"* and NEVER *"this host cannot look"*
+///
+/// The second of those is [`AGENT_SUPERVISION_SLOT`]'s to answer, and separating them is the whole
+/// point of the pair: they are opposite instructions to a supervisor, and a reader handed one word
+/// for both concludes *no agents here* about a daemon that never looked. So the `agents.is_none()`
+/// arm below is not a shortcut — it is the case where this address has genuinely nothing to say and
+/// the capability slot is where the caller must have asked.
+///
+/// # It observes rather than reading a cached verdict, and that is the same read the list makes
+///
+/// [`AgentClock::observe`](crate::AgentClock::observe) is the ONE arbitrated look: it takes the
+/// registry's lock, applies the settle window and the quiescence gate, and answers the same facts
+/// the [`PANES_SLOT`] walk gets. A second path that read a stored verdict would be a second
+/// authority — and, worse, one that never advanced the tracker, so a pane read only through this
+/// address would never settle at all.
+///
+/// ⚠ The window is read from the user's config per call rather than cached, exactly as the list
+/// reads it lazily: this address is asked about ONE pane on a supervisor's step, not per frame.
+fn verdict_value(
+    workspace: &Arc<Mutex<Workspace>>,
+    agents: Option<&crate::AgentClock>,
+    pane: PaneId,
+) -> IntrospectValue {
+    let Some(agents) = agents else {
+        return IntrospectValue::Null;
+    };
+    let guard = lock(workspace);
+    let Some(held) = guard.pane(pane) else {
+        // A pane this window does not hold (closed, or another window's) — `project.<pane>`'s own
+        // reading of the same absence.
+        return IntrospectValue::Null;
+    };
+    // The CHILD's own title, never the pane's name: a name is chosen by whoever asked for the pane,
+    // and one built-in fingerprint is a condition on the title alone, so reading a name here would
+    // let anyone who can name a pane forge an agent identity. The pane list states the same rule.
+    let title = held.title();
+    held.pty()
+        .with_screen(|screen| {
+            agents.observe(
+                pane,
+                screen,
+                title.as_deref(),
+                Instant::now(),
+                crate::config::agent_settle,
+            )
+        })
+        .as_ref()
+        .map_or(IntrospectValue::Null, |facts| {
+            IntrospectValue::Json(crate::agent::verdict_json(facts))
+        })
 }
 
 /// The `project.<pane>` answer for one pane: the commands the project it sits in declares.
@@ -4365,6 +4381,11 @@ mod tests {
                 // 441): a zero is *this pane's agent has stated no answer*, and an absent key
                 // would be indistinguishable from a daemon too old to count.
                 "said_seq": 0,
+                // ⚠⚠⚠ AND HOW MANY REPORTS IT HAS ACCEPTED — register item 458, on the wire since
+                // 557. ONE here, because this pane's verdict IS a report: it is the counter that
+                // moves while a turn is merely working, which is what tells a supervisor a slow
+                // peer from one that has stopped speaking.
+                "reports": 1,
                 "source": "herdr:claude",
             }),
             "a pane no rule claims is published because a process inside it said so, and the answer \
@@ -4650,6 +4671,12 @@ mod tests {
                 // reason — the two ends of a turn, and a supervisor needs both to say where one
                 // stands: asked moved and said did not is a peer still working (item 441).
                 "said_seq": 0,
+                // ⚠⚠⚠ AND HOW MANY REPORTS IT HAS ACCEPTED — register item 458, on the wire since
+                // 557, always present on the two counters above's terms. ZERO here, and that is the
+                // fact rather than a placeholder: this verdict was SCRAPED off the screen, so
+                // nobody inside the pane has said anything at all — which is exactly the case a
+                // supervisor must not read as *a reporter that has gone quiet*.
+                "reports": 0,
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.

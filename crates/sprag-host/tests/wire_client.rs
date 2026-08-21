@@ -22,12 +22,12 @@ use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
     CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, FULL_LINES_SLOT,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
-    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_EOF_SLOT, PANES_SLOT,
-    PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION,
+    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_EOF_SLOT, PANE_SUMMARY_ID_KEY,
+    PANES_SLOT, PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION,
     RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
     SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, pane_processes_at,
-    project_slot_for,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, agent_slot_for, cells_slot_at,
+    pane_processes_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -6494,6 +6494,223 @@ fn a_modified_keystroke_reaches_a_pane_as_the_chord_it_is() {
          a modifier writes the plain character instead, successfully, and reports the same byte \
          count for both. Read {:?}",
         remote.pane_collapsed(pane),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔ **A DRIVER OUTSIDE THIS PROCESS READS WHAT THE AGENT IN A PANE IS DOING, AND THE TWO
+/// ABSENCES BESIDE IT STAY TWO** — register item 557, the supervision half of item 544's stage 1.
+///
+/// # ⚠⚠⚠⚠⚠ Why this read is the one that decides whether the loop may live elsewhere
+///
+/// `outer.rs` consults [`PaneAccess::supervision`] on five production paths: it is how a run learns
+/// that its peer took the prompt, that a turn ended, and that the peer is asking for a person. A
+/// remote driver that answered `None` there would report *this build cannot supervise anything*
+/// about a daemon that is supervising perfectly well — so every run driven from outside would hand
+/// itself to a human on its first step.
+///
+/// # ⚠⚠⚠⚠⚠ The two absences a single word collapses, which is the defect this gate holds shut
+///
+/// [`PaneAccess::supervision`] answering `None` means *ask a person, this build cannot look*.
+/// `PaneSupervision::pane_agent_state` answering `None` means *this pane is not an agent*. They are
+/// OPPOSITE instructions, and a surface that publishes one `unknown` word for both lets a
+/// supervisor conclude "no agents here" from a host that never looked. The rival terminal cloned in
+/// this tree does exactly that — one `AgentStatus::Unknown` serves both (herdr
+/// `src/api/schema/common.rs:151`, read at its pin `9a4ce5e1`) — so this gate asserts the plain
+/// pane's `None` **in the same breath** as the host's `Some`, which is the only arrangement in
+/// which the distinction is observable at all.
+///
+/// # ⚠⚠⚠ And WHAT the remote answer carries, not merely that it exists
+///
+/// * `reports` — how many reports this pane has ACCEPTED, whatever they said. It is the one counter
+///   that moves while a turn is merely working (register item 458): `seq` stands still through a
+///   turn calling tool after tool, and `asked_seq`/`said_seq` stand still through a turn still in
+///   flight. A remote observation without it cannot tell a thinking peer from one that stopped
+///   speaking, which is the judgement a supervisor exists to make.
+/// * `authority` — REPORTED (and by whom) versus SCRAPED (and by which rule). A driver handed the
+///   flattened form would act on screen evidence believing it had the agent's own statement.
+/// * `asking` — the menu this daemon already parsed. Its absence would make a remote driver
+///   re-derive a question off a screen the daemon read in the same instant, which is the tax R367
+///   was filed over, one process further out.
+#[test]
+fn a_remote_driver_reads_a_pane_agent_verdict_and_a_plain_pane_is_a_different_absence() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+
+    // The agent's pane: a menu on the screen, then `cat` so the child stays and the screen holds.
+    let agent = spawn_pane(
+        &mut setup,
+        json!({
+            "cmd": ["sh", "-c", "printf 'Pick one:\\n\\342\\235\\257 1. first\\n  2. second\\n'; cat"],
+            "cols": 40,
+            "rows": 10,
+        }),
+    );
+    // ...and a pane no manifest claims, on the same host and the same connection.
+    let plain = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_collapsed(agent)
+            .is_some_and(|screen| screen.contains("2. second"))),
+        "the menu never reached the screen, so the `asking` claim below would measure a race. \
+         Read {:?}",
+        remote.pane_collapsed(agent),
+    );
+
+    setup
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(REPORT_AGENT_ACTION),
+                "args": {
+                    "id": agent.0,
+                    "source": "hook:claude",
+                    "state": "blocked",
+                    "name": "claude",
+                    "asked": "which one?",
+                    "said": "I need a person",
+                    "noticed": "the menu is up",
+                    "transcript": "/tmp/a-session.jsonl",
+                },
+            }),
+        )
+        .expect("the agent reports its own state over the wire");
+
+    // ── THE HOST CAN LOOK ──────────────────────────────────────────────────────────────────────
+    let supervisor = remote.supervision().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a remote driver reports that this build CANNOT SUPERVISE \
+             ANYTHING — about a daemon that is supervising the two panes it was just asked about. \
+             That verdict means *hand this to a person*, so every run driven from outside the \
+             daemon stops on its first step. `outer.rs` asks it on five production paths."
+        )
+    });
+
+    let seen = supervisor.pane_agent_state(agent).unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: the pane that just REPORTED itself an agent reads as *not \
+             an agent* through a remote driver's surface. The daemon holds the verdict — it is on \
+             the pane list in the same instant — and the driver has no address to ask it at."
+        )
+    });
+
+    assert_eq!(
+        seen.state,
+        sprag_detect::AgentState::Blocked,
+        "the verdict itself must cross: a driver reading the wrong state acts on the wrong turn",
+    );
+    assert_eq!(
+        seen.agent.as_deref(),
+        Some("claude"),
+        "WHICH agent, as the reporter named it",
+    );
+    assert_eq!(
+        seen.authority,
+        sprag_plugin::Authority::Reported {
+            source: "hook:claude".to_owned()
+        },
+        "⚠⚠⚠⚠ WHERE THE ANSWER CAME FROM, and so how much it is worth. A remote surface that \
+         flattened this into a screen guess would have a driver act on the weaker evidence without \
+         ever learning there was stronger — and one that flattened it the other way would report a \
+         scrape as the agent's own statement",
+    );
+    assert!(
+        seen.reports >= 1,
+        "⛔⛔⛔⛔ REGISTER ITEM 458, one process out: `reports` is the ONLY counter that moves \
+         while a turn is merely working — `seq` stands still through a turn calling tool after \
+         tool, and `asked_seq`/`said_seq` stand still through a turn still in flight. Without it a \
+         remote supervisor cannot tell a thinking peer from one that stopped speaking. Got {}",
+        seen.reports,
+    );
+    assert_eq!(
+        seen.asked.as_deref(),
+        Some("which one?"),
+        "the agent's own account of what it was asked, carried through untouched",
+    );
+    assert_eq!(
+        seen.said.as_deref(),
+        Some("I need a person"),
+        "...and what it answered — the half a driver was reading off a pane that cannot be read \
+         for it (register item 441)",
+    );
+    assert_eq!(
+        seen.noticed.as_deref(),
+        Some("the menu is up"),
+        "...and WHY it wants a person, which is precisely the case a run has to hand to one",
+    );
+    assert_eq!(
+        seen.transcript.as_deref(),
+        Some("/tmp/a-session.jsonl"),
+        "...and where it writes, which no remote reader can derive from a session id",
+    );
+    let asking = seen.asking.as_ref().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: the daemon PARSED this menu — it is on the pane list in \
+             the same instant — and a remote driver is handed nothing, so it must re-derive the \
+             question off a screen somebody has already read. Observation was {seen:?}"
+        )
+    });
+    assert_eq!(
+        asking
+            .choices
+            .iter()
+            .map(|choice| (choice.number, choice.label.as_str(), choice.selected))
+            .collect::<Vec<_>>(),
+        vec![(1, "first", true), (2, "second", false)],
+        "⚠⚠⚠ the menu crosses with its SELECTION intact: which option a bare Enter would take is \
+         the answer a caller gets by doing nothing, and a driver that lost it cannot tell a \
+         consent from an accident",
+    );
+
+    // ── ONE BUILDER, TWO READERS ───────────────────────────────────────────────────────────────
+    // ⚠⚠⚠⚠ The listing has carried this object since H3 and the address is new, so *they are the
+    // same object* is a claim exactly one round old — and the way it would break is the way every
+    // duplicated shape in this repository has broken: a key added at one site and not the other,
+    // with both looking perfectly well-formed. Asserted whole rather than key by key, so a key that
+    // ARRIVES at one site is as red as a key that leaves.
+    let listed = setup
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list on the test's own connection");
+    let entry = listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry[PANE_SUMMARY_ID_KEY].as_u64() == Some(agent.0))
+        .cloned()
+        .expect("the agent's pane is on the list");
+    let addressed = setup
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&agent_slot_for(agent.0)) }),
+        )
+        .expect("the same verdict at its own address");
+    assert_eq!(
+        entry["agent"], addressed,
+        "⛔⛔⛔⛔ REGISTER ITEM 557: the pane list and the pane's own address must publish the SAME \
+         verdict, because they are one builder. Two literals answering one question drift first in \
+         whichever key one of them forgot — and a driver reading the address while a person reads \
+         the list would then be supervising a peer the screen disagrees about",
+    );
+
+    // ── AND THE PANE THAT IS SIMPLY NOT AN AGENT, IN THE SAME BREATH ───────────────────────────
+    assert!(
+        supervisor.pane_agent_state(plain).is_none(),
+        "⚠⚠⚠⚠⚠ a pane no manifest claims must read as NOT AN AGENT. An address answering \
+         something here would have a driver supervise a shell — and one answering the neighbouring \
+         pane's verdict would have it supervise the wrong peer",
+    );
+    assert!(
+        remote.supervision().is_some(),
+        "⛔⛔⛔⛔ REGISTER ITEM 557, AND THE WHOLE POINT: the plain pane's `None` above must not be \
+         readable as *this host cannot look*. The two are OPPOSITE instructions — *this pane is \
+         not an agent* versus *ask a person, nothing here can supervise* — and a surface that \
+         publishes one word for both lets a supervisor conclude «no agents here» from a host that \
+         never looked. The rival terminal in this tree collapses them into one `unknown`",
     );
 
     let _ = std::fs::remove_file(&sock);

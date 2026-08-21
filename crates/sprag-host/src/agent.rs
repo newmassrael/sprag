@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use sprag_detect::{Hysteresis, Question, Report, ReportOutcome, Ruleset, Tracker};
+use sprag_detect::{Choice, Hysteresis, Question, Report, ReportOutcome, Ruleset, Tracker};
 use sprag_terminal::PaneId;
 use sprag_vt::Screen;
 
@@ -249,6 +249,165 @@ pub fn question_json(question: &Question) -> serde_json::Value {
                 crate::wire::CHOICE_SELECTED_KEY: choice.selected,
             }))
             .collect::<Vec<_>>(),
+    })
+}
+
+/// The [`Question`] behind [`question_json`], read back — the parse a client outside this process
+/// needs, written HERE so the renderer and the reader are one edit apart.
+///
+/// ⚠⚠ A menu with no `choices` array is not a question: the parser's own rule is that ONE numbered
+/// line is a prompt echo, so a shape carrying none of them has nothing a caller could answer and
+/// reads as absent rather than as an empty menu.
+fn question_of(value: &serde_json::Value) -> Option<Question> {
+    let choices: Vec<Choice> = value[crate::wire::CHOICES_KEY]
+        .as_array()?
+        .iter()
+        .filter_map(|choice| {
+            Some(Choice {
+                number: u32::try_from(choice[crate::wire::CHOICE_NUMBER_KEY].as_u64()?).ok()?,
+                label: choice[crate::wire::CHOICE_LABEL_KEY].as_str()?.to_owned(),
+                // ABSENT is `false` — no marker seen — and never *"assume this one"*: a caller told
+                // the wrong option is where a bare Enter lands cannot tell a consent from an
+                // accident.
+                selected: choice[crate::wire::CHOICE_SELECTED_KEY]
+                    .as_bool()
+                    .unwrap_or(false),
+            })
+        })
+        .collect();
+    if choices.is_empty() {
+        return None;
+    }
+    Some(Question {
+        asked: value[crate::wire::ASKED_KEY]
+            .as_array()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(|line| line.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        choices,
+    })
+}
+
+/// **ONE PANE'S AGENT VERDICT, IN THE SHAPE EVERY SURFACE PUBLISHES IT** — the object the
+/// [`PANES_SLOT`](crate::wire::PANES_SLOT) entry carries under `agent` and the whole answer of
+/// [`AGENT_FIELD`](crate::wire::AGENT_FIELD).
+///
+/// # ⚠⚠⚠⚠⚠ ONE BUILDER, because the listing and the address must not drift
+///
+/// The pane list built this inline until register item 557 gave the verdict an address of its own.
+/// A second literal would have been a second answer to the same question, differing first in
+/// whichever key one of them forgot — and the reader that has to parse it back
+/// ([`verdict_of`]) sits directly below, so a key added here and nowhere else is one edit
+/// from being visible rather than a round.
+///
+/// # What is always present, and what is present only when it was stated
+///
+/// The four counters and the state are ALWAYS written: zero is a real answer for each of them
+/// (*nothing has ever been asked here*), and an absent key would be read as an older daemon instead
+/// of as the fact. Everything else is additive — present only where somebody said it — so a pane
+/// nobody has reported about is byte-identical to the wire shape before each key existed.
+#[must_use]
+pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        crate::wire::AGENT_STATE_KEY: facts.state,
+        crate::wire::AGENT_SEQ_KEY: facts.seq,
+        crate::wire::AGENT_ASKED_SEQ_KEY: facts.asked_seq,
+        crate::wire::AGENT_SAID_SEQ_KEY: facts.said_seq,
+        // ⚠⚠⚠⚠⚠ THE COUNTER THAT MOVES WHILE A TURN IS MERELY WORKING — register item 458. The
+        // three above stand still through a turn calling tool after tool, which reads exactly like
+        // a turn nothing will ever end; this one is the peer's reporter being alive. It reached
+        // `AgentFacts` when 458 was paid and reached no wire until 557, so every out-of-process
+        // supervisor was telling a slow peer from a dead one without it.
+        crate::wire::AGENT_REPORTS_KEY: facts.reports,
+    });
+    if let Some(name) = &facts.agent {
+        value[crate::wire::AGENT_NAME_KEY] = serde_json::json!(name);
+    }
+    if let Some(rule) = &facts.rule {
+        value[crate::wire::AGENT_RULE_KEY] = serde_json::json!(rule);
+    }
+    // WHO said so, for a verdict that was REPORTED rather than inferred — `rule`'s counterpart on
+    // the other kind of evidence. A reported verdict carries no rule and a scraped one carries no
+    // source, so a reader never has to guess which authority answered.
+    if let Some(source) = &facts.source {
+        value[crate::wire::AGENT_SOURCE_KEY] = serde_json::json!(source);
+    }
+    // WHICH BUILD that reporter is, when it said. ABSENT means the reporter did not say, never that
+    // it matches (`crate::wire::AGENT_BUILD_KEY`).
+    if let Some(build) = &facts.reporter_build {
+        value[crate::wire::AGENT_BUILD_KEY] = serde_json::json!(build);
+    }
+    // WHAT THE PANE IS ASKING — the question, its options, and which one a bare Enter would take.
+    // ⚠⚠ Its ABSENCE on a `blocked` pane is a claim too: this daemon looked and could not read a
+    // menu there. The remedy is a person.
+    if let Some(question) = &facts.asking {
+        value[crate::wire::ASKING_KEY] = question_json(question);
+    }
+    // ⚠⚠ The agent's own account of the turn — what it was asked, what it answered, and why it
+    // wants a person. Carried through untouched: this layer states, and the reader judges.
+    if let Some(asked) = &facts.asked {
+        value[crate::wire::AGENT_ASKED_KEY] = serde_json::json!(asked);
+    }
+    if let Some(said) = &facts.said {
+        value[crate::wire::AGENT_SAID_KEY] = serde_json::json!(said);
+    }
+    if let Some(noticed) = &facts.noticed {
+        value[crate::wire::AGENT_NOTICED_KEY] = serde_json::json!(noticed);
+    }
+    // WHERE IT WRITES, stated rather than derived from a session id — the derivation that was
+    // measured answering `0` for a transcript that existed (register item 431).
+    if let Some(transcript) = &facts.transcript {
+        value[crate::wire::AGENT_TRANSCRIPT_KEY] = serde_json::json!(transcript);
+    }
+    value
+}
+
+/// [`verdict_json`] read back into the observation a supervisor acts on, or [`None`] for anything
+/// that is not a verdict — a `null` (*this pane is not an agent*), or a word this build's
+/// vocabulary does not hold.
+///
+/// # ⚠⚠⚠⚠ A state this build cannot spell is an ABSENCE, never a guess
+///
+/// [`sprag_detect::AgentState::from_wire`] refuses a word it does not know, and that is carried
+/// through: a newer daemon publishing a fifth state would otherwise be read as whichever variant a
+/// fallback picked, and a supervisor would act on a verdict nobody made. *I cannot see that pane*
+/// is the safe reading, and it is the one every other absence on this wire already means.
+///
+/// ⚠⚠ The authority is DERIVED from which of the two evidence keys is present, exactly as the
+/// in-process source derives it: a reported verdict carries [`AGENT_SOURCE_KEY`](crate::wire) and a
+/// scraped one carries [`AGENT_RULE_KEY`](crate::wire). A shape carrying neither is a scrape whose
+/// rule went unnamed, which is what `Scraped { rule: None }` means.
+#[must_use]
+pub fn verdict_of(value: &serde_json::Value) -> Option<sprag_plugin::AgentObservation> {
+    let state = sprag_detect::AgentState::from_wire(value[crate::wire::AGENT_STATE_KEY].as_str()?)?;
+    let text = |key: &str| value[key].as_str().map(str::to_owned);
+    Some(sprag_plugin::AgentObservation {
+        state,
+        agent: text(crate::wire::AGENT_NAME_KEY),
+        authority: match text(crate::wire::AGENT_SOURCE_KEY) {
+            Some(source) => sprag_plugin::Authority::Reported { source },
+            None => sprag_plugin::Authority::Scraped {
+                rule: text(crate::wire::AGENT_RULE_KEY),
+            },
+        },
+        // ⚠ A MISSING counter reads as zero, which is this wire's own rule for it: the four are
+        // always written, so an absent one is an older daemon — and *nothing has happened yet* is
+        // the reading that makes a supervisor wait rather than conclude.
+        seq: value[crate::wire::AGENT_SEQ_KEY].as_u64().unwrap_or(0),
+        asked_seq: value[crate::wire::AGENT_ASKED_SEQ_KEY]
+            .as_u64()
+            .unwrap_or(0),
+        said_seq: value[crate::wire::AGENT_SAID_SEQ_KEY].as_u64().unwrap_or(0),
+        reports: value[crate::wire::AGENT_REPORTS_KEY].as_u64().unwrap_or(0),
+        asking: question_of(&value[crate::wire::ASKING_KEY]),
+        asked: text(crate::wire::AGENT_ASKED_KEY),
+        said: text(crate::wire::AGENT_SAID_KEY),
+        noticed: text(crate::wire::AGENT_NOTICED_KEY),
+        transcript: text(crate::wire::AGENT_TRANSCRIPT_KEY),
     })
 }
 

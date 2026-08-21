@@ -2081,6 +2081,40 @@ pub const AGENT_TRANSCRIPT_KEY: &str = "transcript";
 /// evidence, since a refused report is one that never says which build it was.
 pub const AGENT_BUILD_KEY: &str = "build";
 
+/// The published verdict's key naming **WHICH RULE ANSWERED**, on a verdict read off the screen.
+///
+/// ⚠ An ANSWER key rather than a request one, which is what separates it from the block above: a
+/// reporter never sends a rule, because a rule is what this daemon used when nobody reported. It is
+/// [`AGENT_SOURCE_KEY`]'s counterpart on the other kind of evidence, and the pair is why a reader
+/// never has to guess which authority spoke.
+pub const AGENT_RULE_KEY: &str = "rule";
+/// The published verdict's key carrying **HOW MANY QUESTIONS THIS PANE HAS BEEN ASKED** — register
+/// item 441, and the count [`AGENT_SEQ_KEY`] cannot supply, because a prompt typed at a pane that is
+/// already `working` publishes no change at all.
+///
+/// ⚠ ALWAYS PRESENT, unlike the additive keys around it: zero is the real answer (*nothing has ever
+/// been asked here*), and an absent key would be read as an older daemon instead.
+pub const AGENT_ASKED_SEQ_KEY: &str = "asked_seq";
+/// The published verdict's key carrying **HOW MANY ANSWERS THIS PANE'S AGENT HAS STATED** — the
+/// other end of [`AGENT_ASKED_SEQ_KEY`]'s turn, always present for the same reason.
+pub const AGENT_SAID_SEQ_KEY: &str = "said_seq";
+/// The published verdict's key carrying **HOW MANY REPORTS THIS PANE HAS ACCEPTED**, whatever any of
+/// them said — register item 458, and the number that separates *the peer is working* from *the peer
+/// has stopped speaking*.
+///
+/// # ⚠⚠⚠⚠⚠ Why the three counters beside it cannot answer this, and why a REMOTE reader needs it
+///
+/// [`AGENT_SEQ_KEY`] counts published CHANGES, and a turn calling tool after tool reports `working`
+/// every time and changes nothing. [`AGENT_ASKED_SEQ_KEY`] and [`AGENT_SAID_SEQ_KEY`] count
+/// STATEMENTS, and a turn still in flight has made neither. **So a long turn and a dead one read
+/// identically on all three** — the measured case being a turn a person stopped with Escape, which
+/// emitted no payload of any kind for fourteen minutes.
+///
+/// ⚠⚠ It reached [`crate::AgentFacts`] at item 458 and never reached the wire, so until item 557
+/// every out-of-process supervisor was making that judgement without the only fact that settles it.
+/// ALWAYS PRESENT, for [`AGENT_ASKED_SEQ_KEY`]'s reason.
+pub const AGENT_REPORTS_KEY: &str = "reports";
+
 /// **WHICH OF FOUR THINGS IS TRUE** about the reporter that produced a pane's verdict, once the
 /// party holding both builds has compared them — [`AGENT_BUILD_KEY`]'s judgement, as data.
 ///
@@ -2563,6 +2597,11 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::new(WINDOW_SIZE_SLOT, "object"),
     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
     SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
+    // ⚠⚠⚠⚠⚠ WHETHER THIS DAEMON SUPERVISES AT ALL — register item 557. A CAPABILITY beside the
+    // per-pane verdicts below, and separate from them on purpose: *this host cannot look* and *this
+    // pane is not an agent* are opposite instructions to a supervisor, and one address answering
+    // both is how a driver concludes "no agents here" about a host that never looked.
+    SchemaField::new(AGENT_SUPERVISION_SLOT, "bool"),
     SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
     // ⚠⚠⚠ R372: `PROJECT_FIELD` NOW HAS ITS EMPTY MEMBER, AND THE NOTE THAT USED TO STAND HERE
     // WAS READING A DEFECT AS A DESIGN. It said this was *"the one parametric family of the eleven
@@ -2577,6 +2616,11 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     // real answer the other ten give.
     PROJECT_FIELD,
     empty_member_of(&PROJECT_FIELD),
+    // ⚠⚠⚠⚠ ONE PANE'S AGENT VERDICT — register item 557. Parametric for the family above's reason,
+    // and on THIS surface rather than the pane's own because the answer needs the registry's
+    // ruleset and per-pane memory, which a pane external does not hold. See `AGENT_FIELD`.
+    AGENT_FIELD,
+    empty_member_of(&AGENT_FIELD),
     NEIGHBORS_FIELD,
     empty_member_of(&NEIGHBORS_FIELD),
     EVENTS_FIELD,
@@ -4134,6 +4178,68 @@ pub const GLOBAL_COMMANDS_SLOT: &str = "commands";
 /// touches no disk at all (the report is already rendered and held), which is the one way it is
 /// CHEAPER than the two config slots above rather than merely alike.
 pub const AGENT_MANIFESTS_SLOT: &str = "agent_manifests";
+
+/// The mux control external query slot: **WHETHER THIS DAEMON CAN SUPERVISE AT ALL**, as a bool —
+/// register item 557, and the first of the two absences a supervisor must not confuse.
+///
+/// # ⚠⚠⚠⚠⚠ The two absences, and what collapsing them costs
+///
+/// A supervisor asks two different questions and gets `None` for both unless they have separate
+/// addresses:
+///
+/// * *This host cannot look* — no detector at all, no manifests, nothing to ask. The instruction is
+///   **hand this to a person**, because nothing here will ever answer.
+/// * *This pane is not an agent* — the host looked and no manifest claims it. The instruction is
+///   **carry on**: it is a shell, and there is nothing to supervise.
+///
+/// They are OPPOSITE, and a surface publishing one word for both lets a supervisor conclude *"no
+/// agents here"* from a host that never looked. [`PaneSupervision`](sprag_plugin::PaneSupervision)
+/// states that rule for the in-process trait; this slot is what makes it survive the wire.
+/// ⚠⚠ The rival terminal cloned in this tree does collapse them — one `AgentStatus::Unknown` serves
+/// *not looked*, *not an agent* and *looked and could not tell* alike.
+///
+/// ⚠ It is a CAPABILITY, not a verdict, so it is a fixed slot rather than a member of
+/// [`AGENT_FIELD`]: a daemon with no detector still has panes, and every one of them would otherwise
+/// have to answer the host's question over again.
+pub const AGENT_SUPERVISION_SLOT: &str = "agent_supervision";
+
+/// The arguments of [`AGENT_FIELD`] — one pane `id`, `Open` for [`PROJECT_FIELD`]'s reason (a pane
+/// id is minted by the host and never bounded by a list this schema publishes).
+const AGENT_ARGS: &[SchemaArg] = &[SchemaArg::open("pane", "int")];
+
+/// The mux control external query slot: **THE AGENT VERDICT FOR ONE PANE** — the same object the
+/// [`PANES_SLOT`] entry carries under `agent`, at an address a driver can ask about ONE pane, and
+/// `null` for a pane no manifest claims.
+///
+/// # Why a pane-parametric slot on the MUX surface, and not on the pane's own
+///
+/// [`PROJECT_FIELD`]'s reason exactly: the answer needs facts only the registry holds — the
+/// compiled ruleset, each pane's tracker memory, and the settle window read from the user's config
+/// — while a pane external holds its pseudoterminal and nothing else. Serving it there would mean
+/// handing every pane a second route to the detector, which is a second authority to drift from.
+///
+/// # ⚠⚠⚠⚠ Why it exists when the list already carries it
+///
+/// A driver supervising ONE pane had to fetch EVERY pane's entry — every screen's projection token,
+/// every title, every image summary — to read one verdict, on a path a run takes each step. Worse,
+/// it had to find its pane in that list, which is a second way to be wrong about which pane it is
+/// watching. ⚠ The object is byte-identical to the list's, from [`crate::agent::verdict_json`]:
+/// **one builder, two readers**, so the address and the listing cannot come to disagree.
+///
+/// * `null` — this pane is not an agent (or is a pane nobody knows). See [`AGENT_SUPERVISION_SLOT`]
+///   for why *this host cannot look* is a different address rather than the same `null`.
+/// * an object — [`AGENT_STATE_KEY`], [`AGENT_SEQ_KEY`], [`AGENT_ASKED_SEQ_KEY`],
+///   [`AGENT_SAID_SEQ_KEY`] and [`AGENT_REPORTS_KEY`] always; [`AGENT_NAME_KEY`],
+///   [`AGENT_RULE_KEY`], [`AGENT_SOURCE_KEY`], [`AGENT_BUILD_KEY`], [`ASKING_KEY`],
+///   [`AGENT_ASKED_KEY`], [`AGENT_SAID_KEY`], [`AGENT_NOTICED_KEY`] and
+///   [`AGENT_TRANSCRIPT_KEY`] where they were stated.
+pub const AGENT_FIELD: SchemaField = SchemaField::parametric("agent.<pane>", "object", AGENT_ARGS);
+
+/// The [`AGENT_FIELD`] address of one pane's verdict.
+#[must_use]
+pub fn agent_slot_for(pane: u64) -> String {
+    format!("agent.{pane}")
+}
 
 /// The mux control external action: a process inside a pane REPORTS what it is doing, and that
 /// report outranks anything the screen argues until it is released.
@@ -9405,7 +9511,14 @@ mod tests {
             // ⚠ AND A THIRD, the plugin host's — which this pin is how anybody would ever have
             // learned about, if the coverage gate had not named the surface first.
             "action_grammar",
+            // ⚠⚠⚠ Register item 557: three names ADDED, so the number stands by this pin's own
+            // rule — an old client that never asks is unaffected, and one that does gets an answer
+            // it could not previously get at all. `agent.` is the family's empty member, declared
+            // with the family for the reason `project.` records one screen up.
+            "agent.",
+            "agent.<pane>",
             "agent_manifests",
+            "agent_supervision",
             "application_cursor_keys",
             "break_pane",
             "cancel",

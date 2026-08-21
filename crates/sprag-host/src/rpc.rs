@@ -4924,6 +4924,16 @@ mod tests {
                 "grid_work",
                 "commands",
                 "agent_manifests",
+                // ⚠⚠⚠ R557: WHETHER THIS DAEMON SUPERVISES AT ALL, and it belongs on THIS list for
+                // the slot above's reason plus one of its own. A detector is the daemon's, so no
+                // session can be wrong about it — and *can anything here answer about an agent* is
+                // exactly what a supervisor asks when the rest of its world has stopped answering.
+                // A dead scope refusing it would make a lost session read as a host that cannot
+                // look, which is the collapse the address exists to prevent, arriving by the one
+                // route the address itself could not see.
+                // ⚠⚠ This gate is what found it: the slot was first written into the SCOPED match,
+                // where it compiled and passed its own end-to-end gate.
+                "agent_supervision",
                 // R352 — HOW TO CALL THE VERBS. Registry-subject for the strongest reason on this
                 // list: its subject is the WIRE, so no session can be wrong about it, and a client
                 // whose session has gone is exactly the one that may need to look a verb up.
@@ -4961,6 +4971,13 @@ mod tests {
                 // declared. It was the one family whose malformed member answered "no such
                 // address" — a lie, since `project.<pane>` is right above it in the same schema.
                 "project.",
+                // ⚠ R557: ONE PANE'S AGENT VERDICT, session-subject where the capability slot on
+                // the list above is not — and the pair is the taxonomy working rather than an
+                // inconsistency. A DETECTOR belongs to the daemon; a PANE belongs to a workspace,
+                // which belongs to a session, so a reader whose session has gone is asking about
+                // panes that are gone with it.
+                "agent.<pane>",
+                "agent.",
                 "neighbors.<pane>",
                 "neighbors.",
                 "events.<since>",

@@ -39,16 +39,19 @@ use std::io;
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
-use sprag_plugin::{KeyStroke, PaneAccess, PaneError, PaneRow, Written};
+use sprag_plugin::{
+    AgentObservation, KeyStroke, PaneAccess, PaneError, PaneRow, PaneSupervision, Written,
+};
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT};
 use sprag_terminal::PaneId;
 
 use crate::external::lock;
 use crate::wire::{
-    ALT_FIELD, CTRL_FIELD, FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY,
-    INJECTED_BYTES_KEY, KEY_FIELD, PANE_EOF_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT,
-    PEER_GONE_REFUSAL, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD,
-    mux_action_path, pane_input_path, refusal, unknown_action, unknown_slot,
+    AGENT_SUPERVISION_SLOT, ALT_FIELD, CTRL_FIELD, FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION,
+    INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, PANE_EOF_SLOT, PANE_SUMMARY_ID_KEY,
+    PANES_SLOT, PEER_GONE_REFUSAL, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SUPER_FIELD, agent_slot_for, mux_action_path, pane_input_path, refusal, unknown_action,
+    unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -256,6 +259,30 @@ impl PaneAccess for RemotePaneAccess {
     /// that is deliberate: asking [`PANE_EOF_SLOT`] here first would decide on a fact read a round
     /// trip ago about a child that can exit in between. The party holding the atomic answers it at
     /// the write; this maps the word back to [`PaneError::PeerGone`].
+    /// **WHETHER THE DAEMON ON THE OTHER END SUPERVISES AT ALL** — register item 557, and one of the
+    /// two absences a supervisor must never see collapsed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The `None`s below and beside are OPPOSITE instructions
+    ///
+    /// A `None` HERE says *nothing on that host will ever answer about an agent; ask a person*. A
+    /// `None` from [`pane_agent_state`](PaneSupervision::pane_agent_state) says *that pane is a
+    /// shell; carry on*. A surface publishing one word for both — which is what a remote driver had
+    /// until this address existed, since every optional sub-surface answered `None` — lets a
+    /// supervisor conclude "no agents here" from a daemon that never looked.
+    ///
+    /// ⚠⚠ A daemon too old to serve the address, and a wire that failed, both land on the first
+    /// reading. That is the SAFE direction and it is deliberate: *this build cannot supervise* sends
+    /// the run to a person, where the other reading would have it decide a turn had ended.
+    ///
+    /// ⚠ One round trip per call, at a supervisor's cadence rather than a frame's. It is asked
+    /// rather than cached because a daemon is a process that can be replaced under this connection,
+    /// and a capability remembered from a handshake would outlive the thing it described.
+    fn supervision(&self) -> Option<&dyn PaneSupervision> {
+        self.read(&mux_action_path(AGENT_SUPERVISION_SLOT))?
+            .as_bool()?
+            .then_some(self as &dyn PaneSupervision)
+    }
+
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
         let path = pane_input_path(id.0, INJECT_ACTION);
         let strokes: Vec<Value> = keys.iter().map(stroke_form).collect();
@@ -277,5 +304,28 @@ impl PaneAccess for RemotePaneAccess {
                     "{path} answered no {INJECTED_BYTES_KEY}, so what it wrote cannot be counted"
                 ))
             })
+    }
+}
+
+/// **WHAT THE AGENT IN ONE PANE IS DOING, READ OVER THE SOCKET** — register item 557.
+///
+/// Reached only through [`PaneAccess::supervision`], so a caller holding one of these has already
+/// been told this daemon CAN look. That is what makes the `None` below mean one thing.
+impl PaneSupervision for RemotePaneAccess {
+    /// The pane's verdict, or [`None`] for a pane no manifest claims.
+    ///
+    /// # ⚠⚠⚠ Read at the pane's OWN address, not found in the pane list
+    ///
+    /// The listing carries the same object, and taking it from there would mean fetching every
+    /// pane's screen token, title and image summaries to read one verdict — on a path a run walks
+    /// each step — and then FINDING this pane among them, which is a second way to supervise the
+    /// wrong peer. The address answers about the pane it names or about nothing.
+    ///
+    /// ⚠⚠ The object is parsed by the reader that lives beside the writer
+    /// ([`crate::agent::verdict_of`]), which is what keeps the two spellings of this verdict one
+    /// edit apart rather than one round apart. A state word this build does not know reads as
+    /// absent rather than as a guess — see that function.
+    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
+        crate::agent::verdict_of(&self.read(&mux_action_path(&agent_slot_for(id.0)))?)
     }
 }
