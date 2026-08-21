@@ -6232,18 +6232,54 @@ fn the_door_every_plugin_types_through_drives_a_real_pane_from_another_process()
     )
     .expect("a delivery through the remote surface");
 
-    let Delivered::OnScreenOnly {
-        attempts,
-        written,
-        echo,
-    } = delivered
-    else {
-        panic!(
-            "⛔⛔⛔⛔ REGISTER ITEM 544: `deliver` over the wire answered {delivered:?}. A driver \
+    // ⚠⚠⚠⚠⚠ THE VERDICT IS ASSERTED AGAINST THE READING, NOT AGAINST A PLATFORM'S SHELL — and CI
+    // is what taught this gate the difference. It used to assert `echo.is_none()` (*"a remote
+    // surface cannot ask a pane's terminal who echoes"*), which item 557 made false; the version
+    // after that asserted `OnScreenOnly` with `ByTheTerminal`, on the assumption that *a shell
+    // echoes*. **That is not true of a shell, it is true of `dash`.** Linux's `/bin/sh` is dash;
+    // macOS's is bash, and an interactive readline shell takes its terminal RAW at the prompt and
+    // echoes the characters ITSELF — so macOS answered `ByTheProgram`, `deliver` answered
+    // `Confirmed`, and BOTH were right.
+    //
+    // So the claim this gate actually owns is the DERIVATION: whichever mode the pane is in, the
+    // verdict must be the one that mode implies. A verdict that disagreed with the reading would be
+    // `deliver` guessing — which is the whole defect item 557 removed.
+    let (attempts, written) = match delivered {
+        Delivered::OnScreenOnly {
+            attempts,
+            written,
+            echo,
+        } => {
+            assert_eq!(
+                echo,
+                Some(sprag_terminal::PaneEcho::ByTheTerminal),
+                "⛔⛔⛔⛔ REGISTER ITEM 557: `OnScreenOnly` is the verdict for a pane whose TERMINAL \
+                 put the text there — a weaker fact than it looks (measured: a confirmed delivery \
+                 into a pane running `sleep 60`, in 20 ms, over a peer that never read a byte). \
+                 Reaching it on any other reading means the verdict was not derived from the \
+                 reading. Got {echo:?}",
+            );
+            (attempts, written)
+        }
+        Delivered::Confirmed { attempts, written } => {
+            assert_eq!(
+                remote
+                    .terminal_modes()
+                    .and_then(|modes| modes.pane_echo(pane)),
+                Some(sprag_terminal::PaneEcho::ByTheProgram),
+                "⛔⛔⛔⛔ REGISTER ITEM 557: `Confirmed` claims the PROGRAM printed the text, which \
+                 is only true where the terminal is not echoing. Reaching it over a pane whose \
+                 terminal echoes would be the strong verdict on the weak evidence — exactly what \
+                 the modes address exists to prevent",
+            );
+            (attempts, written)
+        }
+        other => panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 544: `deliver` over the wire answered {other:?}. A driver \
              outside the daemon must reach the same verdict the in-process one does — the text \
              read back off a screen it changed, then the submit. Anything else means this seam \
              cannot carry the loop."
-        );
+        ),
     };
     assert_eq!(
         attempts, 1,
@@ -6258,20 +6294,6 @@ fn the_door_every_plugin_types_through_drives_a_real_pane_from_another_process()
          encoder's answer under the pane's LIVE input modes, which the program may change between \
          any read and any write, so the count is the writer's to report or it is a guess.",
         text.len(),
-    );
-    // ⚠⚠⚠⚠⚠ THIS ARM USED TO ASSERT `echo.is_none()` — *"a remote surface cannot ask a pane's
-    // terminal who echoes, so the honest verdict carries no answer"* — and item 557 is where that
-    // stopped being true. It is the same claim from the other side: the verdict must carry what was
-    // READ and never a guess, and the read now exists. A `None` here would mean the modes address
-    // stopped answering for a pane whose mode this daemon can read perfectly well.
-    assert_eq!(
-        echo,
-        Some(sprag_terminal::PaneEcho::ByTheTerminal),
-        "⛔⛔⛔⛔ REGISTER ITEM 557: `deliver` over the wire must say WHO put the text on that \
-         screen. A shell echoes, so this delivery was confirmed by the TERMINAL rather than by the \
-         program — which is a weaker fact than it looks (measured: a confirmed delivery into a \
-         pane running `sleep 60`, in 20 ms, over a peer that never read a byte) and exactly the \
-         thing a caller must be told rather than left to assume. Got {echo:?}",
     );
 
     assert!(
@@ -6779,13 +6801,20 @@ fn a_remote_driver_replaces_a_pane_and_the_new_one_is_the_same_program_in_the_sa
         )
     });
 
+    // ⚠⚠⚠⚠⚠ READ THROUGH `full_lines`, NOT `full_text`, AND THAT IS STAGE 1b'S OWN LESSON BITING
+    // THIS GATE. `full_text` is the RENDERED text, so a line the terminal WRAPPED carries a newline
+    // that the program never printed — and this pane is 33 columns wide on purpose. It passed on
+    // Linux (`/tmp` is four characters) and failed on macOS, whose temp directory is sixty-four:
+    // the path came back as `…djsxfhc17\nx95674wsm…`. The CONTENT question is `full_lines`', which
+    // is why the two addresses exist.
+    let printed_home = |lines: Vec<String>| lines.iter().any(|line| line.contains(&home));
     assert!(
-        wait_until(Duration::from_secs(10), || remote
-            .pane_full_text(old)
-            .is_some_and(|out| out.contains(&home))),
+        wait_until(Duration::from_secs(10), || printed_home(
+            remote.pane_full_lines(old).unwrap_or_default()
+        )),
         "the original never printed its working directory, so the comparison below would have \
          nothing to compare. Read {:?}",
-        remote.pane_full_text(old),
+        remote.pane_full_lines(old),
     );
 
     // ── THE REPLACEMENT ────────────────────────────────────────────────────────────────────────
@@ -6804,14 +6833,14 @@ fn a_remote_driver_replaces_a_pane_and_the_new_one_is_the_same_program_in_the_sa
     );
 
     assert!(
-        wait_until(Duration::from_secs(10), || remote
-            .pane_full_text(fresh)
-            .is_some_and(|out| out.contains(&home))),
+        wait_until(Duration::from_secs(10), || printed_home(
+            remote.pane_full_lines(fresh).unwrap_or_default()
+        )),
         "⛔⛔⛔⛔ REGISTER ITEM 557: the replacement did not re-run the pane's OWN command in the \
          pane's OWN directory. `pwd` printing anything else means the world was rebuilt from what \
          the caller knew rather than from what the pane was — and a caller knows the argv at best, \
          never the cwd or the environment. Read {:?}",
-        remote.pane_full_text(fresh),
+        remote.pane_full_lines(fresh),
     );
 
     // ── THE SEAT, AND THE SIZE, READ OFF THE DAEMON'S OWN LISTING ──────────────────────────────
@@ -7031,18 +7060,28 @@ fn a_remote_barrier_refuses_the_marker_the_driver_typed_and_takes_the_one_the_sh
 ///
 /// # ⚠⚠⚠ The PAIR is the claim, on one host and one connection
 ///
-/// A shell pane answers `ByTheTerminal` / `EndsTheInput`; a pane that has taken its terminal RAW
-/// answers `ByTheProgram` / `IsJustAByte`. Either slot hard-wired to one word passes for one of
-/// them and fails for the other, and both are asked in the same breath — so an address answering
-/// about the HOST rather than about the pane it names is red too.
+/// A pane whose program leaves the discipline alone answers `ByTheTerminal` / `EndsTheInput`; a pane
+/// that has taken its terminal RAW answers `ByTheProgram` / `IsJustAByte`. Either slot hard-wired to
+/// one word passes for one of them and fails for the other, and both are asked in the same breath —
+/// so an address answering about the HOST rather than about the pane it names is red too.
+///
+/// # ⚠⚠⚠⚠⚠ The cooked pane runs `cat`, NOT a shell, and CI is what taught this gate the difference
+///
+/// The first version used `sh`, on the assumption that *a shell echoes*. **It is not true of a
+/// shell, it is true of `dash`.** Linux's `/bin/sh` is dash and leaves the discipline alone;
+/// macOS's is bash, and an interactive readline shell **takes its terminal RAW at the prompt and
+/// echoes the characters itself** — which is exactly what [`PaneEcho`]'s own doc says every
+/// interactive agent does. So macOS answered `ByTheProgram` for the "cooked" pane and was RIGHT,
+/// and this gate was asserting one platform's shell as a fact about terminals. `cat` touches
+/// nothing, so the pty's default discipline stands on both.
 #[test]
 fn a_remote_driver_reads_who_echoes_and_whether_ctrl_d_ends_the_input() {
     let (_host, sock) = spawn_host();
     let (remote, mut setup) = remote_driver(&sock);
 
-    // CANONICAL: a shell, which echoes and whose line discipline turns the EOF character into
-    // end-of-input.
-    let cooked = spawn_pane(&mut setup, json!({ "cmd": ["sh"] }));
+    // CANONICAL: `cat` never reconfigures its terminal, so the pty's own default discipline is what
+    // the address must report — echo on, canonical on, identically on every platform.
+    let cooked = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
     // RAW: the pane takes its own terminal off echo and out of canonical mode before `cat` runs —
     // which is what every full-screen agent does on startup, done here in one line.
     let raw = spawn_pane(
@@ -7062,16 +7101,16 @@ fn a_remote_driver_reads_who_echoes_and_whether_ctrl_d_ends_the_input() {
     assert!(
         wait_until(Duration::from_secs(10), || modes.pane_echo(cooked)
             == Some(PaneEcho::ByTheTerminal)),
-        "⛔⛔⛔⛔ REGISTER ITEM 557: a shell's terminal ECHOES, and a driver that cannot learn that \
-         will read its own keystroke coming back as the peer's output — a delivery confirmed in \
-         20 ms over a peer that never read a byte. Got {:?}",
+        "⛔⛔⛔⛔ REGISTER ITEM 557: a pane whose program leaves the discipline alone ECHOES, and a \
+         driver that cannot learn that will read its own keystroke coming back as the peer's \
+         output — a delivery confirmed in 20 ms over a peer that never read a byte. Got {:?}",
         modes.pane_echo(cooked),
     );
     assert_eq!(
         modes.pane_end_of_input(cooked),
         Some(PaneEndOfInput::EndsTheInput),
-        "a shell is in CANONICAL mode, so the EOF character becomes end-of-input and a caller that \
-         ends its question with Ctrl-D is asking for something that will happen",
+        "the pty's default discipline is CANONICAL, so the EOF character becomes end-of-input and \
+         a caller that ends its question with Ctrl-D is asking for something that will happen",
     );
 
     // ── AND THE RAW PANE, IN THE SAME BREATH ───────────────────────────────────────────────────
