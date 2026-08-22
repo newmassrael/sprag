@@ -3570,12 +3570,27 @@ mod tests {
             // arrived here at once. **The pin doing its job**: the same bump also made those dock
             // panels the first surface this audit had never had reason to name, which is the
             // finding that led here.
+            // ⚠⚠⚠ **AND IT MOVED 103 → 115 AT THE R1769 PIN BUMP. THIS IS THAT DECISION, MADE THE
+            // WAY THE PARAGRAPH ABOVE ASKS FOR.** Again not one widget was added. pinion R1769
+            // (*a configuration says whose it is*) gave every widget a statechart-configuration
+            // ROUND TRIP — a `configuration` read and a `resume` action, and upstream says in the
+            // same breath that they are a pair: *"what this slot answers is exactly what `resume`
+            // accepts"*. Measured across three of the eight widget files it touched
+            // (`text_field`, `checkbox`, `toggle`): two schema fields and two dispatch arms each,
+            // uniformly. **So +12 is SIX registered instances × 2**, not twelve new surfaces.
+            //
+            // ⚠⚠ What sprag owes for it is nothing yet, and that is worth writing down rather than
+            // leaving as silence: `resume` is upstream's own door onto SCE `enter_at` (item 549,
+            // delivered at this same bump), so a client can now put a WIDGET back where it was.
+            // sprag drives no widget that way — its runs live in `sprag-plugin`, not in a pinion
+            // widget's statechart — so this is capability arriving under the tree rather than
+            // capability consumed. 544 stage 3b is where it would be reached for.
             assert_eq!(
                 audit.count_or_panic(),
-                103,
+                115,
                 "every verb this window serves, counted per surface: sprag's nine — the palette's \
-                 four, the confirmation's three, a pane oracle's two — and ninety-four belonging \
-                 to the pinion widgets sprag registers",
+                 four, the confirmation's three, a pane oracle's two — and one hundred and six \
+                 belonging to the pinion widgets sprag registers",
             );
         });
     }

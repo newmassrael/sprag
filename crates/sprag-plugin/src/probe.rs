@@ -1356,6 +1356,24 @@ mod tests {
         fn initialize_at<A>(&mut self, _at: A) -> NoSuchMethod {
             NoSuchMethod
         }
+        /// ⚠⚠⚠⚠⚠ **DEAD SINCE SCE `f3765c95c9`, AND ITS DEADNESS IS NOW THE RATCHET POINTING THE
+        /// OTHER WAY — which is why it is kept rather than deleted.**
+        ///
+        /// This is the control above's pattern, earned rather than copied: the body is unreachable
+        /// precisely because `Engine::enter_at` exists and wins resolution. Deleting it would throw
+        /// away the only cheap thing that notices the door being TAKEN AWAY again — a pin that
+        /// regressed would make this fallback reachable, the expectation unfulfilled, and the build
+        /// would say so under `-D warnings`. Item 549 was open for a day because nothing watched
+        /// the absence; nothing should now watch the presence any less.
+        ///
+        /// ⚠ It is deliberately NOT in the probe loop below any more. The real method takes two
+        /// arguments and returns a `Result`, so a call there is a compile error rather than a
+        /// verdict — see the note at that loop.
+        #[expect(
+            dead_code,
+            reason = "unreachable while `Engine::enter_at` exists, which is item 549 delivered; \
+                      the day it becomes reachable the door was withdrawn"
+        )]
         fn enter_at<A>(&mut self, _at: A) -> NoSuchMethod {
             NoSuchMethod
         }
@@ -1456,9 +1474,19 @@ mod tests {
              below is then measuring the probe rather than the engine",
         );
 
+        // ⚠⚠⚠⚠⚠ `enter_at` IS NO LONGER PROBED HERE, AND THAT IS THIS GATE HAVING WORKED.
+        // It was in this list until SCE `f3765c95c9` (*"Enter a saved configuration without
+        // re-running onentry"*) — item 549's ask, delivered. The arm did not fail its assertion:
+        // it stopped COMPILING, because the real method takes two arguments and returns a
+        // `Result`, neither of which the fallback's shape admits. ⚠ This doc's own limit 2 called
+        // that outcome in advance and called it correct, so the `E0061` a reader lands on is the
+        // alarm working rather than a surprise — the prediction is the author's, not a finding of
+        // the round that collected it.
+        // What `enter_at` DOES is now held by
+        // `a_saved_configuration_is_entered_without_re_running_onentry`, which drives it against
+        // the same harness the sibling gate below uses.
         for (name, verdict) in [
             ("initialize_at", engine.initialize_at(saved.clone()).door()),
-            ("enter_at", engine.enter_at(saved.clone()).door()),
             (
                 "enter_configuration",
                 engine.enter_configuration(saved.clone()).door(),
@@ -1591,6 +1619,102 @@ mod tests {
              says `initialize` stopped executing `<onentry>`, which would change what every run \
              in this crate does on its first turn — check `Engine::initialize` at the pinned rev \
              rather than reading this as resumption having arrived",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A SAVED CONFIGURATION IS ENTERED AND THE ENTRY ACTIONS DO NOT RUN — item 549's
+    /// hard half, ANSWERED, and the reason 544 stage 3b is buildable at all.**
+    ///
+    /// SCE `f3765c95c9` (*"Enter a saved configuration without re-running onentry"*) is
+    /// `SCE-PR90` delivered; sprag reached it at pin `ebee8c932a`, taken from `pinion@3d58da75`
+    /// as the shared-instance rule requires. This gate is the consumption: the door is DRIVEN
+    /// here, not read.
+    ///
+    /// # Why this is the inverse of the gate above, deliberately
+    ///
+    /// `the_only_way_into_a_machine_runs_its_entry_actions_again` measures `initialize` and
+    /// asserts the sends fire a SECOND time — that is still true and still the reason a restart
+    /// cannot resume. This one takes the same document, the same harness and the same counter,
+    /// and asserts the new door fires them ZERO times. Two ways in, opposite verdicts, one
+    /// observable: a `<send type="x-sprag-host">` that leaves the process. **Entry actions that
+    /// stay inside the datamodel would not do** — the loop's re-typed prompt leaves the process,
+    /// so the analogue has to as well.
+    ///
+    /// # ⚠⚠ What this does NOT claim
+    ///
+    /// The datamodel is NOT restored — `enter_at`'s own doc says so (`<data>` is re-declared at
+    /// document defaults and a host must put saved values back through `IScriptEngine`). So this
+    /// gate says a run's POSITION survives, not its variables; 544 stage 3b owes the second half
+    /// and this test is not evidence for it.
+    #[test]
+    fn a_saved_configuration_is_entered_without_re_running_onentry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let build = || {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+            let left_the_process = Arc::new(AtomicUsize::new(0));
+            engine.register_event_processor("x-sprag-host", {
+                let left_the_process = Arc::clone(&left_the_process);
+                move |request| {
+                    left_the_process.fetch_add(1, Ordering::SeqCst);
+                    Some(sce_rust_runtime::host_processor::HostSendResponse {
+                        event_name: request.event_name,
+                        event_data: String::new(),
+                    })
+                }
+            });
+            engine.register_invoker("x-sprag-host", |_event| None);
+            (engine, left_the_process)
+        };
+
+        // ── THE RUN THAT GETS INTERRUPTED, driven off its initial configuration ──
+        let (mut before, before_sends) = build();
+        before.initialize();
+        for _ in 0..8 {
+            before.tick();
+        }
+        before.process_event(ProbeSendTypeEvent::Go);
+        for _ in 0..8 {
+            before.tick();
+        }
+        let saved = before.get_active_states();
+        let current = before.get_current_state();
+        assert!(
+            saved.contains(&ProbeSendTypeState::Invoking)
+                && !saved.contains(&ProbeSendTypeState::Sending),
+            "the premise: the run must have MOVED off the document's start, or landing at `saved` \
+             below proves nothing about resumption. saved = {saved:?}",
+        );
+        assert_eq!(
+            before_sends.load(Ordering::SeqCst),
+            1,
+            "the control: the entry actions of the initial configuration DID leave the process \
+             once, so a zero after the door below is a fact about that door",
+        );
+
+        // ── THE RESTART, THROUGH THE NEW DOOR: no `initialize()` anywhere in this arm ──
+        let (mut after, after_sends) = build();
+        after
+            .enter_at(&saved, current)
+            .expect("⚠⚠⚠ the saved configuration is a configuration of THIS document, so the door \
+                     must not refuse it — a rejection here is `configuration::validate` disagreeing \
+                     with `get_active_states`, which would make the pair unusable for resumption");
+
+        assert_eq!(
+            after.get_active_states(),
+            saved,
+            "⚠⚠⚠⚠⚠ the run must come back WHERE IT WAS. Entering 'near' the requested \
+             configuration is the one outcome `enter_at` documents it must never produce, and a \
+             host has no way to detect it afterwards",
+        );
+        assert_eq!(
+            after_sends.load(Ordering::SeqCst),
+            0,
+            "⚠⚠⚠⚠⚠ ITEM 549's HARD HALF, and the whole reason this door is worth having: entering \
+             a saved configuration must NOT run `<onentry>`. A one here means the door is a \
+             REPLAY — for `ai_loop.scxml` that is the run re-typing every prompt its states \
+             compose, which is exactly what 543 cannot ship",
         );
     }
 }
