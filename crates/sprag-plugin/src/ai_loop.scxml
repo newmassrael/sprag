@@ -3027,6 +3027,38 @@
     </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
+    <!--
+      ⛔⛔⛔⛔ THE EDGE THAT BELONGS HERE CANNOT BE MADE TO FIRE, AND THAT IS AN
+      UPSTREAM FINDING RATHER THAN A GAP IN THIS DOCUMENT — register item 604.
+
+      What belongs here: a peer that left AFTER its turn was banked, under an
+      order to stop, is not a run that failed. Being in `judging` at all means
+      `working` raised `turn.done`, so the turn COMPLETED and its account is in
+      hand; a person who typed `sprag stand-down` asked for exactly that and for
+      nothing further to be typed at the pane. The plain edge below calls that
+      `failed`, and `sprag-host`'s `stand_down_sentence` then tells somebody
+      whose turn HAD been banked that it was NOT. **The relieved answer and the
+      alarming one are swapped** — the one direction a report must never be
+      wrong in. And it is the ORDINARY case: an agent that finishes its work
+      exits.
+
+      ⚠⚠⚠⚠⚠ IT IS NOT ABOUT THE GUARD. Five expressions were driven and all five
+      read false with the order provably standing, ending with a trivially true
+      arithmetic one (`turns >= 0`, no `In()`, no event data). Nor is it about
+      shadowing: deleting the edge below does not help, and the run still reaches
+      `peer_gone` from an ANCESTOR after this state matched nothing. Nor is it the
+      raise path: both the plain and the data-carrying one behave alike.
+
+      ⚠⚠⚠ AND THE SAME GUARD SHAPE WORKS ONE EDGE ABOVE, on `judge`, at this very
+      state. So it is not the guard, not this state, and not this document.
+
+      ⚠⚠ The reproduction is 30 ms and deterministic:
+      `a_banked_turn_survives_an_agent_that_leaves_under_a_standing_order`, which
+      PINS the defect rather than asserting a fix — green today, red the day this
+      is fixed, and then this comment and that gate both go. The upstream report
+      is filed under the engine's own report directory; register item 605 in this
+      repository's ledger names it.
+    -->
     <transition event="peer.gone" target="peer_gone"/>
   </state>
 
@@ -4003,6 +4035,17 @@
       carry on* that raced a milestone would be a run whose ending depended on
       which of two messages arrived first. ⚠⚠ It is also why this is a state
       rather than a flag somebody could flip twice.
+    -->
+    <!--
+      ⚠⚠ IT RUNS NOTHING ON ENTRY, and one round tried to change that. A mirror
+      of this state as a datamodel boolean was written here to sidestep the guard
+      defect registered against `judging`'s `peer.gone` edge; it did not sidestep
+      it, and what it left behind was executable content in a TEMPLATE — which
+      then owes an `error.execution` edge, because W3C SCXML 3.8 abandons the rest
+      of a block that raised one and 3.12.2 drops what nothing matches.
+
+      ⚠ `OuterLoop::standing_down` answers the same question from outside with
+      nothing added here at all, which is why the mirror is gone.
     -->
     <state id="standing_down"/>
   </state>

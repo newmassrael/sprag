@@ -299,6 +299,14 @@ impl AiLoop {
         self.inner.stand_down();
     }
 
+    /// **IS AN ORDER TO STAND DOWN STANDING, AS THE DOCUMENT HOLDS IT?** — see
+    /// [`OuterLoop::standing_down`] for why the document's answer and the host's flag are different
+    /// authorities.
+    #[must_use]
+    pub fn standing_down(&self) -> bool {
+        self.inner.standing_down()
+    }
+
     /// How many turns the AGENT has taken — the document's own counter, which its `max_turns`
     /// guard compares against.
     ///
@@ -1360,7 +1368,7 @@ mod tests {
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
     use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
-    use crate::testing::{standin_agent, supervised};
+    use crate::testing::{standin_agent, standin_agent_that_leaves, supervised};
 
     /// The document's own composed prompt, as a person reading the file expects it.
     const COMPOSED_START_PROMPT: &str = "North star: ";
@@ -5783,45 +5791,174 @@ mod tests {
     /// with the person's word already spent."*
     #[test]
     fn an_order_that_arrives_after_the_loop_has_started_is_still_honoured() {
-        use crate::outer::DoneReason;
+        // ⚠⚠⚠⚠⚠ EVERY MOMENT, NOT ONE. A person's order lands wherever the run happens to be, and
+        // which state that is is not something they choose or can even see. So the experiment is a
+        // SWEEP over the loop's own early life — pump `delay` passes, then speak — and the states
+        // it covers are whichever ones the product actually passes through, which is a list the
+        // document decides rather than one this gate keeps.
+        //
+        // ⚠⚠ ONE FRESH LOOP PER DELAY, because a stand-down is one-way by construction: the orders
+        // region has no edge back, so a single loop could be asked this question exactly once.
+        let mut seen: Vec<AiLoopState> = Vec::new();
+        for delay in 0..6u32 {
+            let (workspace, pane) = standin_agent(40);
+            let access = supervised(&workspace);
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
 
-        let (workspace, pane) = standin_agent(40);
+            // ⚠ THROUGH `Plugin::step`, the Driver's own one-pass entry point rather than a door
+            // opened for this gate: what the order meets is a loop stepped the ordinary way.
+            for _ in 0..delay {
+                loops.step(&access, &run).expect("a live pane takes a pass");
+            }
+            let arrived_at = loops.state();
+            loops.stand_down();
+
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 120,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &run);
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Converged,
+                "⛔⛔⛔⛔ AN ORDER GIVEN AFTER {delay} PASSES — the loop was in {arrived_at:?} — WAS \
+                 NOT HONOURED. `sprag stand-down` promises the run stops at its next milestone with \
+                 its work kept, and this run reached {:?} instead. A person can only ever give this \
+                 order to a MOVING run; an order the document hears only from some states is an \
+                 order whose landing is decided by timing nobody controls. Walked {walk:?}",
+                outcome.state,
+            );
+            assert!(
+                walk.iter()
+                    .any(|note| note.starts_with("Judging --Judge--> Closing")),
+                "⚠⚠⚠ AND BY THE STAND-DOWN'S OWN EDGE, after {delay} passes from {arrived_at:?}. A \
+                 convergence reached some other way would satisfy the assertion above while saying \
+                 nothing about the order: `standin_agent(40)` needs forty prompts to reach its \
+                 milestone on its own, so a run that got there without this edge did not stand \
+                 down. Walked {walk:?}",
+            );
+            seen.push(arrived_at);
+        }
+
+        // ⚠⚠⚠⚠ THE CONTROL ON THE SWEEP ITSELF: it has to have covered more than one moment. Six
+        // delays that all landed in the same state would be six copies of the gate this replaced,
+        // passing while saying nothing about the states in between.
+        seen.sort_unstable_by_key(|state| format!("{state:?}"));
+        seen.dedup();
+        assert!(
+            seen.len() > 1,
+            "⚠⚠⚠ every delay put the order in the same state ({seen:?}), so this swept nothing — \
+             the loop is not moving between passes and the claim above is one moment restated",
+        );
+        // ⚠⚠⚠⚠⚠ AND `judging` HAS TO BE ONE OF THEM. That state is where a standing order is
+        // ACTED ON, so an order arriving there is the one case where the region's activity and the
+        // guard that reads it are exercised in the same breath. A sweep that stopped short of it
+        // would leave the sharpest moment untested while looking thorough — and register item 604's
+        // whole investigation turns on whether `In('standing_down')` is true at exactly this state.
+        assert!(
+            seen.contains(&AiLoopState::Judging),
+            "⚠⚠⚠ the sweep never reached `judging` ({seen:?}); widen the delays until it does, or \
+             the moment this gate most needs to cover is the one it skips",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A TURN THAT WAS BANKED IS NOT LOST BECAUSE THE AGENT THEN LEFT** — register item
+    /// 604, measured at the host door on 2026-08-22 and driven here where it is deterministic.
+    ///
+    /// # What a person is told, and what happened
+    ///
+    /// `sprag stand-down` promises *"it stops at its next milestone, and its work is kept"*. This
+    /// run's turn COMPLETES — the loop reaches `judging`, which is only reachable by a completed
+    /// turn, so the work really is banked. Then the agent exits, **which is what an agent that has
+    /// finished its work does**. The document took `Judging --PeerGone--> PeerGone`, the run ended
+    /// `failed`, and `sprag-host`'s `stand_down_sentence` therefore told the person *"it was cut
+    /// short, so the turn it had going was NOT banked"*.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE RELIEVED ANSWER AND THE ALARMING ONE WERE SWAPPED**, which is the one direction
+    /// a report must never be wrong in — and register item 594 exists because this same pair was
+    /// unreadable once already.
+    ///
+    /// # ⛔⛔⛔⛔ THIS GATE PINS THE DEFECT. IF IT GOES RED, THE DEFECT IS FIXED — delete it, delete
+    /// the comment block it names in `ai_loop.scxml`, and pay item 604.
+    ///
+    /// The edge that fixes this belongs at `judging`'s `peer.gone`, guarded on the order. It was
+    /// written and **five guard expressions all read false** with the order provably standing —
+    /// [`AiLoop::standing_down`] says the machine holds it immediately before the run — ending with
+    /// a trivially true arithmetic guard that names no state and reads no event data. It is not
+    /// shadowing either: deleting the unguarded sibling does not help, and the run still reaches
+    /// `peer_gone` from an ancestor. Nor is it the raise path. And the same guard shape works one
+    /// edge above, on `judge`, at this very state.
+    ///
+    /// ⚠ An unverified product change is worse than a measured defect, so what is committed is the
+    /// measurement.
+    ///
+    /// # Why it is driven from here rather than from the host
+    ///
+    /// The host gate that measured it first depends on when a wire call lands relative to a worker
+    /// thread. Here the peer's departure and the loop's state are both staged by this test, so
+    /// there is no timing left in the experiment at all — which is what turned a round of guessing
+    /// into a 30 ms reproduction.
+    #[test]
+    fn a_banked_turn_survives_an_agent_that_leaves_under_a_standing_order() {
+        let (workspace, pane) = standin_agent_that_leaves();
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
         let run = RunContext::uncancellable();
 
-        // ⚠⚠⚠⚠⚠ PUMPED BY HAND UNTIL THE LOOP HAS LEFT `idle`, and that is the whole experiment.
-        // Every gate this document has for a stand-down raises the order BEFORE the first pump, so
-        // the machine is in `idle` when it arrives. A person cannot do that: they read `sprag runs`,
-        // see a loop working, and speak — the order lands in whatever state the run happens to be
-        // in. `hold`'s own comment records that exact hazard being MEASURED for the other order
-        // (*"the order landed while the loop was still in `idle`, where no such edge exists, and
-        // the run drove on with the person's word already spent"*), and nothing here had ever asked
-        // it of this one.
-        // ⚠ THROUGH `Plugin::step`, which is the Driver's own one-pass entry point rather than a
-        // door opened for this gate: what a person's order meets is a loop that has been stepped
-        // the ordinary way.
+        // ⚠⚠⚠ PUMPED TO `judging` AND NOWHERE ELSE, because that state IS the claim: reaching it
+        // means `working` raised `turn.done`, so the turn is over and its account is in hand. A
+        // peer that leaves while the loop is still in `working` really has cost that turn, and this
+        // gate must not be able to pass by accident on that case.
         let mut pumped = 0;
-        while loops.state() == AiLoopState::Idle && pumped < 40 {
+        while loops.state() != AiLoopState::Judging && pumped < 40 {
             loops.step(&access, &run).expect("a live pane takes a pass");
             pumped += 1;
         }
-        assert_ne!(
+        assert_eq!(
             loops.state(),
-            AiLoopState::Idle,
-            "⚠⚠⚠ THE CONTROL: this gate is about an order arriving at a MOVING loop. If it is still \
-             in `idle` after {pumped} passes, the order below lands where every other gate already \
-             puts it and nothing new is measured",
+            AiLoopState::Judging,
+            "⚠⚠⚠ THE FIXTURE'S OWN PRECONDITION: this loop must reach `judging` within {pumped} \
+             passes, or nothing below is about a banked turn",
         );
-        let arrived_at = loops.state();
+
+        // ⚠⚠ THE AGENT HAS ALREADY LEFT BY NOW — `standin_agent_that_leaves` answers once and
+        // exits, so reaching `judging` above and the peer's departure are the same moment, which is
+        // what a real agent finishing its work looks like. Nothing here kills anything: a pane
+        // CLOSED and a program EXITED are different facts, and only the second is this claim.
         loops.stand_down();
+        // ⚠⚠⚠⚠⚠ THE PROBE, INSIDE. Everything below is about what the document DECIDES with the
+        // order, and that question is only worth asking once the order is known to have been HEARD.
+        // Without this line a red below has two causes and the reader cannot tell them apart —
+        // which cost this investigation a whole round.
+        assert!(
+            loops.standing_down(),
+            "⚠⚠⚠ the document did not hear the order at all, so nothing below is about what it \
+             decides with one. The loop was in {:?}",
+            loops.state(),
+        );
 
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 200,
+            max_iterations: 120,
             max_cost: None,
-            max_duration: Some(Duration::from_secs(60)),
+            max_duration: Some(Duration::from_secs(30)),
         })
         .reporting_to(Arc::clone(&progress))
         .run(&mut loops, &access, &run);
@@ -5832,35 +5969,25 @@ mod tests {
             .iter()
             .filter_map(|step| step.note.clone())
             .collect();
+        // ⚠⚠⚠⚠⚠ THE SAME TWO READERS, AFTER. Both said the order was standing a moment ago and the
+        // guard that had to agree did not, so the remaining question is whether the fact SURVIVED
+        // the run — a session re-initialised mid-run would put the datamodel back to its authored
+        // `false` and would explain every guard form failing alike.
         for live in access.pane_ids() {
             access.lifecycle().expect("lifecycle").close(live);
         }
 
         assert_eq!(
             outcome.state,
-            OutcomeState::Converged,
-            "⛔⛔⛔⛔ AN ORDER GIVEN TO A LOOP THAT WAS ALREADY MOVING (it was in {arrived_at:?}) \
-             WAS NOT HONOURED. `sprag stand-down` promises the run stops at its next milestone with \
-             its work kept, and this run reached {:?} instead. A person can only ever give this \
-             order to a moving run — that is what makes it an order rather than a flag — so an \
-             order the document only hears from `idle` is an order nobody can actually give. \
-             Walked {walk:?}",
-            outcome.state,
+            OutcomeState::Failed,
+            "⛔ IF THIS IS RED, GOOD — a banked turn whose agent then left is no longer reported as \
+             a failure. Delete this gate, delete the comment block it is named in inside \
+             `ai_loop.scxml`, and pay register item 604. Walked {walk:?}",
         );
         assert!(
-            walk.iter()
-                .any(|note| note.starts_with("Judging --Judge--> Closing")),
-            "⚠⚠⚠ AND BY THE STAND-DOWN'S OWN EDGE. A convergence reached some other way would \
-             satisfy the assertion above while saying nothing about the order: this run must have \
-             closed straight out of `judging`, which is what a STANDING order does. Walked {walk:?}",
-        );
-        // ⚠⚠ AND THE DOCUMENT'S OWN WORD FOR WHY, walked rather than asked of a getter: the reason
-        // reaches a reader through the journal and nowhere else, which is `DoneReason`'s own doc.
-        assert!(
-            walk.iter().any(|note| note.contains("Closing")),
-            "⚠⚠ the run must have gone through `closing`, which is the state {:?} names. Walked \
-             {walk:?}",
-            DoneReason::StoodDown,
+            walk.iter().any(|note| note.contains("--> PeerGone")),
+            "⛔ IF THIS IS RED, GOOD — the document has stopped sending a stood-down run through \
+             `peer_gone`. Delete this gate and pay item 604. Walked {walk:?}",
         );
     }
 

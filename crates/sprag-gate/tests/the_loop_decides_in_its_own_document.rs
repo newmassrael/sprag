@@ -76,7 +76,11 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     ("screening", 8),
     ("service_down", 8),
     ("standing", 8),
-    ("standing_down", 8),
+    // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
+    // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
+    // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
+    // `cond` moved out of the document to get it, and the reader decides nothing.
+    ("standing_down", 9),
     ("stopping", 8),
     ("work", 9),
     ("working", 10),

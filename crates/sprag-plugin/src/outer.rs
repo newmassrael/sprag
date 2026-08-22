@@ -3827,6 +3827,29 @@ impl OuterLoop {
         self.machine.process_event(AiLoopEvent::StandDown);
     }
 
+    /// **IS AN ORDER TO STAND DOWN STANDING, AS THE DOCUMENT ITSELF HOLDS IT?** — register item
+    /// 604's probe, and a reader this machine did not have.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the document is a different authority from the host's flag
+    ///
+    /// `sprag-host` publishes *a person asked this run to stand down* from a boolean of its own,
+    /// raised the moment the wire call lands. That answers **whether somebody spoke**. This answers
+    /// **whether the machine heard**, and the two can disagree: an order is carried in at the top
+    /// of a pass, so between the speaking and the next pass they differ by construction — and if
+    /// an order were ever dropped, nothing anywhere could see it, because the only published answer
+    /// was the one that cannot be wrong.
+    ///
+    /// ⚠⚠ [`state`](Self::state) cannot answer this. It filters to the WORK region on purpose, and
+    /// the order lives in the ORDERS region beside it; a reader that took the deepest active state
+    /// of the whole set would answer whichever of the two the arrangement happened to yield.
+    #[must_use]
+    pub fn standing_down(&self) -> bool {
+        self.machine
+            .get_active_states()
+            .into_iter()
+            .any(|active| active == crate::sm::ai_loop::AiLoopState::StandingDown)
+    }
+
     /// **A WATCHING PERSON HALTS THE LOOP BETWEEN TURNS** — `hold` → `awaiting_human`, the edge
     /// register item 9 recorded as having no producer.
     ///

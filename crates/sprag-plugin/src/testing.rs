@@ -1107,6 +1107,51 @@ pub(crate) fn standin_agent_reflecting(
     )
 }
 
+/// **A STAND-IN THAT ANSWERS ONCE AND THEN LEAVES** — register item 604, and the one thing
+/// [`standin_agent`] deliberately cannot do.
+///
+/// # ⚠⚠⚠⚠⚠ An agent that has finished its work EXITS, and that is not a failure
+///
+/// Every other peer in this file loops for ever, so every gate built on them asks about a run whose
+/// agent is still there. **A real agent's last act is to leave.** A loop under a standing
+/// stand-down meets a departing peer nearly every time — the order says *finish this turn and
+/// stop*, and finishing is exactly when the agent goes — and until this fixture existed nothing in
+/// this workspace could stage that pairing at all.
+///
+/// ⚠⚠ IT ANSWERS PROPERLY FIRST: the reply and then the sequence marker, in
+/// [`standin_agent`]'s own shape, so the supervisor sees a turn that COMPLETED. A peer that just
+/// died would test a lost turn, which is a different claim with the opposite right answer.
+///
+/// ⚠ The pane stays open after the child goes, which is what a terminal does. The difference
+/// between *the program exited* and *the pane was closed* is the difference between the run this
+/// gate is about and a run whose access door is simply gone — measured 2026-08-22, when closing the
+/// pane instead produced an empty walk and a bare `failed`.
+pub(crate) fn standin_agent_that_leaves() -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let script = format!(
+        "stty -echo; printf 'AGENT-READY\\n'; read line; \
+         printf 'ACK 1\\n'; printf '{SEQ} 1\\n'",
+        SEQ = SEQ_MARKER,
+    );
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
 /// The width every stand-in here is spawned at unless a gate is ABOUT the width.
 ///
 /// ⚠ It is eighty because that is what a terminal is, and for most gates it is a number nobody
