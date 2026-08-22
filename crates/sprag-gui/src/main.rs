@@ -3070,6 +3070,77 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **A TAB CLICK MOVES THE PANES, NOT ONLY THE CHROME** — register item 582, reported
+    /// live by the owner and gated here for the first time.
+    ///
+    /// # What was reported
+    ///
+    /// Clicking a window tab moved the header, the tab strip and the daemon's current window — and
+    /// **left the panes where they were**. The header read one window's name over another window's
+    /// pixels, which is worse than showing nothing: it shows the wrong thing and says it is right.
+    /// Only restarting the GUI healed it.
+    ///
+    /// ⚠⚠⚠⚠⚠ **ITS NEIGHBOUR ABOVE DRIVES THE SAME CLICK AND CANNOT SEE THIS.** That gate asserts
+    /// the WINDOW LIST after a tab click, and the window list is exactly the half that always
+    /// worked — it is session-scoped and passes straight through. The panes are the other half, and
+    /// no gate anywhere asked about them. Two gates over one gesture, and the defect lived in the
+    /// gap between what they each looked at.
+    ///
+    /// ⚠⚠⚠ **THE TWO WINDOWS MUST HOLD DIFFERENT PANES**, which the `+` button gives for free: a
+    /// new window is born with its own shell. Without that the reading cannot tell one window's
+    /// panes from the other's, and the gate would pass on a client that never moved.
+    ///
+    /// ⚠⚠ This drives the IN-PROCESS host, so a green here does not clear the shipped wire client —
+    /// see the host-side pair in `sprag_host::workspace` for the other end of the same claim.
+    #[test]
+    fn a_window_tab_click_moves_the_panes_and_not_only_the_chrome() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+
+        // The pane ids this client would PAINT — read through the same `SlotView` the view does.
+        let painted = |core: &ShellCore<TerminalViewer>| -> Vec<u64> {
+            core.root_owner().run(|| {
+                let tv = use_terminal();
+                tv.slots
+                    .occupied_slots()
+                    .into_iter()
+                    .filter_map(|slot| tv.slots.id(slot).map(|id| id.0))
+                    .collect()
+            })
+        };
+        let click = |tag: &str| Intent {
+            tag: Cow::Owned(format!("{tag}.click")),
+            payload: IntrospectValue::Null,
+        };
+
+        let boot = painted(&core);
+        assert!(
+            !boot.is_empty(),
+            "the boot window must be painting something, or nothing below discriminates",
+        );
+
+        core.dispatch_intent(&click("sprag_gui.wnew"));
+        let created = painted(&core);
+        assert_ne!(
+            created, boot,
+            "⚠⚠⚠ THE PREMISE: `+` makes a window with its own shell and selects it, so what this \
+             client paints must have CHANGED. If it did not, the two windows are indistinguishable \
+             here and the assertion below would pass without measuring anything",
+        );
+
+        core.dispatch_intent(&click("sprag_gui.wtab.0"));
+        assert_eq!(
+            painted(&core),
+            boot,
+            "⛔⛔⛔ ITEM 582: the tab click selected window 0 — its neighbour above proves the \
+             window list followed — and this client is still painting the other window's panes. \
+             The header names one window while the pixels are another's, and the owner reported \
+             exactly that: only restarting the GUI healed it.",
+        );
+    }
+
     /// Live cursor-following tear-off (R1094 / PINION-PR31): the `tear_off_follow`
     /// intent a [`DockPanelExternal`] emits on every escaped drag move, routed by the
     /// REAL shell through `WidgetCore::update`, floats the named pane AND positions
