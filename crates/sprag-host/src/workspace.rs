@@ -3650,6 +3650,101 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **THE PANE LIST IS THE CURRENT WINDOW'S** — register item 582, and the half of it a
+    /// host test can settle.
+    ///
+    /// # What was reported and what it cost
+    ///
+    /// The owner clicked a window tab and **the chrome moved while the panes did not**: the header
+    /// read `pinion`, the tab strip read `pinion`, the daemon's current window was `pinion` — and
+    /// the pixels were the other window's panes. That is worse than showing nothing, which is
+    /// register item 285's family: this one **shows the wrong thing and says it is right**.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THIS GATE IS ONE HALF ON PURPOSE, AND SAYING WHICH HALF IS THE POINT.** Every read
+    /// of a pane goes through `PANES_SLOT`, and a scope resolves its pool from
+    /// `Session::current_window` on each request — so the wire *ought* to follow a `select-window`
+    /// with nothing cached anywhere. If it does, the defect is entirely on the client's side of the
+    /// socket and the next round starts there instead of re-deriving this. If it does not, the
+    /// defect is here and no amount of GUI work would have fixed it.
+    ///
+    /// ⚠⚠ **THE TWO WINDOWS HOLD DIFFERENT PANES**, which is what makes the answer discriminating:
+    /// an assertion that the list is merely non-empty would pass on a surface that never moved.
+    #[test]
+    fn the_pane_list_a_client_reads_is_the_current_windows() {
+        let reg = registry();
+        let session = lock(&reg).default_session().name().to_owned();
+        let boot = lock(&reg)
+            .default_session()
+            .current_window()
+            .name()
+            .to_owned();
+
+        // ── ONE PANE IN THE BOOT WINDOW ──
+        let (mut first, _) = control(&reg);
+        let in_boot = spawn_pane(&mut first);
+
+        // ── A SECOND WINDOW, WITH A PANE OF ITS OWN ──
+        // ⚠ NOT detached: creating it MAKES it current, which is the state a person is in the
+        // moment before they click back to the first one.
+        lock(&reg)
+            .new_window(&session, None, sprag_terminal::WindowBirth::default())
+            .expect("a session takes a second window");
+        let (mut other, _) = control(&reg);
+        let in_second = spawn_pane(&mut other);
+        assert_ne!(
+            in_boot, in_second,
+            "⚠⚠ the two windows must hold DIFFERENT panes, or the reading below cannot tell one \
+             window's list from the other's",
+        );
+
+        // ⚠ A FRESH SURFACE PER READING, because that is what a request gets: the assembly builds
+        // a scope per request, so a surface held across the switch would be testing a cache this
+        // wire does not have.
+        assert_eq!(
+            pane_ids_now(&reg),
+            vec![in_second],
+            "the second window is current, so its own pane is what a client reads",
+        );
+
+        lock(&reg)
+            .select_window(&session, &boot)
+            .expect("the boot window is still there");
+        assert_eq!(
+            pane_ids_now(&reg),
+            vec![in_boot],
+            "⛔⛔⛔ ITEM 582: the session's current window went back to {boot:?} and the pane list \
+             a client reads did not follow. Every pixel a client paints comes from this list, so a \
+             client that asked correctly would draw the other window's panes under a header naming \
+             this one — which is the shape the owner reported.",
+        );
+    }
+
+    /// Spawn one pane through the surface and answer its id.
+    fn spawn_pane(surface: &mut WorkspaceExternal) -> u64 {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("exec cat");
+        command.env("TERM", "dumb");
+        lock(surface.workspace())
+            .spawn(command, "sh".to_owned(), 80, 24)
+            .expect("spawn a pane")
+            .0
+    }
+
+    /// The pane ids a client reads RIGHT NOW, through a surface built for this reading.
+    fn pane_ids_now(reg: &Arc<Mutex<SessionRegistry>>) -> Vec<u64> {
+        let (surface, _) = control(reg);
+        let IntrospectValue::Json(Value::Array(entries)) =
+            surface.read(PANES_SLOT).expect("the panes slot answers")
+        else {
+            panic!("the panes slot answers a JSON array");
+        };
+        entries
+            .iter()
+            .filter_map(|entry| entry["id"].as_u64())
+            .collect()
+    }
+
     #[test]
     fn the_dead_scope_surface_reads_the_registry_and_writes_nothing() {
         let reg = registry();
