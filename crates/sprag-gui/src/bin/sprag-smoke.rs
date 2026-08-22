@@ -2721,12 +2721,14 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     // a precondition if it is about the same number as the claim. A longer sleep would have hidden
     // this at the next load spike instead of removing it.
     //
-    // ⚠ WHAT THIS DOES NOT CLAIM. The one failure was not reproduced: three runs of each binary
-    // under 2x CPU oversubscription came back `0 projections, 0 cells` on BOTH, so the condition
-    // needs whatever the concurrent release build was doing (I/O and memory, not spinners) and no
-    // rig here forces it. So this is a precondition corrected on its own terms — it now watches the
-    // number the claim reads — and NOT a fix demonstrated against a failing case. Said here rather
-    // than left for a later round to assume the opposite.
+    // ⚠⚠⚠⚠⚠ AND IT WAS NOT ENOUGH — 2026-08-22, and the sentence that stood here was wrong about
+    // why. It said the one failure needed a loaded machine and could not be reproduced. It
+    // reproduces every run: two equal readings of the meter is not quiescence, so this settle
+    // passes and the straggler lands in the NEXT window whatever that window is doing. The reads
+    // were never paying for it — with a control window in front of them they come back
+    // `0 projections, 0 cells` while the control takes the `1 projections, 72 cells`. The working
+    // precondition is the one below, measured over the claim's own span; this wait stays because
+    // it is cheap and gets most of the way there, not because it is sufficient.
     let mut last_work = None;
     let host_quiet = smoke.wait_for(|_| {
         let now = grid_work(&mut daemon, &session)?;
@@ -2738,6 +2740,50 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
         "the host's grid meter settles before it is read",
         host_quiet.is_ok(),
     );
+
+    // ── THE CONTROL WINDOW: the same length, the same sleeps, and NO reads in it at all.
+    //
+    // ⚠⚠⚠⚠⚠ The meter is PROCESS-WIDE — `sprag_grid`'s counters are statics — so subtracting two
+    // readings cannot tell THIS connection's reads from any other client's legitimate work. The
+    // attached GUI re-fetching a pane whose token moved lands in the very same total. Without a
+    // control, "a projection appeared WHILE I was reading" and "a projection appeared" are the
+    // same sentence, and this assertion has been deriving the first from the second.
+    //
+    // The DIFFERENCE between an idle window and a reading window is what the reads themselves
+    // cost, and that difference is the claim. Measured FIRST, so the reads cannot be charged for a
+    // projection the daemon was going to make with nobody reading at all.
+    //
+    // ⚠⚠⚠⚠⚠ ...AND IT IS ALSO THE PRECONDITION, WHICH IS WHY IT REPEATS. Measured 2026-08-22 with
+    // the control in place: the settle above passes and the straggler lands in the FIRST window
+    // after it — whichever window that is. It was the reading window while that was the only one
+    // (`1 projections, 72 cells`, and R352 saw the same pair once before); with a control in front
+    // it moved to the control, and the reads came back `0 projections, 0 cells`. So two equal
+    // readings of the meter is not quiescence, and the answer is not a longer sleep: it is to
+    // spend a WINDOW OF THE CLAIM'S OWN LENGTH finding the straggler, and to keep spending one
+    // until a window comes back free. A precondition is only a precondition if it is about the
+    // same number as the claim AND measured over the same span.
+    const IDLE_WINDOWS: usize = 4;
+    let mut idle = (0, 0);
+    let mut windows = 0;
+    for attempt in 1..=IDLE_WINDOWS {
+        windows = attempt;
+        let Some(idle_before) = grid_work(&mut daemon, &session) else {
+            report.check("the host reports what it has projected", false);
+            return;
+        };
+        for _ in 0..READS {
+            std::thread::sleep(POLL);
+        }
+        let Some(idle_after) = grid_work(&mut daemon, &session) else {
+            report.check("the host still reports what it has projected", false);
+            return;
+        };
+        idle = (idle_after.0 - idle_before.0, idle_after.1 - idle_before.1);
+        if idle == (0, 0) {
+            break;
+        }
+    }
+    let (idle_projections, idle_cells) = idle;
 
     // ── The window: nothing but reads. No keystroke, no output, no resize.
     let Some(before) = grid_work(&mut daemon, &session) else {
@@ -2763,13 +2809,26 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
         ),
         pane_areas(&mut daemon, &session) == areas,
     );
+    // What a QUIET daemon costs on its own. A non-zero answer here is a statement about the
+    // product — some pane is being projected with nobody asking for it — and it gets its own
+    // check so that a red names WHICH of the two sentences failed, instead of charging the reads
+    // for a cost they did not cause. Together with the claim below this is exactly as strong as
+    // the single `== 0` it replaces: when the idle window is free, the reads must be free too.
+    report.check(
+        &format!(
+            "an idle window of the same length costs the grid nothing \
+             ({windows} window(s), {idle_projections} projections, {idle_cells} cells)"
+        ),
+        idle_projections == 0 && idle_cells == 0,
+    );
     // THE claim: a read that cannot reach a grid does not pay for one. This used to be one whole
     // pane set per call — `{READS} reads` cost `{READS}` sets — and is now nothing whatsoever.
     report.check(
         &format!(
-            "{READS} reads of a NUMBER cost the grid nothing ({projections} projections, {cells} cells)"
+            "{READS} reads of a NUMBER cost the grid no more than an idle window \
+             ({projections} projections / {cells} cells against {idle_projections} / {idle_cells})"
         ),
-        projections == 0 && cells == 0,
+        projections <= idle_projections && cells <= idle_cells,
     );
 
     // The positive control, without which the zero above is equally well explained by a meter that
