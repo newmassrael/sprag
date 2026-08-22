@@ -3719,6 +3719,138 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **AND THE SAME IS TRUE FOR A CLIENT THAT IS SITTING SOMEWHERE** — register item 582,
+    /// and the half its sibling above **could not see**.
+    ///
+    /// # Why one gate was not enough, which is this gate's whole reason
+    ///
+    /// That one builds its scope with `SessionScope::unscoped`, so it has **no seat**. And a
+    /// seatless caller is not what the GUI is: since R346 a scope resolves to the window THIS
+    /// CLIENT is on, and only falls back to the session's landing window for a caller with no eyes
+    /// — a script, an agent, the CLI. So the green above is about a path the reporting client never
+    /// takes, and a gate green about the wrong path is register item 453's shape wearing a pass.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE TWO ANSWERS COME FROM DIFFERENT PLACES, WHICH IS THE DEFECT'S WHOLE SHAPE.** The
+    /// tab strip reads `windows()`, which is session-scoped and passes straight through; the panes
+    /// read the scope, which is seat-scoped. So a client whose seat did not move draws one window's
+    /// panes under another window's name — *the header said `pinion` and the pixels were `sce`*.
+    ///
+    /// ⚠⚠ `invoke` re-seats the caller after every action (`reconcile_views`), so this SHOULD hold.
+    /// Nothing asserted it, and the owner reported it not holding.
+    #[test]
+    fn a_seated_client_that_selects_a_window_is_moved_to_it() {
+        let reg = registry();
+        let session = lock(&reg).default_session().name().to_owned();
+        let boot = lock(&reg)
+            .default_session()
+            .current_window()
+            .name()
+            .to_owned();
+
+        let (mut first, _) = control(&reg);
+        let in_boot = spawn_pane(&mut first);
+        lock(&reg)
+            .new_window(&session, None, sprag_terminal::WindowBirth::default())
+            .expect("a session takes a second window");
+        let (mut other, _) = control(&reg);
+        let in_second = spawn_pane(&mut other);
+
+        // ── A CLIENT WITH EYES, sitting on the window the session is currently landing on ──
+        let attachments = Arc::new(Mutex::new(crate::AttachmentRegistry::default()));
+        let conn = pinion_rpc::ConnId::allocate();
+        {
+            let mut seats = lock(&attachments);
+            seats.hello(conn, "gui".to_owned(), None);
+            let (id, landing) = {
+                let reg = lock(&reg);
+                let held = reg.session(&session).expect("the fixture session");
+                (held.id(), held.current_window().id())
+            };
+            seats.attach(conn, session.clone(), id, landing);
+        }
+
+        // ⚠ THE SCOPE IS RESOLVED THE WAY A REQUEST'S IS — from this client's seat — so what the
+        // surface answers is what this client would be sent, not what a seatless caller would.
+        let seated = |seats: &Arc<Mutex<crate::AttachmentRegistry>>| {
+            // ⚠ THE SEAT IS RESOLVED TO A WINDOW NAME the way `SessionScope::narrowed` does it —
+            // by looking the client's window id up in THIS session's own list, never by trusting
+            // the id. A scope built any other way would not be the one a request gets.
+            let seat = lock(seats).window_of(conn);
+            let named = {
+                let registry = lock(&reg);
+                let held = registry.session(&session).expect("the fixture session");
+                seat.and_then(|id| {
+                    held.windows()
+                        .iter()
+                        .find(|window| window.id() == id)
+                        .map(|window| window.name().to_owned())
+                })
+            };
+            let scope = match named {
+                Some(name) => {
+                    let registry = lock(&reg);
+                    let held = registry.session(&session).expect("the fixture session");
+                    SessionScope::of_window(held, &name).expect("the seat's own window")
+                }
+                None => SessionScope::unscoped(&reg),
+            }
+            .from_conn(conn);
+            WorkspaceExternal::new(
+                Arc::clone(&reg),
+                scope,
+                Arc::new(ChannelRegistry::default()),
+                crate::DaemonShared {
+                    on_pane_exit: None,
+                    attachments: Some(Arc::clone(seats)),
+                    attention: None,
+                    agents: None,
+                    samplers: sampler(),
+                    runs: None,
+                },
+            )
+        };
+        let ids = |ext: &WorkspaceExternal| -> Vec<u64> {
+            let IntrospectValue::Json(Value::Array(entries)) =
+                ext.read(PANES_SLOT).expect("the panes slot answers")
+            else {
+                panic!("the panes slot answers a JSON array");
+            };
+            entries
+                .iter()
+                .filter_map(|entry| entry["id"].as_u64())
+                .collect()
+        };
+
+        assert_eq!(
+            ids(&seated(&attachments)),
+            vec![in_second],
+            "the client is seated on the second window, so it reads that window's pane",
+        );
+
+        // ── THE TAB CLICK, through the verb a tab click sends ──
+        let mut acting = seated(&attachments);
+        acting
+            .invoke(
+                SELECT_WINDOW_ACTION,
+                IntrospectValue::Json(sprag_host_select_window_args(&boot)),
+            )
+            .expect("a window this session holds");
+
+        assert_eq!(
+            ids(&seated(&attachments)),
+            vec![in_boot],
+            "⛔⛔⛔ ITEM 582: this client asked to go to {boot:?} and its next read still answers \
+             the window it left. The tab strip reads the SESSION and follows; the panes read this \
+             client's SEAT and did not — so the header names one window while the pixels are \
+             another's, which is what the owner reported.",
+        );
+    }
+
+    /// The `select-window` argument a tab click sends, in the grammar `SelectWindowAsk` admits.
+    fn sprag_host_select_window_args(window: &str) -> Value {
+        serde_json::json!({ "window": window })
+    }
+
     /// Spawn one pane through the surface and answer its id.
     fn spawn_pane(surface: &mut WorkspaceExternal) -> u64 {
         let mut command = CommandBuilder::new("/bin/sh");
