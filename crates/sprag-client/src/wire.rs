@@ -2714,14 +2714,38 @@ impl WireHost {
                 return;
             }
         };
-        if let Ok(seeds) = query_panes(&mut conn) {
-            refresh_to_set(&mut conn, &self.cache, &seeds);
+        // ⚠⚠⚠⚠⚠ EACH FAILURE SAYS SO, and until register item 582's investigation these three said
+        // NOTHING — the arm above logged and these swallowed. That asymmetry is what makes the
+        // worst outcome of this function invisible: **the windows re-read succeeds, a pane re-read
+        // does not, and the client is left holding the NEW window's chrome over the OLD window's
+        // panes.** That is precisely the shape the owner reported (a header naming one window over
+        // another's pixels, healed only by restarting the GUI), and four rounds of narrowing went
+        // into cornering it because nothing anywhere recorded that half of a switch had failed.
+        //
+        // ⚠⚠ THEY DO NOT RETURN EARLY, deliberately — unlike the windows arm. A pane read that
+        // failed is no reason to also skip the layout and the size; each mirror is independent and
+        // whichever ones CAN be brought forward should be. What was missing was the record, not a
+        // different control flow.
+        //
+        // ⚠ `debug!` and the same target as its sibling, because `diag.rs`'s own promise is that a
+        // live misbehaviour is read STRAIGHT from the log rather than re-instrumented by hand.
+        match query_panes(&mut conn) {
+            Ok(seeds) => refresh_to_set(&mut conn, &self.cache, &seeds),
+            Err(error) => {
+                tracing::debug!(target: "sprag_gui::wire", %error, "refresh_view: panes re-read failed; this client now shows the new window's chrome over the panes it already had");
+            }
         }
-        if let Ok(snapshot) = query_layout(&mut conn) {
-            store_layout(&self.layout, &current, snapshot);
+        match query_layout(&mut conn) {
+            Ok(snapshot) => store_layout(&self.layout, &current, snapshot),
+            Err(error) => {
+                tracing::debug!(target: "sprag_gui::wire", %error, "refresh_view: layout re-read failed; the tiling is the previous window's");
+            }
         }
-        if let Ok(size) = query_window_size(&mut conn) {
-            store_window_size(&self.layout, size);
+        match query_window_size(&mut conn) {
+            Ok(size) => store_window_size(&self.layout, size),
+            Err(error) => {
+                tracing::debug!(target: "sprag_gui::wire", %error, "refresh_view: window size re-read failed; the size is the previous window's");
+            }
         }
     }
 
