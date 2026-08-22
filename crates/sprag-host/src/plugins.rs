@@ -2967,12 +2967,41 @@ mod tests {
 
         // ── THE ARM: A PERSON SPOKE, AND THE RUN DIED BEFORE IT COULD OBEY ──
         let ordered = a_cancelled_run(true);
-        assert_eq!(
-            ordered["state"]["outcome"]["state"], quiet["state"]["outcome"]["state"],
-            "⚠⚠⚠⚠ THE ARM AND ITS CONTROL MUST END THE SAME WAY, or the key below is being read \
-             off two different runs and the difference measured is not the order. Ordered \
-             {ordered:?}, control {quiet:?}",
-        );
+        // ⛔⛔⛔ **THIS USED TO ASSERT THE TWO ARMS ENDED WITH THE SAME WORD, AND THAT WAS A CLAIM
+        // ABOUT THE MACHINE'S SPEED.** It went red on `headless (macos)` the first time it ran
+        // there: the arm reported `failed` — *"the pane never showed \"AGENT-READY\", which this
+        // run was told to wait for before driving it"* — while the control reported `cancelled`.
+        // The ARM makes one extra wire call (the stand-down) between starting the run and
+        // cancelling it, so its cancel lands later, and on a loaded runner the readiness bound wins
+        // that race. **Both readings are correct behaviour**; which one appears is a fact about the
+        // box.
+        //
+        // ⚠⚠⚠⚠⚠ WHAT THE ORIGINAL ASSERTION WAS PROTECTING IS REAL AND IS KEPT AS A CLASS. The
+        // claim under test needs the arm to be a run that did NOT reach a milestone, because that
+        // is the branch of `stand_down_sentence` this gate is about — not that it reached any
+        // particular one. `converged` is the one ending that would make the sentence say the
+        // opposite, so THAT is what has to be impossible here, and it is asserted of both arms.
+        //
+        // ⚠⚠ AND THE CONTROL'S OWN JOB IS UNAFFECTED EITHER WAY: the key's presence is decided by
+        // `run.stood_down` alone, so a control that ended differently still answers *nobody ordered
+        // this one*. R358's rule — *what makes the loser impossible, rather than late?* — is why
+        // the equality had to go rather than be retried.
+        for (label, entry) in [("the ordered run", &ordered), ("the control", &quiet)] {
+            assert_ne!(
+                entry["state"]["outcome"]["state"],
+                json!("converged"),
+                "⚠⚠⚠⚠ {label} REACHED A MILESTONE, and this gate is about the pairing where an \
+                 order was given and NOT honoured. A converged run's work is banked, so the \
+                 sentence below would be the opposite one and the assertion on it would be about a \
+                 branch nobody drove: {entry:?}",
+            );
+            assert_eq!(
+                entry["state"]["status"],
+                json!("done"),
+                "⚠⚠ {label} must have FINISHED, or `ended` handed back a run still going and every \
+                 reading below is a snapshot of the middle: {entry:?}",
+            );
+        }
         let said = ordered[RUN_STOOD_DOWN_KEY].as_str().unwrap_or_else(|| {
             panic!(
                 "⛔⛔⛔ ITEM 594: a person asked this run to stand down and `sprag runs` says \
