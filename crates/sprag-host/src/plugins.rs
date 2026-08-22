@@ -3451,6 +3451,145 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **THIS GATE PINS A DEFECT RATHER THAN A GUARANTEE. IF IT GOES RED, THE DEFECT IS
+    /// FIXED — DELETE IT AND PAY REGISTER ITEM 598.** Measured 2026-08-22.
+    ///
+    /// # What it holds
+    ///
+    /// A person types `sprag stand-down`, which promises *"it stops at its next milestone, and its
+    /// work is kept"*. This run's turn COMPLETES — `Working --TurnDone--> Judging` is in the walk,
+    /// so the work really is banked — and then its agent exits, which is what an agent that has
+    /// finished does. The document takes `Judging --PeerGone--> PeerGone`, the run reports
+    /// `failed`, and [`stand_down_sentence`] therefore tells the person **"it was cut short, so the
+    /// turn it had going was NOT banked"**.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE RELIEVED ANSWER AND THE ALARMING ONE ARE SWAPPED**, which is the one direction
+    /// a report must never be wrong in — and register item 594 exists because this exact pair was
+    /// unreadable once already.
+    ///
+    /// # Why it is pinned instead of fixed
+    ///
+    /// The fix belongs in `ai_loop.scxml` (this repository's rule: the loop decides in its own
+    /// document) as a guarded `peer.gone` edge at `judging` that closes when an order is standing.
+    /// That edge was written and it **did not fire**; the generated machine contains it, correctly
+    /// compiled to `is_state_active("standing_down")`, so why the region was not active at that
+    /// moment is unmeasured. An unverified product change is worse than a measured defect, so the
+    /// measurement is what is committed.
+    ///
+    /// # And what it settles about item 598
+    ///
+    /// That item's recorded blocker — *a converging run needs a supervisor the `/bin/sh` stand-in
+    /// cannot be* — is nearly right and names the wrong thing. A stood-down run converges at
+    /// `judging`, reached only when a TURN COMPLETES, and there are two completion signals:
+    ///
+    /// * `settles` needs a detector, and every gate in this module builds `PluginsExternal` with
+    ///   `agents: None`. **No pane here can ever be called settled** — that is the real blocker.
+    /// * `exits` completes the turn, and lands in exactly the defect above.
+    ///
+    /// ⚠ So 598 is payable from this door only once that defect is fixed, or once this module grows
+    /// a fixture with a detector. Both are named in the register.
+    #[test]
+    fn a_stood_down_run_whose_peer_exits_is_told_its_banked_work_was_lost() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        // ⚠⚠ A ONE-SHOT STAND-IN: it announces itself, takes ONE prompt, answers it, and EXITS —
+        // which is what a well-behaved agent does when its work is finished. `echoing_agent_pane`'s
+        // peer never stops reading, so its turn has no end a shell can signal at all.
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // ⚠⚠⚠ THE `sleep` IS THE WINDOW THE ORDER ARRIVES IN, not padding. Without it the whole run
+        // is over in milliseconds — measured: four steps, ending before the stand-down had crossed
+        // the wire at all, so the gate was reading a run nobody had ordered. The peer holds its
+        // answer long enough for a person's order to land, which is what a real agent's thinking
+        // time does for free.
+        command.arg("stty -echo; printf 'AGENT-READY\\n'; read l; sleep 2; printf '%s\\n' \"$l\"");
+        command.env("TERM", "dumb");
+        let pane = lock(&workspace)
+            .spawn(command, "agent".to_string(), 80, 24)
+            .expect("spawn the one-shot stand-in agent");
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+        // ⚠⚠⚠⚠⚠ THE TURN CONTRACT IS WHAT MAKES THIS REACHABLE, and finding that out is what this
+        // round measured — twice, because the first two answers were both the product's.
+        //
+        // 1. The fixture's default barrier left the run sitting in `Working` for sixty seconds
+        //    (*"looked, nothing had happened"*): a turn ends when the peer SETTLES, and no detector
+        //    will call a `/bin/sh` stand-in settled. **That is the register's recorded blocker, and
+        //    it is real.**
+        // 2. `done_when: exits` DID end the turn — `Working --TurnDone--> Judging` — and then the
+        //    document took `Judging --PeerGone--> PeerGone` and the run reported `failed`. A peer
+        //    that exits is gone, standing order or not.
+        // 3. A turn BOUND does not end a turn either — it bounds `done_when`, it does not replace
+        //    it; the run sat in `Working` through 22 steps until its duration ceiling.
+        //
+        // ⚠⚠⚠⚠ So `exits` is the ONLY turn-completion a shell can produce, and reaching this
+        // pairing meant fixing the document rather than the fixture: `judging` now lets a STANDING
+        // order close the run when the peer leaves, instead of calling a banked turn a failure.
+        // That is register item 598's real finding and it is not a test convenience — an agent
+        // that finishes and exits is the ordinary case.
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({ "done_when": "exits" }))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+        // ⚠⚠ THE ORDER IS GIVEN TO A RUN THAT IS PROVABLY DRIVING, not to one that may not have
+        // started: a delivery means the prompt is in the pane and the loop is waiting on its peer,
+        // which is exactly the moment a person watching a long run reaches for `sprag stand-down`.
+        drop(driving(&external, id, Duration::from_secs(30)));
+        external
+            .invoke(
+                STAND_DOWN_ACTION,
+                IntrospectValue::Json(json!({ "id": id })),
+            )
+            .expect("an ai_loop run reads a stand-down");
+        // ⚠ NOTHING IS CANCELLED HERE, and that absence is the whole gate. The sibling above ends
+        // its run with the registry's own cancel to reach the pairing item 594 measured; this one
+        // lets the document do what the order asks and reports what came out.
+        let entry = ended(&registry, id, Duration::from_secs(60));
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+
+        // ⚠⚠⚠ THE PRECONDITION, ASSERTED SO THE PIN CANNOT DRIFT INTO PINNING SOMETHING ELSE: the
+        // turn really did complete. Without this line a run that failed for any other reason would
+        // satisfy everything below, and the whole point is that the work WAS banked first.
+        let walk = entry[RUN_JOURNAL_KEY].as_array().expect("a walk");
+        assert!(
+            walk.iter().any(|step| step["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("TurnDone"))),
+            "⚠⚠⚠ this run's turn must have COMPLETED, or the sentence below is right rather than \
+             wrong and this gate is pinning nothing: {entry:?}",
+        );
+        assert_eq!(
+            entry["state"]["outcome"]["state"],
+            json!("failed"),
+            "⛔ IF THIS IS RED, GOOD — a stood-down run whose peer exited after banking its turn no \
+             longer reports `failed`. Delete this gate and pay register item 598, which is now \
+             reachable from this door: {entry:?}",
+        );
+        let said = entry[RUN_STOOD_DOWN_KEY]
+            .as_str()
+            .expect("the order was given, so its sentence is published");
+        assert!(
+            said.contains("NOT banked"),
+            "⛔ IF THIS IS RED, GOOD — the sentence has stopped telling a person their banked work \
+             was lost. Delete this gate and pay item 598: {said:?}",
+        );
+    }
+
     /// ⛔⛔⛔⛔ **AN ORDER ONLY ONE PLUGIN CAN READ IS REFUSED AT THE DOOR, NAMING WHY** — register
     /// items 539 and 597 together, because they are one defect wearing two words.
     ///

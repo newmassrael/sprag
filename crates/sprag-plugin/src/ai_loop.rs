@@ -5747,7 +5747,8 @@ mod tests {
     }
 
     /// ⛔⛔⛔ **THE PROMISE A PERSON IS TOLD ABOUT A STAND-DOWN NAMES THE WORD `sprag runs` REALLY
-    /// PRINTS** — register item 594, and register item 522's shape found one order over.
+    /// PRINTS, AND AN ORDER GIVEN TO A MOVING LOOP IS STILL HONOURED** — register item 594, and
+    /// register item 522's shape found one order over.
     ///
     /// # What shipped, and why nothing could go red on it
     ///
@@ -5766,9 +5767,111 @@ mod tests {
     /// ended with**. A gate comparing the sentence to an `OutcomeState::Converged` written into this
     /// file would agree with whatever this file believed, which is the failure it exists to catch.
     ///
-    /// ⚠⚠ Its neighbour above owns the other half — that a stood-down run converges AT ALL, and
-    /// that the walk says a person ended it. This one owns only the crossing between what the
-    /// machine does and what a person was told it would do.
+    /// ⚠⚠ Its neighbour owns the other half — that a stood-down run converges AT ALL, and that the
+    /// walk says a person ended it. That one owns only the crossing between what the machine does
+    /// and what a person was told it would do.
+    ///
+    /// ⛔⛔⛔⛔ **AND THIS ONE OWNS THE HALF NEITHER OF THEM ASKED: AN ORDER GIVEN TO A LOOP THAT IS
+    /// ALREADY MOVING** — register item 598's round, 2026-08-22.
+    ///
+    /// Every stand-down gate in this file raises the order BEFORE the first pump, so the machine is
+    /// in `idle` when it arrives. **A person cannot do that.** They read `sprag runs`, see a loop
+    /// working, and speak — so the order lands in whatever state the run happens to be in, which is
+    /// never `idle`. This drives that, and it is not a hypothetical hazard: `OuterLoop::hold`'s own
+    /// comment records the same thing being MEASURED for the order beside this one — *"the order
+    /// landed while the loop was still in `idle`, where no such edge exists, and the run drove on
+    /// with the person's word already spent."*
+    #[test]
+    fn an_order_that_arrives_after_the_loop_has_started_is_still_honoured() {
+        use crate::outer::DoneReason;
+
+        let (workspace, pane) = standin_agent(40);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let run = RunContext::uncancellable();
+
+        // ⚠⚠⚠⚠⚠ PUMPED BY HAND UNTIL THE LOOP HAS LEFT `idle`, and that is the whole experiment.
+        // Every gate this document has for a stand-down raises the order BEFORE the first pump, so
+        // the machine is in `idle` when it arrives. A person cannot do that: they read `sprag runs`,
+        // see a loop working, and speak — the order lands in whatever state the run happens to be
+        // in. `hold`'s own comment records that exact hazard being MEASURED for the other order
+        // (*"the order landed while the loop was still in `idle`, where no such edge exists, and
+        // the run drove on with the person's word already spent"*), and nothing here had ever asked
+        // it of this one.
+        // ⚠ THROUGH `Plugin::step`, which is the Driver's own one-pass entry point rather than a
+        // door opened for this gate: what a person's order meets is a loop that has been stepped
+        // the ordinary way.
+        let mut pumped = 0;
+        while loops.state() == AiLoopState::Idle && pumped < 40 {
+            loops.step(&access, &run).expect("a live pane takes a pass");
+            pumped += 1;
+        }
+        assert_ne!(
+            loops.state(),
+            AiLoopState::Idle,
+            "⚠⚠⚠ THE CONTROL: this gate is about an order arriving at a MOVING loop. If it is still \
+             in `idle` after {pumped} passes, the order below lands where every other gate already \
+             puts it and nothing new is measured",
+        );
+        let arrived_at = loops.state();
+        loops.stand_down();
+
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 200,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &run);
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⛔⛔⛔⛔ AN ORDER GIVEN TO A LOOP THAT WAS ALREADY MOVING (it was in {arrived_at:?}) \
+             WAS NOT HONOURED. `sprag stand-down` promises the run stops at its next milestone with \
+             its work kept, and this run reached {:?} instead. A person can only ever give this \
+             order to a moving run — that is what makes it an order rather than a flag — so an \
+             order the document only hears from `idle` is an order nobody can actually give. \
+             Walked {walk:?}",
+            outcome.state,
+        );
+        assert!(
+            walk.iter()
+                .any(|note| note.starts_with("Judging --Judge--> Closing")),
+            "⚠⚠⚠ AND BY THE STAND-DOWN'S OWN EDGE. A convergence reached some other way would \
+             satisfy the assertion above while saying nothing about the order: this run must have \
+             closed straight out of `judging`, which is what a STANDING order does. Walked {walk:?}",
+        );
+        // ⚠⚠ AND THE DOCUMENT'S OWN WORD FOR WHY, walked rather than asked of a getter: the reason
+        // reaches a reader through the journal and nowhere else, which is `DoneReason`'s own doc.
+        assert!(
+            walk.iter().any(|note| note.contains("Closing")),
+            "⚠⚠ the run must have gone through `closing`, which is the state {:?} names. Walked \
+             {walk:?}",
+            DoneReason::StoodDown,
+        );
+    }
+
+    /// ⛔⛔⛔ **THE SENTENCE A PERSON IS TOLD NAMES THE WORD THEIR RUN REALLY ENDS WITH** —
+    /// register item 594, and the neighbour above owns the rest of that item's argument.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE ENDING IS MEASURED, NOT SPELLED.** The run below is stood down before its first
+    /// pump and driven to its close, and the sentence is held against the word **that run actually
+    /// ended with**. A gate comparing the sentence to an `OutcomeState::Converged` written into
+    /// this file would agree with whatever this file believed, which is the failure it exists to
+    /// catch.
     #[test]
     fn the_promise_about_a_stand_down_names_the_word_a_stood_down_run_reports() {
         use crate::outer::{DoneReason, STAND_DOWN_TAKES_EFFECT};
