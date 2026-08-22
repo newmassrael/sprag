@@ -20,7 +20,7 @@ use sce_rust_runtime::Engine;
 use sprag_terminal::{Reach, Stop, Unstopped};
 
 use crate::access::{PaneAccess, PaneError, Signalled};
-use crate::plugin::{Accounting, Cost, Plugin, Step, Verdict};
+use crate::plugin::{Accounting, Cost, Deliveries, Plugin, Step, Verdict};
 use crate::run::RunContext;
 use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
@@ -500,6 +500,14 @@ pub struct Outcome {
     /// and the file is never written. One number covering both would answer that question with a
     /// count that includes every refusal.
     pub screened: u32,
+    /// ⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE AND HOW MUCH OF IT WAS NEVER VISIBLE THERE** —
+    /// register item 591, [`Progress::deliveries`] read at the end.
+    ///
+    /// ⚠ Reported for EVERY terminal state, on [`answered`](Self::answered)'s argument: a run whose
+    /// every prompt was folded away and which then hit its iteration ceiling is precisely the run
+    /// somebody is reading the outcome to understand, and a tally present only on convergence would
+    /// be absent in exactly those cases.
+    pub deliveries: Deliveries,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -568,6 +576,13 @@ pub struct Driver {
     /// HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN REFUSED AND REDIRECTED, on the loop author's
     /// standing instructions — [`Self::answered`]'s argument, for the other decision.
     screened: u32,
+    /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS DELIVERIES CAME TO** — register item 591, held for
+    /// [`at`](Self::at)'s reason and read from the plugin at the same one place.
+    ///
+    /// ⚠ NEVER incremented here. The Driver records the plugin's own totals and adds nothing: the
+    /// evidence a delivery was accepted on is visible only inside the thing that delivered, so a
+    /// second counter out here would be a number that agrees until the day it does not.
+    deliveries: Deliveries,
     /// ⚠⚠⚠ **WHETHER THE RUN IS SPENDING ITS LAST MOMENTS SAYING WHERE IT GOT TO** — set once, by
     /// the single site that asks a plugin for an account, and never cleared.
     ///
@@ -638,6 +653,18 @@ pub struct Progress {
     /// [`STATECHARTS_FINGERPRINT`](crate::STATECHARTS_FINGERPRINT) beside it. `None` before the
     /// first step completes, and for a plugin that walks no statechart.
     pub at: Option<&'static str>,
+    /// ⚠⚠⚠⚠⚠ **WHAT THIS RUN HAS PUT INTO ITS PANE AND HOW MUCH OF IT NOBODY CAN SEE THERE** —
+    /// [`crate::plugin::Plugin::deliveries`], register item 591.
+    ///
+    /// ⚠⚠ **A LEVEL, like everything else in this cell**, and that is the whole reason it is here.
+    /// The same fact reaches a reader through the walk as a CHANGE — `crate::outer::Told` publishes
+    /// the evidence once and again only when the road moves — so *are my prompts visible on that
+    /// pane?* was answerable only by having watched from the start. A person who comes back to a
+    /// running loop reads a level or reads nothing.
+    ///
+    /// ⚠ [`Deliveries::NONE`] for a plugin that delivers no composed prompt, which is three of the
+    /// four bundled ones; see that constant for why the absence is a claim rather than a default.
+    pub deliveries: Deliveries,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -697,6 +724,7 @@ impl Driver {
             taken_over: None,
             answered: 0,
             screened: 0,
+            deliveries: Deliveries::NONE,
             winding: false,
         }
     }
@@ -728,6 +756,7 @@ impl Driver {
                 answered: self.answered,
                 screened: self.screened,
                 at: self.at,
+                deliveries: self.deliveries,
             };
         }
     }
@@ -892,6 +921,13 @@ impl Driver {
                     // where it last said*. Asked here, after the step and before the publish, it
                     // cannot be missed and cannot be stale.
                     self.at = plugin.at();
+                    // ⚠⚠⚠ AND WHAT ITS DELIVERIES CAME TO, asked in the same breath and for the
+                    // same reason — register item 591. Two totals read a moment apart from one
+                    // plugin are two facts about two moments, which is this repository's *비교하는
+                    // 두 값은 같은 순간에* rule; and asking here rather than carrying it on a
+                    // `Step` means it cannot be forgotten at one of the twenty-odd sites that
+                    // build one, where a forgotten fold reads as a prompt somebody can go and see.
+                    self.deliveries = plugin.deliveries();
                     self.publish();
                     let decided = match &step.verdict {
                         // A step that saw the goal SAW IT. A stop or a deadline arriving in the
@@ -1264,6 +1300,7 @@ impl Driver {
             stopped: self.stopped,
             answered: self.answered,
             screened: self.screened,
+            deliveries: self.deliveries,
         }
     }
 }

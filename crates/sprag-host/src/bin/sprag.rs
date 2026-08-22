@@ -5530,12 +5530,21 @@ fn render_run(run: &Value) -> String {
     let order = run[sprag_host::plugins::RUN_STOOD_DOWN_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⚠⚠⚠ AND WHETHER THIS RUN'S PROMPTS ARE ON THAT PANE AT ALL — register item 591. It goes in
+    // the same place and under the same constraint as the clause above: a detail line UNDER the
+    // status, where the outer-loop watcher's two positional reads cannot see it.
+    //
+    // ⚠ The SENTENCE and not the two numbers, `plugins::delivery_sentence`'s own argument: a
+    // person who has to compare `delivered` against `folded` by eye is one comparison away from
+    // the opposite conclusion, and the whole point is to tell them whether to go and look.
+    let prompts = sprag_host::plugins::delivery_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}{order}\n{}",
+            "{head}  running — {} iterations, {} {} so far{}{order}{prompts}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -5552,7 +5561,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{prompts}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -5584,7 +5593,7 @@ fn render_run(run: &Value) -> String {
         // first of them: a daemon restarted under a standing order left a person a bare word and
         // no way to learn that what they asked for had never happened.
         _ => format!(
-            "{head}  {}{order}\n",
+            "{head}  {}{order}{prompts}\n",
             state["status"].as_str().unwrap_or("?"),
         ),
     }
@@ -9227,6 +9236,7 @@ mod tests {
             stopped: None,
             answered,
             screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
         }
     }
 

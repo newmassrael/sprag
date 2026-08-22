@@ -910,6 +910,13 @@ impl Plugin for AiLoop {
         Some(AiLoopPolicy::get_state_name(self.state()))
     }
 
+    /// ⚠ DELEGATED and never re-counted here — register item 591. The driver that puts the prompts
+    /// in is the only thing that sees what proved each one arrived, so a second tally at this layer
+    /// would be a number that agrees with the first until the day it does not.
+    fn deliveries(&self) -> crate::plugin::Deliveries {
+        self.inner.deliveries()
+    }
+
     /// ONE PUMP of the machine, reported in the substrate's own terms.
     ///
     /// ⚠⚠ A MOVE INTO A FINAL STATE IS JUDGED IN THE SAME STEP THAT MADE IT, never on the pump

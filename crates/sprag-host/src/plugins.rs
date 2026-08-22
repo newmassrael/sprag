@@ -196,6 +196,31 @@ pub const RUN_JOURNAL_KEY: &str = "journal";
 /// the work is still running and still spending — and the one a caller must act on is the second.
 /// Its text is [`sprag_plugin::Stopped`]'s own sentence, so the host never spells a variant.
 pub const RUN_STOPPED_KEY: &str = "stopped";
+/// The answer key carrying **HOW MANY PROMPTS A RUN HAS PUT INTO ITS PANE** — register item 591,
+/// and the denominator without which the key beside it is a number with no scale.
+///
+/// ⚠ Present whenever a run has delivered anything, and ABSENT for a run that has delivered
+/// nothing — which is every run of the three bundled plugins that compose no prompt. That absence
+/// is a claim: *this run has no prompts for a composer to fold*, which is a different fact from
+/// *this run's prompts are all visible*.
+pub const RUN_DELIVERED_KEY: &str = "delivered";
+/// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE NOWHERE ON ITS PANE** — register item
+/// 591, present beside [`RUN_DELIVERED_KEY`] and never alone.
+///
+/// # ⛔⛔⛔ The fact that was only ever published as a CHANGE
+///
+/// `ai_loop` already says which road a delivery took, and says it well — but it says it as a diff:
+/// `sprag_plugin`'s `Told` publishes the evidence once and again only when the road MOVES, so
+/// *"the prompt is NOWHERE ON THAT SCREEN — its composer folded the paste away"* appears in a walk
+/// at the moment the road changed and nowhere after. **A supervisor who arrives mid-run, or who
+/// reads a finished run's totals, could not ask whether that was true.** Measured 2026-08-22: a
+/// live loop carried that sentence on every one of its reflections, and delivery confirmation is
+/// the axis this project has spent the most rounds on.
+///
+/// ⚠⚠ A run whose `folded` equals its [`RUN_DELIVERED_KEY`] is one where *go and look at the pane*
+/// is the wrong instruction — `sprag_plugin::Deliveries::all_folded` is the predicate, and both
+/// mouths say it in words rather than leaving a reader to divide two numbers.
+pub const RUN_FOLDED_KEY: &str = "folded";
 /// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
 /// gave one, the rule [`RUN_CEILING_KEY`] follows.
 ///
@@ -1993,6 +2018,20 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     if run.stood_down {
         entry[RUN_STOOD_DOWN_KEY] = json!(stand_down_sentence(&run.state));
     }
+    // ⚠⚠⚠⚠ AND WHAT THIS RUN HAS PUT INTO ITS PANE — register item 591, present only for a run
+    // that has delivered something, which is `RUN_CEILING_KEY`'s presence-is-the-claim rule.
+    //
+    // ⚠⚠ BESIDE THE STATE for `RUN_JOURNAL_KEY`'s reason, which is this fact's reason exactly: it
+    // means the same thing whether the run is still going or over. Nested under `running` it would
+    // vanish from a finished run — the one a person reads to work out why it went wrong — and
+    // nested under the outcome it would be invisible while there was still time to act on it.
+    //
+    // ⚠ THE PAIR, never the fold count alone: `folded: 3` says nothing without the denominator,
+    // and `sprag_plugin::Deliveries`' own doc holds the argument.
+    if run.progress.deliveries.made > 0 {
+        entry[RUN_DELIVERED_KEY] = json!(run.progress.deliveries.made);
+        entry[RUN_FOLDED_KEY] = json!(run.progress.deliveries.folded);
+    }
     entry
 }
 
@@ -2203,6 +2242,66 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
             )
         }
     }
+}
+
+/// **WHAT A RUN'S PROMPTS LOOK LIKE FROM THE PANE**, or [`None`] for a run that has delivered
+/// none — register item 591, and the sentence both mouths print for [`RUN_FOLDED_KEY`].
+///
+/// # ⚠⚠⚠⚠ Why a sentence and not two numbers on a row
+///
+/// The fact a person acts on is a RATIO and not a count, and the act is *do I go and look at that
+/// pane?* Handed `delivered 14, folded 14` a reader has to notice the two are equal; handed
+/// `delivered 14, folded 3` they have to notice they are not. **Both readings are one comparison
+/// away from the opposite conclusion**, and the mouths this project has are read by tired people
+/// and by agents — which is the argument `stand_down_sentence` is built on one key over.
+///
+/// ⚠ The numbers travel too ([`RUN_DELIVERED_KEY`] / [`RUN_FOLDED_KEY`]), so a caller that wants
+/// the ratio for itself is not made to parse prose. This is the reading, not the record.
+///
+/// # ⚠⚠ Why it takes the RUN and not a [`sprag_plugin::Deliveries`]
+///
+/// [`refusal_sentence`]'s reason, one key over: the agent-facing mouth depends on this crate and
+/// NOT on the plugin crate, so a typed argument would make that binary carry the whole plugin layer
+/// to read two integers. And there is a second reason this one has and that one does not — a
+/// parameter would put the key-reading at every call site, which is two mouths spelling one
+/// projection twice, the exact drift this file's `outcome_to_json` is `pub` to prevent.
+#[must_use]
+pub fn delivery_sentence(run: &Value) -> Option<String> {
+    /// One count off a run's answer, saturating rather than wrapping — a number too large to be a
+    /// `u32` is a defect somewhere else, and a reader must not be told a small one instead.
+    fn count(run: &Value, key: &str) -> u32 {
+        run[key]
+            .as_u64()
+            .unwrap_or_default()
+            .try_into()
+            .unwrap_or(u32::MAX)
+    }
+    let deliveries = sprag_plugin::Deliveries {
+        made: count(run, RUN_DELIVERED_KEY),
+        folded: count(run, RUN_FOLDED_KEY),
+    };
+    if deliveries.made == 0 {
+        return None;
+    }
+    if deliveries.folded == 0 {
+        return Some(format!(
+            "{} prompt(s) delivered, all of them on that pane",
+            deliveries.made,
+        ));
+    }
+    // ⚠⚠⚠ THE READING THAT CHANGES WHAT SOMEBODY DOES, said in words rather than left to
+    // arithmetic: every prompt this run sent is invisible where people are sent to look for it.
+    if deliveries.all_folded() {
+        return Some(format!(
+            "⚠ all {} of this run's prompts were folded away by its peer's composer — NONE of them \
+             is on that pane, so looking there for one will find a fold and not the text",
+            deliveries.made,
+        ));
+    }
+    Some(format!(
+        "⚠ {} of {} prompts were folded away by its peer's composer and are not on that pane",
+        deliveries.folded, deliveries.made,
+    ))
 }
 
 /// A run's OUTCOME as a client receives it — the projection both mouths render from.
@@ -3585,6 +3684,7 @@ mod tests {
             stopped: None,
             answered,
             screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
         }
     }
 

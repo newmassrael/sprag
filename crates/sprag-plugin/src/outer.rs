@@ -3063,7 +3063,18 @@ pub struct OuterLoop {
     ///
     /// ⚠ **THE TRADE, STATED**: a reader who joins a walk part-way sees no evidence line until the
     /// road changes. The alternative is one repeated sentence per step, which is the failure above.
+    ///
+    /// ⚠⚠⚠⚠ **AND THAT TRADE IS WHY [`deliveries`](Self#structfield.deliveries) EXISTS** — register
+    /// item 591. This field is the STREAM's memory; that one is the LEVEL, and a supervisor who
+    /// arrives mid-run can only read a level.
     told: Told,
+    /// ⚠⚠⚠⚠⚠ **HOW MANY PROMPTS THIS RUN HAS DELIVERED, AND HOW MANY OF THEM ARE NOWHERE ON THE
+    /// PANE** — register item 591, answered through [`Plugin::deliveries`](crate::Plugin).
+    ///
+    /// Written at ONE place ([`witnessed`](Self::witnessed)), which is the same discipline
+    /// [`Told`] is built on: the record and the answer are one act, so *what this run delivered*
+    /// and *what its walk said about it* cannot drift apart.
+    deliveries: crate::plugin::Deliveries,
 }
 
 /// **WHAT A RUN HAS ALREADY BEEN TOLD ABOUT THE GROUNDS OF ITS DELIVERIES** — the level a pass's
@@ -3196,6 +3207,7 @@ impl OuterLoop {
             unaccountable: None,
             witnessed: None,
             told: Told::default(),
+            deliveries: crate::plugin::Deliveries::NONE,
         })
     }
 
@@ -4140,6 +4152,59 @@ impl OuterLoop {
     #[must_use]
     pub fn errors_nobody_answered(&self) -> u32 {
         self.machine.unhandled_error_events()
+    }
+
+    /// **HOW MANY PROMPTS THIS RUN HAS DELIVERED AND HOW MANY WERE FOLDED AWAY** — register item
+    /// 591, and what [`crate::Plugin::deliveries`] answers for an `ai_loop` run.
+    ///
+    /// ⚠ A LEVEL. The walk carries the same fact as CHANGES — the evidence is published once and
+    /// again only when the road moves — so this is what a supervisor arriving mid-run can ask, and
+    /// the walk by construction cannot answer it for them.
+    ///
+    /// ⚠⚠ The diffing type that makes the walk a stream is private to this module, so it is
+    /// described here rather than linked: a `pub` item linking a private one is a rustdoc red under
+    /// this workspace's own gate, and the fact a reader needs is the BEHAVIOUR rather than the name.
+    #[must_use]
+    pub const fn deliveries(&self) -> crate::plugin::Deliveries {
+        self.deliveries
+    }
+
+    /// **RECORD WHAT PROVED THIS PASS'S DELIVERY ARRIVED**, and tally it — register item 591.
+    ///
+    /// # ⚠⚠⚠⚠⚠ One act, for [`Told`]'s reason and one harder
+    ///
+    /// The evidence slot and the running tally are two views of one event, and the whole class of
+    /// defect this repository keeps paying for is two facts nobody keeps in step. Assigning the
+    /// field directly at the two delivery sites and incrementing beside them would be exactly that:
+    /// **a site that forgot the increment does not read as a missing count, it reads as a run whose
+    /// prompts were visible** — the reassuring answer, which is item 453's shape.
+    ///
+    /// ⚠⚠ **A `None` IS A REFUSAL AND IS NOT COUNTED.** `Witnessed::of` answers `None` for exactly
+    /// the two deliveries that are refusals (`Unconfirmed`, `Unsubmitted`), and both are turned
+    /// into a `PaneError` by the caller a few lines on. Counting one would put a prompt that never
+    /// reached the pane into the denominator, and the ratio would then read *this run's prompts are
+    /// visible* on a run whose prompts never arrived.
+    ///
+    /// ⚠ It also CLEARS the slot on a refusal, which is the behaviour the direct assignment had and
+    /// which that field's own comment argues for: the slot must describe this pass's delivery and
+    /// no earlier one.
+    ///
+    /// ⚠⚠ NOT named `witnessed`, though that is the field it writes: this workspace's rustdoc gate
+    /// refuses a word that names two things (R349), and a reader meeting `self.witnessed` would
+    /// have to know which of the two they were looking at.
+    fn record_delivery(&mut self, evidence: Option<crate::deliver::Witnessed>) {
+        self.witnessed = evidence;
+        let Some(evidence) = evidence else {
+            return;
+        };
+        self.deliveries.made = self.deliveries.made.saturating_add(1);
+        // ⚠⚠⚠ THE ONE ROAD WHERE THE PANE CANNOT ANSWER. `Account` means the agent named the
+        // question and its screen never carried the text — see `Witnessed::Account`. Every other
+        // road leaves the prompt somewhere a person can find it, so every other road is a delivery
+        // this count deliberately does not flag.
+        if evidence == crate::deliver::Witnessed::Account {
+            self.deliveries.folded = self.deliveries.folded.saturating_add(1);
+        }
     }
 
     /// **HOW MANY CALLS THE DOCUMENT COUNTS A STANDING INSTRUCTION HAVING TURNED DOWN** — its own
@@ -6544,7 +6609,7 @@ impl OuterLoop {
             // nothing before a submit is precisely the one whose walk must not be read as *the
             // prompt is on that pane*; recording nothing here would leave it indistinguishable
             // from a pass that delivered nothing at all.
-            self.witnessed = Some(crate::deliver::Witnessed::Unchecked);
+            self.record_delivery(Some(crate::deliver::Witnessed::Unchecked));
             return Ok(written);
         }
         let delivered = deliver(
@@ -6570,7 +6635,7 @@ impl OuterLoop {
         // did. A peer whose hooks report the question can still be `Painted`, on a prompt short
         // enough for its composer to show — so a walk that published the contract would say item
         // 421's road was taken on every delivery to a hooked agent.
-        self.witnessed = crate::deliver::Witnessed::of(delivered);
+        self.record_delivery(crate::deliver::Witnessed::of(delivered));
         // ⚠ A prompt the pane never took is a REFUSAL, not a turn to wait out. The alternative is
         // a loop that waits its whole bound for an answer to a question that was never asked, and
         // then judges the screen anyway — this crate's most expensive failure class.
@@ -8556,6 +8621,191 @@ mod tests {
             said.contains("could not be read back off the pane") && said.contains("FOLDED"),
             "⚠⚠ AND THE SENTENCE NAMES THE CAUSE IT MET. Two rounds were spent widening a pane \
              this refusal had blamed: {said:?}",
+        );
+    }
+
+    /// ⛔⛔⛔ **A RUN COUNTS THE PROMPTS ITS PEER FOLDED AWAY, SO *«CAN I GO AND LOOK AT THAT PANE?»*
+    /// HAS AN ANSWER AT ANY MOMENT** — register item 591.
+    ///
+    /// # What the walk could not answer, and why a second reader is not a duplicate
+    ///
+    /// Its neighbour above proves the loop WALKS the folded road and that the walk says so. But the
+    /// walk says it as a CHANGE: [`Told`] publishes the evidence once and again only when the road
+    /// moves, and that type's own doc states the trade — *"a reader who joins a walk part-way sees
+    /// no evidence line until the road changes."* Measured 2026-08-22 on a live loop: every one of
+    /// its reflections carried *"the prompt is NOWHERE ON THAT SCREEN"*, and a supervisor arriving
+    /// afterwards had no way to ask whether that was still true. **A stream cannot answer a question
+    /// asked at an arbitrary moment; a level can.**
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND THE DENOMINATOR IS HALF THE CLAIM.** *Three folds* is a run whose every prompt
+    /// is invisible if it made three deliveries and a rounding error if it made two hundred, so the
+    /// pair is asserted rather than the fold count alone — see [`Deliveries`](crate::plugin::Deliveries).
+    ///
+    /// # ⚠⚠⚠⚠ The control is a peer that PAINTS, not one that refuses
+    ///
+    /// The neighbouring gate's control is a SCRAPED pane, which refuses the delivery — so its
+    /// tally would be `0 of 0` and would agree with this one by having delivered nothing at all.
+    /// Here the control takes the identical prompt down the identical road and **puts it on the
+    /// screen**, so both arms deliver, both are accepted, and the ONE thing that differs is whether
+    /// a person could find the text. Without it a fix that counted every delivery as folded would
+    /// pass.
+    #[test]
+    fn a_run_counts_the_prompts_its_peer_folded_away_and_the_ones_it_did_not() {
+        /// A peer whose composer FOLDS what it is given: it prints a placeholder and swallows the
+        /// rest, so the prompt's own characters are nowhere on that screen.
+        const FOLDS: &str = "stty raw -echo; printf 'GO'; \
+             dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '[Pasted text #2 +5 lines]'; \
+             exec cat > /dev/null";
+        /// ⚠ THE CONTROL'S PEER: the same shape, and it PAINTS what it is given back. `cat` with
+        /// the terminal in raw mode is the fixture this repository settled on for *a program that
+        /// echoes* (register item 568: a shell's own echo is a platform coin-toss).
+        const PAINTS: &str = "stty raw -echo; printf 'GO'; exec cat";
+
+        // Drive ONE pass of a loop over a peer running `peer`, and answer what its deliveries came
+        // to, with the screen so each arm's own premise can be checked.
+        //
+        // ⚠ ONE BODY FOR BOTH ARMS: two hand-written setups is how a control quietly stops being
+        // one, and everything here except `peer` is load-bearing for the road being compared.
+        let start = |peer: &'static str| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(peer);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            // The stand-in for an agent's submit hook — the neighbouring gate's, for its reason:
+            // what stands in for *the agent says it was asked this* is the pty's own record of what
+            // was typed, tied to the submit's carriage return because a real hook fires on a SUBMIT.
+            let published = Arc::new(Mutex::new(0_u64));
+            let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
+                let typed = reader
+                    .input_trail()
+                    .and_then(|echo| echo.pane_recent_input(id))
+                    .unwrap_or_default();
+                let submitted = typed.contains('\r');
+                let mut seq = published.lock().expect("the published verdict");
+                if submitted && *seq == 0 {
+                    *seq = 1;
+                }
+                Some(crate::access::AgentObservation {
+                    state: if submitted {
+                        sprag_detect::AgentState::Working
+                    } else {
+                        sprag_detect::AgentState::Idle
+                    },
+                    agent: Some("claude".to_owned()),
+                    // ⚠⚠⚠ REPORTED IN BOTH ARMS, deliberately. The authority is what decides
+                    // whether the AGENT'S ACCOUNT is available as a road at all, and holding it
+                    // fixed is what makes the folding the only difference: the painting peer is
+                    // confirmed off its SCREEN even though the account was there to be used, which
+                    // is `record_delivery`'s claim — the road is chosen by what the delivery
+                    // ANSWERED and not by what the contract would have allowed.
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_owned(),
+                    },
+                    seq: *seq,
+                    asked_seq: *seq,
+                    reports: 0,
+                    asking: None,
+                    asked: submitted.then(|| typed.replace('\r', "")),
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    transcript: None,
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                Duration::from_secs(1),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            // ⚠ BEFORE ANY DELIVERY, so the tally below cannot be read as *it was always like
+            // that*: a counter that started non-zero would make both arms agree for the wrong
+            // reason.
+            assert_eq!(
+                loops.deliveries(),
+                crate::plugin::Deliveries::NONE,
+                "a loop that has delivered nothing must say so",
+            );
+            // The peer has to be past its `stty` before anything is typed, or the line discipline
+            // echoes the prompt and this measures the kernel instead of the peer.
+            let up = Instant::now();
+            while !access
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pumped = loops.pump(&access, &RunContext::uncancellable());
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (pumped, loops.deliveries(), screen)
+        };
+
+        // ── THE ARM: THE COMPOSER ATE IT ──
+        let (folded_pump, folded, folded_screen) = start(FOLDS);
+        folded_pump.expect("the loop must not refuse a prompt its peer took and folded");
+        assert!(
+            folded_screen.contains("[Pasted text"),
+            "⚠ THE FIXTURE'S OWN PREMISE: this peer must have folded, or the arm is about a pane \
+             that printed nothing. Screen: {folded_screen:?}",
+        );
+        assert_eq!(
+            (folded.made, folded.folded),
+            (1, 1),
+            "⛔⛔⛔ ITEM 591: this run delivered one prompt and NOTHING of it is on that pane, and \
+             the run has to be able to say so at any moment rather than only in the instant the \
+             road changed. Screen: {folded_screen:?}",
+        );
+        assert!(
+            folded.all_folded(),
+            "⚠⚠⚠ AND THE READING A PERSON ACTS ON: every prompt this run delivered is invisible, \
+             so *go and look at the pane* is the wrong instruction. Got {folded:?}",
+        );
+
+        // ── THE CONTROL: THE SAME PROMPT, ON THE SCREEN ──
+        let (painted_pump, painted, painted_screen) = start(PAINTS);
+        painted_pump.expect("the control's peer paints the prompt, so the delivery is confirmed");
+        assert!(
+            !painted_screen.contains("[Pasted text"),
+            "⚠ THE CONTROL'S OWN PREMISE: this peer must NOT have folded, or the two arms differ in \
+             nothing. Screen: {painted_screen:?}",
+        );
+        assert_eq!(
+            (painted.made, painted.folded),
+            (1, 0),
+            "⚠⚠⚠⚠⚠ THE CONTROL: the same prompt down the same road at a peer that PAINTS it must \
+             be counted as delivered and NOT as folded. If this reads (1, 1) the tally is counting \
+             deliveries rather than folds and the arm above passed for the wrong reason; if it \
+             reads (0, 0) this peer refused, and the two arms are not comparable. Screen: \
+             {painted_screen:?}",
+        );
+        assert!(
+            !painted.all_folded(),
+            "⚠⚠ and a run whose prompt is on the screen must not tell anybody to distrust it. Got \
+             {painted:?}",
         );
     }
 

@@ -311,6 +311,60 @@ impl Cost {
     }
 }
 
+/// **WHAT A RUN HAS PUT INTO ITS PANE, AND HOW MUCH OF IT NOBODY CAN SEE THERE** — register item
+/// 591, and the answer to [`Plugin::deliveries`].
+///
+/// # ⚠⚠⚠⚠⚠ Why the two numbers travel together and neither is useful alone
+///
+/// `folded` alone is a count with no scale: *three folds* is a run whose every prompt is invisible
+/// if it made three deliveries, and a rounding error if it made two hundred. `made` alone says
+/// nothing about visibility. **The question a person actually asks is a RATIO** — *can I go and
+/// look at that pane for my prompt?* — and it has one honest answer only when both are published.
+///
+/// ⚠⚠ It is deliberately not a tally over every [`Witnessed`](crate::deliver::Witnessed) road.
+/// Six counters would publish five numbers nobody has asked a question about, and the wire rule
+/// this repository follows is that a number the product does not read is folklore. The two here
+/// are the two register item 591 was filed on; a third road that turns out to matter earns its own
+/// field with its own measurement.
+///
+/// ⚠ `made` counts deliveries that were ACCEPTED — a refused one never reached a pane at all, and
+/// counting it would make the ratio read as *this run's prompts are visible* on a run whose
+/// prompts never arrived.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Deliveries {
+    /// How many prompts this run has put into its pane and had accepted.
+    pub made: u32,
+    /// How many of [`made`](Self::made) were confirmed on the AGENT'S OWN ACCOUNT because the
+    /// peer's composer folded the paste away — [`Witnessed::Account`](crate::deliver::Witnessed).
+    ///
+    /// ⚠ **THE ONE ROAD WHERE LOOKING AT THE PANE ANSWERS NOTHING.** Every other road leaves the
+    /// text somewhere a person can find it; this one leaves `[Pasted text +N lines]` where they
+    /// were told to expect their prompt.
+    pub folded: u32,
+}
+
+impl Deliveries {
+    /// **NOTHING DELIVERED** — the answer for a plugin that puts no composed prompt into a pane.
+    ///
+    /// ⚠ A named constant rather than `Default::default()` at the call site, for the reason
+    /// `crate::runs`-style absences are named everywhere in this workspace: `Deliveries::default()`
+    /// reads as *I have not filled this in*, and this is a positive claim — **this plugin has no
+    /// prompts for a composer to fold.** `pipe` relays bytes somebody else composed, `orchestrator`
+    /// drives a peer it did not write the words for, and neither has a delivery in this sense.
+    pub const NONE: Self = Self { made: 0, folded: 0 };
+
+    /// Whether EVERY prompt this run delivered was folded away — the reading that says *do not go
+    /// and look at that pane*, and the one register item 591 was measured on.
+    ///
+    /// ⚠ False for a run that has delivered nothing, which is the honest answer: a run with no
+    /// deliveries has no invisible ones, and a predicate answering `true` there would tell a person
+    /// to distrust a pane nothing has been typed into.
+    #[must_use]
+    pub const fn all_folded(self) -> bool {
+        self.made > 0 && self.folded == self.made
+    }
+}
+
 /// What a [`Plugin::step`] did and decided.
 ///
 /// ⚠ NOT `Copy`, because of [`note`](Self::note) — and the field is worth that. A run reported its
@@ -464,6 +518,43 @@ pub trait Plugin {
     /// [`JOURNAL_LIMIT`]: crate::driver::JOURNAL_LIMIT
     fn at(&self) -> Option<&'static str> {
         None
+    }
+
+    /// ⚠⚠⚠⚠⚠ **HOW MANY PROMPTS THIS PLUGIN HAS PUT INTO ITS PANE, AND HOW MANY OF THEM THE PEER'S
+    /// COMPOSER FOLDED AWAY** — register item 591.
+    ///
+    /// # The fact that existed only as a CHANGE — and a supervisor arrives mid-run
+    ///
+    /// `ai_loop` already says which road a delivery took, but it says it as a DIFF:
+    /// `crate::outer::Told` publishes the evidence once and then only when it CHANGES, and that
+    /// type's own doc states the trade — *"a reader who joins a walk part-way sees no evidence line
+    /// until the road changes"*. So *are my run's prompts visible on that pane?* was answerable only
+    /// by having watched from the start, and a person who came back to a running loop could not ask
+    /// it at all.
+    ///
+    /// ⚠⚠⚠⚠ **A FOLDED PROMPT IS INVISIBLE EXACTLY WHERE PEOPLE ARE SENT TO LOOK.** Measured
+    /// 2026-08-22: a live run carried *"the prompt is NOWHERE ON THAT SCREEN — its composer folded
+    /// the paste away"* on every one of its reflections, and delivery confirmation is the axis this
+    /// project has spent the most rounds on. A count is what turns that from an anecdote into a
+    /// number somebody can act on — and the DENOMINATOR is half of it: *3 of 3* and *3 of 200* are
+    /// different runs, and only the first says every prompt is a fold.
+    ///
+    /// # ⚠⚠ Why the Driver ASKS, rather than [`Step`] carrying it
+    ///
+    /// [`at`](Self::at)'s argument verbatim, and it applies harder here because these are TOTALS: a
+    /// per-step field forgotten at one of the twenty-odd sites that build a `Step` does not read as
+    /// absent, it reads as *nothing was delivered on that step* — a fold silently uncounted, which
+    /// is the exact failure this exists to end. Asked here, it has one call site.
+    ///
+    /// ⚠ A LEVEL and never a delta: answer the run's totals so far. The Driver records what it is
+    /// told and never adds to it, which is what keeps one authority on the count.
+    ///
+    /// ⚠ The default is [`Deliveries::NONE`], which is the honest answer for the three bundled
+    /// plugins that put no composed prompt into a pane at all — see that constant.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn deliveries(&self) -> Deliveries {
+        Deliveries::NONE
     }
 
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**

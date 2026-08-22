@@ -884,6 +884,11 @@ impl RunRegistry {
                         // decision: this one counts the peer's tool calls a run REFUSED, and the
                         // log has no column for it either.
                         screened: 0,
+                        // ⚠ AND WHAT ITS DELIVERIES CAME TO IS NOT RESTORED — register item 591,
+                        // on the same argument and with an extra edge: the fact is about a PANE,
+                        // and the pane a restored run was driving is either gone or holding
+                        // somebody else. `NONE` reads as `0 of 0`, which claims nothing.
+                        deliveries: sprag_plugin::Deliveries::NONE,
                     }),
                     output: saved.output.clone(),
                 }
@@ -928,6 +933,12 @@ impl RunRegistry {
                     answered: 0,
                     // ⚠ Nor the count of calls it refused, for the same reason.
                     screened: 0,
+                    // ⚠ NOR WHAT ITS DELIVERIES CAME TO — register item 591, and the same argument
+                    // a third time: the durable log has no column for it, and `NONE` is the honest
+                    // shape of *nothing was written down*. It reads as `0 of 0`, which
+                    // `Deliveries::all_folded` answers `false` for — a restored run does not tell
+                    // anybody to distrust a pane, which is right, because nobody knows.
+                    deliveries: sprag_plugin::Deliveries::NONE,
                     // ⚠⚠⚠⚠⚠ AND THE POSITION IS NOT RESTORED INTO THE LIVE CELL, WHICH IS THE
                     // POINT OF THE FINGERPRINT RATHER THAN A GAP IN IT — register items 543, 544.
                     // `Progress::at` is `&'static str`: a word from THIS binary's documents. The
@@ -1090,6 +1101,7 @@ mod tests {
                 stopped: None,
                 answered: 0,
                 screened: 0,
+                deliveries: sprag_plugin::Deliveries::NONE,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -1129,6 +1141,7 @@ mod tests {
                     stopped: None,
                     answered: 0,
                     screened: 0,
+                    deliveries: sprag_plugin::Deliveries::NONE,
                 }),
                 output: None,
             };
@@ -1209,6 +1222,7 @@ mod tests {
             stopped: None,
             answered: 0,
             screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
         }
     }
 
