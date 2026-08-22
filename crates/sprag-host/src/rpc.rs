@@ -225,6 +225,12 @@ impl HostState {
             // minted here would hold nothing at the moment it was asked and every request would take
             // its own `/proc` walk. One set per host is what makes the answers shared.
             samplers: self.host.samplers().clone(),
+            // ⚠⚠⚠ THE RUN DIRECTORY, so the PANE list can answer *is anybody driving me* — register
+            // items 595 and 602. It is the HOST's own registry rather than a fresh one for
+            // `samplers`' reason and a sharper one: a copy would be a directory holding no runs,
+            // which answers *nothing is driving this pane* about every pane on a working daemon —
+            // the reassuring wrong answer item 595 is about.
+            runs: Some(Arc::clone(self.runs())),
         }
     }
 

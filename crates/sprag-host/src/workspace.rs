@@ -528,6 +528,17 @@ pub struct WorkspaceExternal {
     /// split was made to remove. Unlike `agents` this is not `Option`: there is no host that cannot
     /// answer where its sessions are working or what its panes are running.
     samplers: crate::Samplers,
+    /// ⚠⚠⚠⚠⚠ **THE RUNS THIS DAEMON IS DRIVING**, read when the pane list is served so a pane can
+    /// say whether anybody is driving it — register items 595 and 602.
+    ///
+    /// See [`crate::DaemonShared::runs`], which holds the whole argument: why a restored `claude`
+    /// pane that nobody drives looks exactly like a working loop, and why the join lives HERE
+    /// rather than in each mouth.
+    ///
+    /// ⚠ Shared like [`agents`](Self::agents) rather than owned, and for that field's reason: this
+    /// surface is rebuilt per JSON-RPC request, so a directory owned here would be an empty one —
+    /// which answers *nothing is driving this pane* about every pane on a working daemon.
+    runs: Option<Arc<Mutex<crate::runs::RunRegistry>>>,
     /// Where this surface reads the [`window-size`](crate::options::WINDOW_SIZE) policy —
     /// [`crate::config::window_size`] on every real host, and the ONE authority both readers of it
     /// go through ([`size_policy`](Self::size_policy)).
@@ -586,6 +597,7 @@ impl WorkspaceExternal {
             attention,
             agents,
             samplers,
+            runs,
         } = daemon;
         Self {
             registry,
@@ -596,6 +608,7 @@ impl WorkspaceExternal {
             attention,
             agents,
             samplers,
+            runs,
             window_size: crate::config::window_size,
         }
     }
@@ -2834,6 +2847,32 @@ impl WorkspaceExternal {
                 // Reconciled rather than read raw, so a pane that has just exited cannot be marked
                 // active in the very list that no longer contains it.
                 let active = crate::host::active_pane(&self.registry, &self.scope);
+                // ⚠⚠⚠⚠⚠ **WHICH PANES A LIVE RUN IS DRIVING** — register items 595 and 602, taken
+                // ONCE for the whole list rather than per pane: the run directory is behind a lock,
+                // and asking it inside the map below would take that lock once per pane and answer
+                // each one about a different instant. The two facts a reader compares — this pane,
+                // and whether anybody is driving it — have to come from one moment.
+                //
+                // ⚠⚠ **THE JOIN LIVES HERE AND NOT IN THE MOUTHS.** `sprag panes` and the
+                // agent-facing `list_panes` could each fetch `runs` and match ids; that is two
+                // readers deriving one fact, which is the class this crate keeps paying for. The
+                // host answers it once and both mouths print what they are given.
+                //
+                // ⚠ ONLY runs that are still RUNNING count. A finished run's `driving` still names
+                // the pane it drove — which is item 540's whole point, asked of history — and
+                // reading it here would say somebody is driving a pane nobody is.
+                let driven: std::collections::HashSet<u64> = self
+                    .runs
+                    .as_ref()
+                    .map(|runs| {
+                        crate::lock(runs)
+                            .snapshot()
+                            .iter()
+                            .filter(|run| matches!(run.state, crate::runs::RunState::Running))
+                            .filter_map(|run| run.progress.driving.map(|pane| pane.0))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let entries = panes
                     .iter()
                     .map(|p| {
@@ -3023,6 +3062,23 @@ impl WorkspaceExternal {
                         // additive — and for its reader, which sits beside it.
                         if let Some(facts) = agents.as_ref().and_then(|map| map.get(&p.id)) {
                             entry["agent"] = crate::agent::verdict_json(facts);
+                        }
+                        // ⚠⚠⚠⚠⚠ **AND WHETHER ANYBODY IS DRIVING IT** — register item 595, the
+                        // half that only the pane surface can answer.
+                        //
+                        // A daemon restart re-runs an allowlisted agent's argv, so a `claude` pane
+                        // comes back holding its old conversation with NOTHING driving it. On the
+                        // screen that is a `claude` prompt, and so is a loop mid-turn: measured
+                        // three times in one day, the last with `sprag runs` reporting no running
+                        // run beside three live `claude` processes.
+                        //
+                        // ⚠⚠ PRESENT ONLY WHEN TRUE, which is this wire's presence-is-the-claim
+                        // rule — and here the absence is what a reader must be able to act on, so
+                        // it is worth saying why a bool would be worse: `driven: false` on every
+                        // shell in the workspace is noise on the common path, and noise is what
+                        // gets skimmed past on the pane that matters.
+                        if driven.contains(&p.id) {
+                            entry[crate::wire::PANE_DRIVEN_KEY] = serde_json::json!(true);
                         }
                         entry
                     })
@@ -3716,6 +3772,7 @@ mod tests {
                     attention: None,
                     agents: None,
                     samplers: sampler(),
+                    runs: None,
                 },
             ),
             revision,
@@ -3741,6 +3798,7 @@ mod tests {
                     attention: None,
                     agents: Some(Arc::clone(&agents)),
                     samplers: sampler(),
+                    runs: None,
                 },
             ),
             agents,
@@ -3828,6 +3886,120 @@ mod tests {
             None,
             "and the key is ABSENT — not null — for a pane nobody claims, so a workspace no agent \
              touched is byte-identical to the pre-provenance wire shape",
+        );
+    }
+
+    /// ⛔⛔⛔ **A PANE SAYS WHETHER ANYBODY IS DRIVING IT** — register items 595 and 602, and the
+    /// half of the question that only this surface can answer.
+    ///
+    /// # What the two indistinguishable pictures cost
+    ///
+    /// A daemon restart re-runs an allowlisted agent's argv ([`crate::durability::restore_command`]),
+    /// so a `claude` pane comes back **holding its old conversation with nothing driving it**. On
+    /// the screen that is a `claude` prompt — and so is a loop mid-turn. Measured 2026-08-22, three
+    /// times in one day, ending with `sprag runs` reporting **no running run** beside **three** live
+    /// `claude` processes: tokens and context held by agents nobody had asked for anything.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL IS THE SECOND PANE, AND WITHOUT IT THIS GATE IS DECORATION.** Both panes
+    /// are born the same way into the same workspace and are read out of the same answer; the ONLY
+    /// difference is that a run reports driving one of them. A key that appeared on both would be
+    /// saying nothing about who is driving anything, and a key that appeared on neither would leave
+    /// the two pictures exactly as indistinguishable as they were.
+    ///
+    /// ⚠⚠ **THE RUN IS CONSTRUCTED RATHER THAN DRIVEN, and the pairing is what makes that honest.**
+    /// What is under test HERE is the JOIN — given a running run that reports a pane, does the pane
+    /// say so — and building the progress directly is the only way to state that without a live
+    /// agent. That the loop really FILLS `driving` is a different claim, gated where a real run is
+    /// driven (`plugins::tests::a_loop_started_over_the_wire_prompts_its_agent_with_what_the_caller
+    /// _briefed`). Neither gate is worth much alone; together they carry the fact end to end.
+    #[test]
+    fn a_pane_says_whether_a_live_run_is_driving_it() {
+        let reg = registry();
+        let runs = Arc::new(Mutex::new(crate::runs::RunRegistry::default()));
+        let scope = SessionScope::unscoped(&reg);
+        let channels = Arc::new(ChannelRegistry::default());
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            scope,
+            channels,
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+                runs: Some(Arc::clone(&runs)),
+            },
+        );
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .expect("both panes are born the same way");
+        }
+
+        // ── A RUNNING RUN THAT REPORTS PANE 0 ── its progress is written where the Driver writes
+        // it, so the join below reads the same cell production reads.
+        let progress = sprag_plugin::ProgressCell::default();
+        crate::lock(&progress).driving = Some(sprag_terminal::PaneId(0));
+        // The cell the WORKER writes its terminal state into, kept here so the arm below can end
+        // this run the way a driver does rather than by reaching into the directory.
+        let state = Arc::new(Mutex::new(crate::runs::RunState::Running));
+        let id = crate::lock(&runs).reserve();
+        crate::lock(&runs).submit(crate::runs::NewRun {
+            id,
+            label: "ai_loop pane=0".to_owned(),
+            opened_by: None,
+            opened_by_session: None,
+            state: Arc::clone(&state),
+            run: Box::new(crate::runs::EndedRun::restored(false)),
+            progress,
+        });
+
+        assert_eq!(
+            pane_entry(&mut ext, 0)[crate::wire::PANE_DRIVEN_KEY],
+            json!(true),
+            "⛔⛔⛔ ITEM 595: a run is driving this pane and the pane does not say so, so a revived \
+             agent nobody is driving reads exactly like a loop mid-turn — which is what a person \
+             sees on the screen and cannot tell apart",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1).get(crate::wire::PANE_DRIVEN_KEY),
+            None,
+            "⚠⚠⚠⚠⚠ THE CONTROL: nothing drives this pane, and the key must be ABSENT rather than \
+             `false` — every shell in a workspace carrying `driven: false` is noise on the common \
+             path, and noise is what gets skimmed past on the one pane that matters",
+        );
+
+        // ── AND THE RUN ENDS, WITHOUT ITS PANE GOING ANYWHERE ──
+        //
+        // ⚠⚠⚠⚠⚠ **THIS IS THE ARM ITEM 595 IS ACTUALLY ABOUT.** A finished run's `driving` still
+        // names the pane it drove — that is register item 540 working, asked of history — so a join
+        // that read every run would say *somebody is driving this* about a pane whose driver is
+        // gone. That is precisely the picture a restored `claude` presents, and reporting it as
+        // driven would make this key certify the very confusion it was built to end.
+        //
+        // ⚠⚠ THE PROGRESS CELL IS LEFT SAYING `pane 0`, deliberately and without touching it: a
+        // finished run keeps the last reading its driver took, which is what makes this arm a
+        // measurement of the STATE filter rather than of a field somebody cleared.
+        *crate::lock(&state) = crate::runs::RunState::Done {
+            outcome: Box::new(sprag_plugin::Outcome {
+                state: sprag_plugin::OutcomeState::Converged,
+                iterations: 1,
+                cost: None,
+                failure: None,
+                stopped: None,
+                answered: 0,
+                screened: 0,
+                deliveries: sprag_plugin::Deliveries::NONE,
+                checks: sprag_plugin::Checks::NONE,
+            }),
+            output: None,
+        };
+        assert_eq!(
+            pane_entry(&mut ext, 0).get(crate::wire::PANE_DRIVEN_KEY),
+            None,
+            "⛔⛔⛔ ITEM 595: this run is OVER and its pane is still here holding whatever the agent \
+             left in it. Nobody is driving it, and a pane that says otherwise is the revived-agent \
+             confusion wearing the fix's clothes",
         );
     }
 
@@ -4538,6 +4710,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         );
 
@@ -6268,6 +6441,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         );
         assert_eq!(
@@ -6688,6 +6862,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         );
         // `new_session` sends exactly one signal by itself: the [`crate::BirthPin`] it takes fires
@@ -6876,6 +7051,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         );
         assert_eq!(lock(&attachments).attached_count("work"), 2, "two viewers");
@@ -6941,6 +7117,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         );
 
@@ -7588,6 +7765,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         );
 
@@ -8076,6 +8254,7 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                runs: None,
             },
         )
     }

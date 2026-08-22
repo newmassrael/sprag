@@ -4449,6 +4449,25 @@ pub const RENAME_PANE_ACTION: &str = "rename_pane";
 pub const GRANT_PANE_ACTION: &str = "grant_pane";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
+/// The [`PANES_SLOT`] member saying **A LIVE RUN IS DRIVING THIS PANE** — register items 595 and
+/// 602, present only when one is and absent otherwise.
+///
+/// # ⛔⛔⛔ A revived agent and a working loop are the same picture
+///
+/// A daemon restart re-runs an allowlisted agent's argv (`crate::durability::restore_command`), so
+/// a `claude` pane comes back **holding its old conversation with nothing driving it**. On screen
+/// that is a `claude` prompt, and so is a loop mid-turn. Measured 2026-08-22, three times in one
+/// day, the last with `sprag runs` reporting **no running run** beside **three** live `claude`
+/// processes — tokens and context held by an agent nobody had asked for anything.
+///
+/// ⚠⚠ **IT IS THE OTHER HALF OF `RUN_DRIVING_KEY`** (register item 540). The run says which pane it
+/// drives; this says whether anybody drives this pane. Neither answers the question alone, and the
+/// join is the HOST's — two mouths matching ids would be two readers deriving one fact.
+///
+/// ⚠ ABSENT rather than `false`, the rule its neighbours in this slot follow: a `driven: false` on
+/// every shell in a workspace is noise on the common path, and noise is what gets skimmed past on
+/// the one pane it matters for.
+pub const PANE_DRIVEN_KEY: &str = "driven";
 /// The member of a [`PANES_SLOT`] entry that is an ADDRESS: the pane's id, which is what a client
 /// puts back into [`pane_input_path`] to read or drive that pane.
 ///

@@ -209,6 +209,32 @@ pub struct DaemonShared {
     /// caller passes here decides only WHO SHARES the samples: the set taken from
     /// [`Host::samplers`] is the whole host's, and a fresh one is nobody else's.
     pub samplers: Samplers,
+    /// ⚠⚠⚠⚠⚠ **THE RUNS THIS DAEMON IS DRIVING**, read when the pane list is served so a pane can
+    /// answer *is anybody driving me* — register items 595 and 602.
+    ///
+    /// # Why the PANE list needs the RUN directory
+    ///
+    /// A daemon restart re-runs an allowlisted agent's argv, so a `claude` pane comes back holding
+    /// its old conversation **with nothing driving it** ([`durability::restore_command`]). On the
+    /// screen that is indistinguishable from a loop that is working — both are a `claude` prompt —
+    /// and it was measured three times in one day, ending with `sprag runs` reporting **no running
+    /// run** while three `claude` processes sat there.
+    ///
+    /// Register item 540 gave the RUN side of the answer (`driving`, a pane id a program can read).
+    /// This field is what lets the PANE side use it, and it is here rather than passed separately
+    /// because [`DaemonShared`] is exactly the bundle of *things only a daemon has* that this
+    /// surface is already built from — adding a parameter would have changed six call sites to say
+    /// the same thing.
+    ///
+    /// ⚠⚠ **THE JOIN HAS ONE HOME, AND THAT IS THE WHOLE REASON THIS IS NOT DONE IN THE MOUTHS.**
+    /// `sprag panes` and the agent-facing `list_panes` could each fetch `runs` and match ids, and
+    /// then there would be two readers deriving one fact — the defect this crate has paid for
+    /// often enough to name. The host answers it once.
+    ///
+    /// ⚠ [`None`] off a daemon, like its optional neighbours: an in-process host with no run
+    /// directory leaves the key absent, which is *nothing here drives panes* rather than a wrong
+    /// answer.
+    pub runs: Option<Arc<Mutex<runs::RunRegistry>>>,
 }
 
 /// The host's SAMPLED facts, one sampler each, shared by every arm that serves them.
