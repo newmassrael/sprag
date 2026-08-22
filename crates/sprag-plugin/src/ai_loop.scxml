@@ -1308,6 +1308,43 @@
     <data id="turns" expr="0"/>
     <data id="turns_since_reflect" expr="0"/>
     <!--
+      WHICH TURN THE MILESTONE WAS SET ON, so a briefing can say how old the
+      text it is about to type really is. Register item 592.
+
+      MEASURED 2026-08-22. A run's brief carried
+      `Milestone: 전수 라운드(pid 3988592, 현재 18/21 CAUGHT ...)` and
+      `What to carry: the fix is done, do not build it again`. The pid was
+      gone; `ps` found no such process. The run went 55 turns and committed
+      nothing, because the agent was told to continue something that did not
+      exist and told not to rebuild it.
+
+      THE DEFECT IS NOT THAT THE pid DIED. It is that the milestone HOLDS a
+      snapshot and is then re-typed VERBATIM at every re-priming, so a number
+      true when it was written is presented as true now, for ever. This
+      document cannot check somebody else's pid and must not pretend to. What
+      it can say, and what nothing said before, is HOW OLD the claim is - and
+      the reader who can act on that is the agent being briefed.
+
+      IT IS A TURN NUMBER AND NOT A CLOCK, deliberately. This machine's own
+      unit of progress is a turn; a wall-clock age would be a second authority
+      on how far a run has got, and the number a reader compares it against
+      (`turns`) is right here.
+
+      SET WHEREVER `milestone` IS, and both sites carry the assignment beside
+      the one they already had: `brief` at the start and `reflect.applied` when
+      a reflection moves the checkpoint. A third writer of `milestone` that
+      forgot this would leave the age reading as somebody else's milestone, and
+      a gate in `ai_loop.rs` counts the pair.
+    -->
+    <data id="milestone_at" expr="0"/>
+    <!--
+      THE CLAUSE `priming` COMPOSES OUT OF IT, empty while the milestone is
+      fresh. Held as a variable rather than inlined so the composition above
+      stays one expression per prompt - this document's own rule about the
+      three prompts being read side by side.
+    -->
+    <data id="milestone_age" expr="''"/>
+    <!--
       ⚠ CONSECUTIVE refusals, cleared when the run reflects — see
       `reflect_after_refusals` above and `reflecting`'s own `onentry`.
     -->
@@ -1849,6 +1886,9 @@
     <transition event="brief">
       <assign location="north_star" expr="_event.data.north_star"/>
       <assign location="milestone" expr="_event.data.milestone"/>
+      <!-- WHEN IT WAS SET - register item 592, beside the assignment it dates. -->
+      <assign location="milestone_at" expr="turns"/>
+      <assign location="milestone_age" expr="''"/>
       <assign location="reference" expr="_event.data.reference"/>
       <assign location="max_turns" expr="_event.data.max_turns"/>
       <assign location="reflect_every" expr="_event.data.reflect_every"/>
@@ -2066,9 +2106,28 @@
         that carried its instructions only in `turn_prompt` would hand its
         replacement a clean slate and the original milestone.
       -->
+      <!--
+        HOW OLD THE MILESTONE IS, RE-READ HERE - register item 592.
+
+        `priming` is entered at the start AND again on `session.ready`, which is
+        what a replacement session is briefed through. So this subtraction is
+        computed at the moment somebody is told the text, against a counter that
+        has been running the whole time: it is a live read, not a snapshot, and
+        that is the whole of the fix. A run 55 turns in now says so.
+
+        THE EMPTY STRING FOR A FRESH MILESTONE IS THE POINT, not a saving. At
+        turn 0, and on the turn a reflection moves the checkpoint, the age is
+        zero and there is nothing to warn anybody about - a clause that said
+        `(set 0 turns ago)` on every first briefing would be noise on the
+        common path, and noise is what gets skimmed past on the rare one.
+      -->
+      <assign location="milestone_age"
+              expr="turns - milestone_at &gt; 0
+                    ? ' (set ' + (turns - milestone_at) + ' turns ago; check it still describes live facts)'
+                    : ''"/>
       <assign location="start_prompt"
               expr="'North star: ' + north_star + '\n' +
-                    'Milestone: ' + milestone + '\n' +
+                    'Milestone: ' + milestone + milestone_age + '\n' +
                     'What to carry: ' + reference + '\n' +
                     standing +
                     carried +
@@ -3128,6 +3187,12 @@
     -->
     <transition event="reflect.applied" target="reviewing">
       <assign location="milestone" expr="_event.data.milestone"/>
+      <!--
+        AND THE AGE RESETS WITH IT - register item 592. A reflection that moves
+        the checkpoint has authored a NEW claim, so the one thing a briefing
+        must not say about it is that it is as old as the run.
+      -->
+      <assign location="milestone_at" expr="turns"/>
       <assign location="reference" expr="_event.data.reference"/>
       <assign location="standing" expr="_event.data.standing"/>
     </transition>

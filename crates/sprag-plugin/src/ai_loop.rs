@@ -8501,6 +8501,101 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔ **A MILESTONE RE-TYPED INTO A REPLACEMENT SESSION SAYS HOW OLD IT IS** — register
+    /// item 592, and the number is re-read at the moment somebody is briefed rather than frozen
+    /// with the text.
+    ///
+    /// # What a snapshot in a milestone cost, measured
+    ///
+    /// A live run's brief read `Milestone: 전수 라운드(pid 3988592, 현재 18/21 CAUGHT …)` beside
+    /// `What to carry: the fix is done, do not build it again`. `ps -p 3988592` found **nothing**;
+    /// the run went **55 iterations and committed nothing**, because its agent was told to carry on
+    /// with a process that did not exist and told not to rebuild it.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE DEFECT IS NOT THAT THE pid DIED.** It is that the milestone HOLDS a snapshot and
+    /// is then re-typed VERBATIM at every re-priming (`reflect_every` makes that every few turns),
+    /// so a number true when it was written is presented as true now, for ever. This document
+    /// cannot check somebody else's pid and must not pretend to — what it can say, and what nothing
+    /// said before, is HOW OLD the claim is.
+    ///
+    /// # ⚠⚠⚠⚠ Why the assertion is about a REPLACEMENT and not about the first briefing
+    ///
+    /// `priming` is entered twice: once at the start, and again on `session.ready`, which is the
+    /// door a replacement session comes through. **The first briefing cannot be stale** — the
+    /// milestone was set moments before — so a gate that read only that one would be green over a
+    /// composition that had frozen the number. The walk below takes turns FIRST and is briefed
+    /// AFTER, which is the only arrangement where a frozen number and a live one differ.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE FIRST BRIEFING**, asserted to carry NO age clause at all: a
+    /// fresh milestone has nothing to warn anybody about, and a clause printed on every run's
+    /// opening prompt is noise on the common path — which is exactly what gets skimmed past on the
+    /// rare one.
+    #[test]
+    fn a_milestone_re_typed_into_a_replacement_session_says_how_old_it_is() {
+        /// What the composed clause says when the milestone has aged — the words a briefed agent
+        /// acts on, and the reason it is not merely a number.
+        const AGED: &str = "turns ago; check it still describes live facts";
+
+        let (mut engine, lua, session) = started();
+        let composed =
+            |lua: &Arc<dyn IScriptEngine>| match lua.get_variable(&session, "start_prompt") {
+                Ok(ScriptValue::String(text)) => text,
+                other => panic!("`priming` must compose a string prompt: {other:?}"),
+            };
+
+        // ── THE CONTROL: THE FIRST BRIEFING, WHERE THE MILESTONE IS BRAND NEW ──
+        engine.process_event(AiLoopEvent::Start);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Priming,
+            "the control: the composition runs on entry to `priming`",
+        );
+        let first = composed(&lua);
+        assert!(
+            !first.contains(AGED),
+            "⚠⚠⚠ THE CONTROL: a milestone set moments ago has nothing to warn anybody about, and a \
+             clause on EVERY opening prompt is noise on the common path — which is what gets \
+             skimmed on the rare one. Got {first:?}",
+        );
+
+        // ── TURNS PASS, AND THEN A SESSION IS REPLACED UNDER THE SAME MILESTONE ──
+        //
+        // ⚠ Each turn is driven through the door the driver uses, carrying what `judging`'s entry
+        // reads: an empty raise makes that block index nil and the walk ends `failed` on an error
+        // nobody meant — the trap `carried`'s own doc records.
+        for _ in 0..3 {
+            carried(&mut engine, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+        }
+        carried(&mut engine, AiLoopEvent::PromptUnasked, "");
+        carried(&mut engine, AiLoopEvent::SessionReplaced, "");
+        carried(&mut engine, AiLoopEvent::SessionReady, "");
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Priming,
+            "⚠⚠⚠ the fixture must have come back through `priming`, or what is read below is the \
+             FIRST briefing and this gate is about nothing",
+        );
+
+        // ── AND THE REPLACEMENT IS TOLD THE TEXT IS OLD ──
+        let again = composed(&lua);
+        assert!(
+            again.contains(AGED),
+            "⛔⛔⛔ ITEM 592: this session is being briefed with a milestone authored several turns \
+             ago and is not told so. A milestone holding a pid or a progress fraction is a claim \
+             that was true once; re-typing it verbatim presents it as true now, and a run spent 55 \
+             iterations on exactly that. Got {again:?}",
+        );
+        assert!(
+            again.contains("set 3 turns ago"),
+            "⚠⚠⚠⚠⚠ AND THE NUMBER IS THE LIVE ONE. Three turns were taken before this briefing, so \
+             a composition that froze the age with the TEXT would say `0` here and a briefing at \
+             turn fifty would still say `0` — which is the defect wearing the fix's clothes. Got \
+             {again:?}",
+        );
+    }
+
     /// ⚠⚠⚠ **THE AUTHORED HALF OF THE DOCUMENT SURVIVES — AND THE ROUND HAD TO RUN
     /// IT TO FIND THAT OUT, BECAUSE READING SAID THE OPPOSITE.**
     ///
