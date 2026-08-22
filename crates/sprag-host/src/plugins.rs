@@ -2733,6 +2733,9 @@ mod tests {
                 // ⚠ Likewise, and here `None` needs no such caveat: a canceller is an option
                 // already, so *nobody cancelled it* and *nothing was written down* are one answer.
                 cancelled_by: None,
+                // ⚠ And this fixture IS an older log, so item 606's field is absent by the same
+                // argument as `stood_down` above: it reads as `0 of 0`, which claims nothing.
+                deliveries: None,
             }],
         };
 

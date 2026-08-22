@@ -847,6 +847,64 @@ pub struct PersistedRun {
     /// ⚠ [`RUN_LOG_VERSION`] does not move: an optional field with a default reads both ways.
     #[serde(default)]
     pub cancelled_by: Option<Canceller>,
+    /// ⚠⚠⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE, AND HOW MUCH OF IT NOBODY CAN SEE** — register item
+    /// 606. [`None`] only for a log written before this field existed.
+    ///
+    /// # Why this is persisted where a HOLD is refused
+    ///
+    /// [`RunRegistry::restore`]'s rule turns away an ORDER, because resurrecting an instruction
+    /// nobody can act on is a promise to a person that nothing will keep. This is not an
+    /// instruction. It is a RECORD of what already happened, and it is the only thing that explains
+    /// a pane that looks empty after a run spent thousands of bytes on it.
+    ///
+    /// ⚠⚠⚠ **MEASURED BEFORE IT WAS ADDED.** Asked of two live daemons on 2026-08-22, thirteen runs
+    /// answered and none carried the pair — every one restored, one of them 90 iterations and
+    /// 17203 bytes deep. A run is read AFTER it ends, and the daemon that drove it is restarted
+    /// between rounds, so the instrument register item 591 built was unreadable on exactly the runs
+    /// anybody looks at.
+    ///
+    /// ⚠ The PAIR or neither, which is why it is one value rather than two numbers: `folded: 3` is
+    /// meaningless without the denominator, and two optional fields is a pair somebody writes half
+    /// of. [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument.
+    #[serde(default)]
+    pub deliveries: Option<PersistedDeliveries>,
+}
+
+/// **THE STORED SHAPE OF [`sprag_plugin::Deliveries`]** — register item 606.
+///
+/// # ⚠⚠⚠ Why this is not that type with derives on it
+///
+/// `sprag-plugin` states a **serde-free contract** in its own manifest: it perceives a foreign
+/// tool's JSON, and *"the host still owns the RPC-wire mapping"*. A derive over there would move
+/// the decision about how sprag's own types are stored into the crate that must not make it — and
+/// the crates that copy `ai_loop.scxml` would inherit a dependency for a file they never write.
+///
+/// ⚠⚠ So the pair crosses as ONE value here too. Two `Option<u32>` would be a pair a later writer
+/// can fill half of, which is exactly what [`sprag_plugin::Deliveries`] exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedDeliveries {
+    /// [`sprag_plugin::Deliveries::made`].
+    pub made: u32,
+    /// [`sprag_plugin::Deliveries::folded`].
+    pub folded: u32,
+}
+
+impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
+    fn from(live: sprag_plugin::Deliveries) -> Self {
+        Self {
+            made: live.made,
+            folded: live.folded,
+        }
+    }
+}
+
+impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
+    fn from(stored: PersistedDeliveries) -> Self {
+        Self {
+            made: stored.made,
+            folded: stored.folded,
+        }
+    }
 }
 
 impl PersistedRun {
@@ -1160,6 +1218,10 @@ impl RunRegistry {
                         // reader of such a log may see it. Writing `None` for *no order* would make
                         // this daemon's own silence indistinguishable from an older daemon's.
                         stood_down: Some(run.stood_down),
+                        // ⚠ ALWAYS `Some`, INCLUDING THE ZERO PAIR — the field above's argument.
+                        // This image looked, so `made: 0` is a claim it may make; the `None` this
+                        // field documents belongs to a log written before it existed.
+                        deliveries: Some(run.progress.deliveries.into()),
                         // ⚠ AND HERE `None` REALLY IS *no cancel*, unlike the field above — item
                         // 596. A stand-down is a bool and needs `Some(false)` to distinguish a
                         // silent daemon from an old log; a canceller is an option already, so the
@@ -1252,10 +1314,12 @@ impl RunRegistry {
                         // decision: this one counts the peer's tool calls a run REFUSED, and the
                         // log has no column for it either.
                         screened: 0,
-                        // ⚠ AND WHAT ITS DELIVERIES CAME TO IS NOT RESTORED — register item 591,
-                        // on the same argument and with an extra edge: the fact is about a PANE,
-                        // and the pane a restored run was driving is either gone or holding
-                        // somebody else. `NONE` reads as `0 of 0`, which claims nothing.
+                        // ⚠⚠⚠ AND NOT HERE, THOUGH THE LOG NOW CARRIES IT — register item 606. The
+                        // restored pair goes into `Progress` below, which is where every reader
+                        // takes it from: `crate::plugins::run_to_json` publishes `delivered` out of
+                        // `progress`, not out of the outcome. Filling both from one column would
+                        // make two authorities on one number, which is register item 445's whole
+                        // finding, and nothing would be watching them agree.
                         deliveries: sprag_plugin::Deliveries::NONE,
                         // ⚠⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, and here the absence
                         // is load-bearing rather than merely honest: `asked: 0` means *nobody was
@@ -1317,12 +1381,20 @@ impl RunRegistry {
                     answered: 0,
                     // ⚠ Nor the count of calls it refused, for the same reason.
                     screened: 0,
-                    // ⚠ NOR WHAT ITS DELIVERIES CAME TO — register item 591, and the same argument
-                    // a third time: the durable log has no column for it, and `NONE` is the honest
-                    // shape of *nothing was written down*. It reads as `0 of 0`, which
-                    // `Deliveries::all_folded` answers `false` for — a restored run does not tell
-                    // anybody to distrust a pane, which is right, because nobody knows.
-                    deliveries: sprag_plugin::Deliveries::NONE,
+                    // ⚠⚠⚠⚠⚠ AND WHAT ITS DELIVERIES CAME TO **IS** RESTORED — register item 606.
+                    // This used to say the log had no column for it, which was true and was the
+                    // reason item 599 could not be answered by looking: measured on this machine,
+                    // thirteen live runs across two daemons and not one carried the pair, because
+                    // every one of them had been restored. A run is READ after it ends, and the
+                    // daemon that drove it is restarted between rounds.
+                    //
+                    // ⚠⚠ A RECORD, NOT AN ORDER, which is what separates this from a hold: how
+                    // many prompts a finished run typed is a fact about what already happened, and
+                    // it is the only thing that explains a pane that looks empty. An older log
+                    // still reads as `NONE`, which claims nothing.
+                    deliveries: saved
+                        .deliveries
+                        .map_or(sprag_plugin::Deliveries::NONE, Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠ AND NOT WHICH PANE IT WAS DRIVING — register items 540 and 595, and here
@@ -1952,6 +2024,87 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **WHAT A RUN PUT INTO ITS PANE SURVIVES THE DAEMON THAT PUT IT THERE** — register
+    /// item 606, and the reason register item 599 could not be answered by looking.
+    ///
+    /// # What was measured, on this machine, on 2026-08-22
+    ///
+    /// Item 591 built the instrument 599 needs: a run publishes `delivered` and `folded`, so a
+    /// reader can ask whether the prompts a loop typed were ones its peer's composer folded away.
+    /// Asked of the two live daemons here, **thirteen runs answered and not one carried the
+    /// number** — every one of them was `(build not recorded)`, which is what a run restored from
+    /// the log looks like. Several had obviously delivered: one spent 17203 bytes over 90
+    /// iterations.
+    ///
+    /// ⚠⚠⚠⚠⚠ **SO THE INSTRUMENT IS UNREADABLE ON EXACTLY THE RUNS A PERSON READS.** A run is
+    /// looked at after it ends, and the daemon that drove it is restarted constantly — this
+    /// repository's own debt loop promotes a build and restarts between rounds. The fact reached
+    /// the wire and died at the first restart.
+    ///
+    /// ⚠⚠ **IT IS A RECORD, NOT AN ORDER**, which is what makes persisting it right where
+    /// persisting a hold would be wrong. `RunRegistry::restore`'s rule refuses to resurrect an
+    /// INSTRUCTION nobody can act on; how many prompts a finished run typed is a fact about what
+    /// already happened, and it is the only thing that explains a pane that looks empty.
+    ///
+    /// ⚠ The PAIR travels or neither does — `sprag_plugin::Deliveries`' own rule. A fold count
+    /// without its denominator says nothing.
+    #[test]
+    fn what_a_run_put_into_its_pane_survives_the_daemon_that_put_it_there() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        lock(&progress).deliveries = sprag_plugin::Deliveries {
+            made: 14,
+            folded: 3,
+        };
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            opened_by: None,
+            opened_by_session: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None)),
+            progress,
+        });
+
+        // ⚠⚠ THROUGH THE FILE, not through `persistable` alone: a field `serde` never writes would
+        // still satisfy an in-process round trip, which is the neighbouring gate's argument.
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let restored = successor.snapshot();
+        let carried = restored[0].progress.deliveries;
+        assert_eq!(
+            (carried.made, carried.folded),
+            (14, 3),
+            "⛔⛔⛔ ITEM 606: this run typed 14 prompts and 3 of them were folded away, and a \
+             daemon restart lost the pair. That number is the whole of item 591's instrument, and \
+             a run is READ after it has ended — by which time the daemon that drove it has usually \
+             been restarted. Got {carried:?} from {on_disk}",
+        );
+    }
+
+    /// An outcome for a run whose ending is not what the gate is about.
+    fn an_outcome() -> sprag_plugin::Outcome {
+        sprag_plugin::Outcome {
+            state: sprag_plugin::OutcomeState::Converged,
+            iterations: 6,
+            cost: None,
+            failure: None,
+            stopped: None,
+            answered: 0,
+            screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
+        }
+    }
+
     /// The conversation the run in the gate above was started from — an opaque id, exactly as
     /// `Pane::agent_session` carries one, because nothing in this layer parses it.
     const A_CONVERSATION: &str = "13cac637-d86c-4fa3-8411-785d552cee16";
@@ -1988,6 +2141,7 @@ mod tests {
                 document: None,
                 stood_down: None,
                 cancelled_by: None,
+                deliveries: None,
             }],
         };
         let on_disk = serde_json::to_string(&log).expect("the run log encodes");
@@ -2181,6 +2335,7 @@ mod tests {
             document: document.map(str::to_owned),
             stood_down: None,
             cancelled_by: None,
+            deliveries: None,
         };
 
         // ── THE WORD SURVIVES THE ROUND TRIP THROUGH THE FILE, which is the whole point: this is
@@ -2547,6 +2702,8 @@ mod tests {
                 // ⚠ And no cancel was recorded either, which is what an interrupted run looks
                 // like: the daemon holding it went away without sweeping, so nobody raised one.
                 cancelled_by: None,
+                // ⚠ Nor what it delivered — item 606's field, absent in a log written before it.
+                deliveries: None,
             }],
         });
 

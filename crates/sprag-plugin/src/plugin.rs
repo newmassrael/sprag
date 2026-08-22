@@ -330,6 +330,10 @@ impl Cost {
 /// ⚠ `made` counts deliveries that were ACCEPTED — a refused one never reached a pane at all, and
 /// counting it would make the ratio read as *this run's prompts are visible* on a run whose
 /// prompts never arrived.
+/// ⚠⚠ **NO `serde` DERIVES, THOUGH `sprag-host` DOES PERSIST THIS PAIR** — register item 606, and
+/// this crate's stated contract (see its `Cargo.toml`): the host owns every mapping to a stored or
+/// wire shape. `crate::runs::PersistedDeliveries` one crate over is that mapping, and it keeps the
+/// pair as ONE value for the reason this struct exists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Deliveries {
     /// How many prompts this run has put into its pane and had accepted.
