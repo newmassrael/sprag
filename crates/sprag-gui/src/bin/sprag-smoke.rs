@@ -269,32 +269,44 @@ fn check_a_burst_of_keys_arrives_as_one_delivery(smoke: &mut Smoke, report: &mut
         return;
     };
 
-    // ⚠⚠⚠⚠⚠ THE COST OF ONE KEY IS MEASURED FIRST, AND THAT IS NOT CEREMONY — IT IS THE ONLY
-    // SOUND SHAPE AGAINST THIS CLIENT.
+    // ⚠⚠⚠⚠⚠ THE READ'S OWN COST IS ASSERTED AT ZERO, AND UNTIL pinion R1760 IT COULD NOT BE.
     //
-    // Upstream's stated way to confirm a burst is *"read either side of the call; it advances by
-    // exactly one"*. **That protocol does not hold here, measured rather than doubted**: two reads
-    // of `scene/input_state` BACK TO BACK, with nothing at all between them, advance the ordinal by
-    // one — the READ itself opens a delivery — and one `scene/key` request advances it by two.
-    // Filed as register item 561, with the numbers.
+    // Upstream's way to confirm a burst is *"read either side of the call; it advances by exactly
+    // one"*. Against THIS client that protocol was false, and this check used to be built around
+    // the falsehood: two reads of `scene/input_state` back to back, nothing between them, advanced
+    // the ordinal by one, and one `scene/key` request advanced it by two — so both costs were
+    // measured and SUBTRACTED rather than asserted. Filed as PINION-PR91 with the numbers.
     //
-    // Both costs are CONSTANTS, so they can be MEASURED and subtracted rather than assumed away.
-    // The read's own cost is taken first, back to back with nothing between; every window below
-    // then closes with exactly one read, so what remains after subtracting it is what the REQUESTS
-    // in that window opened. ⚠ The first draft of this check skipped that subtraction and asserted
-    // `3 x unit` for the three-request arm — which is wrong by two reads, and the arm said so.
+    // ⚠⚠⚠⚠ R1760 TOOK THE STRONGEST OF THAT PR's THREE GRADED REQUESTS (R-91.1) RATHER THAN THE
+    // DOC-ONLY ONE. The cause was not the drain this end guessed at: the GUI backend opens a
+    // delivery every event-loop iteration, so the counter FREE-RAN ON THE CLOCK and "the
+    // difference" was the burst plus however long the caller waited. Upstream now marks a delivery
+    // pending on open and NUMBERS it only when a keystroke claims it, so an iteration carrying no
+    // key burns nothing and a `HandlerKind::Read` is side-effect-free again.
+    //
+    // ⚠⚠⚠⚠⚠ SO THE SUBTRACTION BECOMES AN ASSERTION, AND THAT IS THE WHOLE POINT OF SAYING SO
+    // HERE: a gate that measures a cost and subtracts it PASSES IN BOTH WORLDS, so the pin bump
+    // that fixed this could not turn anything red. Pinning the two constants is what gives the
+    // regression somewhere to fail. Measured at the R1760 bump against a live windowed client —
+    // read 0, one key 1, burst 1, three requests 3 — which is upstream's documented shape holding
+    // here for the first time. ⚠ The arms below still compare RATIOS, because the burst claim is a
+    // ratio and stays true whatever the unit is; these two checks own the absolute values.
     let read_cost = smoke.key_deliveries_opened().unwrap_or(idle_a) - idle_a;
+    report.check(
+        &format!(
+            "a read of `scene/input_state` opens NO delivery — it is side-effect-free, which is \
+             the regression PINION-PR91 reported and R1760 fixed ({read_cost})"
+        ),
+        read_cost == 0,
+    );
     let base = smoke.key_deliveries_opened().unwrap_or(idle_a);
 
     let one_key = smoke.press(pane, "ArrowLeft", false).is_ok();
     let after_one = smoke.key_deliveries_opened().unwrap_or(base);
     let unit = after_one.saturating_sub(base + read_cost);
     report.check(
-        &format!(
-            "one key in one request is accepted and costs a measurable unit \
-             ({unit}, with the read's own {read_cost} taken off)"
-        ),
-        one_key && unit > 0,
+        &format!("one key in one request opens EXACTLY ONE delivery ({unit})"),
+        one_key && unit == 1,
     );
 
     let burst = smoke.press_burst(pane, &["ArrowLeft", "ArrowLeft", "ArrowLeft"]);
@@ -5791,6 +5803,12 @@ impl Smoke {
     /// ⚠ An ORDINAL, so the question it answers is a DISTANCE: read it either side of a request and
     /// the difference says how many deliveries that request opened. One is *"they arrived
     /// together"*; three is *"they did not"*, which is the honest answer for three separate sends.
+    ///
+    /// ⚠⚠⚠⚠ THAT PARAGRAPH ONLY BECAME TRUE AT pinion R1760, and it was written before it was.
+    /// Until then this client's counter free-ran on the event loop, so the difference carried the
+    /// caller's own waiting as well as its request — PINION-PR91, taken upstream as R-91.1. The
+    /// distance is a usable answer here now; the check that holds it to that is
+    /// [`check_a_burst_of_keys_arrives_as_one_delivery`], which asserts the read costs zero.
     fn key_deliveries_opened(&mut self) -> Result<u64, String> {
         self.call("scene/input_state", json!({}))?["key_delivery"]["opened"]
             .as_u64()
