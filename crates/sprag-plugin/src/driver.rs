@@ -20,7 +20,7 @@ use sce_rust_runtime::Engine;
 use sprag_terminal::{Reach, Stop, Unstopped};
 
 use crate::access::{PaneAccess, PaneError, Signalled};
-use crate::plugin::{Accounting, Cost, Deliveries, Plugin, Step, Verdict};
+use crate::plugin::{Accounting, Checks, Cost, Deliveries, Plugin, Step, Verdict};
 use crate::run::RunContext;
 use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
@@ -508,6 +508,13 @@ pub struct Outcome {
     /// somebody is reading the outcome to understand, and a tally present only on convergence would
     /// be absent in exactly those cases.
     pub deliveries: Deliveries,
+    /// ⚠⚠⚠ **WHETHER ANYTHING INDEPENDENT VERIFIED THE MILESTONES THIS RUN CONVERGED ON** —
+    /// register item 601, [`Progress::checks`] read at the end.
+    ///
+    /// ⚠ Reported for EVERY terminal state on [`answered`](Self::answered)'s argument, and here it
+    /// matters most on the HAPPY one: a `converged` whose every check was silent is exactly the
+    /// ending somebody would otherwise take at face value.
+    pub checks: Checks,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -583,6 +590,9 @@ pub struct Driver {
     /// evidence a delivery was accepted on is visible only inside the thing that delivered, so a
     /// second counter out here would be a number that agrees until the day it does not.
     deliveries: Deliveries,
+    /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
+    /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
+    checks: Checks,
     /// ⚠⚠⚠ **WHETHER THE RUN IS SPENDING ITS LAST MOMENTS SAYING WHERE IT GOT TO** — set once, by
     /// the single site that asks a plugin for an account, and never cleared.
     ///
@@ -665,6 +675,14 @@ pub struct Progress {
     /// ⚠ [`Deliveries::NONE`] for a plugin that delivers no composed prompt, which is three of the
     /// four bundled ones; see that constant for why the absence is a claim rather than a default.
     pub deliveries: Deliveries,
+    /// ⚠⚠⚠⚠ **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
+    /// [`crate::plugin::Plugin::checks`], register item 601.
+    ///
+    /// ⚠⚠ **A LEVEL, and the third fact to need one.** *Checked* and *the checker never started*
+    /// were the same `converged` in a run's answer, because the verdict reached the WALK and
+    /// nothing else — items 591 and 594 are the same shape, and the pattern is written out in
+    /// [`Checks`]' own doc.
+    pub checks: Checks,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -725,6 +743,7 @@ impl Driver {
             answered: 0,
             screened: 0,
             deliveries: Deliveries::NONE,
+            checks: Checks::NONE,
             winding: false,
         }
     }
@@ -757,6 +776,7 @@ impl Driver {
                 screened: self.screened,
                 at: self.at,
                 deliveries: self.deliveries,
+                checks: self.checks.clone(),
             };
         }
     }
@@ -928,6 +948,11 @@ impl Driver {
                     // `Step` means it cannot be forgotten at one of the twenty-odd sites that
                     // build one, where a forgotten fold reads as a prompt somebody can go and see.
                     self.deliveries = plugin.deliveries();
+                    // ⚠⚠⚠ AND WHAT ITS CHECKS CAME TO — register item 601, in the same breath as
+                    // the two above for the same reason: three totals read at three moments are
+                    // three facts about three moments, and a reader weighing a `converged` needs
+                    // them to describe one run.
+                    self.checks = plugin.checks();
                     self.publish();
                     let decided = match &step.verdict {
                         // A step that saw the goal SAW IT. A stop or a deadline arriving in the
@@ -1301,6 +1326,7 @@ impl Driver {
             answered: self.answered,
             screened: self.screened,
             deliveries: self.deliveries,
+            checks: self.checks.clone(),
         }
     }
 }

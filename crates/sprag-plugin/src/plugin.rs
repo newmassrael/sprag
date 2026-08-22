@@ -365,6 +365,70 @@ impl Deliveries {
     }
 }
 
+/// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and the answer to
+/// [`Plugin::checks`].
+///
+/// # ⛔⛔⛔ *Checked* and *the checker died* were the same `converged`
+///
+/// Register item 428 built the independent check because **a milestone certified by the agent that
+/// worked on it is not certified** — the literature it cites measured 92 of 100 runs recording
+/// success where success meant *the branch was pushed*. Register item 593 then made a silent check
+/// say WHICH silence. Neither reached the place a person actually looks: the run's own answer says
+/// `converged` whether an independent process agreed or whether the checker never started, and
+/// those are opposite facts about how much the ending is worth.
+///
+/// ⚠⚠⚠⚠⚠ **THIS IS THE THIRD TIME THE SAME SHAPE HAS BEEN PAID** — items 591 and 594 are the other
+/// two. A fact the driver knows flows into the WALK, which is a stream of changes bounded to the
+/// last `JOURNAL_LIMIT` steps and not persisted; the run's ANSWER only carries it if somebody
+/// deliberately carries it. **Three instances is a tendency, not a coincidence**, and it is written
+/// down here rather than in a round summary because the next person adding a driver-side fact needs
+/// to meet it.
+///
+/// ⚠⚠ `asked` is the denominator and it separates the two absences a reader must not confuse:
+/// `asked: 0` is a run whose document **authored no checker** — a decision its author took, which
+/// [`crate::outer::Checked::NotAsked`] names — while `asked: 3, silent: 3` is a checker that was
+/// declared and never worked. Item 593 was filed on the second and the first is not a fault at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Checks {
+    /// How many milestone claims this run put to an independent checker.
+    pub asked: u32,
+    /// How many of [`asked`](Self::asked) answered nothing this run could read.
+    pub silent: u32,
+    /// **WHY THE LAST SILENT ONE SAID NOTHING** — `crate::judge::Unheard::describe`, or [`None`]
+    /// when no check has been silent.
+    ///
+    /// ⚠⚠ THE LAST rather than a list, and that is a decision with a reason: a run's answer is read
+    /// to decide what to do NEXT, and the remedy for the most recent failure is the one still
+    /// standing. A list would grow with the run — the property `Step::note` is capped for — and a
+    /// FIRST would name a checker that may since have been fixed.
+    ///
+    /// ⚠ The sentence is `judge`'s, not composed here: one authority on what a silence means.
+    pub why_silent: Option<String>,
+}
+
+impl Checks {
+    /// **NOTHING CHECKED** — the answer for a plugin that puts no claim to an independent checker.
+    ///
+    /// ⚠ Named for [`Deliveries::NONE`]'s reason: this is a positive claim — *this plugin makes no
+    /// milestone claim anybody could check* — and not an unfilled field.
+    pub const NONE: Self = Self {
+        asked: 0,
+        silent: 0,
+        why_silent: None,
+    };
+
+    /// Whether EVERY check this run asked said nothing — the reading that says *this run's endings
+    /// rest on the working agent's own word*, and the one register item 593 was measured on.
+    ///
+    /// ⚠ False for a run that asked none, which is the honest answer and the important one: a run
+    /// whose author declared no checker has nothing broken, and saying otherwise would send
+    /// somebody to fix a checker that was never meant to exist.
+    #[must_use]
+    pub const fn none_answered(&self) -> bool {
+        self.asked > 0 && self.silent == self.asked
+    }
+}
+
 /// What a [`Plugin::step`] did and decided.
 ///
 /// ⚠ NOT `Copy`, because of [`note`](Self::note) — and the field is worth that. A run reported its
@@ -555,6 +619,18 @@ pub trait Plugin {
     /// [`Driver`]: crate::driver::Driver
     fn deliveries(&self) -> Deliveries {
         Deliveries::NONE
+    }
+
+    /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS PLUGIN'S INDEPENDENT CHECKS** — register item 601, and
+    /// [`deliveries`](Self::deliveries)' argument one fact over: asked here, at the one site a step
+    /// completes, so it cannot be forgotten at any of the twenty-odd places a [`Step`] is built —
+    /// and a forgotten check does not read as absent, it reads as **a run whose milestone was
+    /// verified**, which is the reassuring wrong answer.
+    ///
+    /// ⚠ [`Checks::NONE`] by default: three of the four bundled plugins make no milestone claim,
+    /// so there is nothing for an independent process to be shown.
+    fn checks(&self) -> Checks {
+        Checks::NONE
     }
 
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**

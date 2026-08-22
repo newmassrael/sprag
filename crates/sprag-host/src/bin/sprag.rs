@@ -5539,12 +5539,17 @@ fn render_run(run: &Value) -> String {
     // the opposite conclusion, and the whole point is to tell them whether to go and look.
     let prompts = sprag_host::plugins::delivery_sentence(run)
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601, in
+    // the same place and under the same constraint as the two clauses above.
+    let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}{order}{prompts}\n{}",
+            "{head}  running — {} iterations, {} {} so far{}{order}{prompts}{verified}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -5561,7 +5566,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{prompts}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{prompts}{verified}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -5593,7 +5598,7 @@ fn render_run(run: &Value) -> String {
         // first of them: a daemon restarted under a standing order left a person a bare word and
         // no way to learn that what they asked for had never happened.
         _ => format!(
-            "{head}  {}{order}{prompts}\n",
+            "{head}  {}{order}{prompts}{verified}\n",
             state["status"].as_str().unwrap_or("?"),
         ),
     }
@@ -9237,6 +9242,7 @@ mod tests {
             answered,
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
         }
     }
 

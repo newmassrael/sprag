@@ -917,6 +917,13 @@ impl Plugin for AiLoop {
         self.inner.deliveries()
     }
 
+    /// ⚠ DELEGATED for `deliveries`' reason — register item 601. The driver that puts the claim to
+    /// a checker is the only thing that sees what came back, so a tally at this layer would be a
+    /// second authority on one fact.
+    fn checks(&self) -> crate::plugin::Checks {
+        self.inner.checks()
+    }
+
     /// ONE PUMP of the machine, reported in the substrate's own terms.
     ///
     /// ⚠⚠ A MOVE INTO A FINAL STATE IS JUDGED IN THE SAME STEP THAT MADE IT, never on the pump

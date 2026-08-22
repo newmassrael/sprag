@@ -221,6 +221,24 @@ pub const RUN_DELIVERED_KEY: &str = "delivered";
 /// is the wrong instruction — `sprag_plugin::Deliveries::all_folded` is the predicate, and both
 /// mouths say it in words rather than leaving a reader to divide two numbers.
 pub const RUN_FOLDED_KEY: &str = "folded";
+/// The answer key carrying **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
+/// register item 601, a sentence and absent for a run that put no claim to a checker.
+///
+/// # ⛔⛔⛔ *Checked* and *the checker never started* were the same `converged`
+///
+/// Register item 428 built the independent check because a milestone certified by the agent that
+/// did the work is not certified. Register item 593 then made a silent check say WHICH silence.
+/// Neither reached the run's own answer: it says `converged` whether a separate process agreed or
+/// whether the checker would not start, and those are opposite facts about what the ending is
+/// worth. Measured 2026-08-22 — a run converged carrying *"Silence is not agreement: fix the
+/// checker, or the milestone is resting on the working agent's own word"*, in a walk, on a line no
+/// mouth prints.
+///
+/// ⚠⚠ **THE THIRD KEY OF THIS SHAPE**, after [`RUN_STOOD_DOWN_KEY`] and [`RUN_FOLDED_KEY`], and the
+/// tendency is worth naming: a fact the driver knows flows into the walk — a bounded, unpersisted
+/// stream of CHANGES — and reaches the answer only if somebody carries it. See
+/// `sprag_plugin::Checks`.
+pub const RUN_CHECKS_KEY: &str = "checks";
 /// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
 /// gave one, the rule [`RUN_CEILING_KEY`] follows.
 ///
@@ -2032,6 +2050,13 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
         entry[RUN_DELIVERED_KEY] = json!(run.progress.deliveries.made);
         entry[RUN_FOLDED_KEY] = json!(run.progress.deliveries.folded);
     }
+    // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
+    // beside the state for the two keys above's reason and absent when no claim was ever put to a
+    // checker. ⚠ The SENTENCE, because the fact a reader acts on is a comparison (`silent` against
+    // `asked`) and not a pair of numbers — `delivery_sentence`'s argument one key over.
+    if let Some(said) = checks_sentence(&run.progress.checks) {
+        entry[RUN_CHECKS_KEY] = json!(said);
+    }
     entry
 }
 
@@ -2301,6 +2326,54 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     Some(format!(
         "⚠ {} of {} prompts were folded away by its peer's composer and are not on that pane",
         deliveries.folded, deliveries.made,
+    ))
+}
+
+/// **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES**, or [`None`] for a run that put
+/// no claim to a checker — register item 601, and the sentence [`RUN_CHECKS_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠ The two absences a reader must never confuse
+///
+/// `asked == 0` is a run whose document **authored no checker**: a decision its author took, which
+/// `sprag_plugin::outer::Checked::NotAsked` names and which is not a fault. `asked > 0, silent ==
+/// asked` is a checker that was declared and never worked once. Telling somebody to *fix the
+/// checker* in the first case sends them after a thing that was never meant to exist, so the first
+/// answers `None` and says nothing at all.
+///
+/// ⚠⚠ **AND THE MIDDLE CASE IS NOT SILENCE.** A run where some checks answered and some did not
+/// still converged on ones that were verified or on ones that were not, and a reader has to be able
+/// to weigh that — so it gets a sentence of its own rather than being folded into either end.
+///
+/// ⚠ The reason for the last silence is `judge::Unheard`'s own words, carried rather than composed:
+/// one authority on what a silence means.
+#[must_use]
+pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
+    if checks.asked == 0 {
+        return None;
+    }
+    let why = checks
+        .why_silent
+        .as_deref()
+        .map_or_else(String::new, |why| format!(" ({why})"));
+    if checks.silent == 0 {
+        return Some(format!(
+            "{} milestone claim(s) went to an independent checker and every one of them answered",
+            checks.asked,
+        ));
+    }
+    // ⚠⚠⚠ THE READING THAT CHANGES WHAT SOMEBODY DOES: nothing outside this run verified anything
+    // it converged on, so the ending rests on the working agent's own word — register item 428's
+    // whole reason for existing, arriving where a person reads it.
+    if checks.none_answered() {
+        return Some(format!(
+            "⚠ NONE of this run's {} milestone claim(s) was verified — its checker never answered, \
+             so anything it converged on rests on the working agent's own word{why}",
+            checks.asked,
+        ));
+    }
+    Some(format!(
+        "⚠ {} of {} milestone claims went unverified — the checker answered for the rest{why}",
+        checks.silent, checks.asked,
     ))
 }
 
@@ -3714,6 +3787,7 @@ mod tests {
             answered,
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
         }
     }
 

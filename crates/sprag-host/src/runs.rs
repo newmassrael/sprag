@@ -889,6 +889,11 @@ impl RunRegistry {
                         // and the pane a restored run was driving is either gone or holding
                         // somebody else. `NONE` reads as `0 of 0`, which claims nothing.
                         deliveries: sprag_plugin::Deliveries::NONE,
+                        // ⚠⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, and here the absence
+                        // is load-bearing rather than merely honest: `asked: 0` means *nobody was
+                        // meant to check this*, and a restored run must not be made to say that
+                        // about a run whose checker the log never recorded. `NONE` claims nothing.
+                        checks: sprag_plugin::Checks::NONE,
                     }),
                     output: saved.output.clone(),
                 }
@@ -939,6 +944,8 @@ impl RunRegistry {
                     // `Deliveries::all_folded` answers `false` for — a restored run does not tell
                     // anybody to distrust a pane, which is right, because nobody knows.
                     deliveries: sprag_plugin::Deliveries::NONE,
+                    // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
+                    checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠⚠⚠ AND THE POSITION IS NOT RESTORED INTO THE LIVE CELL, WHICH IS THE
                     // POINT OF THE FINGERPRINT RATHER THAN A GAP IN IT — register items 543, 544.
                     // `Progress::at` is `&'static str`: a word from THIS binary's documents. The
@@ -1102,6 +1109,7 @@ mod tests {
                 answered: 0,
                 screened: 0,
                 deliveries: sprag_plugin::Deliveries::NONE,
+                checks: sprag_plugin::Checks::NONE,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -1142,6 +1150,7 @@ mod tests {
                     answered: 0,
                     screened: 0,
                     deliveries: sprag_plugin::Deliveries::NONE,
+                    checks: sprag_plugin::Checks::NONE,
                 }),
                 output: None,
             };
@@ -1223,6 +1232,7 @@ mod tests {
             answered: 0,
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
         }
     }
 

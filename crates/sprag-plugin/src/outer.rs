@@ -3075,6 +3075,13 @@ pub struct OuterLoop {
     /// [`Told`] is built on: the record and the answer are one act, so *what this run delivered*
     /// and *what its walk said about it* cannot drift apart.
     deliveries: crate::plugin::Deliveries,
+    /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, answered
+    /// through [`Plugin::checks`](crate::Plugin).
+    ///
+    /// Written at ONE place ([`checked`](Self::checked)), which is the discipline
+    /// [`deliveries`](Self#structfield.deliveries) and the evidence level beside it are both built
+    /// on: the count and the word a walk carries move in the same arm, so they cannot disagree.
+    checks: crate::plugin::Checks,
 }
 
 /// **WHAT A RUN HAS ALREADY BEEN TOLD ABOUT THE GROUNDS OF ITS DELIVERIES** — the level a pass's
@@ -3208,6 +3215,7 @@ impl OuterLoop {
             witnessed: None,
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
+            checks: crate::plugin::Checks::NONE,
         })
     }
 
@@ -4167,6 +4175,18 @@ impl OuterLoop {
     #[must_use]
     pub const fn deliveries(&self) -> crate::plugin::Deliveries {
         self.deliveries
+    }
+
+    /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and what
+    /// [`crate::Plugin::checks`] answers for an `ai_loop` run.
+    ///
+    /// ⚠ A LEVEL, for the tally beside it's reason: the walk says each verdict as it happens and
+    /// is bounded and unpersisted, so *did anything actually verify this run's milestones?* is a
+    /// question only a level can answer — and it is the question that decides what a `converged`
+    /// is worth.
+    #[must_use]
+    pub fn checks(&self) -> crate::plugin::Checks {
+        self.checks.clone()
     }
 
     /// **RECORD WHAT PROVED THIS PASS'S DELIVERY ARRIVED**, and tally it — register item 591.
@@ -6800,6 +6820,12 @@ impl OuterLoop {
         let produced = self.turn_produced(panes);
         let shown = produced.evidence();
         let question = self.check_question(&produced);
+        // ⚠⚠⚠⚠⚠ **COUNTED HERE AND NOWHERE ELSE** — register item 601. This is the one place a
+        // claim is really put to an independent process: past the `said` guard and past the empty
+        // argv, so the tally counts CHECKS ASKED rather than judging edges walked. A counter one
+        // level out would include every run whose author declared no checker, and `asked: 0` is the
+        // very thing that separates *nobody was meant to check this* from *the checker is broken*.
+        self.checks.asked = self.checks.asked.saturating_add(1);
         match crate::judge::asked_of_another(panes, run, &argv, &question, CHECK_WITHIN) {
             // ⚠⚠ THE WORDS TRAVEL WITH BOTH VERDICTS, not only the refusal. A reader deciding what
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
@@ -6823,7 +6849,18 @@ impl OuterLoop {
             // check that would not start and a check handed nothing are both `Silent` here, and
             // knowing which reader was in play is the one thing that separates *the judge failed*
             // from *the judge was given a blind pane*.
-            Err(unheard) => (Checked::Silent, Some(unheard.describe()), Some(shown)),
+            Err(unheard) => {
+                // ⚠⚠⚠ AND THE TALLY MOVES WITH THE WORD, in the same arm, so *how many were
+                // silent* and *what the walk said about them* cannot disagree — `Told`'s rule for
+                // deliveries, applied to the other fact register item 601 is about.
+                let why = unheard.describe();
+                self.checks.silent = self.checks.silent.saturating_add(1);
+                // ⚠ THE LAST ONE WINS, deliberately: a run's answer is read to decide what to do
+                // next, and the remedy still standing is the most recent failure's. See
+                // `Checks::why_silent`.
+                self.checks.why_silent = Some(why.clone());
+                (Checked::Silent, Some(why), Some(shown))
+            }
         }
     }
 
@@ -14062,6 +14099,48 @@ mod tests {
                 "⚠⚠⚠ a reply whose first word is not a verdict is SILENCE — a broken checker, and a \
                  fact a reader can act on. It must not be an agreement, and it must not be a verdict \
                  against the agent either",
+            );
+            // ⛔⛔⛔ **AND THE RUN COUNTS WHAT ITS CHECKS CAME TO, WHICH IS THE ONLY THING A READER
+            // OF THE ENDING EVER SEES** — register item 601.
+            //
+            // Every assertion above reads a verdict the moment it happens. That verdict reaches a
+            // WALK, which is bounded to the last `JOURNAL_LIMIT` steps and is not persisted, so
+            // *did anything actually verify what this run converged on?* had no answer at the level
+            // — `converged` looked identical whether an independent process agreed or whether the
+            // checker never started. Items 591 and 594 are the same shape; this is the third.
+            //
+            // ⚠⚠⚠⚠⚠ **THE NUMBERS ARE READ OFF THE CHECKS THIS BLOCK ALREADY MADE**, not staged: by
+            // here the arms above have asked five times — DENIES, AGREES, EXPLAINS, DENIES again
+            // and MUMBLES — and exactly ONE of them (MUMBLES) said nothing readable. Asserting the
+            // pair against those five is what makes this a measurement of the counter rather than
+            // of a fixture written to agree with it.
+            let counted = loops.checks();
+            assert_eq!(
+                (counted.asked, counted.silent),
+                (5, 1),
+                "⛔⛔⛔ ITEM 601: this run put five claims to a checker and one of them answered \
+                 nothing, and the run has to be able to say so at the LEVEL — the walk says each \
+                 verdict as it happens and is gone by the time anybody reads the ending. Got \
+                 {counted:?}",
+            );
+            assert!(
+                !counted.none_answered(),
+                "⚠⚠⚠ AND THE READING MUST NOT OVERSTATE: four of these five checks DID answer, so \
+                 *nothing verified this run* is false here. That predicate is what tells a person \
+                 the ending rests on the working agent's own word, and it must fire only when it \
+                 does. Got {counted:?}",
+            );
+            assert_eq!(
+                counted.why_silent.as_deref(),
+                Some(
+                    crate::judge::Unheard::NotAVerdict("perhaps".to_owned())
+                        .describe()
+                        .as_str()
+                ),
+                "⚠⚠⚠⚠ AND IT CARRIES WHY — register item 593's answer arriving at 601's level. A \
+                 tally saying *one was silent* sends a person to look somewhere; the reason says \
+                 WHERE, and this checker answered a word rather than failing to start. Got \
+                 {counted:?}",
             );
             assert_eq!(
                 // ⚠ The count is immaterial to THIS claim — nothing is asked whatever the judge
