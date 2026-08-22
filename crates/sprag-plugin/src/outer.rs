@@ -6805,18 +6805,25 @@ impl OuterLoop {
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
             // verdict at all — and publishing them on one arm would tell the two apart by the
             // absence of a sentence, which is the reading this crate has burned wire numbers over.
-            Some(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown)),
-            Some(judged) => (Checked::Failed, judged.explained, Some(shown)),
+            Ok(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown)),
+            Ok(judged) => (Checked::Failed, judged.explained, Some(shown)),
             // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
-            // and this crate's standing direction: silence is never a yes. ⚠ It explains nothing by
-            // construction: a judge whose first word was not a verdict answered `None` above, so
-            // there is no verdict for anything to be said beside.
+            // and this crate's standing direction: silence is never a yes.
+            //
+            // ⛔⛔⛔ **AND IT USED TO EXPLAIN NOTHING, WHICH THE COMMENT HERE CALLED «BY
+            // CONSTRUCTION»** — register item 593. That was true of the code and wrong about the
+            // world: `asked_of_another` answered one `None` to six different things, so a person
+            // was told *the checker said nothing* and could not tell a checker that would not start
+            // from one that outran its bound from one that answered prose. **Three remedies behind
+            // one word, and the run converged on the working agent's own say-so for a reason nobody
+            // could fix.** The reason now travels in the same field the two verdicts use, which is
+            // what makes it reach a walk, an ending and both mouths without a channel of its own.
             //
             // ⚠⚠ IT STILL SAYS WHAT IT WAS SHOWN, and that is deliberate rather than incidental: a
             // check that would not start and a check handed nothing are both `Silent` here, and
             // knowing which reader was in play is the one thing that separates *the judge failed*
             // from *the judge was given a blind pane*.
-            None => (Checked::Silent, None, Some(shown)),
+            Err(unheard) => (Checked::Silent, Some(unheard.describe()), Some(shown)),
         }
     }
 

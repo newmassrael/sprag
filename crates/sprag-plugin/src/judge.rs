@@ -206,8 +206,16 @@ impl JudgedRules {
     /// the likeliest decision first, and it is worth saying because no other rule list in this
     /// crate has a per-element price.
     ///
-    /// ⚠ A rule whose judge answers [`None`] is skipped and the next is tried — silence about one
+    /// ⚠ A rule whose judge says nothing is skipped and the next is tried — silence about one
     /// criterion says nothing about another.
+    ///
+    /// ⚠⚠ **AND THE REASON FOR THAT SILENCE IS DELIBERATELY DROPPED HERE, WHICH IS NOT THE SAME
+    /// DECISION THE MILESTONE CHECK TOOK** — register item 593. This walk asks up to one model call
+    /// PER RULE and takes the first that claims the dialog, so a run with five rules can produce
+    /// five silences of five different kinds while still ending on a rule that answered. There is
+    /// no single reason to report and no place to put five; what a caller acts on here is *no rule
+    /// claimed this dialog*. The milestone check has exactly one question and one answer, so its
+    /// silence has a reason worth carrying — see `crate::outer::OuterLoop::checked`.
     #[must_use]
     pub fn claiming(
         &self,
@@ -218,6 +226,7 @@ impl JudgedRules {
     ) -> Option<(&JudgedRule, Judgement)> {
         self.rules.iter().find_map(|rule| {
             judges(panes, run, rule.criterion(), question, spec)
+                .ok()
                 .filter(|judged| judged.holds)
                 .map(|judged| (rule, judged))
         })
@@ -289,22 +298,120 @@ pub struct Judgement {
     pub took: Duration,
 }
 
+/// ⛔⛔⛔ **WHY A CHECK SAID NOTHING THIS RUN COULD READ** — register item 593.
+///
+/// # The decision was right and the REPORT was not
+///
+/// [`asked_of_another`]'s own doc states the safety property and states it correctly: *no argv, no
+/// lifecycle, a spawn that failed, a process that outran `within`, a run that ended underneath, or
+/// a reply whose first word is not a verdict — all of them answer `None`, and the CALLER decides
+/// what nothing means.* **Silence is never a yes.** Nothing about that changes here.
+///
+/// What that collapse cost is a different thing: **a person told only *the checker was silent* has
+/// no way to act.** A checker that would not start wants its argv looked at; one that outran its
+/// bound wants a longer `within` or a faster judge; one that answered prose wants its prompt fixed
+/// — three remedies behind one word. Measured 2026-08-22 on this repository's own loop: a run
+/// converged carrying *"the check said nothing this run could read — it would not start, outran its
+/// bound, or answered something that is not a verdict"*, and the round that read it could not tell
+/// which, so the milestone rested on the working agent's own word for a reason nobody could fix.
+///
+/// ⚠⚠⚠⚠⚠ **THIS IS R358's RULE, WHICH THIS CRATE ALREADY PAID FOR ONCE**: *when a diagnostic
+/// cannot know, it must not claim* — and the remedy there was not a cleverer check but an HONEST
+/// one, three findings instead of one word covering three. Counting the exits of one function found
+/// **six**, not three.
+///
+/// ⚠⚠ IT IS NOT A VERDICT AND MUST NEVER BE ROUTED ON. `crate::outer::Checked` is what the document
+/// matches; this says why the driver could not give it one, and it belongs beside that word exactly
+/// as `Checked`'s own `explained` field does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unheard {
+    /// The caller named no checker at all — an empty argv, or a criterion that is only whitespace.
+    ///
+    /// ⚠ Reachable from [`judges`] and NOT from the milestone check, whose caller answers
+    /// `Checked::NotAsked` before it gets here. Two doors, one function, and only one of them
+    /// screens this out — which is why it is a variant rather than an unreachable case.
+    Unasked,
+    /// **THIS HOST CANNOT OPEN A PANE**, so nothing could be asked of anybody. A fact about the
+    /// deployment and not about the checker — the distinction
+    /// [`Stopped::Unsupported`](crate::driver::Stopped) draws one door over.
+    NoPane,
+    /// **THE CHECKER WOULD NOT START**, carrying what the spawn said. The one item 593 suspected
+    /// and could not confirm.
+    Unstarted(String),
+    /// **IT WAS ASKED AND THE WAIT DID NOT END IN AN ANSWER**, carrying how that wait ended — it
+    /// outran its bound, the run was stopped underneath it, or its pane went in a way
+    /// [`crate::completion::Over`] has a word for.
+    ///
+    /// ⚠ The word is that type's, so this never spells one: a second vocabulary for how a wait
+    /// ended is the two-authorities defect this crate keeps naming.
+    Unfinished(crate::completion::Over),
+    /// **ITS PANE COULD NOT ACCOUNT FOR WHAT IT HANDED BACK** — the retained history had evicted
+    /// lines, or the numbering changed underneath the read, so the verdict may not be the first
+    /// word of what the judge actually wrote.
+    Unaccountable,
+    /// **IT ANSWERED, AND WHAT IT SAID IS NOT A VERDICT**, carrying the first word it did say.
+    ///
+    /// ⚠ The word is kept because it is the whole diagnosis: `Error:` is a broken checker, `Yes,`
+    /// with a comma is a prompt that needs tightening, and an empty string is a judge that printed
+    /// nothing at all. One remedy each.
+    NotAVerdict(String),
+}
+
+impl Unheard {
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// name, exactly as `crate::outer::Checked::describe` is.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Unasked => "no checker was named, so nothing was asked".to_owned(),
+            Self::NoPane => {
+                "this host cannot open a pane, so no checker could be started at all — the remedy \
+                 is the deployment's, not the checker's"
+                    .to_owned()
+            }
+            Self::Unstarted(why) => {
+                format!("the checker would not start ({why}) — look at the argv it was given")
+            }
+            Self::Unfinished(over) => {
+                format!(
+                    "the checker was started and never answered: the wait ended {over:?} — give it \
+                     longer, or a faster judge"
+                )
+            }
+            Self::Unaccountable => {
+                "its pane could not account for what it handed back, so the first word may not be \
+                 the judge's own — the verdict was discarded rather than guessed at"
+                    .to_owned()
+            }
+            Self::NotAVerdict(said) => {
+                format!(
+                    "the checker answered {said:?}, which is not YES or NO — fix its prompt or its \
+                     program, because nothing here can turn that into a verdict"
+                )
+            }
+        }
+    }
+}
+
 /// Ask `spec`'s agent whether `criterion` holds of `question`.
 ///
-/// [`None`] when there is no lifecycle to spawn into, the judge could not be started, it did not
+/// [`Err`] when there is no lifecycle to spawn into, the judge could not be started, it did not
 /// finish inside [`JudgeSpec::within`], the run ended underneath, or its first word was not a
 /// verdict. Every one of those is *this judge said nothing* — see the module doc for why that must
-/// not be read as either answer.
-#[must_use]
+/// not be read as either answer, and [`Unheard`] for why they are told apart.
+///
+/// ⚠ NO `#[must_use]` HERE, and its absence is the type doing the work: `Result` carries that
+/// attribute itself, so the reason can no longer be dropped without the compiler saying so —
+/// which is precisely what register item 593 was about one layer up. Clippy said so first.
 pub fn judges(
     panes: &dyn PaneAccess,
     run: &RunContext,
     criterion: &str,
     question: &Question,
     spec: &JudgeSpec,
-) -> Option<Judgement> {
+) -> Result<Judgement, Unheard> {
     if criterion.trim().is_empty() {
-        return None;
+        return Err(Unheard::Unasked);
     }
     asked_of_another(
         panes,
@@ -338,28 +445,39 @@ pub fn judges(
 /// # ⚠⚠⚠ Every silence is [`None`], and that direction is the safety property
 ///
 /// No argv, no lifecycle, a spawn that failed, a process that outran `within`, a run that ended
-/// underneath, or a reply whose first word is not a verdict — all of them answer `None`, and the
-/// CALLER decides what nothing means. **Silence is never a yes**, and it is never a no either: a
-/// `false` here would look exactly like a considered verdict against, which is a different fact.
-#[must_use]
+/// underneath, or a reply whose first word is not a verdict — **none of them is a verdict**, and
+/// the CALLER decides what nothing means. **Silence is never a yes**, and it is never a no either:
+/// a `false` here would look exactly like a considered verdict against, which is a different fact.
+///
+/// ⚠⚠⚠⚠⚠ **AND SINCE REGISTER ITEM 593 THEY ARE TOLD APART** — [`Unheard`]. The decision is
+/// unchanged (every one of them is still *no verdict*); what changed is that the caller learns
+/// WHICH, because the six have six different remedies and a person handed one word had none of
+/// them. ⚠ `Result` and not `Option`, so a caller cannot go on treating the absence as one thing:
+/// the type makes the reason impossible to drop silently.
 pub fn asked_of_another(
     panes: &dyn PaneAccess,
     run: &RunContext,
     argv: &[String],
     question: &str,
     within: Duration,
-) -> Option<Judgement> {
+) -> Result<Judgement, Unheard> {
     if argv.is_empty() {
-        return None;
+        return Err(Unheard::Unasked);
     }
-    let life = panes.lifecycle()?;
+    let Some(life) = panes.lifecycle() else {
+        return Err(Unheard::NoPane);
+    };
     let mut argv = argv.to_vec();
     argv.push(question.to_owned());
 
     let began = Instant::now();
-    let pane = life
-        .spawn(&argv, JudgeSpec::PANE.0, JudgeSpec::PANE.1)
-        .ok()?;
+    let pane = match life.spawn(&argv, JudgeSpec::PANE.0, JudgeSpec::PANE.1) {
+        Ok(pane) => pane,
+        // ⚠ THE SPAWN'S OWN SENTENCE, not a word this function invents: item 593 suspected a cwd
+        // the checker could not read and had no way to confirm it, because the one thing that knew
+        // was thrown away here.
+        Err(why) => return Err(Unheard::Unstarted(why.to_string())),
+    };
     // From here every exit path closes the pane. A judge left running would hold a pty and a
     // process for the rest of the run, once per blocked turn.
     // ⚠ NO SILENCE BOUND. A judgement is one short-lived peer answering one question, and this call
@@ -370,7 +488,10 @@ pub fn asked_of_another(
     life.close(pane);
 
     if over != Over::Yes {
-        return None;
+        // ⚠ THE WAIT'S OWN WORD travels: `Over` already tells an expired bound from a stopped run
+        // from a peer that went, and re-spelling that here would be a second vocabulary for one
+        // fact — the defect this crate names every time it finds two authorities.
+        return Err(Unheard::Unfinished(over));
     }
     // ⚠⚠⚠⚠⚠ THE ADDRESS COULD NOT ACCOUNT FOR WHAT IT HANDED BACK, SO THERE IS NO VERDICT HERE.
     //
@@ -380,7 +501,9 @@ pub fn asked_of_another(
     // read with its opening missing does not produce a wrong reason, it produces **a wrong verdict**
     // — the first word of the middle of a sentence, put through the YES/NO match. Silence is the
     // safe direction and this function is built on it, so an unaccountable read takes it.
-    let reply = reply?;
+    let Some(reply) = reply else {
+        return Err(Unheard::Unaccountable);
+    };
     // ⚠⚠ SPLIT ONCE, so the verdict and what follows it are read off the SAME reply at the same
     // moment. Taking the first word here and re-scanning the text for the rest would be two readers
     // of one string, free to disagree about where the word ended.
@@ -388,7 +511,10 @@ pub fn asked_of_another(
     let (first, rest) =
         trimmed.split_at(trimmed.find(char::is_whitespace).unwrap_or(trimmed.len()));
     if first.is_empty() {
-        return None;
+        // ⚠ AN EMPTY FIRST WORD IS A CHECKER THAT PRINTED NOTHING, and it is kept as such rather
+        // than folded into the arm below: an empty string in that variant would render as `""`,
+        // which reads like a judge that said something unquotable instead of one that said nothing.
+        return Err(Unheard::NotAVerdict(String::new()));
     }
     let said = first.trim_matches(|c: char| !c.is_ascii_alphabetic());
     // ⚠⚠⚠⚠⚠ AND WHAT IT WENT ON TO SAY — see [`Judgement::explained`]. TRIMMED BEFORE the line is
@@ -426,9 +552,13 @@ pub fn asked_of_another(
         // refusal has not answered, and the caller must be able to tell that from a measured
         // `false` — a `false` here would look exactly like a judge that considered the dialog and
         // decided against, which is a different fact.
-        _ => return None,
+        //
+        // ⚠⚠ THE WORD IT DID SAY TRAVELS, which is what makes this actionable: `Error:` names a
+        // broken checker, `Yes,` names a prompt that needs tightening, and the two used to arrive
+        // as the same silence.
+        _ => return Err(Unheard::NotAVerdict(said.to_owned())),
     };
-    Some(Judgement {
+    Ok(Judgement {
         holds,
         said: said.to_owned(),
         explained,
@@ -673,10 +803,129 @@ mod tests {
                     &question(),
                     &spec
                 ),
-                None,
-                "{criterion:?} declines the judge entirely",
+                Err(Unheard::Unasked),
+                "⚠⚠ {criterion:?} declines the judge entirely — and since register item 593 it \
+                 says so with the word for *nobody was asked*, which is a DECISION the author took \
+                 rather than a checker that went wrong",
             );
         }
+    }
+
+    /// ⛔⛔⛔ **A CHECK THAT SAID NOTHING SAYS *WHICH* NOTHING, AND THE SIX ARE TOLD APART** —
+    /// register item 593, and R358's rule paid a second time: *when a diagnostic cannot know, it
+    /// must not claim.*
+    ///
+    /// # What one word cost, measured on this repository's own loop
+    ///
+    /// A run converged carrying *"the check said nothing this run could read — it would not start,
+    /// outran its bound, or answered something that is not a verdict"*, and the round reading it
+    /// **could not tell which**, so the milestone rested on the working agent's own word for a
+    /// reason nobody could act on. Three remedies behind one word — and counting the exits of
+    /// [`asked_of_another`] found six, not three.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE DECISION IS UNCHANGED AND THAT IS ASSERTED FIRST.** Every arm here is still *no
+    /// verdict*: silence is never a yes and never a no. A round that widened the ANSWER while
+    /// paying off the REPORT would have turned a broken checker into an agreement, which is the one
+    /// thing this module exists to prevent — so the first assertion of every arm is `is_err`.
+    ///
+    /// ⚠⚠ **EACH ARM IS STAGED BY A DIFFERENT REAL FAILURE**, not by constructing the variant: a
+    /// checker whose program does not exist, one that prints something that is not a verdict, and
+    /// one that prints nothing at all. A gate that built `Unheard::Unstarted(…)` by hand would
+    /// assert that this file can spell its own type.
+    #[test]
+    fn a_check_that_said_nothing_says_which_nothing() {
+        // A real workspace, which is what gives every arm below a lifecycle to spawn into — the
+        // one thing `AsksNobody` cannot provide, and the difference between staging a failure and
+        // asserting that this host has no panes.
+        let host = crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+            sprag_terminal::Workspace::new((80, 24)),
+        )));
+        let ask = |argv: Vec<String>| {
+            judges(
+                &host,
+                &RunContext::uncancellable(),
+                "anything at all",
+                &question(),
+                &JudgeSpec {
+                    argv,
+                    within: Duration::from_secs(20),
+                },
+            )
+        };
+
+        // ── THE CHECKER WOULD NOT START ── item 593's own prime suspect, staged: a program that is
+        // not there at all is the closest a fixture can get to the cwd it could not read.
+        let unstarted = ask(vec!["/nonexistent/checker-593".to_owned()]);
+        assert!(
+            unstarted.is_err(),
+            "⚠⚠⚠ THE DECISION FIRST: a checker that never ran has not agreed. Got {unstarted:?}",
+        );
+        let Err(Unheard::Unstarted(why)) = &unstarted else {
+            panic!(
+                "⛔⛔⛔ ITEM 593: a checker whose program does not exist must be reported as one \
+                 that WOULD NOT START — that is the remedy *look at the argv*, and it is a \
+                 different remedy from every other silence. Got {unstarted:?}"
+            );
+        };
+        assert!(
+            !why.trim().is_empty(),
+            "⚠⚠ and it carries what the spawn said, because *it would not start* without a reason \
+             is the same dead end one word further in: {why:?}",
+        );
+
+        // ── IT ANSWERED, AND WHAT IT SAID IS NOT A VERDICT ──
+        let prose = ask(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            "printf 'Error: no API key\\n'".to_owned(),
+        ]);
+        assert!(
+            prose.is_err(),
+            "⚠⚠⚠ THE DECISION FIRST: a reply that is not YES or NO is not a NO. Got {prose:?}",
+        );
+        assert_eq!(
+            prose,
+            Err(Unheard::NotAVerdict("Error".to_owned())),
+            "⛔⛔⛔ ITEM 593: this checker RAN and ANSWERED, and the remedy is its prompt or its \
+             program — the opposite end of the diagnosis from one that would not start. The word \
+             it said travels because that word IS the diagnosis: {prose:?}",
+        );
+
+        // ── IT PRINTED NOTHING AT ALL ── the control on the arm above: same road, same exit, and
+        // the reported word must be EMPTY rather than absent. A judge that printed nothing and one
+        // that printed `Error` are both `NotAVerdict`, and only the payload separates them.
+        let mute = ask(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            "exit 0".to_owned(),
+        ]);
+        assert_eq!(
+            mute,
+            Err(Unheard::NotAVerdict(String::new())),
+            "⚠⚠⚠ a checker that printed NOTHING is still *it answered no verdict*, with an empty \
+             word — and if this reads as some other arm, the read below the wait is deciding \
+             something the parse should: {mute:?}",
+        );
+
+        // ── AND THE THREE ARE DISTINCT ── without this the arms above could all be one variant
+        // wearing three payloads, which is the collapse this item is about, one level in.
+        assert_ne!(
+            unstarted, prose,
+            "⚠⚠⚠⚠⚠ THE WHOLE OF ITEM 593: a checker that would not start and one that answered \
+             prose must not arrive as the same thing. They did, for a whole round, and the person \
+             reading it had three remedies and one word",
+        );
+        assert_ne!(
+            prose, mute,
+            "⚠⚠ and the payload has to separate the two that share an arm, or the word it carries \
+             is decoration",
+        );
+        assert!(
+            host.pane_ids().is_empty(),
+            "⚠⚠ AND EVERY ARM CLOSED ITS PANE. A judge left running holds a pty and a process for \
+             the rest of the run — once per silence, which is the case nobody watches: {:?}",
+            host.pane_ids(),
+        );
     }
 
     /// An empty argv is the other way a run has no judge: nobody to ask.
@@ -693,7 +942,10 @@ mod tests {
                     within: Duration::from_secs(30)
                 },
             ),
-            None,
+            Err(Unheard::Unasked),
+            "⚠⚠ an empty argv is the OTHER way a caller names no checker, and it must reach the \
+             same word — a reader told *nobody was asked* should not have to know which of the two \
+             fields was left empty",
         );
     }
 
@@ -749,10 +1001,11 @@ mod tests {
             &question(),
             &instant_judge(),
         );
-        let Some(verdict) = judged else {
+        let Ok(verdict) = judged else {
             panic!(
-                "⚠⚠⚠ the control must reach a verdict, or the arm below is `None` for a reason \
-                 that has nothing to do with the run: spawn, wait, read and parse all have to work",
+                "⚠⚠⚠ the control must reach a verdict, or the arm below is silent for a reason \
+                 that has nothing to do with the run: spawn, wait, read and parse all have to \
+                 work. It said {judged:?}",
             );
         };
         assert!(
@@ -769,19 +1022,30 @@ mod tests {
         // ── AND THE SAME EVERYTHING, ON A RUN THAT IS ALREADY OVER ──
         let stopped = host();
         let cancelled = RunContext::new(Arc::new(std::sync::atomic::AtomicBool::new(true)));
-        assert_eq!(
-            judges(
-                &stopped,
-                &cancelled,
-                CRITERION,
-                &question(),
-                &instant_judge(),
-            ),
-            None,
-            "⚠⚠⚠ a run that is over may not collect a judgement, and this is not a nicety: a \
-             `Some` here sends the loop to `redirecting`, whose act presses {REFUSES:?} into a \
+        let said = judges(
+            &stopped,
+            &cancelled,
+            CRITERION,
+            &question(),
+            &instant_judge(),
+        );
+        assert!(
+            said.is_err(),
+            "⚠⚠⚠ a run that is over may not collect a judgement, and this is not a nicety: an \
+             `Ok` here sends the loop to `redirecting`, whose act presses {REFUSES:?} into a \
              dialog the run has stopped being allowed to touch. **Silence is never a yes**, and a \
-             stopped run's silence least of all",
+             stopped run's silence least of all. It said {said:?}",
+        );
+        // ⚠⚠⚠⚠⚠ **AND IT SAYS WHICH SILENCE** — register item 593, asserted here because this is
+        // the one arm of it a fixture can stage deterministically. The wait is what ended without
+        // an answer, so the reason has to be the WAIT's own word rather than a spawn's or a
+        // parser's: a `NotAVerdict` here would mean the judge really did answer and was misread,
+        // and an `Unstarted` would mean the run's cancellation was never consulted at all.
+        assert!(
+            matches!(said, Err(Unheard::Unfinished(_))),
+            "⚠⚠⚠ ITEM 593: the reason a stopped run gets no verdict is that its WAIT did not end \
+             in one, and a reader has to be told that rather than *the checker was silent*. Got \
+             {said:?}",
         );
         assert!(
             stopped.pane_ids().is_empty(),
@@ -871,9 +1135,10 @@ mod tests {
                 within: Duration::from_secs(20),
             },
         );
-        let Some(verdict) = judged else {
+        let Ok(verdict) = judged else {
             panic!(
-                "⚠⚠⚠ the judge must reach a verdict at all, or nothing below is about the reason"
+                "⚠⚠⚠ the judge must reach a verdict at all, or nothing below is about the reason. \
+                 It said {judged:?}"
             );
         };
         // The CONTROL: the verdict itself is unchanged by any of this. The first-word rule is right

@@ -4557,6 +4557,14 @@ fn the_judge_separates_a_design_dialog_from_a_routine_one() {
         let mut holds = Vec::new();
         for _ in 0..ROUNDS {
             let judged = judges(&live.access, &run, CRITERION, question, &spec);
+            // ⚠⚠⚠ AND A SILENCE SAYS WHICH ONE, HERE TOO — register item 593. A live harness that
+            // printed `None` for a judge that would not start, one that outran its bound and one
+            // that answered prose is the very disease this round paid off, one layer out: the
+            // numbers below would be identical and the remedy for them completely different.
+            if let Err(unheard) = &judged {
+                println!("    no verdict: {}", unheard.describe());
+            }
+            let judged = judged.ok();
             if let Some(judged) = &judged {
                 slowest = slowest.max(judged.took);
             }
