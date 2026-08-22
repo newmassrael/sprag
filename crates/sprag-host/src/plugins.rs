@@ -239,6 +239,21 @@ pub const RUN_FOLDED_KEY: &str = "folded";
 /// stream of CHANGES — and reaches the answer only if somebody carries it. See
 /// `sprag_plugin::Checks`.
 pub const RUN_CHECKS_KEY: &str = "checks";
+/// The answer key carrying **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — register item 540, and
+/// absent for a run that has taken no step or drives no pane of its own.
+///
+/// # ⛔⛔⛔ It was published all along, as prose inside a name
+///
+/// A run's `label` reads `ai_loop pane=3`, so every reader that wanted the pane had to parse a
+/// human sentence — R431's *derive it from a name*, one surface over — against a string this
+/// repository is free to reword. Nothing structured said it.
+///
+/// ⚠⚠ **AND IT IS HALF OF A QUESTION THAT NEEDED BOTH HALVES** — register item 595. A daemon
+/// restart re-runs an allowlisted agent's argv, so a `claude` pane comes back holding its old
+/// conversation with **nothing driving it**, and a person cannot tell that from a working loop:
+/// both are a `claude` prompt. This key is what lets the PANE surface answer *is anybody driving
+/// me* — see `crate::wire`'s pane answer.
+pub const RUN_DRIVING_KEY: &str = "driving";
 /// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
 /// gave one, the rule [`RUN_CEILING_KEY`] follows.
 ///
@@ -2057,6 +2072,12 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     if let Some(said) = checks_sentence(&run.progress.checks) {
         entry[RUN_CHECKS_KEY] = json!(said);
     }
+    // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
+    // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
+    // prose: a reader that had to parse `ai_loop pane=3` would be deriving a fact from a name.
+    if let Some(pane) = run.progress.driving {
+        entry[RUN_DRIVING_KEY] = json!(pane.0);
+    }
     entry
 }
 
@@ -2942,6 +2963,25 @@ mod tests {
             entry["label"],
             json!(format!("ai_loop pane={}", pane.0)),
             "a reader of `runs` must be able to see WHICH pane a loop is driving: {entry:?}",
+        );
+        // ⛔⛔⛔ **AND NOT ONLY AS PROSE INSIDE THAT NAME** — register item 540.
+        //
+        // The assertion above passed for a year while the ONLY structured answer to *which pane is
+        // this run driving* was a human sentence a reader had to parse — R431's *derive it from a
+        // name*, against a label this repository rewords at will. `Plugin::driving` knew it the
+        // whole time and nothing carried it out.
+        //
+        // ⚠⚠ THE PAIR IS THE CLAIM: the key must equal the pane the label names, so a run that
+        // reported some OTHER pane structurally would be caught rather than quietly believed. And
+        // it is asserted on a run that was CANCELLED — the counters and the pane survive the
+        // ending, because the question *what was it driving* is asked most often about a run that
+        // stopped.
+        assert_eq!(
+            entry[RUN_DRIVING_KEY],
+            json!(pane.0),
+            "⛔⛔⛔ ITEM 540: nothing published names the pane this run is driving except the label's \
+             prose. `sprag panes` cannot ask *is anybody driving me* (item 595) until the run says \
+             it in a form a program can read: {entry:?}",
         );
         assert!(
             lock(&workspace).close(pane).is_some(),

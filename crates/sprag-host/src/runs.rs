@@ -946,6 +946,11 @@ impl RunRegistry {
                     deliveries: sprag_plugin::Deliveries::NONE,
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
+                    // ⚠⚠⚠ AND NOT WHICH PANE IT WAS DRIVING — register items 540 and 595, and here
+                    // the absence is the CORRECT answer rather than a lossy one: this run's driver
+                    // died with its daemon, so nothing is driving that pane now. Restoring a pane
+                    // id would say the opposite of what item 595 exists to make visible.
+                    driving: None,
                     // ⚠⚠⚠⚠⚠ AND THE POSITION IS NOT RESTORED INTO THE LIVE CELL, WHICH IS THE
                     // POINT OF THE FINGERPRINT RATHER THAN A GAP IN IT — register items 543, 544.
                     // `Progress::at` is `&'static str`: a word from THIS binary's documents. The

@@ -593,6 +593,9 @@ pub struct Driver {
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
     /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
     checks: Checks,
+    /// ⚠⚠⚠ **WHICH PANE THE PLUGIN LAST SAID IT WAS DRIVING** — register items 540 and 595, held
+    /// and read exactly as the two totals above are.
+    driving: Option<sprag_terminal::PaneId>,
     /// ⚠⚠⚠ **WHETHER THE RUN IS SPENDING ITS LAST MOMENTS SAYING WHERE IT GOT TO** — set once, by
     /// the single site that asks a plugin for an account, and never cleared.
     ///
@@ -675,6 +678,23 @@ pub struct Progress {
     /// ⚠ [`Deliveries::NONE`] for a plugin that delivers no composed prompt, which is three of the
     /// four bundled ones; see that constant for why the absence is a claim rather than a default.
     pub deliveries: Deliveries,
+    /// ⚠⚠⚠⚠⚠ **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — [`Plugin::driving`], register item 540.
+    ///
+    /// # The fact that was published only as prose inside a name
+    ///
+    /// It was never absent — a run's LABEL reads `ai_loop pane=3`, and every reader that wanted the
+    /// pane had to parse a human sentence to get it. That is R431's *derive it from a name* one
+    /// surface over, and the label is free to change wording at any time.
+    ///
+    /// ⚠⚠ **AND IT IS THE OTHER HALF OF A QUESTION NOBODY COULD ASK** — register item 595. A daemon
+    /// restart re-runs an allowlisted agent's argv, so a `claude` pane comes back **holding its old
+    /// conversation and driven by nothing**, and a person looking at the screen cannot tell that
+    /// from a loop that is working: both are a `claude` prompt. Answering *which pane is a run
+    /// driving* is what lets the other surface answer *is anybody driving this pane*.
+    ///
+    /// ⚠ [`None`] while a run has completed no step, and for a plugin driving no pane of its own —
+    /// see [`Plugin::driving`]'s own doc for why that is a real answer rather than an omission.
+    pub driving: Option<sprag_terminal::PaneId>,
     /// ⚠⚠⚠⚠ **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
     /// [`crate::plugin::Plugin::checks`], register item 601.
     ///
@@ -744,6 +764,7 @@ impl Driver {
             screened: 0,
             deliveries: Deliveries::NONE,
             checks: Checks::NONE,
+            driving: None,
             winding: false,
         }
     }
@@ -777,6 +798,7 @@ impl Driver {
                 at: self.at,
                 deliveries: self.deliveries,
                 checks: self.checks.clone(),
+                driving: self.driving,
             };
         }
     }
@@ -953,6 +975,11 @@ impl Driver {
                     // three facts about three moments, and a reader weighing a `converged` needs
                     // them to describe one run.
                     self.checks = plugin.checks();
+                    // ⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register items 540 and 595, in the same
+                    // breath as the three above. A pane read a moment apart from the counters is a
+                    // fact about a different moment, and this one is compared against the LIVE
+                    // workspace by a mouth that has to say *is anybody driving this pane*.
+                    self.driving = plugin.driving();
                     self.publish();
                     let decided = match &step.verdict {
                         // A step that saw the goal SAW IT. A stop or a deadline arriving in the
