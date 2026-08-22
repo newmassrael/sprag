@@ -196,6 +196,44 @@ pub const RUN_JOURNAL_KEY: &str = "journal";
 /// the work is still running and still spending — and the one a caller must act on is the second.
 /// Its text is [`sprag_plugin::Stopped`]'s own sentence, so the host never spells a variant.
 pub const RUN_STOPPED_KEY: &str = "stopped";
+/// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
+/// gave one, the rule [`RUN_CEILING_KEY`] follows.
+///
+/// # ⛔⛔⛔ Register item 594 — the promise had no surface to be kept on
+///
+/// `sprag stand-down` tells a person *"its work is kept — `sprag runs` says when it has"*, and
+/// **`sprag runs` published nothing whatsoever about the order.** The order was a host-side flag
+/// (`sprag_plugin::RunContext::stood_down`) that only the loop document ever read, and the word it
+/// closes under (`DoneReason::StoodDown`) reaches a walk and no wire key at all. So a stood-down
+/// run printed `converged` — byte-identical to a run that finished on its own — and a stood-down
+/// run that was killed first printed `cancelled`, which reads as *the work was thrown away* with
+/// nothing beside it to say an order had been standing.
+///
+/// Measured 2026-08-22: `sprag stand-down 1` was answered *"its work is kept"* and the run was
+/// later reported `cancelled after 56 iterations, 23146 bytes`. **The worst shape a failure can
+/// take is one that makes somebody believe work was banked and then discards it**, and no reading
+/// of that line could tell the two apart.
+///
+/// ⚠⚠ **THE VALUE IS A SENTENCE, NOT A BOOLEAN**, for [`RUN_STOPPED_KEY`]'s reason one level up: the
+/// fact a reader needs is not *was an order given* but *did it land*, and that is the ORDER weighed
+/// against the ENDING. [`stand_down_sentence`] is the one place the two are put side by side.
+///
+/// # Why this earns no [`sprag_rpc::WIRE_PROTOCOL`] bump
+///
+/// Written down because NOT bumping is a judgement too — `run_to_json`'s rule for `opened_by`.
+///
+/// It is an ADDED ANSWER KEY, which that constant's own doc settles as *absent-not-wrong* to an
+/// older reader: no request argument moved, no address was withdrawn, and no value space a peer
+/// decodes whole was widened. The one condition that would overturn it is a reader treating the
+/// absence as agreement — and on this wire a client and a daemon that are talking at all hold the
+/// SAME protocol number, because the handshake refuses a mismatch outright. So there is no *new
+/// client, old daemon* pair for whom a missing key could mean *this daemon cannot say*: to every
+/// reader that got an answer, absence means what it says, **nobody ordered this run to stand down**.
+///
+/// ⚠ The FILE is a separate question with a separate answer, and there absence really is *cannot
+/// say* — see `crate::runs::PersistedRun::stood_down`, which is `Option<bool>` for exactly that
+/// reason and does not move `crate::runs::RUN_LOG_VERSION` either.
+pub const RUN_STOOD_DOWN_KEY: &str = "stood_down";
 
 sprag_vt::closed_set! {
     /// WHERE A RUN HAS GOT TO — the `status` word inside a run's `state`.
@@ -1945,6 +1983,16 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     if let Some(build) = &run.build {
         entry[RUN_BUILD_KEY] = json!(build);
     }
+    // ⚠⚠⚠ AND WHAT BECAME OF A PERSON'S ORDER — register item 594, present only when somebody gave
+    // one, which is `RUN_CEILING_KEY`'s presence-is-the-claim rule.
+    //
+    // ⚠⚠ IT SITS BESIDE THE STATE AND NOT INSIDE IT, `RUN_JOURNAL_KEY`'s argument verbatim: it is
+    // one of the two facts that mean the same thing whether the run is still going or over. Nesting
+    // it under `done` would make a standing order invisible on exactly the runs a person can still
+    // do something about, and nesting it under `running` would erase it at the moment they need it.
+    if run.stood_down {
+        entry[RUN_STOOD_DOWN_KEY] = json!(stand_down_sentence(&run.state));
+    }
     entry
 }
 
@@ -2073,6 +2121,87 @@ pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeS
                 .unwrap_or(Ceiling::Iterations),
         ),
         _ => OutcomeState::Failed,
+    }
+}
+
+/// **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER**, weighed against where the run actually got to —
+/// register item 594, and the sentence [`RUN_STOOD_DOWN_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠⚠ The two facts have to be read TOGETHER or neither answers anything
+///
+/// The ORDER alone says a person spoke. The ENDING alone says what the run did. `sprag stand-down`
+/// promises *the work is kept*, and that promise is true of exactly one pairing — an order standing
+/// over a run that reached a milestone — while every other pairing is the promise BROKEN, which is
+/// the case a reader has to be able to see. Publishing the order as a bare `true` would have handed
+/// every mouth the job of doing this arithmetic, and R431's rule says what happens then: the
+/// broken state and the healthy state render identically and nobody can tell.
+///
+/// ⚠⚠ **WHAT IT DOES NOT CLAIM.** A converged run's work is banked whatever closed it, so this
+/// says the order STOOD while the run converged — never that the order CAUSED the convergence. That
+/// distinction belongs to the loop document, which spells it `DoneReason::StoodDown` into the
+/// walk; the host cannot see it and does not guess. ⚠ The residue is registered rather than hidden:
+/// a run that converged on its own a moment after the order gets this same sentence, and it is
+/// true of that run too.
+///
+/// ⚠ The outcome's own word comes from [`outcome_word`], so the host never spells a variant here —
+/// a seventh [`OutcomeState`] gets its sentence on the day it exists rather than a silent omission.
+#[must_use]
+pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
+    /// What every ending that is not a convergence has to tell the reader, in one place so the
+    /// three of them cannot drift into three different degrees of bad news.
+    ///
+    /// ⚠⚠ IT DOES NOT SAY *"never reached a milestone"*, and that is the same measurement the
+    /// running arm below is written from: a milestone is `ai_loop.scxml`'s concept and this
+    /// renderer cannot see which plugin it is holding. *Cut short* is true of all of them.
+    const NOT_BANKED: &str = "it was cut short, so the turn it had going was NOT banked — this is \
+                              not what `sprag stand-down` promised";
+    match state {
+        // ⚠⚠⚠⚠⚠ IT SAYS THE ORDER AND NOT WHAT THE ORDER WILL DO, and that is a measurement rather
+        // than caution — register item 539's sibling. `RunOrder::StandDown` is delivered to EVERY
+        // run and exactly ONE plugin reads it: `RunContext::stood_down` has a single caller in the
+        // whole tree (`OuterLoop::pump`). So *it stops at its next milestone* is true of an
+        // `ai_loop` run and false of an `orchestrator`, a `pipe` or an `agent` one, and this
+        // renderer cannot see which it is holding. The loop-specific promise stays where a gate can
+        // hold it to the document — `sprag_plugin::STAND_DOWN_TAKES_EFFECT`, printed by the command
+        // — and what a RUNNING run publishes is the fact plus where the answer will come from.
+        crate::runs::RunState::Running => {
+            "a person asked this run to stand down; it has not stopped yet — its ending is what \
+             says whether the order landed"
+                .to_owned()
+        }
+        crate::runs::RunState::Done { outcome, .. } => {
+            if outcome.state == OutcomeState::Converged {
+                // ⚠ *ended on its own terms* rather than *stopped at a milestone*, for `NOT_BANKED`'s
+                // reason: convergence is what every plugin's own `Verdict` can say, and only one of
+                // them has milestones to stop at.
+                "a person asked this run to stand down and it converged, so it ended on its own \
+                 terms and its work is banked"
+                    .to_owned()
+            } else {
+                format!(
+                    "⚠ a person asked this run to stand down and it ended {:?} instead — \
+                     {NOT_BANKED}",
+                    outcome_word(outcome),
+                )
+            }
+        }
+        // ⚠ A DRIVER THAT DIED IS NOT AN ENDING THE DOCUMENT CHOSE, so it gets its own clause: the
+        // remedy is to look at why the thread went, where the arm above sends a reader to the
+        // outcome word.
+        crate::runs::RunState::Panicked(_) => {
+            format!(
+                "⚠ a person asked this run to stand down and its driver died first — {NOT_BANKED}"
+            )
+        }
+        // ⚠⚠ THE ONE THIS ITEM WAS MEASURED ON. A daemon restarted under a standing order used to
+        // erase the order entirely, so a person came back to a bare `interrupted` and no way to
+        // learn that the thing they asked for had never happened.
+        crate::runs::RunState::Interrupted => {
+            format!(
+                "⚠ a person asked this run to stand down and the daemon driving it died first — \
+                 {NOT_BANKED}"
+            )
+        }
     }
 }
 
@@ -2273,6 +2402,9 @@ mod tests {
                 opened_by_session: Some(RESUMED.to_owned()),
                 at: None,
                 document: None,
+                // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
+                // daemon, so the honest value is *nobody recorded whether an order was given*.
+                stood_down: None,
             }],
         };
 
@@ -2642,6 +2774,131 @@ mod tests {
         assert!(
             lock(&workspace).close(pane).is_some(),
             "the pane this gate opened was there to close",
+        );
+    }
+
+    /// ⛔⛔⛔ **`sprag runs` SAYS WHAT BECAME OF A PERSON'S STAND-DOWN, INCLUDING WHEN THE ANSWER IS
+    /// «IT DID NOT LAND»** — register item 594, measured on this repository's own loop.
+    ///
+    /// # What a person was told, and what they were shown
+    ///
+    /// `sprag stand-down 1` answered *"it stops at its next milestone, and its work is kept —
+    /// `sprag runs` says when it has"*. What `sprag runs` said afterwards was **`cancelled after 56
+    /// iterations, 23146 bytes`**, and there was nothing anywhere in that answer to say an order had
+    /// ever been given. The order lived in a host flag that only the loop document read, and the
+    /// word that document closes under reaches a walk and no wire key at all — so the two endings a
+    /// person most needs to tell apart, *my order landed and the work is banked* and *my order never
+    /// landed and the work is gone*, were published as one word each and neither mentioned the
+    /// order.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL IS THE SAME RUN WITHOUT THE ORDER**, and it is what makes this a
+    /// measurement rather than a decoration. Both arms are the same brief over the same stand-in
+    /// agent, both are ended by the registry's own cancel, and both report `cancelled`. The ONLY
+    /// difference is that somebody spoke to one of them. If the key appeared on both, its presence
+    /// would be saying nothing; if it appeared on neither, the promise would still have no surface.
+    ///
+    /// ⚠⚠ **AND IT IS THE UNHONOURED PAIRING THAT IS DRIVEN HERE**, deliberately. The honoured one —
+    /// an order standing over a run that converges — needs a supervisor that can call this peer's
+    /// turns over, which is `sprag-plugin`'s own fixture and its own gate
+    /// (`the_promise_about_a_stand_down_names_the_word_a_stood_down_run_reports`). The pairing this
+    /// register item was FILED for is the one that broke a promise, and it is the one no gate could
+    /// reach before this key existed.
+    #[test]
+    fn a_stood_down_run_publishes_the_order_and_says_when_the_ending_did_not_honour_it() {
+        /// One `ai_loop` run over a stand-in agent, optionally stood down, then cancelled — and the
+        /// entry `query("runs")` publishes for it once it is over.
+        ///
+        /// ⚠ ONE BODY FOR BOTH ARMS, so the arm and its control cannot differ in anything except
+        /// the order: two hand-written setups is how a control quietly stops being one.
+        fn a_cancelled_run(ordered: bool) -> Value {
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+            let pane = echoing_agent_pane(&workspace);
+            let registry = Arc::new(Mutex::new(RunRegistry::default()));
+            let mut external = PluginsExternal::new(
+                Arc::clone(&workspace),
+                Arc::clone(&registry),
+                None,
+                None,
+                None,
+                None,
+            );
+            let started = external
+                .invoke(
+                    RUN_ACTION,
+                    IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+                )
+                .expect("a well-formed ai_loop run");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            let id = u64::try_from(id).expect("a run id is not negative");
+            if ordered {
+                // ⚠⚠ THROUGH THE WIRE VERB, not `RunRegistry::stand_down` — this gate is about what
+                // a PERSON typing `sprag stand-down` is later shown, and the CLI reaches the
+                // registry through exactly this action. A gate that called the registry directly
+                // would leave the door it is really about untested.
+                external
+                    .invoke(
+                        STAND_DOWN_ACTION,
+                        IntrospectValue::Json(json!({ "id": id })),
+                    )
+                    .expect("a run in the directory takes a stand-down");
+            }
+            assert!(
+                lock(&registry).cancel(RunId(id)),
+                "the run this call started is one the registry can stop",
+            );
+            let entry = ended(&registry, id, Duration::from_secs(30));
+            assert!(
+                lock(&workspace).close(pane).is_some(),
+                "the pane this arm opened was there to close",
+            );
+            entry
+        }
+
+        // ── THE CONTROL: NOBODY SPOKE TO IT ──
+        let quiet = a_cancelled_run(false);
+        assert_eq!(
+            quiet[RUN_STOOD_DOWN_KEY],
+            Value::Null,
+            "⚠⚠⚠ THE CONTROL: a run nobody ordered must publish NO such key. Presence is the claim \
+             here — the rule `RUN_CEILING_KEY` follows — so a key that appeared on every run would \
+             make the arm below pass while saying nothing about anybody's order: {quiet:?}",
+        );
+
+        // ── THE ARM: A PERSON SPOKE, AND THE RUN DIED BEFORE IT COULD OBEY ──
+        let ordered = a_cancelled_run(true);
+        assert_eq!(
+            ordered["state"]["outcome"]["state"], quiet["state"]["outcome"]["state"],
+            "⚠⚠⚠⚠ THE ARM AND ITS CONTROL MUST END THE SAME WAY, or the key below is being read \
+             off two different runs and the difference measured is not the order. Ordered \
+             {ordered:?}, control {quiet:?}",
+        );
+        let said = ordered[RUN_STOOD_DOWN_KEY].as_str().unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔ ITEM 594: a person asked this run to stand down and `sprag runs` says \
+                 nothing about it — which is the surface `sprag stand-down`'s own answer sends \
+                 them to. Entry: {ordered:?}"
+            )
+        });
+        assert!(
+            said.contains("NOT banked"),
+            "⛔⛔⛔ ITEM 594, THE WHOLE OF IT: this run was ordered to stand down and then died \
+             without reaching a milestone, so the promise *its work is kept* was NOT kept — and \
+             the sentence a person reads has to say so. A sentence that reported the order and let \
+             them go on believing the work was banked is worse than the silence it replaced. Got \
+             {said:?}",
+        );
+        assert!(
+            said.contains(
+                ordered["state"]["outcome"]["state"]
+                    .as_str()
+                    .expect("a finished run publishes its word"),
+            ),
+            "⚠⚠⚠ AND IT MUST NAME THE ENDING THAT OVERTOOK THE ORDER. *It did not land* is half an \
+             answer; the remedy differs by what happened instead, and the word is already in this \
+             very entry — a reader should not have to pair two lines by eye. Got {said:?} beside \
+             {ordered:?}",
         );
     }
 

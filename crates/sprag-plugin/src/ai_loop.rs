@@ -5716,6 +5716,122 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔ **THE PROMISE A PERSON IS TOLD ABOUT A STAND-DOWN NAMES THE WORD `sprag runs` REALLY
+    /// PRINTS** — register item 594, and register item 522's shape found one order over.
+    ///
+    /// # What shipped, and why nothing could go red on it
+    ///
+    /// `sprag stand-down`'s own doc said the run *"converges reporting `stood_down`"*. **There are
+    /// two vocabularies in that clause and they do not overlap.** `stood_down` is
+    /// [`DoneReason::StoodDown`]'s word, and that type's doc records what becomes of it: it is
+    /// *"rendered through `noted` into a walk and nowhere else"*, so **nothing publishes it as a
+    /// wire key or value**. What `sprag runs` prints is an [`OutcomeState`], whose vocabulary is six
+    /// words with no `stood_down` among them. A person sent to watch for it was watching a surface
+    /// that could never say it — and the repayment skill had by then copied the word into a table
+    /// defining it as a run state, which is how a run reported `cancelled after 56 iterations` read
+    /// as *the opposite of the promise* rather than as *a promise nobody could check*.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE ENDING IS MEASURED, NOT SPELLED.** The run below is stood down before its first
+    /// pump and driven to its close, and the sentence is held against the word **that run actually
+    /// ended with**. A gate comparing the sentence to an `OutcomeState::Converged` written into this
+    /// file would agree with whatever this file believed, which is the failure it exists to catch.
+    ///
+    /// ⚠⚠ Its neighbour above owns the other half — that a stood-down run converges AT ALL, and
+    /// that the walk says a person ended it. This one owns only the crossing between what the
+    /// machine does and what a person was told it would do.
+    #[test]
+    fn the_promise_about_a_stand_down_names_the_word_a_stood_down_run_reports() {
+        use crate::outer::{DoneReason, STAND_DOWN_TAKES_EFFECT};
+
+        // ── THE ENDING, MEASURED ── arm 3's fixture: the order stands from before the first pump,
+        // so it is still standing when `judging` finally asks.
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        loops.stand_down();
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 60,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        // ⚠⚠⚠ THE CONTROL ON THE FIXTURE: this arm is worth nothing unless the run really took the
+        // stand-down's own edge. Its neighbour asserts the whole line; here the arrow is enough,
+        // and without it a run that expired or failed would hand this gate a word to agree with.
+        assert!(
+            walk.iter()
+                .any(|note| note.starts_with("Judging --Judge--> Closing")),
+            "⚠⚠⚠ the control: this run must have closed straight out of `judging`, which is what a \
+             STANDING order does. Any other arrow means the word measured below belongs to some \
+             other ending. Walked {walk:?}",
+        );
+        let reported = outcome.state.wire_str();
+
+        // 1. ── THE SENTENCE NAMES THAT WORD ──
+        assert!(
+            STAND_DOWN_TAKES_EFFECT.contains(reported),
+            "⛔⛔⛔ ITEM 594: a run a person stood down really ends {reported:?}, and the sentence \
+             they were told does not contain that word — so they are watching `sprag runs` for \
+             something it will not print. Sentence {STAND_DOWN_TAKES_EFFECT:?}. Walked {walk:?}",
+        );
+
+        // 2. ── AND NAMES NO OTHER OUTCOME WORD ── a sentence hedging across the vocabulary would
+        // satisfy the assertion above while telling a person to accept any ending at all.
+        let named: Vec<&str> = OutcomeState::WIRE_WORDS
+            .iter()
+            .copied()
+            .filter(|word| STAND_DOWN_TAKES_EFFECT.contains(word))
+            .collect();
+        assert_eq!(
+            named,
+            vec![reported],
+            "⚠⚠⚠ the promise must name ONE ending — the one a stood-down run reaches. Naming \
+             several is a sentence that cannot be wrong, which is a sentence that says nothing. \
+             Sentence {STAND_DOWN_TAKES_EFFECT:?}",
+        );
+
+        // 3. ── AND IT MAY NOT SPEND THE DOCUMENT'S VOCABULARY ON A PERSON ── walked rather than
+        // spelled, so a FOURTH `DoneReason` invented later is covered by this gate on the day it
+        // exists rather than on the day somebody remembers to come back here.
+        for ending in DoneReason::ALL {
+            if OutcomeState::WIRE_WORDS.contains(&ending.word()) {
+                continue;
+            }
+            assert!(
+                !STAND_DOWN_TAKES_EFFECT.contains(ending.word()),
+                "⛔⛔⛔ ITEM 594, EXACTLY: the promise spends {:?}, which is a `DoneReason` — it \
+                 reaches a walk and NOTHING else, so no reader of `sprag runs` can ever see it. \
+                 That is the word the shipped doc told people to wait for. Sentence \
+                 {STAND_DOWN_TAKES_EFFECT:?}",
+                ending.word(),
+            );
+        }
+
+        // 4. ── AND IT NAMES THE COMMAND THAT ANSWERS ── R455's rule: a sentence that delegates
+        // must delegate somewhere that replies. `sprag-host`'s `a_stood_down_run_publishes_the_
+        // order_and_says_when_the_ending_did_not_honour_it` is what holds that end of it; before
+        // that gate this clause was a promise about a surface publishing nothing at all.
+        assert!(
+            STAND_DOWN_TAKES_EFFECT.contains("sprag runs"),
+            "⚠⚠⚠ the promise must say WHERE the answer appears. A person who is told the work is \
+             kept and not told what would show them has to go and read a pane. Sentence \
+             {STAND_DOWN_TAKES_EFFECT:?}",
+        );
+    }
+
     /// ⚠⚠⚠ **AND THE WIDTH THE GATE ABOVE LEFT AS A RESIDUE IS MEASURED HERE** — register item 270,
     /// the half of it that only a whole run can say.
     ///

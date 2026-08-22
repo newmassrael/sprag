@@ -131,6 +131,24 @@ pub trait RunHandle: Send + Sync {
     /// directory rather than about the driver.
     fn deliver(&self, order: RunOrder);
 
+    /// **WHETHER A PERSON HAS ASKED THIS RUN TO FINISH UP AND STAND DOWN** — register item 594.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the ORDER is asked of the handle and not remembered by the directory
+    ///
+    /// [`deliver`](Self::deliver)'s doc says the registry's callers are told only whether a run
+    /// EXISTS, *"which is a fact about the directory rather than about the driver"*. This is the
+    /// other side of that sentence: the directory forwards an order and does not know what became
+    /// of it, so a second copy kept here would be a fact about a delivery rather than about the run
+    /// — and it would answer `true` for an [`EndedRun`], which accepts every order and delivers
+    /// none.
+    ///
+    /// ⚠⚠ **IT IS NOT AN OUTCOME AND MUST NEVER BE READ AS ONE.** A standing order says a person
+    /// spoke, not that the run obeyed: `stand-down` is honoured at the loop document's next
+    /// milestone and a run cut short before one reaches it having banked nothing. What the two facts
+    /// MEAN together is `crate::plugins::stand_down_sentence`'s to say, and it is the only reader
+    /// allowed to put them side by side.
+    fn stood_down(&self) -> bool;
+
     /// Whether a driver has stopped and is waiting to be collected — non-blocking. `false` once
     /// [`reap`](Self::reap) has taken it, and `false` for a run that never had one.
     fn reapable(&self) -> bool;
@@ -185,6 +203,13 @@ impl RunHandle for ThreadRun {
         }
     }
 
+    fn stood_down(&self) -> bool {
+        // ⚠ THE SAME FLAG THE WORKER'S `RunContext` IS SHARING, read rather than copied — see the
+        // struct's own note on why the three `Arc`s are handed in. A second bool set beside the
+        // `store` above could disagree with what the driver is reading.
+        self.stand_down.load(Ordering::Acquire)
+    }
+
     fn reapable(&self) -> bool {
         self.handle.as_ref().is_some_and(JoinHandle::is_finished)
     }
@@ -215,10 +240,42 @@ impl RunHandle for ThreadRun {
 ///
 /// ⚠ The registry still answers `true` for it, which is unchanged and correct — the caller asked
 /// whether the run exists, and it does.
-pub struct EndedRun;
+pub struct EndedRun {
+    /// **WHETHER A PERSON HAD STOOD THIS RUN DOWN BEFORE ITS DAEMON DIED** — register item 594, and
+    /// the one thing in here that is a MEMORY rather than a capability.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why an order survives here when [`RunRegistry::restore`] refuses to resurrect one
+    ///
+    /// That function's own note says persisting an order *"would let a restart resurrect an
+    /// instruction nobody could act on"*, and it is right about `hold` and `cancel`: a hold is a
+    /// level somebody is CURRENTLY holding, and nothing can be holding a run that is not moving.
+    ///
+    /// A stand-down on a run that is over is not an instruction any more. It is the only thing that
+    /// explains the ENDING — *a person said stop* — and dropping it made a restart erase the
+    /// question a reader is actually asking: **did my order land, or did the work go?** So it comes
+    /// back as a fact and is read as one. [`deliver`](RunHandle::deliver) here still accepts every
+    /// order and delivers none, so nothing can be written into this after the fact and nobody can
+    /// mistake the memory for a live order.
+    stood_down: bool,
+}
+
+impl EndedRun {
+    /// A run with no driver left, carrying whether a person had stood it down.
+    ///
+    /// ⚠ Named rather than a struct literal at the call site: `EndedRun { stood_down: false }`
+    /// reads as a decision somebody took, and this is the one value a restore may not guess at.
+    #[must_use]
+    pub const fn restored(stood_down: bool) -> Self {
+        Self { stood_down }
+    }
+}
 
 impl RunHandle for EndedRun {
     fn deliver(&self, _order: RunOrder) {}
+
+    fn stood_down(&self) -> bool {
+        self.stood_down
+    }
 
     fn reapable(&self) -> bool {
         false
@@ -327,6 +384,13 @@ pub struct RunSummary {
     /// WHICH BUILD DROVE IT, or [`None`] when nothing recorded one — see `RunRecord::build` for
     /// why those are different answers and why a reader must not fill the second one in.
     pub build: Option<String>,
+    /// **WHETHER A PERSON ASKED THIS RUN TO STAND DOWN** — [`RunHandle::stood_down`], republished so
+    /// a mouth can say what became of the ORDER and not only what became of the run.
+    ///
+    /// ⚠⚠ **IT IS THE ORDER AND NOT THE ENDING.** `true` beside a run that ended `cancelled` means
+    /// the order was given and NOT honoured, which is register item 594's whole finding.
+    /// [`crate::plugins::stand_down_sentence`] is the one reader allowed to weigh the two together.
+    pub stood_down: bool,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -455,6 +519,22 @@ pub struct PersistedRun {
     /// ⚠ Compared for EQUALITY only; it is an identity and never an ordering.
     #[serde(default)]
     pub document: Option<String>,
+    /// ⚠⚠⚠⚠ **WHETHER A PERSON HAD STOOD THIS RUN DOWN** — register item 594. [`None`] for a log
+    /// written before this field existed, which is NOT the same answer as `Some(false)`: one is
+    /// *nobody recorded whether an order was given*, the other is *no order was given*.
+    ///
+    /// # Why an ORDER is persisted here when [`RunRegistry::restore`] refuses to resurrect one
+    ///
+    /// See [`EndedRun::stood_down`], which holds the argument: a stand-down on a run that is over
+    /// has stopped being an instruction and become the only thing that explains the ending. What
+    /// this repository measured on 2026-08-22 is the cost of dropping it — a run ordered to stand
+    /// down came back from a daemon restart as a plain `cancelled`, and *"its work is kept"* had no
+    /// trace left anywhere to be weighed against.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move: [`build`](Self::build)'s argument verbatim, an optional
+    /// field with a default reads in both directions.
+    #[serde(default)]
+    pub stood_down: Option<bool>,
 }
 
 impl PersistedRun {
@@ -711,6 +791,12 @@ impl RunRegistry {
                             .progress
                             .at
                             .map(|_| sprag_plugin::STATECHARTS_FINGERPRINT.to_owned()),
+                        // ⚠⚠⚠ ALWAYS `Some`, INCLUDING `false` — item 594. This image DID look, so
+                        // `Some(false)` is a claim it is entitled to make; the `None` this field
+                        // documents belongs to a log written before the field existed, and only a
+                        // reader of such a log may see it. Writing `None` for *no order* would make
+                        // this daemon's own silence indistinguishable from an older daemon's.
+                        stood_down: Some(run.stood_down),
                     }
                 })
                 .collect(),
@@ -821,7 +907,14 @@ impl RunRegistry {
                 // nobody can be holding a run that is not moving, and persisting an order would let
                 // a restart resurrect an instruction nobody could act on. Those sentences were
                 // right and were the only thing enforcing them.
-                run: Box::new(EndedRun),
+                //
+                // ⚠⚠⚠⚠ **AND THE STAND-DOWN IS THE ONE EXCEPTION, WHICH IS NOT A CRACK IN THAT
+                // RULE BUT ITS OTHER HALF** — item 594. Those sentences are about resurrecting an
+                // INSTRUCTION, and nothing here can: `EndedRun` accepts every order and delivers
+                // none. What comes back is the RECORD that somebody gave one, which is the only
+                // thing that can explain the ending a reader is looking at. An absent field reads
+                // `false` — a log written before this existed cannot be made to say a person spoke.
+                run: Box::new(EndedRun::restored(saved.stood_down.unwrap_or(false))),
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
                     cost,
@@ -870,6 +963,10 @@ impl RunRegistry {
                 state: lock(&record.state).clone(),
                 progress: lock(&record.progress).clone(),
                 build: record.build.clone(),
+                // ⚠ ASKED OF THE HANDLE, on the same pass that reads the state — item 594's
+                // sentence weighs the two against each other, and reading them a moment apart is
+                // this repository's *비교하는 두 값은 같은 순간에* rule at its cheapest.
+                stood_down: record.run.stood_down(),
             })
             .collect()
     }
@@ -1468,6 +1565,7 @@ mod tests {
                 opened_by_session: Some(A_CONVERSATION.to_owned()),
                 at: None,
                 document: None,
+                stood_down: None,
             }],
         };
         let on_disk = serde_json::to_string(&log).expect("the run log encodes");
@@ -1659,6 +1757,7 @@ mod tests {
             opened_by_session: None,
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
+            stood_down: None,
         };
 
         // ── THE WORD SURVIVES THE ROUND TRIP THROUGH THE FILE, which is the whole point: this is
@@ -1729,6 +1828,14 @@ mod tests {
     impl RunHandle for RecordingRun {
         fn deliver(&self, order: RunOrder) {
             lock(&self.0).push(order);
+        }
+        // ⚠⚠ ANSWERED FROM WHAT IT WAS TOLD, not from a second flag — item 594. A driver living
+        // outside this process knows a standing order only through its own record of the delivery,
+        // and a recorder that answered a bool set beside `deliver` would be agreeing with itself.
+        fn stood_down(&self) -> bool {
+            lock(&self.0)
+                .iter()
+                .any(|order| matches!(order, RunOrder::StandDown))
         }
         fn reapable(&self) -> bool {
             false
@@ -1962,8 +2069,20 @@ mod tests {
                 opened_by_session: None,
                 at: None,
                 document: None,
+                // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
+                stood_down: None,
             }],
         });
+
+        // ⚠⚠⚠ AND NOTHING IT IS TOLD BECOMES A STANDING ORDER — register item 594. This is read
+        // BEFORE the orders below and again after, because the claim is that the pair does not
+        // move: an `EndedRun` answers what it was RESTORED with, and a `stand_down` delivered to a
+        // run whose driver died would otherwise publish *a person asked this run to stand down* on
+        // a run that could never have heard it.
+        assert!(
+            !registry.snapshot()[0].stood_down,
+            "a log that recorded no order must restore as no order",
+        );
 
         assert!(
             registry.cancel(RunId(4))
@@ -1971,6 +2090,13 @@ mod tests {
                 && registry.hold(RunId(4), true),
             "⚠⚠ every order must still find a restored run — the boolean answers *does this run \
              exist*, and it does",
+        );
+        assert!(
+            !registry.snapshot()[0].stood_down,
+            "⚠⚠⚠⚠ ITEM 594: the stand-down above was ACCEPTED and DELIVERED NOWHERE, so the run \
+             must not now claim somebody is standing it down. `EndedRun` answers the fact it was \
+             restored with and never the order it just swallowed — a run with no driver cannot \
+             obey, and publishing the order would promise a milestone that is never coming",
         );
         assert!(
             registry

@@ -215,6 +215,38 @@ pub const HOLD_TAKES_EFFECT: &str = "it parks at its next pass, leaving the turn
                                      while it waits, and waiting spends no part of its iteration \
                                      budget";
 
+/// **WHAT A PERSON IS TOLD `stand-down` WILL DO** — the sentence `sprag stand-down` prints, kept
+/// here for [`HOLD_TAKES_EFFECT`]'s reason and found by the same question asked one order over.
+///
+/// # ⛔⛔⛔ Register item 594 — the promise named a word `sprag runs` cannot print
+///
+/// The command's own doc said the run *"converges reporting `stood_down`"*. **Half of that sentence
+/// is about a different vocabulary than the half a person acts on.** `stood_down` is
+/// [`DoneReason::StoodDown`]'s word — the DOCUMENT's, assigned as a literal on the edge out of
+/// `judging` — and that type's own doc records that *nothing publishes a `done_reason` as a wire
+/// key or value*. What `sprag runs` prints is an [`OutcomeState`](crate::OutcomeState), whose
+/// vocabulary has six words and no `stood_down` among them; a stood-down run reports **`converged`**
+/// there, byte-identical to one that finished on its own.
+///
+/// So a person told to watch for `stood_down` watched a surface that could never say it. Measured
+/// 2026-08-22: a run ordered to stand down was reported `cancelled after 56 iterations`, the
+/// opposite of *"its work is kept"*, and the repayment skill had by then copied the false word into
+/// a table defining `stood_down` as a run state. **A claim that crosses two vocabularies is wrong in
+/// the one the reader is standing in.**
+///
+/// ⚠⚠ THE SECOND CLAUSE IS A PROMISE ABOUT ANOTHER COMMAND, and it was false when it was written:
+/// *"`sprag runs` says when it has"* named a surface that published nothing at all about a person's
+/// order. `crate::run::RunContext::stood_down` was a host-side flag no answer carried. It is
+/// answerable now — `sprag-host`'s `stand_down_sentence` is the renderer — and this sentence is what
+/// says a reader may rely on it.
+///
+/// ⚠ It names no run id, so the caller composes the id and the way back around it —
+/// [`HOLD_TAKES_EFFECT`]'s rule.
+pub const STAND_DOWN_TAKES_EFFECT: &str = "it finishes the turn its agent is in the middle of and stops at the next milestone, banking \
+     that work; `sprag runs` then reports it converged and says a person stood it down. If it ends \
+     any other way, `sprag runs` says that too — the milestone was never reached, so the turn it \
+     had going was not banked";
+
 /// The datamodel variable holding **HOW LONG A HOLD MAY LAST BEFORE THE RUN IS ABANDONED**, in
 /// milliseconds — spelled once, here, so the driver's reader, the document's `<data>` and the
 /// document's `<assign>` cannot drift.

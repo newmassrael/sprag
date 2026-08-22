@@ -5519,12 +5519,23 @@ fn render_run(run: &Value) -> String {
         .as_u64()
         .map_or_else(String::new, |pane| format!("  (asked for by pane {pane})"));
     let state = &run["state"];
+    // ⚠⚠⚠⚠⚠ WHAT BECAME OF A PERSON'S STAND-DOWN — register item 594 — AND WHY IT IS NOT ON THE
+    // HEADING AND NOT AT THE END. `render_build`'s doc names the constraint: this repository's own
+    // outer-loop watcher (the repayment skill's `watch.sh`) reads the run's STATUS as the line
+    // immediately after the heading (`$0 ~ r {getline; print}`) and its walk as the block's LAST
+    // line (`… | tail -1`). A clause inserted at either end moves a reader that already exists.
+    //
+    // So it goes where `stopped` and `failure` already go — a detail clause UNDER the status line,
+    // which is the one place in a run's block that is addressed by neither of those two reads.
+    let order = run[sprag_host::plugins::RUN_STOOD_DOWN_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}\n{}",
+            "{head}  running — {} iterations, {} {} so far{}{order}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -5541,7 +5552,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -5569,7 +5580,13 @@ fn render_run(run: &Value) -> String {
                 render_journal(run),
             )
         }
-        _ => format!("{head}  {}\n", state["status"].as_str().unwrap_or("?")),
+        // ⚠⚠ `interrupted` AND `panicked` COME THROUGH HERE, and item 594 was MEASURED on the
+        // first of them: a daemon restarted under a standing order left a person a bare word and
+        // no way to learn that what they asked for had never happened.
+        _ => format!(
+            "{head}  {}{order}\n",
+            state["status"].as_str().unwrap_or("?"),
+        ),
     }
 }
 
@@ -5649,8 +5666,18 @@ fn cancel_run(args: Vec<String>) -> io::Result<()> {
 ///
 /// A cancel stops a loop MID-TURN: whatever the agent had written since its last checkpoint is
 /// thrown away, and the run reports `cancelled`. This one waits — the milestone the agent is working
-/// toward is finished, `closing` takes its account, and the run converges reporting `stood_down`.
-/// **The work is banked.**
+/// toward is finished, `closing` takes its account, and the run **converges**. The work is banked.
+///
+/// ⛔⛔⛔ **THIS PARAGRAPH USED TO SAY THE RUN CONVERGES *"reporting `stood_down`"*, AND THAT WORD
+/// REACHES NO READER OF `sprag runs`** — register item 594. `stood_down` is
+/// [`sprag_plugin::DoneReason::StoodDown`]'s word, which the loop DOCUMENT assigns and which is
+/// rendered into a walk and nowhere else; what this command's own second sentence sends a person to
+/// look at publishes an `OutcomeState`, and that vocabulary has no such word. The repayment skill
+/// then copied it into a table defining `stood_down` as a run state, so a run reported `cancelled`
+/// read as the opposite of a promise rather than as a promise nobody could check.
+/// `sprag_plugin::outer::tests::the_promise_about_a_stand_down_names_the_word_a_stood_down_run_reports`
+/// is what stops it being written again — it drives a stood-down run and holds the sentence to the
+/// word that run really ends with.
 ///
 /// Those are opposite outcomes from one keystroke's distance apart, which is exactly why they are
 /// two verbs: a mode flag would let somebody lose a milestone by mistyping a boolean at the end of a
@@ -5685,9 +5712,15 @@ fn stand_down(args: Vec<String>) -> io::Result<()> {
             json!({ "id": id }),
         ),
     )?;
+    // ⚠⚠⚠ THE SENTENCE IS THE PRODUCT'S, NOT THIS COMMAND'S — register item 594, and register item
+    // 522's remedy applied to the order beside `hold`. The words live in the crate that holds the
+    // document that keeps them (`sprag_plugin::STAND_DOWN_TAKES_EFFECT`), where a gate can drive a
+    // real stood-down run and hold the promise to the ending it actually reaches. Prose here could
+    // not be turned red by anything, and for a whole round it was not: it named an outcome word
+    // that reaches no reader of `sprag runs`.
     println!(
-        "run {id} asked to finish up; it stops at its next milestone, and its work is kept — \
-         `sprag runs` says when it has"
+        "run {id} asked to finish up; {}",
+        sprag_plugin::STAND_DOWN_TAKES_EFFECT,
     );
     Ok(())
 }

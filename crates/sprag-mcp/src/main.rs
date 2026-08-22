@@ -2660,12 +2660,23 @@ fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
     let label = run["label"].as_str().unwrap_or("?");
     let state = &run["state"];
+    // ⚠⚠⚠ WHAT BECAME OF A PERSON'S STAND-DOWN — register item 594, and this mouth needs it as
+    // sharply as the person's does. An agent supervising a loop is exactly who has to tell *the
+    // order landed and the work is banked* from *the order never landed and the work is gone*, and
+    // before this key both arrived as one outcome word with nothing beside it.
+    //
+    // ⚠ THE SENTENCE IS THE HOST'S and is not composed here: `stand_down_sentence` weighs the order
+    // against the ending in ONE place, so this mouth and the person's cannot reach different
+    // conclusions about the same run — the two-readers defect this crate has paid for repeatedly.
+    let order = run[sprag_host::plugins::RUN_STOOD_DOWN_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" {said}."));
     match state["status"].as_str() {
         // The counters, for the reason the person's renderer prints them: an agent that polls a
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}\n{}",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -2678,7 +2689,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{}{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2709,8 +2720,11 @@ fn render_run(run: &Value) -> String {
                 render_journal(run),
             )
         }
+        // ⚠⚠ `interrupted` COMES THROUGH HERE, and item 594 was measured on it: a daemon restarted
+        // under a standing order left a reader a bare word and no way to learn that what was asked
+        // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.\n",
+            "Run {id} ({label}): {}.{order}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }
