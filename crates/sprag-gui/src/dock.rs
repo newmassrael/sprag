@@ -206,14 +206,21 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
             // HEADER (R95 controls-in-header — `window_chrome` returns `None` for it).
             // `decorations` is create-time-only (pinion app.rs warns on a runtime flip),
             // so it must be declared here at the seed, not toggled later.
+            // ⚠⚠⚠⚠⚠ THE MAIN WINDOW IS BORN HERE, AND NOWHERE ELSE — register item 589.
+            // `WidgetView::initial_size_strategy` looks like the seam and is not: pinion calls it
+            // only from the DEFAULT `windows()`, and declaring `windows_signal()` (the R683
+            // runtime lift, which this client needs for floating panes) replaces that path
+            // entirely. Measured with a probe inside the client: that method is never called, and
+            // a size put there was inert while the window still opened at the constants.
+            //
+            // So the size a person last chose is read HERE, falling back to the constants when
+            // nothing has been remembered — a first run, or a cleared state dir.
+            let (width, height) = sprag_host::load_gui_window().unwrap_or((WINDOW_W, WINDOW_H));
             Signal::new(vec![
                 WindowSpec::new(
                     Cow::Borrowed(MAIN_WINDOW_ID),
                     MAIN_WINDOW_TITLE,
-                    SizeStrategy::Fixed {
-                        width: WINDOW_W,
-                        height: WINDOW_H,
-                    },
+                    SizeStrategy::Fixed { width, height },
                 )
                 .with_decorations(false),
             ])

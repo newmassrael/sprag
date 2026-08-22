@@ -39,6 +39,75 @@ pub fn snapshot_path(socket: &Path) -> PathBuf {
     sprag_state_dir().join(format!("{}.snapshot.json", socket_key(socket)))
 }
 
+/// Where the windowed client remembers the size a PERSON gave its window:
+/// `$XDG_STATE_HOME/sprag/gui-window.json`.
+///
+/// # Why here, and why not the config file
+///
+/// This is a value the PROGRAM writes, every time the person drags an edge. The config file is a
+/// value the PERSON writes, and `gui-font` lives there rightly. Mixing them would have
+/// `set-option` rewriting a hand-edited file with a number nobody typed — so the split is
+/// authorship, not importance. Register item 589 names that choice as the one it was leaving open.
+///
+/// # Why NOT keyed on a socket, unlike everything else in this module
+///
+/// A window belongs to the CLIENT, not to a daemon: the same window attaches to one daemon and
+/// then another, and its size did not change when it did. Keying it on a socket would give a
+/// person who runs two daemons two different windows for the same screen, and would lose the size
+/// entirely for a client that attaches somewhere new.
+#[must_use]
+pub fn gui_window_path() -> PathBuf {
+    sprag_state_dir().join("gui-window.json")
+}
+
+/// The logical-pixel size a windowed client should be born at, or `None` when nothing has been
+/// remembered yet — a first run, a cleared state dir, a file this build cannot read.
+///
+/// ⚠ `None` rather than a default, deliberately: the fallback is the CLIENT's to choose (it owns
+/// the constants and knows its own chrome), and a default returned from here would be a second
+/// authority for the same number. Every failure answers `None`, because "I cannot tell" must
+/// resolve to "let the client decide" and never to a size nobody chose.
+#[must_use]
+pub fn load_gui_window() -> Option<(u32, u32)> {
+    let bytes = std::fs::read(gui_window_path()).ok()?;
+    let stored: GuiWindow = serde_json::from_slice(&bytes).ok()?;
+    // A zero in either axis is a window nothing can be painted in — a truncated write, or a
+    // minimised window some window managers report as 0x0. Refused here rather than handed on.
+    (stored.width > 0 && stored.height > 0).then_some((stored.width, stored.height))
+}
+
+/// Remember `size` as the windowed client's, writing ONLY when it differs from what is already
+/// stored. Answers whether it wrote.
+///
+/// Write-if-changed for [`save_if_changed`]'s reason and a sharper one: this is called from a
+/// RESIZE, which arrives as a stream of events while a person drags an edge, and an unconditional
+/// write would fsync a file per frame of the drag.
+///
+/// # Errors
+///
+/// Whatever the atomic owner-private write returns — the state dir being unwritable, most likely.
+/// The caller is a paint path, so it should log and carry on rather than fail the frame.
+pub fn save_gui_window_if_changed(size: (u32, u32)) -> io::Result<bool> {
+    if load_gui_window() == Some(size) {
+        return Ok(false);
+    }
+    let stored = GuiWindow {
+        width: size.0,
+        height: size.1,
+    };
+    let json = serde_json::to_vec_pretty(&stored).map_err(io::Error::other)?;
+    write_atomic_private(&gui_window_path(), &json)?;
+    Ok(true)
+}
+
+/// The stored shape behind [`load_gui_window`] — a named record rather than a bare pair, so a
+/// later round can add a position or a monitor without the file becoming unreadable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct GuiWindow {
+    width: u32,
+    height: u32,
+}
+
 /// Where a daemon leaves its RUN LOG for its successor:
 /// `$XDG_STATE_HOME/sprag/<socket-stem>.runs.json`, beside the workspace snapshot and keyed the
 /// same way.
@@ -365,6 +434,56 @@ fn exact_or_shell(argv: &[String], allowlist: &HashSet<String>) -> (CommandBuild
 mod tests {
     use super::*;
     use sprag_terminal::{LayoutWire, SNAPSHOT_VERSION, SessionSnapshot, WindowSnapshot};
+
+    /// The window a person sized comes back, and a size nobody could paint in does not — register
+    /// item 589. Both halves in one test because they share the one env var this can set.
+    ///
+    /// ⚠ The zero half is the one worth having: the pixel smoke drives the whole loop through a
+    /// real window, and a real window never reports `0x0` there — but a minimised one does on some
+    /// window managers, and a truncated write can. A size of zero restored at birth is a client
+    /// with nothing to paint in and no way for the person to grow it back.
+    #[test]
+    fn a_window_size_round_trips_and_a_zero_is_refused() {
+        let home = std::env::temp_dir().join(format!("sprag-gui-window-{}", std::process::id()));
+        let prior = std::env::var_os("XDG_STATE_HOME");
+        // SAFETY: single-threaded test; no other thread reads the environment concurrently.
+        unsafe { std::env::set_var("XDG_STATE_HOME", &home) };
+
+        assert_eq!(
+            load_gui_window(),
+            None,
+            "nothing has been remembered yet, and the fallback is the CLIENT's to choose",
+        );
+        assert!(
+            save_gui_window_if_changed((1600, 700)).expect("the state dir is writable"),
+            "the first save of a size writes it",
+        );
+        assert_eq!(load_gui_window(), Some((1600, 700)), "and it comes back");
+        assert!(
+            !save_gui_window_if_changed((1600, 700)).expect("the state dir is writable"),
+            "the same size again writes nothing — a drag is a stream of these",
+        );
+
+        // A zero in either axis: written here deliberately, because what is being asserted is that
+        // a stored one cannot reach a window.
+        for zero in [(0, 700), (1600, 0)] {
+            save_gui_window_if_changed(zero).expect("the state dir is writable");
+            assert_eq!(
+                load_gui_window(),
+                None,
+                "{zero:?} is a window nothing can be painted in, so it must not be restored",
+            );
+        }
+
+        // SAFETY: as above.
+        unsafe {
+            match prior {
+                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     fn a_snapshot() -> Snapshot {
         Snapshot {

@@ -73,6 +73,7 @@ pub(crate) fn install_reflow() {
     // itself stays cache-free.
     let terminal = use_terminal();
     install_report(&owner, &terminal);
+    install_window_memory(&owner);
     for index in terminal.slots.occupied_slots() {
         install_pane_reflow(&owner, &terminal, index);
     }
@@ -201,6 +202,62 @@ fn install_report(owner: &Owner, terminal: &Rc<TerminalView>) {
         }
     });
     owner.cache(REPORT_KEY.to_owned(), move || ReportMarker {
+        _effect: effect,
+    });
+}
+
+/// `Owner::cache` key for the window-size memory [`Effect`] — one per client, like the report
+/// beside it, because what it remembers is this WINDOW's size.
+const MEMORY_KEY: &str = "sprag_gui.window_size_memory";
+
+/// Holds the window-size memory [`Effect`] so the `Owner::cache` keeps it alive across frames.
+pub(crate) struct MemoryMarker {
+    _effect: Effect,
+}
+
+/// Remember the size of this window for the NEXT process — register item 589.
+///
+/// # Why an Effect on the viewport, and not a resize handler
+///
+/// [`use_viewport_size`](pinion_core::use_viewport_size) is a TRACKED read that re-fires on an OS
+/// window resize — the note on the fold above records measuring exactly that. So the subscription
+/// this needs already exists and is already load-bearing; a second path listening for resizes would
+/// be a second answer to *how big is this window*.
+///
+/// # What is NOT written
+///
+/// `(0, 0)` is pinion's pre-layout sentinel, not a size anybody chose, and writing it would have
+/// the next process born into a window nothing can be painted in. The store refuses a stored zero
+/// as well — both ends, because this is the one value here that outlives the process.
+///
+/// # The residue, stated
+///
+/// A person dragging an edge produces a stream of DISTINCT sizes, and this writes once per distinct
+/// size rather than once per drag: an atomic write and an fsync of forty bytes, tens of times over
+/// a drag. The in-memory guard below keeps it from re-reading the file each time, but it does not
+/// coalesce the drag itself. That is a debounce, and a debounce needs a timer this seam does not
+/// have — worth adding when a measurement says it costs something, not before.
+fn install_window_memory(owner: &Owner) {
+    if owner.cache_contains::<MemoryMarker>(MEMORY_KEY.to_owned()) {
+        return;
+    }
+    let last = std::cell::Cell::new(Option::<(u32, u32)>::None);
+    let effect = Effect::new(owner, move || {
+        let size = pinion_core::use_viewport_size();
+        if size.0 == 0 || size.1 == 0 || last.get() == Some(size) {
+            return;
+        }
+        match sprag_host::save_gui_window_if_changed(size) {
+            Ok(_) => last.set(Some(size)),
+            // A paint path: an unwritable state dir costs the memory, never the frame. Logged
+            // rather than swallowed, because a window that silently stops remembering is exactly
+            // the complaint item 589 is about.
+            Err(error) => {
+                tracing::debug!(target: "sprag_gui::reflow", %error, ?size, "the window size could not be remembered");
+            }
+        }
+    });
+    owner.cache(MEMORY_KEY.to_owned(), move || MemoryMarker {
         _effect: effect,
     });
 }

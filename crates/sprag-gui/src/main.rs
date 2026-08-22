@@ -1230,6 +1230,18 @@ impl WidgetCore for TerminalViewer {
 impl WidgetView for TerminalViewer {
     type Renderer = SpragGuiRenderer;
 
+    /// ⚠⚠⚠⚠⚠ **THIS IS NEVER CALLED, AND THAT IS WHY IT SAYS SO.** pinion reads it only from the
+    /// DEFAULT [`windows()`](pinion_shell::WidgetView::windows); declaring
+    /// [`windows_signal`](Self::windows_signal) below — the R683 runtime lift this client needs for
+    /// floating panes — replaces that path, and the main window's spec comes from
+    /// [`dock::use_windows_topology`] instead.
+    ///
+    /// Measured with a probe inside the client on 2026-08-22 (register item 589): a size read from
+    /// disk here was inert while the window went on opening at the constants, because nothing ever
+    /// asked. **The window's real birth size lives in `dock.rs`** — change it there.
+    ///
+    /// Kept rather than deleted because the trait requires it and a wrong-looking default here
+    /// would be read as the answer by the next person; the constants keep the two agreeing.
     fn initial_size_strategy() -> SizeStrategy {
         SizeStrategy::Fixed {
             width: WINDOW_W,

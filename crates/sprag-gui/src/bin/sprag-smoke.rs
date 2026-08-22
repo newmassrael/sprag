@@ -174,6 +174,9 @@ fn main() -> ExitCode {
             // client twice. Before the session kill, which is happy to kill whichever session the
             // client it finds is attached to.
             check_the_gui_follows_the_users_font(&mut smoke, &mut report);
+            // Beside the font gate on purpose: the two settings are the asymmetry item 589 is
+            // about, they share `boot_pane_cols` as their instrument, and both replace the client.
+            check_the_window_size_a_person_chose_outlives_the_process(&mut smoke, &mut report);
             // Straight after the font gate, which has just replaced the client twice — so this one
             // is not spending a relaunch that the run had not already paid for.
             // It inherits NO particular pane set and needs none: it reads the daemon's own list and
@@ -2683,6 +2686,131 @@ fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &
     if let Err(error) = smoke.relaunch_gui_attached(&session) {
         report.check(&format!("the client returns to {session} ({error})"), false);
     }
+}
+
+/// **ITEM 589: what a person resized must still be there next time.**
+///
+/// # The symptom
+///
+/// The owner asked *"화면을 키우는 게 해법이라는 거야?"* — is making the window bigger the answer? It
+/// was not; it was a MEASUREMENT I had taken by hand, and the question underneath it had never been
+/// answered: why does this window open small every time. It opens at a pair of constants
+/// (`WINDOW_W` x `WINDOW_H`), and nothing anywhere records what the person dragged it to.
+///
+/// The asymmetry is what makes it a defect rather than a missing feature: **`gui-font` IS
+/// remembered.** A bigger font in a window that always reopens at 960x600 is a smaller grid, so the
+/// setting that persists makes the setting that does not persist worse, and the person re-does the
+/// correction by hand every launch.
+///
+/// # How it is asked
+///
+/// Through the BOOT PANE'S COLUMNS, which is the same instrument the `gui-font` gate uses and for
+/// the same reason: a window's size is not directly readable from the wire, but the grid it can
+/// give a pane is, and it is a function of exactly this. A wider window, remembered, is a wider
+/// boot pane in the NEXT process.
+///
+/// ⚠ The resize itself is driven with `xdotool` against the X server this run owns, so what is
+/// gated is a real window-manager-shaped resize and not a value handed to the client by a test. If
+/// `xdotool` is absent the claim is `unmet` rather than skipped silently — item 576's rule: a skip
+/// nobody can see reads as coverage.
+fn check_the_window_size_a_person_chose_outlives_the_process(
+    smoke: &mut Smoke,
+    report: &mut Report,
+) {
+    /// Wider than the `WINDOW_W` this client is born at, by enough that the column count cannot be
+    /// mistaken for rounding.
+    const WIDER: u32 = 1600;
+    /// Kept close to the birth height: this claim is about the width, and a much taller window
+    /// would change the pane count under some layouts.
+    const TALLER: u32 = 700;
+
+    let Some(before) = boot_pane_cols(smoke, report, "before a resize") else {
+        return;
+    };
+
+    let Ok(found) = std::process::Command::new("xdotool")
+        .args(["search", "--name", "sprag terminal"])
+        .output()
+    else {
+        report.unmet(
+            "a window size a person chose is still there after a relaunch — this machine has no \
+             `xdotool`, so no resize a window manager would make can be driven here",
+        );
+        return;
+    };
+    let Some(window) = String::from_utf8_lossy(&found.stdout)
+        .lines()
+        .last()
+        .map(str::to_owned)
+    else {
+        report.check(
+            "the client's OS window can be addressed to resize it (xdotool found none)",
+            false,
+        );
+        return;
+    };
+    let resized = std::process::Command::new("xdotool")
+        .args([
+            "windowsize",
+            &window,
+            &WIDER.to_string(),
+            &TALLER.to_string(),
+        ])
+        .status();
+    report.check(
+        &format!("the client's window is resized to {WIDER}x{TALLER} ({resized:?})"),
+        resized.is_ok_and(|status| status.success()),
+    );
+
+    // Waited on the CLIENT having seen it — a resize is an X event, a reflow, and a daemon round
+    // trip away from the number this asserts on, and reading before that is reading the old window.
+    let widened = smoke.wait_for(|s| {
+        let session = s.attached_session()?;
+        let listed = s.cli(&["panes", "-t", &session]).ok()?;
+        let cols: u16 = listed
+            .lines()
+            .next()?
+            .split_whitespace()
+            .nth(1)?
+            .split('x')
+            .next()?
+            .parse()
+            .ok()?;
+        (cols > before).then_some(cols)
+    });
+    report.check(
+        &format!("the live client reflows to the wider window ({widened:?} from {before})"),
+        widened.is_ok(),
+    );
+    let Ok(widened) = widened else {
+        return;
+    };
+
+    // ⚠⚠⚠⚠⚠ THE CLAIM. A NEW PROCESS, which is the only way to ask it: `initial_size_strategy` is
+    // read once at birth, so a client that merely still has the size in memory cannot pass.
+    // ⚠ The store is read from the CHILD's state dir, not this process's: the smoke hands its
+    // children an `XDG_STATE_HOME` of its own, so `gui_window_path()` resolved here would answer
+    // about the wrong home. Reported either way, because "nothing was saved" and "what was saved
+    // was not read" are different defects and a bare boolean cannot tell them apart.
+    let stored = std::fs::read_to_string(smoke.state.join("sprag").join("gui-window.json"))
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|why| format!("<unreadable: {why}>"));
+    let Some(after) = boot_pane_cols(smoke, report, "after a relaunch") else {
+        return;
+    };
+    // The root's painted rect IS the window, so this separates "born small" from "born big and
+    // sized its pane wrong" — two different defects that both reach `after` as a small number.
+    let root = smoke
+        .tags()
+        .ok()
+        .and_then(|tags| tags.get("sprag_gui").and_then(|node| node.rect));
+    report.check(
+        &format!(
+            "the window size a person chose outlives the process \
+             ({before} -> resized {widened} -> reborn {after}, stored {stored}, root {root:?})"
+        ),
+        after > before,
+    );
 }
 
 /// Relaunch the client and answer the columns its BOOT pane was sized to, or `None` after reporting.
