@@ -8136,6 +8136,12 @@ fn a_window_kill_that_took_the_session_says_so() {
     // session that had just died (*"the client had switched to `beta` and the row went back to
     // `[0] 0:0*`"*). The switch happens inside this gesture's own dispatch now, so the row this
     // client settles on already names where it landed.
+    //
+    // ⚠ WHAT ENFORCES THIS IS THE WAIT, NOT THIS LINE — said rather than left to be assumed. Since
+    // 2026-08-22 `rows_until_settled` hands back the rows it JUDGED, so this can no longer disagree
+    // with them; a client that never comes to rest on the landing fails at the window's deadline
+    // instead, and that is the failure to read. The line stays as the record of the claim and as
+    // the thing that goes red if the helper is ever changed to return something else.
     assert_eq!(
         rows.last().map(String::as_str),
         Some("[beta] 0:0*"),
@@ -8374,9 +8380,25 @@ fn the_join_pane_key_opens_a_chooser_that_says_so_and_a_pick_puts_the_pane_in_th
 /// The rows now come from [`Tui::status_trail`], which the READER THREAD appends to as it applies
 /// each batch — every row the client painted is in it whether anybody was looking or not. This
 /// function only decides when to STOP waiting, and the generous cap is a failure bound rather than a
-/// sample point: a run that never settles returns everything the client ever painted, and the
-/// caller's own assertion prints the whole list. One list, every claim, no clock to tune.
+/// sample point: a run that never settles PANICS at that bound, and the panic carries everything the
+/// client ever painted as its last observation. One list, every claim, no clock to tune.
+/// ⚠ That sentence used to say the function *returns* the whole list on a run that never settles.
+/// It never did — [`wait_bounded`] panics, so nothing after the wait runs — and reading it as true
+/// is what made the second reading below look free.
 fn rows_until_settled(tui: &Tui, sentence: &str, landing: &str) -> Vec<String> {
+    // ⚠⚠⚠⚠⚠ THE ROWS HANDED BACK ARE THE ROWS THAT WERE JUDGED, and taking a second reading here
+    // is what made this window lie. `status_rows` clones a trail that GROWS, so a message arriving
+    // between the condition passing and the return appends itself and becomes `rows.last()` —
+    // the caller then asserts about a row this function never looked at. Measured on CI 2026-08-22
+    // (`headless (linux)`, `39ba024`): `["[0] 0:0*", "[beta] 0:0*", "the session went with it"]`,
+    // the landing reached SECOND and the sentence arriving after it. Item 368/429's rule, one layer
+    // in: the two values compared must come from the same moment.
+    //
+    // ⚠ AND IT IS DEMONSTRATED, NOT ARGUED. Pushing one row onto the trail between the judgement
+    // and the return reproduces the CI failure word for word against the old shape, and leaves this
+    // one green — so the difference is the fix and not the weather. The trail is a `Mutex<Vec<_>>`
+    // this file owns, which is what makes a race forceable instead of hunted for under load.
+    let mut judged = Vec::new();
     tui.wait_for(
         &format!("this client to say {sentence:?} and then come to rest on {landing:?}"),
         || {
@@ -8393,12 +8415,13 @@ fn rows_until_settled(tui: &Tui, sentence: &str, landing: &str) -> Vec<String> {
             // the second claim is about what the client comes to rest on.
             let rows = tui.status_rows();
             if rows.last().map(String::as_str) == Some(landing) && tui.said(sentence) {
+                judged = rows;
                 return Ok(());
             }
             Err(format!("the rows painted were {rows:?}"))
         },
     );
-    tui.status_rows()
+    judged
 }
 
 /// A live `sprag-tui` under `detach-on-destroy = policy`, with a spare session `beta` to land in
