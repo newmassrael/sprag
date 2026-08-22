@@ -63,6 +63,24 @@
 //! the state. So stage 2 is an upstream request rather than a design, and acts stay in the driver
 //! while the document keeps saying WHICH act. Stage 1's guard is untouched by this — a `cond` is
 //! the datamodel's and needs no registry.
+//!
+//! # ⚠⚠⚠⚠⚠ A MACHINE CAN SAY WHERE IT IS AND CANNOT BE PUT THERE — measured, and it is what run
+//! persistence waits on
+//!
+//! Register item 549, and the reason 543 (*a daemon restarted mid-run brings that run back
+//! RUNNING*) and 544's stage 3b are not being built. The engine publishes its configuration —
+//! `get_current_state`, `get_active_states` — and offers no way to enter at one: `initialize()` is
+//! the only door and it enters the DOCUMENT's initial configuration, running `<onentry>` on the
+//! way. So a restarted host can say exactly where a run was and can only replay it from the start,
+//! which for `ai_loop.scxml` means re-sending prompts its agent already answered.
+//!
+//! ⚠⚠⚠ **THE ANSWER USED TO BE A SOURCE READING AND IS NOW TWO GATES.** It was measured by reading
+//! `backends/rust/runtime/src` three times — at registration, at the 550 bump, and while writing
+//! `SCE-PR90`. A reading is true of the file somebody opened and nothing re-opens it at the next
+//! pin, so the finding could only ever age silently. The two gates ask the same question of the
+//! pinned crate instead: one of the TYPE (no inherent door of these names resolves) and one of a
+//! RUN (the door that exists re-runs entry actions). The day SCE ships the door, the sweep says so
+//! rather than a person remembering to look.
 
 #[cfg(test)]
 mod tests {
@@ -73,7 +91,9 @@ mod tests {
     use crate::sm::probe_parallel_sm::{
         ProbeParallelEvent, ProbeParallelPolicy, ProbeParallelState,
     };
-    use crate::sm::probe_send_type_sm::{ProbeSendTypeEvent, ProbeSendTypePolicy};
+    use crate::sm::probe_send_type_sm::{
+        ProbeSendTypeEvent, ProbeSendTypePolicy, ProbeSendTypeState,
+    };
 
     /// ⚠⚠⚠⚠⚠ **A HOST CANNOT REGISTER ITS OWN `<send>` OR `<invoke>` TYPE — measured, and it
     /// refutes register item 470's second stage as a design.**
@@ -1280,6 +1300,297 @@ mod tests {
              This is what lets `max_turns` mean *no bound* by being declared and left empty, \
              instead of needing a boolean beside it. If this fires, the one-`<data>` spelling is \
              REFUSED and the debt loop's *never ends on turns* has to be written as a pair",
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+    // REGISTER ITEM 549 — CAN A MACHINE BE PUT WHERE IT SAYS IT IS?
+    //
+    // The two gates below are that item's VERDICT, and they exist because the answer had been
+    // carried three times as a source reading (549's registration, the 550 bump, SCE-PR90's
+    // measurement section). A reading is true of the file somebody opened and nothing re-opens it
+    // at the next pin; these run against the engine the tree is pinned to, so the sweep is what
+    // notices when the answer changes.
+    // ══════════════════════════════════════════════════════════════════════════════════════════
+
+    /// What an item-549 probe found about ONE method name on the pinned `Engine`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Door {
+        /// No inherent method of that name exists, so the call reached the blanket fallback in
+        /// `NoConfigurationDoor` instead.
+        Absent,
+        /// An INHERENT method of that name exists on `Engine` and won method resolution.
+        Present,
+    }
+
+    /// What every fallback in `NoConfigurationDoor` returns. Nothing else produces one, which is
+    /// the whole instrument: seeing this type back means the call found no inherent method.
+    struct NoSuchMethod;
+
+    /// Maps whatever a probe call actually returned onto a [`Door`].
+    trait DoorOf {
+        fn door(self) -> Door;
+    }
+
+    impl DoorOf for NoSuchMethod {
+        fn door(self) -> Door {
+            Door::Absent
+        }
+    }
+
+    /// `Engine::has_ready_events` returns this, and it is the positive control's whole point: a
+    /// `bool` coming back means an INHERENT method answered.
+    impl DoorOf for bool {
+        fn door(self) -> Door {
+            Door::Present
+        }
+    }
+
+    /// Every method here is reachable ONLY while `Engine` has no inherent method of that name —
+    /// inherent methods win method resolution over trait ones, so the day SCE grows a door, the
+    /// call site stops reaching this trait and the gate below turns red.
+    ///
+    /// The argument is generic so a door taking the saved configuration resolves rather than
+    /// failing to type-check on its parameter.
+    trait NoConfigurationDoor {
+        fn initialize_at<A>(&mut self, _at: A) -> NoSuchMethod {
+            NoSuchMethod
+        }
+        fn enter_at<A>(&mut self, _at: A) -> NoSuchMethod {
+            NoSuchMethod
+        }
+        fn enter_configuration<A>(&mut self, _at: A) -> NoSuchMethod {
+            NoSuchMethod
+        }
+        fn restore_configuration<A>(&mut self, _at: A) -> NoSuchMethod {
+            NoSuchMethod
+        }
+        fn set_active_states<A>(&mut self, _at: A) -> NoSuchMethod {
+            NoSuchMethod
+        }
+        fn resume_at<A>(&mut self, _at: A) -> NoSuchMethod {
+            NoSuchMethod
+        }
+        /// THE POSITIVE CONTROL, and it names a method SCE really has. If this ever answers
+        /// `Absent`, the instrument is broken and every `Absent` beside it means nothing.
+        ///
+        /// ⚠⚠⚠⚠ **AND ITS DEADNESS IS A SECOND INSTRUMENT, WHICH IS WHY THIS IS `expect` AND NOT
+        /// `allow`.** This body is unreachable precisely because `Engine::has_ready_events` wins
+        /// resolution over it — so `dead_code` firing here is the control's claim restated by the
+        /// compiler. The day it stops firing, the fallback has become reachable, the lint
+        /// expectation goes unfulfilled, and the build says so under `-D warnings` before any
+        /// assertion in the test below gets a chance to read a meaningless `Absent`.
+        #[expect(
+            dead_code,
+            reason = "unreachable while the inherent method it is named after exists, which is \
+                      exactly what the control asserts"
+        )]
+        fn has_ready_events(&self) -> NoSuchMethod {
+            NoSuchMethod
+        }
+    }
+
+    impl<T: ?Sized> NoConfigurationDoor for T {}
+
+    /// ⚠⚠⚠⚠⚠ **A MACHINE CAN SAY WHERE IT IS AND CANNOT BE PUT THERE — item 549's verdict, asked
+    /// of the TYPE.**
+    ///
+    /// # What a red here means
+    ///
+    /// A `Present` verdict is GOOD NEWS: SCE grew the door SCE-PR90 asked for. The response is to
+    /// re-open item 549, re-read the new method's contract (does it run `<onentry>`? the sibling
+    /// gate below is what answers that half), build 544 stage 3b on it, and delete the arm that
+    /// went red. This gate is written to be deleted.
+    ///
+    /// # ⚠⚠⚠⚠ Why the instrument is method resolution rather than a grep
+    ///
+    /// A grep reads a checkout somebody happened to have. This reads the crate the tree is
+    /// COMPILED against: the fallback trait below is reachable only while no inherent method of
+    /// that name exists, because inherent methods win resolution. So the verdict is produced by
+    /// the same rustc invocation that builds the product, at whatever rev `Cargo.toml` pins.
+    ///
+    /// # ⚠⚠⚠ THE TWO LIMITS, STATED RATHER THAN HIDDEN
+    ///
+    /// 1. **The names are a list with no glob.** A door named something none of the arms below
+    ///    guesses is missed by this gate — registered as item 583 rather than left as a residue.
+    ///    The names are SCE-PR90's own two (`initialize_at`, `enter_at`) plus four spellings an
+    ///    upstream author might reach for.
+    /// 2. **A door of a DIFFERENT SHAPE stops this file compiling instead of failing.** An
+    ///    inherent `initialize_at` taking two arguments, or returning something with no `DoorOf`
+    ///    impl, is a compile error at the call site rather than a `Present`. That is still the
+    ///    alarm — this module's own header records a case where a compiler's refusal was the
+    ///    strongest evidence available — and a reader who lands on an `E0061` or a trait-bound
+    ///    error inside this test is being told exactly what this gate exists to tell them.
+    #[test]
+    fn sce_publishes_no_door_to_enter_a_machine_at_a_configuration() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeParallelPolicy::new(lua));
+        engine.initialize();
+        // ⚠ Driven off the initial configuration first, so what each probe is handed is a REAL
+        // configuration of more than one state — the thing a resumed run would have to hand back,
+        // rather than a value that happens to type-check.
+        engine.raise(sce_rust_runtime::EventWithMetadata::new(
+            ProbeParallelEvent::Alert,
+        ));
+        engine.step();
+
+        let saved = engine.get_active_states();
+        assert!(
+            saved.len() > 1 && saved.contains(&ProbeParallelState::Alerted),
+            "⚠⚠ THE SUBJECT MUST BE A CONFIGURATION, not one state: item 549 is about handing a \
+             whole active set back, and a probe handed a single-state chain would be asking an \
+             easier question than the one 543 needs answered. saved = {saved:?}",
+        );
+
+        // ── THE INSTRUMENT'S OWN CONTROL, AND IT COMES FIRST ──
+        // A name the pinned engine really has must read `Present` through the SAME resolution the
+        // arms below use. Without it, six `Absent`s are equally what this test reads when the
+        // blanket impl shadows everything, when the receiver is wrong, or when `Engine` grew a
+        // `Deref` that moved resolution somewhere else.
+        assert_eq!(
+            engine.has_ready_events().door(),
+            Door::Present,
+            "⚠⚠⚠⚠⚠ THE INSTRUMENT IS BROKEN, not the finding. `Engine::has_ready_events` exists \
+             at every rev this tree has pinned, so a fallback answering here means inherent \
+             methods are no longer winning resolution for this receiver — and every `Absent` \
+             below is then measuring the probe rather than the engine",
+        );
+
+        for (name, verdict) in [
+            ("initialize_at", engine.initialize_at(saved.clone()).door()),
+            ("enter_at", engine.enter_at(saved.clone()).door()),
+            (
+                "enter_configuration",
+                engine.enter_configuration(saved.clone()).door(),
+            ),
+            (
+                "restore_configuration",
+                engine.restore_configuration(saved.clone()).door(),
+            ),
+            (
+                "set_active_states",
+                engine.set_active_states(saved.clone()).door(),
+            ),
+            ("resume_at", engine.resume_at(saved.clone()).door()),
+        ] {
+            assert_eq!(
+                verdict,
+                Door::Absent,
+                "⚠⚠⚠⚠⚠ `Engine::{name}` EXISTS AT THE PINNED REV — item 549 may be unblocked, \
+                 which is what this gate was built to catch. Read the new method's contract \
+                 first: a door that re-runs `<onentry>` is a replay and 543 still cannot be \
+                 built on it (the sibling gate here is what measures that half). Then re-open \
+                 549, build 544 stage 3b, and delete this arm",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND THE ONE DOOR THAT DOES EXIST IS A REPLAY — item 549's other half, asked of a
+    /// RUN.**
+    ///
+    /// # Why both halves are needed
+    ///
+    /// SCE-PR90's acceptance criterion 2 is the one with teeth: *`onentry` must not fire*.
+    /// Criterion 1 alone cannot tell resumption from replay. The sibling gate above asks whether
+    /// a door exists at all; this one measures what the EXISTING way in does, because that is
+    /// what a host restarting mid-run is actually left with today.
+    ///
+    /// # What it measures, in order
+    ///
+    /// 1. the entry actions of the initial configuration run once, and they are observable
+    ///    OUTSIDE the machine — `<send type="x-sprag-host">` reaches this crate's handler. That is
+    ///    the analogue of the loop's re-typed prompt: an entry action that leaves the process.
+    /// 2. the run moves elsewhere and `get_active_states()` says so — **the READ side works**,
+    ///    which is why item 549 is a missing door and not a blind machine.
+    /// 3. a second `Engine`, handed nothing but `initialize()`, lands at the DOCUMENT's initial
+    ///    configuration rather than at the saved one, and
+    /// 4. runs those entry actions a SECOND time.
+    ///
+    /// So a daemon that restarted mid-run and called `initialize()` would not resume the run; it
+    /// would re-send everything the entry actions send. For `ai_loop.scxml` that is the prompt.
+    ///
+    /// # ⚠⚠ What a red here means
+    ///
+    /// Either the engine stopped landing at the initial configuration, or it stopped re-running
+    /// entry actions on the way in. The second would be a CONTRACT change under the tree — read
+    /// `Engine::initialize` at the new rev before believing the good news, because a resumed run
+    /// that skips entry actions everywhere is not the same offer as one that skips them once.
+    #[test]
+    fn the_only_way_into_a_machine_runs_its_entry_actions_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // ⚠ ONE closure builds both engines, so the second is not a different machine dressed as
+        // the same one: same document, same registrations, a fresh script session each time.
+        let build = || {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+            let left_the_process = Arc::new(AtomicUsize::new(0));
+            engine.register_event_processor("x-sprag-host", {
+                let left_the_process = Arc::clone(&left_the_process);
+                move |request| {
+                    left_the_process.fetch_add(1, Ordering::SeqCst);
+                    Some(sce_rust_runtime::host_processor::HostSendResponse {
+                        event_name: request.event_name,
+                        event_data: String::new(),
+                    })
+                }
+            });
+            engine.register_invoker("x-sprag-host", |_event| None);
+            (engine, left_the_process)
+        };
+
+        // ── THE RUN THAT WOULD HAVE BEEN INTERRUPTED ──
+        let (mut before, before_sends) = build();
+        before.initialize();
+        for _ in 0..8 {
+            before.tick();
+        }
+        assert_eq!(
+            before_sends.load(Ordering::SeqCst),
+            1,
+            "the control: entering the initial configuration must fire the `<onentry>` send once, \
+             or the count read after the restart below is not counting entry actions at all",
+        );
+
+        before.process_event(ProbeSendTypeEvent::Go);
+        for _ in 0..8 {
+            before.tick();
+        }
+        let saved = before.get_active_states();
+        assert!(
+            saved.contains(&ProbeSendTypeState::Invoking)
+                && !saved.contains(&ProbeSendTypeState::Sending),
+            "⚠⚠⚠ THE READ SIDE IS THE HALF THAT WORKS, and the rest of this gate needs it: the \
+             run must have MOVED and be able to say so, or 'it cannot be put back' would be \
+             indistinguishable from 'it never went anywhere'. saved = {saved:?}",
+        );
+
+        // ── THE RESTART: `initialize()` is the entire vocabulary of ways in ──
+        let (mut after, after_sends) = build();
+        after.initialize();
+        for _ in 0..8 {
+            after.tick();
+        }
+        let landed = after.get_active_states();
+        assert!(
+            landed.contains(&ProbeSendTypeState::Sending),
+            "the control for the assertion below: the fresh engine must have entered the \
+             DOCUMENT's initial configuration. landed = {landed:?}",
+        );
+        assert_ne!(
+            landed, saved,
+            "⚠⚠⚠⚠⚠ ITEM 549: a machine that came back at the configuration it was saved in would \
+             mean the only way in stopped being the document's own start — read `Engine` for the \
+             door before celebrating, because this gate cannot tell 'resumed' from 'the initial \
+             configuration moved'",
+        );
+        assert_eq!(
+            after_sends.load(Ordering::SeqCst),
+            1,
+            "⚠⚠⚠⚠⚠ ITEM 549's HARD HALF: the entry actions ran AGAIN on the way in. A zero here \
+             says `initialize` stopped executing `<onentry>`, which would change what every run \
+             in this crate does on its first turn — check `Engine::initialize` at the pinned rev \
+             rather than reading this as resumption having arrived",
         );
     }
 }
