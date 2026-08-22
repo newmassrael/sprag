@@ -9378,6 +9378,128 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **EVERY DETAIL CLAUSE REACHES THE SCREEN, AND LANDS WHERE THE READERS EXPECT** —
+    /// register items 594, 591 and 601's residue, measured 2026-08-22 and paid 2026-08-23.
+    ///
+    /// # What was missing
+    ///
+    /// Each of those rounds put a fact on the wire and taught a renderer to print it. **Not one of
+    /// them was held to printing it.** The gate above was built for a fourth clause and covers only
+    /// that one, so three facts reached `sprag runs` with nothing able to notice if they stopped:
+    /// what became of a person's stand-down, how many of a loop's prompts nobody can see, and
+    /// whether anything independent verified what a run converged on.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND `render_run`'S OWN COMMENT NAMES THE FAILURE IT WAS OPEN TO** — *"a fact that
+    /// reaches the wire and dies at the mouth somebody actually reads"*. A comment is not a gate.
+    /// This repository has paid for that sentence more than once, and it kept being written into
+    /// the very renderer that nothing was checking.
+    ///
+    /// ⚠⚠⚠ **THE POSITION IS PART OF THE CLAIM, not tidiness.** This project's own outer-loop
+    /// watcher reads a run's STATUS as the line after the heading and its WALK as the block's last
+    /// line. A clause that lands at either end silently moves a reader that already exists — so
+    /// each one is asserted to be present, and to be neither of those two lines.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE SAME RUN WITH NO KEYS AT ALL.** Without it a renderer that printed
+    /// four fixed sentences on every run would satisfy every assertion here.
+    #[test]
+    fn every_fact_a_run_publishes_beside_its_state_reaches_the_person_reading_it() {
+        // (the wire key, a sentence only that clause could produce). The sentences are the shape
+        // the host's own renderers compose, and each is distinctive enough that finding it in the
+        // output cannot be an accident of some other line.
+        let clauses: &[(&str, &str)] = &[
+            (
+                sprag_host::plugins::RUN_STOOD_DOWN_KEY,
+                "a person asked this run to stand down and it converged, so it ended on its own \
+                 terms and its work is banked",
+            ),
+            (
+                sprag_host::plugins::RUN_CHECKS_KEY,
+                "an independent check was shown this milestone and agreed",
+            ),
+            (
+                sprag_host::plugins::RUN_CANCELLED_BY_KEY,
+                "a person cancelled this run, so the turn it was in the middle of was thrown away",
+            ),
+        ];
+
+        let mut run = run_entry(&blocked_run(sprag_plugin::Refusal::NoConsent, 0));
+        // ⚠ A WALK, for the reason the gate above records: a block with an empty journal ends on
+        // whatever clause came last, so the positional assertions would be measuring nothing.
+        run[sprag_host::plugins::RUN_JOURNAL_KEY] = serde_json::json!([{
+            "iteration": 1,
+            "cost": 245,
+            "unit": "bytes",
+            "verdict": "continue",
+            "note": "Idle --Start--> Priming",
+        }]);
+
+        // ── THE CONTROL: no keys, so none of the sentences may appear ──
+        let quiet = render_run(&run);
+        for (key, sentence) in clauses {
+            assert!(
+                !quiet.contains(sentence),
+                "⚠⚠⚠ THE CONTROL: a run publishing no `{key}` must say nothing about it. A clause \
+                 printed unconditionally would make every assertion below pass while saying \
+                 nothing about any run's facts: {quiet}",
+            );
+        }
+        // ⚠⚠ THE DELIVERY PAIR IS ITS OWN CONTROL, because its clause is composed from two numeric
+        // keys rather than carried as a sentence — `plugins::delivery_sentence` is the one reader.
+        assert!(
+            !quiet.contains("prompt"),
+            "⚠⚠⚠ THE CONTROL for the delivery pair: a run that delivered nothing must not talk \
+             about prompts at all: {quiet}",
+        );
+
+        for (key, sentence) in clauses {
+            run[*key] = Value::String((*sentence).to_owned());
+        }
+        run[sprag_host::plugins::RUN_DELIVERED_KEY] = serde_json::json!(14);
+        run[sprag_host::plugins::RUN_FOLDED_KEY] = serde_json::json!(14);
+        let said = render_run(&run);
+        let lines: Vec<&str> = said.lines().collect();
+
+        let delivered = sprag_host::plugins::delivery_sentence(&run)
+            .expect("a run that delivered has a delivery sentence");
+        let expected: Vec<&str> = clauses
+            .iter()
+            .map(|(_, sentence)| *sentence)
+            .chain(std::iter::once(delivered.as_str()))
+            .collect();
+
+        for sentence in &expected {
+            assert!(
+                said.contains(sentence),
+                "⛔⛔⛔ A FACT THIS RUN PUBLISHES DIES AT THE MOUTH A PERSON READS. The daemon put \
+                 it on the wire and `sprag runs` does not print it, which is the exact failure \
+                 `render_run`'s own comment warns about. Missing: {sentence:?}\nGot:\n{said}",
+            );
+            let at = lines
+                .iter()
+                .position(|line| line.contains(sentence))
+                .expect("the sentence is in the output");
+            assert!(
+                at > 1,
+                "⚠⚠⚠ AND NOT ON THE HEADING OR THE STATUS LINE UNDER IT — the repayment loop's \
+                 watcher reads the status positionally, as the line after the heading, so a clause \
+                 landing there changes what an existing reader is told. {sentence:?} is at line \
+                 {at}:\n{said}",
+            );
+            assert!(
+                at < lines.len() - 1,
+                "⚠⚠⚠ NOR LAST, which is where that same watcher reads the walk. {sentence:?} is \
+                 at line {at} of {}:\n{said}",
+                lines.len(),
+            );
+        }
+        assert!(
+            lines[lines.len() - 1].contains("Idle --Start--> Priming"),
+            "⚠⚠ and the WALK is still last, which is the other half of the same claim — a clause \
+             that pushed it off the end would satisfy the assertions above while breaking the \
+             reader they exist to protect:\n{said}",
+        );
+    }
+
     /// ⚠⚠ **EVERY REASON REACHES THE PERSON, including the one with no question at all.**
     ///
     /// Driven from the type's own published list, so a reason ADDED to it fails here until this

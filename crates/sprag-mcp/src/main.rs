@@ -8437,6 +8437,80 @@ mod tests {
         })
     }
 
+    /// ⛔⛔⛔⛔ **EVERY DETAIL CLAUSE REACHES THE AGENT TOO** — register items 594, 591 and 601's
+    /// residue, and the person's mouth has the same gate one crate over.
+    ///
+    /// # Why this one is not a copy of that one
+    ///
+    /// **The two mouths are separate renderers with separate readers**, and the whole reason the
+    /// host composes these sentences rather than each mouth composing its own is that a person and
+    /// an agent looking at one run must not be told different things. Nothing was checking that
+    /// this side prints them at all: three facts reached the wire, and only the fourth had a gate.
+    ///
+    /// ⚠⚠⚠ **AND AN AGENT IS THE READER THAT ACTS WITHOUT ASKING.** A person who is not told a
+    /// loop's prompts were folded away goes and looks at the pane; a supervising agent reads
+    /// `list_runs` and decides. A fact missing here is a decision taken without it.
+    ///
+    /// ⚠⚠ The CONTROL is the same run with no keys, so a mouth printing fixed sentences would fail
+    /// rather than pass.
+    #[test]
+    fn every_fact_a_run_publishes_beside_its_state_reaches_the_agent_reading_it() {
+        // (the wire key, a sentence only that clause could produce) — the person's mouth uses the
+        // same table, because the claim is that ONE fact reaches BOTH readers.
+        let clauses: &[(&str, &str)] = &[
+            (
+                sprag_host::plugins::RUN_STOOD_DOWN_KEY,
+                "a person asked this run to stand down and it converged, so it ended on its own \
+                 terms and its work is banked",
+            ),
+            (
+                sprag_host::plugins::RUN_CHECKS_KEY,
+                "an independent check was shown this milestone and agreed",
+            ),
+            (
+                sprag_host::plugins::RUN_CANCELLED_BY_KEY,
+                "a person cancelled this run, so the turn it was in the middle of was thrown away",
+            ),
+        ];
+
+        let mut run = run_entry(&blocked_run(sprag_plugin::Refusal::NoConsent, 0));
+        let quiet = render_run(&run);
+        for (key, sentence) in clauses {
+            assert!(
+                !quiet.contains(sentence),
+                "⚠⚠⚠ THE CONTROL: a run publishing no `{key}` must say nothing about it, or every \
+                 assertion below passes while saying nothing about any run's facts: {quiet}",
+            );
+        }
+        assert!(
+            !quiet.contains("prompt"),
+            "⚠⚠⚠ THE CONTROL for the delivery pair: a run that delivered nothing must not talk \
+             about prompts at all: {quiet}",
+        );
+
+        for (key, sentence) in clauses {
+            run[*key] = Value::String((*sentence).to_owned());
+        }
+        run[sprag_host::plugins::RUN_DELIVERED_KEY] = serde_json::json!(14);
+        run[sprag_host::plugins::RUN_FOLDED_KEY] = serde_json::json!(14);
+        let said = render_run(&run);
+
+        let delivered = sprag_host::plugins::delivery_sentence(&run)
+            .expect("a run that delivered has a delivery sentence");
+        for sentence in clauses
+            .iter()
+            .map(|(_, sentence)| *sentence)
+            .chain(std::iter::once(delivered.as_str()))
+        {
+            assert!(
+                said.contains(sentence),
+                "⛔⛔⛔ A FACT THIS RUN PUBLISHES NEVER REACHES THE AGENT SUPERVISING IT. The \
+                 daemon put it on the wire and `list_runs` does not print it, so a supervisor \
+                 decides without it. Missing: {sentence:?}\nGot:\n{said}",
+            );
+        }
+    }
+
     /// A run that stopped on its peer's question, refused for `why`.
     fn blocked_run(why: sprag_plugin::Refusal, answered: u32) -> sprag_plugin::Outcome {
         sprag_plugin::Outcome {
