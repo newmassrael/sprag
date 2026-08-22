@@ -662,11 +662,14 @@ impl PluginsExternal {
             .get("id")
             .and_then(Value::as_u64)
             .ok_or(InvokeError::TypeMismatch)?;
-        if lock(&self.runs).stand_down(RunId(id)) {
-            Ok(IntrospectValue::Null)
-        } else {
-            Err(refused(format!("no run {id} is in flight")))
-        }
+        // ⚠⚠⚠⚠ THE REASON IS THE REGISTRY'S, PRINTED VERBATIM — register items 539 and 597. This
+        // door used to collapse three states of the world into one boolean and answer `refused: no
+        // run N is in flight` for the only one it could name, while a run of a plugin with no
+        // reader for the order was answered OK and drove straight on.
+        lock(&self.runs)
+            .stand_down(RunId(id))
+            .map(|()| IntrospectValue::Null)
+            .map_err(|why| refused(why.describe(RunId(id))))
     }
 
     /// **HALT A RUN BETWEEN TURNS, OR LET IT GO AGAIN** — [`HOLD_RUN_ACTION`], and the word a person
@@ -694,11 +697,13 @@ impl PluginsExternal {
             None | Some(Value::Null) => true,
             Some(value) => value.as_bool().ok_or(InvokeError::TypeMismatch)?,
         };
-        if lock(&self.runs).hold(RunId(id), held) {
-            Ok(IntrospectValue::Null)
-        } else {
-            Err(refused(format!("no run {id} is in flight")))
-        }
+        // ⚠⚠⚠⚠ THE REASON IS THE REGISTRY'S — items 539 and 597, its sibling door's argument
+        // verbatim. This is the one the register was FILED for: a person holds an `orchestrator` to
+        // read its pane, is told the pane is now still, and it is not.
+        lock(&self.runs)
+            .hold(RunId(id), held)
+            .map(|()| IntrospectValue::Null)
+            .map_err(|why| refused(why.describe(RunId(id))))
     }
 
     /// Parse the plugin discriminator + its args, validating target panes
@@ -947,6 +952,18 @@ impl PluginsExternal {
         mut plugin: PluginKind,
         guardrails: Guardrails,
     ) -> RunId {
+        // ⚠⚠⚠⚠ ASKED BEFORE THE PLUGIN MOVES INTO THE WORKER — register items 539 and 597. Once
+        // the thread owns it there is nothing left here to ask, so the plugin's own answer is taken
+        // now and replayed by `ThreadRun::honours`.
+        //
+        // ⚠⚠ WALKED FROM `StandingOrder::ALL` rather than listed: an order added to that set is
+        // asked about here with nothing to remember, which is this repository's *a list with no
+        // glob decides alone* rule pointed the other way — the glob is the type's own list.
+        let name = plugin.name();
+        let honoured: Vec<sprag_plugin::StandingOrder> = sprag_plugin::StandingOrder::ALL
+            .into_iter()
+            .filter(|order| plugin.as_plugin().honours(*order))
+            .collect();
         let state = Arc::new(Mutex::new(RunState::Running));
         let worker_state = Arc::clone(&state);
         // The cancel flag is shared two ways: the run's RunContext reads it, and
@@ -1013,6 +1030,7 @@ impl PluginsExternal {
         lock(&self.runs).submit(crate::runs::NewRun {
             id,
             label,
+            plugin: name,
             opened_by,
             opened_by_session,
             state,
@@ -1020,7 +1038,9 @@ impl PluginsExternal {
             // 544's stage 2. This is the one place in the product that knows the driver is
             // in-process, which is exactly where that knowledge should end up once a run's driver
             // can be another process. See `sprag_host::runs::RunHandle`.
-            run: Box::new(crate::runs::ThreadRun::new(cancel, order, hold, handle)),
+            run: Box::new(crate::runs::ThreadRun::new(
+                cancel, order, hold, honoured, handle,
+            )),
             progress,
         })
     }
@@ -1264,6 +1284,24 @@ impl PluginKind {
             PluginKind::Dialogue(dialogue) => dialogue.as_mut(),
             PluginKind::Answer(answer) => answer,
             PluginKind::AiLoop(loops) => loops.as_mut(),
+        }
+    }
+
+    /// **WHICH NAME THIS BUILT PLUGIN ANSWERS TO** — register items 539 and 597.
+    ///
+    /// ⚠⚠⚠ The identity a refusal prints, and it comes from the VALUE rather than from the run's
+    /// label. A label is prose composed for a reader (`"orchestrator pane=3"`), and register item
+    /// 587's finding is that identity re-derived from prose drifts the day somebody rewords it.
+    ///
+    /// ⚠ Exhaustive: a seventh plugin is named here in the compile that adds it.
+    const fn name(&self) -> PluginName {
+        match self {
+            PluginKind::Orchestrator(_) => PluginName::Orchestrator,
+            PluginKind::Pipe(_) => PluginName::Pipe,
+            PluginKind::Agent(_) => PluginName::Agent,
+            PluginKind::Dialogue(_) => PluginName::Dialogue,
+            PluginKind::Answer(_) => PluginName::Answer,
+            PluginKind::AiLoop(_) => PluginName::AiLoop,
         }
     }
 
@@ -3410,6 +3448,74 @@ mod tests {
              DOES: nobody decided anything about it. A sentence that merely named the mechanism \
              would leave them looking for a decision that was never taken — which is exactly the \
              search item 594 recorded and could not end. Got {by_shutdown:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **AN ORDER ONLY ONE PLUGIN CAN READ IS REFUSED AT THE DOOR, NAMING WHY** — register
+    /// items 539 and 597 together, because they are one defect wearing two words.
+    ///
+    /// # What a person is told today, and what happens
+    ///
+    /// `RunContext::held` and `RunContext::stood_down` have exactly ONE reader each in this
+    /// workspace — `OuterLoop::pump` — and two standing ratchets count them. Every other plugin is
+    /// handed the same order and drives straight on. So `sprag hold-run` and `sprag stand-down`
+    /// against an `orchestrator`, a `pipe`, a `dialogue` or an `agent` run **answer as though they
+    /// worked and change nothing**, and the sentences the CLI prints — *"it parks at its next pass
+    /// … nothing further is typed at the pane while it waits"*, *"it stops at its next milestone,
+    /// and its work is kept"* — are false for four of the five.
+    ///
+    /// ⚠⚠⚠ **THE COST IS THE ANSWER, NOT THE MISSING FEATURE.** A person who holds an
+    /// `orchestrator` to read its pane is told the pane is now still, and it is not. An
+    /// `orchestrator` run is the LONG UNATTENDED one, so *pause it and let me look* is exactly what
+    /// somebody reaches for.
+    ///
+    /// ⚠⚠ **AND THE REFUSAL IS THE EXTENSIBLE HALF.** It is not a list of plugin names: the run is
+    /// refused because its plugin ANSWERED that it does not read the order, so the day a second
+    /// plugin implements one, its own answer lifts the refusal with nothing here to remember.
+    #[test]
+    fn an_order_a_runs_plugin_cannot_read_is_refused_rather_than_quietly_accepted() {
+        let (mut external, registry, pane) = host_with_a_pane();
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "max_iterations": 1_000_000,
+                })),
+            )
+            .expect("a well-formed orchestrator run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+
+        for (action, args) in [
+            (STAND_DOWN_ACTION, json!({ "id": id })),
+            (HOLD_RUN_ACTION, json!({ "id": id, "held": true })),
+        ] {
+            let answer = external.invoke(action, IntrospectValue::Json(args));
+            let Err(refusal) = &answer else {
+                panic!(
+                    "⛔⛔⛔ ITEMS 539/597: `{action}` was ACCEPTED for a run whose plugin has no \
+                     reader for it. The caller was told it worked, the run drives straight on, and \
+                     the CLI prints a promise about a pane that is not going to go still. Got \
+                     {answer:?}"
+                );
+            };
+            let said = format!("{refusal:?}");
+            assert!(
+                said.contains("orchestrator"),
+                "⚠⚠⚠ AND THE REFUSAL MUST NAME WHICH PLUGIN CANNOT READ IT. *Refused* alone sends \
+                 a person to guess whether they typed the wrong id; the fact they need is that \
+                 THIS KIND OF RUN has no reader for the order. Got {said}",
+            );
+        }
+
+        assert!(
+            lock(&registry).cancel(RunId(id)),
+            "the run this gate started is one the registry can stop",
         );
     }
 

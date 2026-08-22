@@ -221,7 +221,7 @@ pub use outer::{
     Pumped, STAND_DOWN_TAKES_EFFECT,
 };
 pub use pipe::{Pipe, PipeSpec};
-pub use plugin::{Accounting, Checks, Cost, Deliveries, Plugin, Step, Verdict};
+pub use plugin::{Accounting, Checks, Cost, Deliveries, Plugin, StandingOrder, Step, Verdict};
 pub use readiness::{
     Attended, Attention, DEFAULT_READY_TIMEOUT, Handback, Handover, Interruption, Reached,
     Readiness, ReadyWhen,

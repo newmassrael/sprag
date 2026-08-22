@@ -9759,6 +9759,149 @@ fn the_orchestrate_refusals_are_the_daemons_own_grammar() {
     );
 }
 
+/// ⛔⛔⛔⛔ **`sprag hold-run` AND `sprag stand-down` STOP PROMISING A PERSON SOMETHING THEY WILL
+/// NOT GET** — register items 539 and 597, at the surface a person actually types.
+///
+/// # What was printed, and what happened
+///
+/// `hold-run` printed `sprag_plugin::HOLD_TAKES_EFFECT` — *"it parks at its next pass … nothing
+/// further is typed at the pane while it waits"* — and `stand-down` printed
+/// `sprag_plugin::STAND_DOWN_TAKES_EFFECT`. Both sentences are true of exactly ONE plugin, and both
+/// were printed for a run of ANY of the six. So a person holding an `orchestrator` to read its pane
+/// was told the pane had gone still, and it had not: the run drove on and kept typing under them.
+///
+/// ⚠⚠⚠ **THIS GATE IS AT THE CLI ON PURPOSE.** The host's own gate proves the wire door refuses;
+/// nothing proved the COMMAND stops printing the promise, and *a fact that reaches the wire and
+/// dies at the mouth* is this repository's most repeated defect. Here the promise is a string
+/// owned one crate over, so the assertion holds the printed output to that constant rather than to
+/// words retyped here.
+///
+/// ⚠⚠ **AND THE CONTROL IS THE SAME COMMAND AGAINST A LOOP**, which is what keeps this from
+/// passing on a build where both verbs simply refuse everything.
+#[test]
+fn an_order_only_the_loop_reads_is_refused_at_the_command_a_person_types() {
+    let (_guard, sock, pane) = daemon_with_one_pane("orders");
+    let pane = pane.to_string();
+
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "sleep 1",
+            "--max-iterations",
+            "1000000",
+        ],
+    );
+    assert!(started.ok, "{}", started.stderr);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(
+            &sock,
+            &["runs", "-t", "work"]
+        )
+        .stdout
+        .contains("running")),
+        "the run never reached the state this test is about",
+    );
+
+    for (argv, promise) in [
+        (
+            vec!["stand-down", "0", "-t", "work"],
+            sprag_plugin::STAND_DOWN_TAKES_EFFECT,
+        ),
+        (
+            vec!["hold-run", "0", "-t", "work"],
+            sprag_plugin::HOLD_TAKES_EFFECT,
+        ),
+    ] {
+        let said = sprag(&sock, &argv);
+        let printed = format!("{}{}", said.stdout, said.stderr);
+        assert!(
+            !said.ok,
+            "⛔⛔⛔ ITEMS 539/597: `sprag {}` SUCCEEDED against an orchestrator run. No plugin but \
+             the loop reads that order, so the run drove straight on while the caller was told it \
+             had not: {printed}",
+            argv.join(" "),
+        );
+        assert!(
+            !printed.contains(promise),
+            "⛔⛔⛔⛔ AND THE PROMISE WAS PRINTED ANYWAY, which is the whole cost of these two \
+             items. A person who reads this goes and types in a pane an agent is still driving. \
+             Got: {printed}",
+        );
+        assert!(
+            printed.contains("orchestrator"),
+            "⚠⚠⚠ the refusal must name WHICH KIND of run cannot take the order — *refused* alone \
+             sends a person to check whether they typed the wrong id: {printed}",
+        );
+        assert!(
+            printed.contains("cancel-run"),
+            "⚠⚠ and what to reach for instead. A refusal that leaves somebody with no way to stop \
+             a long unattended run has told them half of what they need: {printed}",
+        );
+    }
+
+    // ⚠⚠⚠⚠ THE CONTROL: the same two verbs against a run whose plugin DOES read them. Without it
+    // this gate passes on a build where both verbs refuse every run, which is the opposite defect
+    // and would take the two orders away from the one plugin that can obey them.
+    let loop_run = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "ai_loop",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--north-star",
+            "SPRAG-ORDERS-CONTROL",
+            "--milestone",
+            "say the marker",
+            "--reference",
+            "this gate",
+            "--max-turns",
+            "1000000",
+            // ⚠ The three the form requires, named by the refusal this gate's first run got: an
+            // `ai_loop` carries a readiness barrier because it INJECTS, and the barrier is what
+            // stops it typing into a shell. It never has to be satisfied here — the orders below
+            // are given to a run that EXISTS, and readiness is about what it may do to the pane.
+            "--agent",
+            "claude",
+            "--match",
+            "shows",
+            "--marker",
+            "SPRAG-ORDERS-CONTROL-READY",
+        ],
+    );
+    assert!(loop_run.ok, "{}", loop_run.stderr);
+    for (argv, promise) in [
+        (
+            vec!["stand-down", "1", "-t", "work"],
+            sprag_plugin::STAND_DOWN_TAKES_EFFECT,
+        ),
+        (
+            vec!["hold-run", "1", "-t", "work"],
+            sprag_plugin::HOLD_TAKES_EFFECT,
+        ),
+    ] {
+        let said = sprag(&sock, &argv);
+        assert!(
+            said.ok && said.stdout.contains(promise),
+            "⚠⚠⚠⚠ THE CONTROL: `sprag {}` against an `ai_loop` run must still be ACCEPTED and \
+             still print the promise — that plugin reads the order, and a refusal here would mean \
+             the fix took the order away from the one run that can obey it: {} / {}",
+            argv.join(" "),
+            said.stdout,
+            said.stderr,
+        );
+    }
+}
+
 /// ⚠⚠ **A RUNNING LOOP CAN BE STOPPED, AND STOPPING ONE THAT IS NOT THERE IS A DIFFERENT ANSWER.**
 ///
 /// The cancel flag is polled by every wait inside the driver, so a cancel lands BETWEEN steps

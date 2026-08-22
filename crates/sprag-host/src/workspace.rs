@@ -3947,6 +3947,10 @@ mod tests {
         crate::lock(&runs).submit(crate::runs::NewRun {
             id,
             label: "ai_loop pane=0".to_owned(),
+            // ⚠ The type and not a word cut out of the label above — items 539 and 597. This gate
+            // is about a pane saying a run drives it, so the plugin only has to be the one the
+            // label names, said in the form nothing has to parse.
+            plugin: crate::plugins::PluginName::AiLoop,
             opened_by: None,
             opened_by_session: None,
             state: Arc::clone(&state),

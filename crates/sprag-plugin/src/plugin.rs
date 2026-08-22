@@ -716,6 +716,78 @@ pub trait Plugin {
     /// the reasoning that renamed `Waited::Cancelled` — **make the mistake fail to compile rather
     /// than fail quietly.**
     fn driving(&self) -> Option<PaneId>;
+
+    /// ⚠⚠⚠⚠⚠ **DO YOU READ THIS STANDING ORDER?** — register items 539 and 597, asked of the
+    /// plugin so that nothing anywhere else has to keep a list of which plugins do.
+    ///
+    /// # What this closes
+    ///
+    /// [`RunContext::held`] and [`RunContext::stood_down`] have exactly ONE reader each in this
+    /// workspace, and two standing ratchets count them. Every other plugin is handed the same
+    /// order and drives straight on — so `sprag hold-run` and `sprag stand-down` against an
+    /// orchestrator, a pipe, a dialogue or an agent run **answered as though they worked and
+    /// changed nothing**, while the CLI printed *"it parks at its next pass"* and *"its work is
+    /// kept"*. A person who held a run to read its pane was told the pane was now still.
+    ///
+    /// ⚠⚠⚠ **ASKED, NOT LOOKED UP.** The host refuses the order when this answers `false`, and the
+    /// day a second plugin grows a reader it says so HERE and its own refusal lifts — there is no
+    /// table of plugin names to remember to update, which is the shape a list would have taken and
+    /// the shape that rots. It is [`driving`](Self::driving)'s argument for the same reason.
+    ///
+    /// ⚠⚠ **THE DEFAULT IS `false`, AND THAT IS THE HONEST ONE**, unlike `driving`'s. A plugin that
+    /// has not been written to read an order does not read it, so inheriting *no* describes the
+    /// author's silence exactly. The failure mode `driving` guards against — a default that makes a
+    /// FALSE claim — is reversed here: this default under-claims, and an under-claim costs a
+    /// refusal a person can see and act on rather than a promise they cannot.
+    ///
+    /// ⚠ [`StandingOrder`] has no `_` arm at any reader, so an order ADDED to it makes every plugin
+    /// that answers this fail to compile until its author decides. `Cancel` is deliberately absent:
+    /// the DRIVER acts on a cancel, not the plugin, so it is honoured by every run alike.
+    ///
+    /// [`RunContext::held`]: crate::run::RunContext::held
+    /// [`RunContext::stood_down`]: crate::run::RunContext::stood_down
+    fn honours(&self, order: StandingOrder) -> bool {
+        let _ = order;
+        false
+    }
+}
+
+/// **AN ORDER A PERSON RAISES OVER A RUNNING RUN THAT ITS PLUGIN HAS TO READ** — register items
+/// 539 and 597, and the question [`Plugin::honours`] is asked.
+///
+/// # ⚠⚠⚠ Why a cancel is not one of these
+///
+/// A cancel is acted on by the DRIVER: it aborts the turn in flight whatever the plugin is, so
+/// every run honours one and there is nothing to ask. These two are different in kind — they are
+/// carried into the plugin's own document and take effect at a moment only that document can
+/// name (*its next pass*, *its next milestone*), so a plugin that has no such moment cannot obey
+/// them at all.
+///
+/// ⚠ A closed set with no `_` arm at its readers, so adding a third order is a compile error at
+/// every plugin rather than a silent `false`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandingOrder {
+    /// **PARK BETWEEN TURNS UNTIL A PERSON SAYS GO** — `sprag hold-run`, read via
+    /// [`RunContext::held`](crate::run::RunContext::held).
+    Hold,
+    /// **FINISH WHAT YOU ARE DOING AND THEN STOP** — `sprag stand-down`, read via
+    /// [`RunContext::stood_down`](crate::run::RunContext::stood_down).
+    StandDown,
+}
+
+impl StandingOrder {
+    /// Every order there is, so a gate can walk them rather than name the ones its author
+    /// remembered — the rule this repository spells *a list with no glob decides alone*.
+    pub const ALL: [Self; 2] = [Self::Hold, Self::StandDown];
+
+    /// **WHAT A PERSON ASKED FOR**, in the words the refusal prints — never the variant's name.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Hold => "hold it between turns",
+            Self::StandDown => "stop at its next milestone",
+        }
+    }
 }
 
 #[cfg(test)]

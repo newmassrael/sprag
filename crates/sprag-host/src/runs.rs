@@ -107,6 +107,26 @@ pub enum RunOrder {
     Hold(bool),
 }
 
+impl RunOrder {
+    /// **WHICH STANDING ORDER THIS IS**, or [`None`] for one the plugin never has to read.
+    ///
+    /// ⚠⚠⚠ Register items 539 and 597. A cancel is acted on by the DRIVER, so every run honours one
+    /// and there is nobody to ask; the other two are carried into the plugin's own document and
+    /// take effect at a moment only that document can name, so a plugin with no such moment cannot
+    /// obey them at all. That difference is what this method exists to state once.
+    ///
+    /// ⚠ No `_` arm: a fourth [`RunOrder`] has to be classified here rather than defaulting into
+    /// *nobody needs to read it*, which is the answer that made this defect invisible.
+    #[must_use]
+    pub const fn standing(self) -> Option<sprag_plugin::StandingOrder> {
+        match self {
+            Self::Cancel(_) => None,
+            Self::StandDown => Some(sprag_plugin::StandingOrder::StandDown),
+            Self::Hold(_) => Some(sprag_plugin::StandingOrder::Hold),
+        }
+    }
+}
+
 /// ⛔⛔⛔ **WHO STOPPED THIS RUN** — register item 596, and the fact a `cancelled` outcome could not
 /// carry.
 ///
@@ -127,6 +147,74 @@ pub enum RunOrder {
 /// the flag and every wait that reads it are untouched. What changed is that the run can say which
 /// happened — `sprag_plugin::judge::Unheard`'s shape one crate over, and register item 593's rule:
 /// **the answer stays, the REPORT gains a reason.**
+/// **WHY A STANDING ORDER WAS NOT DELIVERED** — register items 539 and 597.
+///
+/// ⚠⚠⚠ Each arm is a DIFFERENT thing for the caller to do, which is why it is a type and not a
+/// `false`: a wrong id is retyped, an order no plugin of that kind reads is abandoned or the run is
+/// cancelled instead, and the third arm cannot happen from either public door.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unordered {
+    /// No run of that id is in this directory — the answer both doors already gave.
+    NoSuchRun,
+    /// **THE RUN EXISTS AND ITS PLUGIN HAS NO READER FOR THE ORDER**, so delivering it would change
+    /// nothing while telling the caller it had. This is the whole of items 539 and 597.
+    Unread {
+        /// The plugin, as the TYPE the request named — never re-derived from a run's label, which
+        /// is prose a reader composed and register item 587's finding.
+        plugin: crate::plugins::PluginName,
+        /// Which order went unread, so the sentence can name what was actually asked for.
+        order: sprag_plugin::StandingOrder,
+    },
+    /// **NOTHING IS DRIVING THIS RUN** — it was restored from a daemon that is gone, so there is no
+    /// worker to carry the order anywhere.
+    ///
+    /// ⚠⚠ The same lie as [`Unread`](Self::Unread) wearing a different cause, and it was answered
+    /// `true` before this type existed: a person could stand down a run whose driver died with its
+    /// daemon and be told it landed.
+    NoDriver,
+    /// A [`RunOrder`] that is not something a person raises over a running run — unreachable from
+    /// either public door, and answered rather than panicked for the reason given at the call site.
+    NotAStandingOrder,
+}
+
+impl Unordered {
+    /// **WHAT HAPPENED AND WHAT TO DO ABOUT IT** — prose, and never the arm's own name, the rule
+    /// every describing vocabulary in this workspace follows.
+    #[must_use]
+    pub fn describe(&self, id: RunId) -> String {
+        match self {
+            Self::NoSuchRun => format!("no run {} is in flight", id.0),
+            // ⚠⚠⚠ IT NAMES THE PLUGIN, and that is the load-bearing half. *Refused* alone sends a
+            // person to check whether they typed the wrong id; what they need is that THIS KIND OF
+            // RUN has no reader for the order, which tells them to cancel it instead.
+            Self::Unread { plugin, order } => {
+                let plugin = plugin.wire_str();
+                // ⚠ NO ARTICLE BEFORE THE PLUGIN'S NAME, and that is deliberate rather than terse:
+                // `a`/`an` depends on the word, and a mutation of this round printed *"a
+                // `ai_loop`"*. A sentence built by a machine should not have to know English
+                // orthography, so the shape avoids needing to.
+                format!(
+                    "run {}'s plugin is `{plugin}`, and `{plugin}` cannot {} — that order is only \
+                     read by a plugin built to act on it, and this one drives straight on. Nothing \
+                     was changed. `sprag cancel-run {}` is the ending that works on any run.",
+                    id.0,
+                    order.describe(),
+                    id.0,
+                )
+            }
+            Self::NoDriver => format!(
+                "run {} came back from a daemon that is gone, so nothing is driving it and there \
+                 is nothing to order. Its record is here to be read, not steered.",
+                id.0,
+            ),
+            Self::NotAStandingOrder => format!(
+                "run {} was sent an order that is not one a person raises over a running run",
+                id.0,
+            ),
+        }
+    }
+}
+
 /// ⚠⚠ `Serialize`/`Deserialize` because it is written into the durable run log, and
 /// `rename_all = "snake_case"` so the log holds `"person"` and not `"Person"` — the shape every
 /// other word in [`PersistedRun`] already takes. An arm added later must keep the old spellings
@@ -247,6 +335,17 @@ pub trait RunHandle: Send + Sync {
     /// reader allowed to weigh the two together.
     fn cancelled_by(&self) -> Option<Canceller>;
 
+    /// **DOES THIS RUN'S PLUGIN READ `order`?** — register items 539 and 597.
+    ///
+    /// ⚠⚠⚠ Forwarded from the plugin's own [`sprag_plugin::Plugin::honours`] rather than decided
+    /// here, so the day a second plugin grows a reader its answer changes and NOTHING in this
+    /// directory has to be remembered. A handle that answered from a table of plugin names would be
+    /// the list this design exists to avoid.
+    ///
+    /// ⚠ `false` is the honest default for a run with no driver left: nothing can act on an order
+    /// given to a run that is over, so refusing it is the truth rather than a limitation.
+    fn honours(&self, order: sprag_plugin::StandingOrder) -> bool;
+
     /// Whether a driver has stopped and is waiting to be collected — non-blocking. `false` once
     /// [`reap`](Self::reap) has taken it, and `false` for a run that never had one.
     fn reapable(&self) -> bool;
@@ -280,6 +379,15 @@ pub struct ThreadRun {
     /// ⚠ `Mutex` and not an atomic, because the value is an enum rather than a bit and because
     /// nothing reads it on a hot path: it is asked once, when a run's answer is projected.
     cancelled_by: Mutex<Option<Canceller>>,
+    /// **WHICH STANDING ORDERS THIS RUN'S PLUGIN ANSWERED THAT IT READS** — register items 539
+    /// and 597, captured at submit because the plugin itself moves into the worker thread and is
+    /// unreachable from here afterwards.
+    ///
+    /// ⚠⚠⚠ A LIST THE PLUGIN PRODUCED, not one anybody here composed: the caller walks
+    /// [`sprag_plugin::StandingOrder::ALL`] and keeps what
+    /// [`sprag_plugin::Plugin::honours`] said yes to, so an order added to that set is asked about
+    /// with nothing here to update.
+    honoured: Vec<sprag_plugin::StandingOrder>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -290,6 +398,7 @@ impl ThreadRun {
         cancel: Arc<AtomicBool>,
         stand_down: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
+        honoured: Vec<sprag_plugin::StandingOrder>,
         handle: JoinHandle<()>,
     ) -> Self {
         Self {
@@ -297,6 +406,7 @@ impl ThreadRun {
             stand_down,
             hold,
             cancelled_by: Mutex::new(None),
+            honoured,
             handle: Some(handle),
         }
     }
@@ -328,6 +438,12 @@ impl RunHandle for ThreadRun {
 
     fn cancelled_by(&self) -> Option<Canceller> {
         *lock(&self.cancelled_by)
+    }
+
+    /// ⚠ THE PLUGIN'S OWN ANSWER, replayed. Nothing here decides it: the list was taken from
+    /// `sprag_plugin::Plugin::honours` at submit, before the plugin moved into the worker thread.
+    fn honours(&self, order: sprag_plugin::StandingOrder) -> bool {
+        self.honoured.contains(&order)
     }
 
     fn stood_down(&self) -> bool {
@@ -418,6 +534,14 @@ impl RunHandle for EndedRun {
         self.cancelled_by
     }
 
+    /// ⚠⚠ **NEVER, AND THAT IS THE FACT RATHER THAN A LIMITATION** — register items 539 and 597.
+    /// This run's driver died with its daemon, so no order given now reaches anything at all. It
+    /// used to be told `true`: a person could stand down a run that had been over for hours and be
+    /// answered as though it had landed.
+    fn honours(&self, _order: sprag_plugin::StandingOrder) -> bool {
+        false
+    }
+
     fn stood_down(&self) -> bool {
         self.stood_down
     }
@@ -438,6 +562,17 @@ impl RunHandle for EndedRun {
 struct RunRecord {
     id: RunId,
     label: String,
+    /// **WHICH PLUGIN THIS RUN IS**, as the request named it — register items 539 and 597.
+    ///
+    /// ⚠⚠⚠ A TYPE and not a word cut out of [`label`](Self::label). That label is prose composed
+    /// for a reader (`"orchestrator pane=3"`), and register item 587's finding is that identity
+    /// re-derived from prose is identity that drifts the day somebody rewords the prose. This is
+    /// carried from the one place that decided it.
+    ///
+    /// ⚠ [`None`] for a run RESTORED from disk: the log records the run, not the request, so a
+    /// successor daemon does not know and does not guess. Such a run has no driver either, so the
+    /// order would be refused regardless — see [`RunRegistry::standing_order`].
+    plugin: Option<crate::plugins::PluginName>,
     /// WHO ASKED for this run — the pane whose occupant wanted it, or [`None`] for a run nobody
     /// claims (what a person starting one from a shell is).
     ///
@@ -560,6 +695,9 @@ pub struct NewRun {
     pub id: RunId,
     /// What the run is, in a reader's terms.
     pub label: String,
+    /// **WHICH PLUGIN THIS RUN IS** — see `RunRecord::plugin` for why it is a type rather than a
+    /// word parsed back out of [`label`](Self::label).
+    pub plugin: crate::plugins::PluginName,
     /// The pane whose occupant asked for it, or [`None`] for a run nobody claims.
     pub opened_by: Option<u64>,
     /// **WHICH CONVERSATION ASKED** — the asking pane's `agent_session`, resolved by the caller
@@ -822,6 +960,7 @@ impl RunRegistry {
         self.runs.push(RunRecord {
             id,
             label: run.label,
+            plugin: Some(run.plugin),
             opened_by: run.opened_by,
             opened_by_session: run.opened_by_session,
             state: run.state,
@@ -867,6 +1006,49 @@ impl RunRegistry {
         }
     }
 
+    /// **FORWARD A STANDING ORDER TO RUN `id`, OR SAY WHY IT CANNOT BE** — register items 539 and
+    /// 597, and the door [`hold`](Self::hold) and [`stand_down`](Self::stand_down) go through.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this could not be [`order`](Self::order)'s boolean
+    ///
+    /// That boolean answers *is there such a run*, and there is a THIRD state of the world it
+    /// cannot express: **the run exists and its plugin has no reader for the order.** Both orders
+    /// used to collapse it into `true` — the caller was told it worked, the run drove straight on,
+    /// and the CLI printed a promise about a pane that was never going to go still.
+    ///
+    /// ⚠⚠⚠ **A `Result` AND NOT A SECOND BOOLEAN**, which is register item 593's rule reaching a
+    /// second surface: the type carries the reason so no caller can drop it, and the compiler makes
+    /// each of the two doors decide what to say rather than letting one of them forget.
+    ///
+    /// ⚠⚠ **THE PLUGIN IS ASKED, NEVER LOOKED UP.** `RunHandle::honours` forwards the question to
+    /// the plugin's own answer, so the day a second one grows a reader nothing here changes.
+    fn standing_order(&self, id: RunId, order: RunOrder) -> Result<(), Unordered> {
+        let Some(record) = self.runs.iter().find(|record| record.id == id) else {
+            return Err(Unordered::NoSuchRun);
+        };
+        let Some(standing) = order.standing() else {
+            // ⚠ UNREACHABLE BY CONSTRUCTION and answered rather than asserted: the two callers pass
+            // `Hold` and `StandDown`. A `RunOrder` a person cannot raise over a running run has no
+            // plugin to ask, so *nobody can be asked about it* is the honest answer, not a panic in
+            // a daemon holding somebody's session.
+            return Err(Unordered::NotAStandingOrder);
+        };
+        if !record.run.honours(standing) {
+            // ⚠⚠ THE TWO CAUSES ARE DIFFERENT THINGS TO TELL A PERSON, so they are different arms:
+            // a live run of the wrong plugin is one they should cancel instead, and a run restored
+            // from a dead daemon is one there is nothing left to steer at all.
+            return Err(match record.plugin {
+                Some(plugin) => Unordered::Unread {
+                    plugin,
+                    order: standing,
+                },
+                None => Unordered::NoDriver,
+            });
+        }
+        record.run.deliver(order);
+        Ok(())
+    }
+
     /// **ASK RUN `id` TO FINISH WHAT IT IS DOING AND THEN STOP**, returning whether such a run
     /// exists. Its worker carries the order into the loop document at its next pass, and the
     /// document decides — at its own next milestone — what to do about it.
@@ -878,8 +1060,8 @@ impl RunRegistry {
     /// ⚠ IDEMPOTENT AND ONE-WAY. A second call changes nothing, and there is no un-ordering: a
     /// *stand down, no wait, carry on* racing a milestone would make a run's ending depend on which
     /// message arrived first.
-    pub fn stand_down(&self, id: RunId) -> bool {
-        self.order(id, RunOrder::StandDown)
+    pub fn stand_down(&self, id: RunId) -> Result<(), Unordered> {
+        self.standing_order(id, RunOrder::StandDown)
     }
 
     /// **HALT RUN `id` BETWEEN TURNS, OR LET IT GO AGAIN**, returning whether such a run exists.
@@ -899,8 +1081,8 @@ impl RunRegistry {
     /// ⚠ NOTHING IS INTERRUPTED and nothing ends. The turn in flight runs to its end, the loop then
     /// stops at `awaiting_human` — which sends nothing, so the pane stays exactly as the person
     /// found it — and their declared patience does not run while they hold it.
-    pub fn hold(&self, id: RunId, held: bool) -> bool {
-        self.order(id, RunOrder::Hold(held))
+    pub fn hold(&self, id: RunId, held: bool) -> Result<(), Unordered> {
+        self.standing_order(id, RunOrder::Hold(held))
     }
 
     /// Raise every run's cancel flag — used on host shutdown so in-flight runs abort promptly
@@ -1090,6 +1272,11 @@ impl RunRegistry {
             self.runs.push(RunRecord {
                 id: RunId(saved.id),
                 label: saved.label.clone(),
+                // ⚠⚠ NOT KNOWN, AND NOT GUESSED — items 539 and 597. The log records what became
+                // of the run, not the request that started it, and the label is prose. A restored
+                // run has no driver either, so an order over it is refused as `NoDriver` whatever
+                // plugin it once was — this `None` costs a reader nothing they could have used.
+                plugin: None,
                 // ⚠ THE SEAT IS DROPPED AND THE CONVERSATION IS KEPT — rule 1 above. A successor
                 // cannot know who is sitting in pane 3; it can know which conversation asked, and
                 // `crate::plugins` re-derives the seat from that at read time.
@@ -1361,6 +1548,7 @@ mod tests {
             registry.submit(NewRun {
                 id,
                 label: "test".to_string(),
+                plugin: crate::plugins::PluginName::Orchestrator,
                 opened_by: Some(7),
                 opened_by_session: None,
                 state,
@@ -1368,6 +1556,9 @@ mod tests {
                     cancel,
                     Arc::new(AtomicBool::new(false)),
                     Arc::new(AtomicBool::new(false)),
+                    // ⚠ BOTH: this fixture is about the directory holding a record, and a handle
+                    // that refused every order would make the orders below untestable here.
+                    sprag_plugin::StandingOrder::ALL.to_vec(),
                     handle,
                 )),
                 progress: ProgressCell::default(),
@@ -1548,6 +1739,9 @@ mod tests {
         NewRun {
             id,
             label,
+            // ⚠ Stated rather than defaulted, for the recorder fixture's reason: these gates are
+            // about workers and joins, and the plugin is not what any of them measures.
+            plugin: crate::plugins::PluginName::Orchestrator,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
@@ -1555,6 +1749,9 @@ mod tests {
                 cancel,
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicBool::new(false)),
+                // ⚠ BOTH, for the fixture above's reason: these gates are about the directory, and
+                // the refusal is driven where a real plugin answers it.
+                sprag_plugin::StandingOrder::ALL.to_vec(),
                 handle,
             )),
             progress: ProgressCell::default(),
@@ -2066,6 +2263,13 @@ mod tests {
         // ⚠ THE FIRST ONE IT WAS TOLD — item 596's rule, answered the way an out-of-process driver
         // would have to: from its own record of what arrived, and taking the earliest because a
         // person's decision must not be overwritten by the shutdown that sweeps every run.
+        // ⚠⚠ EVERYTHING, so this recorder measures FORWARDING and never the refusal: a double that
+        // answered `false` would make every gate below assert an empty list and pass. The refusal
+        // is driven where a real plugin answers it, one crate over.
+        fn honours(&self, _order: sprag_plugin::StandingOrder) -> bool {
+            true
+        }
+
         fn cancelled_by(&self) -> Option<Canceller> {
             lock(&self.0).iter().find_map(|order| match order {
                 RunOrder::Cancel(who) => Some(*who),
@@ -2106,6 +2310,9 @@ mod tests {
         registry.submit(NewRun {
             id,
             label: "elsewhere".to_string(),
+            // ⚠ THE PLUGIN IS IRRELEVANT TO THESE GATES and is stated rather than defaulted: the
+            // handle is a recorder that honours everything, so what is measured is FORWARDING.
+            plugin: crate::plugins::PluginName::Orchestrator,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
@@ -2187,7 +2394,11 @@ mod tests {
     fn a_stand_down_is_forwarded_and_is_not_a_cancel() {
         let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
 
-        assert!(registry.stand_down(RunId(0)), "the run is in the directory");
+        assert_eq!(
+            registry.stand_down(RunId(0)),
+            Ok(()),
+            "the run is in the directory and its handle reads the order",
+        );
         let told = heard(&log);
         assert_eq!(
             told,
@@ -2210,8 +2421,16 @@ mod tests {
     fn a_hold_and_its_release_are_forwarded_as_the_two_way_order_they_are() {
         let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
 
-        assert!(registry.hold(RunId(0), true), "the run is in the directory");
-        assert!(registry.hold(RunId(0), false), "and it is still there");
+        assert_eq!(
+            registry.hold(RunId(0), true),
+            Ok(()),
+            "the run is in the directory and its handle reads the order",
+        );
+        assert_eq!(
+            registry.hold(RunId(0), false),
+            Ok(()),
+            "and it is still there, and a release is the same order lowered",
+        );
         let told = heard(&log);
         assert_eq!(
             told,
@@ -2245,6 +2464,9 @@ mod tests {
                 Arc::clone(&cancel),
                 Arc::clone(&stand),
                 Arc::clone(&hold),
+                // ⚠ BOTH: this gate is about which FLAG each order reaches, so a handle that
+                // refused one would take that order's arm out of the measurement entirely.
+                sprag_plugin::StandingOrder::ALL.to_vec(),
                 std::thread::spawn(|| {}),
             );
             (run, cancel, stand, hold)
@@ -2339,18 +2561,33 @@ mod tests {
         );
 
         assert!(
-            registry.cancel(RunId(4))
-                && registry.stand_down(RunId(4))
-                && registry.hold(RunId(4), true),
-            "⚠⚠ every order must still find a restored run — the boolean answers *does this run \
+            registry.cancel(RunId(4)),
+            "⚠⚠ a cancel must still FIND a restored run — that boolean answers *does this run \
              exist*, and it does",
         );
+        // ⛔⛔⛔⛔ **AND THE TWO STANDING ORDERS ARE NOW REFUSED, WHICH IS THE CHANGE ITEMS 539 AND
+        // 597 MADE.** This gate used to assert that all three were ACCEPTED and call that correct
+        // because *the boolean answers does this run exist*. It does — and a person who stood down
+        // a run whose driver died with its daemon was told their order had landed. Existence was
+        // never the whole question for an order somebody has to READ.
+        for (order, answer) in [
+            ("stand-down", registry.stand_down(RunId(4))),
+            ("hold", registry.hold(RunId(4), true)),
+        ] {
+            assert_eq!(
+                answer,
+                Err(Unordered::NoDriver),
+                "⛔⛔⛔ ITEMS 539/597: a {order} over a run restored from a dead daemon must be \
+                 REFUSED and say why. Nothing is driving it, so the order reaches nothing at all — \
+                 and being told it landed is worse than being told it cannot",
+            );
+        }
         assert!(
             !registry.snapshot()[0].stood_down,
-            "⚠⚠⚠⚠ ITEM 594: the stand-down above was ACCEPTED and DELIVERED NOWHERE, so the run \
-             must not now claim somebody is standing it down. `EndedRun` answers the fact it was \
-             restored with and never the order it just swallowed — a run with no driver cannot \
-             obey, and publishing the order would promise a milestone that is never coming",
+            "⚠⚠⚠⚠ ITEM 594: the stand-down above reached nothing, so the run must not now claim \
+             somebody is standing it down. `EndedRun` answers the fact it was restored with and \
+             never an order it was handed — a run with no driver cannot obey, and publishing the \
+             order would promise a milestone that is never coming",
         );
         assert!(
             registry

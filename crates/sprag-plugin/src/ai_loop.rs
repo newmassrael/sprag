@@ -924,6 +924,22 @@ impl Plugin for AiLoop {
         self.inner.checks()
     }
 
+    /// ⚠⚠⚠⚠⚠ **BOTH, AND THIS IS THE ONLY PLUGIN THAT MAY SAY SO** — register items 539 and 597.
+    ///
+    /// `OuterLoop::pump` is the single reader of `RunContext::held` and `RunContext::stood_down` in
+    /// this workspace, and two standing ratchets count exactly that. So this answer is not a claim
+    /// about intent: it is the same measurement those ratchets make, said in the place the host can
+    /// ask before it accepts an order.
+    ///
+    /// ⚠⚠ **NO `_` ARM.** A third [`StandingOrder`](crate::plugin::StandingOrder) must fail to
+    /// compile here rather than inherit a silent `false` from a plugin that would in fact be the
+    /// one expected to read it.
+    fn honours(&self, order: crate::plugin::StandingOrder) -> bool {
+        match order {
+            crate::plugin::StandingOrder::Hold | crate::plugin::StandingOrder::StandDown => true,
+        }
+    }
+
     /// ONE PUMP of the machine, reported in the substrate's own terms.
     ///
     /// ⚠⚠ A MOVE INTO A FINAL STATE IS JUDGED IN THE SAME STEP THAT MADE IT, never on the pump
