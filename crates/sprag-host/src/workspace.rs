@@ -3950,7 +3950,9 @@ mod tests {
             opened_by: None,
             opened_by_session: None,
             state: Arc::clone(&state),
-            run: Box::new(crate::runs::EndedRun::restored(false)),
+            // ⚠ Nobody stood it down and nobody cancelled it: this arm is about a run that is
+            // RUNNING, and the handle is a stand-in only because the gate above needs no driver.
+            run: Box::new(crate::runs::EndedRun::restored(false, None)),
             progress,
         });
 

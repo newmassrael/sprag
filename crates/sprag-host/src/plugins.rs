@@ -293,6 +293,28 @@ pub const RUN_DRIVING_KEY: &str = "driving";
 /// reason and does not move `crate::runs::RUN_LOG_VERSION` either.
 pub const RUN_STOOD_DOWN_KEY: &str = "stood_down";
 
+/// **WHO RAISED THE CANCEL THAT ENDED THIS RUN, AND WHAT TO DO ABOUT IT** — register item 596.
+/// Absent unless a cancel was raised, which is [`RUN_CEILING_KEY`]'s presence-is-the-claim rule.
+///
+/// # ⚠⚠⚠⚠⚠ Why a key beside `cancelled` and not two words in place of it
+///
+/// `RunRegistry::cancel` (a person) and `RunRegistry::cancel_all` (a daemon shutting down) raised
+/// the same flag, so the driver raised one `OrchestrationEvent::Cancel` and both runs ended on the
+/// same word — while [`crate::runs::Canceller::describe`] shows the remedies are opposite: one is a
+/// decision to respect, the other is a run **nobody decided anything about** and that a person
+/// almost certainly wants back. Splitting the STATE would have made every existing reader of
+/// `cancelled` wrong about runs it had already understood; a second key leaves them all correct and
+/// merely less informed. That is the shape [`RUN_CEILING_KEY`] and [`RUN_STOPPED_KEY`] chose first.
+///
+/// ⚠⚠ **A SENTENCE, NOT THE ARM'S NAME** — [`RUN_STOOD_DOWN_KEY`]'s reason verbatim. A reader
+/// handed `"shutdown"` still has to know what a shutdown implies for their run; the sentence is
+/// the part they were actually after.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, for `RUN_STOOD_DOWN_KEY`'s argument unchanged: an added
+/// ANSWER key is absent-not-wrong, and the handshake refuses a version mismatch outright so no
+/// reader can mistake absence for *this daemon cannot say*.
+pub const RUN_CANCELLED_BY_KEY: &str = "cancelled_by";
+
 sprag_vt::closed_set! {
     /// WHERE A RUN HAS GOT TO — the `status` word inside a run's `state`.
     ///
@@ -2051,6 +2073,13 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     if run.stood_down {
         entry[RUN_STOOD_DOWN_KEY] = json!(stand_down_sentence(&run.state));
     }
+    // ⚠⚠⚠⚠ AND WHO RAISED THE CANCEL — register item 596, the other half of 594's unanswered
+    // *why*. Beside the state and not inside it for the same reason as the order above: a run
+    // stopped by a shutdown is exactly the run a person still wants to do something about, and the
+    // sweep happens on a daemon's way out, so this is read after a restart or not at all.
+    if let Some(who) = run.cancelled_by {
+        entry[RUN_CANCELLED_BY_KEY] = json!(cancel_sentence(who, &run.state));
+    }
     // ⚠⚠⚠⚠ AND WHAT THIS RUN HAS PUT INTO ITS PANE — register item 591, present only for a run
     // that has delivered something, which is `RUN_CEILING_KEY`'s presence-is-the-claim rule.
     //
@@ -2287,6 +2316,71 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
                  {NOT_BANKED}"
             )
         }
+    }
+}
+
+/// **WHO RAISED THE CANCEL, WEIGHED AGAINST WHAT ACTUALLY ENDED THE RUN** — register item 596, and
+/// the sentence [`RUN_CANCELLED_BY_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠⚠ A cancel is RAISED; it is not always what ends the run
+///
+/// Measured while building this key, by the mutation that was supposed to prove something else: a
+/// run whose pane never showed its readiness marker ended `failed`, and a cancel raised over it a
+/// moment later still made this key say *"a person cancelled this run, so the turn it was in the
+/// middle of was thrown away"*. **That sentence was false about that run** — its turn was ended by
+/// the readiness bound and the person's cancel arrived at a run that was already over.
+///
+/// That is [`stand_down_sentence`]'s finding one key over, and it has the same answer: **the ORDER
+/// alone says somebody spoke, and only the ORDER weighed against the ENDING says what became of
+/// it.** A renderer that reports the first and lets the reader assume the second sends them looking
+/// for a decision that explains an ending it did not cause — which is the search register item 594
+/// recorded and could not end.
+///
+/// ⚠⚠ **THE CANCELLER'S OWN WORDS SURVIVE INTO BOTH ARMS**, because who raised it is the fact this
+/// item exists to publish and it is true either way. What changes is whether the sentence claims
+/// the cancel is what finished the run.
+///
+/// ⚠ The ending's word comes from [`outcome_word`], so the host never spells an [`OutcomeState`]
+/// here — a new one gets its sentence on the day it exists rather than a silent omission.
+#[must_use]
+pub fn cancel_sentence(who: crate::runs::Canceller, state: &crate::runs::RunState) -> String {
+    // ⚠⚠⚠⚠⚠ THE TENSE-NEUTRAL PHRASE, and it is the DEFAULT here rather than the exception —
+    // `Canceller::raiser`'s own doc holds the measurement. Every arm below except one is about a
+    // run this cancel did NOT finish, and `describe` would put the word *cancelled* on all of them.
+    let raised = who.raiser();
+    match state {
+        // ⚠⚠ THE RUN IS STILL GOING, so nothing has been thrown away yet and the sentence must not
+        // say it has. `describe()` is written in the past tense about a finished run, so the
+        // running arm says the fact and sends the reader to the ending, which is the shape
+        // `stand_down_sentence`'s own running arm takes.
+        crate::runs::RunState::Running => format!(
+            "a cancel has been raised over this run and it has not stopped yet — its ending is \
+             what says whether the cancel is what stopped it. Who raised it: {raised}"
+        ),
+        crate::runs::RunState::Done { outcome, .. } => {
+            if outcome.state == OutcomeState::Cancelled {
+                // ⚠ THE ONE ARM ENTITLED TO THE ENDING WORD, so `describe` and not `raiser`: this
+                // run really was finished by this cancel, and the sentence may say so.
+                who.describe().to_owned()
+            } else {
+                format!(
+                    "⚠ a cancel was raised over this run and it ended {:?} instead, so the cancel \
+                     is NOT what finished it and the ending is the thing to read. Who raised the \
+                     cancel: {raised}",
+                    outcome_word(outcome),
+                )
+            }
+        }
+        // ⚠ A DRIVER THAT DIED, and a DAEMON that died, each get the `stand_down_sentence` arm of
+        // the same name: neither is an ending anybody chose, so the cancel is not what did it.
+        crate::runs::RunState::Panicked(_) => format!(
+            "⚠ a cancel was raised over this run and its driver died first, so the cancel is NOT \
+             what finished it. Who raised the cancel: {raised}"
+        ),
+        crate::runs::RunState::Interrupted => format!(
+            "⚠ a cancel was raised over this run and the daemon driving it died first, so the \
+             cancel is NOT what finished it. Who raised the cancel: {raised}"
+        ),
     }
 }
 
@@ -2598,6 +2692,9 @@ mod tests {
                 // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
                 // daemon, so the honest value is *nobody recorded whether an order was given*.
                 stood_down: None,
+                // ⚠ Likewise, and here `None` needs no such caveat: a canceller is an option
+                // already, so *nobody cancelled it* and *nothing was written down* are one answer.
+                cancelled_by: None,
             }],
         };
 
@@ -2642,6 +2739,36 @@ mod tests {
              the whole of `RunRegistry::restore`'s rule 1. Entry: {:?}",
             listed[0],
         );
+    }
+
+    /// Poll `query("runs")` until run `id` has DELIVERED a prompt, and answer its entry.
+    ///
+    /// ⚠⚠⚠ **THE BOUNDARY THIS WATCHES IS THE READINESS BARRIER**, which nothing publishes
+    /// directly: a run only injects once `ready_when` is satisfied, so a delivery is the product's
+    /// own proof that the barrier is behind it. A gate that cancels before this point is timing the
+    /// runner rather than testing the claim — see the caller for the red that established it.
+    ///
+    /// ⚠ Bounded, and the timeout is a FAILURE rather than a retry: a run that never delivers has
+    /// something wrong with it that a longer wait would only hide.
+    fn driving(external: &PluginsExternal, id: u64, within: Duration) -> Value {
+        let start = Instant::now();
+        loop {
+            let entry = read_runs(external)
+                .into_iter()
+                .find(|entry| entry["id"] == json!(id));
+            if let Some(entry) = &entry
+                && entry[RUN_DELIVERED_KEY].as_u64().unwrap_or(0) > 0
+            {
+                return entry.clone();
+            }
+            assert!(
+                start.elapsed() < within,
+                "run {id} had delivered nothing after {:?}, so it never cleared its readiness \
+                 barrier and there is no driving run to stop: {entry:?}",
+                start.elapsed(),
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// `query("runs")` as a client reads it — through the product's own door.
@@ -3141,6 +3268,237 @@ mod tests {
              very entry — a reader should not have to pair two lines by eye. Got {said:?} beside \
              {ordered:?}",
         );
+    }
+
+    /// ⛔⛔⛔⛔ **A RUN A PERSON STOPPED AND A RUN A SHUTDOWN SWEPT ARE THE SAME WORD AND OPPOSITE
+    /// SITUATIONS, AND `sprag runs` NOW TELLS THEM APART** — register item 596, the half of item
+    /// 594's unanswered *why* that no amount of reading could settle.
+    ///
+    /// # What could not be answered, and why it was not a documentation gap
+    ///
+    /// That round measured a run reported `cancelled after 56 iterations` under a standing
+    /// stand-down order, and could not say whether a person had cancelled it or the promotion's
+    /// `kill-server` had. **The product genuinely did not know**: `RunRegistry::cancel` and
+    /// `RunRegistry::cancel_all` both stored into one `AtomicBool`, so the driver raised one
+    /// `OrchestrationEvent::Cancel` and both runs closed on the identical word — while
+    /// [`crate::runs::Canceller::describe`] shows the remedies pointing in opposite directions:
+    /// *ask whoever stopped it* against *nobody decided anything, bring the daemon back*.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE TWO ARMS DIFFER IN ONE CALL AND NOTHING ELSE.** Same brief, same stand-in
+    /// agent, same registry, same ending word — one is stopped through `cancel`, the other through
+    /// `cancel_all`. That is the whole experiment: if the answers match, the distinction this item
+    /// exists to draw is not on the wire, whatever the enum one crate over says.
+    ///
+    /// ⚠⚠ **AND A THIRD ARM HOLDS THE KEY TO PRESENCE-IS-THE-CLAIM.** A run still going has had no
+    /// cancel raised over it, so it must publish NO such key — a key present on every run would let
+    /// both arms above pass while saying nothing about anybody's cancel.
+    #[test]
+    fn a_cancelled_run_says_whether_a_person_or_a_shutting_down_daemon_raised_it() {
+        /// One `ai_loop` run over a stand-in agent, stopped by `stopper`, and the entry
+        /// `query("runs")` publishes for it once it is over.
+        ///
+        /// ⚠ ONE BODY FOR BOTH ARMS for the sibling gate's reason: two hand-written setups is how
+        /// a control quietly stops being one. The `stopper` closure is the ONLY difference, and it
+        /// is handed the registry rather than an id so `cancel_all` — which names no run — can be
+        /// one of the two.
+        fn a_run_stopped_by(stopper: impl FnOnce(&Arc<Mutex<RunRegistry>>, u64)) -> (Value, Value) {
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+            let pane = echoing_agent_pane(&workspace);
+            let registry = Arc::new(Mutex::new(RunRegistry::default()));
+            let mut external = PluginsExternal::new(
+                Arc::clone(&workspace),
+                Arc::clone(&registry),
+                None,
+                None,
+                None,
+                None,
+            );
+            let started = external
+                .invoke(
+                    RUN_ACTION,
+                    IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+                )
+                .expect("a well-formed ai_loop run");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            let id = u64::try_from(id).expect("a run id is not negative");
+            // ⛔⛔⛔⛔ WAIT UNTIL THE LOOP IS PROVABLY PAST ITS READINESS BARRIER BEFORE STOPPING
+            // IT — and this is not caution, it is a red this gate's own first mutation produced.
+            // Cancelling straight after `submit` races the `ready_when` wait: the run reported
+            // **`failed` — "the pane never showed \"AGENT-READY\""** — because the cancel reached a
+            // run that had not started driving, and an arm that ended `failed` is not a cancelled
+            // run at all. That is register item 600's finding on this repository's own gates
+            // (*make the loser impossible, not merely late*), met here rather than tolerated.
+            //
+            // ⚠⚠ A DELIVERY is the observable, and it is the right one: a run that has put a prompt
+            // into its pane has by definition cleared the barrier that guards the injection. It is
+            // read through `query("runs")` like everything else here, so the wait cannot see a fact
+            // the product does not publish.
+            let live = driving(&external, id, Duration::from_secs(30));
+            stopper(&registry, id);
+            let entry = ended(&registry, id, Duration::from_secs(30));
+            assert!(
+                lock(&workspace).close(pane).is_some(),
+                "the pane this arm opened was there to close",
+            );
+            (live, entry)
+        }
+
+        // ── ARM ONE: A PERSON SAID STOP ──
+        let (live, person) = a_run_stopped_by(|registry, id| {
+            assert!(
+                lock(registry).cancel(RunId(id)),
+                "the run this call started is one the registry can stop",
+            );
+        });
+        assert_eq!(
+            live[RUN_CANCELLED_BY_KEY],
+            Value::Null,
+            "⚠⚠⚠ THE THIRD ARM: a run nobody has cancelled must publish NO such key. Presence is \
+             the claim here — `RUN_CEILING_KEY`'s rule — so a key that appeared on every run would \
+             make both arms below pass while saying nothing about anybody's cancel: {live:?}",
+        );
+
+        // ── ARM TWO: THE DAEMON WENT AWAY AND SWEPT EVERY RUN ──
+        let (_, shutdown) = a_run_stopped_by(|registry, _| lock(registry).cancel_all());
+
+        // ⚠⚠⚠⚠⚠ THE WORD IS THE SAME ON PURPOSE, AND ASSERTING IT IS WHAT MAKES THE REST A
+        // MEASUREMENT. If the two arms ended on different `state` words, a reader could already
+        // tell them apart and this key would be answering a question nobody had. R358's rule: name
+        // what would make the finding vacuous, then assert it away.
+        for (label, entry) in [("the person's run", &person), ("the swept run", &shutdown)] {
+            assert_eq!(
+                entry["state"]["status"],
+                json!("done"),
+                "⚠⚠ {label} must have FINISHED, or every reading below is a snapshot of the \
+                 middle: {entry:?}",
+            );
+        }
+        assert_eq!(
+            person["state"]["outcome"]["state"], shutdown["state"]["outcome"]["state"],
+            "⚠⚠⚠⚠ THE TWO ARMS MUST END ON THE SAME WORD — that identity is the PROBLEM this item \
+             was filed about, not an accident to be tolerated. If they differ, the key under test \
+             is decorating a distinction the state already made and this gate proves nothing. \
+             {person:?} against {shutdown:?}",
+        );
+
+        let by_person = person[RUN_CANCELLED_BY_KEY].as_str().unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔ ITEM 596: a person stopped this run and `sprag runs` will not say so — \
+                 which is the surface they are sent to. Entry: {person:?}"
+            )
+        });
+        let by_shutdown = shutdown[RUN_CANCELLED_BY_KEY].as_str().unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔ ITEM 596: a daemon shutting down stopped this run and `sprag runs` will \
+                 not say so. This is the arm that matters MOST — a sweep happens on a daemon's way \
+                 out, so it is read after a restart or never. Entry: {shutdown:?}"
+            )
+        });
+        assert_ne!(
+            by_person, by_shutdown,
+            "⛔⛔⛔⛔ ITEM 596, THE WHOLE OF IT: both runs closed on the same word, and the ONE \
+             thing that separates them — who raised the cancel — must reach the reader as \
+             something different to read. Identical sentences here mean `cancel` and `cancel_all` \
+             have been fused again somewhere between the registry and this key. Got {by_person:?} \
+             for both",
+        );
+        assert!(
+            by_shutdown.contains("NOBODY"),
+            "⚠⚠⚠⚠ AND THE SWEPT RUN'S SENTENCE HAS TO SAY THE PART THAT CHANGES WHAT A PERSON \
+             DOES: nobody decided anything about it. A sentence that merely named the mechanism \
+             would leave them looking for a decision that was never taken — which is exactly the \
+             search item 594 recorded and could not end. Got {by_shutdown:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A CANCEL IS RAISED; IT IS NOT ALWAYS WHAT ENDED THE RUN, AND THE SENTENCE MUST NOT
+    /// SAY OTHERWISE** — register item 596's second half, and a defect this repository wrote and
+    /// caught in the same round.
+    ///
+    /// # Where this came from, because it is worth not forgetting
+    ///
+    /// The first mutation aimed at the gate above — fusing the two cancellers again — went red on
+    /// a DIFFERENT assertion, and what it printed was a run that had ended **`failed`** (its pane
+    /// never showed the readiness marker) while [`RUN_CANCELLED_BY_KEY`] said *"a person cancelled
+    /// this run, so the turn it was in the middle of was thrown away"*. **The key was reporting the
+    /// ORDER and letting the reader assume the ENDING** — which is register item 594's finding
+    /// exactly, reproduced one key over by the person who had just written 594's fix.
+    ///
+    /// ⚠⚠⚠ **THIS GATE EXISTS BECAUSE THE LIVE ONE CANNOT REACH THESE ARMS ANY MORE.** The gate
+    /// above now waits for a delivery before cancelling, precisely so its runs end `cancelled` —
+    /// so the branches where a cancel did NOT do the ending are unreachable there, and a branch
+    /// nobody drives is a branch nobody is testing. [`cancel_sentence`] is a pure function of the
+    /// two facts, so it is driven directly, over every [`crate::runs::RunState`] there is.
+    #[test]
+    fn a_cancel_that_did_not_end_the_run_does_not_claim_the_turn_was_thrown_away() {
+        use crate::runs::{Canceller, RunState};
+
+        // ⚠ THE ONE PAIRING WHERE THE CANCEL IS THE ENDING, and the only one entitled to speak in
+        // the canceller's own words with nothing hedged.
+        let did_end = cancel_sentence(
+            Canceller::Person,
+            &RunState::Done {
+                outcome: Box::new(finished(OutcomeState::Cancelled, 0)),
+                output: None,
+            },
+        );
+        assert_eq!(
+            did_end,
+            Canceller::Person.describe(),
+            "⚠⚠ a run the cancel DID end must be described in the canceller's own words, with no \
+             hedge added — a warning on the healthy pairing is how a reader learns to skip the \
+             warning on the broken one. Got {did_end:?}",
+        );
+
+        // ⚠⚠⚠⚠ AND EVERY OTHER STATE THERE IS. Listed rather than globbed, so a new `RunState`
+        // arrives as a compile error at `cancel_sentence` and as a silent omission here — which is
+        // this repository's *a list with no glob decides alone* rule, and the reason the match in
+        // that function has no `_` arm.
+        for (label, state) in [
+            ("a run that failed on its own", {
+                RunState::Done {
+                    outcome: Box::new(finished(OutcomeState::Failed, 0)),
+                    output: None,
+                }
+            }),
+            ("a run that is still going", RunState::Running),
+            (
+                "a run whose driver died",
+                RunState::Panicked("boom".to_owned()),
+            ),
+            ("a run whose daemon died", RunState::Interrupted),
+        ] {
+            let said = cancel_sentence(Canceller::Shutdown, &state);
+            assert!(
+                !said.starts_with(Canceller::Shutdown.describe()),
+                "⛔⛔⛔ ITEM 596: {label} is being described as though the cancel is what finished \
+                 it. The cancel was RAISED over this run and something else ended it, so a reader \
+                 handed the canceller's bare words goes looking for a decision that explains an \
+                 ending it did not cause. Got {said:?}",
+            );
+            assert!(
+                said.contains("NOBODY"),
+                "⚠⚠⚠ AND WHO RAISED IT MUST SURVIVE THE HEDGE. The hedge says the cancel is not \
+                 the ending; it must not swallow the fact this key exists to publish, or the \
+                 broken pairing becomes LESS informative than the healthy one. For {label}, got \
+                 {said:?}",
+            );
+            // ⛔⛔⛔⛔ AND NOT THE ENDING WORD, WHICH IS THE HALF THIS GATE LEARNED LAST AND THE
+            // HARD WAY. The first version of this key embedded `Canceller::describe` in every arm,
+            // and that sentence contains **cancelled** — so a run that was STILL RUNNING carried
+            // the word for a run that is over. Two integration suites waited for exactly that word
+            // and were satisfied by a live run; a person scanning `sprag runs` for it would have
+            // been misled identically. A word that carries a conclusion may appear only where the
+            // conclusion holds.
+            assert!(
+                !said.contains("cancelled"),
+                "⛔⛔⛔ {label} is not a run that ended `cancelled`, and its sentence uses that \
+                 word anyway — which is the reading this whole item exists to stop being \
+                 ambiguous. Got {said:?}",
+            );
+        }
     }
 
     /// ⚠⚠⚠ **A BRIEF THIS BUILD CANNOT DRIVE TO THE END IS REFUSED AT THE DOOR, NAMING THE KNOB** —

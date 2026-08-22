@@ -95,12 +95,101 @@ pub enum RunState {
 /// milestone would make a run's ending depend on which message arrived first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunOrder {
-    /// Stop now and lose the turn in flight — `RunRegistry::cancel`.
-    Cancel,
+    /// Stop now and lose the turn in flight — `RunRegistry::cancel`, carrying WHO said so.
+    ///
+    /// ⚠⚠ The word rides on the ORDER rather than being a second call, because the two arrive at
+    /// the same flag and a caller that had to set a reason separately could set one and not the
+    /// other. See [`Canceller`].
+    Cancel(Canceller),
     /// Finish what you are doing and then stop — `RunRegistry::stand_down`. One-way.
     StandDown,
     /// Halt between turns (`true`), or let go again (`false`) — `RunRegistry::hold`.
     Hold(bool),
+}
+
+/// ⛔⛔⛔ **WHO STOPPED THIS RUN** — register item 596, and the fact a `cancelled` outcome could not
+/// carry.
+///
+/// # The two cancels that were one word
+///
+/// [`RunRegistry::cancel`] is a PERSON saying stop. [`RunRegistry::cancel_all`] is the DAEMON
+/// shutting down, raising every run's flag so nothing is waited out and detached. Both arrived at
+/// one `AtomicBool`, so the driver raised one `OrchestrationEvent::Cancel` and every run reported
+/// the same `cancelled` — and **the remedies are opposite**: a run the daemon stopped wants
+/// *bring the daemon back and start it again*, and a run a person stopped wants *ask them why*.
+///
+/// ⚠⚠⚠⚠⚠ **IT IS WHY REGISTER ITEM 594's «WHY» COULD NOT BE SETTLED.** That round measured a run
+/// reported `cancelled after 56 iterations` under a standing stand-down order and could not tell
+/// whether a person had cancelled it or the promotion's `kill-server` had — the product does not
+/// distinguish them, so no amount of reading could. This is that half.
+///
+/// ⚠⚠ **THE DECISION IS UNCHANGED.** Both still cancel, immediately, losing the turn in flight;
+/// the flag and every wait that reads it are untouched. What changed is that the run can say which
+/// happened — `sprag_plugin::judge::Unheard`'s shape one crate over, and register item 593's rule:
+/// **the answer stays, the REPORT gains a reason.**
+/// ⚠⚠ `Serialize`/`Deserialize` because it is written into the durable run log, and
+/// `rename_all = "snake_case"` so the log holds `"person"` and not `"Person"` — the shape every
+/// other word in [`PersistedRun`] already takes. An arm added later must keep the old spellings
+/// readable: a log written by yesterday's daemon is read by today's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Canceller {
+    /// **A PERSON SAID STOP** — `sprag cancel-run`, or an agent's `cancel_run` on its own run.
+    Person,
+    /// **THE DAEMON IS SHUTTING DOWN** and raised every run's flag so none is waited out and
+    /// detached — [`RunRegistry::cancel_all`].
+    ///
+    /// ⚠ Nobody decided anything about THIS run. That is the whole difference: the remedy is to
+    /// bring the daemon back, and asking a person why they stopped it would be asking about a
+    /// decision nobody took.
+    Shutdown,
+}
+
+impl Canceller {
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// name, the rule every describing vocabulary in this workspace follows.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Person => {
+                "a person cancelled this run, so the turn it was in the middle of was thrown away \
+                 — whoever asked for that is the one who knows why"
+            }
+            Self::Shutdown => {
+                "the daemon this run was in shut down and stopped it on the way out, so NOBODY \
+                 decided anything about this run — bring the daemon back and start it again"
+            }
+        }
+    }
+
+    /// **WHO RAISED IT, WITHOUT CLAIMING THE RUN IS OVER** — the phrase for every reader whose run
+    /// did NOT end on this cancel.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why [`describe`](Self::describe) cannot be used there, measured rather than reasoned
+    ///
+    /// `describe` is written about a run the cancel FINISHED, so it contains the word **cancelled**
+    /// — and this repository's own suites read that word as *the run is over*: two integration
+    /// tests waited for it and were satisfied by a run that was **still running**, because a clause
+    /// naming the canceller had put the ending word on a live run's line. A person scanning
+    /// `sprag runs` for the same word would have been misled the same way.
+    ///
+    /// ⚠⚠ **THIS IS THE DEFECT REGISTER ITEM 596 EXISTS TO FIX, ONE TURN LATER**: a word that
+    /// carries a conclusion has to appear only where the conclusion holds. So the ending word lives
+    /// in exactly one arm of [`crate::plugins::cancel_sentence`], and every other arm says who
+    /// raised the cancel in words that claim nothing about how the run finished.
+    ///
+    /// ⚠ It still names the REMEDY, because that is the half a reader acts on and it is true
+    /// whatever the ending was.
+    #[must_use]
+    pub const fn raiser(self) -> &'static str {
+        match self {
+            Self::Person => "a person, and they are the one who knows why",
+            Self::Shutdown => {
+                "a daemon on its way out, so NOBODY decided anything about this run — bring the \
+                 daemon back and start it again"
+            }
+        }
+    }
 }
 
 /// **A RUN AS THE REGISTRY KNOWS IT** — the seam that lets [`RunRegistry`] be a DIRECTORY of runs
@@ -149,6 +238,15 @@ pub trait RunHandle: Send + Sync {
     /// allowed to put them side by side.
     fn stood_down(&self) -> bool;
 
+    /// **WHO CANCELLED THIS RUN**, or [`None`] if nobody has — register item 596.
+    ///
+    /// ⚠⚠ [`stood_down`](Self::stood_down)'s argument verbatim: the directory forwards an order and
+    /// does not know what became of it, so the handle is what remembers. And like that one it is a
+    /// FACT ABOUT THE ORDER and never about the ending — a run whose flag was raised at the same
+    /// instant it converged still converged, and `crate::plugins::cancel_sentence` is the only
+    /// reader allowed to weigh the two together.
+    fn cancelled_by(&self) -> Option<Canceller>;
+
     /// Whether a driver has stopped and is waiting to be collected — non-blocking. `false` once
     /// [`reap`](Self::reap) has taken it, and `false` for a run that never had one.
     fn reapable(&self) -> bool;
@@ -171,6 +269,17 @@ pub struct ThreadRun {
     cancel: Arc<AtomicBool>,
     stand_down: Arc<AtomicBool>,
     hold: Arc<AtomicBool>,
+    /// ⚠⚠⚠⚠⚠ **WHO RAISED THE CANCEL FLAG** — register item 596, and it is HERE rather than shared
+    /// with the worker on purpose.
+    ///
+    /// The three flags above are the worker's business: it reads them to decide what to do. This is
+    /// nobody's business but a READER's — the driver does the same thing either way, and handing it
+    /// down would invite a decision to be taken on it. So it stays on this side of the seam, where
+    /// the run's ANSWER is assembled.
+    ///
+    /// ⚠ `Mutex` and not an atomic, because the value is an enum rather than a bit and because
+    /// nothing reads it on a hot path: it is asked once, when a run's answer is projected.
+    cancelled_by: Mutex<Option<Canceller>>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -187,6 +296,7 @@ impl ThreadRun {
             cancel,
             stand_down,
             hold,
+            cancelled_by: Mutex::new(None),
             handle: Some(handle),
         }
     }
@@ -197,10 +307,27 @@ impl RunHandle for ThreadRun {
         // ⚠ ONE `match`, so a fourth order cannot be added without this arm being written. That is
         // the ratchet a trio of `store` calls at three call sites did not have.
         match order {
-            RunOrder::Cancel => self.cancel.store(true, Ordering::Release),
+            RunOrder::Cancel(who) => {
+                // ⚠⚠⚠ WHO FIRST, FLAG SECOND, and the order matters — register item 596. The
+                // worker can observe the flag on its very next poll, so a reason written afterwards
+                // could be read as absent by a projection racing the run's own ending. Written
+                // first, a reader that sees the cancel has already been able to see the reason.
+                //
+                // ⚠ THE FIRST WORD WINS: a person's cancel that a shutdown then repeats is still a
+                // person's decision, and `cancel_all` sweeps every run on the way out — including
+                // ones somebody had already stopped.
+                let mut said = lock(&self.cancelled_by);
+                said.get_or_insert(who);
+                drop(said);
+                self.cancel.store(true, Ordering::Release);
+            }
             RunOrder::StandDown => self.stand_down.store(true, Ordering::Release),
             RunOrder::Hold(held) => self.hold.store(held, Ordering::Release),
         }
+    }
+
+    fn cancelled_by(&self) -> Option<Canceller> {
+        *lock(&self.cancelled_by)
     }
 
     fn stood_down(&self) -> bool {
@@ -257,21 +384,39 @@ pub struct EndedRun {
     /// order and delivers none, so nothing can be written into this after the fact and nobody can
     /// mistake the memory for a live order.
     stood_down: bool,
+    /// WHO RAISED THE CANCEL, as the log recorded it — register item 596, and [`stood_down`]'s
+    /// argument reaching one field further.
+    ///
+    /// [`stood_down`]: Self::stood_down
+    ///
+    /// ⚠⚠⚠ **REPEATED, NEVER DEDUCED.** This daemon did not end the run and cannot tell why one it
+    /// found on disk stopped; what it may do is carry forward what the daemon that DID end it wrote
+    /// down. The distinction matters because the most common recorded reason is
+    /// [`Canceller::Shutdown`] — a daemon sweeping runs on its way out — and a reader must be able
+    /// to tell *nobody decided this* from *nobody wrote it down*.
+    cancelled_by: Option<Canceller>,
 }
 
 impl EndedRun {
-    /// A run with no driver left, carrying whether a person had stood it down.
+    /// A run with no driver left, carrying what the log said became of it.
     ///
     /// ⚠ Named rather than a struct literal at the call site: `EndedRun { stood_down: false }`
-    /// reads as a decision somebody took, and this is the one value a restore may not guess at.
+    /// reads as a decision somebody took, and these are the values a restore may not guess at.
     #[must_use]
-    pub const fn restored(stood_down: bool) -> Self {
-        Self { stood_down }
+    pub const fn restored(stood_down: bool, cancelled_by: Option<Canceller>) -> Self {
+        Self {
+            stood_down,
+            cancelled_by,
+        }
     }
 }
 
 impl RunHandle for EndedRun {
     fn deliver(&self, _order: RunOrder) {}
+
+    fn cancelled_by(&self) -> Option<Canceller> {
+        self.cancelled_by
+    }
 
     fn stood_down(&self) -> bool {
         self.stood_down
@@ -391,6 +536,17 @@ pub struct RunSummary {
     /// the order was given and NOT honoured, which is register item 594's whole finding.
     /// [`crate::plugins::stand_down_sentence`] is the one reader allowed to weigh the two together.
     pub stood_down: bool,
+    /// **WHO RAISED THE CANCEL** — [`RunHandle::cancelled_by`], or [`None`] when none was raised
+    /// (and also when the run was restored from disk, where nobody in this process knows).
+    ///
+    /// ⚠⚠⚠ **A WORD BESIDE `cancelled`, NEVER A WIDER `cancelled`** — register item 596. A person
+    /// stopping one run and a daemon sweeping every run on its way out both end a run `cancelled`,
+    /// and the remedies are opposite: the first is a decision to respect, the second is a run that
+    /// nobody decided anything about and that a person would want back. Splitting the STATE into
+    /// two words would have made every existing reader of `cancelled` wrong; a second key leaves
+    /// them all correct and merely less informed, which is this repository's shape at
+    /// `RUN_CEILING_KEY` and `RUN_STOPPED_KEY` already.
+    pub cancelled_by: Option<Canceller>,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -535,6 +691,24 @@ pub struct PersistedRun {
     /// field with a default reads in both directions.
     #[serde(default)]
     pub stood_down: Option<bool>,
+    /// ⚠⚠⚠⚠⚠ **WHO RAISED THE CANCEL THAT ENDED THIS RUN** — register item 596. [`None`] both for
+    /// a log written before this field existed and for a run no cancel touched.
+    ///
+    /// # Why persisting this is not optional, the way [`stood_down`](Self::stood_down)'s was
+    ///
+    /// [`Canceller::Shutdown`] is raised by [`RunRegistry::cancel_all`], and every caller of that
+    /// is a daemon on its way out — so the process that learns the reason stops existing moments
+    /// later. Without this field the value could be *produced* and never *read* by anybody, which
+    /// is a value space widened for nobody: the whole distinction item 596 exists to draw would
+    /// have been observable only in the seconds between the sweep and the exit.
+    ///
+    /// ⚠⚠ A restore reads it and hands it to [`EndedRun::restored`], which is the ONLY way this
+    /// daemon may answer `Shutdown` about a run it did not end — it is repeating a record, not
+    /// deducing a cause.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move: an optional field with a default reads both ways.
+    #[serde(default)]
+    pub cancelled_by: Option<Canceller>,
 }
 
 impl PersistedRun {
@@ -665,7 +839,11 @@ impl RunRegistry {
     /// The worker observes it at its next loop-top / wait-poll and ends
     /// [`crate::runs::RunState`]'s outcome as cancelled.
     pub fn cancel(&self, id: RunId) -> bool {
-        self.order(id, RunOrder::Cancel)
+        // ⚠ A PERSON — register item 596. Every caller of this verb is somebody saying stop: the
+        // CLI's `cancel-run`, the agent mouth's `cancel_run` on a run it opened, and a test
+        // standing in for one. The daemon's own sweep has its own door beside this one, and the
+        // whole point of the pair is that the two answers differ.
+        self.order(id, RunOrder::Cancel(Canceller::Person))
     }
 
     /// **FORWARD `order` TO RUN `id`**, returning whether such a run exists — the ONE place this
@@ -729,7 +907,10 @@ impl RunRegistry {
     /// instead of being waited out and detached by [`join_all_within`](Self::join_all_within).
     pub fn cancel_all(&self) {
         for record in &self.runs {
-            record.run.deliver(RunOrder::Cancel);
+            // ⚠ NOBODY DECIDED ANYTHING ABOUT THIS RUN — register item 596. The daemon is going
+            // away and is raising every flag so no worker is waited out and detached; a reader told
+            // only `cancelled` would go looking for the person who asked, and there is none.
+            record.run.deliver(RunOrder::Cancel(Canceller::Shutdown));
         }
     }
 
@@ -797,6 +978,11 @@ impl RunRegistry {
                         // reader of such a log may see it. Writing `None` for *no order* would make
                         // this daemon's own silence indistinguishable from an older daemon's.
                         stood_down: Some(run.stood_down),
+                        // ⚠ AND HERE `None` REALLY IS *no cancel*, unlike the field above — item
+                        // 596. A stand-down is a bool and needs `Some(false)` to distinguish a
+                        // silent daemon from an old log; a canceller is an option already, so the
+                        // absent case carries its own meaning and needs no second one.
+                        cancelled_by: run.cancelled_by,
                     }
                 })
                 .collect(),
@@ -924,7 +1110,13 @@ impl RunRegistry {
                 // none. What comes back is the RECORD that somebody gave one, which is the only
                 // thing that can explain the ending a reader is looking at. An absent field reads
                 // `false` — a log written before this existed cannot be made to say a person spoke.
-                run: Box::new(EndedRun::restored(saved.stood_down.unwrap_or(false))),
+                run: Box::new(EndedRun::restored(
+                    saved.stood_down.unwrap_or(false),
+                    // ⚠⚠⚠ ITEM 596. Without this the ONE canceller a person ever meets after a
+                    // restart would be unanswerable: `Shutdown` is raised by a daemon that then
+                    // exits, so the only daemon left to be asked is this one.
+                    saved.cancelled_by,
+                )),
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
                     cost,
@@ -990,6 +1182,9 @@ impl RunRegistry {
                 // sentence weighs the two against each other, and reading them a moment apart is
                 // this repository's *비교하는 두 값은 같은 순간에* rule at its cheapest.
                 stood_down: record.run.stood_down(),
+                // ⚠ SAME PASS, SAME REASON — item 596. The sentence a mouth prints weighs this
+                // against `state`, so the two must not be read a moment apart either.
+                cancelled_by: record.run.cancelled_by(),
             })
             .collect()
     }
@@ -1595,6 +1790,7 @@ mod tests {
                 at: None,
                 document: None,
                 stood_down: None,
+                cancelled_by: None,
             }],
         };
         let on_disk = serde_json::to_string(&log).expect("the run log encodes");
@@ -1787,6 +1983,7 @@ mod tests {
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
             stood_down: None,
+            cancelled_by: None,
         };
 
         // ── THE WORD SURVIVES THE ROUND TRIP THROUGH THE FILE, which is the whole point: this is
@@ -1866,6 +2063,15 @@ mod tests {
                 .iter()
                 .any(|order| matches!(order, RunOrder::StandDown))
         }
+        // ⚠ THE FIRST ONE IT WAS TOLD — item 596's rule, answered the way an out-of-process driver
+        // would have to: from its own record of what arrived, and taking the earliest because a
+        // person's decision must not be overwritten by the shutdown that sweeps every run.
+        fn cancelled_by(&self) -> Option<Canceller> {
+            lock(&self.0).iter().find_map(|order| match order {
+                RunOrder::Cancel(who) => Some(*who),
+                _ => None,
+            })
+        }
         fn reapable(&self) -> bool {
             false
         }
@@ -1932,7 +2138,7 @@ mod tests {
         let told = heard(&log);
         assert_eq!(
             told,
-            vec![RunOrder::Cancel],
+            vec![RunOrder::Cancel(Canceller::Person)],
             "⛔⛔⛔⛔ REGISTER ITEM 544: a cancel must be DELIVERED to the run. {told:?} — an empty \
              list means the registry reached for a flag of its own instead, which is the fusion \
              this stage exists to undo, because a driver in another process has no flag here",
@@ -1957,8 +2163,15 @@ mod tests {
         let told = heard(&log);
         assert_eq!(
             told,
-            vec![RunOrder::Cancel, RunOrder::Cancel],
-            "shutdown's broadcast must reach a run whose driver is not a thread. Got {told:?}",
+            vec![
+                RunOrder::Cancel(Canceller::Person),
+                RunOrder::Cancel(Canceller::Shutdown),
+            ],
+            "⛔⛔⛔ shutdown's broadcast must reach a run whose driver is not a thread — AND ARRIVE \
+             AS A DIFFERENT ORDER FROM THE PERSON'S ONE ABOVE (register item 596). Both used to be \
+             the bare word `Cancel`, so a run stopped by a daemon going away and a run somebody \
+             deliberately stopped were the same delivery, the same flag and the same `cancelled` — \
+             with opposite remedies. Got {told:?}",
         );
     }
 
@@ -2038,11 +2251,20 @@ mod tests {
         };
 
         let (run, cancel, stand, hold) = build();
-        run.deliver(RunOrder::Cancel);
+        run.deliver(RunOrder::Cancel(Canceller::Person));
         assert_eq!(
             read(&[&cancel, &stand, &hold]),
             vec![true, false, false],
             "a cancel must raise the cancel flag and only that one",
+        );
+        // ⚠⚠⚠ AND THE REASON IS NOT ONE OF THE FLAGS — register item 596. The three booleans are
+        // the WORKER's business, read from another thread on every turn; who asked is a READER's,
+        // and lives beside them rather than among them. Asserting it here is what keeps the two
+        // from being fused again by somebody who sees four facts and reaches for a fourth flag.
+        assert_eq!(
+            run.cancelled_by(),
+            Some(Canceller::Person),
+            "the run must remember WHO raised the cancel, not only that one was raised",
         );
 
         let (run, cancel, stand, hold) = build();
@@ -2100,6 +2322,9 @@ mod tests {
                 document: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
                 stood_down: None,
+                // ⚠ And no cancel was recorded either, which is what an interrupted run looks
+                // like: the daemon holding it went away without sweeping, so nobody raised one.
+                cancelled_by: None,
             }],
         });
 

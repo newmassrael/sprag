@@ -2683,12 +2683,19 @@ fn render_run(run: &Value) -> String {
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!(" {said}."));
+    // ⚠⚠⚠⚠ AND WHO RAISED THE CANCEL — register item 596, from the host's renderer for the reason
+    // above. An AGENT is the reader this one changes most: handed a bare `cancelled` it has no way
+    // to tell a decision it must respect from a daemon restart it should simply start over from,
+    // and the second is what a supervising agent meets every time this host is promoted.
+    let canceller = run[sprag_host::plugins::RUN_CANCELLED_BY_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" {said}."));
     match state["status"].as_str() {
         // The counters, for the reason the person's renderer prints them: an agent that polls a
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{verified}\n{}",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -2701,7 +2708,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{verified}{}{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{verified}{canceller}{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2736,7 +2743,7 @@ fn render_run(run: &Value) -> String {
         // under a standing order left a reader a bare word and no way to learn that what was asked
         // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.{order}{prompts}{verified}\n",
+            "Run {id} ({label}): {}.{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }

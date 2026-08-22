@@ -5544,12 +5544,19 @@ fn render_run(run: &Value) -> String {
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⚠⚠⚠⚠ AND WHO RAISED THE CANCEL — register item 596, in the same place and under the same
+    // constraint as the three clauses above. This is the one whose absence from the mouth would
+    // cost the most: `cancelled` alone is the word item 594 measured a person reading and being
+    // unable to act on, and a `Canceller::Shutdown` is only ever read AFTER a restart.
+    let canceller = run[sprag_host::plugins::RUN_CANCELLED_BY_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}{order}{prompts}{verified}\n{}",
+            "{head}  running — {} iterations, {} {} so far{}{order}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -5566,7 +5573,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{prompts}{verified}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{prompts}{verified}{canceller}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -5598,7 +5605,7 @@ fn render_run(run: &Value) -> String {
         // first of them: a daemon restarted under a standing order left a person a bare word and
         // no way to learn that what they asked for had never happened.
         _ => format!(
-            "{head}  {}{order}{prompts}{verified}\n",
+            "{head}  {}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
         ),
     }
@@ -9285,6 +9292,89 @@ mod tests {
             said.contains("was given no consent"),
             "⚠⚠ and WHY nothing was answered, as the sentence and not the wire word — `I gave no \
              consent` and `my consent did not fire` are different things to fix: {said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A CANCELLED RUN TELLS THE PERSON WHO CANCELLED IT** — register item 596, held at
+    /// the MOUTH and not only on the wire.
+    ///
+    /// # Why the mouth needs its own gate when the key is already gated
+    ///
+    /// `render_run`'s own comment names the failure it is guarding against — *"a fact that reaches
+    /// the wire and dies at the mouth somebody actually reads"* — and until this gate, **nothing in
+    /// this binary held it to that**. The host's gates prove the key is published; a renderer that
+    /// simply never read it would leave every one of them green while the person typing `sprag
+    /// runs` learned nothing, which is the exact shape register item 594 was filed about.
+    ///
+    /// ⚠⚠⚠ **THE CONTROL IS THE SAME RUN WITH NO CANCEL**, so a renderer that printed a fixed
+    /// clause on every run would fail here rather than pass by accident.
+    #[test]
+    fn a_cancelled_run_tells_the_person_who_cancelled_it() {
+        let mut swept = run_entry(&sprag_plugin::Outcome {
+            state: sprag_plugin::OutcomeState::Cancelled,
+            ..blocked_run(sprag_plugin::Refusal::NoConsent, 0)
+        });
+        // ⚠⚠⚠ THE RUN HAS A WALK, and giving it one is not decoration — it is what makes the
+        // positional assertions below mean anything. A block whose journal is empty ENDS on
+        // whatever clause came last, so a fixture without one cannot tell a clause that displaced
+        // the walk from a clause that merely followed it. The first run of this gate failed
+        // exactly there, and the fixture was the wrong half.
+        swept[sprag_host::plugins::RUN_JOURNAL_KEY] = serde_json::json!([{
+            "iteration": 1,
+            "cost": 245,
+            "unit": "bytes",
+            "verdict": "continue",
+            "note": "Idle --Start--> Priming",
+        }]);
+        // ⚠ THE HOST'S OWN SENTENCE, taken from the renderer that composes it rather than typed
+        // out here: two mouths reading one fact must not reach two conclusions, and a gate that
+        // spelled the words itself would go green against a mouth printing something else.
+        let expected = sprag_host::plugins::cancel_sentence(
+            sprag_host::runs::Canceller::Shutdown,
+            &sprag_host::runs::RunState::Done {
+                outcome: Box::new(sprag_plugin::Outcome {
+                    state: sprag_plugin::OutcomeState::Cancelled,
+                    ..blocked_run(sprag_plugin::Refusal::NoConsent, 0)
+                }),
+                output: None,
+            },
+        );
+        let quiet = render_run(&swept);
+        assert!(
+            !quiet.contains("bring the daemon back"),
+            "⚠⚠⚠ THE CONTROL: a run with no such key must say nothing about a canceller. A clause \
+             printed unconditionally would make the assertion below pass while saying nothing \
+             about anybody's cancel: {quiet}",
+        );
+
+        swept[sprag_host::plugins::RUN_CANCELLED_BY_KEY] = Value::String(expected.clone());
+        let said = render_run(&swept);
+        assert!(
+            said.contains(&expected),
+            "⛔⛔⛔ ITEM 596: the daemon knows a shutdown swept this run and the person reading \
+             `sprag runs` is told only `cancelled` — which is the word they cannot act on. The \
+             remedy for a swept run is *start it again*, and for a cancelled one it is *ask \
+             whoever stopped it*; a mouth that drops this makes them the same line. Got: {said}",
+        );
+        // ⚠⚠ AND NOT ON THE HEADING LINE, NOR AS THE LAST ONE. This repository's own outer-loop
+        // watcher reads a run's STATUS as the line after the heading and its walk as the block's
+        // last line, so a clause at either end silently moves a reader that already exists —
+        // `render_run`'s comment states the constraint and nothing was holding it.
+        let lines: Vec<&str> = said.lines().collect();
+        assert!(
+            !lines[0].contains("bring the daemon back") && !lines[1].contains("bring the daemon"),
+            "⚠⚠⚠ the clause must not land on the heading or the status line under it — the \
+             repayment loop's watcher reads both positionally: {said}",
+        );
+        assert!(
+            !lines[lines.len() - 1].contains("bring the daemon back"),
+            "⚠⚠⚠ nor last, which is where that watcher reads the walk: {said}",
+        );
+        assert!(
+            lines[lines.len() - 1].contains("Idle --Start--> Priming"),
+            "⚠⚠ and the WALK is what is still last, which is the other half of the same claim: a \
+             clause that pushed the walk off the end would satisfy the assertion above while \
+             breaking the reader it exists to protect: {said}",
         );
     }
 
