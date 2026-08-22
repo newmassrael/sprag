@@ -71,6 +71,9 @@ fn main() -> ExitCode {
             check_a_command_runs_from_a_palette_row(&mut smoke, &mut report);
             check_the_sole_docked_pane_locks_its_tear_off(&mut smoke, &mut report);
             check_focus_survives_a_window_change(&mut smoke, &mut report);
+            // Immediately after it, and deliberately: that check drives the owner's exact gesture
+            // and asks about the ring, this one asks about the PIXELS. Item 582 lived between them.
+            check_a_window_switch_moves_the_painted_panes(&mut smoke, &mut report);
             check_a_pane_can_be_created_and_closed(&mut smoke, &mut report);
             // AFTER a check that answers a confirmation, and THAT ordering is load-bearing: the
             // state a confirmed row leaves behind is the whole claim. It replaces the opposite
@@ -970,6 +973,11 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
 ///
 /// It leaves the window it created standing — closing it is the NEXT check's claim, not this one's
 /// — which is why that check reads the strip's tab count instead of assuming one.
+///
+/// ⚠⚠⚠⚠⚠ AND IT IS NOT THE CLAIM ITEM 582 IS ABOUT, which is why the check below exists. This one
+/// drives the owner's exact gesture and then asks about the FOCUS RING; a client that switched the
+/// chrome and left the old window's panes on screen passes it, because the panes it left standing
+/// are still docked and still take the ring. That is the gap 582 lived in.
 fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) {
     let Ok(docked) = smoke.docked_panes() else {
         report.check("the client's painted tree answers a docked pane set", false);
@@ -1066,6 +1074,287 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
     report.check(
         &format!("a live pane holds the keyboard after a PALETTE window change ({after:?})"),
         after.is_ok(),
+    );
+}
+
+/// **ITEM 582's LAST PATH: a window switch moves the PANES, not only the chrome.**
+///
+/// # The symptom, in the owner's words
+///
+/// *"pinion tab을 여러 번 눌렀는데 탭이 안 눌리고 있어"* — pressed repeatedly, apparently doing
+/// nothing. Every click reached the client (twelve of them in the log, none lost). The header, the
+/// tab strip and the daemon's current window had all moved to `pinion`; the PANES on screen were
+/// still the other window's, and only restarting the GUI healed it. A client showing one window's
+/// pixels under another window's name is worse than showing nothing: it answers, and the answer is
+/// wrong.
+///
+/// # Why here, and why the other three gates did not catch it
+///
+/// Three paths were gated first and all three are green:
+///
+/// * the host, called by a SEATLESS client (the CLI, an agent);
+/// * the host, called by a SEATED one — the path the GUI actually takes;
+/// * the GUI over an IN-PROCESS host.
+///
+/// The shipped GUI is none of those: it is a pure wire client (`sprag_client::WireHost`) with a
+/// pane cache a poll thread maintains, and this binary is the only rig that drives it. Reading the
+/// chain start to finish says it is correct — `refresh_view` re-queries the panes and reseeds the
+/// cache — so **the remaining defect, if there is one, is in a place reading cannot see**, which is
+/// the whole reason this asks the pixels instead.
+///
+/// # What is asserted
+///
+/// A distinct marker is typed into a pane of each window, and the question is put to the PAINTED
+/// text at three moments: the home marker is on screen; opening a window takes it off screen (a new
+/// window paints its OWN panes); and coming back by a tab click brings it back while the other
+/// window's marker stays off. ⚠ Both directions, because they are different swaps — one onto a
+/// newborn pane set, one onto slots this client has already used — and the owner's report is
+/// about the second.
+///
+/// ⚠ The marker is typed at the pane's own shell rather than injected into the client, so what the
+/// assertion reads is a pane's real screen arriving through the real wire.
+///
+/// # What the mutations showed, including the ones that showed nothing
+///
+/// It is GREEN on the shipped client, so the power of the gate is the whole question. Four
+/// mutations, and the two that changed nothing are the more interesting half:
+///
+/// * ⛔ `WireHost`'s POLL THREAD not re-querying the pane set: **red here**, at the first assertion
+///   — nothing mirrors, so no marker ever paints. The gate is not blind to this path.
+/// * ⛔ `refresh_view` not reseeding the cache: red, but in a DIFFERENT check (`the split reached
+///   the client's tiling`). So that arm is what a within-window pane change rides, and the poll
+///   thread is what a window switch rides.
+/// * ⚠⚠⚠⚠⚠ Removing the `reseed_pane_focus()` call from `SlotView::select_window`: **the whole
+///   suite stayed green.** That is the exact mutation the in-process gate for this item reds on,
+///   and it does not transfer — the wire client does not depend on it for panes.
+/// * ⚠⚠⚠⚠⚠ Removing the `remap()` inside `reseed_pane_focus`: **the whole suite stayed green** too.
+///
+/// So this gate is proven sensitive to the mirroring path and NOT proven to catch a client that
+/// mirrors panes yet fails to follow a switch. Said here rather than left for a later round to
+/// assume the stronger thing, which is the mistake the comment above the grid-cost check made and
+/// paid for on 2026-08-22.
+fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut Report) {
+    /// What the home window's pane is made to say.
+    const HOME_MARK: &str = "SPRAG-MARK-HOME";
+    /// ...and the window opened on top of it. Distinct strings, so "the wrong window is painted"
+    /// and "nothing is painted" cannot be confused for each other.
+    const AWAY_MARK: &str = "SPRAG-MARK-AWAY";
+
+    /// Whether any painted node in the CURRENT window carries `mark`.
+    ///
+    /// The whole painted tree, not a pane index: which slot a pane lands in is exactly what a
+    /// window switch changes, so an index would be asserting about the wrong thing.
+    ///
+    /// ⚠⚠⚠⚠⚠ `rows`, NOT `text`. A pane's screen is a GRID node, and `Painted::text` collects the
+    /// `content` of `Text` children — so a pane's own output is not in it and the first cut of this
+    /// check read `""` for a pane that was painting perfectly well. Measured: `painted
+    /// ["sprag_gui.pane.0=\"\""]` against a daemon that had just accepted the write. A question put
+    /// to the wrong field of the right node fails exactly like a broken product.
+    fn painted(smoke: &mut Smoke, mark: &str) -> bool {
+        smoke.tags().is_ok_and(|tags| {
+            tags.iter()
+                .filter(|(tag, _)| tag.starts_with("sprag_gui.pane."))
+                .any(|(_, node)| node.rows.iter().any(|row| row.contains(mark)))
+        })
+    }
+
+    /// Type `mark` at pane `id`'s own shell.
+    fn mark_pane(
+        daemon: &mut HostConn,
+        session: &str,
+        id: u32,
+        mark: &str,
+    ) -> std::io::Result<Value> {
+        daemon.call(
+            "scene/invoke",
+            json!({
+                "path": format!("/pane_{id}/sprag_input/external/text"),
+                "args": { "text": format!("printf '{mark}\\n'\n") },
+                "session": session,
+            }),
+        )
+    }
+
+    /// Open a window with the strip's own `+` button and answer the tab NAME that appeared, with
+    /// the strip it appeared in.
+    ///
+    /// By name rather than by count, because every later step addresses this window again after the
+    /// strip has grown once more, and a position does not survive that.
+    fn open_a_window(
+        smoke: &mut Smoke,
+        report: &mut Report,
+        before: &[String],
+    ) -> Option<(String, Vec<String>)> {
+        let pressed = smoke
+            .invoke(NEW_WINDOW_TAG, "send", json!("KeyboardActivate"))
+            .is_ok();
+        report.check("the strip's + button activates", pressed);
+        if !pressed {
+            return None;
+        }
+        let grown = smoke.wait_for(|s| {
+            let tabs = s.tabs().ok()?;
+            (tabs.len() > before.len()).then_some(tabs)
+        });
+        let Ok(grown) = grown else {
+            report.check(
+                &format!("the + button opened a window (was {before:?})"),
+                false,
+            );
+            return None;
+        };
+        let born = grown.iter().find(|name| !before.contains(name)).cloned();
+        report.check(
+            &format!("the new window carries a tab name of its own ({born:?} in {grown:?})"),
+            born.is_some(),
+        );
+        born.map(|name| (name, grown))
+    }
+
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session to drive", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the daemon takes a second connection to drive it by", false);
+        return;
+    };
+    let Ok(before) = smoke.tabs() else {
+        report.check("the client's painted tree answers a tab strip", false);
+        return;
+    };
+
+    // ⚠⚠⚠⚠⚠ BOTH WINDOWS ARE ONES THIS CHECK MAKES, and that is not tidiness — it removes an
+    // assumption that was wrong. The first cut marked "the window this client is on", came back to
+    // `tabs().first()`, and read two bare shell prompts: the strip's FIRST TAB IS NOT THE WINDOW
+    // THIS CLIENT IS VIEWING, and by this point in the run several checks have left windows behind.
+    // Nothing below needs to know which window was current on entry.
+    let Some((first_tab, after_first)) = open_a_window(smoke, report, &before) else {
+        return;
+    };
+    let first_ids = daemon_panes(&mut daemon, &session);
+    let Some(&home_pane) = first_ids.first() else {
+        report.check(
+            &format!("the window this check made has a pane to mark ({first_tab})"),
+            false,
+        );
+        return;
+    };
+    let home_ids = first_ids.clone();
+
+    let drove = mark_pane(&mut daemon, &session, home_pane, HOME_MARK);
+    // Waited on the PAINT, not on the drive's answer: the text action returns when the bytes reach
+    // the pty, which is several processes short of a frame.
+    let home_painted = smoke.wait_for(|s| painted(s, HOME_MARK).then_some(()));
+    // ⚠ The diagnostic is INSIDE, because the thing that can go wrong here is a correspondence:
+    // the daemon addresses a pane by id and the client paints it by index, and nothing on the wire
+    // maps one to the other (the same warning the agent-title check carries). If the id driven is
+    // not one this window paints, the marker is real and invisible — so the failure has to show
+    // both sides.
+    let painted_now: Vec<String> = smoke
+        .tags()
+        .map(|tags| {
+            let mut seen: Vec<String> = tags
+                .iter()
+                .filter(|(tag, _)| tag.starts_with("sprag_gui.pane."))
+                .map(|(tag, node)| format!("{tag}={:?}", node.rows.join("|").trim()))
+                .collect();
+            seen.sort();
+            seen
+        })
+        .unwrap_or_default();
+    report.check(
+        &format!(
+            "this window's pane paints its own marker (drove pane {home_pane} of daemon \
+             {home_ids:?}, drive {drove:?}, painted {painted_now:?})"
+        ),
+        home_painted.is_ok(),
+    );
+    if home_painted.is_err() {
+        return;
+    }
+
+    let Some((_second_tab, grown)) = open_a_window(smoke, report, &after_first) else {
+        return;
+    };
+
+    // THE FIRST HALF OF THE SYMPTOM. A new window that still paints the previous one's panes is the
+    // defect, seen from the other side — and it is asserted separately so a red says WHICH swap
+    // failed rather than leaving both under one sentence.
+    let left = smoke.wait_for(|s| (!painted(s, HOME_MARK)).then_some(()));
+    report.check(
+        &format!("opening a window paints ITS panes and not the ones that were there ({grown:?})"),
+        left.is_ok(),
+    );
+
+    let away_ids: Vec<u32> = daemon_panes(&mut daemon, &session)
+        .into_iter()
+        .filter(|id| !home_ids.contains(id))
+        .collect();
+    let Some(&away_pane) = away_ids.first() else {
+        report.check(
+            &format!("the new window has a pane of its own to mark (home {home_ids:?})"),
+            false,
+        );
+        return;
+    };
+    let drove = mark_pane(&mut daemon, &session, away_pane, AWAY_MARK);
+    let away_painted = smoke.wait_for(|s| painted(s, AWAY_MARK).then_some(()));
+    report.check(
+        &format!("the new window's pane paints a marker of its own (drive {drove:?})"),
+        away_painted.is_ok(),
+    );
+
+    // Back to the FIRST window this check made, found by the NAME it was born with: the strip grew
+    // again, so the index that tab had is not the index it has now.
+    let Some(at) = grown.iter().position(|name| *name == first_tab) else {
+        report.check(
+            &format!("the window this check marked still has a tab ({first_tab} of {grown:?})"),
+            false,
+        );
+        return;
+    };
+    report.check(
+        &format!("the marked window's tab activates ({at} of {grown:?})"),
+        smoke
+            .invoke(
+                &format!("sprag_gui.wtab.{at}"),
+                "send",
+                json!("KeyboardActivate"),
+            )
+            .is_ok(),
+    );
+
+    // ⚠⚠⚠⚠⚠ THE CLAIM, and both halves of it in ONE window: the marker that belongs here is back,
+    // and the one that does not is gone. Asserting only the first would pass against a client that
+    // paints every window's panes at once, which is a different defect wearing the same green.
+    let home_again =
+        smoke.wait_for(|s| (painted(s, HOME_MARK) && !painted(s, AWAY_MARK)).then_some(()));
+    // ⚠ The two halves are reported SEPARATELY in the message, because they are different defects:
+    // "the panes did not come back" is the owner's report, and "the other window's panes are still
+    // here" is a client painting more than one window at once. A single boolean would leave the
+    // next round guessing which one it is looking at — and this file has paid for that guess.
+    let (home_here, away_here) = (painted(smoke, HOME_MARK), painted(smoke, AWAY_MARK));
+    let painted_now: Vec<String> = smoke
+        .tags()
+        .map(|tags| {
+            let mut seen: Vec<String> = tags
+                .iter()
+                .filter(|(tag, _)| tag.starts_with("sprag_gui.pane.") && !tag.contains('#'))
+                .map(|(tag, node)| format!("{tag}={:?}", node.rows.join(" ").trim()))
+                .collect();
+            seen.sort();
+            seen
+        })
+        .unwrap_or_default();
+    report.check(
+        &format!(
+            "a tab click brings this window's panes back, and not the other window's \
+             (home painted {home_here}, other painted {away_here}, tabs now \
+             {:?}, panes {painted_now:?})",
+            smoke.tabs()
+        ),
+        home_again.is_ok(),
     );
 }
 
