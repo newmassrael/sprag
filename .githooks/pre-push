@@ -58,14 +58,26 @@ pushed_refs="$(cat)"
 
 # ── The pixel smoke, when this push touches what it paints.
 #
-# WHY THIS IS HERE AT ALL. The smoke is the only gate that looks at PIXELS, and it runs in neither
-# CI (it needs an X server and a GPU-less Vulkan) nor pre-commit. So its number was only ever as
-# current as the last round that felt like running it — and R349 shipped a paint change without it,
-# leaving it RED for eleven rounds while every other gate stayed green. A gate nobody runs goes red
-# in silence, and the number people quote for it is a date rather than a state.
+# WHY THIS IS HERE AT ALL. The smoke is the only gate that looks at PIXELS, and it ran in neither CI
+# nor pre-commit. So its number was only ever as current as the last round that felt like running it
+# — and R349 shipped a paint change without it, leaving it RED for eleven rounds while every other
+# gate stayed green. A gate nobody runs goes red in silence, and the number people quote for it is a
+# date rather than a state.
+#
+# ⚠⚠⚠⚠⚠ AND THAT IS NO LONGER THE WHOLE PICTURE: CI runs this same binary on EVERY push, in the
+# `pixel (linux)` job, under xvfb with the same GPU-less Vulkan. It grew after the paragraph above
+# was written and the paragraph did not follow. What this list scopes is therefore LOCAL FEEDBACK —
+# whether a paint break is caught before publishing or one round later — and NOT whether the smoke
+# runs at all. Reading it as coverage is what registers 608 and 611 both did in one round, one of
+# them concluding the shipped topology passed through no gate while `pixel (linux)` was green on the
+# very commit. `a_hook_that_scopes_a_gate_is_read_against_where_that_gate_runs` holds these two
+# artefacts together so the next rename cannot quietly separate them again.
 #
 # WHY IT IS SCOPED. It is minutes, not seconds. It runs when the push carries a change to what it
-# watches — the GUI client and the re-wrap the client paints through — and not otherwise.
+# watches — the GUI client and the re-wrap the client paints through — and not otherwise. ⚠ The
+# residue that leaves, stated: a change to `crates/sprag-client` (the shipped GUI's own `WireHost`)
+# or to the daemon paints differently and does NOT run this locally. CI still catches it; the cost
+# is a round of latency, which is the trade this repository already makes everywhere else.
 #
 # WHY IT REFUSES INSTEAD OF SKIPPING. A gate that quietly steps aside on the machine that lacks its
 # tools is the state this exists to end: it would be absent exactly where nobody notices. Missing
