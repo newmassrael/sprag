@@ -1700,16 +1700,33 @@ mod tests {
     }
 
     /// A run whose worker does what every real one does: reads its cancel flag and comes back.
-    fn a_worker_that_honours_its_cancel_flag(id: RunId) -> NewRun {
+    /// An obedient worker, handing back a flag that says **whether it was ever ASKED** —
+    /// `true` only if it left because the cancel flag was raised, never because it timed out.
+    ///
+    /// ⚠⚠⚠⚠⚠ This exists so *"the drop asks before it waits"* can be asked of the RUN instead of
+    /// of a stopwatch. The claim was gated by a 50 ms wall-clock bound, which is a proxy: it says
+    /// *the wait was short*, and infers the ask from that. On a shared CI runner the inference
+    /// breaks — macOS measured 53.3 ms on 2026-08-22 and reported *"it joined without asking"*
+    /// about a daemon that had asked perfectly well. A flag the worker sets cannot be wrong about
+    /// this, and cannot be slow.
+    fn a_worker_that_records_being_asked(id: RunId) -> (NewRun, Arc<AtomicBool>) {
         let cancel = Arc::new(AtomicBool::new(false));
+        let asked = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
+        let saw = Arc::clone(&asked);
         let handle = std::thread::spawn(move || {
             let start = Instant::now();
             while !flag.load(Ordering::Acquire) && start.elapsed() < Duration::from_secs(60) {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            // Recorded from the flag itself rather than from "the loop ended": the sixty-second
+            // ceiling is the other way out, and a worker that fell out of it was never asked.
+            saw.store(flag.load(Ordering::Acquire), Ordering::Release);
         });
-        parked_run_with(id, "obedient".to_string(), handle, cancel)
+        (
+            parked_run_with(id, "obedient".to_string(), handle, cancel),
+            asked,
+        )
     }
 
     /// A run whose worker returns after `delay` — a healthy one, slow enough that the FIRST sweep
@@ -2171,21 +2188,25 @@ mod tests {
         );
     }
 
-    /// **WHAT A SHUTDOWN MAY COST WHEN EVERY RUN BEHAVES** — a requirement, not a reading.
+    /// **A DROP THAT HAS ONLY GONE PATIENT** — the backstop, not the instrument.
     ///
-    /// ⚠⚠⚠ **DELIBERATELY NOT A MULTIPLE OF [`RunRegistry::JOIN_POLL`]**, which is the constant it
-    /// is here to defend. A bound written as *n × the constant* moves when the constant moves and
-    /// can therefore never catch it — item 377's lesson, where a repair's headline promise was held
-    /// by an unrelated number and nothing noticed. This is the requirement instead: a person who
-    /// asked a well-behaved daemon to stop must not perceive the wait. Measured at **5.27 - 5.47 ms**
-    /// (four samples, 2026-08-17) — one poll interval and the worker's own 1 ms tick — so fifty
-    /// milliseconds is nine times the measurement, and a poll raised an order of magnitude to
-    /// 400 ms is red here at 400.4 ms.
+    /// ⚠⚠⚠⚠⚠ **THIS USED TO BE 50 ms AND IT WAS A PROXY.** The claim is *the drop ASKS before it
+    /// waits*, and a tight wall-clock bound infers that from *the wait was short*. The inference is
+    /// only as good as the machine: macOS CI measured **53.3 ms** on 2026-08-22 and reported *"it
+    /// joined without asking the run to stop"* about a daemon that had asked correctly. That is a
+    /// gate blaming the product for the weather — item 454's fifth face — and the third wall-clock
+    /// assertion to do it here in one day.
     ///
-    /// ⚠ A poll set to exactly this number sits ON the boundary and is caught only by the sleep's
-    /// own overshoot (50.25 ms, measured). That is not a property to lean on: what this defends is
-    /// the ORDER of the poll, not its last millisecond.
-    const A_SHUTDOWN_NOBODY_FEELS: Duration = Duration::from_millis(50);
+    /// The two claims that bound was carrying are now asked directly and without a clock: the ask
+    /// itself by [`a_worker_that_records_being_asked`], and the poll's ORDER by
+    /// [`the_join_poll_is_short_enough_that_nobody_feels_a_shutdown`]. What is left for a stopwatch
+    /// is the one thing neither can see — a `Drop` that sat for its whole deadline — so the number
+    /// is now a fraction of [`RunRegistry::JOIN_DEADLINE`] rather than a multiple of a measurement.
+    ///
+    /// ⚠ Deliberately FAR from the 5.27 - 5.47 ms this actually takes (four samples, 2026-08-17):
+    /// a backstop that a loaded runner can reach is a flake, and a backstop that only an unbounded
+    /// wait can reach is a backstop.
+    const A_DROP_THAT_WENT_PATIENT: Duration = Duration::from_secs(1);
 
     /// ⚠⚠⚠ **DROPPING A REGISTRY ASKS ITS RUNS TO STOP BEFORE IT WAITS FOR THEM.**
     ///
@@ -2194,23 +2215,55 @@ mod tests {
     /// run that would have come back in milliseconds — which is worse than the unbounded join it
     /// replaced, because it loses the outcome as well as the time.
     ///
-    /// ⚠⚠ AND THE SAME GATE HOLDS THE POLL'S COST, because they are one question asked of one
-    /// clock: *how long does a shutdown take when nothing is wrong?* See
-    /// [`A_SHUTDOWN_NOBODY_FEELS`] for why the answer is an absolute and not a multiple.
+    /// ⚠⚠ ASKED OF THE RUN, NOT OF A CLOCK. The worker records whether the cancel flag was raised
+    /// before it left, so *the drop asked* is an observation rather than something inferred from a
+    /// short wait. See [`A_DROP_THAT_WENT_PATIENT`] for what the remaining stopwatch is still for.
     #[test]
     fn dropping_a_registry_asks_its_runs_to_stop_before_waiting_for_them() {
         let mut registry = RunRegistry::default();
         let id = registry.reserve();
-        registry.submit(a_worker_that_honours_its_cancel_flag(id));
+        let (run, asked) = a_worker_that_records_being_asked(id);
+        registry.submit(run);
 
         let raised = Instant::now();
         drop(registry);
         let waited = raised.elapsed();
 
         assert!(
-            waited < A_SHUTDOWN_NOBODY_FEELS,
-            "the drop waited {waited:?} — it joined without asking the run to stop, or it is \
-             asking too rarely to hear the answer",
+            asked.load(Ordering::Acquire),
+            "the run was never asked to stop — the drop joined a worker it had not cancelled, \
+             which holds every shutdown for the whole deadline and then detaches a run that would \
+             have come back in milliseconds (waited {waited:?})",
+        );
+        assert!(
+            waited < A_DROP_THAT_WENT_PATIENT,
+            "the drop waited {waited:?} — it asked, and then sat there anyway",
+        );
+    }
+
+    /// ⚠⚠⚠ **AND THE POLL IS SHORT ENOUGH THAT NOBODY FEELS THE SHUTDOWN** — the other half of the
+    /// bound that used to be one number, asked of the constant instead of of a clock.
+    ///
+    /// A drop that asks correctly still makes a person wait if it only listens for the answer every
+    /// half second. That is a property of [`RunRegistry::JOIN_POLL`] alone, so it is asserted
+    /// against an ABSOLUTE — item 377's rule, and the reason the old bound refused to be written as
+    /// a multiple of this constant: a bound expressed in terms of the thing it guards moves with it
+    /// and can never catch it.
+    ///
+    /// Twenty milliseconds is four times today's poll and two orders below the deadline: a poll
+    /// raised to 400 ms — the case the old comment named — is red here, and no machine's load can
+    /// make this test say anything at all, because it reads no clock.
+    #[test]
+    fn the_join_poll_is_short_enough_that_nobody_feels_a_shutdown() {
+        assert!(
+            RunRegistry::JOIN_POLL <= Duration::from_millis(20),
+            "a shutdown listens for its runs every {:?}; a person asking a well-behaved daemon to \
+             stop would perceive that wait",
+            RunRegistry::JOIN_POLL,
+        );
+        assert!(
+            RunRegistry::JOIN_POLL < RunRegistry::JOIN_DEADLINE,
+            "the poll must fit inside the deadline it is polling towards",
         );
     }
 
