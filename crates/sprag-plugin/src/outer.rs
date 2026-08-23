@@ -6848,6 +6848,17 @@ impl OuterLoop {
             wanted,
         } = delivered
         {
+            // ⚠⚠⚠⚠⚠ **COUNTED HERE, AND NOWHERE ELSE, BECAUSE THIS IS WHERE THE ANSWER IS READ** —
+            // register item 617. `record_delivery` above cannot do it: it is handed
+            // `Witnessed::of(delivered)`, which maps BOTH refusals to the same `None`, and the two
+            // are not one fact — this prompt is on the pane and the other one never got there.
+            //
+            // ⚠⚠ The argument is the one the `shows_the_prompt` road above already makes for
+            // recording `Unchecked`: *recording nothing here would leave it indistinguishable from
+            // a pass that delivered nothing at all*. That call was made once and missed here, and
+            // what it cost is a live run measured 2026-08-23 whose own sentence said the text had
+            // been read back off the screen while its counters said `0 of 0`.
+            self.deliveries.unsubmitted = self.deliveries.unsubmitted.saturating_add(1);
             return Err(PaneError::NeverSubmitted {
                 attempts,
                 written: written.bytes(),
@@ -8584,6 +8595,112 @@ mod tests {
             "⚠⚠⚠ THE CONTROL: under a supervisor that CAN see the turn start, the same peer and \
              the same prompt go through — a rule that refused here would refuse every loop there \
              is. Got {moved:?}",
+        );
+    }
+
+    /// ⛔⛔⛔ **A PROMPT THAT REACHED THE PANE AND WAS NEVER ASKED IS COUNTED, AND A PROMPT THAT
+    /// NEVER REACHED IT IS NOT** — register item 617, found by driving a live agent for item 599.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two failures below were the SAME NUMBER, and one of them is item 591's own run
+    ///
+    /// `Witnessed::of` folds both refusals to `None`, so [`record_delivery`](OuterLoop::
+    /// record_delivery) counted neither — and a run whose prompt was typed, painted and left
+    /// sitting in a composer published `0 of 0`, which is what a run that sent nothing publishes.
+    /// The host then prints NOTHING for it (`delivery_sentence` returns `None` on a zero
+    /// denominator), so the one run register item 591 exists for says nothing at all about
+    /// delivery. MEASURED 2026-08-23 against a real `claude` on a 44-column pane: the run's own
+    /// failure sentence said *the text was read back off a screen this delivery changed* while its
+    /// counters said `made: 0, folded: 0`.
+    ///
+    /// ⚠⚠ **THE ARMS DIFFER IN ONE THING: WHERE THE PEER SENDS WHAT IT IS TYPED.** Both peers take
+    /// the bytes and act on none of them; one paints them and one swallows them. That is the whole
+    /// difference between *your prompt is sitting in that composer, go and look* and *your prompt
+    /// never got there* — two different things for the person reading, and one number until today.
+    ///
+    /// ⚠ Neither arm is supervised, deliberately: both are the FAILURE road, and a supervisor that
+    /// could see a turn start would take the painting arm off it (which is the control the refusal
+    /// gate above already drives). What is under test here is the COUNT the two failures publish.
+    #[test]
+    fn a_prompt_left_in_a_composer_is_counted_and_one_that_never_landed_is_not() {
+        /// A peer that paints what it is typed and acts on none of it — a composer holding a
+        /// question. Its delivery is CONFIRMED and its submit never stirs anything.
+        const PAINTS_EVERYTHING: &str = "stty raw -echo; printf 'GO'; exec cat";
+        /// The same peer with its mouth shut: it takes every byte and paints none, so the delivery
+        /// is never confirmed and the prompt is nowhere a person could be sent to look.
+        const PAINTS_NOTHING: &str = "stty raw -echo; printf 'GO'; exec cat > /dev/null";
+
+        let refused_by = |peer: &str| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(peer);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                Duration::from_secs(1),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            // The peer has to be past its `stty` before anything is typed, or the line discipline
+            // echoes the prompt and this measures the kernel — `deliver`'s own fixtures learned it.
+            let up = Instant::now();
+            while !access
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pumped = loops.pump(&access, &RunContext::uncancellable());
+            let counted = loops.deliveries();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (pumped, counted)
+        };
+
+        let (wedged, held) = refused_by(PAINTS_EVERYTHING);
+        assert!(
+            matches!(wedged, Err(PaneError::NeverSubmitted { .. })),
+            "the staging, not the claim: this arm must reach the refusal whose count is under \
+             test, or what follows is about somewhere else. Got {wedged:?}",
+        );
+        assert_eq!(
+            held.unsubmitted, 1,
+            "⛔⛔⛔ ITEM 617: this prompt is ON that pane — typed, painted, and sitting in a \
+             composer nobody submitted — and the run's counters do not say so. That run is exactly \
+             the one register item 591 built these counters for, and it publishes the numbers of a \
+             run that never sent anything: {held:?}",
+        );
+
+        let (never_landed, missed) = refused_by(PAINTS_NOTHING);
+        assert!(
+            matches!(never_landed, Err(PaneError::NeverTook { .. })),
+            "the staging for the control: this arm must fail the OTHER way. Got {never_landed:?}",
+        );
+        assert_eq!(
+            missed.unsubmitted, 0,
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS THE WHOLE CLAIM: nothing was ever confirmed on this \
+             pane, so there is no prompt for anybody to go and look at. A count that rose here \
+             would be telling a person to search a screen the text never reached — the reassuring \
+             wrong answer, which is the direction this repository has paid for twice: {missed:?}",
         );
     }
 

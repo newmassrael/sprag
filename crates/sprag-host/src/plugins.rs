@@ -221,6 +221,25 @@ pub const RUN_DELIVERED_KEY: &str = "delivered";
 /// is the wrong instruction — `sprag_plugin::Deliveries::all_folded` is the predicate, and both
 /// mouths say it in words rather than leaving a reader to divide two numbers.
 pub const RUN_FOLDED_KEY: &str = "folded";
+/// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE SITTING IN A COMPOSER, TYPED AND NEVER
+/// ASKED** — register item 617, present beside [`RUN_DELIVERED_KEY`] and never alone.
+///
+/// # ⛔⛔⛔ It was `0`, which is what a run that sent nothing publishes
+///
+/// A prompt the pane took and painted, whose submit never became a question, is not a delivery —
+/// nothing was asked — so it is rightly outside [`RUN_DELIVERED_KEY`]. But it was outside
+/// everything: `sprag_plugin::deliver::Witnessed::of` maps both refusals to `None`, so the wedged
+/// run and the run that never typed a byte published the same `0 of 0`, and [`delivery_sentence`]
+/// (which returns nothing on a zero denominator) printed no delivery line for either.
+///
+/// ⚠⚠ **THE REMEDY IS THE OPPOSITE OF [`RUN_FOLDED_KEY`]'s.** A folded prompt means *do not go and
+/// look at that pane*; this one means **go and look — it is sitting there**. Two instructions to
+/// two different people, and one number until this key existed.
+///
+/// ⚠ MEASURED 2026-08-23 against a live `claude` on a 44-column pane: the run's own failure
+/// sentence said *the text was read back off a screen this delivery changed* while its counters
+/// said `made: 0, folded: 0`.
+pub const RUN_UNSUBMITTED_KEY: &str = "unsubmitted";
 /// The answer key carrying **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
 /// register item 601, a sentence and absent for a run that put no claim to a checker.
 ///
@@ -2128,9 +2147,23 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     //
     // ⚠ THE PAIR, never the fold count alone: `folded: 3` says nothing without the denominator,
     // and `sprag_plugin::Deliveries`' own doc holds the argument.
-    if run.progress.deliveries.made > 0 {
-        entry[RUN_DELIVERED_KEY] = json!(run.progress.deliveries.made);
-        entry[RUN_FOLDED_KEY] = json!(run.progress.deliveries.folded);
+    // ⚠⚠⚠⚠⚠ **THE CONDITION IS *DID THIS RUN PUT A PROMPT ANYWHERE*, NOT *WAS ONE ASKED*** —
+    // register item 617. It used to be `made > 0`, and a WEDGED run has `made == 0` by definition:
+    // nothing was asked, so there is no delivery to count. The triple was therefore published under
+    // a condition the run it matters most for can never satisfy, and the run whose prompt is still
+    // sitting in a composer somebody could walk over and read said nothing at all.
+    //
+    // ⚠ The absence is still a claim for a run that composed NOTHING — `pipe` and `orchestrator`
+    // relay words they did not write — which is why this is a predicate over the value rather than
+    // an unconditional publication of three zeroes.
+    let deliveries = run.progress.deliveries;
+    if deliveries.made > 0 || deliveries.unsubmitted > 0 {
+        entry[RUN_DELIVERED_KEY] = json!(deliveries.made);
+        entry[RUN_FOLDED_KEY] = json!(deliveries.folded);
+        // ⚠ AND THE THIRD OF THE TRIPLE — register item 617. Published beside its two neighbours
+        // because they are ONE value (`sprag_plugin::Deliveries`), and a key a writer can omit
+        // half of is what that type exists to prevent.
+        entry[RUN_UNSUBMITTED_KEY] = json!(deliveries.unsubmitted);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
@@ -2514,7 +2547,46 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     let deliveries = sprag_plugin::Deliveries {
         made: count(run, RUN_DELIVERED_KEY),
         folded: count(run, RUN_FOLDED_KEY),
+        unsubmitted: count(run, RUN_UNSUBMITTED_KEY),
     };
+    // ⚠⚠⚠⚠⚠ **A PROMPT NOBODY WAS ASKED IS SAID FIRST, BECAUSE IT IS THE ONE STILL SITTING
+    // SOMEWHERE** — register item 617. It is read BEFORE the zero-denominator return below, and
+    // that ordering is the whole repair: a wedged run has no deliveries by definition (nothing was
+    // asked), so the early return was swallowing the one run register item 591 was built for.
+    //
+    // ⚠⚠ THE INSTRUCTION IS THE OPPOSITE OF THE FOLD CLAUSES BELOW. Those say *do not go and look
+    // at that pane*; this says **go and look, it is there** — so it is its own sentence rather than
+    // a number folded into theirs, on `delivery_sentence`'s own stated argument that the fact a
+    // person acts on is the reading and not the count.
+    if deliveries.unsubmitted > 0 {
+        let wedged = format!(
+            "⚠ {} prompt(s) reached that pane and were never asked — the text is sitting in its \
+             composer, so go and look at that pane: what is there is a question nobody put",
+            deliveries.unsubmitted,
+        );
+        if deliveries.made == 0 {
+            return Some(wedged);
+        }
+        // A run that delivered AND wedged has both readings, and neither survives being dropped for
+        // the other: the earlier prompts are somewhere, and the last one is somewhere else.
+        return Some(match delivered_clause(deliveries) {
+            Some(delivered) => format!("{wedged}. {delivered}"),
+            None => wedged,
+        });
+    }
+    if deliveries.made == 0 {
+        return None;
+    }
+    delivered_clause(deliveries)
+}
+
+/// What became of the prompts this run actually DELIVERED — [`delivery_sentence`]'s fold reading,
+/// lifted out so the wedged clause above can carry it too.
+///
+/// ⚠ Split rather than duplicated: two spellings of *all of them were folded* would differ first in
+/// whichever one a later round forgot, which is the failure `delivery_sentence`'s own doc argues
+/// against one function up.
+fn delivered_clause(deliveries: sprag_plugin::Deliveries) -> Option<String> {
     if deliveries.made == 0 {
         return None;
     }
@@ -2869,6 +2941,102 @@ mod tests {
                 start.elapsed(),
             );
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// ⛔⛔⛔ **A RUN WHOSE ONLY PROMPT IS STUCK IN A COMPOSER PUTS THAT ON THE WIRE** — register
+    /// item 617's second half, and the one the sentence gate cannot reach.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE GUARD IS `made > 0`, AND A WEDGED RUN HAS `made == 0` BY DEFINITION.** Nothing
+    /// was asked, so there is no delivery to count — which is exactly why this run's count was
+    /// invisible: the triple is published under a condition the run it matters most for can never
+    /// satisfy. A gate that built the JSON by hand (as `delivery_sentence`'s does) reads a shape
+    /// no daemon would ever emit, so this one asks the product's own door instead.
+    ///
+    /// ⚠⚠ **THE CONTROL IS A RUN THAT TYPED NOTHING**, and it holds the rest of the claim: the
+    /// keys stay ABSENT there, which is what keeps a workspace of shells byte-identical to the
+    /// pre-591 wire shape. Publishing zeroes on every run would satisfy the arm above while making
+    /// the absence — *this plugin has no prompts for a composer to fold* — unsayable.
+    #[test]
+    fn a_run_whose_prompt_is_stuck_in_a_composer_publishes_that_count() {
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Two runs a predecessor daemon left on disk. Restored rather than submitted live, which
+        // is both this module's own fixture shape and the harder road: it drives the persistence
+        // register item 617 added beside the count, so a field the log dropped fails here too.
+        let one = |id: u64, deliveries: Option<crate::runs::PersistedDeliveries>| {
+            crate::runs::PersistedRun {
+                id,
+                label: "ai_loop pane=2".to_owned(),
+                iterations: 1,
+                cost: None,
+                unit: None,
+                finished: true,
+                outcome: None,
+                ceiling: None,
+                output: None,
+                build: None,
+                opened_by_session: None,
+                at: None,
+                document: None,
+                stood_down: None,
+                cancelled_by: None,
+                deliveries,
+                banked: None,
+            }
+        };
+        lock(&registry).restore(&crate::runs::RunLog {
+            version: crate::runs::RUN_LOG_VERSION,
+            runs: vec![
+                // A run that typed ONE prompt onto its pane and never got it asked. `made` is 0
+                // because nothing was ever asked, which is the whole shape under test.
+                one(
+                    0,
+                    Some(crate::runs::PersistedDeliveries {
+                        made: 0,
+                        folded: 0,
+                        unsubmitted: 1,
+                    }),
+                ),
+                // ── AND THE CONTROL: a run that put nothing into any pane ──
+                one(1, None),
+            ],
+        });
+
+        let listed = read_runs(&external);
+        let entry = |id: u64| {
+            listed
+                .iter()
+                .find(|entry| entry["id"] == json!(id))
+                .unwrap_or_else(|| panic!("run {id} is listed"))
+        };
+        assert_eq!(
+            entry(0).get(RUN_UNSUBMITTED_KEY).and_then(Value::as_u64),
+            Some(1),
+            "⛔⛔⛔ ITEM 617: this run's prompt is sitting in a composer on a pane somebody can go \
+             and look at, and the wire says nothing — because the triple is published only when \
+             `delivered > 0`, which a run that never got a question asked can never be. Entry: \
+             {:?}",
+            entry(0),
+        );
+        for key in [RUN_DELIVERED_KEY, RUN_FOLDED_KEY, RUN_UNSUBMITTED_KEY] {
+            assert!(
+                entry(1).get(key).is_none(),
+                "⚠⚠⚠⚠⚠ THE CONTROL: this run composed no prompt at all, and the absence of {key:?} \
+                 is a CLAIM — *this plugin has nothing for a composer to fold*. Zeroes published \
+                 on every run would make that unsayable and would change the wire shape every \
+                 script reading this slot was written against. Entry: {:?}",
+                entry(1),
+            );
         }
     }
 

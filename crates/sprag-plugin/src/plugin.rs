@@ -345,6 +345,23 @@ pub struct Deliveries {
     /// text somewhere a person can find it; this one leaves `[Pasted text +N lines]` where they
     /// were told to expect their prompt.
     pub folded: u32,
+    /// How many prompts this run typed onto a pane, saw painted there, and **never got asked** —
+    /// [`crate::deliver::Delivered::Unsubmitted`], the composer holding a question nobody
+    /// submitted.
+    ///
+    /// ⚠⚠⚠⚠⚠ **NOT PART OF [`made`](Self::made), AND THAT IS THE POINT.** It is not a delivery: no
+    /// question was asked, so putting it in the denominator would dilute the folded ratio with
+    /// prompts nobody was ever asked. But it is not NOTHING either, which is what it was until
+    /// register item 617 — `Witnessed::of` maps both refusals to `None`, so a run whose prompt sat
+    /// in a composer published the same `0 of 0` as a run that never typed a byte, and the host's
+    /// sentence (which returns early on a zero denominator) said nothing at all about the one run
+    /// register item 591 built these counters for.
+    ///
+    /// ⚠⚠ **THE REMEDY IT CARRIES IS THE OPPOSITE OF [`folded`](Self::folded)'s.** A folded prompt
+    /// means *do not go and look at that pane*; this one means **go and look — your prompt is
+    /// sitting there**, which is a different instruction to a different person. Counting them as
+    /// one number would be counting two remedies as one.
+    pub unsubmitted: u32,
 }
 
 impl Deliveries {
@@ -355,7 +372,11 @@ impl Deliveries {
     /// reads as *I have not filled this in*, and this is a positive claim — **this plugin has no
     /// prompts for a composer to fold.** `pipe` relays bytes somebody else composed, `orchestrator`
     /// drives a peer it did not write the words for, and neither has a delivery in this sense.
-    pub const NONE: Self = Self { made: 0, folded: 0 };
+    pub const NONE: Self = Self {
+        made: 0,
+        folded: 0,
+        unsubmitted: 0,
+    };
 
     /// Whether EVERY prompt this run delivered was folded away — the reading that says *do not go
     /// and look at that pane*, and the one register item 591 was measured on.

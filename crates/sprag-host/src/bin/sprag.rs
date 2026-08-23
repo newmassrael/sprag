@@ -9474,6 +9474,55 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔ **A RUN WHOSE PROMPT IS SITTING IN A COMPOSER IS TOLD SO, AND ONE THAT SENT NOTHING IS
+    /// NOT** — register item 617, measured against a live `claude` 2026-08-23.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The run register item 591 exists for was the one saying nothing
+    ///
+    /// `delivery_sentence` returns early on a zero denominator, which is right for a run that never
+    /// typed a byte — and it was also every run whose prompt was typed, painted, and never asked,
+    /// because until item 617 nothing counted those. So the wedged run — the one whose whole
+    /// symptom is *your prompt is on that pane and nobody was asked it* — printed no delivery line
+    /// at all, on the mouth a person greps. MEASURED: a 44-column pane, a 10599-byte brief, the
+    /// run's own failure sentence saying the text had been read back off the screen, and its
+    /// counters saying `0 of 0`.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE SAME RUN WITH THE COUNT AT ZERO**, and it carries the claim: a
+    /// sentence printed for a run that delivered nothing would be telling a person to go and look
+    /// at a pane no text ever reached — the reassuring wrong answer, and the direction this
+    /// repository has paid for twice.
+    ///
+    /// ⚠ The remedy is asserted rather than the number: what a reader does about a prompt sitting
+    /// in a composer is GO AND LOOK, which is the opposite of what `folded` tells them, so the
+    /// words are the artefact and the pair of integers is not.
+    #[test]
+    fn a_run_whose_prompt_never_became_a_question_says_where_that_prompt_is() {
+        let wedged = json!({
+            "id": 4,
+            "state": "failed",
+            sprag_host::plugins::RUN_DELIVERED_KEY: 0,
+            sprag_host::plugins::RUN_FOLDED_KEY: 0,
+            sprag_host::plugins::RUN_UNSUBMITTED_KEY: 1,
+        });
+        let said = sprag_host::plugins::delivery_sentence(&wedged).unwrap_or_default();
+        assert!(
+            said.contains("never asked") && said.contains("go and look at that pane"),
+            "⛔⛔⛔ ITEM 617: this run typed a prompt onto its pane, watched it painted there, and \
+             never got it asked — and the mouth a person reads says nothing about delivery at all. \
+             That is the run register item 591 built these counters for. Got: {said:?}",
+        );
+
+        let mut silent = wedged.clone();
+        silent[sprag_host::plugins::RUN_UNSUBMITTED_KEY] = json!(0);
+        assert_eq!(
+            sprag_host::plugins::delivery_sentence(&silent),
+            None,
+            "⚠⚠⚠⚠⚠ THE CONTROL: this run put nothing on any pane, so there is no prompt for \
+             anybody to go and look at. A sentence here would send a person to search a screen the \
+             text never reached",
+        );
+    }
+
     /// ⛔⛔⛔⛔ **EVERY DETAIL CLAUSE REACHES THE SCREEN, AND LANDS WHERE THE READERS EXPECT** —
     /// register items 594, 591 and 601's residue, measured 2026-08-22 and paid 2026-08-23.
     ///

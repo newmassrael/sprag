@@ -896,6 +896,15 @@ pub struct PersistedDeliveries {
     pub made: u32,
     /// [`sprag_plugin::Deliveries::folded`].
     pub folded: u32,
+    /// [`sprag_plugin::Deliveries::unsubmitted`] — register item 617.
+    ///
+    /// ⚠ `#[serde(default)]` so a run log written before this field READS: an older record simply
+    /// has no wedged prompts recorded, which is the honest reading of a file whose writer could not
+    /// count them. It is `RUN_LOG_VERSION`'s own rule for an added field, and the same call
+    /// register item 616 made one field over — a version bump would refuse every run this machine
+    /// already has, to gain nothing.
+    #[serde(default)]
+    pub unsubmitted: u32,
 }
 
 impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
@@ -903,6 +912,7 @@ impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
         Self {
             made: live.made,
             folded: live.folded,
+            unsubmitted: live.unsubmitted,
         }
     }
 }
@@ -912,6 +922,7 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
         Self {
             made: stored.made,
             folded: stored.folded,
+            unsubmitted: stored.unsubmitted,
         }
     }
 }
@@ -2150,6 +2161,12 @@ mod tests {
         lock(&progress).deliveries = sprag_plugin::Deliveries {
             made: 14,
             folded: 3,
+            // ⚠ THE THIRD COUNT TRAVELS TOO — register item 617, and it is set to a value distinct
+            // from both above so a restore that dropped it, or that filled it from a neighbour,
+            // fails here rather than agreeing by coincidence. A wedged prompt is the fact that
+            // MOST needs to survive its daemon: the text is still sitting in a composer somebody
+            // can walk over and look at, long after the run that typed it is gone.
+            unsubmitted: 5,
         };
         registry.submit(NewRun {
             id,
@@ -2175,12 +2192,15 @@ mod tests {
         let restored = successor.snapshot();
         let carried = restored[0].progress.deliveries;
         assert_eq!(
-            (carried.made, carried.folded),
-            (14, 3),
-            "⛔⛔⛔ ITEM 606: this run typed 14 prompts and 3 of them were folded away, and a \
-             daemon restart lost the pair. That number is the whole of item 591's instrument, and \
-             a run is READ after it has ended — by which time the daemon that drove it has usually \
-             been restarted. Got {carried:?} from {on_disk}",
+            (carried.made, carried.folded, carried.unsubmitted),
+            (14, 3, 5),
+            "⛔⛔⛔ ITEM 606: this run typed 14 prompts, 3 of them were folded away and 5 were \
+             never asked at all, and a daemon restart lost them. Those numbers are the whole of \
+             item 591's instrument, and a run is READ after it has ended — by which time the \
+             daemon that drove it has usually been restarted. ⚠ THE THIRD IS ITEM 617's, asserted \
+             beside the pair rather than in its own gate because it is one value: it says a prompt \
+             is STILL SITTING in a composer, which is the one of the three a person can act on \
+             after the fact. Got {carried:?} from {on_disk}",
         );
     }
 
