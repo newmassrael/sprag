@@ -367,7 +367,12 @@ pub(crate) mod grammar {
         // this pin: `--workspace --exclude sprag-gui` is one half and `-p sprag-gui --bins` is the
         // other, and item 567's round ran only the first. The pin did its job the moment it was
         // asked; nothing asked it. Register item 575.
-        38,
+        // ⚠⚠⚠⚠ THE SEVENTH, and it is a WAIT rather than a read: register item 631 added the
+        // `revision` pane slot and the `pane/waitForRevision` park, so a run driven from outside
+        // the daemon can be TOLD a pane moved instead of re-reading its screen. **A window does not
+        // park on a pane** — it parks on `scene/waitFor`, which is the whole session — so this pin
+        // moves for a seventh cause it takes no part in. Seven for seven.
+        39,
         &[
             (
                 "the command palette",

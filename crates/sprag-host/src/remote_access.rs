@@ -62,13 +62,14 @@
 use std::io;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_plugin::{
     AgentObservation, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneInputEcho,
     PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes, Written,
 };
-use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT};
+use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
 use sprag_terminal::{JobProcess, PaneEcho, PaneEndOfInput, PaneId};
 use sprag_vt::LinesSince;
 
@@ -130,6 +131,43 @@ pub struct RemotePaneAccess {
     /// The agent state word this daemon published that this build cannot spell, once one has been
     /// met — see [`unspellable_state`](Self::unspellable_state). Register item 564.
     unspellable: Mutex<Option<String>>,
+    /// **A SECOND CONNECTION, KEPT FOR PARKS ONLY** — [`None`] until a caller supplies one with
+    /// [`parking_on`](Self::parking_on), and what makes [`changes`](PaneAccess::changes) answer
+    /// anything but [`None`]. Register item 631.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a park cannot share the connection every read uses
+    ///
+    /// A [`HostConn`] carries ONE outstanding request and matches replies by id. A park is a
+    /// request the daemon deliberately does not answer yet — so while one is outstanding, any
+    /// ordinary read on the same socket would meet the park's reply first, find an id it is not
+    /// waiting for, and **drop it**. The park would then never be answered and the wait would sleep
+    /// out its whole bound over a pane that had already moved.
+    ///
+    /// That is not a locking problem a mutex can solve: the two uses want the connection at the
+    /// same time BY DESIGN, because the whole value of a park is that it stays outstanding while
+    /// the driver gets on with looking.
+    parks: Mutex<Option<Parked>>,
+}
+
+/// The park connection and the one question currently outstanding on it.
+///
+/// # ⚠⚠ ONE park at a time, and it is REUSED across slices
+///
+/// `sprag_plugin::run::park_until` calls
+/// [`pane_moved_after`](sprag_plugin::PaneChanges::pane_moved_after) once
+/// per ten-millisecond slice with the SAME `(pane, seen)` until something moves. Sending a fresh
+/// request each time would be the polling this surface exists to remove, so the outstanding request
+/// is remembered and the next slice merely waits on it again.
+struct Parked {
+    /// The socket the parks ride. Its own connection — see [`RemotePaneAccess::parks`].
+    conn: HostConn,
+    /// The pane, the revision, and the request — `None` when nothing is outstanding.
+    ///
+    /// ⚠ The pane and the revision are held so a slice can tell *the same question again* from *a
+    /// different one*. A different one ABANDONS the old park, which is sound and is documented at
+    /// the call: an abandoned park fires the next time that pane moves and its answer is dropped by
+    /// id, and the daemon releases every one of them when this connection closes.
+    asked: Option<(PaneId, u64, Outstanding)>,
 }
 
 /// How long a redial waits for the socket to accept.
@@ -154,7 +192,36 @@ impl RemotePaneAccess {
             adopted: Mutex::new(None),
             changed: AtomicBool::new(false),
             unspellable: Mutex::new(None),
+            parks: Mutex::new(None),
         }
+    }
+
+    /// **GIVE THIS SURFACE A SECOND CONNECTION TO PARK ON**, so a wait over the wire stops being a
+    /// poll — register item 631. Without one, [`changes`](PaneAccess::changes) answers [`None`] and
+    /// every wait takes `park_until`'s documented degradation.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the caller supplies it rather than this type dialling one
+    ///
+    /// The same reason [`over`](Self::over) does not handshake: a connection's SCOPE and its client
+    /// identity are the opening party's to decide, and a surface that dialled its own would have to
+    /// guess both. A driver scoped to `work` whose park connection silently landed on the default
+    /// session would park on a revision no pane of its own can move — a wait that never wakes, and
+    /// one nothing about this type could have got right on its own.
+    ///
+    /// ⚠⚠ **IT MUST BE SCOPED THE WAY THE READ CONNECTION IS**, and that is the one obligation this
+    /// hands to the caller. The daemon refuses a park naming a pane the SCOPED session does not
+    /// hold, so a mis-scoped connection fails loudly at the first park rather than silently — which
+    /// is why the refusal exists and is worth its own sentence in `handle_revision_wait`.
+    ///
+    /// ⚠ A caller with only one connection is not wrong, it is DEGRADED, and the degradation is
+    /// named at [`PaneChanges`](sprag_plugin::PaneChanges) rather than hidden here.
+    #[must_use]
+    pub fn parking_on(self, parks: HostConn) -> Self {
+        *lock(&self.parks) = Some(Parked {
+            conn: parks,
+            asked: None,
+        });
+        self
     }
 
     /// **THE AGENT STATE WORD THIS DAEMON SPOKE THAT THIS BUILD CANNOT SPELL**, once one has been
@@ -604,6 +671,25 @@ impl PaneAccess for RemotePaneAccess {
             .then_some(self as &dyn PaneSupervision)
     }
 
+    /// **WHETHER THIS SURFACE CAN BE WAITED ON RATHER THAN ASKED** — register item 631.
+    ///
+    /// `Some` exactly when a caller supplied a park connection ([`parking_on`](Self::parking_on)),
+    /// and that is the honest discrimination rather than an always-`Some` that fails at the call: a
+    /// `None` here means *this build cannot say when a pane changed*, and `park_until` reads it as
+    /// the instruction to fall back to a clock. Answering `Some` without somewhere to park would
+    /// make every wait return "nothing moved" instantly and spin.
+    ///
+    /// ⚠⚠ It does NOT ask the daemon whether it serves the address. A daemon too old to know
+    /// `pane/waitForRevision` refuses the park with an [`INVALID_PARAMS`](sprag_rpc::INVALID_PARAMS)
+    /// -shaped fault at the first slice, and `pane_moved_after` answers `None` to that — which puts
+    /// the wait on the same degradation, one round trip later. Paying a probe per surface to save a
+    /// round trip once would be the cache this type's own documentation declines.
+    fn changes(&self) -> Option<&dyn sprag_plugin::PaneChanges> {
+        lock(&self.parks)
+            .is_some()
+            .then_some(self as &dyn sprag_plugin::PaneChanges)
+    }
+
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
         let path = pane_input_path(id.0, INJECT_ACTION);
         let strokes: Vec<Value> = keys.iter().map(stroke_form).collect();
@@ -647,6 +733,116 @@ impl PaneAccess for RemotePaneAccess {
                     "{path} answered no {INJECTED_BYTES_KEY}, so what it wrote cannot be counted"
                 ))
             })
+    }
+}
+
+/// **WAITING ON A PANE FROM OUTSIDE THE DAEMON** — register item 631, and the surface that stops a
+/// remote driver re-reading a screen it has no reason to believe has changed.
+///
+/// # ⚠⚠⚠⚠⚠ What this replaces, measured on a real daemon
+///
+/// **2026-08-24, build machine (32 cores, 125 GB), a one-second wait ended by the pane printing a
+/// marker: 96 looks polling, 2 parked.** A look here is not a cheap one — it is a whole SCREEN
+/// over a socket, and a supervisor's detector run over the result. The gate is
+/// `a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen`
+/// (`sprag-host/tests/wire_client.rs`), and it asserts the ratio against a driver holding one
+/// connection rather than an absolute number, which is what survives a shared runner.
+///
+/// # ⚠⚠⚠ It does not close item 631 on its own, and saying so is the point
+///
+/// A wait whose predicate rests on the AGENT VERDICT still looks every slice, because that verdict
+/// arrives with [`Settling::Unknown`](sprag_plugin::Settling::Unknown) — the wire carries no
+/// deadline for it — and an unknown deadline must buy a look. What this fixes is every wait whose
+/// predicate rests on the pane's BYTES: `readiness::left_the_question`, the orchestrator's sentinel
+/// and row-trail arms, which are the ones deliberately built to answer
+/// [`Look::Steady`](sprag_plugin::run::Look::Steady). The verdict's own deadline is the other half.
+impl sprag_plugin::PaneChanges for RemotePaneAccess {
+    /// The pane's revision, read at its own address.
+    ///
+    /// ⚠ CHEAP BY THE STANDARD OF THIS SURFACE, which is not the standard of the in-process one: it
+    /// is a round trip (**55 µs**, register item 565) where in-process it is a lock take and an
+    /// integer read. It is still two orders cheaper than the alternative it removes, which is a
+    /// whole screen plus a detector — and the contract is the same either way, so no caller has to
+    /// know which surface it holds.
+    fn pane_revision(&self, id: PaneId) -> Option<u64> {
+        self.read_pane(id, crate::wire::PANE_REVISION_SLOT)?
+            .as_u64()
+    }
+
+    /// Park until `id` passes `seen`, or until `within` elapses — answering the revision as it
+    /// stands on the way out.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The request is sent ONCE and waited on in slices
+    ///
+    /// `park_until` asks this every ten milliseconds with the same `(id, seen)` so it can hear a
+    /// cancel in between. If each of those sent a request, this would be a poll of a cheap number
+    /// rather than a poll of a screen — better, and still a poll, and still an hour of patience
+    /// spent as 360,000 round trips. So the park is REMEMBERED: the first slice sends it, and every
+    /// slice after waits on the same outstanding reply through
+    /// [`HostConn::settle`](sprag_rpc::HostConn::settle). A slice that ends in silence costs a
+    /// socket read timeout and nothing whatever on the wire or in the daemon.
+    ///
+    /// ⚠⚠ **A DIFFERENT QUESTION ABANDONS THE OLD PARK**, deliberately and not by oversight. It
+    /// happens when the pane moved (so the old park has already been answered) or when a caller
+    /// waits on another pane. An abandoned park fires the next time its pane moves and its answer
+    /// is dropped by id; the daemon releases every park this connection holds when it closes. What
+    /// it costs is one daemon-side entry per pane that never moves again, which is why
+    /// `ChannelRegistry::release` names this case in its own comment.
+    ///
+    /// ⚠⚠⚠ **A FAILURE ANSWERS [`None`], WHICH IS THE DEGRADATION AND NOT AN ERROR.** A daemon too
+    /// old to serve the address, a park refused, a socket that died — all three mean *this surface
+    /// cannot tell you when the pane moved*, and `park_until` reads that as the instruction to fall
+    /// back to a clock. Reporting it as *the pane did not move* would park a driver on a signal
+    /// that is never coming.
+    fn pane_moved_after(&self, id: PaneId, seen: u64, within: Duration) -> Option<u64> {
+        // ⚠ A SURFACE WHOSE DAEMON WAS REPLACED WAITS ON NOTHING — `read`'s first statement, for
+        // its reason: pane ids mean nothing across a replacement, and a park on one would be a wait
+        // on a stranger's pane.
+        if self.world_changed() {
+            return None;
+        }
+        let mut held = lock(&self.parks);
+        let parked = held.as_mut()?;
+        // The SAME question again — resume it. A different one is a new park, and the old one is
+        // abandoned (see this method's own note).
+        if !matches!(parked.asked, Some((pane, since, _)) if pane == id && since == seen) {
+            let asked = parked
+                .conn
+                .begin(
+                    crate::wire::PANE_WAIT_REVISION_METHOD,
+                    json!({ crate::wire::PANE_PARAM: id.0, crate::wire::SINCE_PARAM: seen }),
+                )
+                .ok()?;
+            parked.asked = Some((id, seen, asked));
+        }
+        // Cloned out so the borrow of `parked.asked` ends before `settle` takes `&mut parked.conn`.
+        let (_, _, outstanding) = parked.asked.as_ref()?;
+        let outstanding = outstanding.clone();
+        match parked.conn.settle(&outstanding, within) {
+            // It moved. The answer is where the pane is NOW, not `seen + 1`, so a caller handing it
+            // back as the next `since` can neither be woken twice for one move nor miss a second.
+            Ok(Some(answer)) => {
+                parked.asked = None;
+                answer[crate::wire::PANE_REVISION_FIELD].as_u64()
+            }
+            // The slice elapsed with the park still outstanding. `seen` UNCHANGED is the contract's
+            // word for *nothing happened*, and it is what stops the caller taking a look.
+            Ok(None) => Some(seen),
+            Err(error) => {
+                tracing::debug!(
+                    target: "sprag_host",
+                    error = ?error,
+                    pane = id.0,
+                    "a remote pane park did not complete; the wait degrades to a clock",
+                );
+                // ⚠ THE PARK CONNECTION IS DROPPED, not merely forgotten. A transport failure may
+                // have left half a frame in the stream, and `HostConn` retires itself for exactly
+                // that — keeping it would answer `None` for ever while looking like a capability.
+                // Dropping it also releases every park the daemon held for it.
+                *held = None;
+                None
+            }
+        }
     }
 }
 

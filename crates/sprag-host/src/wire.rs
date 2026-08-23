@@ -375,6 +375,32 @@ pub const FULL_LINES_SLOT: &str = "full_lines";
 /// answers it has always read.
 pub const PANE_EOF_SLOT: &str = "eof";
 
+/// The pane-input external query slot: **HOW MANY TIMES THIS PANE HAS MOVED** — a monotonic count,
+/// and the cheap half of [`sprag_rpc::PANE_WAIT_REVISION_METHOD`].
+/// Register item 631.
+///
+/// # ⚠⚠⚠⚠⚠ It is a PERMISSION TO LOOK, never an answer
+///
+/// Nothing here says what the pane holds. It says only that the pane said something, which is
+/// exactly [`PaneChanges::pane_revision`](sprag_plugin::PaneChanges::pane_revision)'s in-process
+/// contract — one uncontended lock take and an integer read, no screen rendered and no detector
+/// run. That distinction IS the surface: a driver that could only ask *what does this pane show*
+/// paid a whole screen over the wire to find out that nothing had changed.
+///
+/// ⚠⚠ **THE NUMBER IS THE READER THREAD'S, not a second count of the same thing.**
+/// [`PaneRevision`](sprag_terminal::PaneRevision) is bumped at the three moments a pane moves — a
+/// parsed batch applied, the child's end of file, the exit status landing — beside the same call
+/// and in the same thread. A second notion of *the pane moved* would be a second answer that can
+/// drift from the one the park is woken by, and then a client could be told to look by one and
+/// find nothing by the other.
+///
+/// ⚠ **IT IS PER-DAEMON AND PER-PANE, so it means nothing across a restart.** A pane that came back
+/// under the same NAME is a different pane with a counter that starts again; a client that compared
+/// a number it held from before would read *the pane moved backwards* as *the pane is still*. That
+/// is [`RemotePaneAccess`](crate::remote_access::RemotePaneAccess)'s latch to notice, not this
+/// slot's — the address answers about the pane that is there now, which is all a number can do.
+pub const PANE_REVISION_SLOT: &str = "revision";
+
 /// The arguments of [`RECENT_INPUT_FIELD`] — one `needle`, `Open`, for the same reason
 /// [`FIND_ARGS`] is: the needle is a marker the CALLER invents, so there is no domain to enumerate.
 const RECENT_INPUT_ARGS: &[SchemaArg] = &[SchemaArg::open("needle", "string")];
@@ -906,6 +932,12 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The four above say what the pane HOLDS; this says
     // whether anything more is coming, which reading the text cannot answer.
     SchemaField::new(PANE_EOF_SLOT, "bool"),
+    // ⚠⚠⚠⚠⚠ Register item 631 — see `PANE_REVISION_SLOT`. Every slot above answers WHAT the pane
+    // holds, and each of them costs a screen render or a kernel read. This one answers only
+    // WHETHER it has moved, so a driver waiting on a pane over the wire stops paying for a screen
+    // to be told nothing happened. Its park is `pane/waitForRevision`; the two ship together
+    // because a client that could read the number but not be woken by it would poll it.
+    SchemaField::new(PANE_REVISION_SLOT, "int"),
     // ⚠⚠⚠⚠⚠ Register items 557 and 567 — see `RECENT_INPUT_FIELD`. Every slot above is what the
     // pane SHOWS; this is about what was written INTO it, and the two must not be derived from each
     // other. A pty echoes input, so a driver reading its marker off the screen cannot tell the
@@ -3356,6 +3388,17 @@ pub use sprag_rpc::{
 /// Intercepted before the generic dispatch core, like [`EVENTS_WAIT_METHOD`], because it PARKS its
 /// reply rather than returning one.
 pub use sprag_rpc::{NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM};
+
+/// The REVISION WAIT and its answer key, re-exported on the same terms — register item 631.
+///
+/// It completes the slot/method pair one axis further: **[`PANE_REVISION_SLOT`] is the read, this
+/// method is the wait**, and the number one answers is the number the other takes as
+/// [`SINCE_PARAM`]. That is the same pairing [`FIND_FIELD`] has with the output wait above, and it
+/// is what lets a caller hold ONE number for both questions.
+///
+/// ⚠⚠ The cheapest question this wire serves, and deliberately so: a driver asks it in place of
+/// reading a screen it has no reason to believe has changed.
+pub use sprag_rpc::{PANE_REVISION_FIELD, PANE_WAIT_REVISION_METHOD};
 
 /// The wire's SHAPE agreement, re-exported from the transport that defines it for the same reason
 /// the vocabulary above is: one spelling, both ends.
@@ -8661,7 +8704,10 @@ mod tests {
             // ⚠ 38: re-stamped with every ANSWER value space unchanged. Register item 567 WITHDREW
             // an address and added a parametric one; what `recent_input_has.<needle>` answers is a
             // bool, which is not an enum and has no arm to widen. The surface pin is the subject.
-            38,
+            // ⚠ 39: re-stamped with every ANSWER value space unchanged. Register item 631 added a
+            // slot answering an INTEGER and a method answering `{pane, revision}`. Neither is an
+            // enum, so neither has an arm to widen; the surface pin is the subject again.
+            39,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -9026,7 +9072,10 @@ mod tests {
             // ⚠ 38: re-stamped with every published REQUEST vocabulary unchanged, for the same
             // reason one number up. Register item 567's `needle` is an OPEN string — a marker the
             // caller invents, like `find`'s and `regex`'s — so there is no closed list to move.
-            38,
+            // ⚠ 39: re-stamped with every published REQUEST vocabulary unchanged. Register item
+            // 631's park takes a pane id and a REVISION, both numbers the caller carries; and it is
+            // a METHOD rather than a published verb, so it has no grammar entry here at all.
+            39,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -9328,7 +9377,10 @@ mod tests {
             // same is true of `find.<needle>`, `regex.<pattern>` and `cells.<offset>`, which have
             // ridden here undeclared since before this pin existed. ⚠ The surface pin is what
             // catches a parametric family, by its `<placeholder>` template.
-            38,
+            // ⚠ 39: re-stamped with every published argument shape unchanged. Register item 631's
+            // addition is a SLOT (no arguments at all) and a JSON-RPC METHOD, which is not a
+            // published form and so has no argument shape for this pin to walk.
+            39,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -9938,7 +9990,12 @@ mod tests {
         // and is GONE; `recent_input_has.<needle>` (and its empty member) answer the one question
         // the trail ever had a reader for. A client that asked the old address now gets nothing,
         // and that is exactly what the number is for. See `WIRE_PROTOCOL`'s entry for 38.
-        38,
+        // ⚠⚠⚠⚠ 39 — REGISTER ITEM 631: `revision` ADDED. An addition alone usually leaves the
+        // number standing, and this one does not, because the address does not stand alone: it
+        // ships with the `pane/waitForRevision` PARK, and a daemon serving the read without the
+        // park hands a driver a number whose only use is to poll it. The number is what lets a
+        // driver tell *this daemon cannot be waited on* from *this pane has not moved*.
+        39,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -10080,6 +10137,12 @@ mod tests {
             // ⚠⚠ ADDED at register item 557: the verb a run rolls its inner session with. A name
             // added, so the number stands — an old client that never asks is unaffected.
             "respawn",
+            // ⚠⚠⚠⚠ ADDED at register item 631: HOW MANY TIMES A PANE HAS MOVED. A name added, so
+            // an older client loses nothing — but the number DOES move for this one, because the
+            // slot ships with `pane/waitForRevision` and a daemon serving the read without the
+            // park would leave a driver polling the very number it was given to stop polling with.
+            // See `WIRE_PROTOCOL`'s entry for 39.
+            "revision",
             "run",
             "runs",
             // ⚠⚠⚠ ADDED at register item 544's stage 1b: the VISIBLE SCREEN, published the two ways

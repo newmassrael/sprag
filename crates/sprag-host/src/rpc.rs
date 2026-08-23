@@ -48,9 +48,9 @@ use crate::wire::{
     CLIENT_HELLO_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
     EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, GOTO_PANE_PARAM,
     GOTO_PARAM, GOTO_SESSION_PARAM, GOTO_WINDOW_PARAM, INVALID_PARAMS, LAST_PARAM, MESSAGE_FIELD,
-    NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD,
-    PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM, TREE_SLOT,
-    UNATTACHED_PARAM, WIRE_PROTOCOL,
+    NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANE_WAIT_REVISION_METHOD, PATTERN_PARAM,
+    PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM,
+    TREE_SLOT, UNATTACHED_PARAM, WIRE_PROTOCOL,
 };
 use serde_json::Value;
 use sprag_terminal::{OrderStep, SessionInfo};
@@ -1145,6 +1145,77 @@ fn handle_output_wait(
     evaluate_output_waits(state, scope.session());
 }
 
+/// `pane/waitForRevision` — park until `pane` has MOVED past `since`, answering the revision it is
+/// at. Register item 631.
+///
+/// # ⚠⚠⚠⚠⚠ `since` is REQUIRED and is not defaulted to zero
+///
+/// A missing cursor is refused rather than read as *from the beginning*, and that is the one
+/// decision in this handler worth arguing. A park with `since = 0` on a pane that has ever produced
+/// a byte is answered INSTANTLY — so a caller that omitted the key would get a wait that returns
+/// immediately, for ever, and would spin at whatever rate its loop runs. The failure would look
+/// like a busy driver rather than like a mistake, and it is precisely the failure this whole
+/// surface was opened to remove. A refusal names it at the door.
+///
+/// ⚠⚠ Everything else follows [`handle_output_wait`]: the pane must exist IN THIS SESSION (the park
+/// hangs off this session's revision, so a pane elsewhere moves a token this wait cannot hear), and
+/// the first evaluation is the ORDINARY pass — a pane already past `since` is answered inside this
+/// call, through the one code path every later wake uses, so there is no check-then-park gap for a
+/// move to land in.
+fn handle_revision_wait(
+    state: &HostState,
+    conn: ConnId,
+    scope: &SessionScope,
+    request: &Request,
+    reply: RpcReply,
+) {
+    let params = request.params.as_ref();
+    let number = |key: &str| {
+        params
+            .and_then(|params| params.get(key))
+            .and_then(serde_json::Value::as_u64)
+    };
+    let Some(pane) = number(PANE_PARAM).map(sprag_terminal::PaneId) else {
+        refuse_wait(
+            request,
+            format!("params.{PANE_PARAM} must be the id of the pane to watch (a whole number)"),
+            reply,
+        );
+        return;
+    };
+    let Some(since) = number(SINCE_PARAM) else {
+        refuse_wait(
+            request,
+            format!(
+                "params.{SINCE_PARAM} must be the revision you have already accounted for (a \
+                 whole number) — read it from the pane's `{}` slot. It is required rather than \
+                 defaulted: a wait from 0 on a pane that has ever produced a byte comes back \
+                 instantly, every time, which is the polling this address exists to remove",
+                crate::wire::PANE_REVISION_SLOT
+            ),
+            reply,
+        );
+        return;
+    };
+    if pane_handle_in(state, scope.session(), pane).is_none() {
+        refuse_wait(
+            request,
+            format!(
+                "session {:?} has no pane {pane} — a wait is parked on ONE session's revision, so \
+                 a pane of another session could never wake it",
+                scope.session()
+            ),
+            reply,
+        );
+        return;
+    }
+    state
+        .channels()
+        .revisions(scope.session())
+        .park(conn, pane, since, request.id.clone(), reply);
+    evaluate_revision_waits(state, scope.session());
+}
+
 /// Refuse a park with an INVALID_PARAMS fault carrying `why` — the shape
 /// [`handle_events_wait`]'s own refusals take, so both waits fail the same way.
 fn refuse_wait(request: &Request, why: String, reply: RpcReply) {
@@ -1720,7 +1791,14 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
                     window_moved(state, &session);
                 }
             }
-            IngressEvent::OutputMoved(session) => evaluate_output_waits(state, &session),
+            // ONE signal, TWO passes. The wake is the same fact — *this session's panes moved* —
+            // and a second ingress variant would mean a second SEND in the signal's sink, on the
+            // PTY reader thread, where forgetting one is a whole class of client that never wakes.
+            // One variant, both passes: there is nothing to forget.
+            IngressEvent::OutputMoved(session) => {
+                evaluate_output_waits(state, &session);
+                evaluate_revision_waits(state, &session);
+            }
         }
     }
 }
@@ -1765,22 +1843,55 @@ pub fn dispatch_channel(state: &HostState) -> (Sender<IngressEvent>, Receiver<In
 /// ms at p99 — applied at the site rather than discovered at it.
 fn evaluate_output_waits(state: &HostState, session: &str) {
     let channel = state.channels().outputs(session);
-    channel.evaluate(|pane, query| {
-        let handle = pane_handle_in(state, session, pane)?;
-        // Through the SAME two functions the `find.<needle>` / `regex.<pattern>` slots call, so the
-        // language a caller wrote reaches the engine the query slot would have reached. The answer
-        // shape was already shared; this is the question's half of that.
-        let found = handle.with_screen(|screen| match query {
-            OutputQuery::Literal(needle) => crate::pane::search_literal(screen, needle),
-            OutputQuery::Pattern(pattern) => crate::pane::search_pattern(screen, pattern),
-        });
-        // A REFUSAL is an answer, not a reason to keep waiting: a pattern the engine will not
-        // compile cannot start matching later, so parking on one is a wait that can never end. It
-        // rides the normal result shape rather than a JSON-RPC error for the reason
-        // `crate::PaneFind::error` gives about the `regex.<pattern>` slot — an invalid pattern is a
-        // well-formed question whose VALUE was rejected.
-        (!found.matches.is_empty() || found.error.is_some()).then_some(found)
-    });
+    channel.evaluate(
+        |pane, query| {
+            let handle = pane_handle_in(state, session, pane)?;
+            // Through the SAME two functions the `find.<needle>` / `regex.<pattern>` slots call, so the
+            // language a caller wrote reaches the engine the query slot would have reached. The answer
+            // shape was already shared; this is the question's half of that.
+            let found = handle.with_screen(|screen| match query {
+                OutputQuery::Literal(needle) => crate::pane::search_literal(screen, needle),
+                OutputQuery::Pattern(pattern) => crate::pane::search_pattern(screen, pattern),
+            });
+            // A REFUSAL is an answer, not a reason to keep waiting: a pattern the engine will not
+            // compile cannot start matching later, so parking on one is a wait that can never end. It
+            // rides the normal result shape rather than a JSON-RPC error for the reason
+            // `crate::PaneFind::error` gives about the `regex.<pattern>` slot — an invalid pattern is a
+            // well-formed question whose VALUE was rejected.
+            (!found.matches.is_empty() || found.error.is_some()).then_some(found)
+        },
+        crate::notify::send_found,
+    );
+}
+
+/// Evaluate every REVISION wait parked on `session`, answering the ones whose pane has moved past
+/// the number they were parked with — register item 631.
+///
+/// # ⚠⚠⚠ It costs a counter read, and that is the whole difference from the pass beside it
+///
+/// [`evaluate_output_waits`] searches a pane's entire retained output — 338 µs at the default
+/// scrollback cap, and the reason that pass runs here rather than on the reader thread. This one
+/// clones a handle and reads a `u64`. Sharing the channel between the two questions would have made
+/// every driver's slice pay the search, which is the cost the whole surface exists to remove.
+///
+/// ⚠⚠ **A pane that has GONE resolves to `None` and stays parked**, deliberately, and it is the
+/// same lifetime an output wait has: the client's own bound ends the question, and a session ending
+/// drains the channel. A wait answered with *the pane is gone* would need an answer shape for it,
+/// and the caller — a driver holding a pane id — reads that fact at
+/// [`PANE_EOF_SLOT`](crate::wire::PANE_EOF_SLOT), which is the address that means it.
+fn evaluate_revision_waits(state: &HostState, session: &str) {
+    let channel = state.channels().revisions(session);
+    channel.evaluate(
+        |pane, since| {
+            let handle = pane_handle_in(state, session, pane)?;
+            // THE SAME counter `pane.<id>.revision` serves and the reader thread bumps. A second
+            // notion of *the pane moved* could tell this pass to answer while the slot said
+            // nothing had happened.
+            let now = handle.revision().now();
+            (now > *since).then_some(now)
+        },
+        crate::notify::send_revision,
+    );
 }
 
 /// A cloneable handle to the live pane `id` of `session`, or `None` when that session holds no such
@@ -1954,6 +2065,14 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
             // scoped by the machinery every other method uses.
             if parsed.method.as_str() == PANE_WAIT_OUTPUT_METHOD {
                 handle_output_wait(state, conn, &scope, &parsed, reply);
+                return;
+            }
+            // ...and the CHEAP question about the same token — *has this pane moved at all* —
+            // intercepted here for the same two reasons. Register item 631: it is what lets a run
+            // driven from outside this process WAIT on a pane instead of re-reading its screen
+            // every ten milliseconds.
+            if parsed.method.as_str() == PANE_WAIT_REVISION_METHOD {
+                handle_revision_wait(state, conn, &scope, &parsed, reply);
                 return;
             }
             // Parked against the SCOPED session's channel — the half `scene/waitFor` used to check
@@ -4397,6 +4516,291 @@ mod tests {
             state.channels().outputs(BOOT).parked_count(),
             0,
             "the loop released the output wait of a connection that closed",
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "and a gone connection is not written to: the release drops, it does not answer",
+        );
+    }
+
+    /// One `pane/waitForRevision` frame from `conn`, through the real per-frame dispatch body —
+    /// [`output_wait_recording`]'s sibling, register item 631.
+    fn revision_wait_recording(
+        state: &HostState,
+        conn: ConnId,
+        params: serde_json::Value,
+        sink: &Arc<Mutex<Vec<String>>>,
+    ) {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": PANE_WAIT_REVISION_METHOD,
+            "params": params,
+        });
+        dispatch_one(
+            state,
+            RpcFrame::new(
+                conn,
+                declaring_the_protocol(&request.to_string()),
+                recording_egress(sink),
+            ),
+        );
+    }
+
+    /// What pane 0's `revision` slot answers right now — the number a caller parks FROM, read the
+    /// way a client reads it rather than off the handle.
+    fn pane0_revision(state: &HostState) -> u64 {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "scene/query",
+            "params": { "path": crate::pane_input_path(0, crate::wire::PANE_REVISION_SLOT) },
+        });
+        dispatch_one(
+            state,
+            RpcFrame::new(
+                ConnId::allocate(),
+                declaring_the_protocol(&request.to_string()),
+                recording_egress(&sink),
+            ),
+        );
+        only_reply(&sink)["result"]
+            .as_u64()
+            .expect("the revision slot answers a number")
+    }
+
+    /// ⚠⚠⚠ **THE SLOT AND THE PARK ARE ONE NUMBER** — register item 631, and the pairing that lets
+    /// a caller hold ONE value for both questions.
+    ///
+    /// A park from the revision the SLOT just answered must not come back immediately: if the two
+    /// were different counters, the park would either fire at once (the slot behind) or sleep
+    /// through a move (the slot ahead). This asserts the first — and the gate below asserts a real
+    /// move does wake it, which is what stops "never fires" passing here.
+    #[test]
+    fn the_revision_slot_and_the_revision_park_are_the_same_number() {
+        let state = host_with("cat", 40, 6);
+        let at = pane0_revision(&state);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        revision_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0, SINCE_PARAM: at }),
+            &sink,
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "a park from the number the slot answered is not already satisfied",
+        );
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            1,
+            "it parked",
+        );
+    }
+
+    #[test]
+    fn a_revision_wait_answers_a_pane_that_has_already_moved() {
+        // The first evaluation is the ordinary pass, so a pane already past the caller's cursor is
+        // answered inside the park call itself — the same property the output wait has, and the
+        // reason there is no "check first, then park" fork for a move to land in.
+        let state = host_with("printf 'it-moved\\n'", 40, 6);
+        wait_for_pane0_eof(&state);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        revision_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0, SINCE_PARAM: 0 }),
+            &sink,
+        );
+
+        let reply = only_reply(&sink);
+        assert_eq!(reply["result"][PANE_PARAM], 0);
+        let answered = reply["result"][crate::wire::PANE_REVISION_FIELD]
+            .as_u64()
+            .unwrap_or_default();
+        assert!(
+            answered > 0,
+            "the answer is WHERE THE PANE IS, not the cursor it was asked about: {reply}",
+        );
+        assert_eq!(
+            answered,
+            pane0_revision(&state),
+            "and it is the number the slot answers, so a caller can hand it straight back",
+        );
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            0,
+            "and nothing is left parked — an answered wait is not also a waiter",
+        );
+    }
+
+    #[test]
+    fn the_dispatch_loop_wakes_a_revision_wait_when_the_pane_moves() {
+        // ⚠⚠⚠⚠⚠ THE ARM, not the pass. `evaluate_revision_waits` could be perfect and never be
+        // CALLED: the loop's `OutputMoved` arm ran only the output pass until item 631, and a
+        // revision wait under that build parks and is never woken by anything. That is the whole
+        // failure this gate exists for, and it is invisible to any test that calls the pass itself.
+        //
+        // Deterministic rather than timed, on the output wait's own pattern: the wait is proved
+        // PARKED, the pane is then made to move and the wait proved STILL unanswered, and only then
+        // does the signal go down the queue.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let at = pane0_revision(&state);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": PANE_WAIT_REVISION_METHOD,
+            "params": { PANE_PARAM: 0, SINCE_PARAM: at },
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| dispatch_frames(&state, rx));
+            tx.send(IngressEvent::Frame(RpcFrame::new(
+                ConnId::allocate(),
+                declaring_the_protocol(&request.to_string()),
+                recording_egress(&sink),
+            )))
+            .expect("queue the park");
+            settle("the wait to park", || {
+                state.channels().revisions(BOOT).parked_count() == 1
+            });
+
+            lock(&state.host.workspace())
+                .pane(PaneId(0))
+                .expect("the pane")
+                .handle()
+                .write(b"it-moved\n", sprag_terminal::Hand::AProgram)
+                .expect("write into the pane");
+            settle("the pane to move", || pane0_revision(&state) > at);
+            assert!(
+                sink.lock().unwrap().is_empty(),
+                "the pane has moved and the wait is STILL unanswered — without this line the test \
+                 could not tell the loop's arm from the park's own evaluation",
+            );
+
+            tx.send(IngressEvent::OutputMoved(BOOT.to_owned()))
+                .expect("queue the signal");
+            settle("the loop to answer", || !sink.lock().unwrap().is_empty());
+            drop(tx);
+        });
+
+        let reply = only_reply(&sink);
+        assert!(
+            reply["result"][crate::wire::PANE_REVISION_FIELD]
+                .as_u64()
+                .is_some_and(|now| now > at),
+            "the loop's OutputMoved arm ran the REVISION pass and answered it: {reply}",
+        );
+    }
+
+    #[test]
+    fn a_revision_wait_without_a_cursor_is_refused_and_names_the_slot_that_answers_it() {
+        // ⚠⚠⚠ NOT DEFAULTED TO ZERO. A park from 0 on a pane that has ever produced a byte comes
+        // back instantly, every time — so a caller that omitted the key would spin at whatever rate
+        // its loop runs, which is precisely the polling this address was opened to remove. The
+        // failure would read as a busy driver rather than as a mistake, so it is named at the door.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        revision_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0 }),
+            &sink,
+        );
+        let reply = only_reply(&sink);
+        assert_eq!(
+            reply["error"]["code"], INVALID_PARAMS,
+            "refused by CODE, never by wording: {reply}",
+        );
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(crate::wire::PANE_REVISION_SLOT),
+            "and the refusal NAMES the address that answers the missing number, because a caller \
+             who did not know to send it does not know where to get it: {reply}",
+        );
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            0,
+            "nothing parked",
+        );
+
+        // THE CONTROL, and it is what stops this passing on a build that refuses every park: the
+        // identical request WITH the cursor is accepted.
+        let parked = Arc::new(Mutex::new(Vec::new()));
+        revision_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0, SINCE_PARAM: pane0_revision(&state) }),
+            &parked,
+        );
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            1,
+            "the same request with a cursor parks",
+        );
+    }
+
+    #[test]
+    fn a_revision_wait_on_a_pane_of_another_session_is_refused_rather_than_parked() {
+        // The output wait's own argument, one channel over: a park hangs off ONE session's
+        // revision, so a pane elsewhere moves a token this wait does not listen to.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        revision_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 4242, SINCE_PARAM: 0 }),
+            &sink,
+        );
+
+        let reply = only_reply(&sink);
+        assert_eq!(
+            reply["error"]["code"], INVALID_PARAMS,
+            "refused by CODE, never by wording: {reply}",
+        );
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            0,
+            "and nothing parked",
+        );
+    }
+
+    #[test]
+    fn the_dispatch_loop_releases_a_closed_connections_revision_waits() {
+        // ⚠⚠ A REVISION WAIT NEEDS THIS MORE THAN EITHER SIBLING. A driver holds one open BY
+        // DESIGN — `park_until` gives up on a slice and comes back to the same park — so a run
+        // that ends while parked leaves one behind on purpose, and a pane that never moves again
+        // means only the disconnect can answer for it.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let conn = ConnId::allocate();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": PANE_WAIT_REVISION_METHOD,
+            "params": { PANE_PARAM: 0, SINCE_PARAM: 9_999_999 },
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(IngressEvent::Frame(RpcFrame::new(
+            conn,
+            declaring_the_protocol(&request.to_string()),
+            recording_egress(&sink),
+        )))
+        .expect("queue the park");
+        tx.send(IngressEvent::Disconnect(conn))
+            .expect("queue the close");
+        drop(tx);
+        dispatch_frames(&state, rx);
+
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            0,
+            "the loop released the revision wait of a connection that closed",
         );
         assert!(
             sink.lock().unwrap().is_empty(),

@@ -132,7 +132,9 @@ pub use host::{
 };
 pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};
-pub use notify::{ChannelRegistry, OutputChannel, OutputQuery, OutputSignal};
+pub use notify::{
+    ChannelRegistry, OutputChannel, OutputQuery, OutputSignal, PaneWaitChannel, RevisionChannel,
+};
 pub use options::{OPTIONS, OptionError, OptionKind, OptionSpec, Options};
 pub use pane::{CellFrame, SpragPaneExternal, focus, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;

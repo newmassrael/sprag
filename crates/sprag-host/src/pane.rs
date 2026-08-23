@@ -72,9 +72,9 @@ use crate::wire::{
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
     LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
-    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL,
-    PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
-    SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_REVISION_SLOT, PANE_SCHEMA, PASTE_ACTION,
+    PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT,
+    SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -775,6 +775,17 @@ impl SpragPaneExternal {
             // this one is what `ai_loop.scxml`'s `peer_gone` — and the 43-hour wedge behind it —
             // stands on. See `PANE_EOF_SLOT`.
             PANE_EOF_SLOT => Some(IntrospectValue::Bool(self.pty.is_eof())),
+            // ⚠⚠⚠⚠⚠ HOW MANY TIMES THIS PANE HAS MOVED — register item 631, and the cheap half of
+            // `pane/waitForRevision`. Every arm above renders a screen or asks the kernel; this one
+            // is a lock take and an integer read, which is the whole point: a driver outside this
+            // process used to pay a SCREEN over the wire to be told nothing had happened —
+            // **96 times in a one-second wait, measured 2026-08-24, against 2 once it can park**.
+            //
+            // ⚠⚠⚠ THE SAME COUNTER THE PARK IS WOKEN BY, deliberately — `PaneRevision`, bumped on
+            // the reader thread at the three moments a pane moves. A second count would let this
+            // slot say *look* while the park says *nothing yet*, and the two would be right about
+            // different things.
+            PANE_REVISION_SLOT => Some(IntrospectValue::Json(json!(self.pty.revision().now()))),
             // ⚠⚠⚠⚠⚠ WHAT THIS PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT — register item
             // 557. Read from the KERNEL at the moment of asking, never cached at the pane's birth:
             // both are the program's to change and every interactive agent changes them, so a value

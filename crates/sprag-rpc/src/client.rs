@@ -1028,7 +1028,23 @@ impl ScopeAsk {
 ///   caller already holds. Every other reader is a gate running in the same process as the panes,
 ///   and those keep the trail through `PaneInputTrail`, a capability a remote surface declines
 ///   outright rather than answers emptily.
-pub const WIRE_PROTOCOL: u32 = 38;
+///
+/// * **39 — A PANE CAN BE WAITED ON FROM OUTSIDE THE DAEMON.** Register item 631.
+///   [`PANE_WAIT_REVISION_METHOD`] is a new METHOD and `pane.<id>.revision` a new READ address, so
+///   this is an ADDITION and an older client loses nothing — the number moves for the rule this
+///   wire has always applied to a new address, and because the two halves must ship together: a
+///   daemon serving the slot but not the park would let a driver read a number it can only poll.
+///
+///   ⚠⚠⚠ **WHY IT IS WORTH A NUMBER RATHER THAN BEING WAVED THROUGH AS «NOTHING BROKE».** A driver
+///   that finds the method absent falls back to the documented degradation — one whole SCREEN over
+///   the wire per ten milliseconds — and that fallback is INVISIBLE: it is correct, it is slow, and
+///   nothing says which one is running. The number is what lets a driver tell *this daemon cannot
+///   be waited on* from *this daemon did not move*, which is exactly the discrimination
+///   `sprag_plugin::Settling::Unknown` was given a third arm for.
+///
+///   ⚠⚠ **NO ANSWER WORD OR ARGUMENT MOVED ANYWHERE ELSE.** The park's answer shape is its own
+///   (`{pane, revision}`), modelled on [`PANE_WAIT_OUTPUT_METHOD`]'s `{pane, find}`.
+pub const WIRE_PROTOCOL: u32 = 39;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).
@@ -1350,6 +1366,51 @@ pub const NEEDLE_PARAM: &str = "needle";
 /// The [`PANE_WAIT_OUTPUT_METHOD`] params key carrying a REGULAR EXPRESSION to wait for.
 pub const PATTERN_PARAM: &str = "pattern";
 
+/// The JSON-RPC method a client sends to BLOCK until a named pane has MOVED —
+/// `params: { "pane": <id>, "since": <revision> }`, answering
+/// `{ "pane": <id>, "revision": <revision> }` with the pane's revision as it stands the moment it
+/// passes `since`.
+///
+/// ## ⚠⚠⚠⚠⚠ Why a driver could not use either of the other two
+///
+/// This is the address register item 631 was open for: a run driven from OUTSIDE the daemon had no
+/// way to be TOLD a pane moved, so `sprag_plugin::run::park_until` fell to its documented
+/// degradation and re-read the whole SCREEN over the wire every ten milliseconds. Measured on the
+/// remote surface, a 600 ms settle cost **61** screen reads where the in-process path cost 3.
+///
+/// * [`PANE_WAIT_OUTPUT_METHOD`] answers *has this pane SAID something in particular*. A driver's
+///   predicate is not a search: it renders the screen and runs a supervisor's detector over the
+///   result, and no needle expresses that.
+/// * `scene/waitFor` answers *has this SESSION moved*, which is every pane in it plus every mux
+///   mutation. A driver watching one pane while a neighbour builds would wake on the neighbour, so
+///   the cost of its wait would follow somebody else's output — the same objection
+///   [`PANE_WAIT_OUTPUT_METHOD`]'s own documentation makes.
+///
+/// ## ⚠⚠ It answers a NUMBER, and that is the whole contract
+///
+/// Nothing here says what the pane now shows. A caller compares the answer with what it sent:
+/// greater means *worth a look*, and the look is the caller's own. That is exactly
+/// [`PaneChanges`](../../sprag_plugin/access/trait.PaneChanges.html)'s in-process contract, so the
+/// remote surface and the local one answer one question rather than two that can drift.
+///
+/// ## Intercepted and parked, like the other two
+///
+/// Handled in the host's per-frame dispatch before the generic core, because it PARKS its reply. It
+/// carries no deadline of its own, for [`EVENTS_WAIT_METHOD`]'s reason — and a caller that must
+/// give up on a slice and come back to the SAME park has
+/// [`begin`](HostConn::begin)/[`settle`](HostConn::settle) rather than a daemon-side clock. A
+/// daemon-side bound would need a timer per park, which for a ten-millisecond slice is the polling
+/// this method exists to remove, moved into the daemon.
+pub const PANE_WAIT_REVISION_METHOD: &str = "pane/waitForRevision";
+
+/// The [`PANE_WAIT_REVISION_METHOD`] answer key carrying the pane's revision.
+///
+/// Its own constant for [`NEEDLE_PARAM`]'s reason: a key both ends spell has one home. ⚠ It is
+/// deliberately NOT shared with the `scene/revision` and `layout` answers that spell the same word
+/// — those are the SESSION's scene version and a layout's own counter, and a reader that took one
+/// for the other would be comparing two clocks.
+pub const PANE_REVISION_FIELD: &str = "revision";
+
 /// The [`CLIENT_SIZE_METHOD`] params key carrying the client's width in cells.
 pub const COLS_PARAM: &str = "cols";
 
@@ -1463,6 +1524,14 @@ pub struct HostConn {
     /// Set once a read deadline expired mid-reply. See [`set_read_deadline`](Self::set_read_deadline)
     /// for why a timed-out connection can never be used again.
     timed_out: bool,
+    /// The deadline [`set_read_deadline`](Self::set_read_deadline) last installed, remembered so
+    /// that [`settle`](Self::settle) — which narrows it to its own bound for one read — can put
+    /// back what the owner chose.
+    ///
+    /// ⚠ Remembered rather than read back off the socket because there is no getter for
+    /// `SO_RCVTIMEO` in the standard library, and a `settle` that guessed `None` would silently
+    /// remove a deadline its owner set on purpose. The field is the only place that knows.
+    read_deadline: Option<Duration>,
     /// NOTIFICATIONS read while waiting for a response, in arrival order.
     ///
     /// A subscription's batches share this connection with request/response
@@ -1496,6 +1565,32 @@ pub struct HostConn {
     /// `None` for a connection wrapped around an already-open stream, which names no address
     /// anybody could dial again — an honest *cannot ask* rather than a *no*.
     socket: Option<PathBuf>,
+}
+
+/// A request [`HostConn::begin`] has SENT and [`HostConn::settle`] has not yet been given an answer
+/// for — the handle a wait carries across the slices it is taken in.
+///
+/// It carries the request's LABEL as well as its id, so a failure met three slices later still
+/// names the call it came from. That is [`HostConn::call`]'s own rule (*every failure names the
+/// request it came from*) applied to the one shape where the failure and the request are separated
+/// in time — and the shape that needs it most, because by then the method is nowhere on the stack.
+///
+/// ⚠ Not [`Copy`], and not because of the string: a caller holding two of these against one
+/// connection has abandoned one of them, and having to move it is the smallest reminder there is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outstanding {
+    /// The JSON-RPC id this request went out under.
+    id: u64,
+    /// What [`request_label`] called it — the sentence a later failure is prefixed with.
+    label: String,
+}
+
+impl Outstanding {
+    /// What this request was, in the form every other failure on this wire names itself with.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
 }
 
 impl HostConn {
@@ -1536,6 +1631,7 @@ impl HostConn {
             next_id: 1,
             scope: ScopeAsk::Default,
             timed_out: false,
+            read_deadline: None,
             pending: VecDeque::new(),
             daemon_build: None,
             socket: None,
@@ -1572,7 +1668,9 @@ impl HostConn {
     /// Fails if the socket rejects the timeout (which includes a zero `Duration`, since that means
     /// "block forever" to the OS and is never what a caller asking for a deadline meant).
     pub fn set_read_deadline(&mut self, deadline: Option<Duration>) -> io::Result<()> {
-        self.reader.get_ref().set_read_timeout(deadline)
+        self.reader.get_ref().set_read_timeout(deadline)?;
+        self.read_deadline = deadline;
+        Ok(())
     }
 
     /// Scope every subsequent request on this connection to the session NAMED `session`
@@ -1819,6 +1917,169 @@ impl HostConn {
         }
     }
 
+    /// **SEND A REQUEST AND DO NOT WAIT FOR IT** — the first half of a wait that can be given up on
+    /// and resumed. Answered by [`settle`](Self::settle).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the wire needed a third shape of connection
+    ///
+    /// [`set_read_deadline`](Self::set_read_deadline) names two: a REQUEST connection, whose daemon
+    /// answers at once so a deadline is a safeguard, and a LONG-POLL connection, which parks
+    /// indefinitely so a deadline would be a bug. Both are about a wait a caller intends to see
+    /// through.
+    ///
+    /// A DRIVER's wait is neither. `sprag_plugin::run::park_until` parks in slices — ten
+    /// milliseconds at a time — not because it doubts the daemon but because between slices it must
+    /// ask the RUN whether it has been cancelled or has run out of time, which are facts no pane can
+    /// announce. Expressed with the two shapes above, each slice is a deadline that expires, and a
+    /// connection that trips its deadline is FINISHED: driving a pane over the wire would burn and
+    /// redial a socket a hundred times a second, which is worse than the polling it replaces.
+    ///
+    /// So the request is sent ONCE and waited on in slices. Between them the daemon holds a parked
+    /// reply and this end holds nothing but an id, so a slice that ends in silence costs a socket
+    /// read timeout and NOTHING on the wire or in the daemon — which is exactly what the
+    /// `sleep` it replaces cost.
+    ///
+    /// # ⚠⚠ One outstanding request, still
+    ///
+    /// This does not make the connection multiplexed. A [`HostConn`] answers ONE id at a time, and
+    /// beginning a second request while one is outstanding leaves two replies to arrive in an order
+    /// this end does not choose — [`settle`](Self::settle) drops a frame whose id it is not waiting
+    /// for, so the abandoned one is LOST rather than misattributed, but it is lost. **A caller that
+    /// parks must give this connection to that park.**
+    ///
+    /// # Errors
+    ///
+    /// [`CallError::Transport`] if the request cannot be written, or if this connection has already
+    /// been retired by a mid-frame deadline.
+    pub fn begin(&mut self, method: &str, params: Value) -> Result<Outstanding, CallError> {
+        let label = request_label(method, &params);
+        if self.timed_out {
+            return Err(CallError::Transport(io::Error::new(
+                ErrorKind::TimedOut,
+                format!("{label}: connection abandoned after a read deadline expired"),
+            )));
+        }
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": self.scoped(params),
+        });
+        write_request(&mut self.writer, &request_line(&request)).map_err(|error| {
+            CallError::Transport(io::Error::new(error.kind(), format!("{label}: {error}")))
+        })?;
+        Ok(Outstanding { id, label })
+    }
+
+    /// **WAIT UP TO `within` FOR AN OUTSTANDING REPLY, AND KEEP THE CONNECTION EITHER WAY** — the
+    /// second half of [`begin`](Self::begin).
+    ///
+    /// * `Ok(Some(result))` — it answered.
+    /// * `Ok(None)` — the bound elapsed and nothing arrived. The request is STILL outstanding, this
+    ///   connection is still usable, and asking again with the same [`Outstanding`] resumes the
+    ///   same wait. Beginning a different request instead abandons this one.
+    /// * `Err(..)` — the daemon faulted, or the transport failed. A transport failure here is
+    ///   terminal for the connection exactly as it is for [`call`](Self::call).
+    ///
+    /// ⚠⚠⚠ **`Ok(None)` IS NOT A TIMEOUT IN [`set_read_deadline`](Self::set_read_deadline)'s
+    /// SENSE.** That one retires the connection because a deadline may have taken half a frame out
+    /// of the stream. This one is only ever returned when the read consumed NOTHING, which
+    /// `read_frame_inner` is the only place that can know — a slice that ended mid-frame comes back
+    /// as `Err` and retires the connection like any other.
+    ///
+    /// ⚠ A `within` of zero answers `Ok(None)` without reading, because zero means *block forever*
+    /// to the socket layer and a caller asking for no wait never meant that.
+    ///
+    /// # Errors
+    ///
+    /// [`CallError::Fault`] for the daemon's own `error` object; [`CallError::Transport`] for a
+    /// failed or malformed read, and for a connection already retired.
+    pub fn settle(
+        &mut self,
+        outstanding: &Outstanding,
+        within: Duration,
+    ) -> Result<Option<Value>, CallError> {
+        if self.timed_out {
+            return Err(CallError::Transport(io::Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "{}: connection abandoned after a read deadline expired",
+                    outstanding.label
+                ),
+            )));
+        }
+        if within.is_zero() {
+            return Ok(None);
+        }
+        // ⚠ THE OWNER'S DEADLINE IS PUT BACK WHATEVER HAPPENS. This narrows `SO_RCVTIMEO` to its
+        // own slice, and a connection left carrying a ten-millisecond deadline would trip the next
+        // ordinary call that was entitled to wait — a defect that would appear far from here.
+        let restore = self.read_deadline;
+        let outcome = self.settle_inner(outstanding, within);
+        let restored = self.set_read_deadline(restore);
+        match (outcome, restored) {
+            // The wait's own failure outranks a failure to restore: they have the same cause on a
+            // socket that has died, and the first one names the request.
+            (Err(error), _) => Err(error),
+            (Ok(answer), Ok(())) => Ok(answer),
+            (Ok(_), Err(error)) => Err(CallError::Transport(io::Error::new(
+                error.kind(),
+                format!("{}: {error}", outstanding.label),
+            ))),
+        }
+    }
+
+    /// [`settle`](Self::settle)'s body, wrapped by it so the owner's deadline is restored on every
+    /// exit — including the `?` this body uses.
+    fn settle_inner(
+        &mut self,
+        outstanding: &Outstanding,
+        within: Duration,
+    ) -> Result<Option<Value>, CallError> {
+        let started = Instant::now();
+        loop {
+            // Recomputed per frame rather than set once, because a NOTIFICATION arriving mid-slice
+            // must not restart the bound: a subscription's traffic would otherwise keep a slice
+            // alive past the moment the run wanted to be asked about itself.
+            let left = within.checked_sub(started.elapsed()).unwrap_or_default();
+            if left.is_zero() {
+                return Ok(None);
+            }
+            self.set_read_deadline(Some(left)).map_err(|error| {
+                CallError::Transport(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", outstanding.label),
+                ))
+            })?;
+            match self.read_frame_inner() {
+                Err(ReadStop::Idle) => return Ok(None),
+                Err(ReadStop::Failed(error)) => {
+                    return Err(CallError::Transport(io::Error::new(
+                        error.kind(),
+                        format!("{}: {error}", outstanding.label),
+                    )));
+                }
+                Ok(frame) => {
+                    // Set aside, never dropped — `call_inner`'s rule, and for its reason: a batch
+                    // exists nowhere else once the daemon has advanced past it.
+                    if frame.get("id").is_none() && frame.get("method").is_some() {
+                        self.pending.push_back(frame);
+                        continue;
+                    }
+                    if frame.get("id").and_then(Value::as_u64) != Some(outstanding.id) {
+                        continue;
+                    }
+                    if let Some(error) = frame.get("error") {
+                        return Err(CallError::Fault(RpcFault::from_wire(error)));
+                    }
+                    return Ok(Some(frame.get("result").cloned().unwrap_or(Value::Null)));
+                }
+            }
+        }
+    }
+
     /// The next NOTIFICATION this connection has been sent, blocking until one arrives.
     ///
     /// The reading half of a subscription ([`EVENTS_SUBSCRIBE_METHOD`]): one request opens the
@@ -1858,7 +2119,42 @@ impl HostConn {
     /// bookkeeping below has ONE home: a deadline that expires mid-line leaves the stream at an
     /// unknown offset, and a connection in that state is retired rather than retried. Two copies of
     /// that rule is one copy that can forget it.
+    ///
+    /// ⚠ A deadline that elapses having consumed NOTHING is retired here too, and that is this
+    /// caller's decision rather than a fact about the socket — see [`ReadStop::Idle`], which is
+    /// where the two are told apart, and [`settle`](Self::settle), which is the caller that does
+    /// not retire.
     fn read_frame(&mut self) -> io::Result<Value> {
+        self.read_frame_inner().map_err(|stop| match stop {
+            // SAID, not passed on. What the OS hands back for an elapsed `SO_RCVTIMEO` is
+            // `Resource temporarily unavailable`, which describes a socket rather than the
+            // situation: the host is THERE — it accepted this connection — and it is not
+            // answering. An operator reading the first spelling goes looking for a socket that is
+            // missing; one reading the second restarts the daemon.
+            ReadStop::Idle => {
+                self.timed_out = true;
+                io::Error::new(ErrorKind::TimedOut, HOST_SILENT)
+            }
+            ReadStop::Failed(error) => error,
+        })
+    }
+
+    /// One non-blank line, parsed — with *the deadline elapsed and nothing consumed* kept APART
+    /// from every other failure.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two timeouts are different facts, and only this function can tell them apart
+    ///
+    /// `read_line` appends what it managed to read before it failed. So a deadline that fires with
+    /// `line` still EMPTY consumed nothing: the next byte on the wire is still the first byte of a
+    /// frame, and the connection is exactly as usable as it was. A deadline that fires with bytes
+    /// already in `line` has taken half a frame out of the stream and cannot put it back — that
+    /// connection is finished, and [`set_read_deadline`](Self::set_read_deadline) says so.
+    ///
+    /// Everything above this call used to see one word for both, which is why a bounded wait had to
+    /// burn a connection per bound. ⚠ The mid-line half is NOT softened: it still ends the
+    /// connection, and it is [`ReadStop::Failed`] carrying [`ErrorKind::TimedOut`] so a caller
+    /// cannot mistake it for the idle one.
+    fn read_frame_inner(&mut self) -> Result<Value, ReadStop> {
         let mut line = String::new();
         loop {
             line.clear();
@@ -1869,30 +2165,47 @@ impl HostConn {
                 Err(error)
                     if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
                 {
+                    if line.is_empty() {
+                        return Err(ReadStop::Idle);
+                    }
+                    // ⚠ HALF A FRAME IS OUT OF THE STREAM. Retired here as well as by the caller,
+                    // because a caller that chose not to retire on `Idle` must not be able to
+                    // choose it here by forgetting.
                     self.timed_out = true;
-                    // SAID, not passed on. What the OS hands back for an elapsed `SO_RCVTIMEO` is
-                    // `Resource temporarily unavailable`, which describes a socket rather than the
-                    // situation: the host is THERE — it accepted this connection — and it is not
-                    // answering. An operator reading the first spelling goes looking for a socket
-                    // that is missing; one reading the second restarts the daemon. The distinction
-                    // is known HERE and nowhere above, because only this frame knows a deadline
-                    // was set and that it was the deadline that ended the read.
-                    return Err(io::Error::new(ErrorKind::TimedOut, HOST_SILENT));
+                    return Err(ReadStop::Failed(io::Error::new(
+                        ErrorKind::TimedOut,
+                        HOST_SILENT,
+                    )));
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(ReadStop::Failed(error)),
             };
             if read == 0 {
-                return Err(io::Error::new(
+                return Err(ReadStop::Failed(io::Error::new(
                     ErrorKind::UnexpectedEof,
                     "host closed the connection",
-                ));
+                )));
             }
             if !line.trim().is_empty() {
-                return serde_json::from_str(line.trim())
-                    .map_err(|error| io::Error::new(ErrorKind::InvalidData, error));
+                return serde_json::from_str(line.trim()).map_err(|error| {
+                    ReadStop::Failed(io::Error::new(ErrorKind::InvalidData, error))
+                });
             }
         }
     }
+}
+
+/// Why [`HostConn::read_frame_inner`] came back without a frame.
+///
+/// Two variants and not an [`io::Error`] with a kind, because the discrimination is not in the
+/// kind: [`Idle`](Self::Idle) and the mid-line timeout are BOTH [`ErrorKind::TimedOut`] to the
+/// operating system, and only the reader knows whether anything was consumed.
+enum ReadStop {
+    /// The read deadline elapsed having consumed NOTHING. The stream is at a frame boundary and the
+    /// connection is still usable; whether that is an answer or a failure belongs to the caller.
+    Idle,
+    /// Anything else — including a deadline that fired mid-frame, which has already retired the
+    /// connection.
+    Failed(io::Error),
 }
 
 /// The JSON-RPC `Invalid params` code — the one both ends of this wire already spell, now spelled
@@ -2113,6 +2426,228 @@ fn protocol_mismatch(daemon: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// What a [`HostConn::settle`] answered, in the one shape a test can compare — [`CallError`] is
+    /// deliberately not [`PartialEq`] (a fault carries a daemon's own words, and comparing two by
+    /// value would invite matching on a rendering), so the discrimination a gate here needs is
+    /// spelled out rather than derived.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Settled {
+        /// The bound elapsed with the request still outstanding.
+        Nothing,
+        /// It answered.
+        Answered(Value),
+        /// The daemon faulted, or the transport did.
+        Failed,
+    }
+
+    fn settled(outcome: Result<Option<Value>, CallError>) -> Settled {
+        match outcome {
+            Ok(None) => Settled::Nothing,
+            Ok(Some(value)) => Settled::Answered(value),
+            Err(_) => Settled::Failed,
+        }
+    }
+
+    /// A connection whose peer is a socket THIS TEST holds, so a parked reply can be answered — or
+    /// deliberately not answered — at an instant the test chooses.
+    ///
+    /// A real daemon cannot stage the case these gates are about (a slice that ends in silence),
+    /// because it answers as fast as it can. The pair is what makes *nothing happened* a thing a
+    /// test can produce on purpose.
+    fn paired() -> (HostConn, UnixStream) {
+        let (mine, theirs) = UnixStream::pair().expect("a socket pair");
+        (
+            HostConn::from_stream(mine).expect("wrap the client end"),
+            theirs,
+        )
+    }
+
+    /// Write one JSON-RPC response line for `id` into the peer end.
+    fn answer(peer: &mut UnixStream, id: u64, result: Value) {
+        let line = json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+        peer.write_all(format!("{line}\n").as_bytes())
+            .expect("answer the parked request");
+        peer.flush().expect("flush the answer");
+    }
+
+    /// **THE PROPERTY THE WHOLE PRIMITIVE EXISTS FOR**: a slice that ends in silence leaves the
+    /// request outstanding and the connection usable, and the answer arrives on a LATER slice
+    /// without the request being sent again.
+    ///
+    /// ⚠⚠⚠ The last clause is the one that makes this a PARK rather than a poll, and it is asserted
+    /// against the BYTES the peer received rather than against a count this end keeps: a
+    /// re-send would be invisible to any assertion made on the client's own side.
+    #[test]
+    fn a_slice_that_ends_in_silence_keeps_both_the_wait_and_the_connection() {
+        let (mut conn, mut peer) = paired();
+        let outstanding = conn
+            .begin("pane/waitForRevision", json!({"pane": 3, "since": 7}))
+            .expect("send the park");
+
+        for slice in 0..3 {
+            assert_eq!(
+                settled(conn.settle(&outstanding, Duration::from_millis(20))),
+                Settled::Nothing,
+                "slice {slice} must answer 'nothing yet' rather than retiring the connection",
+            );
+        }
+
+        answer(&mut peer, outstanding.id, json!({"pane": 3, "revision": 9}));
+        assert_eq!(
+            settled(conn.settle(&outstanding, Duration::from_secs(5))),
+            Settled::Answered(json!({"pane": 3, "revision": 9})),
+            "the SAME outstanding request resumes and is answered",
+        );
+
+        // ⚠ ONE request line reached the daemon, for four slices of waiting. A poll wearing this
+        // API's clothes would have sent four.
+        peer.set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("bound the peer read");
+        let mut sent = String::new();
+        let mut reader = BufReader::new(peer);
+        let _ = reader.read_line(&mut sent);
+        let mut second = String::new();
+        let read_again = reader.read_line(&mut second).unwrap_or(0);
+        assert!(
+            sent.contains("pane/waitForRevision"),
+            "the peer received the request: {sent:?}",
+        );
+        assert_eq!(
+            read_again, 0,
+            "the request was sent ONCE across four slices; a second line means this polls: {second:?}",
+        );
+    }
+
+    /// **AND THE HALF THAT MUST NOT BE SOFTENED**: a deadline that fires with half a frame already
+    /// out of the stream still retires the connection.
+    ///
+    /// ⚠⚠⚠⚠ This is the gate that keeps [`HostConn::settle`] honest. The whole primitive rests on
+    /// *the read consumed nothing*, and a repair that answered `Ok(None)` for every elapsed
+    /// deadline would pass the gate above and silently desynchronise a connection here — one call's
+    /// result attributed to another, which is the failure
+    /// [`HostConn::set_read_deadline`] retires a connection to prevent.
+    #[test]
+    fn a_slice_that_ends_mid_frame_still_retires_the_connection() {
+        let (mut conn, mut peer) = paired();
+        let outstanding = conn
+            .begin("pane/waitForRevision", json!({"pane": 3, "since": 7}))
+            .expect("send the park");
+
+        // Half a response line, deliberately without its newline: the reader consumes these bytes
+        // and then meets the deadline with no way to put them back.
+        peer.write_all(br#"{"jsonrpc": "2.0", "id": 1, "res"#)
+            .expect("write a partial frame");
+        peer.flush().expect("flush the partial frame");
+
+        let stopped = conn.settle(&outstanding, Duration::from_millis(50));
+        let Err(CallError::Transport(error)) = stopped else {
+            panic!("a mid-frame deadline is a transport failure, not 'nothing yet': {stopped:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::TimedOut, "{error}");
+
+        assert!(
+            matches!(
+                conn.settle(&outstanding, Duration::from_millis(50)),
+                Err(CallError::Transport(_)),
+            ),
+            "the connection stays retired",
+        );
+        assert!(
+            conn.call("scene/query", json!({"path": "/x"})).is_err(),
+            "and so does every ordinary call on it",
+        );
+    }
+
+    /// A bounded slice puts back the deadline its OWNER set — including when the owner set none.
+    ///
+    /// ⚠ The second case is the CONTROL, and it is the one a naive restore gets wrong: a `settle`
+    /// that only restored a deadline it found would leave a long-poll connection carrying this
+    /// slice's ten milliseconds, and the next park on it would trip immediately.
+    #[test]
+    fn a_bounded_slice_puts_back_the_deadline_its_owner_set() {
+        for owners in [None, Some(Duration::from_secs(30))] {
+            let (mut conn, _peer) = paired();
+            conn.set_read_deadline(owners).expect("set the owner's own");
+            let outstanding = conn
+                .begin("scene/query", json!({"path": "/x"}))
+                .expect("send");
+            assert_eq!(
+                settled(conn.settle(&outstanding, Duration::from_millis(20))),
+                Settled::Nothing,
+            );
+            assert_eq!(
+                conn.reader.get_ref().read_timeout().expect("read it back"),
+                owners,
+                "the slice's own bound must not outlive the slice",
+            );
+        }
+    }
+
+    /// A NOTIFICATION arriving mid-slice is set aside rather than lost, and it does not restart the
+    /// slice's bound.
+    ///
+    /// ⚠⚠⚠ The second half is what a driver's cancellation rests on. `park_until` slices at ten
+    /// milliseconds precisely so a run hears a stop; a slice whose bound restarted on every frame
+    /// would be deaf for as long as a subscription on the same connection stayed busy — and a
+    /// subscription IS busy exactly when a pane is producing, which is when a driver most wants to
+    /// be asked.
+    ///
+    /// Asserted against a peer that keeps talking, with a ceiling **fifty times** the bound rather
+    /// than a tight one: the discrimination is between *comes back while the flood is running* and
+    /// *comes back when it stops*, which does not need a sharp clock. (Register item 613 is what
+    /// tight wall-clock assertions cost on a shared runner.)
+    #[test]
+    fn a_notification_mid_slice_is_kept_and_does_not_restart_the_bound() {
+        let (mut conn, mut peer) = paired();
+        let outstanding = conn
+            .begin("scene/query", json!({"path": "/x"}))
+            .expect("send");
+
+        let flooding = Arc::new(AtomicBool::new(true));
+        let stop = Arc::clone(&flooding);
+        let flood = std::thread::spawn(move || {
+            let line = json!({"jsonrpc": "2.0", "method": "events/changed", "params": {"n": 1}})
+                .to_string();
+            // ⚠ THE FLOOD ENDS ON ITS OWN as well as on the flag, and that is what makes the
+            // failure a RED rather than a HANG: under a `settle` whose bound restarts per frame,
+            // the call comes back only when the peer goes quiet, and the assertion below then has
+            // a number to fail on. A flood that ran until the call returned would deadlock exactly
+            // the build the gate is aimed at.
+            let until = Instant::now() + Duration::from_secs(2);
+            while stop.load(Ordering::Acquire) && Instant::now() < until {
+                if peer.write_all(format!("{line}\n").as_bytes()).is_err() {
+                    break;
+                }
+                sleep(Duration::from_millis(1));
+            }
+            peer
+        });
+
+        let started = Instant::now();
+        let answered = conn.settle(&outstanding, Duration::from_millis(20));
+        let took = started.elapsed();
+        flooding.store(false, Ordering::Release);
+        let _peer = flood.join().expect("the flood thread");
+
+        assert_eq!(
+            settled(answered),
+            Settled::Nothing,
+            "the slice ends with no answer to its own request",
+        );
+        assert!(
+            took < Duration::from_secs(1),
+            "the bound is the SLICE's, not one restarted per frame — took {took:?}",
+        );
+        assert_eq!(
+            conn.next_notification("events/changed")
+                .expect("the notification was kept")["n"],
+            json!(1),
+            "a frame read while waiting is set aside, never dropped",
+        );
+    }
 
     /// The grammar round trips through the BYTES, both ways, for every scope a caller can ask for
     /// — the check that keeps the writer and the reader one grammar rather than two that agree

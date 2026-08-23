@@ -6177,6 +6177,212 @@ fn remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
     (RemotePaneAccess::over(driving), setup)
 }
 
+/// The same, PARKABLE — a driver that also holds the second connection its waits park on
+/// ([`RemotePaneAccess::parking_on`], register item 631).
+fn parking_remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
+    let (driver, setup) = remote_driver(sock);
+    let parks = HostConn::connect(sock, Duration::from_secs(5)).expect("the driver's park socket");
+    (driver.parking_on(parks), setup)
+}
+
+/// **A [`PaneAccess`] THAT COUNTS THE READS A WAIT MAKES** — the instrument this gate's number is.
+///
+/// `sprag_plugin::testing::Counted` is the same idea and cannot be used here: it is
+/// `#[cfg(test)]`-gated inside another crate, so an integration test cannot see it. What is counted
+/// is deliberately the same thing — a question about a pane's CONTENT — because that is the
+/// expensive read: over this surface it is a whole SCREEN across a socket.
+///
+/// ⚠⚠⚠ **A PARK IS NOT A LOOK, and that is the whole measurement.** `changes()` is forwarded
+/// UNWRAPPED, so waiting costs nothing here and only looking does. An instrument that counted parks
+/// too would report the same number either way and measure nothing.
+struct CountingRemote {
+    inner: RemotePaneAccess,
+    looks: std::sync::atomic::AtomicU64,
+}
+
+impl CountingRemote {
+    fn new(inner: RemotePaneAccess) -> Self {
+        Self {
+            inner,
+            looks: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn looks(&self) -> u64 {
+        self.looks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn looked(&self) {
+        self.looks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl PaneAccess for CountingRemote {
+    fn pane_ids(&self) -> Vec<PaneId> {
+        self.inner.pane_ids()
+    }
+
+    fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+        self.looked();
+        self.inner.pane_collapsed(id)
+    }
+
+    fn pane_rows(&self, id: PaneId) -> Option<Vec<sprag_plugin::PaneRow>> {
+        self.looked();
+        self.inner.pane_rows(id)
+    }
+
+    fn pane_eof(&self, id: PaneId) -> Option<bool> {
+        self.looked();
+        self.inner.pane_eof(id)
+    }
+
+    fn pane_full_text(&self, id: PaneId) -> Option<String> {
+        self.looked();
+        self.inner.pane_full_text(id)
+    }
+
+    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+        self.inner.inject(id, keys)
+    }
+
+    fn changes(&self) -> Option<&dyn sprag_plugin::PaneChanges> {
+        self.inner.changes()
+    }
+}
+
+/// Type `text` into `pane` on the TEST's connection after `after` — the pane MOVING at an instant
+/// this gate chooses, which is what a wait is being measured against.
+///
+/// On the test's own connection and not the driver's, for [`spawn_pane`]'s reason: what the driver
+/// did, it did through [`PaneAccess`] alone.
+fn print_into_pane_after(sock: &Path, pane: PaneId, after: Duration, text: &'static str) {
+    let sock = sock.to_path_buf();
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        let mut conn =
+            HostConn::connect(&sock, Duration::from_secs(5)).expect("the prodder's connection");
+        let _ = conn.call(
+            "scene/invoke",
+            json!({
+                "path": pane_input_path(pane.0, TEXT_ACTION),
+                "args": { "text": text },
+            }),
+        );
+    });
+}
+
+/// ⛔⛔⛔⛔ **A RUN DRIVEN OVER THE WIRE WAITS ON A PANE INSTEAD OF RE-READING ITS SCREEN** —
+/// register item 631, and the number it was open for.
+///
+/// # ⚠⚠⚠⚠⚠ Why the gate is a PAIR and neither half means anything alone
+///
+/// *Cheap* and *deaf* are one reading when all you count is looks: a wait that answered instantly
+/// and wrongly would score best of all. So this asserts BOTH — the wait comes back
+/// [`Waited::Ready`] because the pane really did print the marker, AND it paid a handful of screen
+/// reads rather than one per ten milliseconds. The register records that lesson twice (items 280
+/// and 630, where a gate measuring only the ENDING stayed green under a polling mutation).
+///
+/// # ⚠⚠⚠ MEASURED, 2026-08-24, on the build machine (32 cores, 125 GB)
+///
+/// A one-second wait over a real `sprag-term`, ended by the pane printing a marker:
+/// **parked 2 looks, polling 96.** Each look is a whole screen across the socket plus a detector
+/// run over the result. The numbers are here rather than in the assertions because an assertion
+/// that named them would be a claim about this machine's speed; what is ASSERTED is the ratio and
+/// a generous ceiling, which is what survives a shared runner (register item 613).
+///
+/// # ⚠⚠⚠ THE RIVAL, measured rather than remembered — herdr at `9a4ce5e1`, read 2026-08-24
+///
+/// **Every wait herdr's API serves is a poll, and there is no wake anywhere in it.**
+/// `src/api/wait.rs::wait_for_output` loops: issue a full `PaneRead` of the pane's text, test the
+/// match, `sleep(CONNECTION_POLL_INTERVAL)` — **100 ms** (`src/api/server.rs`). Its event wait does
+/// the same against a RING (`event_hub.events_after(seq)`) on the same interval, and
+/// `src/api/event_hub.rs` holds exactly three methods — `push`, `events_after`,
+/// `current_sequence` — with no condvar, no observer and nothing to notify. So an hour of patience
+/// over that API is 36,000 pane reads, and the cost of any wait there follows the CLOCK.
+///
+/// After this gate, sprag's is one request and then nothing: no wire traffic, no daemon work, and a
+/// wake that is the pane's own reader thread firing an observer synchronously as it applies the
+/// batch. That is the axis this repository was BEHIND on, and the number below is what changed it.
+///
+/// # ⚠⚠⚠ And the CONTROL is the same wait over a surface with no park connection
+///
+/// An absolute number here would be a claim about this machine's speed. The discriminator is the
+/// RATIO against a driver holding one connection instead of two — same daemon, same pane, same
+/// predicate, same marker, and the only difference is whether the wait could be told. A repair that
+/// broke the park would not merely miss a target; it would land on the control's own number.
+#[test]
+fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
+    /// Long enough that a polling wait pays visibly for it, short enough to keep the gate quick.
+    const BEFORE_IT_SPEAKS: Duration = Duration::from_millis(1000);
+    const MARKER: &str = "PANE-MOVED-631";
+    /// ⚠ WITH ITS NEWLINE. The boot pane runs `cat`, so the line discipline echoes the text and
+    /// `cat` writes it back — but only a completed line reaches `cat` at all, and a gate that
+    /// depended on the echo alone would be measuring the TERMINAL rather than the program.
+    const TYPED: &str = "PANE-MOVED-631\n";
+
+    let wait_for_marker = |driver: CountingRemote, sock: &Path, pane: PaneId| {
+        print_into_pane_after(sock, pane, BEFORE_IT_SPEAKS, TYPED);
+        let run = RunContext::uncancellable();
+        let ended =
+            sprag_plugin::run::park_until(&run, &driver, pane, Duration::from_secs(20), || {
+                let seen = driver
+                    .pane_rows(pane)
+                    .is_some_and(|rows| rows.iter().any(|row| row.text.contains(MARKER)));
+                if seen {
+                    sprag_plugin::run::Look::Holds
+                } else {
+                    // ⚠ THE ARM THIS GATE IS ABOUT. The answer is a function of the pane's bytes
+                    // and of nothing else, so a surface that can be told when the pane moved owes
+                    // exactly one look per move — and one that cannot owes one per slice.
+                    sprag_plugin::run::Look::Steady
+                }
+            });
+        (ended, driver.looks())
+    };
+
+    let (_host, sock) = spawn_host();
+    let (driver, _setup) = parking_remote_driver(&sock);
+    assert!(
+        driver.changes().is_some(),
+        "a driver given a park connection publishes a change signal — without that the number \
+         below measures the control twice",
+    );
+    let (parked_end, parked_looks) = wait_for_marker(CountingRemote::new(driver), &sock, PaneId(0));
+
+    let (_control_host, control_sock) = spawn_host();
+    let (control, _control_setup) = remote_driver(&control_sock);
+    assert!(
+        control.changes().is_none(),
+        "the CONTROL is a driver that cannot be told, and its `None` is what makes it one",
+    );
+    let (control_end, control_looks) =
+        wait_for_marker(CountingRemote::new(control), &control_sock, PaneId(0));
+
+    assert_eq!(
+        parked_end,
+        sprag_plugin::run::Waited::Ready,
+        "the parked wait must END — a cheap wait that never woke is the failure this pairs against",
+    );
+    assert_eq!(
+        control_end,
+        sprag_plugin::run::Waited::Ready,
+        "and so must the control, or the two numbers are not about the same wait",
+    );
+    assert!(
+        parked_looks * 5 < control_looks,
+        "a wait that can be TOLD the pane moved must cost a fraction of one that asks: parked \
+         {parked_looks} looks, polling {control_looks}. Each look here is a whole screen across a \
+         socket plus a detector run over it.",
+    );
+    assert!(
+        parked_looks <= 15,
+        "the parked wait's cost follows the PANE, not the clock — a second of silence must not \
+         buy looks. Got {parked_looks}",
+    );
+}
+
 /// ⛔⛔⛔⛔ **THE FUNCTION EVERY PLUGIN TYPES THROUGH DRIVES A REAL PANE FROM ANOTHER PROCESS** —
 /// register item 544, stage 1, and the claim the whole item is for.
 ///
