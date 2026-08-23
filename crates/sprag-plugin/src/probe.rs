@@ -1513,6 +1513,72 @@ mod tests {
         }
     }
 
+    /// **THE ENGINE REVISION THE DOOR PROBE'S NAME LIST WAS LAST READ AGAINST.**
+    ///
+    /// ⚠⚠⚠ Move this ONLY after re-reading
+    /// [`sce_publishes_no_door_to_enter_a_machine_at_a_configuration`]'s six spellings against the
+    /// new revision — that is the whole transaction the gate below exists to force.
+    const DOORS_READ_AT_SCE_REV: &str = "87f4b1d83165f77fd6ad832b95df45f854890a15";
+
+    /// ⛔⛔⛔⛔ **THE DOOR PROBE'S NAME LIST IS RE-READ WHENEVER THE ENGINE PIN MOVES** — register
+    /// item 583, and the mechanism its `Done when` asked for.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What a list of names cannot do, and what this does instead
+    ///
+    /// The probe above asks about SIX spellings. Upstream picking a seventh leaves it green while
+    /// the door exists, and item 549 then reads *still blocked* for as long as nobody looks. A glob
+    /// would fix that and Rust has no stable way to ask *does this type have a method of this
+    /// shape* without naming it — so the list cannot become one, and the repair has to be a
+    /// mechanism that makes somebody LOOK on the one day the answer can change: a pin bump.
+    ///
+    /// ⚠⚠⚠⚠ **IT READS BOTH ARTEFACTS, WHICH IS WHY IT CANNOT ROT** (register item 470's rule). The
+    /// audited revision is written here by hand; the revision actually built is read out of the
+    /// workspace manifest at COMPILE time. A ratchet that held only its own copy would agree with
+    /// itself forever.
+    ///
+    /// # What the last reading found, at `87f4b1d8` on 2026-08-23
+    ///
+    /// * `enter_at` EXISTS (item 549, delivered and consumed — the probe's own arm says so).
+    /// * The other four spellings do not exist on `Engine`.
+    /// * ⚠⚠ `set_active_states` exists — on `StatePolicy`, NOT on `Engine`. So the probe is right
+    ///   not to see it as a door on the engine, and wrong to imply nothing wears that name: a door
+    ///   arriving on the POLICY is a shape the probe does not look at at all.
+    /// * ⚠⚠ **NO EXTENSION TRAIT IS IMPLEMENTED FOR `Engine`** at this revision — item 583 recorded
+    ///   that blind spot as UNMEASURED and this is the measurement. It is true of THIS pin only,
+    ///   which is exactly why it has to be re-taken when the pin moves.
+    #[test]
+    fn the_door_probes_name_list_is_re_read_whenever_the_engine_pin_moves() {
+        // ⚠ The workspace manifest, from three directories up: `crates/sprag-plugin/src` → root.
+        // Compiled IN, so the gate reads the pin this build actually resolved rather than a copy
+        // somebody kept in step by hand.
+        const MANIFEST: &str = include_str!("../../../Cargo.toml");
+
+        let pinned = MANIFEST
+            .lines()
+            .find(|line| line.starts_with("sce-rust-runtime = "))
+            .and_then(|line| line.split_once("rev = \""))
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(rev, _)| rev)
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠⚠⚠ THE PIN COULD NOT BE READ, so this ratchet is blind rather than \
+                     satisfied. `sce-rust-runtime` must be a `[workspace.dependencies]` line \
+                     carrying `rev = \"…\"`; if that moved, this reader has to move with it — a \
+                     gate that cannot find its second artefact must fail, never pass"
+                )
+            });
+
+        assert_eq!(
+            pinned, DOORS_READ_AT_SCE_REV,
+            "⛔⛔⛔⛔ THE ENGINE PIN MOVED AND THE DOOR PROBE'S NAME LIST HAS NOT BEEN RE-READ. \
+             Open `sce_publishes_no_door_to_enter_a_machine_at_a_configuration`, read its six \
+             spellings against the engine at {pinned}, check whether any extension trait is now \
+             implemented for `Engine`, and only then move `DOORS_READ_AT_SCE_REV`. ⚠ A green here \
+             is a claim that somebody looked — item 583 exists because a list of names is silent \
+             about the seventh one",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **AND THE ONE DOOR THAT DOES EXIST IS A REPLAY — item 549's other half, asked of a
     /// RUN.**
     ///
