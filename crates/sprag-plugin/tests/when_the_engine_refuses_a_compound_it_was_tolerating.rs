@@ -25,13 +25,22 @@
 //! by adding a token that merely descends from one an existing sibling already handles — which is
 //! exactly what `hold.expired` did.
 //!
-//! # ⚠⚠⚠⚠ And the escape hatch cannot be armed in advance
+//! # ✅ And the escape hatch CAN now be armed in advance — fixed upstream 2026-08-24
 //!
-//! SCE's own message offers `sce:unhandled="<event>"`. It cannot be used BEFORE the flip:
-//! `check_declarations` judges a declaration against the same gap map, and while the precondition is
-//! off that map has no entry for the parent — so the declaration is `StaleUnhandledDeclaration` and
-//! the build is refused for the fix. **A document can only declare a gap after that gap has already
-//! become fatal.** The third gate below drives it.
+//! SCE's own message offers `sce:unhandled="<event>"`, and until pin `084dfdbf` it could not be used
+//! BEFORE the flip: `check_declarations` judged a declaration against the same gap map, and while
+//! the precondition was off that map had no entry for the parent — so the declaration was
+//! `StaleUnhandledDeclaration` and the build was refused FOR THE FIX. **A document could only
+//! declare a gap after that gap had already become fatal.**
+//!
+//! SCE `17f43428` splits the inconsistency FACTS from the reportable SUBSET and judges
+//! `sce:unhandled` against the facts. The third gate below is now the CONSUMPTION of that, and it
+//! carries the arm that keeps *accepted in advance* from meaning *no longer judged*.
+//!
+//! ⚠⚠⚠ **THE GATE IS WHAT TOLD US.** It was written as an `expect_err` whose own message said *"if
+//! it ever stops being refused, upstream has fixed the thing this gate was filed about"* — and it
+//! went red on the pin bump, in the round that moved the pin, which is exactly the bargain the last
+//! section of this header describes.
 //!
 //! # Why this is a gate and not a paragraph in the register
 //!
@@ -169,20 +178,39 @@ fn an_event_no_sibling_spells_can_still_create_the_common_ground() {
     );
 }
 
-/// ⛔⛔⛔⛔ **AND THE FIX SCE OFFERS CANNOT BE APPLIED BEFORE IT IS NEEDED** — the residue item 547
-/// leaves for upstream, measured rather than argued.
+/// ✅✅✅✅ **AND THE FIX SCE OFFERS CAN NOW BE APPLIED BEFORE IT IS NEEDED — item 547's residue,
+/// DELIVERED UPSTREAM AND CONSUMED HERE.**
+///
+/// # What this gate said until 2026-08-24, and what moved
 ///
 /// The refusal's own text says to *"declare the gap on the non-handling child with
-/// `sce:unhandled="<event>"` if it is intentional"*. A document sitting on latent gaps would want
-/// exactly that — armed in advance, so no later edge can surprise it. It cannot: declarations are
-/// judged against the same gap map the precondition gates, so while the compound is quiet the
-/// declaration describes a gap the engine does not believe exists.
+/// `sce:unhandled="<event>"` if it is intentional"*. A document sitting on latent gaps wants exactly
+/// that — armed in advance, so no later edge can surprise it. **It could not be**: declarations were
+/// judged against the same gap map the precondition gates, so while the compound was quiet the
+/// declaration described a gap the engine did not believe existed, and the build was refused FOR THE
+/// FIX. This gate held that as a `expect_err` and said in its own message *"if it ever stops being
+/// refused, upstream has fixed the thing this gate was filed about"*.
 ///
-/// ⚠⚠ **THE CONTROL IS THE SAME DECLARATION AFTER THE FLIP**, and it is what makes this a statement
-/// about TIMING rather than about the attribute: identical text, accepted once the precondition is
-/// on. So the hatch works — it just cannot be reached from where a careful author stands.
+/// It stopped. SCE `17f43428` — *"Let a gap be declared before the report asks for it: split the
+/// inconsistency facts from the reportable subset; judge `sce:unhandled` against the facts, the lint
+/// against the subset"* — reached this tree at pin `084dfdbf`, taken from `pinion@38c908b2` as the
+/// shared-instance rule requires. **The gate went red on the pin bump, in the round that moved it,
+/// which is the whole reason it was written as a gate rather than a paragraph.**
+///
+/// # ⚠⚠⚠⚠⚠ SO IT IS INVERTED, AND THE THIRD ARM IS WHAT KEEPS IT A GATE
+///
+/// *Accepted in advance* is also what a build that had stopped judging declarations at all would
+/// answer, and that would be strictly worse than the residue: a document could then name any event
+/// it liked and be told nothing. So the arm that matters is the **FALSE declaration** — an event no
+/// sibling handles inconsistently, declared as a gap — which must still be refused. Upstream's own
+/// split is exactly this: the facts are what a declaration is judged against, and a non-fact is
+/// still stale.
+///
+/// ⚠ The second arm — the same declaration AFTER the flip — is kept unchanged. It was the control
+/// that made the old statement about TIMING rather than about the attribute, and it is now the
+/// control that says the hatch did not merely move.
 #[test]
-fn the_declaration_that_would_prevent_the_surprise_is_refused_until_the_surprise_happens() {
+fn a_gap_can_be_declared_before_the_edge_that_makes_it_fatal_arrives() {
     let declare = |extra: &[&str]| {
         let mut model = orders_with(extra);
         let held = model
@@ -207,36 +235,56 @@ fn the_declaration_that_would_prevent_the_surprise_is_refused_until_the_surprise
         model
     };
 
-    let early = validate(&declare(&[]), "ai_loop.scxml")
-        .expect_err(
-            "⛔⛔⛔ ITEM 547's RESIDUE: this is a document declaring, truthfully, the three gaps it \
-             has — before anything has gone wrong. It must be refused today, and if it ever stops \
-             being refused, upstream has fixed the thing this gate was filed about",
-        )
-        .to_string();
-    // ⚠⚠⚠ THE ENGINE'S OWN SENTENCE IS THE ARTEFACT HERE, not a paraphrase of it: what makes this
-    // the precondition and not some other staleness is that SCE says the parent has NO gaps —
-    // while three of them are plainly written in the document above. Asserting on a state's name
-    // instead would pin whichever declarer happens to come first in document order, which is a
-    // fact about the fixture (this gate's second run learned it) and not about the engine.
-    for said in ["sce:unhandled", "no inconsistently-handled events at all"] {
-        assert!(
-            early.contains(said),
-            "⚠⚠ and the refusal must be the DECLARATION being rejected for describing a gap the \
-             engine does not believe exists — that is the whole shape of the residue, and {said:?} \
-             is what carries it: {early:?}",
-        );
-    }
+    let early = validate(&declare(&[]), "ai_loop.scxml");
+    assert!(
+        early.is_ok(),
+        "⛔⛔⛔ ITEM 547's RESIDUE IS BACK. This is a document declaring, TRUTHFULLY, the gaps it \
+         has — before any edge has made them fatal — which is precisely what SCE's own refusal \
+         text tells an author to do. It was refused until `17f43428`, so a document could only be \
+         made safe AFTER it had already broken, and every author met the check for the first time \
+         in the round that tripped it. If this is red, the engine pin moved backwards or the split \
+         between the inconsistency FACTS and the reportable SUBSET was undone: {}",
+        early
+            .as_ref()
+            .map_or_else(|why| why.to_string(), |()| String::new()),
+    );
 
     let after = validate(&declare(&["hold.expired"]), "ai_loop.scxml");
     assert!(
         after.is_ok(),
-        "⚠⚠⚠⚠⚠ THE CONTROL, AND THE WHOLE POINT: the SAME declarations are accepted once the edge \
-         that flips the precondition is present. The hatch is not broken — it is unreachable from \
-         before, so a document cannot be made safe in advance and every author meets this check \
-         for the first time in the round that trips it. ⚠ The engine's own words are carried here \
-         rather than left in a log, because the first thing a reader needs is WHICH gap is \
-         complained about — this gate's first run failed on a fourth one nobody had counted: {}",
+        "⚠⚠⚠⚠⚠ THE CONTROL THAT SAYS THE HATCH DID NOT MERELY MOVE: the SAME declarations must go \
+         on being accepted once the edge that flips the precondition is present. ⚠ The engine's \
+         own words are carried here rather than left in a log, because the first thing a reader \
+         needs is WHICH gap is complained about — this gate's first run failed on a fourth one \
+         nobody had counted: {}",
         after.map_or_else(|why| why.to_string(), |()| String::new()),
+    );
+
+    // ── ⛔ THE ARM THAT KEEPS THIS A GATE: a declaration that is NOT TRUE is still refused ──
+    //
+    // ⚠⚠⚠⚠⚠ Without it, *accepted in advance* is exactly what a build that had stopped judging
+    // declarations AT ALL would answer — and that is strictly worse than the residue this replaces,
+    // because a document could then name any event it liked and be told nothing. Upstream's own
+    // split is this arm: `sce:unhandled` is judged against the inconsistency FACTS, and an event no
+    // sibling handles inconsistently is not one of them.
+    let mut invented = declare(&[]);
+    invented
+        .states
+        .get_mut("held")
+        .expect("the non-handling child")
+        .unhandled
+        .push("nobody.handles.this".to_string());
+    let stale = validate(&invented, "ai_loop.scxml")
+        .expect_err(
+            "⛔⛔⛔⛔⛔ A DECLARATION NAMING AN EVENT THAT IS NOT A GAP WAS ACCEPTED. Then \
+             `sce:unhandled` has stopped being judged rather than been made reachable, and every \
+             declaration in every document here is now unchecked text — the failure mode that \
+             makes this whole hatch worthless. It must still be stale",
+        )
+        .to_string();
+    assert!(
+        stale.contains("nobody.handles.this"),
+        "⚠⚠ and the refusal must NAME the invented event, or it is refusing something else and \
+         this arm is passing by accident: {stale:?}",
     );
 }

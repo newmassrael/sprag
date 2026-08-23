@@ -42,6 +42,21 @@
          `<send>` does not deliver in this document at all. This is a send with
          NO type in the SAME state and the same entry, so it separates them. -->
     <data id="plain" expr="0"/>
+    <!--
+      ⚠⚠⚠⚠⚠ IN WHICH ORDER TWO EVENTS FROM ONE HOST ACT ARRIVED. SCE widened a
+      handler's reply from ONE event to a LIST at rev 084dfdbf, and the whole of
+      what a list adds over a single reply is the ORDER — so two counters would
+      measure nothing, because both would read 1 whichever way round they came.
+
+      ⚠⚠ RANKS RATHER THAN A STRING, and the reason is the engine underneath: the
+      datamodel is declared `ecmascript` while the IScriptEngine supplied here is
+      Lua, so `seen + '1'` means two different things in the two languages and a
+      concatenated trace would be measuring the script engine. Arithmetic on a
+      counter is the one spelling that is identical in both.
+    -->
+    <data id="ticks" expr="0"/>
+    <data id="rank1" expr="0"/>
+    <data id="rank2" expr="0"/>
   </datamodel>
 
   <!--
@@ -78,6 +93,26 @@
     </transition>
     <transition event="reached.plain">
       <assign location="plain" expr="plain + 1"/>
+    </transition>
+    <!--
+      ⚠⚠⚠ THE TWO EVENTS ONE HOST ACT MAY NOW PRODUCE, and the names share no
+      prefix with `reached.*` on purpose: an SCXML event descriptor matches by
+      PREFIX, so calling these `reached.one` / `reached.two` would put them in the
+      same family as the control and the host measurement above. This repository
+      has already paid for a sibling swallowing a whole compound.
+
+      ⚠⚠ NOTHING HERE FIRES IN THE OTHER PROBES OVER THIS DOCUMENT. Their handler
+      answers the request's own `reached.host`, so these two stay at 0 and the
+      counters they read are untouched — which is what makes this addition safe to
+      make to a document three other gates already measure.
+    -->
+    <transition event="ordered.one">
+      <assign location="ticks" expr="ticks + 1"/>
+      <assign location="rank1" expr="ticks"/>
+    </transition>
+    <transition event="ordered.two">
+      <assign location="ticks" expr="ticks + 1"/>
+      <assign location="rank2" expr="ticks"/>
     </transition>
     <transition event="go" target="invoking"/>
   </state>

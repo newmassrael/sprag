@@ -266,10 +266,16 @@ mod tests {
                 // ⚠ The document's own event name, handed back — the request/reply shape. A
                 // handler that answered a name of its own would be inventing the document's
                 // vocabulary, which is the thing stage 2 must not do.
-                Some(sce_rust_runtime::host_processor::HostSendResponse {
+                //
+                // ⚠⚠ ONE-ELEMENT LIST, and the list is the engine's rather than this crate's
+                // taste: SCE widened the reply at `084dfdbf` so an act can produce SEVERAL events
+                // in a stated order. This handler produces exactly one, and says so by length —
+                // see `a_host_act_can_answer_with_two_events_in_the_order_it_names` for the case
+                // the widening was made for.
+                vec![sce_rust_runtime::host_processor::HostSendResponse {
                     event_name: request.event_name,
                     event_data: String::new(),
-                })
+                }]
             }
         });
         engine.register_invoker("x-sprag-host", {
@@ -345,6 +351,131 @@ mod tests {
             count(&engine, "errors"),
             0,
             "⚠⚠⚠ and the invoke raised no refusal either",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **ONE HOST ACT PRODUCES TWO EVENTS, IN THE ORDER IT NAMED THEM** — consuming SCE
+    /// `084dfdbf`, taken from `pinion@38c908b2` as the shared-instance rule requires.
+    ///
+    /// # ⚠⚠⚠ Why the ORDER is the whole claim, and two counters would have measured nothing
+    ///
+    /// A handler's reply was ONE event until this rev. A host that needed two had two ways out and
+    /// the engine's own notes record rejecting both: re-enter the engine from inside the handler —
+    /// impossible on this backend, because the registry hands out a `&mut` borrowed from the engine
+    /// — or return one and deliver the rest on the host's next step, which puts a pending slot back
+    /// in the host, the hidden state that moving an act into the document exists to remove.
+    ///
+    /// So what the list adds is the ORDER, and nothing else. A gate counting arrivals would read
+    /// `1` and `1` whichever way round they came, and would stay green against an engine that
+    /// delivered a reply backwards.
+    ///
+    /// # ⚠⚠⚠⚠ THE CONTROL IS THE SAME ACT WITH THE LIST REVERSED, and without it this proves
+    /// nothing
+    ///
+    /// One run cannot tell *the engine preserved my order* from *the engine has an order of its
+    /// own that happens to agree* — alphabetical, hash, queue insertion, anything. So the same
+    /// document and the same handler are driven twice with the two events swapped, and the ranks
+    /// must swap with them. **A green needs both halves**; either alone is a coincidence.
+    ///
+    /// # ⚠⚠ Why this matters here rather than upstream
+    ///
+    /// `ai_loop.scxml`'s `priming` leaves on `prompt.sent` — *the session has been told what it is
+    /// here for* — and only then is the machine anywhere a turn result means anything. An act that
+    /// reported the turn FIRST would leave the run sitting in `priming` for ever. Prompting a fresh
+    /// session is therefore exactly two events with exactly one correct order, and until this rev
+    /// the engine could not carry it.
+    ///
+    /// ⚠ What a green does NOT say: no shipped document names a two-event act yet. Item 470 stage
+    /// 2 is where that gets built; this is the road being proven on the day it opened.
+    #[test]
+    fn a_host_act_answers_with_two_events_in_the_order_it_named_them() {
+        /// One run of the probe document with a host handler that answers `first` then `second`,
+        /// giving back what the DATAMODEL recorded — the engine's ordering, not a `Vec`'s.
+        fn ranks(first: &'static str, second: &'static str) -> (i64, i64, i64, i64, i64) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+            // ⚠ REGISTERED BEFORE `initialize`, for the reason its neighbour above states: the
+            // send is in the `onentry` of the INITIAL state.
+            engine.register_event_processor("x-sprag-host", move |_request| {
+                vec![
+                    sce_rust_runtime::host_processor::HostSendResponse {
+                        event_name: first.to_owned(),
+                        event_data: String::new(),
+                    },
+                    sce_rust_runtime::host_processor::HostSendResponse {
+                        event_name: second.to_owned(),
+                        event_data: String::new(),
+                    },
+                ]
+            });
+            engine.register_invoker("x-sprag-host", |_event| None);
+            engine.initialize();
+            // ⚠ `tick()` rather than `step()`, for the reason the gate above gives: a `<send>`
+            // goes through the scheduler even with no delay.
+            for _ in 0..8 {
+                engine.tick();
+            }
+            let session = engine
+                .policy()
+                .session_id
+                .clone()
+                .expect("a script datamodel opens a script session");
+            let count =
+                |name: &str| match engine.policy().script_engine.get_variable(&session, name) {
+                    Ok(ScriptValue::Int(held)) => held,
+                    other => panic!("`{name}` must be a number the datamodel holds: {other:?}"),
+                };
+            (
+                count("rank1"),
+                count("rank2"),
+                count("plain"),
+                count("errors"),
+                count("landed"),
+            )
+        }
+
+        let (one_first, two_first, plain, errors, landed) = ranks("ordered.one", "ordered.two");
+
+        // ── the controls: the document ran, and nothing but this handler spoke ──
+        assert_eq!(
+            plain, 1,
+            "⚠⚠⚠ THE CONTROL: the untyped `<send>` in the same entry must still deliver, or the \
+             ranks below are about a document that never ran",
+        );
+        assert_eq!(
+            errors, 0,
+            "⚠⚠ and a `<send>` whose handler answers a LIST must raise no `error.execution` — a \
+             refusal here would say the engine took the widened reply as a malformed one",
+        );
+        assert_eq!(
+            landed, 0,
+            "⚠⚠⚠⚠ AND THE ENGINE MUST NOT INVENT A REPLY. This handler never names the request's \
+             own `reached.host`, so a `landed` above zero would mean the events the document saw \
+             were not the ones the handler listed — which would make every rank below unreadable",
+        );
+
+        // ── the claim: BOTH arrived, and in the order the handler listed them ──
+        assert_eq!(
+            (one_first, two_first),
+            (1, 2),
+            "⚠⚠⚠⚠⚠ A HOST ACT'S TWO EVENTS DID NOT REACH THE DOCUMENT IN THE ORDER IT NAMED \
+             THEM. A rank of 0 is an event that never arrived at all — the reply was truncated to \
+             one, which is the pre-`084dfdbf` behaviour — and (2, 1) is both arriving BACKWARDS. \
+             `ai_loop.scxml`'s `priming` leaves on the FIRST of a pair; reversed, a run sits there \
+             for ever",
+        );
+
+        // ── the control that makes the claim a claim: swap the list, the ranks must swap ──
+        let (one_second, two_second, ..) = ranks("ordered.two", "ordered.one");
+        assert_eq!(
+            (one_second, two_second),
+            (2, 1),
+            "⛔⛔⛔⛔⛔ THE CONTROL FAILED — the arrival order does not follow the HANDLER's list. \
+             With the same two events listed the other way round the document still saw \
+             ({one_second}, {two_second}), so whatever ordered them belongs to the engine and not \
+             to the host. The assertion above would then be green against an engine that ignores \
+             the order entirely, which is the one thing a list adds over the single reply it \
+             replaced",
         );
     }
 
@@ -1518,7 +1649,20 @@ mod tests {
     /// ⚠⚠⚠ Move this ONLY after re-reading
     /// [`sce_publishes_no_door_to_enter_a_machine_at_a_configuration`]'s six spellings against the
     /// new revision — that is the whole transaction the gate below exists to force.
-    const DOORS_READ_AT_SCE_REV: &str = "87f4b1d83165f77fd6ad832b95df45f854890a15";
+    ///
+    /// # ⚠⚠ WHAT WAS READ AT `084dfdbf`, so the next reader can tell a reading from a bump
+    ///
+    /// The whole `impl<P: StatePolicy> Engine<P>` block was enumerated rather than the six names
+    /// searched for, because the gate's own limit 1 is that a SEVENTH spelling is invisible to a
+    /// name list. `enter_at` is there and is item 549 delivered (already consumed by
+    /// `a_saved_configuration_is_entered_without_re_running_onentry`); nothing else in the block
+    /// takes a configuration. The rev's additions are `schedule_host_send_at`, `pop_ready_act_at`
+    /// and `note_payload_reading` — the scheduler and the payload meter, not a door.
+    ///
+    /// ⚠ And the second half the gate's message asks for: **no trait is implemented for `Engine`
+    /// at all** at this rev, so nothing shadows the method resolution the probe's verdict is made
+    /// of.
+    const DOORS_READ_AT_SCE_REV: &str = "084dfdbf4702169e7874bd18ad372e8b798ef3d7";
 
     /// ⛔⛔⛔⛔ **THE DOOR PROBE'S NAME LIST IS RE-READ WHENEVER THE ENGINE PIN MOVES** — register
     /// item 583, and the mechanism its `Done when` asked for.
@@ -1623,10 +1767,10 @@ mod tests {
                 let left_the_process = Arc::clone(&left_the_process);
                 move |request| {
                     left_the_process.fetch_add(1, Ordering::SeqCst);
-                    Some(sce_rust_runtime::host_processor::HostSendResponse {
+                    vec![sce_rust_runtime::host_processor::HostSendResponse {
                         event_name: request.event_name,
                         event_data: String::new(),
-                    })
+                    }]
                 }
             });
             engine.register_invoker("x-sprag-host", |_event| None);
@@ -1724,10 +1868,10 @@ mod tests {
                 let left_the_process = Arc::clone(&left_the_process);
                 move |request| {
                     left_the_process.fetch_add(1, Ordering::SeqCst);
-                    Some(sce_rust_runtime::host_processor::HostSendResponse {
+                    vec![sce_rust_runtime::host_processor::HostSendResponse {
                         event_name: request.event_name,
                         event_data: String::new(),
-                    })
+                    }]
                 }
             });
             engine.register_invoker("x-sprag-host", |_event| None);
