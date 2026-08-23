@@ -6102,10 +6102,26 @@ mod tests {
              a failure. Delete this gate, delete the comment block it is named in inside \
              `ai_loop.scxml`, and pay register item 604. Walked {walk:?}",
         );
+        // ⚠⚠⚠⚠⚠ **AND THE WALK NAMES `working`, WHICH IS THE WHOLE MECHANISM.** Measured
+        // 2026-08-23, the moment `pump` stopped reading `from` at the top of the pass: this line
+        // used to read `Judging --PeerGone--> PeerGone`, and that sentence is what register item
+        // 605 spent four rounds and five guard rewrites believing.
+        //
+        // What actually happens: the order is standing and the turn IS banked, and the driver
+        // still judges that turn as an ordinary one and asks for another — `judging --judge-->
+        // working` — and only then does sending that prompt discover the agent has gone. So
+        // `peer.gone` is answered from `working`, where a turn in flight really is lost, and the
+        // guarded edge at `judging` is never reached because the machine is no longer there.
+        //
+        // ⚠⚠⚠ THE PASS RAISED TWO EVENTS AND THE WALK CARRIES ONE. `judging --judge--> working`
+        // is nowhere in this journal, which is its own defect and is registered as one.
         assert!(
-            walk.iter().any(|note| note.contains("--> PeerGone")),
-            "⛔ IF THIS IS RED, GOOD — the document has stopped sending a stood-down run through \
-             `peer_gone`. Delete this gate and pay item 604. Walked {walk:?}",
+            walk.iter()
+                .any(|note| note == "Working --PeerGone--> PeerGone"),
+            "⛔ IF THIS IS RED, GOOD — the driver has stopped handing another turn to a run that \
+             was told to stand down at the milestone it had just reached. Read the walk before \
+             deleting anything: a `Judging --PeerGone--> ...` here would mean `from` went back to \
+             being read at the top of the pass. Walked {walk:?}",
         );
     }
 
@@ -7808,6 +7824,134 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **A STOOD-DOWN RUN WHOSE PEER LEAVES AFTER A BANKED TURN MUST CLOSE, NOT FAIL** —
+    /// register item 604, asked of the DOCUMENT by hand.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why by hand, when a driver gate for this already exists
+    ///
+    /// [`a_banked_turn_survives_an_agent_that_leaves_under_a_standing_order`] drives the same claim
+    /// through `OuterLoop::pump`, and **every one of item 605's five guard rewrites was measured
+    /// that way** — five attempts, one altitude. Upstream then drove THIS document at this crate's
+    /// own pinned SCE revision, by hand, and the guarded edge FIRED (SCE reply, 2026-08-23). Two
+    /// runs of one document disagree, and nothing here had ever asked the document alone.
+    ///
+    /// ⚠⚠⚠ **THE CONTROL IS THE NEIGHBOURING GUARD, NOT A SECOND COPY OF THIS ONE.** `judging`
+    /// already carries a `judge` transition guarded on `_event.data.done` AND `In('standing_down')`,
+    /// and that one works. Firing it from the SAME state under the SAME order is what proves
+    /// `In('standing_down')` reads TRUE here — so a red below is about `peer.gone`'s edge and
+    /// cannot be about an order that never arrived. Without the control those two have opposite
+    /// fixes and identical symptoms, which is the shape that cost item 605 four rounds.
+    #[test]
+    fn a_stood_down_run_whose_peer_leaves_after_a_banked_turn_converges_rather_than_fails() {
+        /// A fresh machine in `judging` — a turn banked — with a stand-down order standing.
+        fn banked_and_stood_down() -> Engine<AiLoopPolicy> {
+            let (mut engine, _lua, _session) = started();
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+            engine.process_event(AiLoopEvent::StandDown);
+            let active = engine.get_active_states();
+            assert!(
+                active.contains(&AiLoopState::Judging)
+                    && active.contains(&AiLoopState::StandingDown),
+                "⚠⚠⚠ THE FIXTURE'S OWN PRECONDITION: the turn has to be BANKED (`judging` is only \
+                 reachable by a completed turn) with the order STANDING, or nothing below is item \
+                 604's situation at all. active = {active:?}",
+            );
+            engine
+        }
+
+        // ── THE CONTROL FIRST: same state, same order, the guard that is known to work ──
+        let mut control = banked_and_stood_down();
+        carried(
+            &mut control,
+            AiLoopEvent::Judge,
+            r#"{"done": true, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#,
+        );
+        let control_active = control.get_active_states();
+        assert!(
+            control_active.contains(&AiLoopState::Closing),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, so nothing below is readable: `In('standing_down')` is not \
+             reading true at `judging` even on the edge that already works, and the subject would \
+             be red for the ORDER rather than for the EVENT. active = {control_active:?}",
+        );
+
+        // ── THE SUBJECT: the agent finished its work and then left, which is what a finished
+        // agent does. The turn is already in the bank; the run must be told so.
+        //
+        // ⚠⚠⚠ **`converged` AND NOT `closing`**, though `closing` is where the neighbouring
+        // `judge` edge sends the same order. `closing` exists to ASK a question — its `onentry`
+        // sends `prompt.end` — and at this moment the document already knows the party that would
+        // answer is gone. Entering a state to do something known to be impossible is what the
+        // `prompt.unasked --> converged` edge inside `closing` is already there to repair, one
+        // pass later and at the cost of typing at a dead pane. ⚠ The peer leaving DURING the
+        // closing question is a different moment and still ends `peer_gone`; that is its own item.
+        let mut subject = banked_and_stood_down();
+        subject.process_event(AiLoopEvent::PeerGone);
+        let active = subject.get_active_states();
+        assert!(
+            active.contains(&AiLoopState::Converged),
+            "⛔⛔⛔⛔ ITEM 604, AT THE DOCUMENT: a BANKED turn whose agent then left must CONVERGE — \
+             the person asked for a stop at the next milestone and got one. This sends the run \
+             through `peer_gone` instead, which is what makes `stand_down_sentence` tell them the \
+             work they were promised was kept was lost. active = {active:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **WHOSE DISCRETION IS A STAND-DOWN HONOURED AT** — the question item 604's driver
+    /// half turns on, asked of the document rather than argued about in the driver.
+    ///
+    /// `sprag stand-down` promises *"it stops at its next milestone, and its work is kept"*, and
+    /// `judging` honours it on ONE edge: `_event.data.done && In('standing_down')`. Both halves of
+    /// that guard matter, and the second one is not the interesting half — the first is. It makes
+    /// the order land **only when the AGENT declares a milestone**, so a run that has been told to
+    /// stop keeps being handed turns until its agent volunteers one.
+    ///
+    /// ⚠⚠⚠ **THAT IS WHERE ITEM 604'S MEASURED WALK COMES FROM.** The live run in
+    /// [`a_banked_turn_survives_an_agent_that_leaves_under_a_standing_order`] is stood down at
+    /// `judging`, judged as an ordinary turn because its agent declared nothing, sent back to
+    /// `working` for another turn, and only there discovers the agent has left. The guarded
+    /// `peer.gone` edge at `judging` cannot help a run that is no longer in `judging`.
+    ///
+    /// ⚠⚠ **THIS GATE DOES NOT DECIDE WHICH READING IS RIGHT.** It pins which one the document
+    /// implements today, so that a change in either direction has to move this line and say why.
+    #[test]
+    fn a_standing_order_lands_only_on_a_turn_whose_agent_declared_a_milestone() {
+        /// Drive a fresh machine to `judging` with a stand-down order standing, then judge the
+        /// turn with `data`, and say where the work region ended up.
+        fn judged_under_orders(data: &str) -> Vec<AiLoopState> {
+            let (mut engine, _lua, _session) = started();
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+            engine.process_event(AiLoopEvent::StandDown);
+            carried(&mut engine, AiLoopEvent::Judge, data);
+            engine.get_active_states()
+        }
+
+        // ── THE CONTROL: the agent DID declare one, and the order lands ──
+        let declared = judged_under_orders(
+            r#"{"done": true, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#,
+        );
+        assert!(
+            declared.contains(&AiLoopState::Closing),
+            "⚠⚠⚠ THE CONTROL: an order standing over a turn whose agent said it reached the \
+             milestone must wind the run up. A red here means the order is not landing at all and \
+             the subject below is measuring nothing. active = {declared:?}",
+        );
+
+        // ── THE SUBJECT: the agent declared nothing, and the run is handed another turn ──
+        let silent = judged_under_orders(ORDINARY);
+        assert!(
+            silent.contains(&AiLoopState::Working),
+            "⚠⚠⚠⚠⚠ IF THIS IS RED THE DOCUMENT HAS CHANGED WHAT A STAND-DOWN MEANS — it now stops \
+             a run at the end of the turn it was ordered during, rather than waiting for the agent \
+             to volunteer a milestone. That is a defensible reading and it is NOT the one this \
+             document was written with, so whatever moved it owes item 604's walk a re-measurement: \
+             the driver's `working` raise is downstream of exactly this edge. active = {silent:?}",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **EVERY STATE THAT OWES THE PEER A PROMPT ANSWERS FOR A QUESTION THAT NEVER WENT IN**
     /// — register item 446's remedy, made total over the states that can meet its condition.
     ///
@@ -9411,14 +9555,28 @@ mod tests {
             .expect("⚠⚠⚠ a pass at a dead peer must answer with a VERDICT rather than an error");
         assert_eq!(
             (first.verdict.clone(), first.note.as_deref()),
-            (Verdict::PeerGone(pane), Some("Idle --PeerGone--> PeerGone"),),
-            "⚠⚠⚠⚠ THE DOCUMENT'S OWN EDGE, ON THE FIRST PASS. The start prompt is delivered by the \
-             transition out of `idle`, so this is the loop meeting the refusal at the door and \
-             telling `ai_loop.scxml` rather than walking on. ⚠⚠⚠ MEASURED BEFORE the document had \
-             the word: the same loop reported `Priming --PromptSent--> Working` charging \
-             `Bytes(0)` — the machine had already moved PAST a prompt that never went in, and then \
-             waited in `working` for an answer to a question nobody had been asked",
+            (
+                Verdict::PeerGone(pane),
+                Some("Priming --PeerGone--> PeerGone"),
+            ),
+            "⚠⚠⚠⚠ THE DOCUMENT'S OWN EDGE, ON THE FIRST PASS. This is the loop meeting the refusal \
+             at the door and telling `ai_loop.scxml` rather than walking on. ⚠⚠⚠ MEASURED BEFORE \
+             the document had the word: the same loop reported `Priming --PromptSent--> Working` \
+             charging `Bytes(0)` — the machine had already moved PAST a prompt that never went in, \
+             and then waited in `working` for an answer to a question nobody had been asked",
         );
+        // ⚠⚠⚠⚠⚠ **IT SAYS `priming`, AND IT SAID `idle` UNTIL 2026-08-23.** The pass raises
+        // `start` first — `idle --start--> priming` is what SENDS the start prompt — and only then
+        // does delivering it meet the dead peer, so `priming` is where `peer.gone` is answered
+        // from. `pump` used to stamp this line with the state the PASS BEGAN in, and the older
+        // spelling here was that lie written down as a guarantee.
+        //
+        // ⚠⚠⚠ THE SAME LIE COST REGISTER ITEM 605 FOUR ROUNDS one state over, where it read
+        // `Judging --PeerGone--> PeerGone` for a raise the machine answered from `working`. Two
+        // gates had it pinned; this is the second.
+        //
+        // ⚠⚠ WHAT THE PASS DID NOT SAY IS STILL MISSING: it raised `start` AND `peer.gone` and
+        // this journal carries one of them. Register item 614.
         // ⚠⚠ AND IT STAYS THERE. `peer_gone` is FINAL, so every later pass is `Pumped::Ended` and
         // answers the same word — which is what makes *the run stops* a property of the document
         // rather than of a caller who happened to stop asking.

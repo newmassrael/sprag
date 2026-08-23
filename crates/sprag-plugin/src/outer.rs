@@ -4484,6 +4484,15 @@ impl OuterLoop {
                 })
             }
             Err(PaneError::PeerGone(_)) => {
+                // ⚠⚠⚠⚠⚠ **READ AT THE RAISE, NOT AT THE TOP OF THE PASS.** Every other arm here is
+                // reporting a raise `pumping` made while `from` was still current; this one raises
+                // AFTER `pumping` has run, so the outer `from` is a state the machine may already
+                // have left. A walk line that names the wrong state is not a cosmetic defect: it
+                // is what register item 605 spent four rounds and five guard rewrites believing,
+                // because `Judging --PeerGone--> PeerGone` said the document had answered
+                // `peer.gone` from `judging` and the document, driven by hand from `judging`, does
+                // not do that at all.
+                let from = self.state();
                 self.machine.process_event(AiLoopEvent::PeerGone);
                 Ok(Pumped::Moved {
                     from,

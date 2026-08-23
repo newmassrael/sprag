@@ -3028,37 +3028,43 @@
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
     <!--
-      ⛔⛔⛔⛔ THE EDGE THAT BELONGS HERE CANNOT BE MADE TO FIRE, AND THAT IS AN
-      UPSTREAM FINDING RATHER THAN A GAP IN THIS DOCUMENT — register item 604.
+      ⚠⚠⚠⚠⚠ A PEER THAT LEFT AFTER ITS TURN WAS BANKED, UNDER AN ORDER TO STOP,
+      IS NOT A RUN THAT FAILED — register item 604.
 
-      What belongs here: a peer that left AFTER its turn was banked, under an
-      order to stop, is not a run that failed. Being in `judging` at all means
-      `working` raised `turn.done`, so the turn COMPLETED and its account is in
-      hand; a person who typed `sprag stand-down` asked for exactly that and for
-      nothing further to be typed at the pane. The plain edge below calls that
-      `failed`, and `sprag-host`'s `stand_down_sentence` then tells somebody
-      whose turn HAD been banked that it was NOT. **The relieved answer and the
-      alarming one are swapped** — the one direction a report must never be
-      wrong in. And it is the ORDINARY case: an agent that finishes its work
-      exits.
+      Being in `judging` at all means `working` raised `turn.done`, so the turn
+      COMPLETED and its account is in hand. A person who typed `sprag stand-down`
+      asked for exactly that and for nothing further to be typed at the pane, and
+      an agent that finishes its work then EXITS, which is the ordinary case
+      rather than the unlucky one. Without this edge the plain one below calls it
+      `failed`, and `sprag-host`'s `stand_down_sentence` tells somebody whose turn
+      HAD been banked that it was NOT. **The relieved answer and the alarming one
+      are swapped**, which is the one direction a report must never be wrong in.
 
-      ⚠⚠⚠⚠⚠ IT IS NOT ABOUT THE GUARD. Five expressions were driven and all five
-      read false with the order provably standing, ending with a trivially true
-      arithmetic one (`turns >= 0`, no `In()`, no event data). Nor is it about
-      shadowing: deleting the edge below does not help, and the run still reaches
-      `peer_gone` from an ANCESTOR after this state matched nothing. Nor is it the
-      raise path: both the plain and the data-carrying one behave alike.
+      ⚠⚠⚠⚠⚠ IT IS FIRST, AND THAT ORDERING IS THE WHOLE FIX. SCXML takes the
+      first ENABLED transition in document order, so this guarded edge placed
+      after the plain one below can never be reached whatever its condition says.
+      Item 605 spent four rounds and five guard expressions on the theory that
+      `In('standing_down')` was reading false here, ending with a trivially true
+      arithmetic guard that also "did not fire". It was never the guard: upstream
+      drove this document at this repository's own pinned engine revision and had
+      the guarded edge fire, and the gate
+      `a_stood_down_run_whose_peer_leaves_after_a_banked_turn_converges_rather_than_fails`
+      now asks the document here, with the neighbouring `judge` guard as its
+      control so a red can never be about an order that failed to arrive.
 
-      ⚠⚠⚠ AND THE SAME GUARD SHAPE WORKS ONE EDGE ABOVE, on `judge`, at this very
-      state. So it is not the guard, not this state, and not this document.
+      ⚠⚠⚠ IT TARGETS `converged` AND NOT `closing`, which is where the `judge`
+      edge above sends the same order. `closing` exists to ASK a question and its
+      `onentry` sends `prompt.end`; at this moment the document already knows the
+      only party that could answer has gone. Entering a state to do something
+      known to be impossible is what `closing`'s own `prompt.unasked` edge is
+      there to repair, one pass later and at the cost of typing at a dead pane.
 
-      ⚠⚠ The reproduction is 30 ms and deterministic:
-      `a_banked_turn_survives_an_agent_that_leaves_under_a_standing_order`, which
-      PINS the defect rather than asserting a fix — green today, red the day this
-      is fixed, and then this comment and that gate both go. The upstream report
-      is filed under the engine's own report directory; register item 605 in this
-      repository's ledger names it.
+      ⚠⚠ THE GUARD IS THE ORDER, and it has to be. An agent that vanishes with
+      turns still to take really has cost the run its remaining work, and the
+      plain edge below is the right answer for that. What separates the two is
+      whether somebody had already asked the run to stop HERE.
     -->
+    <transition event="peer.gone" cond="In('standing_down')" target="converged"/>
     <transition event="peer.gone" target="peer_gone"/>
   </state>
 
