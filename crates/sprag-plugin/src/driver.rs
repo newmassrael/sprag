@@ -515,6 +515,18 @@ pub struct Outcome {
     /// matters most on the HAPPY one: a `converged` whose every check was silent is exactly the
     /// ending somebody would otherwise take at face value.
     pub checks: Checks,
+    /// ⚠⚠⚠⚠⚠ **HOW MUCH OF THIS RUN'S WORK IS COMPLETE AND KEPT, WHATEVER WORD IT ENDED WITH** —
+    /// register item 604. See [`crate::plugin::Banked`].
+    ///
+    /// It exists because a reader of an ending could not tell *the work is safe* from *the work is
+    /// gone*, and the sentence `sprag stand-down` prints asserted the second of every ending that
+    /// was not a convergence. Measured 2026-08-23: an agent that finished a turn and then exited —
+    /// the ordinary case — had its person told the turn was lost.
+    ///
+    /// ⚠⚠ [`None`] means the plugin does not count completed work, which is a different answer
+    /// from `Some(Banked { completed: 0, .. })` and has to stay different: one is *nothing was
+    /// finished* and the other is *nobody was counting*.
+    pub banked: Option<crate::plugin::Banked>,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -593,6 +605,13 @@ pub struct Driver {
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
     /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
     checks: Checks,
+    /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS COMPLETED WORK CAME TO** — register item 604, held and
+    /// read exactly as the two totals above are, and never added to here.
+    ///
+    /// ⚠⚠ Kept as the last answer that EXISTED rather than the last answer given: a plugin whose
+    /// machine has reached a final state may stop being able to count, and a run's ending is
+    /// exactly when the sentence a person reads is composed.
+    banked: Option<crate::plugin::Banked>,
     /// ⚠⚠⚠ **WHICH PANE THE PLUGIN LAST SAID IT WAS DRIVING** — register items 540 and 595, held
     /// and read exactly as the two totals above are.
     driving: Option<sprag_terminal::PaneId>,
@@ -771,6 +790,7 @@ impl Driver {
             screened: 0,
             deliveries: Deliveries::NONE,
             checks: Checks::NONE,
+            banked: None,
             driving: None,
             winding: false,
         }
@@ -937,6 +957,15 @@ impl Driver {
     ) {
         self.engine.initialize();
         self.engine.process_event(OrchestrationEvent::Start);
+        // ⚠⚠⚠⚠⚠ **ASKED ONCE BEFORE ANY STEP, so the answer does not depend on a step completing.**
+        // Register item 604's fact is read by the sentence a person is shown at the END, and a run
+        // cancelled before its first pass finished would otherwise report *this plugin does not
+        // count completed work* — which is false of a loop that counts perfectly well and had
+        // simply not started. Measured 2026-08-23 on exactly that run.
+        //
+        // ⚠⚠ It is `None` for a plugin with no unit of completed work either way, so the two
+        // answers stay distinguishable: *nobody counts* and *counted, and it was nothing*.
+        self.banked = plugin.banked();
         // `running` is the only non-final state in the loop.
         while !self.engine.is_in_final_state() {
             // Cancel is checked before each step (and again by the plugin's own
@@ -992,6 +1021,13 @@ impl Driver {
                     // three facts about three moments, and a reader weighing a `converged` needs
                     // them to describe one run.
                     self.checks = plugin.checks();
+                    // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS COMPLETE AND KEPT — register item 604, in
+                    // the same breath as the three above and for their reason. It is asked EVERY
+                    // step rather than once at the end because the last step is the one that ends
+                    // the run, and a plugin whose machine has reached a final state may no longer
+                    // be able to answer: what is wanted is the last answer it COULD give, which is
+                    // what a per-step read leaves behind.
+                    self.banked = plugin.banked().or(self.banked);
                     // ⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register items 540 and 595, in the same
                     // breath as the three above. A pane read a moment apart from the counters is a
                     // fact about a different moment, and this one is compared against the LIVE
@@ -1371,6 +1407,7 @@ impl Driver {
             screened: self.screened,
             deliveries: self.deliveries,
             checks: self.checks.clone(),
+            banked: self.banked,
         }
     }
 }

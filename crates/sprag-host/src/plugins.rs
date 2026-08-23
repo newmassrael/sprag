@@ -2305,8 +2305,58 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
     /// ⚠⚠ IT DOES NOT SAY *"never reached a milestone"*, and that is the same measurement the
     /// running arm below is written from: a milestone is `ai_loop.scxml`'s concept and this
     /// renderer cannot see which plugin it is holding. *Cut short* is true of all of them.
-    const NOT_BANKED: &str = "it was cut short, so the turn it had going was NOT banked — this is \
-                              not what `sprag stand-down` promised";
+    const CUT_SHORT: &str = "it was cut short, so it did not stop at a milestone of its own \
+                             choosing — this is not what `sprag stand-down` promised. Nothing here \
+                             counted its completed work, so this ending cannot say what was kept";
+    /// **WHAT BECAME OF THE WORK**, for an ending that is not a convergence — read from the run
+    /// rather than asserted about it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this stopped being one constant
+    ///
+    /// One constant — it said *the turn it had going was NOT banked* — was printed for EVERY such
+    /// ending, and register item 604 measured the
+    /// ordinary case that makes it false: an agent finishes a turn under a standing order and then
+    /// EXITS, which is what a finished agent does. The run ends `peer_gone` with its work recorded,
+    /// and the person was told they lost it. **The alarming answer and the relieved one were
+    /// swapped** — the one direction a report must never be wrong in, and the pair item 594 exists
+    /// because of.
+    ///
+    /// ⚠⚠⚠ **THE PLUGIN IS WHAT ANSWERS**, in its own unit ([`sprag_plugin::Banked`]). This
+    /// renderer holds a `RunState` and cannot see which plugin produced it — the same reason its
+    /// sibling above refuses the word *milestone* — so a sentence it composed out of its own belief
+    /// was always going to be wrong for somebody.
+    ///
+    /// ⚠⚠ THE THREE ANSWERS ARE THREE SENTENCES, because they are three different things to do
+    /// next: work that is kept needs nothing, work that never started is not a loss, and a plugin
+    /// that does not count leaves a person to look — and saying so is better than inventing a zero
+    /// on its behalf.
+    fn work_after(outcome: &Outcome) -> String {
+        match outcome.banked {
+            Some(banked) if banked.completed > 0 => {
+                let unit = if banked.completed == 1 {
+                    banked.unit.to_owned()
+                } else {
+                    format!("{}s", banked.unit)
+                };
+                format!(
+                    "the {} {unit} it had already completed are BANKED and kept; only whatever it \
+                     had in flight is lost",
+                    banked.completed,
+                )
+            }
+            Some(_) => {
+                "it had completed nothing yet, so there was no banked work to lose".to_owned()
+            }
+            // ⚠⚠⚠⚠⚠ **AND THIS ARM MUST NOT CLAIM A LOSS EITHER.** Nobody counted, so *the turn
+            // it had going was NOT banked* is the same unwarranted claim one branch over, made
+            // about a run this renderer knows even less about. A RESTORED run reaches here — the
+            // log carries a summary and not a count — and so does any plugin with no unit of
+            // completed work. Naming what is missing is the only honest answer available.
+            None => "this run does not report completed work, so its ending cannot say what was \
+                     kept — its walk is where that is readable"
+                .to_owned(),
+        }
+    }
     match state {
         // ⚠⚠⚠⚠⚠ IT SAYS THE ORDER AND NOT WHAT THE ORDER WILL DO, and that is a measurement rather
         // than caution — register item 539's sibling. `RunOrder::StandDown` is delivered to EVERY
@@ -2323,17 +2373,24 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
         }
         crate::runs::RunState::Done { outcome, .. } => {
             if outcome.state == OutcomeState::Converged {
-                // ⚠ *ended on its own terms* rather than *stopped at a milestone*, for `NOT_BANKED`'s
+                // ⚠ *ended on its own terms* rather than *stopped at a milestone*, for `CUT_SHORT`'s
                 // reason: convergence is what every plugin's own `Verdict` can say, and only one of
                 // them has milestones to stop at.
                 "a person asked this run to stand down and it converged, so it ended on its own \
                  terms and its work is banked"
                     .to_owned()
             } else {
+                // ⚠⚠⚠⚠⚠ **TWO FACTS, AND NEITHER MAY EAT THE OTHER.** *The order was not honoured*
+                // is register item 594's, and it is true of every ending that is not a convergence
+                // whatever became of the work: the run did not stop at a milestone of its own
+                // choosing. *What became of the work* is item 604's, and it is a separate question
+                // the plugin answers. Collapsing them is how this line got wrong the first time —
+                // one constant carried both and could only be right about one.
                 format!(
-                    "⚠ a person asked this run to stand down and it ended {:?} instead — \
-                     {NOT_BANKED}",
+                    "⚠ a person asked this run to stand down and it ended {:?} instead — this is \
+                     not what `sprag stand-down` promised; {}",
                     outcome_word(outcome),
+                    work_after(outcome),
                 )
             }
         }
@@ -2342,7 +2399,7 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
         // outcome word.
         crate::runs::RunState::Panicked(_) => {
             format!(
-                "⚠ a person asked this run to stand down and its driver died first — {NOT_BANKED}"
+                "⚠ a person asked this run to stand down and its driver died first — {CUT_SHORT}"
             )
         }
         // ⚠⚠ THE ONE THIS ITEM WAS MEASURED ON. A daemon restarted under a standing order used to
@@ -2351,7 +2408,7 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
         crate::runs::RunState::Interrupted => {
             format!(
                 "⚠ a person asked this run to stand down and the daemon driving it died first — \
-                 {NOT_BANKED}"
+                 {CUT_SHORT}"
             )
         }
     }
@@ -3290,12 +3347,17 @@ mod tests {
                  them to. Entry: {ordered:?}"
             )
         });
+        // ⚠⚠⚠ **ASKED OF THE CLAIM, NOT OF ITS OLD SPELLING.** This read `contains("NOT banked")`
+        // until 2026-08-23, which was that claim's wording at the time and ALSO a second claim
+        // welded to it — that the work was lost — which register item 604 measured to be false in
+        // the ordinary case. The clause below is the one this gate is about and the one that has
+        // to survive every rewording: the promise was not kept.
         assert!(
-            said.contains("NOT banked"),
+            said.contains("not what `sprag stand-down` promised"),
             "⛔⛔⛔ ITEM 594, THE WHOLE OF IT: this run was ordered to stand down and then died \
              without reaching a milestone, so the promise *its work is kept* was NOT kept — and \
              the sentence a person reads has to say so. A sentence that reported the order and let \
-             them go on believing the work was banked is worse than the silence it replaced. Got \
+             them go on believing the order had landed is worse than the silence it replaced. Got \
              {said:?}",
         );
         assert!(
@@ -3454,32 +3516,30 @@ mod tests {
         );
     }
 
-    /// ⛔⛔⛔⛔ **THIS GATE PINS A DEFECT RATHER THAN A GUARANTEE. IF IT GOES RED, THE DEFECT IS
-    /// FIXED — DELETE IT AND PAY REGISTER ITEM 598.** Measured 2026-08-22.
+    /// ⛔⛔⛔⛔ **A PERSON WHOSE RUN BANKED A TURN IS NEVER TOLD THAT WORK WAS LOST** — register
+    /// item 604, driven end to end at the door a person actually reads.
     ///
-    /// # What it holds
+    /// # The report that was backwards
     ///
-    /// A person types `sprag stand-down`, which promises *"it stops at its next milestone, and its
-    /// work is kept"*. This run's turn COMPLETES — `Working --TurnDone--> Judging` is in the walk,
-    /// so the work really is banked — and then its agent exits, which is what an agent that has
-    /// finished does. The document takes `Judging --PeerGone--> PeerGone`, the run reports
-    /// `failed`, and [`stand_down_sentence`] therefore tells the person **"it was cut short, so the
-    /// turn it had going was NOT banked"**.
+    /// `sprag stand-down` promises *"it stops at its next milestone, and its work is kept"*. This
+    /// run's turn COMPLETES — the precondition below holds it to the walk — and then its agent
+    /// exits, which is what an agent that has finished its work does. The run ends `failed` by way
+    /// of `peer_gone`, and until 2026-08-23 [`stand_down_sentence`] told the person **"it was cut
+    /// short, so the turn it had going was NOT banked"**.
     ///
-    /// ⚠⚠⚠⚠⚠ **THE RELIEVED ANSWER AND THE ALARMING ONE ARE SWAPPED**, which is the one direction
+    /// ⚠⚠⚠⚠⚠ **THE RELIEVED ANSWER AND THE ALARMING ONE WERE SWAPPED**, which is the one direction
     /// a report must never be wrong in — and register item 594 exists because this exact pair was
     /// unreadable once already.
     ///
-    /// # Why it is pinned instead of fixed
+    /// # ⚠⚠⚠ Why the ENDING is left alone and only the sentence moved
     ///
-    /// The fix belongs in `ai_loop.scxml` (this repository's rule: the loop decides in its own
-    /// document) as a guarded `peer.gone` edge at `judging` that closes when an order is standing.
-    /// That edge was written and it **did not fire**; the generated machine contains it, correctly
-    /// compiled to `is_state_active("standing_down")`, so why the region was not active at that
-    /// moment is unmeasured. An unverified product change is worse than a measured defect, so the
-    /// measurement is what is committed.
+    /// `peer_gone` is an honest ending: the agent really did leave, and a run that cannot be asked
+    /// anything more has not converged. What was never honest is a renderer asserting, about every
+    /// ending that is not a convergence, a fact it had no way to know. The fix is to give it one —
+    /// [`crate::Outcome::banked`], published by the plugin in the plugin's own unit — rather than
+    /// to soften the word the run ended with.
     ///
-    /// # And what it settles about item 598
+    /// # What it settles about item 598
     ///
     /// That item's recorded blocker — *a converging run needs a supervisor the `/bin/sh` stand-in
     /// cannot be* — is nearly right and names the wrong thing. A stood-down run converges at
@@ -3487,12 +3547,11 @@ mod tests {
     ///
     /// * `settles` needs a detector, and every gate in this module builds `PluginsExternal` with
     ///   `agents: None`. **No pane here can ever be called settled** — that is the real blocker.
-    /// * `exits` completes the turn, and lands in exactly the defect above.
+    /// * `exits` completes the turn, and lands in the run this gate drives.
     ///
-    /// ⚠ So 598 is payable from this door only once that defect is fixed, or once this module grows
-    /// a fixture with a detector. Both are named in the register.
+    /// ⚠ So 598 still waits on a fixture with a detector, which is named in the register.
     #[test]
-    fn a_stood_down_run_whose_peer_exits_is_told_its_banked_work_was_lost() {
+    fn a_stood_down_run_whose_peer_exits_after_a_banked_turn_is_told_its_work_is_kept() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
         // ⚠⚠ A ONE-SHOT STAND-IN: it announces itself, takes ONE prompt, answers it, and EXITS —
         // which is what a well-behaved agent does when its work is finished. `echoing_agent_pane`'s
@@ -3583,13 +3642,29 @@ mod tests {
              longer reports `failed`. Delete this gate and pay register item 598, which is now \
              reachable from this door: {entry:?}",
         );
+        // ⚠⚠⚠⚠⚠ **AND THE SENTENCE MUST NOT CALL THAT BANKED TURN LOST.** The precondition above
+        // proves a turn COMPLETED, so *the turn it had going was NOT banked* is false in the one
+        // direction a report must never be wrong in: the alarming answer and the relieved one
+        // swapped. Register item 604's whole harm is this line, and item 594 exists because the
+        // same pair was unreadable once already.
         let said = entry[RUN_STOOD_DOWN_KEY]
             .as_str()
             .expect("the order was given, so its sentence is published");
         assert!(
-            said.contains("NOT banked"),
-            "⛔ IF THIS IS RED, GOOD — the sentence has stopped telling a person their banked work \
-             was lost. Delete this gate and pay item 598: {said:?}",
+            !said.contains("NOT banked"),
+            "⛔⛔⛔⛔ ITEM 604: this run banked a turn and its agent then left, and the sentence \
+             tells the person their work was lost. Said {said:?} for {entry:?}",
+        );
+        // ⚠⚠⚠⚠⚠ **`BANKED and kept` AND NOT MERELY `kept`.** The arm for *nobody counted* also
+        // ends in the word `kept` — *cannot say what was kept* — so an assertion on that word alone
+        // passes on the branch this gate exists to rule out, and would have: the first run of this
+        // gate went green on it. A control that shares a word with the failure it is guarding
+        // against is not a control.
+        assert!(
+            said.contains("BANKED and kept"),
+            "⚠⚠⚠⚠⚠ AND IT HAS TO SAY SO, not merely stop lying: this run BANKED a turn, so the \
+             sentence has to report the count the plugin measured rather than fall back to *this \
+             run does not report completed work*. Said {said:?}",
         );
     }
 
@@ -4434,6 +4509,9 @@ mod tests {
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
+            // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
+            // that does not count — the distinction `Banked` exists to keep.
+            banked: None,
         }
     }
 

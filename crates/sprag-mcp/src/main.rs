@@ -8526,6 +8526,9 @@ mod tests {
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
+            // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
+            // that does not count — the distinction `Banked` exists to keep.
+            banked: None,
         }
     }
 

@@ -4224,6 +4224,7 @@ mod tests {
                 screened: 0,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
+                banked: None,
             }),
             output: None,
         };

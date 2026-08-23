@@ -433,6 +433,38 @@ impl Checks {
     }
 }
 
+/// **WHAT A RUN COMPLETED AND KEPT, WHATEVER WORD IT ENDED WITH**, in the plugin's own unit.
+///
+/// # ⚠⚠⚠⚠⚠ The report this exists to stop being backwards
+///
+/// `sprag stand-down` promises *"it stops at its next milestone, and its work is kept"*, and the
+/// sentence a person reads afterwards asserted, of EVERY ending that was not a convergence, that
+/// *the turn it had going was NOT banked*. Register item 604 measured the ordinary case that makes
+/// it false: an agent finishes a turn under a standing order and then exits, so the run ends
+/// `peer_gone` with its work safely recorded and the person is told they lost it. **The alarming
+/// answer and the relieved one were swapped**, which is the one direction a report must never be
+/// wrong in.
+///
+/// ⚠⚠⚠ **THE RENDERER COULD NOT HAVE KNOWN.** It holds a `RunState` and cannot see which plugin
+/// produced it — the same reason its own comments refuse the word *milestone*. So the repair is not
+/// a softer sentence, it is a FACT: the plugin that counted the work says how much there was.
+///
+/// ⚠⚠ **THE UNIT TRAVELS WITH THE COUNT**, exactly as [`Plugin::at`] carries a state's name and
+/// [`Edge`] carries a document's: a number whose noun lives in the reader is a number the reader
+/// has to already know the plugin for. `ai_loop` answers `"turn"`; a plugin with no unit of
+/// completed work answers [`None`] and the sentence says nothing about work rather than guessing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Banked {
+    /// How many complete units of work this run recorded before it ended.
+    ///
+    /// ⚠ `0` is a real answer and not an absence — *this plugin counts work and there was none* is
+    /// what a run that never finished a turn should say, and it is a different sentence from *this
+    /// plugin does not count work at all*, which is [`None`] one level up.
+    pub completed: u32,
+    /// What the plugin calls ONE of them, singular and lower case — `"turn"` for the loop.
+    pub unit: &'static str,
+}
+
 /// ONE TRANSITION A STEP'S MACHINE ACTUALLY TOOK, in that machine's own words.
 ///
 /// # ⚠⚠⚠⚠⚠ Why the walk stopped being a sentence
@@ -643,6 +675,22 @@ pub trait Plugin {
     /// [`Driver`]: crate::driver::Driver
     fn walked(&self) -> Vec<Edge> {
         Vec::new()
+    }
+
+    /// **HOW MUCH OF THIS RUN'S WORK IS COMPLETE AND KEPT** — see [`Banked`], or [`None`] for a
+    /// plugin with no unit of completed work.
+    ///
+    /// ⚠⚠⚠ Asked in the same breath as [`at`](Self::at), [`deliveries`](Self::deliveries) and
+    /// [`checks`](Self::checks), at the one place a step completes, and for their reason: totals
+    /// read at different moments are facts about different moments, and a person weighing *was my
+    /// work kept* needs one that describes the run they are reading.
+    ///
+    /// ⚠⚠ [`None`] is not *nothing was banked* — that is `Some(Banked { completed: 0, .. })`. The
+    /// difference is what lets the sentence a person reads say nothing about work when nothing
+    /// counted it, rather than reporting a zero the plugin never claimed (register item 539's rule:
+    /// ask the plugin, and let a plugin that cannot answer say so).
+    fn banked(&self) -> Option<Banked> {
+        None
     }
 
     /// ⚠⚠⚠⚠⚠ **HOW MANY PROMPTS THIS PLUGIN HAS PUT INTO ITS PANE, AND HOW MANY OF THEM THE PEER'S

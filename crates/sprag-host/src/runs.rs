@@ -1326,6 +1326,7 @@ impl RunRegistry {
                         // meant to check this*, and a restored run must not be made to say that
                         // about a run whose checker the log never recorded. `NONE` claims nothing.
                         checks: sprag_plugin::Checks::NONE,
+                        banked: None,
                     }),
                     output: saved.output.clone(),
                 }
@@ -1569,6 +1570,7 @@ mod tests {
                 screened: 0,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
+                banked: None,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -1610,6 +1612,7 @@ mod tests {
                     screened: 0,
                     deliveries: sprag_plugin::Deliveries::NONE,
                     checks: sprag_plugin::Checks::NONE,
+                    banked: None,
                 }),
                 output: None,
             };
@@ -1696,6 +1699,7 @@ mod tests {
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
+            banked: None,
         }
     }
 
@@ -2119,6 +2123,7 @@ mod tests {
             screened: 0,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
+            banked: None,
         }
     }
 

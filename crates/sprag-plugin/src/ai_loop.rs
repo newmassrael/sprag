@@ -979,6 +979,34 @@ impl Plugin for AiLoop {
         self.inner.walked().to_vec()
     }
 
+    /// **HOW MANY TURNS THIS RUN BANKED** — see [`crate::plugin::Plugin::banked`].
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT IS THE DOCUMENT'S OWN COUNTER AND NOT A TALLY KEPT HERE.** `ai_loop.scxml`
+    /// raises `turns + 1` on the two `turn.done` edges and nowhere else — the exact moment a turn
+    /// is over and its account is in hand — so this is the same number `max_turns` is compared
+    /// against. A second count out here would be a second authority on the one quantity a run's
+    /// ending is decided by, which is register item 445's whole argument.
+    ///
+    /// ⚠⚠ **READABLE AFTER THE RUN HAS ENDED**, which is what makes it the right fact for the
+    /// sentence a person reads: `turns` is a `<data>` variable, so it survives the machine reaching
+    /// a final state and exiting every region.
+    ///
+    /// ⚠ [`None`] where the datamodel has stopped answering — a run whose script session is gone
+    /// cannot claim a count, and claiming zero would report *nothing was banked* for a reading
+    /// failure. That is the distinction [`crate::plugin::Banked`] exists to keep.
+    fn banked(&self) -> Option<crate::plugin::Banked> {
+        self.turns().and_then(|turns| {
+            u32::try_from(turns).ok().map(|completed| {
+                crate::plugin::Banked {
+                    completed,
+                    // The word this document uses for one, in the prompts it composes and in the
+                    // `max_turns` bound an author writes.
+                    unit: "turn",
+                }
+            })
+        })
+    }
+
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         match self.inner.pump(panes, run)? {
             Pumped::Moved {
