@@ -11,6 +11,7 @@
 //! [`Workspace`]; it stays pinion-free (the producer/control layer).
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
@@ -739,6 +740,68 @@ pub trait PaneAccess {
     fn job_control(&self) -> Option<&dyn PaneJobControl> {
         None
     }
+
+    /// The pane's *change notification* — **when it last MOVED**, and a park that ends the instant
+    /// it does. `None` by default, on the same terms as the other seven sub-surfaces.
+    ///
+    /// ⚠⚠⚠ **A `None` HERE IS *"THIS BUILD CANNOT SAY WHEN A PANE CHANGED"*, AND THE SAFE
+    /// DEGRADATION IS THE OLD ONE**: a consumer without it must fall back to re-reading the pane on
+    /// a clock, which is what every wait in this crate did before this existed. That fallback is a
+    /// degradation and not an equivalent — it costs a screen read every
+    /// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) for as long as the wait lasts, and it is
+    /// [`park_until`](crate::run::park_until) that names it as one.
+    ///
+    /// ⚠⚠ **IT IS A PERMISSION TO LOOK, NEVER AN ANSWER.** Nothing here says what a pane now says,
+    /// only that it said something. Every consumer still evaluates its own predicate; this decides
+    /// when evaluating it is worth the read.
+    fn changes(&self) -> Option<&dyn PaneChanges> {
+        None
+    }
+}
+
+/// Pane *change notification*: **when a pane last moved**, as a number, and a park that ends when
+/// it does. Reached via [`PaneAccess::changes`].
+///
+/// # ⚠⚠⚠⚠ Why waiting had to stop being asking
+///
+/// Every wait in this crate used to be a poll: render the screen, run a detector over it, sleep ten
+/// milliseconds, ask again. The cost of a wait therefore followed the CLOCK and had nothing to do
+/// with the pane. Measured through `crate::testing::Counted`, on the wait a run takes at a
+/// permission dialog: a 400 ms wait cost **43** screen reads and a 1,600 ms wait cost **157** — 98
+/// a second. On the shipped hour of patience for a person that is ~360,000 reads, and every one of
+/// them takes the workspace lock that [`PaneForegroundJob`]'s own comment already measured a
+/// hundred-hertz holder wrecking for concurrent readers (median 0.8 us to 687 us, p99 41.8 ms).
+///
+/// The owner's question at the head of the debt register was *"why is it LOOKING at all? isn't the
+/// looking itself the defect?"* — and this is the surface that lets the answer be *it is not
+/// looking; it is waiting*.
+///
+/// # ⚠⚠ The signal is the one the repaint seam already carries
+///
+/// A pane's reader thread announces *something changed* at three moments — a parsed batch applied,
+/// the child's end of file, the exit status landing. `sprag_terminal::PaneRevision` counts exactly
+/// those, beside the same call, in the same thread. A second notion of *the pane moved* would be a
+/// second answer that can drift; there is one.
+pub trait PaneChanges {
+    /// The pane's revision: a monotonic count of the times it has moved. `None` for a pane nobody
+    /// knows.
+    ///
+    /// ⚠ CHEAP BY CONSTRUCTION — one uncontended lock take and an integer read. That it renders no
+    /// screen and runs no detector is not an optimisation, it is the distinction the whole surface
+    /// exists to draw.
+    fn pane_revision(&self, id: PaneId) -> Option<u64>;
+
+    /// Park until this pane's revision passes `seen`, or until `within` elapses — answering the
+    /// revision as it stands on the way out. `None` for a pane nobody knows.
+    ///
+    /// A caller compares the answer with what it passed: greater means the pane moved and a look is
+    /// worth taking; equal means the bound elapsed and nothing happened.
+    ///
+    /// ⚠⚠ **THE CALLER STILL BOUNDS ITS OWN WAIT.** This answers nothing about a cancelled run or
+    /// an expired deadline — those are facts about a RUN, and a park that ran for an hour would be
+    /// deaf to both for an hour. [`park_until`](crate::run::park_until) parks in slices for exactly
+    /// that reason, and a slice that ends in a timeout costs no look.
+    fn pane_moved_after(&self, id: PaneId, seen: u64, within: Duration) -> Option<u64>;
 }
 
 /// Pane *output stream*: the complete logical lines a pane has produced, addressed by a number
@@ -1565,6 +1628,14 @@ impl PaneAccess for WorkspacePaneAccess {
             .is_some()
             .then_some(self as &dyn PaneSupervision)
     }
+
+    /// ⚠ ANSWERED UNCONDITIONALLY, where [`supervision`](PaneAccess::supervision) above is gated.
+    /// The difference is where the capability comes from: a detector is something a HOST was
+    /// configured with and may not have been, and a pane's revision is the pane's own — every pty
+    /// this workspace owns counts its changes whether or not anybody wired a repaint hook to them.
+    fn changes(&self) -> Option<&dyn PaneChanges> {
+        Some(self)
+    }
 }
 
 impl PaneSupervision for WorkspacePaneAccess {
@@ -1648,6 +1719,25 @@ impl PaneForegroundJob for WorkspacePaneAccess {
 impl PaneRawCapture for WorkspacePaneAccess {
     fn pane_raw_output(&self, id: PaneId) -> Option<RawOutput> {
         Some(self.handle(id)?.raw_output())
+    }
+}
+
+impl PaneChanges for WorkspacePaneAccess {
+    fn pane_revision(&self, id: PaneId) -> Option<u64> {
+        Some(self.handle(id)?.revision().now())
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE HANDLE IS TAKEN AND THE WORKSPACE LOCK IS RELEASED BEFORE THE PARK.**
+    /// `handle` takes that lock, clones, and returns — so by the time this waits, the lock is not
+    /// in this thread's hand. Parking WITH it held would be strictly worse than the polling this
+    /// replaces: a poll takes the lock a hundred times a second and gives it back each time, and a
+    /// park holding it would stop every other reader of the workspace for the whole wait.
+    ///
+    /// ⚠ That property is the reason the revision is shared with the HANDLE and not reachable only
+    /// through the owning pane. See [`PanePtyHandle::revision`](sprag_terminal::PanePtyHandle::revision).
+    fn pane_moved_after(&self, id: PaneId, seen: u64, within: Duration) -> Option<u64> {
+        let handle = self.handle(id)?;
+        Some(handle.revision().await_after(seen, within))
     }
 }
 

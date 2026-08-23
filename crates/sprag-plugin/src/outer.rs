@@ -89,7 +89,7 @@ use crate::completion::{Completion, DoneWhen, Over, Quiet, Turn};
 use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
-use crate::run::{RunContext, Waited, poll_until};
+use crate::run::{RunContext, Waited, park_until, poll_until};
 use crate::screen::{Malformed, Refused, ScreenRule, ScreenRules, Screened};
 use crate::sm::ai_loop::AiLoopPolicy;
 
@@ -5815,9 +5815,25 @@ impl OuterLoop {
             // handing over the whole patience again would restart somebody's hour on every pass.
             Over::Asking(question) => {
                 let left = patience.saturating_sub(since.elapsed());
-                match poll_until(run, left, || {
-                    crate::readiness::moved_on(panes, self.driving.pane, question.as_ref())
-                }) {
+                // ⚠⚠⚠⚠⚠ **PARKED ON THE PANE MOVING, NOT POLLED AT IT** — register item 280, the
+                // last of the owner's three questions (*"why is it LOOKING at all?"*). Item 279
+                // made this ONE wait instead of ~100,000 driver rounds; it was still a wait that
+                // rendered this pane's screen and ran a detector over it every
+                // [`POLL_INTERVAL`] — measured at 43 looks for 400 ms and 157 for 1,600 ms, which
+                // is ~360,000 over the hour of patience the shipped document declares, at a pane
+                // nobody has touched.
+                //
+                // ⚠⚠ THE LAG IS THE PREDICATE'S OWN and it is asked for rather than assumed:
+                // [`moved_on`] is two questions, and only the one that compares SENTENCES is
+                // immune to a supervisor's hysteresis. See [`readiness::moved_on_lag`].
+                match park_until(
+                    run,
+                    panes,
+                    self.driving.pane,
+                    left,
+                    crate::readiness::moved_on_lag(question.as_ref()),
+                    || crate::readiness::moved_on(panes, self.driving.pane, question.as_ref()),
+                ) {
                     // ⚠⚠ THE PERSON ACTED AND THIS DOES NOT GUESS WHAT THEY DID. `turn.done` and
                     // `resume` are different edges and only the next look at the pane can tell them
                     // apart — so the machine stays put for exactly one more step and the completion

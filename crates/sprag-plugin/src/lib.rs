@@ -197,10 +197,10 @@ pub mod spend;
 pub(crate) mod testing;
 
 pub use access::{
-    AgentObservation, AgentStateSource, Authority, JobLeader, KeyStroke, PaneAccess, PaneDoing,
-    PaneError, PaneForegroundJob, PaneHands, PaneInputEcho, PaneInputTrail, PaneJobControl,
-    PaneLifecycle, PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes,
-    RowTrail, Signalled, WorkspacePaneAccess, Written,
+    AgentObservation, AgentStateSource, Authority, JobLeader, KeyStroke, PaneAccess, PaneChanges,
+    PaneDoing, PaneError, PaneForegroundJob, PaneHands, PaneInputEcho, PaneInputTrail,
+    PaneJobControl, PaneLifecycle, PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision,
+    PaneTerminalModes, RowTrail, Signalled, WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
 pub use ai_loop::{AiLoop, NotStarted};
@@ -229,7 +229,7 @@ pub use readiness::{
     Readiness, ReadyWhen,
 };
 pub use reply::{AgentReply, parse_claude_json};
-pub use run::{RunContext, Waited, poll_until};
+pub use run::{RunContext, Waited, park_until, poll_until};
 pub use screen::{Malformed, REFUSES, ScreenRule, ScreenRules, Screened};
 pub use spend::{
     CLAUDE_IDENTITY_FLAG, Spend, identity_in, record_of, spend_at, spend_in, spend_of,

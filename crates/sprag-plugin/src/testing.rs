@@ -349,14 +349,21 @@ pub(crate) fn refused_naming(
 // dialog does to a keystroke — which is the one belief this whole contract refuses to hold on its
 // own authority.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sprag_detect::AgentState;
-use sprag_terminal::{CommandBuilder, PaneId, Workspace};
+use sprag_terminal::{
+    CommandBuilder, Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId, RawOutput, Workspace,
+};
+use sprag_vt::LinesSince;
 
 use crate::access::{
-    AgentObservation, AgentStateSource, Authority, PaneAccess, WorkspacePaneAccess,
+    AgentObservation, AgentStateSource, Authority, KeyStroke, PaneAccess, PaneChanges, PaneError,
+    PaneForegroundJob, PaneHands, PaneInputEcho, PaneInputTrail, PaneJobControl, PaneLifecycle,
+    PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes,
+    WorkspacePaneAccess, Written,
 };
 use crate::driver::Ceiling;
 
@@ -519,6 +526,83 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
                     noticed: None,
                     transcript: None,
                 })
+            })
+        }) as AgentStateSource
+    };
+    let access = WorkspacePaneAccess::new(workspace).with_agent_state(Some(source));
+    (access, pane)
+}
+
+/// **A PEER BLOCKED ON SOMETHING THIS HOST CANNOT READ, WHOSE VERDICT SETTLES ON A CLOCK** — the
+/// one arrangement in which [`readiness::moved_on`](crate::readiness) changes its answer with the
+/// pane producing nothing at all.
+///
+/// # ⚠⚠⚠⚠⚠ Why it has to exist, measured rather than argued
+///
+/// [`park_until`](crate::run::park_until) takes a `lag` because not every predicate about a pane is
+/// a function of the pane's BYTES. `moved_on` is two questions: with a readable question it
+/// compares sentences and cannot change while the screen does not; with an unreadable one it falls
+/// back to *is this pane still blocked at all*, which is the supervisor's verdict — and a verdict
+/// SETTLES, so it flips a window after the last output with no output to announce it.
+///
+/// **Zeroing that second lag reddened NOTHING**: the whole workspace suite — 87 targets — passed
+/// with a mutant that parks straight through a settling verdict and reports *nobody came* about a
+/// peer that moved on. Every fixture in this crate that reaches `moved_on` hands it a question the
+/// shipping parser CAN read, so every one of them exercises the zero-lag arm and none the other.
+///
+/// # ⚠⚠ What is different from [`peer_settling`], and why it is not a parameter of it
+///
+/// That one derives `asking` from the real parser, so its question is readable BY CONSTRUCTION —
+/// which is the property its own gates need. This one publishes `asking: None` while still calling
+/// the pane blocked, which is the honest shape of *a dialog in words `sprag-detect` has no rule
+/// for*: the host can see the peer is stuck and cannot see what it is stuck on.
+///
+/// ⚠ The window runs from the FIRST OBSERVATION rather than from the last paint, so the flip has no
+/// dependence on the screen whatever — which is the hazard in its purest form. The peer prints once
+/// and then sleeps, so nothing bumps the pane's revision after the wait begins.
+pub(crate) fn peer_blocked_unreadably_settling(settle: Duration) -> (WorkspacePaneAccess, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // ⚠ It PAINTS, then goes silent. A pane that never painted is not blocked on anything, and
+        // a pane that goes on painting would wake the park for a reason this gate is not about.
+        command.arg("printf 'a question in words nobody parsed\\n'; sleep 60");
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .expect("the workspace mutex")
+            .spawn(command, "peer".to_string(), 60, 12)
+            .expect("spawn the peer")
+    };
+    let source = {
+        let began: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        Arc::new(move |_id: PaneId| {
+            let mut began = began.lock().expect("the settle mutex");
+            let since = *began.get_or_insert_with(std::time::Instant::now);
+            Some(AgentObservation {
+                // ⚠⚠ THE ONLY MOVING PART, AND IT IS A CLOCK. Nothing the pane does changes this.
+                state: if since.elapsed() < settle {
+                    AgentState::Blocked
+                } else {
+                    AgentState::Idle
+                },
+                agent: Some("claude".to_string()),
+                authority: Authority::Scraped {
+                    rule: Some("dialog-choice-list".to_string()),
+                },
+                seq: 1,
+                asked_seq: 1,
+                reports: 0,
+                // ⚠⚠⚠ BLOCKED WITH NOTHING READABLE — the whole point. `peer_asking` answers
+                // `Some(None)`, so `moved_on` cannot compare sentences and has to ask the weaker
+                // question, which is the one with the lag.
+                asking: None,
+                asked: None,
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                transcript: None,
             })
         }) as AgentStateSource
     };
@@ -2299,7 +2383,8 @@ pub(crate) fn supervised_writing(
 /// ORDINARY.
 ///
 /// Measured 2026-08-20 over EVERY transcript this repository has (250 of the 255 files under
-/// `~/.claude/projects/-home-coin-sprag/` hold the two billed requests that `cold` and `floor` are
+/// this repository's own `~/.claude/projects/` directory hold the two billed requests that `cold`
+/// and `floor` are
 /// defined on): the median `cold` is 28,981 and the median `floor` is 21,350, so the break-even
 /// here is 600,970 and **49 of those 250 sessions ever read that far**. ⚠⚠ At the fixture's own
 /// 466,013 the trade LOSES — 444,663 discardable against a toll of 579,620 — so the single session
@@ -2406,6 +2491,238 @@ pub(crate) const A_PLAIN_AGENT_SESSION: Billed = Billed {
     floor: 38_500,
     context: 466_013,
 };
+
+/// **A [`PaneAccess`] THAT COUNTS WHAT IT WAS ASKED** — the instrument register items 279 and 280
+/// were missing, and the reason their last question could not be gated at all.
+///
+/// # ⚠⚠⚠ A STEP IS NOT A LOOK, and the difference is the whole of item 280
+///
+/// `a_run_waiting_for_a_person_spends_one_step_on_the_whole_wait` holds that waiting for a person
+/// costs the run ONE step — and it does. What a step count cannot say is what happens INSIDE one:
+/// [`poll_until`](crate::run::poll_until) re-evaluates its predicate every
+/// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL), and every predicate this crate waits on a PANE
+/// with renders that pane's screen and runs a detector over it. One step of an hour's patience is
+/// three hundred and sixty thousand of those reads.
+///
+/// The owner's question, recorded at the head of the register, was *"why is it LOOKING at all?
+/// isn't the looking itself the defect?"* — a question about that number. Nothing in this crate
+/// could count it, so every gate answered the easier question instead and the number went on
+/// being nobody's.
+///
+/// # ⚠⚠ WHAT COUNTS AS A LOOK
+///
+/// Every call that answers a question about a pane's CONTENT, or about what the agent in it is
+/// doing. An ACT is not a look — [`inject`](PaneAccess::inject), spawning, closing, stopping a job
+/// — and neither is asking which panes exist, which is a question about the workspace rather than
+/// about any pane.
+///
+/// ⚠⚠ **THE SUB-SURFACES ARE COUNTED THROUGH THIS TYPE**, so a look cannot leave the count by
+/// moving one door along. Each getter answers `Some(self)` exactly where the wrapped access
+/// answers `Some`: a capability's PRESENCE stays the inner access's answer — a double that has no
+/// supervisor must still look as though it has none — and its CALLS become this counter's. The two
+/// surfaces that offer only ACTS ([`PaneLifecycle`], [`PaneJobControl`]) are handed straight
+/// through, because wrapping them would count nothing and hide their identity.
+pub(crate) struct Counted<A: PaneAccess> {
+    /// The real access every question is forwarded to.
+    inner: A,
+    /// How many looks have been asked for.
+    looks: AtomicU64,
+}
+
+impl<A: PaneAccess> Counted<A> {
+    /// Wrap `inner`, counting from zero.
+    pub(crate) const fn new(inner: A) -> Self {
+        Self {
+            inner,
+            looks: AtomicU64::new(0),
+        }
+    }
+
+    /// How many looks it has been asked for so far.
+    pub(crate) fn looks(&self) -> u64 {
+        self.looks.load(Ordering::Relaxed)
+    }
+
+    /// Record one look.
+    ///
+    /// ⚠ [`Ordering::Relaxed`] on purpose and not by default: the count is read after the run being
+    /// measured has come back, so no ordering against any other memory is claimed — and a stronger
+    /// ordering here would put a fence in the very hot path the instrument exists to measure.
+    fn looked(&self) {
+        self.looks.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl<A: PaneAccess> PaneAccess for Counted<A> {
+    /// ⚠ NOT A LOOK — which panes exist is a question about the workspace, and answering it reads
+    /// no pane's content.
+    fn pane_ids(&self) -> Vec<PaneId> {
+        self.inner.pane_ids()
+    }
+
+    fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+        self.looked();
+        self.inner.pane_collapsed(id)
+    }
+
+    fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
+        self.looked();
+        self.inner.pane_rows(id)
+    }
+
+    fn pane_eof(&self, id: PaneId) -> Option<bool> {
+        self.looked();
+        self.inner.pane_eof(id)
+    }
+
+    fn pane_full_text(&self, id: PaneId) -> Option<String> {
+        self.looked();
+        self.inner.pane_full_text(id)
+    }
+
+    /// ⚠ FORWARDED RATHER THAN DEFAULTED, so one question counts as one look however the wrapped
+    /// access chooses to answer it. Left to the default, a host with a real line stream would be
+    /// charged one and a host without it two, for the same question.
+    fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+        self.looked();
+        self.inner.pane_full_lines(id)
+    }
+
+    /// ⚠ AN ACT, not a look.
+    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+        self.inner.inject(id, keys)
+    }
+
+    /// ⚠ HANDED THROUGH: spawning and closing are acts, so wrapping this would count nothing.
+    fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
+        self.inner.lifecycle()
+    }
+
+    /// ⚠ HANDED THROUGH for [`lifecycle`](PaneAccess::lifecycle)'s reason — stopping a job is an
+    /// act.
+    fn job_control(&self) -> Option<&dyn PaneJobControl> {
+        self.inner.job_control()
+    }
+
+    fn raw_capture(&self) -> Option<&dyn PaneRawCapture> {
+        self.inner
+            .raw_capture()
+            .map(|_| self as &dyn PaneRawCapture)
+    }
+
+    fn supervision(&self) -> Option<&dyn PaneSupervision> {
+        self.inner
+            .supervision()
+            .map(|_| self as &dyn PaneSupervision)
+    }
+
+    fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+        self.inner.input_echo().map(|_| self as &dyn PaneInputEcho)
+    }
+
+    fn input_trail(&self) -> Option<&dyn PaneInputTrail> {
+        self.inner
+            .input_trail()
+            .map(|_| self as &dyn PaneInputTrail)
+    }
+
+    fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+        self.inner
+            .terminal_modes()
+            .map(|_| self as &dyn PaneTerminalModes)
+    }
+
+    fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
+        self.inner
+            .foreground_job()
+            .map(|_| self as &dyn PaneForegroundJob)
+    }
+
+    fn output_lines(&self) -> Option<&dyn PaneOutputLines> {
+        self.inner
+            .output_lines()
+            .map(|_| self as &dyn PaneOutputLines)
+    }
+
+    fn hands(&self) -> Option<&dyn PaneHands> {
+        self.inner.hands().map(|_| self as &dyn PaneHands)
+    }
+
+    /// ⚠⚠⚠⚠⚠ **HANDED THROUGH, AND NOT COUNTED — WHICH IS THE MEASUREMENT'S WHOLE POINT.**
+    /// [`PaneChanges`] is the surface that answers *is it worth looking*, and its contract is that
+    /// it renders no screen and runs no detector. Counting it would fold the cheap question into
+    /// the expensive one and the instrument would report the same number before and after the
+    /// repair, which is the shape of a gate that cannot go red.
+    ///
+    /// ⚠⚠ **AND IT MUST BE FORWARDED AT ALL.** Left to the default `None`, a wrapped access looks
+    /// to [`park_until`](crate::run::park_until) like a host that cannot say when a pane changed —
+    /// so every gate built on this instrument would measure the DEGRADATION rather than the
+    /// product, and would go on measuring 98 looks a second for ever.
+    fn changes(&self) -> Option<&dyn PaneChanges> {
+        self.inner.changes()
+    }
+}
+
+impl<A: PaneAccess> PaneRawCapture for Counted<A> {
+    fn pane_raw_output(&self, id: PaneId) -> Option<RawOutput> {
+        self.looked();
+        self.inner.raw_capture()?.pane_raw_output(id)
+    }
+}
+
+impl<A: PaneAccess> PaneSupervision for Counted<A> {
+    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
+        self.looked();
+        self.inner.supervision()?.pane_agent_state(id)
+    }
+}
+
+impl<A: PaneAccess> PaneInputEcho for Counted<A> {
+    fn pane_recent_input_has(&self, id: PaneId, needle: &str) -> Option<bool> {
+        self.looked();
+        self.inner.input_echo()?.pane_recent_input_has(id, needle)
+    }
+}
+
+impl<A: PaneAccess> PaneInputTrail for Counted<A> {
+    fn pane_recent_input(&self, id: PaneId) -> Option<String> {
+        self.looked();
+        self.inner.input_trail()?.pane_recent_input(id)
+    }
+}
+
+impl<A: PaneAccess> PaneTerminalModes for Counted<A> {
+    fn pane_echo(&self, id: PaneId) -> Option<PaneEcho> {
+        self.looked();
+        self.inner.terminal_modes()?.pane_echo(id)
+    }
+
+    fn pane_end_of_input(&self, id: PaneId) -> Option<PaneEndOfInput> {
+        self.looked();
+        self.inner.terminal_modes()?.pane_end_of_input(id)
+    }
+}
+
+impl<A: PaneAccess> PaneForegroundJob for Counted<A> {
+    fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess> {
+        self.looked();
+        self.inner.foreground_job()?.pane_foreground_leader(id)
+    }
+}
+
+impl<A: PaneAccess> PaneOutputLines for Counted<A> {
+    fn pane_lines_since(&self, id: PaneId, cursor: u64) -> Option<LinesSince> {
+        self.looked();
+        self.inner.output_lines()?.pane_lines_since(id, cursor)
+    }
+}
+
+impl<A: PaneAccess> PaneHands for Counted<A> {
+    fn pane_hands(&self, id: PaneId) -> Option<Hands> {
+        self.looked();
+        self.inner.hands()?.pane_hands(id)
+    }
+}
 
 #[cfg(test)]
 mod tests {

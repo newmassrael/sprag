@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::pty::Pty;
+use crate::revision::PaneRevision;
 use sprag_vt::{
     ClipboardQuery, ClipboardWrite, Emulator, HistoryLimits, InputModes, LinesSince, MouseProtocol,
     Notification, Palette, Screen, ShellState, VtPort,
@@ -580,6 +581,12 @@ pub struct PanePty {
     emulator: Arc<Mutex<Emulator>>,
     raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
+    /// **HOW MANY TIMES THIS PANE HAS MOVED**, shared with every [`PanePtyHandle`] — see
+    /// [`PaneRevision`], which holds why a waiter parks on this instead of re-reading the screen.
+    ///
+    /// ⚠ Bumped by the reader thread at exactly the three moments [`PaneHooks::on_dirty`] is
+    /// called, and never anywhere else: one event, one answer.
+    revision: Arc<PaneRevision>,
     /// High-water mark of the OSC 52 clipboard READ query this pane has ANSWERED, shared with
     /// every [`PanePtyHandle`]. When several display clients race to answer the same query (each
     /// has its own system clipboard), a CAS on this admits EXACTLY ONE reply to the PTY — the
@@ -707,6 +714,12 @@ impl PanePty {
         let reader_raw = Arc::clone(&raw_output);
         let reader_eof = Arc::clone(&eof);
         let reader_exit = Arc::clone(&exit);
+        // ⚠⚠⚠ THE PANE'S OWN «SOMETHING CHANGED», independent of whether anybody wired a hook for
+        // it. `on_dirty` is a caller's optional INTEREST in the event; this is the event. A waiter
+        // parks on it and reads no screen until it moves — see [`PaneRevision`] for what that was
+        // worth (measured: 43 screen reads for a 400 ms wait, 157 for a 1,600 ms one).
+        let revision = Arc::new(PaneRevision::new());
+        let reader_revision = Arc::clone(&revision);
         // The reader writes device RESPONSES (e.g. the Kitty `CSI ? u` flags reply) back to the
         // child; it offers to the SAME device the input path does, so the two are serialized by
         // that device's own thread — and a pane whose slave has stopped can no longer stop this
@@ -795,8 +808,15 @@ impl PanePty {
                             // still open, in which case the wake waits for the batch that closes it
                             // (the EOF path below still wakes unconditionally, flushing a held frame
                             // if the child dies mid-update).
-                            if present && let Some(ref notify) = on_dirty {
-                                notify();
+                            if present {
+                                // ⚠⚠ THE COUNTER MOVES FIRST, so a host woken by the hook below
+                                // already sees the revision that wake is announcing. The other
+                                // order publishes one change to two readers at two different
+                                // instants, and the gap is however long the hook takes.
+                                reader_revision.bump();
+                                if let Some(ref notify) = on_dirty {
+                                    notify();
+                                }
                             }
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -810,6 +830,12 @@ impl PanePty {
                 // Wake the host for the child's EXIT, not just its output. A pane dying
                 // changes what a client draws — but the loop above notified only on
                 // `Ok(n)`, so an exit reached whoever happened to poll next and nobody else.
+                //
+                // ⚠⚠⚠ AND A WAITER PARKED ON THE PANE IS EXACTLY SUCH A READER. A run waiting for
+                // a peer to answer must be woken by that peer DYING, or it parks out its whole
+                // bound over a pane that will never produce another byte — the shape
+                // `Over::PeerGone` exists to report, arriving a patience late.
+                reader_revision.bump();
                 if let Some(ref notify) = on_dirty {
                     notify();
                 }
@@ -841,6 +867,7 @@ impl PanePty {
                     // said "(exited)" can now say WHICH exit. For the overwhelmingly common clean
                     // exit the rendering is unchanged, so this repaints nothing visible; it is the
                     // failing command — the one the user needs to see — that gains its code here.
+                    reader_revision.bump();
                     if let Some(ref notify) = on_dirty {
                         notify();
                     }
@@ -906,6 +933,7 @@ impl PanePty {
             emulator,
             raw_output,
             eof,
+            revision,
             clipboard_answered: Arc::new(AtomicU64::new(0)),
             reader_thread: Some(reader_thread),
             reader_done,
@@ -925,6 +953,17 @@ impl PanePty {
     #[must_use]
     pub fn joined(&self) -> &crate::pty::Joined {
         &self.joined
+    }
+
+    /// **THE SIGNAL A WAITER PARKS ON** — this pane's [`PaneRevision`], shared with every handle
+    /// and bumped by the reader thread at each of the three moments [`PaneHooks::on_dirty`] fires.
+    ///
+    /// ⚠ Handed out whole rather than wrapped in two forwarding methods: the two questions a waiter
+    /// asks — *where is it now* and *wake me when it passes here* — are one object's, and splitting
+    /// them across this type would invite a caller to read one and park on the other.
+    #[must_use]
+    pub fn revision(&self) -> &Arc<PaneRevision> {
+        &self.revision
     }
 
     /// Read the current authoritative screen under the emulator lock.
@@ -1268,6 +1307,9 @@ impl PanePty {
             raw_output: Arc::clone(&self.raw_output),
             clipboard_answered: Arc::clone(&self.clipboard_answered),
             eof: Arc::clone(&self.eof),
+            // ⚠⚠ THE SAME COUNTER THE READER THREAD BUMPS, which is what lets a waiter hold a
+            // handle and park without ever taking the workspace lock again.
+            revision: Arc::clone(&self.revision),
             pid: self.pid,
             // ⚠⚠⚠ THE SAME `Arc` THE OWNER REAPS INTO, never a copy — see `PanePtyHandle::pid`.
             // The reap is what makes the pid safe to inspect, so a handle holding a snapshot of it
@@ -1373,6 +1415,10 @@ pub struct PanePtyHandle {
     /// Shared with the owning [`PanePty`] — see [`Hands`].
     hands: SharedHands,
     raw_output: SharedRawCapture,
+    /// Shared with the owning [`PanePty`] — see [`PaneRevision`]. This is the half of the handle a
+    /// WAIT is built on: everything else here answers *what does the pane say*, and this answers
+    /// *is it worth asking*.
+    revision: Arc<PaneRevision>,
     /// Shared OSC 52 answered-query high-water mark — see [`PanePty::clipboard_answered`]. The
     /// host answers a read query through this handle, so the exactly-once arbitration lives here.
     clipboard_answered: Arc<AtomicU64>,
@@ -1400,6 +1446,16 @@ pub struct PanePtyHandle {
 }
 
 impl PanePtyHandle {
+    /// **THE SIGNAL A WAITER PARKS ON** — [`PanePty::revision`] asked through the handle.
+    ///
+    /// ⚠⚠ THIS IS THE ONE A RUN ACTUALLY HOLDS. A consumer reaches its panes handle-first, so a
+    /// revision reachable only from the owning [`PanePty`] would be a signal nothing waiting could
+    /// use — and a waiter holding this parks with no workspace lock in its hand at all.
+    #[must_use]
+    pub fn revision(&self) -> &Arc<PaneRevision> {
+        &self.revision
+    }
+
     /// Read the current authoritative screen under the emulator lock.
     pub fn with_screen<R>(&self, f: impl FnOnce(&Screen) -> R) -> R {
         f(lock(&self.emulator).screen())

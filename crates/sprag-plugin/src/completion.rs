@@ -71,7 +71,7 @@ use sprag_detect::{AgentState, Question};
 use sprag_terminal::PaneId;
 
 use crate::access::PaneAccess;
-use crate::run::{RunContext, Waited, poll_until};
+use crate::run::{RunContext, Waited, park_until};
 
 /// **HOW A TURN ENDED** — the answer [`Completion::wait`] gives, and the twin of
 /// [`Reached`](crate::readiness::Reached) at the other end of the same turn.
@@ -824,7 +824,35 @@ impl Completion {
         // here.
         let mut ending = Over::NotYet;
         let mut listening = quiet.map(Listening::for_);
-        let waited = poll_until(run, within, || {
+        // ⚠⚠⚠⚠⚠ **PARKED ON THE PANE, NOT POLLED AT IT** — register item 280. The predicate below
+        // renders a screen and runs a detector over it, and asking it every
+        // [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) made the cost of a wait a function of the
+        // CLOCK: measured at 98 screen reads a second, which over the loop's half-hour turn bound
+        // is ~180,000 of them at a pane that said nothing.
+        //
+        // ⚠⚠⚠ **THE LAG IS THE SUPERVISOR'S AND IT IS NOT ZERO**, which is the whole reason
+        // [`park_until`](crate::run::park_until) takes one. Everything this closure asks rests on a
+        // published verdict — [`satisfied`](Self::satisfied)'s counter pairing,
+        // [`asked`](Self::asked), [`spoken`](Self::spoken) — and a verdict SETTLES: the tracker
+        // goes on reporting the old state for [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE)
+        // after the screen stopped changing, then changes its answer with no further output. A wait
+        // that parked on the bytes alone would sleep through exactly that.
+        //
+        // ⛔⛔⛔ **AND A SILENCE BOUND IS A CLOCK INSIDE THE PREDICATE, SO A WAIT THAT HAS ONE
+        // CANNOT PARK AT ALL.** `Listening::silent` turns true `quiet` after the last report with
+        // no output whatever — that is what silence IS — so parking on the pane would make
+        // [`Over::Silent`] unreachable for exactly the peers it exists to catch. Handing the whole
+        // bound over as the lag is this function saying so: it degrades to [`poll_until`], by
+        // name, at the callers that ask about silence, and parks at the three that pass [`None`].
+        // ⚠ The residue, stated rather than hidden: a listening wait still pays the old rate. The
+        // repair is for a listener to publish WHEN its silence falls due, the way a settling
+        // detector could, and neither does today.
+        let lag = if quiet.is_some() {
+            within
+        } else {
+            sprag_detect::DEFAULT_SETTLE
+        };
+        let waited = park_until(run, panes, pane, within, lag, || {
             // ⚠⚠⚠ THE CONTRACT IS ASKED FIRST. A turn that ENDED this poll ended — whatever its
             // reporter has been doing — and answering `Silent` about a peer that just came back to
             // rest would hand a finished turn to a person. The silence bound exists for the case

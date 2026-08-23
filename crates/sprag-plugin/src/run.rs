@@ -257,6 +257,140 @@ pub fn poll_until(
     }
 }
 
+/// **WAIT FOR A PANE TO MOVE, RATHER THAN ASKING IT WHETHER IT HAS** — [`poll_until`]'s sibling for
+/// the waits whose predicate is about one pane, and the answer to the debt register's oldest
+/// standing question.
+///
+/// # ⚠⚠⚠⚠ What this replaces, in numbers
+///
+/// [`poll_until`] re-evaluates its predicate every [`POLL_INTERVAL`]. That is right for a predicate
+/// about a FLAG — a run being held, a sentinel a thread will set — and wrong for one about a pane,
+/// because evaluating it renders a screen and runs a detector over the result. Measured through
+/// `crate::testing::Counted` on the wait a run takes at a permission dialog: **43** screen reads
+/// for a 400 ms wait, **157** for a 1,600 ms one — 98 a second, which is this file's poll interval
+/// and nothing whatever about the pane. On the shipped hour of patience for a person that is about
+/// 360,000 reads, each taking the workspace lock every other client reads through.
+///
+/// The owner's three questions at the head of the register end at *"why is it LOOKING at all? isn't
+/// the looking itself the defect?"*. This function's answer is: it is not looking, it is waiting,
+/// and it looks when the pane gives it something to look at.
+///
+/// # ⚠⚠⚠ `lag` — how long a predicate may go on changing after the pane has stopped
+///
+/// **Not every predicate about a pane is a function of the pane's bytes.** A supervisor's verdict
+/// SETTLES: `sprag_detect`'s tracker goes on calling a pane blocked for
+/// [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) after the dialog left the screen, and then
+/// changes its answer with no further output at all. A wait that parked on the pane and never
+/// looked again would sleep out its whole bound over a question that had already been answered.
+///
+/// So the CALLER declares it, because the caller is who knows what its predicate rests on:
+///
+/// * [`Duration::ZERO`] — the predicate reads the screen and nothing else, so it cannot change
+///   while the screen does not. `readiness::left_the_question` is deliberately built this way.
+/// * [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) — the predicate rests on a supervisor's
+///   published verdict, which lags the pane by that window.
+///
+/// ⚠⚠ Inside the lag this behaves EXACTLY as [`poll_until`] does, which is the honest reading of
+/// what the lag means: for that long after a change, asking is the only way to know. Outside it,
+/// the wait costs no look at all. A caller that cannot say what its predicate rests on should pass
+/// the settle and get a wait that is never wrong and sometimes slower.
+///
+/// # ⚠⚠ Cancellation is unchanged, and that is why the park is SLICED
+///
+/// The park comes back every [`POLL_INTERVAL`] to ask the run whether it has been cancelled or has
+/// run out of time — facts about a RUN, which no pane can announce. **A slice that ends in a
+/// timeout costs no look**, so what is left at that cadence is an atomic load and a thread wake,
+/// which is exactly what the `sleep` in [`poll_until`] already cost. The measurements a shutdown's
+/// join deadline is chosen against (0.8-11.6 ms for a loop, 2.7-10.5 ms for the orchestrator) are
+/// therefore untouched by design rather than by hope.
+///
+/// # ⚠⚠⚠ A host with no [`PaneChanges`](crate::access::PaneChanges) degrades to the old wait
+///
+/// Named as a degradation rather than hidden: with no change signal — and with a pane the surface
+/// does not know — this IS [`poll_until`], poll interval and all. Every double in this crate takes
+/// that path today, which is why adding this changed no fixture's behaviour.
+///
+/// ⚠ The ORDER of the endings is [`poll_until`]'s, for [`poll_until`]'s reasons, and it is asked
+/// once per pass around this loop rather than once per look.
+pub fn park_until(
+    run: &RunContext,
+    panes: &dyn crate::access::PaneAccess,
+    pane: sprag_terminal::PaneId,
+    timeout: Duration,
+    lag: Duration,
+    mut predicate: impl FnMut() -> bool,
+) -> Waited {
+    let start = Instant::now();
+    let changes = panes.changes();
+    // ⚠ READ BEFORE THE FIRST LOOK, not after it. A change landing between the look and the read
+    // would be counted as already seen, and the wait would park through the one event it was
+    // waiting for — the lost-wakeup hazard, closed by taking the number first.
+    let mut seen = changes.and_then(|source| source.pane_revision(pane));
+    // ⚠⚠ THE PANE IS ASSUMED TO HAVE MOVED THIS INSTANT, which is the conservative direction: a
+    // wait that begins immediately after the change it is about — every wait in this crate does —
+    // must spend its `lag` looking, or a verdict still settling from that change is missed.
+    let mut moved_at = Instant::now();
+    let mut look = true;
+    loop {
+        if run.cancelled() {
+            return Waited::Stopped;
+        }
+        if look && predicate() {
+            return Waited::Ready;
+        }
+        if run.expired() {
+            return Waited::Stopped;
+        }
+        let Some(left) = timeout.checked_sub(start.elapsed()) else {
+            return Waited::TimedOut;
+        };
+        if left.is_zero() {
+            return Waited::TimedOut;
+        }
+        // ⚠⚠⚠ THE SLICE IS THE SMALLER OF *what is left of the wait* AND *how often the run must be
+        // asked about itself*. Handing the whole remainder to the park would be deaf to a cancel
+        // for as long as the pane stayed still, which is the one thing this repair must not buy.
+        let slice = left.min(POLL_INTERVAL);
+        match (changes, seen) {
+            // Still inside the window in which the predicate can change on its own — see `lag`.
+            // This is `poll_until`, deliberately and only for as long as the lag says.
+            //
+            // ⚠⚠⚠ **ONE POLL OF MARGIN, AND IT IS LOAD-BEARING RATHER THAN TIMID.** A settling
+            // verdict changes at EXACTLY `lag` after the pane last moved, so a window that ended
+            // at `lag` would take its final look microseconds before the answer arrived and then
+            // park for ever over it. The margin is this loop's own granularity — the one it
+            // already has, spelled once.
+            _ if moved_at.elapsed() < lag.saturating_add(POLL_INTERVAL) => {
+                // ⚠⚠ THE CHEAP READ IS STILL TAKEN, AND IT IS NOT A LOOK. Without it the window
+                // would be measured from the FIRST change of the wait rather than the LAST, so a
+                // verdict settling out of a later change would be missed the instant the lag ran
+                // out — the defect the lag exists to prevent, arriving one change along.
+                if let Some(now) = changes.and_then(|source| source.pane_revision(pane))
+                    && Some(now) != seen
+                {
+                    moved_at = Instant::now();
+                    seen = Some(now);
+                }
+                sleep(slice);
+                look = true;
+            }
+            (Some(source), Some(at)) => {
+                let now = source.pane_moved_after(pane, at, slice);
+                look = now != Some(at);
+                if look {
+                    moved_at = Instant::now();
+                }
+                seen = now;
+            }
+            // ⚠ NO CHANGE SIGNAL, or a pane this surface does not know: the documented degradation.
+            _ => {
+                sleep(slice);
+                look = true;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3051,7 +3051,24 @@ mod tests {
     /// the wait was ONE wait. ⚠ Both are asserted anyway: a step count of one with no elapsed time
     /// would mean the patience was skipped, which is the opposite defect and just as wrong.
     ///
-    /// # ⚠⚠⚠ WHAT THIS GATE DOES **NOT** HOLD, AND THE ARM IT CANNOT REACH
+    /// # ⛔⛔⛔⛔⛔ THIS SECTION WAS WRONG, AND IT WAS WRONG IN THE DIRECTION THAT COSTS ROUNDS
+    ///
+    /// **Re-measured 2026-08-23 by the same mutation it names: restoring
+    /// `Over::Asking(_) => return Null` turns this gate RED, at 2000 steps.** The arm IS reached,
+    /// by this fixture, on this path — the walk goes `Working --TurnBlocked--> Screening
+    /// --ScreenNone--> AwaitingHuman`, and `attend`'s `Completion::wait` then answers `Asking`
+    /// because the dialog is still up.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE PARAGRAPH BELOW IS KEPT AS THE RECORD OF A CLAIM THAT AGED**, because that is
+    /// the lesson worth more than the correction. It said *"which was measured, not assumed"* —
+    /// and a measurement is a fact about the tree it was taken in. Nothing made it announce that
+    /// it had stopped being one, and it sat here telling every later round *do not bother, this
+    /// fixture cannot reach that arm*. Register item 416's shape, inside a gate's own doc.
+    ///
+    /// ⚠ Whether it was false when written or became false since cannot be settled from here, and
+    /// saying so is the honest form: what IS settled is the reading at this pin.
+    ///
+    /// # ⚠⚠⚠ (SUPERSEDED) WHAT THIS GATE DOES **NOT** HOLD, AND THE ARM IT CANNOT REACH
     ///
     /// **It does not reach `Over::Asking` — the arm the fix is in.** Restoring
     /// `Over::Asking(_) => return Null` leaves this GREEN, which was measured, not assumed.
@@ -3186,6 +3203,191 @@ mod tests {
              same thing to every reader",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔ **AND IT MUST NOT RE-READ THE PANE WHILE IT WAITS** — register item 280, the half of
+    /// the owner's question its neighbour above cannot reach.
+    ///
+    /// # ⚠⚠⚠⚠ THE QUESTION THAT WAS STILL UNANSWERED
+    ///
+    /// The register's head records three questions, each one layer under the last: *"with no input
+    /// it should just WAIT"*, then *"why 100,000 in one hour?"*, then **"why is it LOOKING at all?
+    /// isn't the looking itself the defect?"** Item 279 answered the middle one — the wait is ONE
+    /// step now, and [`a_run_waiting_for_a_person_spends_one_step_on_the_whole_wait`] holds it.
+    ///
+    /// **The last one was never answered, and no gate could see it.** A step count says nothing
+    /// about what happens inside a step: [`poll_until`](crate::run::poll_until) re-evaluates its
+    /// predicate every [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) — ten milliseconds — and the
+    /// predicates a wait on a pane is built from render that pane's screen and run a detector over
+    /// it. One step of the shipped hour of patience is **three hundred and sixty thousand screen
+    /// reads**, against ~100,000 driver rounds before the repair. The number the owner asked about
+    /// did not fall; it moved down one layer and grew.
+    ///
+    /// ⚠⚠ **AND THE COST IS NOT THE READER'S ALONE.** `WorkspacePaneAccess` takes the workspace
+    /// mutex for every one of them, and `PaneForegroundJob`'s own comment already measured what a
+    /// holder polling at this interval does to everyone else: a concurrent reader's median went
+    /// from 0.8 us to 687 us and its p99 to 41.8 ms. A run waiting politely for a person is,
+    /// underneath, a hundred lock acquisitions a second on the structure every client reads.
+    ///
+    /// # ⚠⚠⚠ WHY IT IS TWO WAITS AND NOT ONE, and why a single ceiling would not be a claim
+    ///
+    /// A ceiling on one wait is a TOLERANCE — it can be met by making [`POLL_INTERVAL`] longer,
+    /// which is the cleverer-cadence repair item 280 refuses by name (*"a cleverer interval is
+    /// **also** logic nobody wrote down"*). So this measures the same wait at two patiences a
+    /// factor of four apart and asserts the count does not follow the clock. **A driver that polls
+    /// fails on the RATIO however slowly it polls**; only a wait that ends on the pane MOVING is
+    /// flat in the duration.
+    ///
+    /// ⚠ The absolute ceiling is asserted too, and it is the weaker of the two on purpose: a
+    /// measurement whose two arms both happened to be enormous would satisfy a ratio.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THAT THE WAIT HAPPENED AT ALL** — both arms must reach `awaiting_human`
+    /// and must last at least the patience they were promised. A run that skips the wait looks
+    /// exactly like a run that parks through it, counted in looks alone, and it is the opposite
+    /// defect: a person promised an hour who was given no time at all.
+    ///
+    /// # ⚠⚠⚠ MEASURED, 2026-08-23, both sides of the repair
+    ///
+    /// | patience | looks BEFORE | looks AFTER |
+    /// |---|---|---|
+    /// | 400 ms | 43 | **5** |
+    /// | 1,600 ms | 157 | **5** |
+    ///
+    /// Before, the count followed the clock at 98 a second, which is
+    /// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) and nothing about the pane; after, it is the
+    /// same number in both arms. On the hour of patience `ai_loop.scxml` ships that is ~353,000
+    /// screen reads against five. ⚠ `CEILING` is set three times the reading rather than at it:
+    /// the RATIO is this gate's claim and the ceiling is its backstop, so leaving a loaded runner
+    /// room to paint one extra frame costs nothing a poll could hide in.
+    ///
+    /// # ⛔⛔⛔ WHAT THIS GATE CANNOT SEE, AND THE GATE THAT CAN — established by mutation
+    ///
+    /// **A park that never wakes passes every assertion here.** Deleting the revision bump from
+    /// `sprag_terminal`'s pty reader leaves this GREEN: the wait costs no looks precisely because
+    /// it has stopped noticing anything, both arms still last their patience, and the count is
+    /// still flat. That is the WORST regression this repair can have and it is invisible from
+    /// here, because *cheap* and *deaf* look identical when all you count is looks.
+    ///
+    /// The gate that answers it is
+    /// [`readiness::tests::a_person_who_answers_is_not_waited_out_by_the_supervisors_own_hysteresis`](crate::readiness),
+    /// which types a real keystroke at a real dialog and asserts the wait comes back. Under the
+    /// same mutation it fails with *"nobody came in 10s"* — about a person who answered.
+    ///
+    /// ⚠⚠ **SO THE PROPERTY IS HELD BY A PAIR AND BY NEITHER ALONE**, and it is written here
+    /// rather than left to be rediscovered: this one says the wait is cheap, that one says it is
+    /// awake, and a repair that satisfied only one of them would be a defect wearing a green tick.
+    #[test]
+    fn a_run_waiting_for_a_person_does_not_re_read_the_pane_while_it_waits() {
+        /// ⚠ Far above the two patiences below, so neither wait can end on the TURN's clock — the
+        /// distinction its neighbour above paid register item 297 to learn.
+        const TURN_BOUND: Duration = Duration::from_secs(8);
+        /// The short arm's patience.
+        const SHORT: Duration = Duration::from_millis(400);
+        /// The long arm's, four times it. ⚠ The FACTOR is what this gate reads, not either number:
+        /// a polling wait costs four times as many looks here, and a parked one costs the same.
+        const LONG: Duration = Duration::from_millis(1_600);
+        /// How many looks a wait may cost however long it lasts. A parked wait looks when it
+        /// arrives and when it leaves; this leaves room for a handful more without leaving room
+        /// for a poll.
+        const CEILING: u64 = 16;
+        /// What the long arm may exceed the short one by. ⚠ NOT ZERO, and not a fraction: two
+        /// live panes are not bit-identical, and a fixed small slack keeps a real difference of
+        /// one or two looks from being read as a cadence. At the poll interval the gap between
+        /// these two arms is ~120 looks, so nothing this size can hide a poll.
+        const SLACK: u64 = 8;
+
+        /// Walk a loop to `awaiting_human` over a peer that stopped to ask, then wait it out —
+        /// answering **how many looks the WAIT cost** and **how long it took**.
+        ///
+        /// ⚠ The count is taken as a DIFFERENCE across the wait, so everything the walk to the
+        /// state spent is somebody else's number.
+        fn waited_out(patience: Duration, turn: Duration) -> (u64, Duration, String) {
+            let (workspace, pane) = crate::testing::standin_agent_asking(
+                crate::testing::Asks::OnItsFirstPromptAfterWorking,
+            );
+            let access =
+                crate::testing::Counted::new(crate::testing::supervised_asking(&workspace));
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    await_person_ms: Some(patience.as_millis() as i64),
+                    handback_still_ms: Some(50),
+                    turn_within_ms: Some(turn.as_millis() as i64),
+                    ..brief_for(1_000_000)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            for _ in 0..40 {
+                if loops.state() == AiLoopState::AwaitingHuman {
+                    break;
+                }
+                let step = loops
+                    .step(&access, &run)
+                    .expect("every step of a paused run must be readable");
+                if let Some(note) = step.note {
+                    walked.push(note);
+                }
+            }
+            let reached = loops.state();
+            let entered = access.looks();
+            let began = std::time::Instant::now();
+            let mut spent = 0_u32;
+            while loops.state() == AiLoopState::AwaitingHuman && spent < 2_000 {
+                loops
+                    .step(&access, &run)
+                    .expect("a waiting run is still readable");
+                spent += 1;
+            }
+            let took = began.elapsed();
+            let looked = access.looks() - entered;
+            access.lifecycle().expect("lifecycle").close(pane);
+            assert_eq!(
+                reached,
+                AiLoopState::AwaitingHuman,
+                "⚠ the control: the loop must be WAITING for a person before its looking can be \
+                 counted. Walked {walked:?}",
+            );
+            (looked, took, format!("{walked:?}"))
+        }
+
+        let (short_looks, short_took, short_walk) = waited_out(SHORT, TURN_BOUND);
+        let (long_looks, long_took, long_walk) = waited_out(LONG, TURN_BOUND);
+
+        // ── the control: both arms really waited, so there is a wait to have looked during ──
+        assert!(
+            short_took >= SHORT && long_took >= LONG,
+            "⚠⚠⚠ NEITHER ARM MAY SKIP THE WAIT — a run that gives a person no time at all costs \
+             no looks either, and would pass every assertion below while committing the opposite \
+             defect. short {short_took:?} of {SHORT:?} ({short_walk}); long {long_took:?} of \
+             {LONG:?} ({long_walk})",
+        );
+        assert!(
+            long_took < TURN_BOUND,
+            "⚠⚠ and both must leave on the PERSON's clock rather than the turn's — {long_took:?} \
+             is past the {TURN_BOUND:?} turn bound, so this measured a different wait",
+        );
+
+        // ── the claim: LOOKING DOES NOT FOLLOW THE CLOCK ──
+        assert!(
+            long_looks <= short_looks + SLACK,
+            "⚠⚠⚠⚠⚠ THE WAIT IS RE-DERIVING THE SAME UNCHANGED PANE. A {LONG:?} wait cost \
+             {long_looks} looks where a {SHORT:?} one cost {short_looks} — the count is following \
+             the CLOCK, so this run is polling a screen rather than waiting for it to move. On the \
+             shipped hour of patience that rate is ~360,000 screen reads and as many takes of the \
+             workspace lock, for a person who has not touched the keyboard. Register item 280, and \
+             the owner's own question: *why is it LOOKING at all?*",
+        );
+        assert!(
+            long_looks <= CEILING && short_looks <= CEILING,
+            "⚠⚠⚠ AND A WAIT COSTS A HANDFUL OF LOOKS, NOT HUNDREDS. short {short_looks}, long \
+             {long_looks}, ceiling {CEILING}. ⚠ This is the weaker of the two assertions — two \
+             enormous arms can satisfy a ratio — and it is here for exactly that case",
+        );
     }
 
     /// ⛔⛔⛔ **A RUN A PERSON IS HOLDING MUST NOT SPEND ITS ITERATION BUDGET WHILE THEY HOLD IT** —
