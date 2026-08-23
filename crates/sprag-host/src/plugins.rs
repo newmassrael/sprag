@@ -2331,10 +2331,10 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
     /// that does not count leaves a person to look — and saying so is better than inventing a zero
     /// on its behalf.
     fn work_after(outcome: &Outcome) -> String {
-        match outcome.banked {
+        match &outcome.banked {
             Some(banked) if banked.completed > 0 => {
                 let unit = if banked.completed == 1 {
-                    banked.unit.to_owned()
+                    banked.unit.clone().into_owned()
                 } else {
                     format!("{}s", banked.unit)
                 };
@@ -2793,6 +2793,9 @@ mod tests {
                 // ⚠ And this fixture IS an older log, so item 606's field is absent by the same
                 // argument as `stood_down` above: it reads as `0 of 0`, which claims nothing.
                 deliveries: None,
+                // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
+                // which is the honest answer for a log written before the column existed.
+                banked: None,
             }],
         };
 

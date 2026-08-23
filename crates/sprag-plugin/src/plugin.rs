@@ -453,7 +453,7 @@ impl Checks {
 /// [`Edge`] carries a document's: a number whose noun lives in the reader is a number the reader
 /// has to already know the plugin for. `ai_loop` answers `"turn"`; a plugin with no unit of
 /// completed work answers [`None`] and the sentence says nothing about work rather than guessing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Banked {
     /// How many complete units of work this run recorded before it ended.
     ///
@@ -462,7 +462,20 @@ pub struct Banked {
     /// plugin does not count work at all*, which is [`None`] one level up.
     pub completed: u32,
     /// What the plugin calls ONE of them, singular and lower case — `"turn"` for the loop.
-    pub unit: &'static str,
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a `Cow` where [`Plugin::at`] is a bare `&'static str`
+    ///
+    /// A live plugin hands over a literal and pays nothing. A run READ AFTER A RESTART hands over a
+    /// word decoded from the daemon's log, and there is no `'static` to borrow it from — so the
+    /// type has to admit both, and saying so is better than an intern table or a leak.
+    ///
+    /// ⚠⚠⚠ **AND RESTORING IT IS SOUND, WHERE RESTORING A POSITION IS NOT.** `sprag-host`'s
+    /// `PersistedRun::at` is a STATE NAME: a symbol whose meaning lives in a `.scxml`, so a word
+    /// from a dead daemon and this binary's vocabulary are only the same fact when the document
+    /// fingerprints agree — which is why that one is deliberately not restored into the live cell.
+    /// This is a plain noun for a unit of work. Three completed turns are three completed turns
+    /// whatever the document said, so the pair survives a restart with nothing to check it against.
+    pub unit: std::borrow::Cow<'static, str>,
 }
 
 /// ONE TRANSITION A STEP'S MACHINE ACTUALLY TOOK, in that machine's own words.

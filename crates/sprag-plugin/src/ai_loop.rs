@@ -1000,8 +1000,10 @@ impl Plugin for AiLoop {
                 crate::plugin::Banked {
                     completed,
                     // The word this document uses for one, in the prompts it composes and in the
-                    // `max_turns` bound an author writes.
-                    unit: "turn",
+                    // `max_turns` bound an author writes. ⚠ Borrowed, which is the case this
+                    // `Cow` is cheap for: a LIVE plugin pays nothing, and only a word read back
+                    // from a daemon's log arrives owned.
+                    unit: std::borrow::Cow::Borrowed("turn"),
                 }
             })
         })

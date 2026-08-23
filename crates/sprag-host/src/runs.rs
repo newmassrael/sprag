@@ -868,6 +868,15 @@ pub struct PersistedRun {
     /// of. [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument.
     #[serde(default)]
     pub deliveries: Option<PersistedDeliveries>,
+    /// ⚠⚠⚠⚠⚠ **HOW MUCH OF ITS WORK WAS COMPLETE AND KEPT** — register item 616, the residue item
+    /// 604 left. See [`PersistedBanked`] for why this crosses a restart where
+    /// [`at`](Self::at) may not.
+    ///
+    /// [`None`] for a plugin that counts no completed work, and for a log written before this
+    /// field existed — the two read alike here and that is correct: neither is a claim that
+    /// nothing was banked. [`RUN_LOG_VERSION`] does not move, [`build`](Self::build)'s argument.
+    #[serde(default)]
+    pub banked: Option<PersistedBanked>,
 }
 
 /// **THE STORED SHAPE OF [`sprag_plugin::Deliveries`]** — register item 606.
@@ -903,6 +912,49 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
         Self {
             made: stored.made,
             folded: stored.folded,
+        }
+    }
+}
+
+/// [`sprag_plugin::Banked`] as the run log carries it — register item 616.
+///
+/// # ⚠⚠⚠⚠⚠ Why the answer travels where a POSITION does not
+///
+/// [`PersistedRun::at`] is a state name, and its meaning lives in a `.scxml`: the saved word and
+/// this build's vocabulary are only the same fact when the fingerprints agree, which is why that
+/// one is never restored into a live cell. **This is a count and a plain noun.** Three completed
+/// turns are three completed turns whatever the document said, so it crosses a restart with
+/// nothing to check it against — the two decisions look alike and are not.
+///
+/// ⚠⚠ **THE PAIR CROSSES AS ONE VALUE**, [`PersistedDeliveries`]' argument verbatim: two options a
+/// later writer can fill half of would give a reader a count with no noun, which is the shape
+/// `Banked` exists to prevent.
+///
+/// ⚠ Its own type rather than `sprag_plugin::Banked` directly, for that neighbour's reason: the
+/// plugin crate is `serde`-free, and the crates that copy `ai_loop.scxml` would inherit a
+/// dependency for a file they never write.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedBanked {
+    /// [`sprag_plugin::Banked::completed`].
+    pub completed: u32,
+    /// [`sprag_plugin::Banked::unit`], owned — the log has no `'static` to borrow from.
+    pub unit: String,
+}
+
+impl From<sprag_plugin::Banked> for PersistedBanked {
+    fn from(live: sprag_plugin::Banked) -> Self {
+        Self {
+            completed: live.completed,
+            unit: live.unit.into_owned(),
+        }
+    }
+}
+
+impl From<PersistedBanked> for sprag_plugin::Banked {
+    fn from(stored: PersistedBanked) -> Self {
+        Self {
+            completed: stored.completed,
+            unit: std::borrow::Cow::Owned(stored.unit),
         }
     }
 }
@@ -1222,6 +1274,13 @@ impl RunRegistry {
                         // This image looked, so `made: 0` is a claim it may make; the `None` this
                         // field documents belongs to a log written before it existed.
                         deliveries: Some(run.progress.deliveries.into()),
+                        // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
+                        // is the PLUGIN's own answer (*I count no completed work*) rather than
+                        // this daemon's silence, which is why it is mapped through rather than
+                        // forced to `Some` the way `stood_down` above is: that field's `None` had
+                        // to be reserved for an older log, and this one's is a real answer a
+                        // reader must be able to see.
+                        banked: run.progress.banked.clone().map(Into::into),
                         // ⚠ AND HERE `None` REALLY IS *no cancel*, unlike the field above — item
                         // 596. A stand-down is a bool and needs `Some(false)` to distinguish a
                         // silent daemon from an old log; a canceller is an option already, so the
@@ -1326,7 +1385,14 @@ impl RunRegistry {
                         // meant to check this*, and a restored run must not be made to say that
                         // about a run whose checker the log never recorded. `NONE` claims nothing.
                         checks: sprag_plugin::Checks::NONE,
-                        banked: None,
+                        // ⚠⚠⚠⚠⚠ **AND THIS ONE IS RESTORED, WHICH IS THE WHOLE OF ITEM 616.** It is
+                        // the outcome `stand_down_sentence` reads, so without it a restored run
+                        // tells the person their ending cannot say what was kept — on exactly the
+                        // runs anybody reads, because a run is read after it ends and its daemon
+                        // is usually gone by then (item 606 measured that: thirteen live runs,
+                        // every one restored). See `PersistedBanked` for why a count may cross
+                        // where a state name may not.
+                        banked: saved.banked.clone().map(Into::into),
                     }),
                     output: saved.output.clone(),
                 }
@@ -1398,6 +1464,13 @@ impl RunRegistry {
                         .map_or(sprag_plugin::Deliveries::NONE, Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
+                    // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS KEPT **IS** RESTORED — register item 616,
+                    // `deliveries` above's argument and one of its own. The position two comments
+                    // down is NOT restored because a state name means what a `.scxml` says it
+                    // means; a count of completed turns means the same thing in any vocabulary,
+                    // and `"turn"` is a plain noun rather than a document symbol. An older log
+                    // still reads as `None`, which claims nothing.
+                    banked: saved.banked.clone().map(Into::into),
                     // ⚠⚠⚠ AND NOT WHICH PANE IT WAS DRIVING — register items 540 and 595, and here
                     // the absence is the CORRECT answer rather than a lossy one: this run's driver
                     // died with its daemon, so nothing is driving that pane now. Restoring a pane
@@ -2111,6 +2184,90 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **THE ANSWER TO *WAS MY WORK KEPT* SURVIVES THE DAEMON THAT MEASURED IT** — register
+    /// item 616, the residue item 604 left behind and named rather than hid.
+    ///
+    /// # Why the answer had to travel
+    ///
+    /// Item 604 stopped [`crate::plugins::stand_down_sentence`] asserting a loss it had no way to
+    /// know, by giving it a fact: the plugin says how much work it completed, in its own unit. That
+    /// fact lived only in the live `Outcome`, so a restored run fell back to *this run does not
+    /// report completed work* — honest, and useless to the person it is for.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND A RUN IS READ AFTER IT HAS ENDED**, by which time the daemon that drove it has
+    /// usually been restarted — item 606 measured exactly that on this machine and found thirteen
+    /// live runs, every one of them restored. A fact that dies at the first restart is a fact
+    /// nobody will ever be holding when they need it.
+    ///
+    /// # ⚠⚠⚠ Why this may be restored where [`PersistedRun::at`] may not
+    ///
+    /// That field is a STATE NAME, a symbol whose meaning lives in a `.scxml`, so the saved word
+    /// and this binary's vocabulary are only the same fact when the fingerprints agree — which is
+    /// why `restore` refuses to leak it into the live cell. A banked COUNT has no such scope: three
+    /// completed turns are three completed turns whatever the document said, and `"turn"` is a
+    /// plain noun rather than a document symbol. The two decisions look alike and are not.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE**, not through `persistable` alone — the neighbouring gate's argument:
+    /// a field `serde` never writes would still satisfy an in-process round trip.
+    #[test]
+    fn the_answer_to_whether_work_was_kept_survives_the_daemon_that_measured_it() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        lock(&progress).banked = Some(sprag_plugin::Banked {
+            completed: 3,
+            unit: "turn".into(),
+        });
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            opened_by: None,
+            opened_by_session: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(sprag_plugin::Outcome {
+                    // ⚠ NOT a convergence, which is the whole point: the sentence's *work is
+                    // banked* arm is the easy one, and item 604's harm was in every other ending.
+                    state: sprag_plugin::OutcomeState::Failed,
+                    banked: Some(sprag_plugin::Banked {
+                        completed: 3,
+                        unit: "turn".into(),
+                    }),
+                    ..an_outcome()
+                }),
+                output: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None)),
+            progress,
+        });
+        // ⚠⚠⚠ **NO ORDER IS GIVEN HERE, AND NONE IS NEEDED.** The assertions below call
+        // `stand_down_sentence` directly, so what is under test is what that renderer SAYS about a
+        // restored ending — the order flag only governs whether the host publishes the line at
+        // all. ⚠ A `stand_down` call would fail anyway: this fixture's run is `EndedRun::restored`,
+        // which answers `Unread` because a restored run reads no orders (register items 539/597) —
+        // and reaching for one here cost a red before that was noticed.
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let restored = successor.snapshot();
+        let said = crate::plugins::stand_down_sentence(&restored[0].state);
+        assert!(
+            said.contains("3 turns"),
+            "⛔⛔⛔⛔ ITEM 616: this run completed three turns and a restart lost the count, so the \
+             person who typed `sprag stand-down` is told their ending cannot say what was kept — \
+             on exactly the runs anybody reads. Said {said:?} from {on_disk}",
+        );
+        assert!(
+            said.contains("BANKED and kept"),
+            "⚠⚠⚠⚠ AND IT MUST BE THE SAME ANSWER A LIVE RUN GIVES, not a weaker one worded around \
+             the gap: a restored run that says *cannot say what was kept* has not been repaired, \
+             it has been made polite. Said {said:?}",
+        );
+    }
+
     /// An outcome for a run whose ending is not what the gate is about.
     fn an_outcome() -> sprag_plugin::Outcome {
         sprag_plugin::Outcome {
@@ -2164,6 +2321,8 @@ mod tests {
                 stood_down: None,
                 cancelled_by: None,
                 deliveries: None,
+                // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
+                banked: None,
             }],
         };
         let on_disk = serde_json::to_string(&log).expect("the run log encodes");
@@ -2394,6 +2553,8 @@ mod tests {
             stood_down: None,
             cancelled_by: None,
             deliveries: None,
+            // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
+            banked: None,
         };
 
         // ── THE WORD SURVIVES THE ROUND TRIP THROUGH THE FILE, which is the whole point: this is
@@ -2762,6 +2923,8 @@ mod tests {
                 cancelled_by: None,
                 // ⚠ Nor what it delivered — item 606's field, absent in a log written before it.
                 deliveries: None,
+                // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
+                banked: None,
             }],
         });
 

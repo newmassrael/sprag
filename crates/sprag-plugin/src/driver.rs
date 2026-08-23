@@ -722,6 +722,15 @@ pub struct Progress {
     /// nothing else — items 591 and 594 are the same shape, and the pattern is written out in
     /// [`Checks`]' own doc.
     pub checks: Checks,
+    /// ⚠⚠⚠⚠⚠ **HOW MUCH OF THIS RUN'S WORK IS COMPLETE AND KEPT SO FAR** — register item 604's
+    /// fact, published as a LEVEL beside the three above and for their reason.
+    ///
+    /// ⚠⚠ It is here as well as on [`Outcome::banked`] because *is my work safe?* is a question
+    /// about a RUNNING run too — a person watching a long loop and reaching for `sprag stand-down`
+    /// is asking exactly it — and because this is the cell the daemon's run log is written from
+    /// (register item 616: the answer has to survive the restart, since a run is read after it
+    /// ends and its daemon is usually gone by then).
+    pub banked: Option<crate::plugin::Banked>,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -825,6 +834,7 @@ impl Driver {
                 at: self.at,
                 deliveries: self.deliveries,
                 checks: self.checks.clone(),
+                banked: self.banked.clone(),
                 driving: self.driving,
             };
         }
@@ -1027,7 +1037,7 @@ impl Driver {
                     // the run, and a plugin whose machine has reached a final state may no longer
                     // be able to answer: what is wanted is the last answer it COULD give, which is
                     // what a per-step read leaves behind.
-                    self.banked = plugin.banked().or(self.banked);
+                    self.banked = plugin.banked().or_else(|| self.banked.take());
                     // ⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register items 540 and 595, in the same
                     // breath as the three above. A pane read a moment apart from the counters is a
                     // fact about a different moment, and this one is compared against the LIVE
