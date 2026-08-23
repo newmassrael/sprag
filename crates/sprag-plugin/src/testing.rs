@@ -567,6 +567,31 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
 /// dependence on the screen whatever — which is the hazard in its purest form. The peer prints once
 /// and then sleeps, so nothing bumps the pane's revision after the wait begins.
 pub(crate) fn peer_blocked_unreadably_settling(settle: Duration) -> (WorkspacePaneAccess, PaneId) {
+    settling_peer(settle, true)
+}
+
+/// **THE SAME PEER, OVER A SURFACE THAT CANNOT SEE ITS SUPERVISOR'S CANDIDATES** — the shape
+/// `RemotePaneAccess` really has, and the arm register item 636 was filed for.
+///
+/// # ⚠⚠⚠⚠⚠ Why this fixture has to exist separately
+///
+/// [`Settling`](crate::access::Settling) has three arms and two of them are gated:
+/// [`At`](crate::access::Settling::At) by
+/// `readiness::tests::a_wait_on_a_settling_verdict_costs_one_look_and_not_the_whole_window` and
+/// [`Nothing`](crate::access::Settling::Nothing) by the doubles every other gate here uses.
+/// [`Unknown`](crate::access::Settling::Unknown) had **nothing at all** — and it is the only arm a
+/// remote driver ever walks, because the wire carries no deadline (`agent::verdict_of` says so in
+/// as many words). The arm the product's own remote surface lives on was the unmeasured one.
+///
+/// ⚠⚠ **IT IS THE SAME PEER, DIFFERING IN THE ONE FIELD**, which is what makes the pair a
+/// measurement rather than two separate observations: identical pane, identical clock, identical
+/// verdict flip. Only *can this surface say when* changes.
+pub(crate) fn peer_blocked_unreadably_unknown(settle: Duration) -> (WorkspacePaneAccess, PaneId) {
+    settling_peer(settle, false)
+}
+
+/// The body both of the two above share — `publishes` is whether the surface can say WHEN.
+fn settling_peer(settle: Duration, publishes: bool) -> (WorkspacePaneAccess, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -601,7 +626,14 @@ pub(crate) fn peer_blocked_unreadably_settling(settle: Duration) -> (WorkspacePa
                 //
                 // ⚠⚠ `Nothing` after the flip, on the same terms: the verdict has published, so
                 // there is nothing further pending and a waiter may park on the pane again.
-                settling: if since.elapsed() < settle {
+                //
+                // ⚠⚠⚠ AND `Unknown` THROUGHOUT for the surface that cannot see candidates — the
+                // remote one. Not `Nothing`: this peer's verdict DOES flip on a clock, so a
+                // surface claiming *park on the pane and look no more* would be lying, and a
+                // waiter that believed it would sleep through the flip. See `Settling`.
+                settling: if !publishes {
+                    crate::access::Settling::Unknown
+                } else if since.elapsed() < settle {
                     crate::access::Settling::At(since + settle)
                 } else {
                     crate::access::Settling::Nothing

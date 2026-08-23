@@ -3215,6 +3215,107 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔ **AND THE ARM A REMOTE DRIVER ACTUALLY WALKS IS MEASURED TOO** — register item 636,
+    /// and the `before` register item 631 will be judged against.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The only arm the product's own remote surface has, and it had no gate
+    ///
+    /// [`Settling`](crate::access::Settling) has three arms. The two gates above measure
+    /// [`At`](crate::access::Settling::At) (the deadline is parked to) and every double in this
+    /// crate exercises [`Nothing`](crate::access::Settling::Nothing) (park on the pane).
+    /// [`Unknown`](crate::access::Settling::Unknown) had nothing at all — and `agent::verdict_of`
+    /// answers it for **every observation a remote driver reads**, because the wire carries no
+    /// deadline. *The arm the shipped remote surface lives on was the unmeasured one.*
+    ///
+    /// # What it holds, and what it deliberately does NOT
+    ///
+    /// * **The wait still ENDS.** `Unknown` is a degradation and not a hole: a surface that cannot
+    ///   say when must still come back when the verdict flips. A mutant that treated the unknown
+    ///   as an absence — `Settling::due` answering `None` for it — parks for ever and reports that
+    ///   nobody came.
+    /// * **It costs the OLD rate, and the number is recorded rather than bounded.** This gate does
+    ///   NOT assert a ceiling, because `Unknown` is *supposed* to poll; asserting a small number
+    ///   here would be asserting the defect away. What it asserts is that the count is
+    ///   **materially larger than the published-deadline arm's** — which is the whole content of
+    ///   item 631, stated as a measurement instead of a sentence.
+    ///
+    /// # ⚠⚠⚠⚠⚠ MEASURED 2026-08-24 — this is register item 631's `before`
+    ///
+    /// Over a 600 ms settle, the same peer: **`Unknown` cost 61 looks, the published deadline cost
+    /// 3.** The day `RemotePaneAccess` grows a deadline, this gate is where the improvement shows
+    /// up — the two counts converge, the assertion below goes red, and its message is what says
+    /// item 631 is paid rather than a sentence in a register claiming so.
+    ///
+    /// ⛔⛔⛔ **AND THE MUTATION IS THE ONE THAT ROUND WILL BE TEMPTED BY.** Making
+    /// [`Settling::due`](crate::access::Settling::due) answer `None` for
+    /// [`Unknown`](crate::access::Settling::Unknown) — reading *cannot say* as *nothing pending* —
+    /// leaves this wait at [`Waited::TimedOut`]: *nobody came*, about a peer whose verdict flipped.
+    /// Measured, not argued.
+    #[test]
+    fn the_arm_a_remote_driver_walks_still_ends_its_wait_and_pays_the_old_rate() {
+        /// How long the fixture's supervisor calls the pane blocked.
+        const SETTLES_AFTER: Duration = Duration::from_millis(600);
+        /// Far above it, so *the verdict changed* and *the patience ran out* are different answers.
+        const PATIENCE: Duration = Duration::from_secs(8);
+        /// How many times more a polling arm must cost than the parked one before this gate calls
+        /// them different. ⚠ Low on purpose: the claim is *materially larger*, not a ratio, and a
+        /// loaded runner must not be able to turn it over. At the poll interval the real gap over
+        /// this settle is ~60 against ~3.
+        const AT_LEAST: u64 = 4;
+
+        /// Wait out the same peer over a surface that either can or cannot say WHEN.
+        fn waited_out(publishes: bool) -> (u64, Waited) {
+            let (access, pane) = if publishes {
+                crate::testing::peer_blocked_unreadably_settling(SETTLES_AFTER)
+            } else {
+                crate::testing::peer_blocked_unreadably_unknown(SETTLES_AFTER)
+            };
+            let counted = crate::testing::Counted::new(access);
+            let run = RunContext::uncancellable();
+            // ⚠ The fixture's clock is anchored by its first observation — taken here, so both
+            // arms wait the same thing and the count starts after it.
+            let _ = moved_on(&counted, pane, None);
+            let entered = counted.looks();
+            let waited = park_until(&run, &counted, pane, PATIENCE, || {
+                moved_on(&counted, pane, None)
+            });
+            let looked = counted.looks() - entered;
+            counted.lifecycle().expect("lifecycle").close(pane);
+            (looked, waited)
+        }
+
+        let (blind_looks, blind_end) = waited_out(false);
+        let (told_looks, told_end) = waited_out(true);
+
+        assert_eq!(
+            blind_end,
+            Waited::Ready,
+            "⛔⛔⛔⛔⛔ A SURFACE THAT CANNOT SAY *WHEN* MUST STILL COME BACK. `Settling::Unknown` is \
+             the honest degradation — ask again — and it is what every observation a remote driver \
+             reads answers today. Read as an ABSENCE it becomes *park on the pane and look no \
+             more*, and this peer's pane produces nothing at all after its first line, so the run \
+             would wait out its whole patience and report that nobody came. That is the lost \
+             wakeup `Settling`'s third arm exists to make unrepresentable",
+        );
+        assert_eq!(
+            told_end,
+            Waited::Ready,
+            "⚠⚠ THE CONTROL: the same peer over a surface that CAN say when must end the same way, \
+             or the two counts below are not comparable",
+        );
+
+        // ── the measurement item 631 will be judged against, recorded rather than bounded ──
+        assert!(
+            blind_looks >= told_looks.saturating_mul(AT_LEAST).max(AT_LEAST),
+            "⚠⚠⚠⚠ THE TWO ARMS HAVE STOPPED BEING DIFFERENT, and that is news either way. \
+             `Unknown` cost {blind_looks} looks where the published deadline cost {told_looks}. \
+             Either a remote surface has grown a deadline — in which case register item 631 is \
+             PAID and this gate is what says so — or the published-deadline arm has regressed into \
+             polling, which the two gates above are about. Re-read both before touching this \
+             number",
+        );
+    }
+
     /// ⚠⚠ **A PATIENCE OF ZERO IS NOT A SPELLING OF `NoOne`.**
     ///
     /// [`Consents::of`]'s rule one level up: two spellings of one behaviour make the caller who
