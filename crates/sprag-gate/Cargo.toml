@@ -16,3 +16,8 @@ publish = false
 [[bin]]
 name = "ambient-home-guard"
 path = "src/bin/ambient-home-guard.rs"
+
+# Register item 585: whether a sweep reached every crate, which no test inside the sweep can say.
+[[bin]]
+name = "sweep-coverage"
+path = "src/bin/sweep-coverage.rs"

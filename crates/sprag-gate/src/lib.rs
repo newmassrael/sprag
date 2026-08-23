@@ -98,6 +98,13 @@ pub mod sources;
 /// no package has grown yet.
 pub mod owners;
 
+/// Whether a SWEEP swept — register item 585, and the clearest case of this crate's own subject.
+///
+/// A suite cannot report that it did not run, so no test inside a sweep can notice the nineteen
+/// crates the sweep never reached. The module derives the expectation from the workspace rather
+/// than holding a number.
+pub mod sweep;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};

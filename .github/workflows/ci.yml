@@ -129,10 +129,39 @@ jobs:
       #
       # The XDG variables are the guard the step below checks, and they are set HERE because the
       # suite has to run under them for that step to have anything to look at.
+      #
+      # ⚠⚠ THE LOG IS KEPT, and that is register item 585's whole requirement: the step below can
+      # only judge what this run COVERED by reading what it printed. `tee` keeps the live output —
+      # a redirect alone would leave a failing run's reason invisible in the Actions view.
+      #
+      # ⚠ `$RUNNER_TEMP` — the ENVIRONMENT VARIABLE, inside a step — and not `${{ runner.temp }}`.
+      # The job-level `env:` above states why that context cannot be named there; a step is exactly
+      # where it can be, and the variable is set on every runner including macOS. The two spellings
+      # are one letter apart in habit and a whole failure mode apart in effect (R343).
       - name: Test
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
-          cargo test --workspace --exclude sprag-gui --no-fail-fast
+          set -o pipefail
+          cargo test --workspace --exclude sprag-gui --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/sweep.log"
+
+      # ⚠⚠⚠⚠ A SWEEP THAT DID NOT SWEEP MUST NOT READ AS ONE — register item 585.
+      #
+      # MEASURED 2026-08-22: the same command without `--no-fail-fast` stopped at a flake and ran
+      # 61 of 80 suites. The nineteen it skipped were not red and not green, and the exit code says
+      # nothing about them — which is why this asks the LOG which crates reported, and derives what
+      # to expect from the workspace's own member list rather than from a number somebody keeps.
+      #
+      # `--excluding sprag-gui` mirrors the `--exclude` on the line above: that crate's tests run in
+      # the pixel job, on another runner, whose log this side will never hold. Declaring it here is
+      # what keeps the gap visible instead of silent.
+      #
+      # `if: always()` for the ambient-home guard's reason one step down: a suite that FAILED can
+      # still have skipped crates, and that is exactly when the distinction matters.
+      - name: The sweep must reach every crate
+        if: always()
+        run: >
+          cargo run -q -p sprag-gate --bin sweep-coverage --
+          "$RUNNER_TEMP/sweep.log" --excluding sprag-gui
 
       # ⚠⚠ THE SUITE MUST NOT WRITE THE HOME OF WHOEVER RAN IT.
       #
@@ -288,10 +317,39 @@ jobs:
       # what THE SUITE does, and a claim checked on one platform is a claim about that platform. A
       # call site that resolves the ambient home only where `cfg(unix)` splits would otherwise be
       # caught on one runner and shipped by the other.
+      #
+      # ⚠⚠ THE LOG IS KEPT, and that is register item 585's whole requirement: the step below can
+      # only judge what this run COVERED by reading what it printed. `tee` keeps the live output —
+      # a redirect alone would leave a failing run's reason invisible in the Actions view.
+      #
+      # ⚠ `$RUNNER_TEMP` — the ENVIRONMENT VARIABLE, inside a step — and not `${{ runner.temp }}`.
+      # The job-level `env:` above states why that context cannot be named there; a step is exactly
+      # where it can be, and the variable is set on every runner including macOS. The two spellings
+      # are one letter apart in habit and a whole failure mode apart in effect (R343).
       - name: Test
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
-          cargo test --workspace --exclude sprag-gui --no-fail-fast
+          set -o pipefail
+          cargo test --workspace --exclude sprag-gui --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/sweep.log"
+
+      # ⚠⚠⚠⚠ A SWEEP THAT DID NOT SWEEP MUST NOT READ AS ONE — register item 585.
+      #
+      # MEASURED 2026-08-22: the same command without `--no-fail-fast` stopped at a flake and ran
+      # 61 of 80 suites. The nineteen it skipped were not red and not green, and the exit code says
+      # nothing about them — which is why this asks the LOG which crates reported, and derives what
+      # to expect from the workspace's own member list rather than from a number somebody keeps.
+      #
+      # `--excluding sprag-gui` mirrors the `--exclude` on the line above: that crate's tests run in
+      # the pixel job, on another runner, whose log this side will never hold. Declaring it here is
+      # what keeps the gap visible instead of silent.
+      #
+      # `if: always()` for the ambient-home guard's reason one step down: a suite that FAILED can
+      # still have skipped crates, and that is exactly when the distinction matters.
+      - name: The sweep must reach every crate
+        if: always()
+        run: >
+          cargo run -q -p sprag-gate --bin sweep-coverage --
+          "$RUNNER_TEMP/sweep.log" --excluding sprag-gui
 
       # See the Linux job for what this is and why a test cannot be it.
       - name: The suite must not write the home of whoever ran it
