@@ -1160,6 +1160,21 @@ pub(crate) fn agent_state_source(
                 // ⚠⚠ AND THE COUNT THAT DATES THE ANSWER, without which the text above cannot be
                 // told from the previous turn's — see `AgentObservation::said_seq`.
                 said_seq: facts.said_seq,
+                // ⚠⚠⚠⚠⚠ AND WHEN THIS VERDICT CHANGES WITH NOTHING FURTHER HAPPENING — register
+                // item 630. Carried through from the same tracker borrow that produced the verdict
+                // above, which is what makes the pair unable to disagree; a waiter that asked the
+                // registry separately would hold a deadline belonging to a later observation than
+                // its own state. It is what lets a wait park to the instant instead of polling the
+                // settle window, and it never reaches the wire — see `AgentFacts::settles_at`.
+                //
+                // ⚠⚠⚠ `Nothing` RATHER THAN `Unknown` FOR THE ABSENCE, and only THIS source may
+                // say so: it read the tracker, so an empty answer is *no candidate is waiting* and
+                // a waiter is entitled to park on the pane and look no more. A surface that cannot
+                // see candidates at all — the remote one — must say `Unknown`, which is what
+                // `Settling` has three arms for.
+                settling: facts
+                    .settles_at
+                    .map_or(sprag_plugin::Settling::Nothing, sprag_plugin::Settling::At),
             })
         })
     })

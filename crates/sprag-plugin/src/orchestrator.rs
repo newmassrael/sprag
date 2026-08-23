@@ -18,7 +18,7 @@ use crate::completion::{Completion, Over, Turn};
 use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
-use crate::run::{RunContext, Waited, poll_until};
+use crate::run::{Look, RunContext, Waited, park_until};
 
 /// How long a step waits for the pane to react before judging on the current
 /// screen.
@@ -140,12 +140,26 @@ impl Orchestrator {
         // ⚠ Seeded with what an unfired wait means, so reading it back after the poll needs no
         // `expect` — [`Completion::wait`]'s shape, for its reason.
         let mut arrival = Arrival::Nothing;
-        let waited = poll_until(run, self.patience(), || match self.arrived(panes) {
-            Some(seen) => {
-                arrival = seen;
-                true
+        // ⚠⚠⚠⚠⚠ **PARKED ON THE PANE, NOT POLLED AT IT** — register item 632, which is item 280's
+        // defect left standing in this plugin after the loop's was paid. [`patience`](Self::patience)
+        // answers [`Duration::MAX`] for a contract with no bound of its own, and this wait used to
+        // render the pane's screen and run a detector over it every
+        // [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) until the RUN's deadline or cancel arrived:
+        // 98 looks a second, ~360,000 an hour, at a peer that had said nothing.
+        //
+        // ⚠⚠⚠ WHEN THE PREDICATE CAN CHANGE ON ITS OWN IS [`settling`](Self::settling)'s answer,
+        // and it is asked BEFORE the predicate for [`park_until`](crate::run::park_until)'s own
+        // lost-wakeup reason — a verdict that publishes between the two reads must leave a deadline
+        // in hand that is already past, which buys one more look.
+        let waited = park_until(run, panes, self.pane, self.patience(), || {
+            let settling = self.settling(panes);
+            match self.arrived(panes) {
+                Some(seen) => {
+                    arrival = seen;
+                    Look::Holds
+                }
+                None => settling.not_yet(),
             }
-            None => false,
         });
         match waited {
             Waited::Ready => arrival,
@@ -161,12 +175,44 @@ impl Orchestrator {
     /// number nobody chose cannot be right for both a shell that answers in milliseconds and an
     /// agent that thinks for a minute. See [`Turn`].
     /// ⚠ [`Duration::MAX`] for a contract with no bound of its own, and it is not a constant in
-    /// disguise: [`poll_until`] compares ELAPSED against it and consults the run's deadline and
+    /// disguise: [`park_until`] compares ELAPSED against it and consults the run's deadline and
     /// cancel flag on every pass, so it means *no bound beyond the run's* and cannot overflow.
+    ///
+    /// ⚠⚠⚠ **AND IT IS NO LONGER AN HOUR OF LOOKING** — register item 632. While this wait polled,
+    /// `Duration::MAX` meant *render this pane's screen a hundred times a second until the run
+    /// ends*; parked, it means what it says. See [`observe`](Self::observe).
     fn patience(&self) -> Duration {
         self.spec.turn.as_ref().map_or(OBSERVE_TIMEOUT, |turn| {
             turn.within().unwrap_or(Duration::MAX)
         })
+    }
+
+    /// **WHEN [`arrived`](Self::arrived) CAN CHANGE ITS ANSWER WITH THE PANE STANDING STILL** —
+    /// register item 632, and it is answerable term by term rather than being the open question the
+    /// item feared.
+    ///
+    /// The union has three terms and only ONE of them has a clock:
+    ///
+    /// * the **SENTINEL** is `contains` over the collapsed SCREEN. It cannot change while the
+    ///   screen does not.
+    /// * the **row trail** ([`reaction`](Self::reaction)) compares this step's baseline against the
+    ///   pane's rows. Same: a function of the pane's bytes.
+    /// * the **CONTRACT** ([`Completion::ended`]) rests on a supervisor's published verdict, and a
+    ///   verdict SETTLES — it changes a window after the last output, with nothing to announce it.
+    ///
+    /// So the deadline is the contract's, taken from the contract itself
+    /// ([`Completion::settles`]) rather than derived here: a second reading of one pane's
+    /// settling is exactly how two answers about it come to disagree, and this way a term added to
+    /// [`Completion::ended`] with a clock of its own arrives here in the same edit.
+    ///
+    /// ⚠ [`Settling::Nothing`](crate::access::Settling::Nothing) with no contract is a CLAIM and a
+    /// true one: with no contract the union is screen-only, so nothing but the pane can move it.
+    fn settling(&self, panes: &dyn PaneAccess) -> crate::access::Settling {
+        self.done
+            .as_ref()
+            .map_or(crate::access::Settling::Nothing, |done| {
+                done.settles(panes, self.pane)
+            })
     }
 
     /// Whether what this step is waiting for has happened — see [`observe`](Self::observe).
@@ -721,6 +767,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {
                             asked: vec!["Do you want to edit lib.rs?".to_string()],
@@ -918,6 +965,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             })
         };
@@ -2138,6 +2186,183 @@ mod tests {
         assert!(
             !witness.contains("PROMPTED 2"),
             "and the peer was asked once: {witness:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THIS PLUGIN'S OWN WAIT PARKS ON THE PANE TOO** — register item 632, which is
+    /// register item 280's defect found still standing HERE after the loop's copy of it was paid.
+    ///
+    /// # ⚠⚠⚠⚠ What it cost, and why it survived the round that fixed the other one
+    ///
+    /// [`observe`](Orchestrator::observe) waited with `poll_until(run, self.patience(), ...)`, and
+    /// [`patience`](Orchestrator::patience) answers [`Duration::MAX`] for a contract that declares
+    /// no bound of its own — *no bound beyond the run's*, which is the right meaning and was the
+    /// wrong implementation. Polled, it meant **render this pane's screen and run a detector over
+    /// it a hundred times a second until the run's deadline or a cancel arrives**: the same 98/s
+    /// item 280 measured, ~360,000 an hour, every one of them taking the workspace lock that every
+    /// other client reads through.
+    ///
+    /// It survived because 280 was paid inside `ai_loop`, and this is a DIFFERENT plugin behind the
+    /// same MCP verb. Nothing in the repair reached it and nothing went red.
+    ///
+    /// # ⚠⚠⚠ THE RATIO IS THE CLAIM, and a ceiling alone would be a tolerance
+    ///
+    /// One step waited out at two patiences a factor of four apart, over a pane that says nothing.
+    /// **A polling wait costs four times as many looks in the long arm however slowly it polls**;
+    /// a parked one costs the same in both. ⚠ The control is that each arm really waited its whole
+    /// patience — a wait that returns at once costs no looks either, and is the opposite defect
+    /// (`a_run_with_no_turn_contract_re_prompts_a_peer_that_is_still_thinking` is what that one
+    /// costs).
+    ///
+    /// ⚠⚠ The contract is [`DoneWhen::Exits`] over a live pane, so `arrived` is false throughout
+    /// and the wait ends on the patience — which is what makes the two arms comparable at all.
+    ///
+    /// # ⚠⚠⚠⚠⚠ MEASURED 2026-08-24, BOTH SIDES OF THE REPAIR
+    ///
+    /// | patience | looks POLLED | looks PARKED |
+    /// |---|---|---|
+    /// | 400 ms | 120 | **3** |
+    /// | 1,600 ms | 471 | **3** |
+    ///
+    /// # ⛔⛔⛔ AND THE THIRD ARM EXISTS BECAUSE A MUTATION OF MINE DID NOTHING
+    ///
+    /// The first mutant tried against this gate was
+    /// [`settling`](Orchestrator::settling)'s `map_or` DEFAULT — and it changed **nothing**,
+    /// because this fixture declares a contract, so the default arm is never taken. A gate whose
+    /// subject is reachable only through a branch the fixture never enters is a green that says
+    /// less than it looks like.
+    ///
+    /// So the third arm asks the wiring DIRECTLY, with no clock in it: an observation carrying
+    /// [`Settling::At`](crate::access::Settling::At) must come back out of
+    /// [`settling`](Orchestrator::settling) unchanged. That kills the whole family — a `settling`
+    /// that answers `Nothing` for everything, one that drops the contract's answer, one that
+    /// invents a deadline of its own.
+    #[test]
+    fn a_step_waiting_out_its_patience_does_not_re_read_the_pane_while_it_waits() {
+        /// The short arm's patience.
+        const SHORT: Duration = Duration::from_millis(400);
+        /// The long arm's, four times it.
+        const LONG: Duration = Duration::from_millis(1_600);
+        /// How many looks one waited-out step may cost however long it lasts — **measured 3 in
+        /// both arms**, so this is set well above the reading rather than at it.
+        const CEILING: u64 = 16;
+        /// What the long arm may exceed the short one by. At the poll interval the gap between
+        /// these two arms is ~120 looks, so nothing this size can hide a poll.
+        const SLACK: u64 = 8;
+
+        /// Wait out one step over a silent pane, answering **how many looks it cost**, how long it
+        /// took, and how it ended.
+        fn waited_out(patience: Duration) -> (u64, Duration, Arrival) {
+            let (access, pane) = cat_access(40, 10);
+            let counted = crate::testing::Counted::new(access);
+            let orchestrator = Orchestrator::new(
+                pane,
+                OrchestrationSpec {
+                    stimulus: "ping".to_string(),
+                    // ⚠ A sentinel this pane can never show, so the SENTINEL term is false for the
+                    // whole wait rather than deciding it early.
+                    sentinel: Some("NEVER-ARRIVES".to_string()),
+                    ready_when: None,
+                    ready_within: None,
+                    may_answer: None,
+                    attended: Attended::NoOne,
+                    turn: Turn::lasting(crate::completion::DoneWhen::Exits, Some(patience)),
+                },
+            );
+            let run = RunContext::uncancellable();
+            let entered = counted.looks();
+            let began = Instant::now();
+            let arrival = orchestrator.observe(&counted, &run);
+            let took = began.elapsed();
+            let looked = counted.looks() - entered;
+            counted.lifecycle().expect("lifecycle").close(pane);
+            (looked, took, arrival)
+        }
+
+        let (short_looks, short_took, short_end) = waited_out(SHORT);
+        let (long_looks, long_took, long_end) = waited_out(LONG);
+
+        // ── the control: both arms really waited out their patience ──
+        assert_eq!(
+            (short_end, long_end),
+            (Arrival::Nothing, Arrival::Nothing),
+            "⚠⚠⚠ THE CONTROL: this pane shows no sentinel and its program has not exited, so both \
+             waits must end on the patience. Anything else measured a different wait",
+        );
+        assert!(
+            short_took >= SHORT && long_took >= LONG,
+            "⚠⚠⚠ AND NEITHER MAY SKIP IT — a step that returns at once costs no looks either and \
+             would pass every assertion below while committing the opposite defect: re-prompting a \
+             peer that is still thinking. short {short_took:?} of {SHORT:?}; long {long_took:?} of \
+             {LONG:?}",
+        );
+
+        // ── the claim: LOOKING DOES NOT FOLLOW THE CLOCK ──
+        assert!(
+            long_looks <= short_looks + SLACK,
+            "⚠⚠⚠⚠⚠ THIS STEP IS POLLING THE PANE. A {LONG:?} wait cost {long_looks} looks where a \
+             {SHORT:?} one cost {short_looks} — the count follows the CLOCK. `patience()` answers \
+             `Duration::MAX` for a contract with no bound, so at this rate a run waiting on a \
+             thinking peer renders its screen ~360,000 times an hour. Register item 632, and item \
+             280's own question: *why is it LOOKING at all?*",
+        );
+        assert!(
+            long_looks <= CEILING && short_looks <= CEILING,
+            "⚠⚠⚠ AND A WAITED-OUT STEP COSTS A HANDFUL OF LOOKS, NOT HUNDREDS. short \
+             {short_looks}, long {long_looks}, ceiling {CEILING}",
+        );
+
+        // ── ⛔ THE WIRING, ASKED WITH NO CLOCK IN IT — see this gate's own doc for why ──
+        let (bare, supervised_pane) = cat_access(40, 10);
+        /// The instant the fixture's supervisor claims its verdict flips at. Any value will do:
+        /// what is under test is that it survives the journey, not what it is.
+        const AHEAD: Duration = Duration::from_secs(42);
+        let publishes_at = Instant::now() + AHEAD;
+        let access = bare.with_agent_state(Some(Arc::new(move |_id: PaneId| {
+            Some(crate::access::AgentObservation {
+                state: sprag_detect::AgentState::Working,
+                agent: Some("claude".to_string()),
+                authority: crate::access::Authority::Reported {
+                    source: "test".to_string(),
+                },
+                seq: 1,
+                asked_seq: 1,
+                reports: 1,
+                asking: None,
+                asked: None,
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                transcript: None,
+                // ⚠ THE ONE FIELD THIS ARM IS ABOUT.
+                settling: crate::access::Settling::At(publishes_at),
+            })
+        })));
+        let step = Orchestrator::new(
+            supervised_pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("NEVER-ARRIVES".to_string()),
+                ready_when: None,
+                ready_within: None,
+                may_answer: None,
+                attended: Attended::NoOne,
+                turn: Turn::lasting(crate::completion::DoneWhen::Settles, Some(SHORT)),
+            },
+        );
+        let forwarded = step.settling(&access);
+        access
+            .lifecycle()
+            .expect("lifecycle")
+            .close(supervised_pane);
+        assert_eq!(
+            forwarded,
+            crate::access::Settling::At(publishes_at),
+            "⛔⛔⛔⛔⛔ THE SUPERVISOR'S DEADLINE IS NOT REACHING THIS STEP'S WAIT. \
+             `Orchestrator::settling` must hand the CONTRACT's answer through untouched: a \
+             `Nothing` here is a claim that the verdict stands until the pane moves, which parks a \
+             run straight through a settling peer, and a deadline of this step's own invention \
+             would be the old lag wearing a new type. Got {forwarded:?}",
         );
     }
 

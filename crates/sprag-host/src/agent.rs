@@ -227,6 +227,26 @@ pub struct AgentFacts {
     pub noticed: Option<String>,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT** — stated, never derived from an id.
     pub transcript: Option<String>,
+    /// **WHEN THIS VERDICT CHANGES WITH NO FURTHER OUTPUT** — [`Tracker::pending_deadline`] as it
+    /// stood on the look that produced these facts, and `None` when nothing is pending.
+    ///
+    /// # ⚠⚠⚠ THE ONE FIELD HERE THAT IS NOT ON THE WIRE, and it cannot be
+    ///
+    /// An [`Instant`] is meaningless outside this process — it is not a wall clock and has no
+    /// serialisation — so this rides on the struct the pane list is built from without ever
+    /// reaching the pane list. That is stated rather than left to be discovered, because the type's
+    /// own headline says *in the shape the pane list puts on the wire* and this is the exception.
+    ///
+    /// ⚠⚠ **IT IS HERE RATHER THAN BEHIND A SECOND CALL** because the alternative loses the race
+    /// it exists to win: `AgentRegistry::pending_deadline(id)` is public and one hash lookup, and a
+    /// caller that observed and THEN asked would hold a deadline fresher than its own verdict.
+    /// Published from the same borrow of the same tracker, the pair cannot disagree.
+    ///
+    /// Register item 630. Spent by `sprag_plugin::run::park_until` through
+    /// `sprag_plugin::AgentObservation::settles_at`: a wait whose predicate rests on this verdict
+    /// used to poll the whole settle window at ~200 screen reads a change, and now takes one look
+    /// at the instant named here.
+    pub settles_at: Option<Instant>,
 }
 
 /// A [`Question`] in the shape BOTH surfaces put it on the wire — the ONE renderer, so a pane's
@@ -430,6 +450,18 @@ pub fn verdict_of(value: &serde_json::Value) -> Verdict {
         said: text(crate::wire::AGENT_SAID_KEY),
         noticed: text(crate::wire::AGENT_NOTICED_KEY),
         transcript: text(crate::wire::AGENT_TRANSCRIPT_KEY),
+        // ⚠⚠⚠⚠⚠ **`Unknown`, AND SPELLING IT `Nothing` WOULD PLANT A LOST WAKEUP** — register
+        // items 630 and 631. This verdict comes off a WIRE that carries no deadline: the daemon's
+        // tracker may well have a candidate publishing two seconds from now, and nothing readable
+        // here says so. `Settling::Nothing` is a CLAIM — *park on the pane and look no more* — and
+        // a driver that believed it from here would sleep straight through the publish it was
+        // waiting for.
+        //
+        // ⚠⚠ It costs the old rate and no more: `RemotePaneAccess` publishes no
+        // `PaneChanges` either (item 631), so every wait over it asks again each slice regardless.
+        // The day that surface becomes parkable, THIS is the line that has to move first — and
+        // until it does, the type is what stops the defect being silent.
+        settling: sprag_plugin::Settling::Unknown,
     }))
 }
 
@@ -653,6 +685,11 @@ impl AgentRegistry {
             said: tracker.reported_said().map(str::to_owned),
             noticed: tracker.reported_noticed().map(str::to_owned),
             transcript: tracker.reported_transcript().map(str::to_owned),
+            // ⚠⚠⚠⚠⚠ READ AFTER THE POLICY CORRECTION ABOVE, NOT BEFORE IT. Case 3 can have just
+            // re-read the user's window and moved this candidate's deadline EARLIER; a value taken
+            // before it would be the default's deadline, and every waiter parked on it would sleep
+            // past the instant the user asked for. Register item 630.
+            settles_at: tracker.pending_deadline(),
         })
     }
 

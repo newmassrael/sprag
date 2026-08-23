@@ -1494,6 +1494,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })
         });
 
@@ -2059,6 +2060,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })
         }
     }

@@ -5823,17 +5823,13 @@ impl OuterLoop {
                 // is ~360,000 over the hour of patience the shipped document declares, at a pane
                 // nobody has touched.
                 //
-                // ⚠⚠ THE LAG IS THE PREDICATE'S OWN and it is asked for rather than assumed:
+                // ⚠⚠ WHEN THE PREDICATE CAN CHANGE ON ITS OWN IS THE PREDICATE'S OWN ANSWER:
                 // [`moved_on`] is two questions, and only the one that compares SENTENCES is
-                // immune to a supervisor's hysteresis. See [`readiness::moved_on_lag`].
-                match park_until(
-                    run,
-                    panes,
-                    self.driving.pane,
-                    left,
-                    crate::readiness::moved_on_lag(question.as_ref()),
-                    || crate::readiness::moved_on(panes, self.driving.pane, question.as_ref()),
-                ) {
+                // immune to a supervisor's hysteresis — the other rides the supervisor's published
+                // deadline (register item 630). See [`readiness::moved_on`].
+                match park_until(run, panes, self.driving.pane, left, || {
+                    crate::readiness::moved_on(panes, self.driving.pane, question.as_ref())
+                }) {
                     // ⚠⚠ THE PERSON ACTED AND THIS DOES NOT GUESS WHAT THEY DID. `turn.done` and
                     // `resume` are different edges and only the next look at the pane can tell them
                     // apart — so the machine stays put for exactly one more step and the completion
@@ -8545,6 +8541,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             });
             let access = WorkspacePaneAccess::new(Arc::clone(&workspace))
@@ -8878,6 +8875,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             });
             let access =
@@ -9068,6 +9066,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             });
             let access =
@@ -9237,6 +9236,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: said.clone(),
+                    settling: crate::access::Settling::Nothing,
                 })
             });
             let access =
@@ -9342,6 +9342,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: said.clone(),
+                    settling: crate::access::Settling::Nothing,
                 })
             });
             let access =
@@ -9431,6 +9432,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: Some(said.clone()),
+                settling: crate::access::Settling::Nothing,
             })
         });
         let access =
@@ -9506,6 +9508,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: stated.lock().expect("what the agent says").clone(),
+                settling: crate::access::Settling::Nothing,
             })
         });
         let access =
@@ -12089,6 +12092,7 @@ mod tests {
                 said_seq: self.said_seq,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })
         }
     }
@@ -13426,6 +13430,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             });
             let access =
@@ -15733,6 +15738,7 @@ mod tests {
                     said_seq: 0,
                     noticed: stated.lock().expect("the statement").clone(),
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             })
         };
@@ -16453,6 +16459,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 }));
             let source = {
                 let seen = Arc::clone(&seen);
@@ -16627,6 +16634,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             }));
         let source = {
             let seen = Arc::clone(&seen);
@@ -16792,6 +16800,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 }));
             let source = {
                 let seen = Arc::clone(&seen);

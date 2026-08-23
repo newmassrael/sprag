@@ -55,7 +55,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{JobLeader, KeyStroke, PaneAccess, PaneDoing, PaneError};
 use crate::consent::{Answered, Consents, Refusal, Taken, Unanswered};
-use crate::run::{RunContext, Waited, park_until, poll_until};
+use crate::run::{Look, RunContext, Waited, park_until, poll_until};
 
 /// Whether the peer in `pane` has stopped to ASK, and what it is asking when this host can read it.
 ///
@@ -174,39 +174,56 @@ fn marker_arrived(
 /// pane still blocked at all. That is strictly more conservative. A person who replaces one
 /// unreadable dialog with another keeps the run waiting, which is right, since nothing here can
 /// tell the two apart and resuming would type into whichever it is.
-pub(crate) fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Question>) -> bool {
-    match question {
-        Some(asked) => left_the_question(panes, pane, asked),
-        // ⚠ A peer blocked on something this host cannot read is the one case that cannot be
-        // answered by comparing sentences, so it asks the weaker question it can answer: is this
-        // pane still blocked at all.
-        None => peer_asking(panes, pane).is_none(),
-    }
-}
-
-/// **HOW LONG AFTER A PANE STOPS MOVING [`moved_on`] CAN STILL CHANGE ITS ANSWER** — the `lag` a
-/// caller owes [`park_until`], answered by the one place that knows which
-/// of two questions is being asked.
 ///
-/// # ⚠⚠⚠ Two questions, two lags, and the difference is already load-bearing above
+/// # ⚠⚠⚠ IT ANSWERS A [`Look`] BECAUSE IT IS TWO PREDICATES WITH TWO CLOCKS
+///
+/// This used to answer `bool` beside a `moved_on_lag` that answered how long its verdict could go
+/// on moving. The pair was correct and the second half was a WINDOW where the truth is a DEADLINE
+/// (register item 630), so the two are now one answer:
 ///
 /// * A question this host CAN read is compared by its SENTENCE, and [`left_the_question`] flattens
 ///   the supervisor's verdict away on purpose — *blocked with no readable menu* is already this
-///   question being over. Its answer therefore changes only when the SCREEN does, and the lag is
-///   **zero**. That property is not incidental: it is what that function's doc calls the difference
-///   this crate has paid for.
+///   question being over. Its answer therefore changes only when the SCREEN does, which is
+///   [`Look::Steady`]. That property is not incidental: it is what that function's doc calls the
+///   difference this crate has paid for.
 /// * A question it CANNOT read falls back to *is this pane still blocked at all*, which IS the
-///   supervisor's verdict — and a verdict settles. A detector goes on calling a pane blocked for
-///   [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) after the dialog left the screen, then
-///   changes its answer with no further output at all.
+///   supervisor's verdict — and a verdict settles. The supervisor publishes WHEN
+///   ([`AgentObservation::settling`](crate::access::AgentObservation::settling)), so this hands that
+///   instant on rather than rounding it up
+///   to [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) and polling the window.
 ///
-/// ⚠⚠ A FUNCTION OF THE SAME ARGUMENT [`moved_on`] TAKES, not a constant beside it: the two must
-/// not be able to drift, and this way a change to which question is asked either changes this in
-/// the same edit or fails to compile.
-pub(crate) const fn moved_on_lag(question: Option<&Question>) -> Duration {
+/// ⚠⚠ **ONE OBSERVATION ANSWERS BOTH HALVES**, which is why the unreadable arm no longer calls
+/// [`peer_asking`]: reading the state and reading the deadline out of two calls would cost two
+/// looks — the thing this seam exists to stop — and would let the two disagree about which
+/// observation they came from.
+pub(crate) fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Question>) -> Look {
     match question {
-        Some(_) => Duration::ZERO,
-        None => sprag_detect::DEFAULT_SETTLE,
+        Some(asked) => {
+            if left_the_question(panes, pane, asked) {
+                Look::Holds
+            } else {
+                Look::Steady
+            }
+        }
+        // ⚠ A peer blocked on something this host cannot read is the one case that cannot be
+        // answered by comparing sentences, so it asks the weaker question it can answer: is this
+        // pane still blocked at all.
+        None => {
+            let Some(seen) = panes
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(pane))
+            else {
+                // ⚠ A host with no supervisor, or a pane it does not know, is what
+                // `peer_asking(..).is_none()` has always read as *not blocked* — kept
+                // deliberately, because the alternative is a wait no absence can ever end.
+                return Look::Holds;
+            };
+            if seen.state == AgentState::Blocked {
+                seen.settling.not_yet()
+            } else {
+                Look::Holds
+            }
+        }
     }
 }
 
@@ -1321,15 +1338,11 @@ impl Readiness {
         // same wait `ai_loop.scxml`'s `awaiting_human` takes. The two share [`moved_on`] and they
         // now share the way it is waited on: a person reading a pane for twenty minutes cost 98
         // screen reads a second, every one of them taking the workspace lock, for a pane that was
-        // not moving. The lag is the predicate's own — see [`moved_on_lag`].
-        let waited = park_until(
-            run,
-            panes,
-            pane,
-            patience,
-            moved_on_lag(asked.as_ref()),
-            || moved_on(panes, pane, asked.as_ref()),
-        );
+        // not moving. ⚠ When the predicate can change on its own is [`moved_on`]'s own answer —
+        // register item 630 — so there is nothing to pass here beside it.
+        let waited = park_until(run, panes, pane, patience, || {
+            moved_on(panes, pane, asked.as_ref())
+        });
         match waited {
             Waited::Ready => Reached::Attended(Attention {
                 asked: unanswered,
@@ -1894,6 +1907,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             })
         };
@@ -2844,6 +2858,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                 })
             }
         }
@@ -2883,8 +2898,9 @@ mod tests {
                 selected: true,
             }],
         };
-        assert!(
+        assert_eq!(
             moved_on(&StillBlockedNothingReadable, PaneId(1), Some(&was_asked)),
+            Look::Holds,
             "⚠⚠⚠ the dialog this run stopped on is off the screen, and only the supervisor's own \
              hysteresis still says otherwise. Read as still-asking, a person who answered inside \
              their patience is reported as never having come",
@@ -2892,8 +2908,15 @@ mod tests {
         // ⚠ THE CONTROL, and it is what keeps the arm above from being *"anything blocked counts
         // as answered"*: the SAME unreadable state, for a run that stopped on an unreadable dialog
         // in the first place. There is no sentence to compare, so nothing here says a person acted.
-        assert!(
-            !moved_on(&StillBlockedNothingReadable, PaneId(1), None),
+        //
+        // ⚠⚠ AND IT ASSERTS THE EXACT ARM, not merely *not over*. This double publishes
+        // `Settling::Nothing`, so a waiter here is entitled to park on the pane and look no more —
+        // which is a stronger statement than `!moved_on` could make and the one register item 630
+        // turns on. A double that answered `Unknown` would poll instead, and every gate built on
+        // it would measure the degradation.
+        assert_eq!(
+            moved_on(&StillBlockedNothingReadable, PaneId(1), None),
+            Look::Steady,
             "⚠⚠⚠ a run that stopped on a dialog it could NOT read has no sentence to compare \
              against, so only the pane ceasing to be blocked can say a person dealt with it — \
              resuming here would type into whatever is still up",
@@ -2983,23 +3006,34 @@ mod tests {
         );
     }
 
-    /// ⛔⛔⛔⛔⛔ **A WAIT ON A QUESTION THIS HOST CANNOT READ MUST GO ON LOOKING WHILE THE VERDICT
-    /// IS STILL SETTLING** — [`moved_on_lag`]'s second arm, which NOTHING held until this.
+    /// ⛔⛔⛔⛔⛔ **A WAIT ON A QUESTION THIS HOST CANNOT READ MUST COME BACK WHEN THE VERDICT
+    /// SETTLES** — [`moved_on`]'s unreadable arm, which NOTHING held until this.
     ///
     /// # ⚠⚠⚠⚠⚠ Found by mutation, and the mutation reddened nothing
     ///
-    /// [`park_until`] takes a `lag` because not every predicate about a pane is a function of the
-    /// pane's bytes, and [`moved_on`] is exactly two predicates: with a readable question it
-    /// compares SENTENCES — immune to hysteresis by construction, which is
-    /// [`left_the_question`]'s whole design — and with an unreadable one it falls back to *is this
-    /// pane still blocked at all*, which is the supervisor's verdict. **A verdict settles**: it
-    /// changes a window after the last output, with no output to announce it.
+    /// Not every predicate about a pane is a function of the pane's bytes, and [`moved_on`] is
+    /// exactly two predicates: with a readable question it compares SENTENCES — immune to
+    /// hysteresis by construction, which is [`left_the_question`]'s whole design — and with an
+    /// unreadable one it falls back to *is this pane still blocked at all*, which is the
+    /// supervisor's verdict. **A verdict settles**: it changes a window after the last output, with
+    /// no output to announce it.
     ///
     /// Zeroing that second arm and running **the whole workspace suite — 87 targets — passed**.
     /// Every fixture in this crate that reaches `moved_on` hands it a question the shipping parser
-    /// CAN read, so all of them exercise the zero-lag arm and none the other. **A mutant that
+    /// CAN read, so all of them exercise the screen-only arm and none the other. **A mutant that
     /// parks straight through a settling verdict, and reports that nobody came about a peer who
     /// moved on, was green everywhere.**
+    ///
+    /// # ⚠⚠⚠⚠ What the mutant IS, now that the arm is a deadline rather than a window
+    ///
+    /// Register item 630 turned *look for the next two seconds* into *look once, at the instant the
+    /// supervisor named*, so the mutation this gate answers is one line different and no weaker:
+    /// [`Settling::Nothing`](crate::access::Settling::Nothing) in place of the fixture's
+    /// [`At`](crate::access::Settling::At) — a supervisor claiming its verdict stands until the
+    /// pane moves, when in fact it flips on a clock. That is the same defect the old zeroed lag
+    /// was, and it is now reachable from the SURFACE rather than only from the wait: any host that
+    /// spells its absence wrong lands here. `RemotePaneAccess` is the live example, and it says
+    /// [`Unknown`](crate::access::Settling::Unknown) for exactly this reason.
     ///
     /// # ⚠⚠⚠ OUTCOMES, NOT DURATIONS — register item 487(a)'s rule, applied on purpose
     ///
@@ -3009,9 +3043,9 @@ mod tests {
     /// race between the fixture's settle and the mutant's patience, which is the shape macOS CI
     /// has already spent (100.219 ms against a hand-written 100 ms).
     ///
-    /// ⚠ The control is the CONVERSE and it is asserted in the same breath: with the lag the
-    /// product actually uses, the wait must also not simply run its whole patience — a wait that
-    /// polled for ever would answer `Ready` too, and this is what says it did so promptly.
+    /// ⚠ The control is the CONVERSE and it is asserted in the same breath: with the deadline the
+    /// product actually publishes, the wait must also not simply run its whole patience — a wait
+    /// that polled for ever would answer `Ready` too, and this is what says it did so promptly.
     #[test]
     fn a_wait_on_an_unreadable_question_still_ends_when_the_verdict_settles() {
         /// How long the fixture's supervisor calls the pane blocked. Short, because the gate pays
@@ -3033,8 +3067,19 @@ mod tests {
             access.pane_collapsed(pane),
         );
 
+        // ⚠⚠ AND THE SECOND CONTROL: the predicate must be answering the SETTLING arm — a
+        // `Look::Steady` here is the mutant, and a `Look::Holds` would mean the fixture never
+        // blocked. Asserted before the wait, so a red separates *the surface lied* from *the wait
+        // ignored it*, which are two different repairs.
+        assert!(
+            matches!(moved_on(&access, pane, None), Look::Settles(_)),
+            "the fixture's supervisor must publish WHEN its verdict flips, or the wait below has \
+             no deadline to park to and this gate is measuring the degradation: {:?}",
+            moved_on(&access, pane, None),
+        );
+
         let began = Instant::now();
-        let waited = park_until(&run, &access, pane, PATIENCE, moved_on_lag(None), || {
+        let waited = park_until(&run, &access, pane, PATIENCE, || {
             moved_on(&access, pane, None)
         });
         let took = began.elapsed();
@@ -3047,13 +3092,126 @@ mod tests {
              blocked on a question this host cannot read, so the only thing that can end the wait \
              is the supervisor changing its mind — and it does that on a CLOCK, with the pane \
              producing nothing at all. A wait that parks on the pane's bytes here never looks \
-             again and reports that nobody came about a peer who moved on. `moved_on_lag`'s \
-             unreadable arm is what keeps it looking, and it took {took:?} of {PATIENCE:?}",
+             again and reports that nobody came about a peer who moved on. `moved_on`'s unreadable \
+             arm hands the supervisor's own deadline to `park_until`, and it took {took:?} of \
+             {PATIENCE:?}",
         );
         assert!(
             took < PATIENCE / 2,
             "⚠⚠ and it must end because the VERDICT changed rather than because the patience ran \
              out — {took:?} of {PATIENCE:?} says something else ended it",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND WAITING OUT A SETTLING VERDICT COSTS ONE LOOK, NOT THE WHOLE WINDOW** —
+    /// register item 630, and the half its neighbour above cannot see.
+    ///
+    /// # ⚠⚠⚠⚠ Why the gate above is green either way, which is what made this a separate item
+    ///
+    /// `a_wait_on_an_unreadable_question_still_ends_when_the_verdict_settles` asserts the wait comes
+    /// BACK. A wait that re-rendered the screen every [`POLL_INTERVAL`](crate::run::POLL_INTERVAL)
+    /// for the whole settle window comes back too — it comes back having spent ~200 screen reads a
+    /// change, each taking the workspace lock every other client reads through. **Correct and
+    /// expensive read identically from there**, which is exactly how the cost survived register
+    /// item 280's repair: 280 stopped the wait polling while nothing happened, and left it polling
+    /// the WINDOW AFTER each change.
+    ///
+    /// The supervisor knew the instant the whole time —
+    /// [`Tracker::pending_deadline`](sprag_detect::Tracker::pending_deadline), written rounds ago
+    /// — and nothing carried it to the waiter. [`Settling`](crate::access::Settling) is that
+    /// carriage; this is the meter that says it arrived.
+    ///
+    /// # ⚠⚠⚠ TWO SETTLE WINDOWS A FACTOR OF FOUR APART, and the RATIO is the claim
+    ///
+    /// A ceiling alone is a tolerance a slower poll interval could meet — the cleverer-cadence
+    /// repair item 280 refuses by name. **A wait that polls the window costs four times as many
+    /// looks when the window is four times longer**; one that parks to the published instant costs
+    /// the same. ⚠ The control is that both arms really waited out their settle and really came
+    /// back, so *cheap* cannot be bought by not waiting.
+    ///
+    /// # ⚠⚠⚠⚠⚠ MEASURED 2026-08-24, BOTH SIDES OF THE REPAIR
+    ///
+    /// | settle window | looks POLLED | looks PARKED |
+    /// |---|---|---|
+    /// | 400 ms | 42 | **3** |
+    /// | 1,600 ms | 159 | **3** |
+    ///
+    /// The polled column is this file with
+    /// [`Settling::due`](crate::access::Settling::due) mutated to answer `Instant::now()` for
+    /// [`At`](crate::access::Settling::At) — the old window, spelled as a deadline. ⚠⚠⚠ **AND THE
+    /// GATE ABOVE STAYED GREEN UNDER THAT MUTATION**, which is this pair's whole reason for
+    /// existing: *correct* and *expensive* are one reading to a gate that only asks how the wait
+    /// ended.
+    #[test]
+    fn a_wait_on_a_settling_verdict_costs_one_look_and_not_the_whole_window() {
+        /// The short arm's settle window.
+        const SHORT: Duration = Duration::from_millis(400);
+        /// The long arm's, four times it.
+        const LONG: Duration = Duration::from_millis(1_600);
+        /// Far above both, so the wait always ends on the VERDICT rather than on the patience.
+        const PATIENCE: Duration = Duration::from_secs(8);
+        /// How many looks the wait may cost however long the window is. A parked wait looks when it
+        /// arrives, once at the deadline, and once more to see the new verdict — **measured 3 in
+        /// both arms**, so this is set well above the reading rather than at it.
+        const CEILING: u64 = 16;
+        /// What the long arm may exceed the short one by. At the poll interval the gap between
+        /// these two is ~120 looks, so nothing this size can hide a poll.
+        const SLACK: u64 = 8;
+
+        /// Wait out a peer whose unreadable verdict flips `after`, answering **how many looks the
+        /// wait cost**, how long it took, and how it ended.
+        fn waited_out(after: Duration) -> (u64, Duration, Waited) {
+            let (access, pane) = peer_blocked_unreadably_settling(after);
+            let counted = crate::testing::Counted::new(access);
+            let run = RunContext::uncancellable();
+            // ⚠⚠ THE FIXTURE'S CLOCK IS ANCHORED BY ITS FIRST OBSERVATION, so it is taken HERE and
+            // the count starts after it. Otherwise the window would begin inside the measurement
+            // and the two arms would not be waiting the same thing.
+            assert!(
+                matches!(moved_on(&counted, pane, None), Look::Settles(_)),
+                "the fixture must publish WHEN its verdict flips, or this measures the degradation",
+            );
+            let entered = counted.looks();
+            let began = Instant::now();
+            let waited = park_until(&run, &counted, pane, PATIENCE, || {
+                moved_on(&counted, pane, None)
+            });
+            let took = began.elapsed();
+            let looked = counted.looks() - entered;
+            counted.lifecycle().expect("lifecycle").close(pane);
+            (looked, took, waited)
+        }
+
+        let (short_looks, short_took, short_end) = waited_out(SHORT);
+        let (long_looks, long_took, long_end) = waited_out(LONG);
+
+        // ── the controls: both really waited, and both really came back ──
+        assert_eq!(
+            (short_end, long_end),
+            (Waited::Ready, Waited::Ready),
+            "⚠⚠⚠⚠⚠ THE CONTROL: a wait that never notices the verdict settle costs no looks \
+             either, and is the WORSE defect — a run that reports nobody came about a peer who \
+             moved on. short {short_end:?}, long {long_end:?}",
+        );
+        assert!(
+            short_took >= SHORT && long_took >= LONG,
+            "⚠⚠⚠ and each must actually have waited out its own window — short {short_took:?} of \
+             {SHORT:?}, long {long_took:?} of {LONG:?}",
+        );
+
+        // ── the claim: LOOKING DOES NOT FOLLOW THE WINDOW ──
+        assert!(
+            long_looks <= short_looks + SLACK,
+            "⚠⚠⚠⚠⚠ THE WAIT IS POLLING THE SETTLE WINDOW. A {LONG:?} window cost {long_looks} \
+             looks where a {SHORT:?} one cost {short_looks} — the count follows the WINDOW, so the \
+             supervisor's published deadline is not being parked to. On the shipped settle that is \
+             ~200 screen reads for every change a waiting predicate sees, and every one of them \
+             takes the workspace lock. Register item 630",
+        );
+        assert!(
+            long_looks <= CEILING && short_looks <= CEILING,
+            "⚠⚠⚠ AND IT COSTS A HANDFUL OF LOOKS, NOT HUNDREDS. short {short_looks}, long \
+             {long_looks}, ceiling {CEILING}",
         );
     }
 
@@ -3635,6 +3793,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })
         }) as crate::access::AgentStateSource;
         let access =
@@ -3710,6 +3869,7 @@ mod tests {
                 said_seq: 0,
                 noticed: Some("Claude needs your permission to use Bash".to_string()),
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })
         }) as crate::access::AgentStateSource;
         let access =

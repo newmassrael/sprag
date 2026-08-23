@@ -71,7 +71,7 @@ use sprag_detect::{AgentState, Question};
 use sprag_terminal::PaneId;
 
 use crate::access::PaneAccess;
-use crate::run::{RunContext, Waited, park_until};
+use crate::run::{Look, RunContext, Waited, park_until};
 
 /// **HOW A TURN ENDED** — the answer [`Completion::wait`] gives, and the twin of
 /// [`Reached`](crate::readiness::Reached) at the other end of the same turn.
@@ -547,6 +547,31 @@ impl Listening {
         self.since.elapsed() >= self.within
     }
 
+    /// **WHEN THIS LISTENER'S SILENCE FALLS DUE** — the instant [`silent`](Self::silent) turns true
+    /// if nothing speaks before it, and register item 629's whole repair.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a wait with a silence bound could not park at all
+    ///
+    /// [`Over::Silent`] is a CLOCK predicate: it becomes true with no output whatever — that is
+    /// what silence IS — so a wait that parked on the pane would never wake to notice it, and
+    /// [`Over::Silent`] would be unreachable for exactly the peers it exists to catch. The wait
+    /// therefore handed its WHOLE bound over as a lag and degraded to
+    /// [`poll_until`](crate::run::poll_until) by name: a `quiet_within_ms` of ten minutes cost
+    /// ~60,000 screen reads at a pane nobody was going to hear from.
+    ///
+    /// The fix is not a cleverer cadence. **This listener has always known the instant** — it is
+    /// [`since`](Self::since) plus [`within`](Self::within), and nothing else — so it says so, and
+    /// [`park_until`] parks to it. Same shape as the supervisor's
+    /// [`AgentObservation::settling`](crate::access::AgentObservation::settling) (register item
+    /// 630), different clock, which is why they are two entries and one mechanism.
+    ///
+    /// ⚠ It MOVES whenever [`silent`](Self::silent) hears something, because the anchor does. A
+    /// caller that cached this would be waiting on a bound that expired for a peer which has since
+    /// spoken — which is why it is asked at every look rather than once.
+    fn due(&self) -> Instant {
+        self.since + self.within
+    }
+
     /// What this listener heard, for the ending it is about to publish.
     fn silence(&self) -> Silence {
         Silence {
@@ -775,6 +800,36 @@ impl Completion {
         }
     }
 
+    /// **WHEN THIS PANE'S VERDICT CAN CHANGE WITH NO FURTHER OUTPUT** — the supervisor's own
+    /// answer, and [`Settling::Nothing`](crate::access::Settling::Nothing) where there is no
+    /// supervisor to ask.
+    ///
+    /// # ⚠⚠⚠ Why an ABSENT supervisor is `Nothing` here and not `Unknown`
+    ///
+    /// [`Settling`](crate::access::Settling)'s whole argument is that *nothing is pending* and
+    /// *this build cannot say* must not share a word — and this fold is the one place the two are
+    /// genuinely the same, for a reason about the CALLER rather than about the surface. `Nothing`
+    /// means [`Look::Steady`], *park on the pane*, and a host with no
+    /// supervisor has no settling verdict for that park to sleep through: everything
+    /// [`ended`](Self::ended) can then answer rests on the screen and on end-of-file, both of which
+    /// move the pane.
+    ///
+    /// ⚠⚠ EVERYTHING THIS EVALUATOR WAITS ON RESTS ON EITHER THE VERDICT OR THE PANE — `satisfied`
+    /// pairs published counters, `asked` reads the published question, `pane_eof` reads the child.
+    /// So one deadline covers the contract, and a term added to [`ended`](Self::ended) with a clock
+    /// of its own would have to be added here in the same edit.
+    ///
+    /// ⚠ VISIBLE TO THE CRATE for the same reason [`ended`](Self::ended) is: a caller composing
+    /// this contract into a LARGER predicate — [`Orchestrator`](crate::orchestrator::Orchestrator)
+    /// unions it with a sentinel and a row trail — needs the deadline that belongs to it, and
+    /// deriving a second one beside it is how two answers about one pane come to disagree.
+    pub(crate) fn settles(&self, panes: &dyn PaneAccess, pane: PaneId) -> crate::access::Settling {
+        panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(pane))
+            .map_or(crate::access::Settling::Nothing, |seen| seen.settling)
+    }
+
     /// **HOW MANY TIMES ANYTHING HAS SPOKEN FOR `pane`**, or [`None`] where nothing here CAN be
     /// silent — no supervisor, no observation, or an observation nothing reported.
     ///
@@ -838,21 +893,21 @@ impl Completion {
         // after the screen stopped changing, then changes its answer with no further output. A wait
         // that parked on the bytes alone would sleep through exactly that.
         //
-        // ⛔⛔⛔ **AND A SILENCE BOUND IS A CLOCK INSIDE THE PREDICATE, SO A WAIT THAT HAS ONE
-        // CANNOT PARK AT ALL.** `Listening::silent` turns true `quiet` after the last report with
-        // no output whatever — that is what silence IS — so parking on the pane would make
-        // [`Over::Silent`] unreachable for exactly the peers it exists to catch. Handing the whole
-        // bound over as the lag is this function saying so: it degrades to [`poll_until`], by
-        // name, at the callers that ask about silence, and parks at the three that pass [`None`].
-        // ⚠ The residue, stated rather than hidden: a listening wait still pays the old rate. The
-        // repair is for a listener to publish WHEN its silence falls due, the way a settling
-        // detector could, and neither does today.
-        let lag = if quiet.is_some() {
-            within
-        } else {
-            sprag_detect::DEFAULT_SETTLE
-        };
-        let waited = park_until(run, panes, pane, within, lag, || {
+        // ⚠⚠⚠⚠⚠ **AND A SILENCE BOUND IS A CLOCK INSIDE THE PREDICATE — WHICH IS NOW A DEADLINE
+        // THIS WAIT PARKS TO, NOT A REASON IT CANNOT.** Register items 629 and 630, paid together
+        // because they are one shape. `Listening::silent` turns true `quiet` after the last report
+        // with NO OUTPUT WHATEVER — that is what silence IS — so a wait that only watched the pane
+        // would make [`Over::Silent`] unreachable for exactly the peers it exists to catch. The old
+        // answer was to hand the whole bound over as a lag and degrade to
+        // [`poll_until`](crate::run::poll_until) by name: a ten-minute `quiet_within_ms` cost
+        // ~60,000 screen reads at a pane nobody was going to hear from.
+        //
+        // Both clocks now PUBLISH instead: `Listening::due` says when the silence falls due, and
+        // the supervisor's `AgentObservation::settling` says when a
+        // pending verdict changes with no further output. The look below hands
+        // [`park_until`](crate::run::park_until) the EARLIER of the two, which is the one thing a
+        // scalar lag could never express — it had to take the larger and poll the difference.
+        let waited = park_until(run, panes, pane, within, || {
             // ⚠⚠⚠ THE CONTRACT IS ASKED FIRST. A turn that ENDED this poll ended — whatever its
             // reporter has been doing — and answering `Silent` about a peer that just came back to
             // rest would hand a finished turn to a person. The silence bound exists for the case
@@ -871,18 +926,31 @@ impl Completion {
             //
             // ⚠⚠ A test encoding a claim the product does not make is worse than none, so it is
             // gone rather than weakened until green.
+            //
+            // ⚠⚠⚠⚠ **THE SUPERVISOR'S DEADLINE IS TAKEN BEFORE THE VERDICT IS ASKED ABOUT**, and
+            // the order is the same lost-wakeup argument [`park_until`] makes about the pane
+            // revision. A candidate publishing BETWEEN the two reads must leave this closure
+            // holding a deadline that is already past — which buys one more look, where the new
+            // verdict is seen — rather than the `None` a later read would give, which buys none at
+            // all and parks over the very change being waited for.
+            let settles = self.settles(panes, pane);
             if let Some(over) = self.ended(panes, pane) {
                 ending = over;
-                return true;
+                return Look::Holds;
             }
             let Some(listening) = listening.as_mut() else {
-                return false;
+                // ⚠ No silence bound: the only clock inside this predicate is the supervisor's.
+                return settles.not_yet();
             };
             if listening.silent(self.spoken(panes, pane)) {
                 ending = Over::Silent(listening.silence());
-                return true;
+                return Look::Holds;
             }
-            false
+            // ⚠⚠⚠ TWO CLOCKS, AND THE EARLIER ONE IS THE DEADLINE — a wait woken by either still
+            // re-asks both, so taking the minimum can only cost a look that finds nothing, while
+            // taking the later one would sleep through the answer the earlier was about.
+            let due = listening.due();
+            Look::Settles(settles.due().map_or(due, |verdict| verdict.min(due)))
         });
         match waited {
             Waited::Ready => ending,
@@ -942,6 +1010,7 @@ mod tests {
             said_seq: 0,
             noticed: None,
             transcript: None,
+            settling: crate::access::Settling::Nothing,
         }));
         let source = {
             let reported = Arc::clone(&reported);
@@ -979,6 +1048,7 @@ mod tests {
             said_seq: 0,
             noticed: None,
             transcript: None,
+            settling: crate::access::Settling::Nothing,
         }));
         let source = {
             let reported = Arc::clone(&reported);
@@ -1219,6 +1289,161 @@ mod tests {
             Over::NotYet,
             "⚠⚠ THE CONTROL FAILED — `Over::Silent` must be unreachable for a caller that declared \
              no silence bound, by construction and not by arithmetic. Got {unasked:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A WAIT THAT LISTENS FOR SILENCE STILL PARKS ON THE PANE** — register item 629, and
+    /// the number nothing in this crate could see until now.
+    ///
+    /// # ⚠⚠⚠⚠ What it cost, and why the old code said so in its own comment
+    ///
+    /// Silence is a CLOCK predicate: it becomes true with no output whatever. So a wait handed a
+    /// [`Quiet`] bound could not park on the pane — it would never wake to notice — and
+    /// [`wait`](Completion::wait) said so by handing its WHOLE bound over as a lag, degrading to
+    /// [`poll_until`](crate::run::poll_until) by name. Its comment named the repair and left it
+    /// undone: *"the repair is for a listener to publish WHEN its silence falls due"*.
+    ///
+    /// [`Listening::due`] is that publication. The wait now parks to the earlier of the listener's
+    /// own deadline and the supervisor's, and this is what says so in looks rather than in prose.
+    ///
+    /// # ⚠⚠⚠⚠⚠ TWO ARMS AND A RATIO, because a ceiling alone can be met by a slower clock
+    ///
+    /// The same wait at two bounds a factor of four apart. **A polling wait costs four times as
+    /// many looks in the long arm however slowly it polls**; a parked one costs the same in both.
+    /// Register item 280's own gate makes this argument and this is it applied one caller along —
+    /// the caller that was explicitly excluded from that repair.
+    ///
+    /// ⚠ The absolute ceiling is asserted too and is the weaker of the two on purpose: two
+    /// enormous arms can satisfy a ratio.
+    ///
+    /// # ⚠⚠⚠⚠⚠ MEASURED 2026-08-24, BOTH SIDES OF THE REPAIR
+    ///
+    /// | turn bound | looks POLLED | looks PARKED |
+    /// |---|---|---|
+    /// | 400 ms | 205 | **5** |
+    /// | 1,600 ms | 795 | **5** |
+    ///
+    /// The polled column is this file with [`Listening::due`] mutated to answer `Instant::now()`,
+    /// which is what handing the whole bound over as a lag amounted to. On the ten-minute
+    /// `quiet_within_ms` a document may declare, that rate is ~300,000 screen reads.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND THE THIRD ARM IS THE ONE THAT MAKES THE OTHER TWO MEAN ANYTHING
+    ///
+    /// **Cheap and DEAF are the same reading when all you count is looks.** A wait that parked for
+    /// ever and never woke would post the best numbers this file can print — and it would make
+    /// [`Over::Silent`] unreachable, which is the exact defect the old lag existed to avoid and the
+    /// reason the repair was left undone for a round.
+    ///
+    /// So the third arm gives the same silent pane a bound INSIDE the wait and demands
+    /// [`Over::Silent`]. Nothing on that pane ever moves — `cat` waits on its input and prints
+    /// nothing — so the ONLY thing that can end it is the listener's own published deadline being
+    /// honoured. A mutant that answers [`Look::Steady`] where the code answers
+    /// [`Look::Settles`](crate::run::Look::Settles) parks straight past it and answers
+    /// [`Over::NotYet`].
+    #[test]
+    fn a_wait_that_listens_for_silence_parks_and_is_still_woken_by_its_own_bound() {
+        /// The short arm's turn bound.
+        const SHORT: Duration = Duration::from_millis(400);
+        /// The long arm's, four times it. ⚠ The FACTOR is what this gate reads, not either number.
+        const LONG: Duration = Duration::from_millis(1_600);
+        /// How many looks a listening wait may cost however long it lasts — **measured 5 in both
+        /// arms**, so this is set well above the reading rather than at it.
+        const CEILING: u64 = 16;
+        /// What the long arm may exceed the short one by — not zero, because two live panes are not
+        /// bit-identical. At the poll interval the gap between these arms is ~120 looks, so nothing
+        /// this size can hide a poll.
+        const SLACK: u64 = 8;
+
+        /// Wait out a silent peer with a silence bound FAR OUTSIDE `within`, so the wait ends on
+        /// the turn's clock and what is measured is the cost of getting there.
+        fn listened(within: Duration) -> (u64, Duration, Over) {
+            let (access, pane, reported) = supervised(AgentState::Working, 7);
+            // ⚠ Spoken once, so `reports` is not zero: a pane with no reporter cannot be silent at
+            // all (control two of the gate above), and this gate must be about one that can.
+            spoke(&reported);
+            let counted = crate::testing::Counted::new(access);
+            let mut done = Completion::new(DoneWhen::Settles);
+            done.begin(&counted, pane);
+            // ⚠ Counted from AFTER the arming look, so what the arming spent is somebody else's
+            // number.
+            let entered = counted.looks();
+            let began = Instant::now();
+            let over = done.wait(
+                &counted,
+                pane,
+                within,
+                Quiet::of(within * 8),
+                &RunContext::uncancellable(),
+            );
+            let took = began.elapsed();
+            let looked = counted.looks() - entered;
+            counted.lifecycle().expect("lifecycle").close(pane);
+            (looked, took, over)
+        }
+
+        let (short_looks, short_took, short_over) = listened(SHORT);
+        let (long_looks, long_took, long_over) = listened(LONG);
+
+        // ── the control: both arms really waited, so there is a wait to have looked during ──
+        assert_eq!(
+            (short_over, long_over),
+            (Over::NotYet, Over::NotYet),
+            "⚠⚠⚠ THE CONTROL: with the silence bound eight times the turn's, both waits must end \
+             on the TURN's clock. Anything else means this measured a different wait",
+        );
+        assert!(
+            short_took >= SHORT && long_took >= LONG,
+            "⚠⚠⚠ AND NEITHER ARM MAY SKIP THE WAIT — a wait that returns at once costs no looks \
+             either and would pass every assertion below. short {short_took:?} of {SHORT:?}; long \
+             {long_took:?} of {LONG:?}",
+        );
+
+        // ── the claim: LOOKING DOES NOT FOLLOW THE CLOCK ──
+        assert!(
+            long_looks <= short_looks + SLACK,
+            "⚠⚠⚠⚠⚠ A LISTENING WAIT IS STILL POLLING THE PANE. A {LONG:?} wait cost {long_looks} \
+             looks where a {SHORT:?} one cost {short_looks} — the count follows the CLOCK, so the \
+             silence bound is still being spent as a lag. On the ten-minute `quiet_within_ms` a \
+             document may declare, that rate is ~60,000 screen reads at a pane nobody is going to \
+             hear from. Register item 629",
+        );
+        assert!(
+            long_looks <= CEILING && short_looks <= CEILING,
+            "⚠⚠⚠ AND A LISTENING WAIT COSTS A HANDFUL OF LOOKS, NOT HUNDREDS. short \
+             {short_looks}, long {long_looks}, ceiling {CEILING}",
+        );
+
+        // ── ⛔ THE ARM THAT SEPARATES CHEAP FROM DEAF ──
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        spoke(&reported);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        let began = Instant::now();
+        let heard = done.wait(
+            &access,
+            pane,
+            LONG,
+            Quiet::of(SHORT),
+            &RunContext::uncancellable(),
+        );
+        let took = began.elapsed();
+        access.lifecycle().expect("lifecycle").close(pane);
+        assert_eq!(
+            heard,
+            Over::Silent(Silence {
+                reports: 1,
+                within: SHORT,
+            }),
+            "⛔⛔⛔⛔⛔ THE WAIT WENT DEAF INSTEAD OF CHEAP. This pane produces nothing at all, so \
+             the ONLY thing that can end this wait is the listener's own deadline being parked to \
+             and honoured — which is exactly what item 629 bought. A `NotYet` here means the wait \
+             parked straight past its silence bound, and the two arms above would still read as a \
+             triumph. Got {heard:?} after {took:?}",
+        );
+        assert!(
+            took < LONG,
+            "⚠⚠ and it must leave on the SILENCE bound rather than on the turn's — {took:?} \
+             against a turn bound of {LONG:?}",
         );
     }
 
@@ -1900,6 +2125,7 @@ mod tests {
                 said_seq: 0,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })));
         let source = {
             let seen = Arc::clone(&seen);
@@ -1988,6 +2214,7 @@ mod tests {
             said_seq: 0,
             noticed: None,
             transcript: None,
+            settling: crate::access::Settling::Nothing,
         });
         assert_eq!(
             done.wait(&access, pane, BOUND, None, &RunContext::uncancellable()),

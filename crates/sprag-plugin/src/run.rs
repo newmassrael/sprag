@@ -257,6 +257,60 @@ pub fn poll_until(
     }
 }
 
+/// **WHAT ONE LOOK AT A PANE FOUND** — and, when it found nothing, WHEN the answer could change
+/// with the pane standing perfectly still. The verdict [`park_until`]'s predicate answers.
+///
+/// # ⚠⚠⚠⚠⚠ Why a look answers TWO things, and why the second one had to stop being a `Duration`
+///
+/// [`park_until`] took a `lag` — *how long after the pane stops moving may this predicate still
+/// change* — and inside that window it degraded to [`poll_until`] by name. That was honest and it
+/// was expensive, because a lag is a bound and not a deadline: the shipped one is
+/// [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE), two seconds, so **every change a settling
+/// predicate saw cost about two hundred looks** at [`POLL_INTERVAL`]. Register items 629 and 630
+/// are that number, filed from two different callers.
+///
+/// The two callers turned out to be one shape: *whoever owns the clock knows the instant*. A
+/// supervisor's tracker has published [`pending_deadline`](sprag_detect::Tracker::pending_deadline)
+/// since it was written — *"this verdict changes at T"* — and a silence bound is a listener's own
+/// `since + within`. Neither could reach the wait, because a scalar lag has nowhere to put an
+/// instant, so both were rounded up to *poll the whole window*.
+///
+/// # ⚠⚠⚠ ONE closure, not two, and that is a measurement rather than a taste
+///
+/// The deadline is a property of the LOOK that found nothing: reading it costs the same screen and
+/// the same detector the predicate just paid for. A separate *when could this change* callback
+/// would take a second look to answer, so the seam that saves looks would spend one — and the two
+/// answers could disagree about which observation they came from. Answering both from one call
+/// makes that unrepresentable.
+///
+/// ⚠⚠ A caller that genuinely cannot say what its predicate rests on has a spelling and it is not
+/// silence: [`Settles`](Self::Settles) with `Instant::now() + POLL_INTERVAL` is the old behaviour,
+/// available on purpose, never reached by accident.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Look {
+    /// The predicate holds. The wait is over.
+    Holds,
+    /// It does not hold, and it CANNOT until the pane moves — the answer is a function of the
+    /// pane's bytes and of nothing else.
+    ///
+    /// ⚠ This is the arm that costs nothing: the wait parks on the change signal and looks again
+    /// only when there is something new to look at. `readiness::left_the_question` is deliberately
+    /// built to be answerable this way.
+    Steady,
+    /// It does not hold, and it can become true at this instant even if the pane never produces
+    /// another byte.
+    ///
+    /// ⚠⚠ **THE INSTANT IS THE PUBLISHER'S, NOT A GUESS.** A settling supervisor answers
+    /// [`Tracker::pending_deadline`](sprag_detect::Tracker::pending_deadline); a silence bound
+    /// answers when the silence falls due. A caller inventing one would be back to a lag with
+    /// better manners.
+    ///
+    /// ⚠ An instant already PAST is not an error and not a spin: it means *the answer is due and
+    /// nobody has confirmed it*, and the look that this buys is itself what confirms it — see
+    /// [`park_until`]'s note on why the confirming observation is the wait's own.
+    Settles(Instant),
+}
+
 /// **WAIT FOR A PANE TO MOVE, RATHER THAN ASKING IT WHETHER IT HAS** — [`poll_until`]'s sibling for
 /// the waits whose predicate is about one pane, and the answer to the debt register's oldest
 /// standing question.
@@ -275,7 +329,7 @@ pub fn poll_until(
 /// the looking itself the defect?"*. This function's answer is: it is not looking, it is waiting,
 /// and it looks when the pane gives it something to look at.
 ///
-/// # ⚠⚠⚠ `lag` — how long a predicate may go on changing after the pane has stopped
+/// # ⚠⚠⚠ The predicate says when it can change ON ITS OWN — [`Look`], and register items 629/630
 ///
 /// **Not every predicate about a pane is a function of the pane's bytes.** A supervisor's verdict
 /// SETTLES: `sprag_detect`'s tracker goes on calling a pane blocked for
@@ -283,17 +337,23 @@ pub fn poll_until(
 /// changes its answer with no further output at all. A wait that parked on the pane and never
 /// looked again would sleep out its whole bound over a question that had already been answered.
 ///
-/// So the CALLER declares it, because the caller is who knows what its predicate rests on:
+/// This used to be a `lag` — a WINDOW after each change, polled at [`POLL_INTERVAL`] from end to
+/// end, which is ~200 looks per change on the shipped settle. It is now the DEADLINE the publisher
+/// already knew:
 ///
-/// * [`Duration::ZERO`] — the predicate reads the screen and nothing else, so it cannot change
-///   while the screen does not. `readiness::left_the_question` is deliberately built this way.
-/// * [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) — the predicate rests on a supervisor's
-///   published verdict, which lags the pane by that window.
+/// * [`Look::Steady`] — nothing but the pane can change the answer. The wait parks and costs
+///   nothing at all.
+/// * [`Look::Settles(at)`](Look::Settles) — the answer is due at `at`. The wait parks until then
+///   and takes **one** look, instead of every look in between.
 ///
-/// ⚠⚠ Inside the lag this behaves EXACTLY as [`poll_until`] does, which is the honest reading of
-/// what the lag means: for that long after a change, asking is the only way to know. Outside it,
-/// the wait costs no look at all. A caller that cannot say what its predicate rests on should pass
-/// the settle and get a wait that is never wrong and sometimes slower.
+/// ⚠⚠⚠ **AND THE LOOK THAT A DEADLINE BUYS IS ITSELF THE CONFIRMING OBSERVATION**, which is why a
+/// past deadline cannot spin here. A supervisor's candidate publishes when it is next OBSERVED, and
+/// on this host observing is exactly what a look does (`plugins::agent_state_source` calls
+/// `AgentRegistry::observe` on the screen it renders). So the look taken at `at` resolves the
+/// candidate, the next look answers [`Look::Steady`], and the wait goes back to costing nothing.
+/// A host whose supervisor is driven from somewhere else degrades to one look per slice AFTER the
+/// deadline rather than for the whole window before it — strictly the old behaviour, minus the part
+/// that was always waste.
 ///
 /// # ⚠⚠ Cancellation is unchanged, and that is why the park is SLICED
 ///
@@ -317,8 +377,7 @@ pub fn park_until(
     panes: &dyn crate::access::PaneAccess,
     pane: sprag_terminal::PaneId,
     timeout: Duration,
-    lag: Duration,
-    mut predicate: impl FnMut() -> bool,
+    mut predicate: impl FnMut() -> Look,
 ) -> Waited {
     let start = Instant::now();
     let changes = panes.changes();
@@ -326,17 +385,24 @@ pub fn park_until(
     // would be counted as already seen, and the wait would park through the one event it was
     // waiting for — the lost-wakeup hazard, closed by taking the number first.
     let mut seen = changes.and_then(|source| source.pane_revision(pane));
-    // ⚠⚠ THE PANE IS ASSUMED TO HAVE MOVED THIS INSTANT, which is the conservative direction: a
-    // wait that begins immediately after the change it is about — every wait in this crate does —
-    // must spend its `lag` looking, or a verdict still settling from that change is missed.
-    let mut moved_at = Instant::now();
     let mut look = true;
+    // ⚠⚠ WHEN THE LAST LOOK SAID ITS ANSWER COULD CHANGE WITH THE PANE STILL — `None` until one
+    // has spoken, which is why the first pass always looks: a wait knows nothing about its own
+    // predicate until it has asked it once.
+    let mut settles: Option<Instant> = None;
     loop {
         if run.cancelled() {
             return Waited::Stopped;
         }
-        if look && predicate() {
-            return Waited::Ready;
+        if look {
+            match predicate() {
+                Look::Holds => return Waited::Ready,
+                // ⚠ CLEARED, not left standing. A deadline belongs to the observation that named
+                // it; carrying a spent one forward would keep waking a wait whose predicate has
+                // since gone back to resting on the pane alone.
+                Look::Steady => settles = None,
+                Look::Settles(at) => settles = Some(at),
+            }
         }
         if run.expired() {
             return Waited::Stopped;
@@ -352,34 +418,13 @@ pub fn park_until(
         // for as long as the pane stayed still, which is the one thing this repair must not buy.
         let slice = left.min(POLL_INTERVAL);
         match (changes, seen) {
-            // Still inside the window in which the predicate can change on its own — see `lag`.
-            // This is `poll_until`, deliberately and only for as long as the lag says.
-            //
-            // ⚠⚠⚠ **ONE POLL OF MARGIN, AND IT IS LOAD-BEARING RATHER THAN TIMID.** A settling
-            // verdict changes at EXACTLY `lag` after the pane last moved, so a window that ended
-            // at `lag` would take its final look microseconds before the answer arrived and then
-            // park for ever over it. The margin is this loop's own granularity — the one it
-            // already has, spelled once.
-            _ if moved_at.elapsed() < lag.saturating_add(POLL_INTERVAL) => {
-                // ⚠⚠ THE CHEAP READ IS STILL TAKEN, AND IT IS NOT A LOOK. Without it the window
-                // would be measured from the FIRST change of the wait rather than the LAST, so a
-                // verdict settling out of a later change would be missed the instant the lag ran
-                // out — the defect the lag exists to prevent, arriving one change along.
-                if let Some(now) = changes.and_then(|source| source.pane_revision(pane))
-                    && Some(now) != seen
-                {
-                    moved_at = Instant::now();
-                    seen = Some(now);
-                }
-                sleep(slice);
-                look = true;
-            }
             (Some(source), Some(at)) => {
                 let now = source.pane_moved_after(pane, at, slice);
-                look = now != Some(at);
-                if look {
-                    moved_at = Instant::now();
-                }
+                // ⚠⚠⚠ TWO REASONS TO LOOK, AND THEY ARE DIFFERENT FACTS. The pane MOVED, so there
+                // is new evidence; or the last look's own deadline has come, so the answer is due
+                // with no new evidence at all. Folding them into one condition is what the old
+                // `lag` did, and it cost every look in between.
+                look = now != Some(at) || settles.is_some_and(|due| Instant::now() >= due);
                 seen = now;
             }
             // ⚠ NO CHANGE SIGNAL, or a pane this surface does not know: the documented degradation.

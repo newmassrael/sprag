@@ -11,7 +11,7 @@
 //! [`Workspace`]; it stays pinion-free (the producer/control layer).
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
@@ -1121,6 +1121,72 @@ impl Authority {
     }
 }
 
+/// **WHEN A PUBLISHED VERDICT CAN CHANGE WITH THE PANE PRODUCING NOTHING AT ALL** — carried on
+/// [`AgentObservation::settling`], and the fact register item 630 was filed for.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is three answers and an `Option<Instant>` would have been a trap
+///
+/// A verdict SETTLES: `sprag_detect`'s tracker holds a CANDIDATE for
+/// [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) and then publishes it with no further output,
+/// and it has always known the instant. Carrying that instant lets
+/// [`park_until`](crate::run::park_until) take ONE look at it instead of polling the whole window
+/// — ~200 screen reads a change, at [`POLL_INTERVAL`](crate::run::POLL_INTERVAL).
+///
+/// The trap is the ABSENCE. Two different hosts have nothing to report here:
+///
+/// * one whose supervisor says *no candidate is waiting* — and a waiter may then park on the pane
+///   for ever, because nothing else can move the answer;
+/// * one that **cannot see a supervisor's candidates at all** — `RemotePaneAccess` reads a verdict
+///   off a wire that carries no deadline — where parking for ever sleeps straight through the
+///   publish.
+///
+/// Spelled `None` they are one word, and the second one is a **lost wakeup that only appears when
+/// somebody makes the remote surface parkable** (register item 631) — a defect planted today and
+/// paid for in a round that will have no reason to look here. This crate has the lesson written
+/// down twice over (*`None` is not `Some(0)`*, *an absence that carries the kernel's reason*), so
+/// the type carries it instead.
+///
+/// ⚠⚠ [`Unknown`](Self::Unknown) IS THE CONSERVATIVE ONE and it costs what the old wait cost: it
+/// asks again next slice. That is the honest degradation for a surface with no address for the
+/// deadline, and it goes away when the surface grows one — not before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settling {
+    /// **NOTHING IS PENDING**: this verdict stands until the pane moves.
+    ///
+    /// ⚠ A claim, not an absence. Only a surface that can SEE a supervisor's candidates may say it,
+    /// because a waiter is entitled to park on the pane and look no more.
+    Nothing,
+    /// A candidate is waiting and publishes at this instant, whatever the pane does in between.
+    At(Instant),
+    /// **THIS BUILD CANNOT SAY** — there may be a candidate and this surface has no address for its
+    /// deadline. A waiter degrades to asking again, which is what every wait did before item 630.
+    Unknown,
+}
+
+impl Settling {
+    /// When this verdict is next due, for a caller combining it with a clock of its own — `None`
+    /// meaning *nothing but the pane can change it*.
+    ///
+    /// ⚠ [`Unknown`](Self::Unknown) answers *now-ish* rather than `None`, which is the whole reason
+    /// the third arm exists: an unknown deadline must buy a look, and an absent one must not.
+    #[must_use]
+    pub fn due(self) -> Option<Instant> {
+        match self {
+            Self::Nothing => None,
+            Self::At(at) => Some(at),
+            Self::Unknown => Some(Instant::now() + crate::run::POLL_INTERVAL),
+        }
+    }
+
+    /// The [`Look`](crate::run::Look) a predicate that rests on this verdict owes when it does NOT
+    /// hold — the one conversion, so no caller has to decide what an absence means twice.
+    #[must_use]
+    pub fn not_yet(self) -> crate::run::Look {
+        self.due()
+            .map_or(crate::run::Look::Steady, crate::run::Look::Settles)
+    }
+}
+
 /// What the agent in one pane is doing, read as a LEVEL.
 ///
 /// Everything here is answered by a pull, deliberately. A supervisor driven by state-change EVENTS
@@ -1273,6 +1339,34 @@ pub struct AgentObservation {
     /// measured answering `0` for a session whose transcript existed and held the very number it
     /// reports (register item 431).
     pub transcript: Option<String>,
+    /// **WHEN THIS VERDICT CAN CHANGE WITH THE PANE PRODUCING NOTHING AT ALL** — see [`Settling`],
+    /// which is three answers because two of them would be a lost wakeup waiting to be written.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Register item 630: the publisher knew, and the waiter could not be told
+    ///
+    /// A verdict SETTLES. `sprag_detect`'s tracker holds a CANDIDATE for
+    /// [`DEFAULT_SETTLE`](sprag_detect::DEFAULT_SETTLE) before publishing it, and it has answered
+    /// [`Tracker::pending_deadline`](sprag_detect::Tracker::pending_deadline) — *"this changes at
+    /// T"* — since the day it was written. Nothing on this surface carried it, so every wait whose
+    /// predicate rested on the verdict had to round the deadline up to the WINDOW and poll the
+    /// whole of it: ~200 screen reads per change at
+    /// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL), for an answer whose exact due time was one
+    /// hash lookup away.
+    ///
+    /// With it, [`park_until`](crate::run::park_until) parks to the instant and takes ONE look —
+    /// see [`Look::Settles`](crate::run::Look::Settles), which is where this field is spent.
+    ///
+    /// # ⚠⚠⚠ An `Instant` inside it, and deliberately NOT a `Duration`
+    ///
+    /// A remaining-time reading has to be re-anchored by whoever receives it, and the anchor is a
+    /// second clock read at a different moment — so two waiters reading one observation would
+    /// compute two deadlines from it. An instant is the same fact for everybody who holds the
+    /// observation, and this surface is in-process (the host builds it beside the tracker that
+    /// owns the clock).
+    ///
+    /// ⚠⚠ **A SURFACE THAT CANNOT SEE CANDIDATES SAYS [`Settling::Unknown`], NEVER
+    /// [`Settling::Nothing`]** — see the type, which is where the whole argument lives.
+    pub settling: Settling,
 }
 
 /// Pane *supervision*: what the AGENT in a pane is doing. Reached via

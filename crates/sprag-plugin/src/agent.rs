@@ -1124,6 +1124,7 @@ mod tests {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    settling: crate::access::Settling::Nothing,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {
                             asked: vec!["Do you want to edit lib.rs?".to_string()],

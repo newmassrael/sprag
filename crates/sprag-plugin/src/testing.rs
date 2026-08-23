@@ -525,6 +525,12 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    // ⚠ A double SEES everything it models, so it can say `Nothing` rather than
+                    // `Unknown`: its verdict is whatever this closure computes from the fixture,
+                    // and nothing but the fixture moving can change it. Answering `Unknown` here
+                    // would make every gate built on these doubles measure the POLLING
+                    // degradation instead of the product — see `Counted::changes`.
+                    settling: crate::access::Settling::Nothing,
                 })
             })
         }) as AgentStateSource
@@ -587,6 +593,19 @@ pub(crate) fn peer_blocked_unreadably_settling(settle: Duration) -> (WorkspacePa
                 } else {
                     AgentState::Idle
                 },
+                // ⚠⚠⚠⚠⚠ **AND IT PUBLISHES THE INSTANT, WHICH IS WHAT A REAL TRACKER DOES** —
+                // register item 630. `sprag_detect::Tracker::pending_deadline` answers exactly
+                // this for a candidate waiting out its hysteresis, so a fixture that flipped on a
+                // clock and said `Settling::Nothing` would be a shape the PRODUCT cannot produce —
+                // and the gate built on it would be measuring a peer no host serves.
+                //
+                // ⚠⚠ `Nothing` after the flip, on the same terms: the verdict has published, so
+                // there is nothing further pending and a waiter may park on the pane again.
+                settling: if since.elapsed() < settle {
+                    crate::access::Settling::At(since + settle)
+                } else {
+                    crate::access::Settling::Nothing
+                },
                 agent: Some("claude".to_string()),
                 authority: Authority::Scraped {
                     rule: Some("dialog-choice-list".to_string()),
@@ -596,7 +615,7 @@ pub(crate) fn peer_blocked_unreadably_settling(settle: Duration) -> (WorkspacePa
                 reports: 0,
                 // ⚠⚠⚠ BLOCKED WITH NOTHING READABLE — the whole point. `peer_asking` answers
                 // `Some(None)`, so `moved_on` cannot compare sentences and has to ask the weaker
-                // question, which is the one with the lag.
+                // question, which is the one that rests on the supervisor's own clock.
                 asking: None,
                 asked: None,
                 said: None,
@@ -2178,6 +2197,12 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    // ⚠ A double SEES everything it models, so it can say `Nothing` rather than
+                    // `Unknown`: its verdict is whatever this closure computes from the fixture,
+                    // and nothing but the fixture moving can change it. Answering `Unknown` here
+                    // would make every gate built on these doubles measure the POLLING
+                    // degradation instead of the product — see `Counted::changes`.
+                    settling: crate::access::Settling::Nothing,
                 })
             })
         }) as AgentStateSource
@@ -2250,6 +2275,12 @@ impl DialogBetweenTheReads {
                     said_seq: 0,
                     noticed: None,
                     transcript: None,
+                    // ⚠ A double SEES everything it models, so it can say `Nothing` rather than
+                    // `Unknown`: its verdict is whatever this closure computes from the fixture,
+                    // and nothing but the fixture moving can change it. Answering `Unknown` here
+                    // would make every gate built on these doubles measure the POLLING
+                    // degradation instead of the product — see `Counted::changes`.
+                    settling: crate::access::Settling::Nothing,
                     // ⚠ `None` even while blocked: what this fixture stages is the ARM, and the
                     // arm's own doc says the question it carries is DROPPED — the barrier reads the
                     // pane again and its reading is the one an answer is decided from. A question
@@ -2321,6 +2352,7 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                 said_seq: 0,
                 noticed: None,
                 transcript: None,
+                settling: crate::access::Settling::Nothing,
             })
         })
     };
@@ -2364,6 +2396,7 @@ pub(crate) fn supervised_writing(
                 said_seq: 0,
                 noticed: None,
                 transcript: Some(said.clone()),
+                settling: crate::access::Settling::Nothing,
             })
         })
     };
