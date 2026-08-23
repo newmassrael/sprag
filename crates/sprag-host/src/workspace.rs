@@ -3080,6 +3080,17 @@ impl WorkspaceExternal {
                         if driven.contains(&p.id) {
                             entry[crate::wire::PANE_DRIVEN_KEY] = serde_json::json!(true);
                         }
+                        // ⚠⚠⚠⚠⚠ **AND WHETHER THE DAEMON BROUGHT IT BACK RATHER THAN ANYBODY ASKING
+                        // FOR IT** — register item 595, the half the key above cannot reach.
+                        //
+                        // A restart brings panes back ALIVE and runs back ENDED, so `driven` is
+                        // absent for EVERY agent pane afterwards: the conversation a person opened
+                        // by hand and the one the daemon revived unasked are the same undriven
+                        // `claude` prompt. This is read off the pane's own birth, which is the only
+                        // place the difference survives.
+                        if p.revived {
+                            entry[crate::wire::PANE_REVIVED_KEY] = serde_json::json!(true);
+                        }
                         entry
                     })
                     .collect();
@@ -4234,6 +4245,112 @@ mod tests {
             "⛔⛔⛔ ITEM 595: this run is OVER and its pane is still here holding whatever the agent \
              left in it. Nobody is driving it, and a pane that says otherwise is the revived-agent \
              confusion wearing the fix's clothes",
+        );
+    }
+
+    /// A pane a RESTORE brought back says so, and one a person opened does not.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE HALF `driven` CANNOT REACH** — register item 595, whose other half is the gate
+    /// above. `driven` answers *is a run driving this pane RIGHT NOW*, and after a restart the
+    /// answer is `no` for every agent pane in the daemon: runs come back ENDED
+    /// (`runs::EndedRun::restored`) while panes come back ALIVE, so the restore is asymmetric by
+    /// construction and no join over live runs can tell the two apart. The pane a person opened by
+    /// hand to talk to an agent and the pane the daemon re-ran out of a snapshot are, at that
+    /// point, the same undriven `claude` — and only one of them is a conversation somebody asked
+    /// for.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE SECOND PANE AND IT IS BORN AFTER THE RESTORE, deliberately.** Both
+    /// panes run the same program at the same size in the same workspace and are read out of the
+    /// same answer; the only difference between them is HOW THEY WERE BORN. A key that appeared on
+    /// both would be reporting that a daemon had restarted, which the daemon knows without asking a
+    /// pane, and a key on neither leaves the two pictures as indistinguishable as they are today.
+    ///
+    /// ⚠ **THE RESTORE IS REAL RATHER THAN STAMPED.** The snapshot is replayed through
+    /// `Host::restore`, so what is under test is the birth the daemon actually performs at boot. A
+    /// fixture that set the field by hand would pass over a `restore` that had stopped setting it,
+    /// which is the one path this fact exists for. `cat` is allowlisted so the restore RE-RUNS the
+    /// recorded command rather than falling back to a shell — the agent case, and what makes the
+    /// two panes below the same program.
+    #[test]
+    fn a_pane_the_daemon_revived_says_so_and_one_a_person_opened_does_not() {
+        let snapshot = sprag_terminal::Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 1,
+            default_size: (80, 24),
+            sessions: vec![sprag_terminal::SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![sprag_terminal::WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: sprag_terminal::LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![sprag_terminal::PaneSnapshot {
+                        id: sprag_terminal::PaneId(0),
+                        cwd: None,
+                        command_label: "cat".to_owned(),
+                        argv: vec!["cat".to_owned()],
+                        agent_session: None,
+                        remote: None,
+                        opened_by: None,
+                        name: None,
+                        cols: 80,
+                        rows: 24,
+                    }],
+                    manual_size: None,
+                    active: None,
+                    zoomed: None,
+                    opened_by: None,
+                }],
+            }],
+        };
+
+        let host = crate::host::Host::new((80, 24));
+        assert_eq!(
+            host.restore(
+                snapshot,
+                &["cat".to_owned()].into_iter().collect(),
+                |_| None,
+                || None,
+                || None,
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores"),
+            1,
+            "the recorded pane came back, which is the precondition and not the claim",
+        );
+
+        let scope = SessionScope::unscoped(host.registry());
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(host.registry()),
+            scope,
+            Arc::new(ChannelRegistry::default()),
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+                runs: None,
+            },
+        );
+        // And a person opens one beside it, through the door a client really uses.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a hand-opened pane");
+
+        assert_eq!(
+            pane_entry(&mut ext, 0)[crate::wire::PANE_REVIVED_KEY],
+            json!(true),
+            "⛔⛔⛔ ITEM 595: the daemon re-ran this pane's command out of a snapshot and the pane \
+             does not say so. For an allowlisted agent that means an old conversation is live again \
+             with nobody driving it — measured three times in one day, the last with `sprag runs` \
+             reporting no running run beside three live `claude` processes",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1).get(crate::wire::PANE_REVIVED_KEY),
+            None,
+            "⚠⚠⚠⚠⚠ THE CONTROL: a person opened this one, and the key must be ABSENT rather than \
+             `false` — the neighbouring `driven` states the rule and the reason, and a key that \
+             said `true` here would be reporting the daemon's restart rather than this pane's birth",
         );
     }
 

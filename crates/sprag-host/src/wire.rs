@@ -4468,6 +4468,27 @@ pub const PANES_SLOT: &str = "panes";
 /// every shell in a workspace is noise on the common path, and noise is what gets skimmed past on
 /// the one pane it matters for.
 pub const PANE_DRIVEN_KEY: &str = "driven";
+/// The [`PANES_SLOT`] member saying **THE DAEMON RE-RAN THIS PANE OUT OF A SNAPSHOT** — register
+/// item 595, present only for a pane a restore gave birth to and absent for one a person or a run
+/// opened.
+///
+/// # ⛔⛔⛔ The half [`PANE_DRIVEN_KEY`] cannot reach
+///
+/// `driven` answers *is a run driving this pane right now*, and after a restart that answer is `no`
+/// for every agent pane in the daemon: **panes come back alive and runs come back ended**
+/// (`crate::runs::EndedRun::restored`), so no join over live runs can separate the conversation a
+/// person opened by hand from the one the daemon revived without being asked. Both are an undriven
+/// `claude` prompt holding context, and only one of them was wanted.
+///
+/// ⚠⚠ **IT REPORTS A BIRTH, NOT A STATE.** A pane is revived once, at boot, and stays the pane that
+/// was revived for as long as it lives — the same shape as the opener a spawn records. That is why
+/// it is stamped where the pane is born rather than derived at read time: nothing later in the
+/// pane's life could recover how it started.
+///
+/// ⚠ ABSENT rather than `false`, on [`PANE_DRIVEN_KEY`]'s stated terms — and here with a second
+/// reason: a `revived: true` on every pane after a restart would be reporting that the daemon had
+/// restarted, which the daemon knows without asking a pane.
+pub const PANE_REVIVED_KEY: &str = "revived";
 /// The member of a [`PANES_SLOT`] entry that is an ADDRESS: the pane's id, which is what a client
 /// puts back into [`pane_input_path`] to read or drive that pane.
 ///

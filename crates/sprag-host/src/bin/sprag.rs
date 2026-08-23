@@ -194,10 +194,10 @@ use sprag_host::wire::{
     DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW, ENDED_KEY, GRANT_PANE_ACTION, JOIN_PANE_ACTION,
     KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, LineBreaks, MOVE_PANE_ACTION,
     MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM,
-    PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
-    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
+    PANE_DRIVEN_KEY, PANE_PARAM, PANE_REVIVED_KEY, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT,
+    PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION,
+    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
     SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
     TREE_SLOT, UNSIGNALLED_KEY, UNSIGNALLED_WHICH_KEY, UNSIGNALLED_WHY_KEY, WINDOWS_SLOT,
@@ -3814,90 +3814,133 @@ fn panes(args: Vec<String>) -> io::Result<()> {
     // The whole entry, not just the id — this is the one command whose subject is the LIST, so it
     // reads the slot directly rather than through `pane_ids`.
     for pane in listed.as_array().into_iter().flatten() {
-        let id = pane["id"].as_u64().unwrap_or_default();
-        let cols = pane["cols"].as_u64().unwrap_or(0);
-        let rows = pane["rows"].as_u64().unwrap_or(0);
-        let command = pane["command"].as_str().unwrap_or("?");
-        // The name a PERSON gave the pane, absent for one nobody named. It sits ahead of the title
-        // and is quoted differently on purpose: the two are the opposite kind of fact. This one is
-        // IDENTITY — unique across the daemon, and what an agent addresses the pane by — where the
-        // title is a display name the child rewrites on every prompt. A reader who cannot tell them
-        // apart at a glance would eventually type one where the other was meant.
-        // QUOTED, and that is not decoration. A name may contain spaces, so `name=my build` cannot
-        // be read back by anything — and this listing IS a machine-readable contract (its leading
-        // field feeds every other verb). `{:?}` is total here because a name can hold no control
-        // character, so the only escapes it can produce are `\"` and `\\`.
-        let name = match pane["name"].as_str() {
-            Some(name) => format!("  name={name:?}"),
-            None => String::new(),
-        };
-        // The child's live OSC 0/2 title, absent until it sets one — a DISPLAY name, never
-        // identity, so it trails the command rather than replacing it.
-        let title = match pane["title"].as_str() {
-            Some(title) if !title.is_empty() => format!("  [{title}]"),
-            _ => String::new(),
-        };
-        // The ACTIVE pane, marked the way tmux's own `list-panes` marks it — TRAILING, because
-        // this listing's leading field is a contract (`cut -d: -f1` feeds these ids to every other
-        // verb) and a marker in front of the id would break it. Exactly one row can carry it:
-        // these rows are one window's panes.
-        let active = if pane["active"] == json!(true) {
-            "  (active)"
-        } else {
-            ""
-        };
-        // WHO ASKED for this pane, absent for one nobody claims — which is every pane a person made.
-        // It is what tells an operator that a pane appeared because an agent asked for it, and which
-        // agent's pane to go and read; without it an agent-opened pane is indistinguishable from one
-        // the operator made and forgot.
-        //
-        // The opener is named by ID and carries no liveness note, deliberately: this listing is ONE
-        // window's panes, so an opener sitting in another window (or another session — ids are
-        // registry-unique) is absent here while being perfectly alive, and a "(gone)" derived from
-        // this list would be a confident lie. Saying whether it still exists needs a second read at a
-        // different scope, which is the two-instant join `layout` is a separate verb to avoid.
-        let opened_by = match pane["opened_by"].as_u64() {
-            Some(opener) => format!("  opened by pane {opener}"),
-            None => String::new(),
-        };
-        // ⚠⚠⚠⚠⚠ WHETHER THE PANE'S CHILD IS STILL THERE — register item 418, and the omission cost
-        // a person their model of the product. A dead pane printed byte-identically to a live one,
-        // so somebody typed `Esc` at a terminal with no program on it, watched nothing happen, and
-        // reported that the KEY was broken. The daemon had known all along: `dead` rides this very
-        // row (additive and one-way), the GUI's title has said it since the marker existed, and
-        // THIS listing — the one a person greps — dropped it on the floor.
-        //
-        // ⚠⚠ The words are `sprag_terminal::exit_phrase`'s, not spelled again here: the GUI and this
-        // are two placings of one vocabulary, and a second spelling is how a signalled death becomes
-        // `exited 1` on one surface and `killed: Terminated` on the other.
-        //
-        // ⚠ LAST on the row, after `(active)`, because it is the most final thing that can be said
-        // about a pane — the GUI's title orders the same three facts the same way, by increasing
-        // finality — and because a dead pane can still be the ACTIVE one, so the two do not compete
-        // for a position. Absent for a live pane, which keeps this listing byte-identical to the
-        // shape every script parsing it was written against.
-        //
-        // ⚠ `child_exit` is rebuilt from its two published fields rather than deserialised: the
-        // daemon writes `{code, signal?}` by hand there (`PaneExit` carries no serde derive, on
-        // purpose — it crosses the wire as a shape the host owns), and a pane can be `dead` with no
-        // `child_exit` at all, which is the not-yet-reaped state `exit_phrase` takes `None` for.
-        let exited = if pane["dead"] == json!(true) {
-            let how = pane["child_exit"]
-                .as_object()
-                .map(|exit| sprag_terminal::PaneExit {
-                    code: exit.get("code").and_then(Value::as_u64).unwrap_or(0) as u32,
-                    signal: exit
-                        .get("signal")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                });
-            format!("  ({})", sprag_terminal::exit_phrase(how.as_ref()))
-        } else {
-            String::new()
-        };
-        println!("{id}: {cols}x{rows}  {command}{name}{title}{opened_by}{active}{exited}");
+        println!("{}", pane_row(pane));
     }
     Ok(())
+}
+
+/// ONE pane's row of [`panes`], built as a string rather than printed — so something other than a
+/// human eye can read what a person reads.
+///
+/// ⚠⚠⚠⚠⚠ **IT IS A FUNCTION BECAUSE THIS ROW HAD NO OTHER READER** — register item 595, and the
+/// shape register item 418 already paid for here: a fact can ride the wire, be asserted at the
+/// daemon, and still never reach the listing a person greps, because nothing in the suite has ever
+/// looked at that listing. Every marker below is additive and absent by default, which keeps the
+/// row byte-identical for every script written against it — and is exactly why an omission here is
+/// invisible until somebody reports the product as broken.
+fn pane_row(pane: &Value) -> String {
+    let id = pane["id"].as_u64().unwrap_or_default();
+    let cols = pane["cols"].as_u64().unwrap_or(0);
+    let rows = pane["rows"].as_u64().unwrap_or(0);
+    let command = pane["command"].as_str().unwrap_or("?");
+    // The name a PERSON gave the pane, absent for one nobody named. It sits ahead of the title
+    // and is quoted differently on purpose: the two are the opposite kind of fact. This one is
+    // IDENTITY — unique across the daemon, and what an agent addresses the pane by — where the
+    // title is a display name the child rewrites on every prompt. A reader who cannot tell them
+    // apart at a glance would eventually type one where the other was meant.
+    // QUOTED, and that is not decoration. A name may contain spaces, so `name=my build` cannot
+    // be read back by anything — and this listing IS a machine-readable contract (its leading
+    // field feeds every other verb). `{:?}` is total here because a name can hold no control
+    // character, so the only escapes it can produce are `\"` and `\\`.
+    let name = match pane["name"].as_str() {
+        Some(name) => format!("  name={name:?}"),
+        None => String::new(),
+    };
+    // The child's live OSC 0/2 title, absent until it sets one — a DISPLAY name, never
+    // identity, so it trails the command rather than replacing it.
+    let title = match pane["title"].as_str() {
+        Some(title) if !title.is_empty() => format!("  [{title}]"),
+        _ => String::new(),
+    };
+    // The ACTIVE pane, marked the way tmux's own `list-panes` marks it — TRAILING, because
+    // this listing's leading field is a contract (`cut -d: -f1` feeds these ids to every other
+    // verb) and a marker in front of the id would break it. Exactly one row can carry it:
+    // these rows are one window's panes.
+    let active = if pane["active"] == json!(true) {
+        "  (active)"
+    } else {
+        ""
+    };
+    // WHO ASKED for this pane, absent for one nobody claims — which is every pane a person made.
+    // It is what tells an operator that a pane appeared because an agent asked for it, and which
+    // agent's pane to go and read; without it an agent-opened pane is indistinguishable from one
+    // the operator made and forgot.
+    //
+    // The opener is named by ID and carries no liveness note, deliberately: this listing is ONE
+    // window's panes, so an opener sitting in another window (or another session — ids are
+    // registry-unique) is absent here while being perfectly alive, and a "(gone)" derived from
+    // this list would be a confident lie. Saying whether it still exists needs a second read at a
+    // different scope, which is the two-instant join `layout` is a separate verb to avoid.
+    let opened_by = match pane["opened_by"].as_u64() {
+        Some(opener) => format!("  opened by pane {opener}"),
+        None => String::new(),
+    };
+    // ⚠⚠⚠⚠⚠ WHETHER THE PANE'S CHILD IS STILL THERE — register item 418, and the omission cost
+    // a person their model of the product. A dead pane printed byte-identically to a live one,
+    // so somebody typed `Esc` at a terminal with no program on it, watched nothing happen, and
+    // reported that the KEY was broken. The daemon had known all along: `dead` rides this very
+    // row (additive and one-way), the GUI's title has said it since the marker existed, and
+    // THIS listing — the one a person greps — dropped it on the floor.
+    //
+    // ⚠⚠ The words are `sprag_terminal::exit_phrase`'s, not spelled again here: the GUI and this
+    // are two placings of one vocabulary, and a second spelling is how a signalled death becomes
+    // `exited 1` on one surface and `killed: Terminated` on the other.
+    //
+    // ⚠ LAST on the row, after `(active)`, because it is the most final thing that can be said
+    // about a pane — the GUI's title orders the same three facts the same way, by increasing
+    // finality — and because a dead pane can still be the ACTIVE one, so the two do not compete
+    // for a position. Absent for a live pane, which keeps this listing byte-identical to the
+    // shape every script parsing it was written against.
+    //
+    // ⚠ `child_exit` is rebuilt from its two published fields rather than deserialised: the
+    // daemon writes `{code, signal?}` by hand there (`PaneExit` carries no serde derive, on
+    // purpose — it crosses the wire as a shape the host owns), and a pane can be `dead` with no
+    // `child_exit` at all, which is the not-yet-reaped state `exit_phrase` takes `None` for.
+    let exited = if pane["dead"] == json!(true) {
+        let how = pane["child_exit"]
+            .as_object()
+            .map(|exit| sprag_terminal::PaneExit {
+                code: exit.get("code").and_then(Value::as_u64).unwrap_or(0) as u32,
+                signal: exit
+                    .get("signal")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
+        format!("  ({})", sprag_terminal::exit_phrase(how.as_ref()))
+    } else {
+        String::new()
+    };
+    // ⚠⚠⚠⚠⚠ **HOW THIS PANE WAS BORN, AND WHETHER ANYTHING HAS IT NOW** — register items 595
+    // and 602, and the pair only says anything TOGETHER.
+    //
+    // A daemon restart re-runs an allowlisted agent's argv, so a `claude` pane comes back
+    // holding its old conversation; and it comes back UNDRIVEN, because a restart brings panes
+    // back alive and runs back ended. On this listing that pane used to print byte-identically
+    // to the `claude` a person opened on purpose and to the one a loop is mid-turn in — three
+    // very different things, one row. Measured 2026-08-22, three times in one day, the last
+    // with `sprag runs` reporting no running run beside three live `claude` processes.
+    //
+    // ⚠⚠ ORDERED THE WAY THE PANE HAPPENED: who asked for it, how it was born, what holds it
+    // now. `(revived)` with no `(driven)` beside it is the orphan — an agent nobody asked for,
+    // holding tokens and context — and reading that off one row is the whole point of putting
+    // the two markers next to each other rather than on separate verbs.
+    //
+    // ⚠ Both absent rather than `false`, which is the rule the wire keys state and the reason
+    // is the same one step later: a `(not driven)` on every shell in the workspace is noise on
+    // the common path, and noise is what gets skimmed past on the row that matters.
+    let revived = if pane[PANE_REVIVED_KEY] == json!(true) {
+        "  (revived)"
+    } else {
+        ""
+    };
+    let driven = if pane[PANE_DRIVEN_KEY] == json!(true) {
+        "  (driven)"
+    } else {
+        ""
+    };
+    format!(
+        "{id}: {cols}x{rows}  {command}{name}{title}{opened_by}{revived}{driven}{active}{exited}"
+    )
 }
 
 /// `layout [-t SESSION]`: WHERE the scoped session's current window puts its panes — the
@@ -8666,6 +8709,56 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The listing a PERSON greps tells a revived agent, a driven one, and a plain pane apart.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE DAEMON HAD ALREADY ANSWERED THIS AND THE ANSWER STOPPED AT THE WIRE** — register
+    /// items 595 and 602. The two keys are published by the host and asserted at the host, and
+    /// until this test existed NOTHING outside `wire.rs` read either of them: `sprag panes` built
+    /// its row without ever looking, so the three panes below printed identically to the one person
+    /// the fact was for. That is register item 418's failure exactly, one fact later.
+    ///
+    /// ⚠⚠ **THE THIRD ROW IS THE CONTROL AND IT CARRIES THE WHOLE CLAIM.** All three rows are the
+    /// same program at the same size built by the same function; a marker that appeared on the
+    /// plain one would be decoration, and one that appeared on none would leave the row as silent
+    /// as it was. The pairing is asserted too — `(revived)` WITHOUT `(driven)` is the orphan, and
+    /// it is the combination rather than either word that a person acts on.
+    #[test]
+    fn the_pane_listing_tells_a_revived_agent_from_a_driven_one_and_from_a_plain_pane() {
+        let row = |extra: Value| {
+            let mut pane = json!({"id": 7, "cols": 80, "rows": 24, "command": "claude"});
+            for (key, value) in extra.as_object().expect("an object of extra keys") {
+                pane[key] = value.clone();
+            }
+            pane_row(&pane)
+        };
+
+        let orphan = row(json!({PANE_REVIVED_KEY: true}));
+        assert!(
+            orphan.contains("(revived)") && !orphan.contains("(driven)"),
+            "⛔⛔⛔ ITEM 595: the daemon re-ran this agent out of a snapshot and nothing is driving \
+             it, and the row a person greps says neither. The whole harm is that this pane looks \
+             exactly like the one they opened on purpose — the row was: {orphan:?}",
+        );
+
+        let working = row(json!({
+            PANE_REVIVED_KEY: true,
+            PANE_DRIVEN_KEY: true,
+        }));
+        assert!(
+            working.contains("(revived)") && working.contains("(driven)"),
+            "⚠⚠⚠⚠ A RESTORED SEAT A RUN PICKED UP IS NOT AN ORPHAN, and the row has to be able to \
+             say both at once or the reader cannot tell it from the one above: {working:?}",
+        );
+
+        let plain = row(json!({}));
+        assert!(
+            !plain.contains("(revived)") && !plain.contains("(driven)"),
+            "⚠⚠⚠⚠⚠ THE CONTROL: a person opened this one and nothing is driving it, so both \
+             markers must be ABSENT rather than negated — a row that marked every pane would be \
+             reporting that the daemon had restarted: {plain:?}",
+        );
+    }
 
     /// ⚠⚠⚠⚠⚠ **A DAEMON THAT CANNOT SAY WHICH BUILD IT IS, IS NOT A DAEMON THAT MATCHES** — the one
     /// sentence `sprag_rpc::BUILD_FIELD`'s whole argument for needing no protocol bump rests on.

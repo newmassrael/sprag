@@ -144,6 +144,29 @@ pub struct Pane {
     /// agent-opened pane whose opener has closed is closable by no agent under either rule, and only
     /// a person's `sprag kill-pane` removes it. Keeping the id at least says WHO to ask.
     opened_by: Option<PaneId>,
+    /// **WHETHER A RESTORE GAVE THIS PANE ITS PROCESS** — `true` only for a pane
+    /// [`spawn_restored`](Workspace::spawn_restored) brought back, `false` for every pane a person
+    /// or a run opened.
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT IS THE ONLY THING THAT SEPARATES A REVIVED AGENT FROM A WANTED ONE** — register
+    /// item 595. A daemon restart re-runs an allowlisted argv, so a `claude` pane comes back holding
+    /// its old conversation; asking *is a run driving it* cannot separate the two, because a restart
+    /// brings panes back ALIVE and runs back ENDED, leaving every agent pane undriven. Measured
+    /// 2026-08-22, three times in one day, the last with no running run beside three live `claude`
+    /// processes.
+    ///
+    /// It is a fact of the BIRTH, so nothing later in the pane's life could recompute it — which is
+    /// why it is a field rather than something the pane list derives. It is deliberately NOT
+    /// snapshotted: a snapshot records what a pane WAS, and whether the pane in front of you was
+    /// re-run is a fact of THIS daemon's boot, exactly as its environment and instrumentation are
+    /// (`spawn_restored` re-derives both for that reason). A snapshot of a restored pane restored
+    /// again is revived again, which is true.
+    ///
+    /// ⚠⚠ **AND IT MUST NOT FOLLOW A REPLACEMENT**, on [`agent_session`](Self::agent_session)'s
+    /// terms: `respawn` runs the command afresh in THIS daemon because something asked it to, so the
+    /// occupant of that seat is wanted even though the seat came back from a snapshot. Carrying it
+    /// would make a loop's own restart look like an orphan forever.
+    revived: bool,
     /// Which cgroup this pane's processes ARE in, as the three ids that spell it — or WHY there is
     /// no such cgroup, which is two different answers and not one.
     ///
@@ -257,6 +280,14 @@ impl Pane {
     #[must_use]
     pub fn opened_by(&self) -> Option<PaneId> {
         self.opened_by
+    }
+
+    /// Whether a RESTORE gave this pane its process — `true` only for a pane
+    /// [`spawn_restored`](Workspace::spawn_restored) brought back out of a snapshot. See the
+    /// [field](Self::revived) for what rests on it.
+    #[must_use]
+    pub fn revived(&self) -> bool {
+        self.revived
     }
 
     /// The name of the conversation this pane's launch joined, `None` for a pane that is not a named
@@ -418,6 +449,10 @@ impl Seat {
             argv: _,
             env: _,
             agent_session: _,
+            // ⚠ On `agent_session`'s terms exactly, stated above: the seat may have come back from a
+            // snapshot, but the REPLACEMENT was asked for by whatever called `respawn`, so carrying
+            // this would leave a loop's own restart reading as an orphan for the pane's whole life.
+            revived: _,
             home: _,
         } = pane;
         Self {
@@ -520,6 +555,14 @@ pub struct PaneInfo {
     /// makes it usable as the thing an agent surface gates a destructive verb on: a reader that
     /// acts on it cannot be acting on a fact that changed under it.
     pub opened_by: Option<u64>,
+    /// Whether a RESTORE gave this pane its process — see [`Pane::revived`], which this republishes
+    /// verbatim.
+    ///
+    /// Fixed at birth like [`Self::opened_by`] beside it, and for the same reason a reader can act
+    /// on it: it names how the pane in front of you started, which nothing later can change. What
+    /// rests on it is register item 595 — telling an agent somebody opened from one the daemon
+    /// re-ran unasked, which no question about live runs can answer after a restart.
+    pub revived: bool,
 }
 
 /// [`PaneHooks`] for a pane that DOES NOT EXIST YET — the form a spawn site can supply, where the
@@ -1143,6 +1186,8 @@ impl Workspace {
             agent_session,
             remote: None,
             opened_by: None,
+            // A person or a run asked for this one, which is what the fresh-spawn door MEANS.
+            revived: false,
             name: None,
             home,
             grant: None,
@@ -1296,6 +1341,11 @@ impl Workspace {
             agent_session,
             remote: None,
             opened_by: None,
+            // ⚠⚠⚠⚠⚠ **THE ONE PLACE THIS IS TRUE**, and it is a constant rather than a parameter for
+            // that reason: every pane born through this door was re-run out of a snapshot, so a
+            // caller able to pass `false` would be a caller able to hide an orphan. See the
+            // [field](Pane::revived).
+            revived: true,
             name: None,
             home,
             grant: None,
@@ -1570,6 +1620,7 @@ impl Workspace {
                     clipboard_query_seq,
                     images: p.images(),
                     opened_by: p.opened_by.map(|opener| opener.0),
+                    revived: p.revived,
                 }
             })
             .collect()
