@@ -39,6 +39,15 @@ serde_json = { workspace = true }
 # handing in an engine that answers differently about one variable, which is a fixture this crate
 # can only build because the engine is a parameter.
 sce-rust-lua = { workspace = true }
+# ⚠⚠⚠⚠⚠ THE COMPILER OF `ai_loop.scxml`, AS A DEV DEPENDENCY TOO — register item 547.
+#
+# It is already this crate's BUILD dependency (above), and a build dependency cannot be driven by a
+# test: `build.rs` runs it once and a gate about WHEN it refuses has nothing to hold. The refusal
+# under test is `scxml_exhaustiveness::validate`'s, and it fires on a precondition an unrelated edit
+# can flip — so a round editing the loop's document can be refused for events it never touched.
+#
+# ⚠ Naming it twice costs nothing to build: the same pinned rev, already compiled for this crate.
+sce-build = { workspace = true }
 
 [build-dependencies]
 # Build-time codegen: orchestration.scxml -> OUT_DIR/orchestration_sm.rs.

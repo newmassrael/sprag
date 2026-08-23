@@ -3957,6 +3957,28 @@
     sentence that arrives mid-turn and changes what the next decision point does.
     Each is a state here, not another boolean somewhere.
   -->
+  <!--
+    ⚠⚠⚠⚠⚠ BEFORE ADDING AN EVENT TO EITHER CHILD BELOW, READ THIS. Register item 547.
+
+    `standing` answers `hold`, `stand.down` and `resume`; `held` answers none of them. That
+    asymmetry is deliberate and it has compiled every round since the region was written — because
+    SCE's handler-consistency check SKIPS a compound entirely until one event exists that EVERY
+    transition-carrying sibling matches. While no such event exists, the three gaps are invisible.
+
+    The moment one appears, all of them are reported at once, and the message names THE OLD THREE
+    rather than the line you just wrote. Measured 2026-08-21: adding `hold.expired` to `held` did
+    exactly that; renaming it to `abandon` compiled again.
+
+    THE RULE A ROUND APPLIES BEFORE EDITING: an event is dangerous here when a sibling already
+    answers any PREFIX of it. SCXML matching is by prefix, so `standing`'s bare `hold` matches
+    `hold.expired` — the token that flips this compound need not be spelled anywhere in it.
+
+    ⛔⛔ AND `sce:unhandled` CANNOT BE ARMED IN ADVANCE: a declaration is judged against the same
+    gap map the precondition gates, so declaring these three today is refused as stale. There is no
+    way to make this compound safe ahead of time; the three gates in
+    `tests/when_the_engine_refuses_a_compound_it_was_tolerating.rs` drive all of it against the
+    pinned engine, so a pin bump that changes any of it goes red rather than silent.
+  -->
   <state id="orders" initial="standing">
 
     <!--
