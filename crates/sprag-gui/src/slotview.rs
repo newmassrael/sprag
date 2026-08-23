@@ -1878,4 +1878,104 @@ mod tests {
         );
         assert_eq!(view.occupied_slots(), vec![0, 1, 2, 3]);
     }
+
+    /// ⛔⛔⛔ **HOW THE SHIPPED CLIENT RE-SEEDS FOCUS, WHICH IS NOT HOW THE IN-PROCESS ONE DOES** —
+    /// register item 612, judged rather than left UNMEASURED.
+    ///
+    /// # What was open
+    ///
+    /// Two mutations left the whole pixel smoke green (312 checks, release build, 2026-08-22):
+    /// dropping `reseed_pane_focus()` from `select_window`, and dropping the `remap()` inside it.
+    /// The same first mutation makes the in-process gate
+    /// `main::tests::a_window_tab_click_moves_the_panes_and_not_only_the_chrome` fail. So either the
+    /// calls are genuinely redundant in the shipped topology, or the smoke has a hole — and nobody
+    /// had told the two apart.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is redundancy, and the two topologies reach it by DIFFERENT mechanisms
+    ///
+    /// * The `remap()` half: [`reconcile`](SlotView::reconcile) calls it from the pre-view frame
+    ///   hook, every frame. A window op that skipped its own re-map is re-mapped one paint later.
+    /// * The focus half: when the pane widget leaves the scene, **pinion drops focus itself** —
+    ///   `FocusManager::update_focusable_tags` commits `None` the moment the focused tag is no
+    ///   longer among the focusable ones — and sprag's frame hook then calls
+    ///   [`reseed_pane_focus_if_idle`](SlotView::reseed_pane_focus_if_idle), whose whole precondition
+    ///   is that focus is `None`. The in-process topology has no such frame hook, so its op must
+    ///   re-seed inline.
+    ///
+    /// ⚠⚠ **THE CALLS THEREFORE STAY.** Deleting them would break the in-process gate, which is a
+    /// live client and not a fixture; what was missing was never the code but the reason. This gate
+    /// is that reason, held against the pinned engine rather than written beside it — the pinion
+    /// half is somebody else's behaviour, and a pin bump that changed it would otherwise leave the
+    /// shipped client with no re-seed at all and nothing to say so.
+    #[test]
+    fn a_shipped_client_re_seeds_focus_because_the_toolkit_drops_it_first() {
+        // ── THE TOOLKIT'S HALF, driven against the pinned pinion ──
+        let mut focus = pinion_runtime::FocusManager::new();
+        let tags =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| (*n).to_owned()).collect() };
+        focus.update_focusable_tags(tags(&["pane.0", "pane.1", "pane.2"]));
+        assert!(
+            focus.focus_set("pane.2"),
+            "the staging, not the claim: focus has to be ON the slot that is about to be freed, or \
+             what follows is about an idle client",
+        );
+
+        focus.update_focusable_tags(tags(&["pane.0", "pane.1"]));
+        assert_eq!(
+            focus.focused(),
+            None,
+            "⛔⛔⛔ ITEM 612: the shipped client's re-seed rests ENTIRELY on the toolkit dropping \
+             focus when the focused pane leaves the scene — `reseed_pane_focus_if_idle` fires only \
+             when focus is `None`, and nothing in `reset_freed_slot` touches focus. If pinion ever \
+             leaves focus on a tag whose widget is gone, a window switch strands it and this \
+             client has no other rescue",
+        );
+
+        // ── AND SPRAG'S HALF: what the frame hook does with that `None` ──
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = view_over(&ids);
+        Owner::new().run(|| {
+            view.reseed_pane_focus_if_idle();
+            assert_eq!(
+                pinion_core::focus_request::drain(),
+                Some(crate::terminal::pane_tag(0).to_owned()),
+                "⚠⚠⚠ AND THE BACKSTOP ASKS FOR THE FIRST OCCUPIED SLOT. Without this the toolkit's \
+                 drop above leaves the client with no focus at all, which is the same stranding \
+                 read from the other end",
+            );
+        });
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL FOR THE GATE ABOVE, and it is what keeps the backstop a BACKSTOP.**
+    ///
+    /// A re-seed that fired whenever it was called would steal focus from whatever a person had
+    /// just clicked on — every frame, since the frame hook calls it on every one of them. That the
+    /// request is conditional is the load-bearing half, and asserting the positive case alone would
+    /// pass just as well against a version that always fired.
+    #[test]
+    fn the_backstop_asks_for_nothing_while_something_is_already_focused() {
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = view_over(&ids);
+        let owner = Owner::new();
+        owner.clone().run(|| {
+            // ⚠⚠⚠ THE MANAGER MUST BE ATTACHED TO THE OWNER, or its focus is real to itself and
+            // invisible to `focus_state::focused()` — which is what the backstop reads. This gate's
+            // first run staged focus and then watched the backstop request slot 0 anyway, because
+            // the mirror it consults had never been published to. A fixture whose staging does not
+            // reach the reader under test is a fixture measuring nothing.
+            let mut focus = pinion_runtime::FocusManager::new();
+            focus.attach_owner(owner.clone());
+            focus.update_focusable_tags(vec![crate::terminal::pane_tag(1).to_owned()]);
+            assert!(focus.focus_set(crate::terminal::pane_tag(1)), "staged");
+
+            view.reseed_pane_focus_if_idle();
+            assert_eq!(
+                pinion_core::focus_request::drain(),
+                None,
+                "⚠⚠⚠⚠⚠ THE CONTROL: something is focused, so the backstop must ask for nothing. A \
+                 version that requested unconditionally would drag focus back to slot 0 on every \
+                 frame, which is a far worse defect than the one item 612 was about",
+            );
+        });
+    }
 }
