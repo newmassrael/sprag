@@ -969,6 +969,16 @@ impl Plugin for AiLoop {
     /// `Continue` on the step that reached `converged` would be told it had run out of iterations
     /// on the very step that finished the work — *"a step that saw the goal SAW IT"*, which is the
     /// Driver's own rule read from this side.
+    /// **EVERY TRANSITION THE LAST PASS TOOK** — see [`crate::plugin::Plugin::walked`].
+    ///
+    /// ⚠⚠ Read straight off the loop rather than threaded through `Pumped::Moved`. `pump` empties
+    /// the slot at the top of every pass, so what is in it belongs to the pass that just ran — and
+    /// a field on `Pumped` would put the same fact at eight construction sites, which is the
+    /// "every exit remembering" shape this crate keeps paying for.
+    fn walked(&self) -> Vec<crate::plugin::Edge> {
+        self.inner.walked().to_vec()
+    }
+
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         match self.inner.pump(panes, run)? {
             Pumped::Moved {
@@ -1705,6 +1715,126 @@ mod tests {
              payload in Lua's table syntax has to come back as the one reading that names a \
              problem, or this whole gate is blind",
         );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN'S WALK IS THE MACHINE'S REAL PATH — EVERY EDGE, AND THEY CHAIN** — register
+    /// item 614, and the reading item 605 needed and did not have.
+    ///
+    /// # ⚠⚠⚠⚠ What a journal used to be able to hide
+    ///
+    /// A step published its path as PROSE, one line, whatever the pass actually did. Two things
+    /// followed and both were measured on 2026-08-23:
+    ///
+    /// * **A pass that raised two events published one.** The pass below raises `judge` in
+    ///   `judging`, lands in `working`, then cannot deliver that turn's prompt and raises
+    ///   `peer.gone`. The journal carried only the second, so a reader could see where the run
+    ///   ended and had no way to learn when it left `judging`.
+    /// * **The one it published named the wrong state.** `from` was read at the top of the pass,
+    ///   so the line read `Judging --PeerGone--> PeerGone` for an event the machine answered from
+    ///   `working`. Item 605 spent four rounds and five guard rewrites on that sentence.
+    ///
+    /// # ⚠⚠⚠ Why the chain is the invariant worth asserting
+    ///
+    /// *Every edge is present* and *`from` is read at the raise* are two rules, and a walk that
+    /// obeys both is exactly a walk in which each edge begins where the last one ended — within a
+    /// step and across steps. One property catches both failures, and it cannot rot: it is checked
+    /// against the walk itself rather than against a list of states kept here.
+    ///
+    /// ⚠⚠ **THE WORDS ARE THE DOCUMENT'S.** Every one comes from SCE's generated
+    /// `get_state_name` / `get_event_name`, so a state renamed in `ai_loop.scxml` renames itself
+    /// here and this gate keeps asking the same question.
+    #[test]
+    fn a_runs_walk_carries_every_edge_its_machine_took_and_they_chain() {
+        let (workspace, pane) = standin_agent_that_leaves();
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let run = RunContext::uncancellable();
+        let mut pumped = 0;
+        while loops.state() != AiLoopState::Judging && pumped < 40 {
+            loops.step(&access, &run).expect("a live pane takes a pass");
+            pumped += 1;
+        }
+        assert_eq!(
+            loops.state(),
+            AiLoopState::Judging,
+            "⚠⚠ THE FIXTURE'S PRECONDITION: this loop must bank a turn within {pumped} passes, or \
+             the two-event pass this gate is about never happens",
+        );
+        loops.stand_down();
+
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 120,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &run);
+        let journal = progress.lock().expect("the progress cell").journal.clone();
+        // ⚠⚠ THE FIXTURE'S SECOND PRECONDITION, and the reason this outcome is READ rather than
+        // dropped: the two-event pass only happens on the run that ENDS here. A run that converged
+        // or was stopped by a ceiling never raised `judge` and `peer.gone` in one pass, so every
+        // assertion below would be about some other walk.
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "⚠⚠ this fixture's agent leaves after banking a turn, so the run must end at \
+             `peer_gone`; a {:?} run took a different path and this gate is measuring it by \
+             mistake. Journal: {journal:?}",
+            outcome.state,
+        );
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ── THE CONTROL FIRST: a walk that is EMPTY chains vacuously ──
+        //
+        // ⚠⚠⚠⚠⚠ Every assertion below is a `for` over edges, and a journal carrying none passes
+        // all of them while saying nothing at all. That is exactly what this field looked like
+        // before it existed, so the gate has to refuse it.
+        let edges: Vec<_> = journal.iter().flat_map(|step| step.walked.iter()).collect();
+        assert!(
+            !edges.is_empty(),
+            "⚠⚠⚠⚠⚠ THE WALK IS EMPTY, so nothing below is being checked. A run that took steps \
+             took transitions; a journal that carries none is the prose-only journal this field \
+             replaced. Journal: {journal:?}",
+        );
+
+        // ── THE SUBJECT: the pass that raised TWO events published both ──
+        let two = journal
+            .iter()
+            .find(|step| step.walked.len() > 1)
+            .unwrap_or_else(|| {
+                panic!(
+                    "⛔ NO PASS PUBLISHED MORE THAN ONE EDGE. This fixture's fatal pass raises \
+                     `judge` and then `peer.gone`, so a journal of one-edge steps means the walk \
+                     is back to one line per pass and register item 614 has regressed. Journal: \
+                     {journal:?}"
+                )
+            });
+        assert_eq!(
+            (two.walked[0].from, two.walked[0].raised, two.walked[0].to),
+            ("judging", "judge", "working"),
+            "⚠⚠⚠⚠⚠ THE EDGE THAT USED TO VANISH. It is the one that says WHEN the run left \
+             `judging`, which is the question item 605 could not answer for four rounds. Journal: \
+             {journal:?}",
+        );
+
+        // ── AND THE WHOLE WALK IS A CHAIN, within each step and across them ──
+        let mut previous: Option<&crate::plugin::Edge> = None;
+        for edge in &edges {
+            if let Some(before) = previous {
+                assert_eq!(
+                    before.to, edge.from,
+                    "⚠⚠⚠⚠⚠ THE WALK IS NOT A PATH: `{}` ends in `{}` and the next edge starts from \
+                     `{}`. Either an edge is missing, or a `from` was read somewhere other than at \
+                     its own raise — the two failures item 614 exists for. Journal: {journal:?}",
+                    before.raised, before.to, edge.from,
+                );
+            }
+            previous = Some(edge);
+        }
     }
 
     /// ⛔⛔⛔⛔ **A RUN PUBLISHES WHERE IT IS AS A FIELD, IN THE DOCUMENT'S OWN WORD** — register

@@ -433,6 +433,35 @@ impl Checks {
     }
 }
 
+/// ONE TRANSITION A STEP'S MACHINE ACTUALLY TOOK, in that machine's own words.
+///
+/// # ⚠⚠⚠⚠⚠ Why the walk stopped being a sentence
+///
+/// A step used to say where it went in [`Step::note`] and nowhere else — `"judging --judge-->
+/// working"` — so every question about a run's path was a substring match on prose. Register item
+/// 611 wrote the rule (*a substring of prose is not a declaration; ask the line that decides*) and
+/// register item 605 paid for breaking it: a walk line that read `Judging --PeerGone--> PeerGone`
+/// was believed for four rounds, and the machine had answered that event from `working`.
+///
+/// ⚠⚠ **THE WORDS ARE THE DOCUMENT'S, NOT A COPY OF THEM.** All three come from the generated
+/// `StatePolicy::get_state_name` / `get_event_name`, exactly as [`crate::driver::Progress::at`]
+/// does since item 543 — so a state renamed in the `.scxml` renames itself here, and no
+/// hand-written table can drift out of step with the machine it describes.
+///
+/// ⚠ A plugin with no machine publishes none of these, which is what keeps the substrate
+/// content-agnostic: this is a fact ABOUT a step, in the plugin's vocabulary, not a type the
+/// driver has to understand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edge {
+    /// The state the machine was in **at the moment this event was raised** — not at the top of
+    /// the pass. Item 605's whole cost was the difference between those two.
+    pub from: &'static str,
+    /// The event that was raised into the machine.
+    pub raised: &'static str,
+    /// Where the machine was once it had answered.
+    pub to: &'static str,
+}
+
 /// What a [`Plugin::step`] did and decided.
 ///
 /// ⚠ NOT `Copy`, because of [`note`](Self::note) — and the field is worth that. A run reported its
@@ -586,6 +615,34 @@ pub trait Plugin {
     /// [`JOURNAL_LIMIT`]: crate::driver::JOURNAL_LIMIT
     fn at(&self) -> Option<&'static str> {
         None
+    }
+
+    /// **EVERY TRANSITION THE LAST [`step`](Self::step) TOOK**, in order — see [`Edge`].
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a step's path stopped being a sentence
+    ///
+    /// [`at`](Self::at) says where a plugin IS and [`Step::note`] said, in prose, how it got there.
+    /// Register item 611 wrote the rule that a substring of prose is not a declaration, and item
+    /// 605 paid for breaking it: a journal line reading `Judging --PeerGone--> PeerGone` was
+    /// believed for four rounds while the machine had answered that event from `working`.
+    ///
+    /// ⚠⚠⚠ **A LIST, BECAUSE A PASS CAN RAISE MORE THAN ONE EVENT.** Measured 2026-08-23: a pass
+    /// in `judging` raised `judge`, landed in `working`, then could not deliver that turn's prompt
+    /// and raised `peer.gone`. Two transitions, and the journal carried one — so a reader could see
+    /// where the run ended and had no way to learn when it left `judging`, which is the question
+    /// item 605 could not answer. Register item 614.
+    ///
+    /// ⚠⚠ Empty by default, and that is the honest answer for a plugin with no machine rather than
+    /// a gap: a `pipe` relaying bytes takes no transitions. It stays plugin-agnostic for
+    /// [`at`](Self::at)'s reason — the words are the plugin's own, and the [`Driver`] records them
+    /// without understanding them.
+    ///
+    /// ⚠ Read by the driver immediately after `step` returns, so a plugin may clear it at the top
+    /// of the next pass and must not clear it on the way out.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn walked(&self) -> Vec<Edge> {
+        Vec::new()
     }
 
     /// ⚠⚠⚠⚠⚠ **HOW MANY PROMPTS THIS PLUGIN HAS PUT INTO ITS PANE, AND HOW MANY OF THEM THE PEER'S

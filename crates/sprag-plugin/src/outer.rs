@@ -3042,6 +3042,13 @@ pub struct OuterLoop {
     /// events they raise (`redirect.done`, `screen.matched`) land in states that owe no prompt
     /// (`Owed::on`) — so a list would be a shape nothing produces and no reader has.
     witnessed: Option<crate::deliver::Witnessed>,
+    /// **THE TRANSITIONS THIS PASS HAS TAKEN SO FAR**, appended by [`Self::walk`] and emptied at
+    /// the top of every [`Self::pump`] — the slot beside `witnessed` and for its reason exactly.
+    ///
+    /// ⚠⚠ A LIST, because a pass can raise more than one event: `judge` into `working` and then
+    /// `peer.gone` when that turn's prompt could not be delivered is TWO, and the journal used to
+    /// carry whichever the arm happened to name (register item 614).
+    walked: Vec<crate::plugin::Edge>,
     /// ⚠⚠⚠ **THE EVIDENCE THIS RUN HAS ALREADY TOLD ITS READER ABOUT** — the level
     /// [`witnessed`](Self#structfield.witnessed)'s event is DIFFED against, so a walk carries the
     /// answer once and then again whenever it CHANGES.
@@ -3213,6 +3220,7 @@ impl OuterLoop {
             shown: None,
             unaccountable: None,
             witnessed: None,
+            walked: Vec::new(),
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             checks: crate::plugin::Checks::NONE,
@@ -3824,7 +3832,7 @@ impl OuterLoop {
     /// changes nothing; there is no edge back, because a *stand down, no wait, carry on* racing a
     /// milestone would make a run's ending depend on which of two messages arrived first.
     pub fn stand_down(&mut self) {
-        self.machine.process_event(AiLoopEvent::StandDown);
+        self.walk(AiLoopEvent::StandDown);
     }
 
     /// **IS AN ORDER TO STAND DOWN STANDING, AS THE DOCUMENT ITSELF HOLDS IT?** — register item
@@ -3878,6 +3886,63 @@ impl OuterLoop {
         self.machine.last_unseen_event()
     }
 
+    /// **RAISE `event` AND RECORD THE EDGE IT TOOK** — the ONE seam every in-pass raise goes
+    /// through, so [`walked`](Self::walked) is the machine's real path by construction.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a seam and not a line at each raise
+    ///
+    /// There are five places a pass can raise into this machine, and a walk assembled by each of
+    /// them remembering is a walk that is right until one of them forgets. Register item 614 is
+    /// the bill for the version of that failure where nobody had to forget at all: `pump` recorded
+    /// ONE edge per pass, and a pass that raised `judge` and then `peer.gone` published the second
+    /// and dropped the first.
+    ///
+    /// ⚠⚠ **`from` IS READ HERE, IMMEDIATELY BEFORE THE RAISE.** That is the whole reason this is a
+    /// function: a `from` read anywhere earlier is a state the machine may already have left, which
+    /// is what item 605 spent four rounds believing.
+    fn walk(&mut self, event: AiLoopEvent) {
+        let from = self.state();
+        self.machine.process_event(event);
+        self.note_edge(from, event);
+    }
+
+    /// [`walk`](Self::walk) for an event that carries `_event.data`.
+    ///
+    /// ⚠⚠ Separate because `process_event` carries NO data at all — it is `raise_external(event,
+    /// "", "")` and a macrostep — so an event whose guard or assignments read `_event.data` has to
+    /// go through the raise that takes a payload. Both record the same way.
+    fn walk_carrying(&mut self, event: AiLoopEvent, data: &str) {
+        let from = self.state();
+        self.machine.raise_external(event, data, "");
+        self.machine.step();
+        self.note_edge(from, event);
+    }
+
+    /// Append one edge, in the DOCUMENT's own words.
+    ///
+    /// ⚠⚠⚠ `get_state_name` and `get_event_name` are SCE's generated readers, so every word here
+    /// is the `.scxml`'s own `id`. A hand-written table would be a second spelling of the machine's
+    /// vocabulary, and it would age silently the first time a state was renamed — which is this
+    /// crate's own recorded failure shape (item 543 made the same argument for a run's position).
+    fn note_edge(&mut self, from: AiLoopState, raised: AiLoopEvent) {
+        use sce_rust_runtime::StatePolicy as _;
+
+        self.walked.push(crate::plugin::Edge {
+            from: AiLoopPolicy::get_state_name(from),
+            raised: AiLoopPolicy::get_event_name(raised),
+            to: AiLoopPolicy::get_state_name(self.state()),
+        });
+    }
+
+    /// **EVERY TRANSITION THIS PASS'S MACHINE TOOK**, in order — see [`crate::plugin::Plugin::walked`].
+    ///
+    /// Emptied at the top of every [`pump`](Self::pump), so what is here belongs to the pass that
+    /// is running now and to no other.
+    #[must_use]
+    pub fn walked(&self) -> &[crate::plugin::Edge] {
+        &self.walked
+    }
+
     /// **WHAT THIS DRIVER TOLD ITS MACHINE THAT THE DATAMODEL COULD NOT READ** — the last event
     /// whose payload announced structure and did not parse, or [`None`] while every payload has
     /// been read as one.
@@ -3921,7 +3986,7 @@ impl OuterLoop {
     /// landed while the loop was still in `idle`, where no such edge exists, and the run drove on
     /// with the person's word already spent.
     pub fn hold(&mut self) {
-        self.machine.process_event(AiLoopEvent::Hold);
+        self.walk(AiLoopEvent::Hold);
     }
 
     /// **THE PERSON LOOKED AND WAVED IT ON** — `resume` → `working`, [`hold`](Self::hold)'s way back
@@ -3941,7 +4006,7 @@ impl OuterLoop {
     /// resuming a half-finished one. That is the honest reading of *waved it on*: whatever the peer
     /// was doing when the person stepped in is theirs now, and the run starts its next turn cleanly.
     pub fn let_go(&mut self) {
-        self.machine.process_event(AiLoopEvent::Resume);
+        self.walk(AiLoopEvent::Resume);
     }
 
     pub fn took_answer(&mut self) -> Option<crate::consent::Answered> {
@@ -4355,6 +4420,14 @@ impl OuterLoop {
     /// only bytes that can be lost are ones that went into a pane still alive at the time — and the
     /// alternative is threading a partial cost out of six acts that do not return one.
     pub fn pump(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Pumped, PaneError> {
+        // ⚠⚠⚠⚠⚠ **EMPTIED HERE, AT THE VERY TOP, AND THE PLACE IS THE POINT.** `witnessed` below
+        // is cleared after the orders are carried in, which is right for a DELIVERY and would be
+        // wrong for this: a stand-down raised two lines down is a transition this pass took, and
+        // clearing after it would drop the one edge a person reading the run most wants to see.
+        // The rest of the argument is `witnessed`'s own, unchanged — one line here makes *what is
+        // in this slot belongs to this pass* true by construction rather than by every exit
+        // remembering.
+        self.walked.clear();
         // ⚠⚠⚠ A PERSON'S ORDER IS CARRIED IN FIRST, BEFORE ANYTHING IS DECIDED THIS PASS. The flag
         // is raised by a host thread at a moment nothing here controls, so the only place it can be
         // read without racing a decision is at the top of a pass — the same reason the barrier
@@ -4459,7 +4532,7 @@ impl OuterLoop {
                 wanted: crate::deliver::SubmittedWhen::Took { .. },
             }) => {
                 self.noticed = Some(Noticed::Unasked { attempts, written });
-                self.machine.process_event(AiLoopEvent::PromptUnasked);
+                self.walk(AiLoopEvent::PromptUnasked);
                 Ok(Pumped::Moved {
                     from,
                     raised: AiLoopEvent::PromptUnasked,
@@ -4491,9 +4564,10 @@ impl OuterLoop {
                 // is what register item 605 spent four rounds and five guard rewrites believing,
                 // because `Judging --PeerGone--> PeerGone` said the document had answered
                 // `peer.gone` from `judging` and the document, driven by hand from `judging`, does
-                // not do that at all.
+                // not do that at all. ⚠⚠ `walk` reads it for the same reason, one layer down, so
+                // this line and the edge published beside it can never disagree.
                 let from = self.state();
-                self.machine.process_event(AiLoopEvent::PeerGone);
+                self.walk(AiLoopEvent::PeerGone);
                 Ok(Pumped::Moved {
                     from,
                     raised: AiLoopEvent::PeerGone,
@@ -6603,11 +6677,8 @@ impl OuterLoop {
         // the raise that takes a payload. Which events those are is decided by whoever read the
         // fact, not here; see [`Raise`].
         match data {
-            Some(data) => {
-                self.machine.raise_external(event, &data, "");
-                self.machine.step();
-            }
-            None => self.machine.process_event(event),
+            Some(data) => self.walk_carrying(event, &data),
+            None => self.walk(event),
         }
         let landed = self.state();
         let owed = Owed::on(event, landed);

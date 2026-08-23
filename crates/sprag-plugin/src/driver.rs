@@ -732,6 +732,13 @@ pub struct StepRecord {
     pub verdict: Verdict,
     /// The plugin's own line about it, if it had one — see [`Step::note`](crate::plugin::Step::note).
     pub note: Option<String>,
+    /// **EVERY TRANSITION THIS STEP'S MACHINE TOOK** — see [`crate::plugin::Plugin::walked`].
+    ///
+    /// ⚠⚠⚠ The journal is where a run is DEBUGGED, and until 2026-08-23 the only account of its
+    /// path was [`note`](Self::note) — prose, one edge per step whatever the step actually did.
+    /// Register item 611 wrote the rule and item 605 paid for it: four rounds spent on a guard at
+    /// a state the machine had already left, because the sentence said otherwise.
+    pub walked: Vec<crate::plugin::Edge>,
 }
 
 /// Where a [`Driver`] publishes its [`Progress`], shared with whoever is watching.
@@ -807,12 +814,17 @@ impl Driver {
     ///
     /// ⚠ The step's OWN cost, not the running total: a journal of totals could not answer *"which
     /// step was the expensive one?"*, which is the question a cost ceiling makes people ask.
-    fn record(&mut self, step: &Step) {
+    /// ⚠⚠⚠ `walked` is passed IN rather than read off the step, because it is the PLUGIN's answer
+    /// and a `Step` is content the plugin composed — see [`crate::plugin::Plugin::walked`].
+    /// One call site, taken the moment the pass returns, is what makes *this walk belongs to this
+    /// step* true by construction rather than by every producer remembering.
+    fn record(&mut self, step: &Step, walked: Vec<crate::plugin::Edge>) {
         self.remember(StepRecord {
             iteration: self.iterations,
             cost: step.cost,
             verdict: step.verdict.clone(),
             note: step.note.clone(),
+            walked,
         });
     }
 
@@ -851,6 +863,11 @@ impl Driver {
             cost: self.cost.map_or(Cost::Bytes(0), Cost::none_of),
             verdict: Verdict::Exhausted(ceiling),
             note: Some(note),
+            // ⚠⚠ EMPTY, AND NOT FOR WANT OF KNOWING: this record is the DRIVER's own line about a
+            // ceiling IT enforced, and the driver takes no transitions. The machine's walk for the
+            // step that reached the ceiling is on that step's record, one entry back — a copy here
+            // would be a second authority on one path, which is item 445's whole argument.
+            walked: Vec::new(),
         });
         self.publish();
     }
@@ -955,7 +972,7 @@ impl Driver {
                     if matches!(step.verdict, Verdict::Screened(_)) {
                         self.screened += 1;
                     }
-                    self.record(&step);
+                    self.record(&step, plugin.walked());
                     // ⚠⚠⚠⚠⚠ WHERE THE PLUGIN IS, ASKED AT THE ONE PLACE A STEP COMPLETES — register
                     // item 543. This is why `Plugin::at` is a question rather than a field on
                     // `Step`: a per-step field can be forgotten at any of the twenty-odd sites that
