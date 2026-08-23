@@ -5310,10 +5310,19 @@ fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
     // account is that the peer said nothing, which is a different finding from a pane that showed
     // nothing at all and different again from one that answered. A journal that called this
     // "reacted" was reporting the kernel's work as the peer's.
+    // ⚠⚠⚠⚠⚠ **AND THE PANE IS IN THE MESSAGE, because this assertion has gone red in CI and could
+    // not be diagnosed from what it said.** Measured 2026-08-24: it failed on macOS with *"the
+    // peer answered; no sentinel yet"* on all three steps, and reproduces on linux at 4 runs in
+    // 20. Everything the note carries is the plugin's VERDICT; nothing in it is the screen that
+    // verdict was reached on, and two rounds of hypotheses about which screen that was died
+    // because the evidence had never been kept. `read_pane` is evaluated ONLY on failure —
+    // `assert!` formats its arguments lazily — so a green run pays nothing for it.
     assert!(
         ended.contains("THE PEER SAID NOTHING"),
         "each line carries the PLUGIN's account of that step, which is the only place the \
-         difference between a peer that answered and one that merely echoed can appear: {ended}",
+         difference between a peer that answered and one that merely echoed can appear: {ended}\n\
+         ── and the pane the verdict was reached on ──\n{}",
+        server.call_tool("read_pane", json!({ "pane": "loop-target" })),
     );
     assert!(
         ended.contains("bytes"),

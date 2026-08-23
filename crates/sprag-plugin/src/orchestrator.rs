@@ -81,7 +81,18 @@ pub struct Orchestrator {
     spec: OrchestrationSpec,
     /// What the pane's rows HELD before the last stimulus, so the observe-wait keys on *this*
     /// step's reply. ⚠ Text and not damage generations — see [`RowTrail`].
+    ///
+    /// ⚠⚠ **THE FALLBACK ONLY**, since register item 639: a row comparison cannot survive a scroll,
+    /// and [`Orchestrator::heard`] carries what that cost. A host that publishes line addresses is
+    /// read through [`spoken`](Self::spoken) instead.
     baseline: RowTrail,
+    /// **THE LINE ADDRESS THIS STEP STARTED FROM** — everything the pane has completed after it is
+    /// what this step provoked, and everything before it was already there.
+    ///
+    /// ⚠ A cursor and not a snapshot, which is the whole reason it survives a scroll: a logical
+    /// line's address is minted at the pane's birth and reflow is defined as preserving it. See
+    /// [`heard`](Self::heard).
+    spoken: u64,
     /// The barrier this run must clear before it types anything — see [`Readiness`].
     ready: Readiness,
     /// What makes THIS step's turn over, armed at the step that typed it — `None` for a run that
@@ -104,6 +115,10 @@ impl Orchestrator {
             pane,
             spec,
             baseline: RowTrail::default(),
+            // ⚠ Zero, and the first mark walks it forward past whatever the pane already said —
+            // see [`Plugin::step`]. A cursor invented here would be a claim about a pane this
+            // plugin has not looked at yet.
+            spoken: 0,
         }
     }
 
@@ -249,9 +264,12 @@ impl Orchestrator {
             (Some(done), _) => done.ended(panes, self.pane).map(Arrival::Turn),
             // A sentinel with no contract: the wait is the sentinel's alone (R374).
             (None, Some(_)) => None,
-            (None, None) => {
-                (self.reaction(panes) == Reaction::Answered).then_some(Arrival::Reacted)
-            }
+            (None, None) => match self.reaction(panes) {
+                // ⚠ The rows that decided it travel with the ending, so the step's own account can
+                // name them — see [`Reaction::Answered`].
+                Reaction::Answered(spoke) => Some(Arrival::Reacted(spoke)),
+                Reaction::EchoOnly | Reaction::None => None,
+            },
         }
     }
 
@@ -273,6 +291,95 @@ impl Orchestrator {
     /// the step's wait: the verdict is judged off the collapsed screen after the
     /// wait either way, so a convergence can be reached late but never lost.
     fn reaction(&self, panes: &dyn PaneAccess) -> Reaction {
+        match panes
+            .output_lines()
+            .and_then(|source| source.pane_lines_since(self.pane, self.spoken))
+        {
+            Some(said) => self.heard(&said),
+            // ⚠ The documented degradation, and the only path a host with no line addresses has.
+            None => self.heard_on_the_rows(panes),
+        }
+    }
+
+    /// **WHAT THE PEER SAID, FROM THE LINES IT ACTUALLY PRODUCED** — register item 639's repair.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the ROWS could never answer this, measured live
+    ///
+    /// [`RowTrail`] compares a pane's rows BY INDEX, so **a scroll reports as changed every row
+    /// whose new text is simply its neighbour's old text** — nothing was written, and the rows come
+    /// back as news. Over a pane running `cat`, which can answer nothing, the run's own journal
+    /// recorded it marching upward one row a step:
+    ///
+    /// ```text
+    /// 1. the peer answered: ["ld/sprag-…/crates/sprag-mcp$ prin", "tf 'ECHO-READY\n'; exec cat", "ECHO-READY"]
+    /// 2. the peer answered: ["tf 'ECHO-READY\n'; exec cat", "ECHO-READY"]
+    /// 3. the peer answered: ["ECHO-READY"]
+    /// ```
+    ///
+    /// Every one of those is a wrapped SHELL PROMPT and a readiness marker that were on the pane
+    /// before the step began. `PaneOutputLines`' own documentation names the hazard — *"a resize
+    /// re-wraps and renumbers every one, a repaint changes none of them, and scrolling drops the
+    /// ones nobody came back for"* — and this is the fourth defect this workspace has paid for it.
+    ///
+    /// A LOGICAL LINE is what the child produced, addressed from the pane's birth, and reflow is
+    /// defined as preserving it. So a cursor taken before the stimulus separates *what this step
+    /// provoked* from *what was already there*, and no amount of scrolling can blur the two.
+    ///
+    /// # ⚠⚠⚠ Three readings, and each absence means something different
+    ///
+    /// * **`lost` above zero** is the pane outrunning its retained history. That is not silence —
+    ///   a peer that says more than the screen can keep has said something — so it answers
+    ///   [`Answered`](Reaction::Answered) and says so in place of the text it cannot show.
+    /// * **`partial`** is deliberately NOT consulted. It is half a sentence, the child has not
+    ///   said it is finished, and this crate's own rule is that a consumer must earn the right to
+    ///   use it. The cost is bounded and named in this function's caller: a peer that answers with
+    ///   no trailing newline is read as silent for the rest of the step's wait, and the verdict is
+    ///   judged off the collapsed screen afterwards either way.
+    /// * **no complete lines at all** is [`None`](Reaction::None) — the pane produced nothing.
+    ///
+    /// ⚠⚠ **THE RESIDUE, STATED**: a pane sitting at a shell PROMPT has an unfinished line, and the
+    /// echo of the stimulus COMPLETES it — so the first line this sees is `…$ echo bounded`, which
+    /// is not a piece of the stimulus and reads as an answer. That is a different case from the one
+    /// measured here (this plugin injects into a pane whose program is already running, which
+    /// [`Readiness`] is the barrier for), it is UNMEASURED, and inventing a rule for it now would
+    /// be guessing. It is filed rather than hidden.
+    fn heard(&self, said: &sprag_vt::LinesSince) -> Reaction {
+        if said.lost > 0 {
+            return Reaction::Answered(vec![format!(
+                "{} line(s) the pane outran before this step could read them",
+                said.lost
+            )]);
+        }
+        let mut heard = false;
+        let mut spoke = Vec::new();
+        for line in &said.lines {
+            let text = line.trim();
+            if text.is_empty() {
+                continue;
+            }
+            heard = true;
+            if !self.spec.stimulus.contains(text) {
+                spoke.push(line.clone());
+            }
+        }
+        if !spoke.is_empty() {
+            return Reaction::Answered(spoke);
+        }
+        if heard {
+            Reaction::EchoOnly
+        } else {
+            Reaction::None
+        }
+    }
+
+    /// [`heard`](Self::heard)'s fallback for a host that publishes no line addresses — the ROW
+    /// comparison this plugin used until register item 639, kept because a host without
+    /// [`PaneOutputLines`](crate::access::PaneOutputLines) has nothing else.
+    ///
+    /// ⚠⚠ **IT IS A DEGRADATION AND NOT AN EQUIVALENT**, and the difference is the defect above: on
+    /// a pane that SCROLLS this reads rows that merely moved as things the peer said. Named here so
+    /// a host that lands on it knows what it is buying.
+    fn heard_on_the_rows(&self, panes: &dyn PaneAccess) -> Reaction {
         let changed = self.baseline.fresh(panes, self.pane);
         if changed.is_empty() {
             return Reaction::None;
@@ -280,13 +387,14 @@ impl Orchestrator {
         // A changed row is the ECHO when what it holds is a piece of what was just typed — the
         // `contains` covers a stimulus the pane wrapped across rows. A blank row is no evidence of
         // an answer either.
-        if changed
-            .iter()
-            .all(|line| line.trim().is_empty() || self.spec.stimulus.contains(line.trim()))
-        {
+        let spoke: Vec<String> = changed
+            .into_iter()
+            .filter(|line| !line.trim().is_empty() && !self.spec.stimulus.contains(line.trim()))
+            .collect();
+        if spoke.is_empty() {
             return Reaction::EchoOnly;
         }
-        Reaction::Answered
+        Reaction::Answered(spoke)
     }
 }
 
@@ -304,8 +412,9 @@ enum Arrival {
     Sentinel,
     /// The peer's turn ended on the contract the caller declared — [`Over`] says HOW.
     Turn(Over),
-    /// The peer produced a row of its own, where the caller named neither sentinel nor contract.
-    Reacted,
+    /// The peer produced a row of its own, where the caller named neither sentinel nor contract —
+    /// carrying the rows that said so. See [`Reaction::Answered`].
+    Reacted(Vec<String>),
     /// None of them, inside the step's own patience.
     Nothing,
     /// THE RUN ended underneath — cancelled, or out of time. The Driver's loop top says which.
@@ -314,14 +423,31 @@ enum Arrival {
 
 /// What a pane has done since a step's baseline — the three cases a step must tell apart, because
 /// two of them are the same absence of an answer with different remedies.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// ⚠ NOT [`Copy`] any more, and that is the evidence arriving rather than a cost: the answering arm
+/// now carries the rows it was reached on.
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum Reaction {
     /// Nothing on the pane changed at all: the peer is not listening, or is not there.
     None,
     /// Only the stimulus came back — the terminal's own echo, not the peer.
     EchoOnly,
-    /// Something the peer produced.
-    Answered,
+    /// Something the peer produced — **and WHAT**, so a reader is not left with a verdict whose
+    /// evidence nobody kept.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the evidence rides on the verdict, measured
+    ///
+    /// This word decides a step for every run that named no sentinel and no contract, and its
+    /// journal line said only *"the peer answered; no sentinel yet"*. On 2026-08-24 that line went
+    /// red in CI over a pane running `cat` — which cannot answer anything — and **two rounds of
+    /// hypotheses about which rows had convinced it died** because none of them had been kept: a
+    /// torn read, then a scroll, each refuted by a probe that could not reproduce what the product
+    /// had plainly done. The screen was recoverable only by teaching the TEST to dump it.
+    ///
+    /// So the rows travel with the verdict, the way [`Over::Silent`](crate::completion::Over) has
+    /// always carried its [`Silence`](crate::completion::Silence). A step that says the peer spoke
+    /// can now say what it heard.
+    Answered(Vec<String>),
 }
 
 impl Plugin for Orchestrator {
@@ -394,7 +520,17 @@ impl Plugin for Orchestrator {
         }
 
         // Baseline before acting, so observe() waits for this step's reply.
+        //
+        // ⚠⚠⚠⚠⚠ **BOTH MARKS, AND THE LINE CURSOR IS THE ONE THAT SURVIVES A SCROLL** — register
+        // item 639. Walking the cursor past everything the pane has ALREADY completed is what
+        // separates *what this step provoked* from *what was on the pane when it began*; the row
+        // trail beside it is the fallback for a host that publishes no line addresses, and it
+        // cannot make that separation at all. See [`Orchestrator::heard`].
         self.baseline = RowTrail::mark(panes, self.pane);
+        self.spoken = panes
+            .output_lines()
+            .and_then(|source| source.pane_lines_since(self.pane, self.spoken))
+            .map_or(self.spoken, |said| said.next);
         // ⚠⚠⚠ AND THE COMPLETION CONTRACT ARMS HERE, IN THE SAME BREATH AND FOR THE SAME REASON:
         // before a byte goes in. A peer waiting to be spoken to is AT REST, so a contract armed
         // after the injection can be satisfied by the stillness this step was addressed TO — and
@@ -491,12 +627,22 @@ impl Plugin for Orchestrator {
             // remedies: a pane showing NOTHING is one nobody is listening on, while one that
             // echoed and said no more is a peer that heard and did not reply.
             (Arrival::Nothing, _) => match self.reaction(panes) {
-                Reaction::Answered => "the pane answered as the step's wait ran out".to_string(),
+                Reaction::Answered(spoke) => {
+                    format!("the pane answered as the step's wait ran out: {spoke:?}")
+                }
                 Reaction::EchoOnly => {
                     "the stimulus was echoed back and THE PEER SAID NOTHING".to_string()
                 }
                 Reaction::None => "the pane did not react to the stimulus at all".to_string(),
             },
+            // ⚠⚠⚠⚠⚠ **AND IT NAMES WHAT IT HEARD.** This line used to say only *the peer answered*,
+            // and when it went red over a `cat` pane — which answers nothing — the rows that had
+            // convinced it were gone. An account a reader cannot check is one they have to
+            // reproduce, and reproducing a race is what cost this two rounds. See
+            // [`Reaction::Answered`].
+            (Arrival::Reacted(spoke), _) => {
+                format!("the peer answered; no sentinel yet: {spoke:?}")
+            }
             _ => "the peer answered; no sentinel yet".to_string(),
         };
         Ok(Step::new(Cost::Bytes(cost), verdict).noting(note))
@@ -1876,6 +2022,165 @@ mod tests {
             "and it converges on the FIRST turn — a second turn means the first was judged on a \
              screen holding nothing but the echo of what it had just typed, and the peer was \
              prompted again while it was still answering",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PANE THAT ONLY ECHOES MUST NEVER READ AS A PEER THAT ANSWERED — AT ANY INSTANT,
+    /// NOT MERELY AT THE ONE A STEP HAPPENS TO SAMPLE.**
+    ///
+    /// # ⚠⚠⚠⚠⚠ Found in CI as a flake, and given a rate before it was given a fix
+    ///
+    /// `sprag-mcp`'s `an_agent_starts_a_bounded_loop_and_reads_how_it_ended` drives a `cat` pane
+    /// through the real daemon and demands the journal say *"the stimulus was echoed back and THE
+    /// PEER SAID NOTHING"*. On 2026-08-24 it failed on macOS with *"the peer answered; no sentinel
+    /// yet"* — and, measured on linux, **4 runs in 20 at HEAD and 2 in 20 with this plugin's wait
+    /// forced back to polling**. So it is not the parking repair: it is older, and both cadences
+    /// hit it.
+    ///
+    /// # ⚠⚠⚠⚠ Why the two gates above cannot see it
+    ///
+    /// Both declare a SENTINEL, so `arrived` ends their step on `Arrival::Sentinel` and
+    /// [`reaction`](Orchestrator::reaction) is only consulted afterwards for the note. A run with
+    /// **no sentinel and no contract** — which is what the MCP verb's default is — ends its step
+    /// on `reaction` ITSELF. That arm, over a pure-echo peer, was gated nowhere in this crate.
+    ///
+    /// # ⚠⚠⚠ A PROBE INSIDE, not twenty runs outside
+    ///
+    /// The defect is a RACE, and one step samples one moment of it: reproducing it from the outside
+    /// means running the whole loop until it happens to land. So this arms the baseline exactly as
+    /// [`Plugin::step`] does, injects the same stimulus, and then asks
+    /// [`reaction`](Orchestrator::reaction) **as fast as it can be asked** for the whole window a
+    /// step would have waited — thousands of samples instead of one, and it keeps the SCREEN that
+    /// fooled it rather than only the verdict.
+    ///
+    /// ⚠ It is deliberately a statement about the PREDICATE and not about a run: a run that
+    /// converges by luck is not evidence, and a predicate that is true at no instant cannot be
+    /// raced by any cadence a caller picks.
+    #[test]
+    fn a_pane_that_only_echoes_never_reads_as_answered_at_any_instant() {
+        /// What is typed. ⚠ Two words, because a single token cannot show the failure this is
+        /// about: the defect is a row that holds MORE than the stimulus, and a longer stimulus is
+        /// what gives the terminal something to tear.
+        const STIMULUS: &str = "echo bounded";
+        /// How long to sample — comfortably past the point at which both the pty's echo and
+        /// `cat`'s copy of the line have landed, so the whole of the interesting window is covered.
+        const WATCH: Duration = Duration::from_millis(800);
+
+        // ⚠⚠⚠⚠⚠ **THE PANE HAS TEXT ON IT THAT WILL SCROLL, AND THAT IS THE WHOLE FIXTURE.** Two
+        // earlier probes could not reproduce this and each green was the finding rather than a
+        // pass: a roomy fresh `cat` pane never scrolls, so [`RowTrail`] is never asked the question
+        // it gets wrong. The live pane is a real shell — its PROMPT wraps across three rows at
+        // forty columns (`developer@…:~/remote-bui` / `ld/sprag-…$ prin` / `tf 'ECHO-READY…`) —
+        // and six echoed lines push all of it upward.
+        //
+        // ⚠⚠ **A SCROLL MOVES CONTENT BETWEEN ROWS WITHOUT ANY PROGRAM WRITING IT**, so a row
+        // comparison reports as CHANGED a row whose new text is simply its neighbour's old text.
+        // `BETA` is not a piece of the stimulus, so the step reads it as the peer speaking.
+        // `PaneOutputLines`' own documentation names this exact hazard — *"a resize re-wraps and
+        // renumbers every one, a repaint changes none of them, and scrolling drops the ones nobody
+        // came back for"* — and this is the fourth time this workspace has paid for it.
+        // ⚠⚠⚠⚠ **THE ROWS MUST MARCH, NOT VANISH — which is what two earlier fixtures got wrong.**
+        // A three-row pane scrolled its markers straight off and left only the echo behind, and a
+        // roomy one never scrolled at all; both were green, and each green was the finding rather
+        // than a pass. The live pane fills EXACTLY, so one added line shifts every remaining row up
+        // by one — and the run's own account showed that marching, three rows then two then one.
+        //
+        // Four markers in five rows is that shape with nothing to spare: after the `printf` the
+        // screen holds `M1..M4` and the cursor's row, and the first echoed line pushes `M1` off
+        // while `M2..M4` all move.
+        const MARKERS: [&str; 4] = ["M1", "M2", "M3", "M4"];
+        let (access, pane) = sh_access("printf 'M1\\nM2\\nM3\\nM4\\n'; exec cat", 40, 5);
+        // ⚠ Every marker must be ON SCREEN before the baseline is marked, or there is nothing for
+        // the echo to push and the fixture has quietly become an earlier probe's.
+        crate::testing::screen_showing(&access, pane, MARKERS[3]);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: STIMULUS.to_string(),
+                // ⚠ NEITHER, and that is the point: with either one the step ends elsewhere and
+                // this predicate is never what decides.
+                sentinel: None,
+                ready_when: None,
+                ready_within: None,
+                may_answer: None,
+                attended: Attended::NoOne,
+                turn: None,
+            },
+        );
+
+        // ── armed exactly as `step` arms it, then the same keystrokes ──
+        // ⚠ BOTH marks, exactly as `step` takes them — a probe that armed only one would be
+        // measuring a plugin no caller can build.
+        orch.baseline = crate::access::RowTrail::mark(&access, pane);
+        orch.spoken = access
+            .output_lines()
+            .and_then(|source| source.pane_lines_since(pane, orch.spoken))
+            .map_or(orch.spoken, |said| said.next);
+        let mut keys = crate::access::KeyStroke::text(STIMULUS);
+        keys.push(crate::access::KeyStroke::named("Enter"));
+        // ⚠ The written count is read rather than dropped: a pane that took NO bytes would leave
+        // this probe watching a window nothing was ever said into.
+        let typed = access
+            .inject(pane, &keys)
+            .expect("the pane takes the stimulus");
+        assert!(
+            typed.bytes() > 0,
+            "⚠⚠ the stimulus must actually have been written, or the window below is empty by \
+             construction: {typed:?}",
+        );
+
+        let deadline = Instant::now() + WATCH;
+        let mut fooled: Vec<String> = Vec::new();
+        let mut misread = 0_u64;
+        let mut samples = 0_u64;
+        let mut echoed = false;
+        while Instant::now() < deadline {
+            samples += 1;
+            match orch.reaction(&access) {
+                // ⚠ BOTH kept: the rows the product read as the peer's, and the whole screen they
+                // were read off. The first says WHAT convinced it, the second says what the pane
+                // looked like — and two rounds of hypotheses died for want of exactly this pair.
+                Reaction::Answered(spoke) => {
+                    misread += 1;
+                    // ⚠⚠ DISTINCT readings only, and that is not thrift: this predicate is asked
+                    // tens of thousands of times in the window, so keeping every one made a
+                    // 160-kilobyte failure message that nobody could read. What a reader needs is
+                    // WHICH readings happened, and the count says how often.
+                    let seen = format!(
+                        "{spoke:?} on {:?}",
+                        access.pane_collapsed(pane).unwrap_or_default()
+                    );
+                    if !fooled.contains(&seen) {
+                        fooled.push(seen);
+                    }
+                }
+                Reaction::EchoOnly => echoed = true,
+                Reaction::None => {}
+            }
+        }
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // ⚠⚠⚠⚠ **THE DEFECT IS ASSERTED BEFORE THE CONTROL, and the order is a repair.** Written
+        // the other way round, a run in which `reaction` answered `Answered` from its very first
+        // sample never sets `echoed` — so the CONTROL fires and reports *nothing arrived*, about a
+        // pane that had in fact been misread from the first instant. A control exists to stop a
+        // vacuous green, and a defect is never vacuous.
+        assert!(
+            fooled.is_empty(),
+            "⛔⛔⛔⛔⛔ AN ECHO WAS READ AS A PEER'S ANSWER. This pane runs `cat`: everything on it \
+             is either the pty's echo of what was typed or `cat` writing the same bytes back, and \
+             NOTHING ON A SCREEN can tell those two apart — so *the peer said nothing* is the only \
+             honest reading and `reaction` must never answer otherwise. It did, at {misread} of \
+             {samples} sampled instants. A run with no sentinel ends its step on exactly this \
+             predicate, so what this costs live is a turn of a bounded budget spent on an answer \
+             nobody gave. The DISTINCT readings that fooled it: {fooled:?}",
+        );
+        // ⚠⚠ THE CONTROL, second: the stimulus must actually have come back, or a clean run means
+        // only that nothing reached the pane and the assertion above passed over an empty window.
+        assert!(
+            echoed,
+            "⚠⚠⚠ THE CONTROL: over {samples} samples the pane never once read as having echoed \
+             the stimulus, so nothing arrived and the green above is vacuous",
         );
     }
 
