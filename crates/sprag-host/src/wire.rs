@@ -4206,10 +4206,10 @@ pub const GRID_WORK_SLOT: &str = "grid_work";
 /// happens to be.' … Inheriting the daemon's directory would put every pane wherever the daemon was
 /// started from — which for a daemon a client spawned is an implementation detail nobody chose."*
 ///
-/// **MEASURED, control and claim in one daemon**: a daemon whose own cwd was `/home/coin/sprag`
-/// spawned a `cwd`-less pane into `/home/coin`. The implementation is right and this sentence was
+/// **MEASURED, control and claim in one daemon**: a daemon whose own cwd was `$HOME/sprag`
+/// spawned a `cwd`-less pane into `$HOME`. The implementation is right and this sentence was
 /// wrong — and this is the sentence a client author reads, which is why it counted as a defect
-/// rather than a typo. What it cost: a restored agent came back asking to trust `/home/coin`
+/// rather than a typo. What it cost: a restored agent came back asking to trust `$HOME`
 /// instead of the repository it had been working in, and nothing in the product could say why.
 ///
 /// ⚠⚠ `start_dir` is the AUTHORITY for the default; this is its published statement, not a second

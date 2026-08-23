@@ -830,7 +830,7 @@ fn the_pane_listing_says_a_child_is_gone_and_how_it_went() {
 /// other.
 ///
 /// ⚠⚠⚠ **What the wrong sentence cost, measured on the owner's own machine 2026-08-18**: a daemon
-/// whose cwd was the repository spawned its panes into `/home/coin`, so a restored `claude` came
+/// whose cwd was the repository spawned its panes into `$HOME`, so a restored `claude` came
 /// back asking to trust the home directory instead of the project, and the run never started.
 /// Nothing in the product could state where an agent's pane ought to be, because no CLI verb could
 /// send the `cwd` the wire had taken all along.

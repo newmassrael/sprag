@@ -1752,7 +1752,7 @@ mod tests {
         "  Tip: Our most capable model yet. GPT-5.6 Sol can tackle complex code changes,",
         "  dig into research, produce polished documents, and take on your most ambitious",
         "› Write tests for @filename",
-        "  gpt-5.6-sol default · /tmp/claude-1000/-home-coin-sprag/6fa43ef3-48fe-4a56-a7…",
+        "  gpt-5.6-sol default · /tmp/claude-1000/-home-user-sprag/6fa43ef3-48fe-4a56-a7…",
     ];
 
     /// The sign-in picker, `codex`'s first screen. Marker is ASCII `>` at column zero.
@@ -1772,7 +1772,7 @@ mod tests {
     /// The directory-trust dialog. Marker is `›` — a DIFFERENT glyph from the screen above, in the
     /// same agent, which is the measurement that made the marker a class.
     const CODEX_TRUST_DIALOG: &[&str] = &[
-        "> You are in /tmp/claude-1000/-home-coin-sprag/6fa43ef3-48fe-4a56-a7d7-5b36f3d23",
+        "> You are in /tmp/claude-1000/-home-user-sprag/6fa43ef3-48fe-4a56-a7d7-5b36f3d23",
         "  Do you trust the contents of this directory? Working with untrusted contents",
         "  comes with higher risk of prompt injection. Trusting the directory allows",
         "  project-local config, hooks, and exec policies to load.",
@@ -1926,7 +1926,7 @@ mod tests {
 
         let footer_only = &[
             "  some transcript line",
-            "  gpt-5.6-sol default · /tmp/claude-1000/-home-coin-sprag/6fa43ef3-48fe-4a56-a7…",
+            "  gpt-5.6-sol default · /tmp/claude-1000/-home-user-sprag/6fa43ef3-48fe-4a56-a7…",
         ];
         assert_eq!(codex_verdict(footer_only, Some("codexprobe")).agent, None);
     }

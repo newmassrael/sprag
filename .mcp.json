@@ -2,7 +2,7 @@
   "mcpServers": {
     "mnemosyne": {
       "command": "mnemosyne-mcp",
-      "args": ["--workspace", "/home/coin/sprag"]
+      "args": ["--workspace", "."]
     }
   }
 }

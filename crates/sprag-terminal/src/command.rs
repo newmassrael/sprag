@@ -143,7 +143,7 @@ impl CommandBuilder {
     /// register item 417 is what happens when it is left to answer for the other case too. A pane
     /// that exists to run an AGENT exists to work in a PROJECT, and `$HOME` is the one directory
     /// that is certainly not it. Measured 2026-08-18: a restored `claude` came back asking to trust
-    /// `/home/coin` while the repository it had been working in sat one level down, and the run
+    /// `$HOME` while the repository it had been working in sat one level down, and the run
     /// never started.
     ///
     /// **The decision, taken rather than inherited: an agent's pane is opened in the project it was

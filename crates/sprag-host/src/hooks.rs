@@ -2051,10 +2051,18 @@ mod tests {
     /// assumed absent for rounds while they were arriving on every turn.
     ///
     /// Verbatim but for the values, which are shortened; the KEYS and their shapes are as captured.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND THE HOME DIRECTORY IS REDACTED, BECAUSE THIS REPOSITORY IS PUBLIC.** A capture
+    /// is taken on somebody's machine and carries their account name in every absolute path; the
+    /// claim it exists for is the agent's SCHEMA — which keys arrive, and in what shape — and none
+    /// of that is a function of whose home it was. ⚠ The substitution is kept CONSISTENT across
+    /// these fixtures (`/home/user`, and the encoded project directory that matches the `cwd` beside
+    /// it), because an encoded path that disagrees with its own `cwd` is a payload the agent could
+    /// not have sent, and a fixture that cannot occur gates nothing.
     fn captured_submit() -> Value {
         serde_json::json!({
             "session_id": "2987c0d6-b456-4847-8a90-8e4d701d97a1",
-            "transcript_path": "/home/coin/.claude/projects/-tmp-probe/2987c0d6.jsonl",
+            "transcript_path": "/home/user/.claude/projects/-tmp-probe/2987c0d6.jsonl",
             "cwd": "/tmp/probe",
             "prompt_id": "c47d7f47-933f-469e-bd8e-efc61818894f",
             "permission_mode": "default",
@@ -2081,7 +2089,7 @@ mod tests {
         assert_eq!(
             asked.transcript,
             Some(PathBuf::from(
-                "/home/coin/.claude/projects/-tmp-probe/2987c0d6.jsonl"
+                "/home/user/.claude/projects/-tmp-probe/2987c0d6.jsonl"
             )),
             "⚠⚠⚠ AND WHERE IT IS WRITING — register item 431 measured the spend reader answering 0 \
              for a session whose transcript existed, because it resolves that path from an id. The \
@@ -2140,8 +2148,8 @@ mod tests {
     fn captured_rest() -> Value {
         serde_json::json!({
             "session_id": "3a9c8559-735c-43ab-ba65-498684aa97da",
-            "transcript_path": "/home/coin/.claude/projects/-home-coin-sprag/3a9c8559.jsonl",
-            "cwd": "/home/coin/sprag",
+            "transcript_path": "/home/user/.claude/projects/-home-user-sprag/3a9c8559.jsonl",
+            "cwd": "/home/user/sprag",
             "prompt_id": "8ee4c9d6-00d6-4ec4-a46f-fb2eb4306818",
             "permission_mode": "auto",
             "effort": { "level": "xhigh" },
@@ -2162,8 +2170,8 @@ mod tests {
     fn captured_idle_notice() -> Value {
         serde_json::json!({
             "session_id": "9fa9e858-9f06-48b3-b209-7719596c1eb6",
-            "transcript_path": "/home/coin/.claude/projects/-home-coin-sprag/9fa9e858.jsonl",
-            "cwd": "/home/coin/sprag",
+            "transcript_path": "/home/user/.claude/projects/-home-user-sprag/9fa9e858.jsonl",
+            "cwd": "/home/user/sprag",
             "prompt_id": "1ede3513-323e-48d5-905e-4be58e0a3dec",
             "hook_event_name": "Notification",
             "message": "Claude is waiting for your input",

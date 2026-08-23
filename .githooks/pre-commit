@@ -22,7 +22,7 @@
 #        rather than deleted because a reader acted on it. It said `cargo fmt
 #        --all` "walks path-deps INTO pinion". Measured 2026-08-17 with
 #        `cargo fmt -v --all`: 60 targets, every one under
-#        `/home/coin/sprag/crates/`, not one pinion path. `--all` means
+#        this repository's own `crates/`, not one pinion path. `--all` means
 #        WORKSPACE MEMBERS, and pinion is not one — it has been a pinned git
 #        rev since R54 (see Cargo.toml: "sprag NO LONGER reads the sibling
 #        ../pinion working tree"), so it lives in cargo's checkout cache and
