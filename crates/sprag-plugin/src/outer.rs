@@ -4489,7 +4489,12 @@ impl OuterLoop {
         // else's prompt. One line here makes *whatever is in this slot belongs to this pass* true
         // by construction rather than by every exit remembering.
         self.witnessed = None;
-        let from = self.state();
+        // ⚠⚠⚠⚠⚠ **THERE IS NO PASS-LEVEL `from` ANY MORE, AND THE COMPILER IS WHAT SAID SO.** One
+        // used to be read here, and the only readers were the two arms below that raise AFTER
+        // `pumping` has run — the arms for which it is exactly the wrong reading, because the
+        // machine may have moved in between. Giving each of them its own read at its own raise
+        // left this one with no users at all, which is the shape register item 445 asks for: not
+        // two authorities kept in step, but one, in the only place that can be right.
         match self.pumping(panes, run) {
             // ⚠ NO NOTICE IS RECORDED, and that is deliberate — see [`Noticed`]'s own comment where
             // the arm would have been. The pane travels in the verdict and the walk names the
@@ -4532,6 +4537,13 @@ impl OuterLoop {
                 wanted: crate::deliver::SubmittedWhen::Took { .. },
             }) => {
                 self.noticed = Some(Noticed::Unasked { attempts, written });
+                // ⚠⚠⚠⚠⚠ **READ AT THE RAISE, for the sibling arm below's reason exactly.** This
+                // arm also raises AFTER `pumping` has run, so the pass's opening state is one the
+                // machine may already have left — and a walk line naming the wrong state is the
+                // defect register item 605 spent four rounds believing. Found 2026-08-23 by
+                // reading the sibling's own comment, which claimed *every other arm* reported a
+                // raise made while `from` was still current: this was the exception it named.
+                let from = self.state();
                 self.walk(AiLoopEvent::PromptUnasked);
                 Ok(Pumped::Moved {
                     from,
@@ -4557,10 +4569,12 @@ impl OuterLoop {
                 })
             }
             Err(PaneError::PeerGone(_)) => {
-                // ⚠⚠⚠⚠⚠ **READ AT THE RAISE, NOT AT THE TOP OF THE PASS.** Every other arm here is
-                // reporting a raise `pumping` made while `from` was still current; this one raises
-                // AFTER `pumping` has run, so the outer `from` is a state the machine may already
-                // have left. A walk line that names the wrong state is not a cosmetic defect: it
+                // ⚠⚠⚠⚠⚠ **READ AT THE RAISE, NOT AT THE TOP OF THE PASS.** The arms that report a
+                // raise `pumping` itself made are reading a `from` that was still current; the two
+                // that raise HERE, after `pumping` has run, are not — the sibling above is the
+                // other one, and it kept the stale reading for a round because this comment said
+                // *every other arm* and nobody counted them (2026-08-23).
+                // A walk line that names the wrong state is not a cosmetic defect: it
                 // is what register item 605 spent four rounds and five guard rewrites believing,
                 // because `Judging --PeerGone--> PeerGone` said the document had answered
                 // `peer.gone` from `judging` and the document, driven by hand from `judging`, does

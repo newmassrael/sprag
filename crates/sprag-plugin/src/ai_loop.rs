@@ -1865,6 +1865,43 @@ mod tests {
             }
             previous = Some(edge);
         }
+
+        // ── AND THE STEP'S OWN SENTENCE NAMES THE SAME STATE ITS LAST EDGE DOES ──
+        //
+        // ⚠⚠⚠⚠ **THE LAST EDGE, AND FINDING THAT OUT IS WHY THIS CHECK IS WORTH HAVING.** Written
+        // against the FIRST edge it went red on the two-event pass with *the note says `Working
+        // --PeerGone--> PeerGone` and the edge was raised from `judging`* — because the arm reports
+        // the raise IT made, which is the pass's last. A pass that raised `judge` and then
+        // `peer.gone` describes the second, and the first is the one only `walked` carries.
+        //
+        // ⚠⚠⚠⚠⚠ **TWO PUBLICATIONS OF ONE FACT, HELD AGAINST EACH OTHER** — register item 470's
+        // shape, and the reason this is not the prose-judging item 611 forbids: the SENTENCE is
+        // the artefact under test here, not the evidence. `Pumped::Moved` carries a `from` of its
+        // own and `walk` reads another at the raise, so the two can disagree — and when they do it
+        // is the sentence that is wrong, because the edge was read at the moment the event went in.
+        //
+        // ⚠⚠⚠ **THAT DISAGREEMENT IS WHAT COST REGISTER ITEM 605 FOUR ROUNDS.** Two arms of `pump`
+        // raise after `pumping` has run, and both once stamped their line with the state the PASS
+        // opened in. Fixing one left the other, and the comment beside the fix said *every other
+        // arm* — so nobody counted them until 2026-08-23. This is the check that would have.
+        // ⚠⚠ THE TWO VOCABULARIES ARE NORMALISED RATHER THAN ASSUMED EQUAL: the sentence spells a
+        // state with Rust's `Debug` (`PeerGone`) and the edge with the document's own id
+        // (`peer_gone`), which are the same word in two alphabets. Folding case and underscores is
+        // what lets the check be about the STATE rather than about a spelling convention.
+        let plainly = |word: &str| word.to_lowercase().replace('_', "");
+        for step in &journal {
+            let (Some(note), Some(reported)) = (step.note.as_deref(), step.walked.last()) else {
+                continue;
+            };
+            assert!(
+                plainly(note).starts_with(&plainly(reported.from)),
+                "⚠⚠⚠⚠⚠ THE STEP'S SENTENCE AND THE RAISE IT REPORTS NAME DIFFERENT STATES: the note \
+                 says {note:?} and that event was raised from {:?}. The edge is the one read AT the \
+                 raise, so a mismatch means some arm of `pump` is stamping its line with the state \
+                 the pass OPENED in — item 605's defect, wearing its original costume",
+                reported.from,
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔ **A RUN PUBLISHES WHERE IT IS AS A FIELD, IN THE DOCUMENT'S OWN WORD** — register
