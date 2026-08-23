@@ -307,6 +307,20 @@ impl AiLoop {
         self.inner.standing_down()
     }
 
+    /// **WHAT THIS RUN'S MACHINE WAS HANDED AND NEVER LOOKED AT** — see [`OuterLoop::unseen`] for
+    /// the three outcomes it separates, and why register item 605 needed it to exist.
+    #[must_use]
+    pub fn unseen(&self) -> Option<crate::sm::ai_loop::AiLoopEvent> {
+        self.inner.unseen()
+    }
+
+    /// **WHAT THIS RUN TOLD ITS MACHINE THAT THE DATAMODEL COULD NOT READ** — see
+    /// [`OuterLoop::unreadable_payload`] for why a run can work and mean nothing.
+    #[must_use]
+    pub fn unreadable_payload(&self) -> Option<crate::sm::ai_loop::AiLoopEvent> {
+        self.inner.unreadable_payload()
+    }
+
     /// How many turns the AGENT has taken — the document's own counter, which its `max_turns`
     /// guard compares against.
     ///
@@ -1621,13 +1635,86 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠⚠⚠ **EVERY PAYLOAD THIS LOOP HANDS ITS MACHINE IS ONE THE DATAMODEL CAN READ** —
+    /// consuming SCE's `undecodable_payloads`, 2026-08-23.
+    ///
+    /// # ⚠⚠⚠⚠ The failure it catches is a run that converges and decides nothing
+    ///
+    /// W3C SCXML B.2.8.1's third rung — *otherwise, the Processor MUST treat the content as a
+    /// space-normalized string literal* — is the right answer to a payload the datamodel cannot
+    /// parse, and it is SILENT. `judging` reads `_event.data.done` and four keys beside it; a
+    /// `judge` whose payload stopped parsing leaves all five nil, every guard reads false, the
+    /// ordinary edge is taken and the run converges. **Nothing raises, nothing fails, and the
+    /// verdict the agent gave is gone** — the same shape as register item 483's abandoned block,
+    /// one layer further out, and with no error event to catch it.
+    ///
+    /// Upstream measured exactly this on three independent Lua implementations and asked this loop
+    /// to look (SCE reply, 2026-08-23). [`AiLoop::unreadable_payload`] is the reading that makes
+    /// looking possible; before it, no gate in this crate could have gone red for it.
+    ///
+    /// ⚠⚠ **ASKED OF A LIVE RUN, not of the fixture constants beside it.** [`TURN`] and
+    /// [`ORDINARY`] are COPIES of what the driver sends, so a gate over them stays green on the
+    /// day the product's own `serde_json::json!` starts emitting something else — which is the
+    /// only way this can actually break.
+    #[test]
+    fn every_payload_this_loop_sends_is_one_its_datamodel_can_read() {
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 40,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .run(&mut loops, &access, &RunContext::uncancellable());
+
+        // ⚠ THE FIXTURE'S OWN PRECONDITION: a run that stopped early sent fewer payloads than this
+        // gate means to cover, so a clean reading below would be about the ones it never sent.
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "⚠⚠ this run must reach the ending it is written around, or the reading below covers a \
+             walk that did not happen: {:?}",
+            outcome.state,
+        );
+        assert_eq!(
+            loops.unreadable_payload(),
+            None,
+            "⚠⚠⚠⚠⚠ THE DATAMODEL COULD NOT READ WHAT THE DRIVER SENT ON THIS EVENT, so every \
+             `_event.data.<key>` the document reads for it is empty — and the run converged \
+             anyway, which is precisely why nothing else in this crate could have said so",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // ── THE CONTROL: the same document, one payload that announces structure and will not parse ──
+        //
+        // ⚠⚠⚠⚠⚠ Without it, `None` above is also what a reader wired to nothing answers. Lua's own
+        // table syntax is the shape chosen on purpose: it opens with `{`, so the ladder ATTEMPTS a
+        // structured read, and only an attempt that failed is the reading a driver may act on —
+        // prose arrives as text quietly and must not count (W3C test 562).
+        let (mut engine, _lua, _session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        engine.process_event(AiLoopEvent::PromptSent);
+        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, AiLoopEvent::Judge, "{done=true}");
+        assert_eq!(
+            engine.last_undecodable_payload(),
+            Some(AiLoopEvent::Judge),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, so the reading above says nothing about this run — a \
+             payload in Lua's table syntax has to come back as the one reading that names a \
+             problem, or this whole gate is blind",
+        );
+    }
+
     /// ⛔⛔⛔⛔ **A RUN PUBLISHES WHERE IT IS AS A FIELD, IN THE DOCUMENT'S OWN WORD** — register
     /// item 543, stage 3a.
     ///
     /// # The channel this fact did not have
     ///
-    /// The gate above reads the walk out of `journal[..].note` with `contains("Judging")` — and
-    /// that is the honest shape of what was available: **a substring match on a human sentence**.
+    /// [`a_loop_run_converges_under_the_driver_that_bounds_it`] reads the walk out of
+    /// `journal[..].note` with `contains("Judging")` — and that is the honest shape of what was
+    /// available: **a substring match on a human sentence**.
     /// Everything a program wanted to know about where a run is had to be recovered that way, from
     /// a journal bounded to [`JOURNAL_LIMIT`](crate::driver::JOURNAL_LIMIT) steps that
     /// `RunRegistry::persistable` deliberately does not save. So the position was unreadable, then
@@ -5969,6 +6056,37 @@ mod tests {
             .iter()
             .filter_map(|step| step.note.clone())
             .collect();
+        // ⚠⚠⚠⚠⚠ **WAS `peer.gone` EVEN LOOKED AT?** — the reading upstream asked for, and the one
+        // that eliminates a whole candidate. SCE's reply of 2026-08-23 drove this very document at
+        // this crate's own pin and had the guarded edge FIRE, leaving two explanations for what is
+        // measured here: the machine was not in `judging` when the event was dequeued, or it had
+        // stopped and never dequeued it at all. [`AiLoop::unseen`] answers the second, and the
+        // answer is that the event WAS dequeued — so the guard really was in the picture, and the
+        // next round's suspect is the ACTIVE STATE at the moment the driver raises.
+        assert_eq!(
+            loops.unseen(),
+            None,
+            "⚠⚠⚠⚠⚠ THE MACHINE REFUSED SOMETHING. Then item 605 is not about a guard at all: the \
+             run had already ended and the event above was never dequeued, which is the reading \
+             every earlier attempt was missing. Walked {walk:?}",
+        );
+        // ── THE CONTROL, and this gate is worth nothing without it ──
+        //
+        // ⚠⚠⚠⚠⚠ A reader that answers `None` because it is BLIND answers `None` here too. The run
+        // is over and `peer_gone` is final, so W3C SCXML Appendix D's main event loop has exited:
+        // an order arriving now is one the machine cannot look at, and the reading MUST turn into
+        // it. That is what makes the `None` above a fact about this run rather than the plumbing.
+        //
+        // ⚠ It costs nothing that the order is spent: `outcome` and `walk` are already read, and a
+        // stand-down against a machine that has stopped is precisely the thing being staged.
+        loops.stand_down();
+        assert_eq!(
+            loops.unseen(),
+            Some(crate::sm::ai_loop::AiLoopEvent::StandDown),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, so the `None` above says nothing. Either this reader cannot \
+             see a refused event at all, or this run did not actually end — and both make the \
+             measurement above unreadable. Walked {walk:?}",
+        );
         // ⚠⚠⚠⚠⚠ THE SAME TWO READERS, AFTER. Both said the order was standing a moment ago and the
         // guard that had to agree did not, so the remaining question is whether the fact SURVIVED
         // the run — a session re-initialised mid-run would put the datamodel back to its authored

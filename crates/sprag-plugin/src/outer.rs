@@ -3850,6 +3850,56 @@ impl OuterLoop {
             .any(|active| active == crate::sm::ai_loop::AiLoopState::StandingDown)
     }
 
+    /// **WHAT THIS MACHINE WAS HANDED AND NEVER LOOKED AT** — the last event refused because the
+    /// run had already ended, or [`None`] while it has refused nothing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It separates three outcomes a driver could not tell apart
+    ///
+    /// A pass raises an event and the configuration does not move. Until SCE grew this count there
+    /// were three explanations and no reading distinguished them:
+    ///
+    /// | what happened | what a driver could see |
+    /// | --- | --- |
+    /// | dequeued, no transition matched | `discarded_external_events` |
+    /// | dequeued, a transition matched and its guard was false | nothing at all |
+    /// | never dequeued — the machine had stopped | nothing at all |
+    ///
+    /// Register item 605 is the bill for that: five guard expressions were rewritten at `judging`'s
+    /// `peer.gone`, ending with a trivially true one, on the theory that the guard read false —
+    /// and the upstream reply (2026-08-23) drove the same document at this crate's own pin and had
+    /// the guarded edge fire. **The remaining candidate is the state of the machine at the moment
+    /// the driver raises**, and this is the reader that can say so.
+    ///
+    /// ⚠⚠ It names the EVENT rather than counting, because a count says something was lost and a
+    /// name says what — and the count is redundant with the name's presence: SCE records the last
+    /// refused event exactly when the count is non-zero.
+    #[must_use]
+    pub fn unseen(&self) -> Option<AiLoopEvent> {
+        self.machine.last_unseen_event()
+    }
+
+    /// **WHAT THIS DRIVER TOLD ITS MACHINE THAT THE DATAMODEL COULD NOT READ** — the last event
+    /// whose payload announced structure and did not parse, or [`None`] while every payload has
+    /// been read as one.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The failure it makes visible is a run that works and means nothing
+    ///
+    /// W3C SCXML B.2.8.1 ends *"otherwise, the Processor MUST treat the content as a
+    /// space-normalized string literal"*, and that fallback is correct. What it costs is silence:
+    /// the document then reads `_event.data.done`, gets nothing, assigns nothing, and the run
+    /// carries on to a perfectly ordinary ending. **Nothing fails.** Every payload this loop hands
+    /// its machine is a guard's or an `<assign>`'s input, so a payload that stopped parsing would
+    /// turn a judged turn into an unjudged one with no reading anywhere to say so — which is the
+    /// same shape as register item 483's abandoned block, one layer further out.
+    ///
+    /// ⚠⚠ Only the reading a driver can act on is carried here. Prose delivered as text is the
+    /// ladder working (W3C test 562) and SCE does not count it — a diagnostic that fires when
+    /// nothing is wrong is one nobody reads.
+    #[must_use]
+    pub fn unreadable_payload(&self) -> Option<AiLoopEvent> {
+        self.machine.last_undecodable_payload()
+    }
+
     /// **A WATCHING PERSON HALTS THE LOOP BETWEEN TURNS** — `hold` → `awaiting_human`, the edge
     /// register item 9 recorded as having no producer.
     ///
@@ -7757,7 +7807,7 @@ mod tests {
     use crate::testing::{standin_agent, started, supervised};
     use sce_rust_runtime::helpers::io_processors::IoProcessorDescriptor;
     use sce_rust_runtime::scripting::i_script_engine::{NativeMethod, StateQueryCallback};
-    use sce_rust_runtime::{ScriptResult, SetCurrentEventArgs};
+    use sce_rust_runtime::{PayloadReading, ScriptResult, SetCurrentEventArgs};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -8111,11 +8161,15 @@ mod tests {
             self.inner
                 .setup_system_variables(session_id, session_name, io)
         }
+        // The `PayloadReading` is FORWARDED, not re-decided here: it is the rung
+        // W3C SCXML B.2.8.1 gave, and only the engine underneath walked that ladder.
+        // Returning a synthesized `Absent` would compile and would make
+        // `undecodable_payloads` blind for every machine this decorator wraps.
         fn set_current_event(
             &self,
             session_id: &str,
             args: SetCurrentEventArgs<'_>,
-        ) -> ScriptResult<()> {
+        ) -> ScriptResult<PayloadReading> {
             self.inner.set_current_event(session_id, args)
         }
         fn register_global_function(&self, name: &str, callback: NativeMethod) -> bool {
