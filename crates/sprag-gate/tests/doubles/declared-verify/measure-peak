@@ -93,6 +93,21 @@ if [ "$rc" -ne 0 ]; then
     grep -aE '^error|FAILED|panicked at|sweep-coverage:' "$out" | tail -20
     echo "--- end ---"
 fi
+
+# ⚠⚠⚠ HOW FAR EACH LEG ACTUALLY GOT — register item 624, and OUTSIDE the failure branch on purpose.
+# `sweep-coverage` reported four crates as having run NOTHING on the first real use of this
+# instrument, and neither the exit code nor the failure lines above could say whether their tests
+# were never BUILT or never REACHED. These counts separate exactly that: a leg that compiled
+# everything and ran it prints one `test result:` per target it STARTED, and a leg that stopped
+# early prints fewer. ⚠ Printed on green runs too — a coverage question whose answer only appears
+# when something else went wrong is a question nobody asks on the day it matters.
+for leg in /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log; do
+    [ -f "$leg" ] || continue
+    started=$(grep -ac '^ *Running \|^ *Doc-tests ' "$leg")
+    reported=$(grep -ac '^test result:' "$leg")
+    errors=$(grep -ac '^error\[\|could not compile' "$leg")
+    echo "LEG_${leg##*/} STARTED=$started REPORTED=$reported COMPILE_ERRORS=$errors"
+done
 sort -rn "$peaks" | head -1 | while IFS=$'\t' read -r kb line; do
     echo "PEAK_KB=$kb"
     echo "PEAK_WORST=$line"

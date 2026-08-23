@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# THE DECLARED `verify`, COLD, WITH NOTHING WATCHING IT — register item 624's discriminator.
+#
+# Three explanations for the four crates `sweep-coverage` reported as unrun were excluded in turn
+# (the checker is right, nothing failed to compile, the run did not stop), and then a fourth: a
+# cold `cargo test --workspace --exclude sprag-gui --no-fail-fast` run on its own reports all 87
+# targets, so COLDNESS is not it either.
+#
+# ⚠⚠⚠⚠⚠ WHAT IS LEFT IS THE INSTRUMENT. Both short runs happened inside `measure-peak`, whose
+# sampler walks every entry of `/proc` every 0.2s — thousands of short-lived `awk` and `tr`
+# processes on the same host cargo is using. An instrument that perturbs what it measures is the
+# oldest failure in measurement there is, and nothing in the earlier artefacts separates it from a
+# property of the command.
+#
+# So: the same declared command, the same cold target, and NOBODY SAMPLING. If this reports 87, the
+# sampler is the cause and `measure-peak` needs a cheaper one; if it reports 59, the command itself
+# has a coverage hole and the sampler is exonerated.
+set -u
+decl=".claude/remote-build.toml"
+[ -f "$decl" ] || { echo "run me from the workspace root; no $decl here" >&2; exit 2; }
+cmd=$(sed -n 's/^verify = "\(.*\)"$/\1/p' "$decl")
+[ -n "$cmd" ] || { echo "no [commands] verify parsed" >&2; exit 2; }
+
+cold=$(mktemp -d)
+out=$(mktemp)
+trap 'rm -rf "$cold" "$out"' EXIT
+
+CARGO_TARGET_DIR="$cold" sh -c "$cmd" > "$out" 2>&1
+echo "RUN_STATUS=$?"
+
+echo "=== what sweep-coverage said ==="
+grep -a 'sweep-coverage:\|the sweep reached' "$out" | tail -2
+
+for leg in /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log; do
+    [ -f "$leg" ] || continue
+    echo "LEG_${leg##*/} RUNNING=$(grep -ac '^ *Running' "$leg") DOCTESTS=$(grep -ac '^ *Doc-tests' "$leg") RESULTS=$(grep -ac '^test result:' "$leg")"
+done

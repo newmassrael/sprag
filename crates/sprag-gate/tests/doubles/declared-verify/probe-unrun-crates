@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# WHICH TEST TARGETS A COLD SWEEP LEAVES UNRUN, AND WHETHER IT BUILT THEM — register item 624.
+#
+# `sweep-coverage` reported four crates as having run NOTHING on a cold `verify`, reproducibly, and
+# the three obvious explanations are all excluded: the checker is right (it passes a complete log
+# and refuses a short one), nothing failed to compile (`COMPILE_ERRORS=0`), and the run did not stop
+# (it reported 59 results and exited). Measured against a warm sweep of the SAME command: 59 of 87.
+#
+# ⚠⚠ THE QUESTION THIS ANSWERS IS THE ONE THAT SPLITS WHAT IS LEFT. If the four crates' lib
+# unittest binaries are ON DISK in the cold target, cargo BUILT them and did not RUN them; if they
+# are absent, cargo never made those targets at all. Those are different defects with different
+# questions to put to cargo, and no artefact from the earlier runs distinguishes them.
+#
+# ⚠ Tracked and unpiped, because both matter: a program a suite writes cannot be executed
+# (register item 467), and a verdict read through a pipe is the pipe's (guard rule F1). Every
+# stage here writes a file and the file is what is read.
+set -u
+cold=$(mktemp -d)
+log=$(mktemp)
+trap 'rm -rf "$cold" "$log"' EXIT
+
+CARGO_TARGET_DIR="$cold" cargo test --workspace --exclude sprag-gui --no-fail-fast > "$log" 2>&1
+echo "RUN_STATUS=$?"
+
+echo "=== crates whose lib unittest RAN ==="
+grep -aoE 'deps/sprag_[a-z]+-' "$log" | sort -u
+
+echo "=== lib unittest binaries BUILT for the four in question ==="
+built=0
+for c in sprag_detect sprag_client sprag_conformance sprag_gate; do
+    n=$(find "$cold/debug/deps" -maxdepth 1 -name "$c-*" -type f 2>/dev/null | wc -l)
+    echo "BUILT_$c=$n"
+    built=$((built + n))
+done
+echo "BUILT_TOTAL=$built"
+
+echo "=== counts ==="
+echo "RESULTS=$(grep -ac '^test result:' "$log")"
+echo "RUNNING=$(grep -ac '^ *Running' "$log")"
+echo "DOCTESTS=$(grep -ac '^ *Doc-tests' "$log")"
+echo "COMPILE_ERRORS=$(grep -ac '^error\[\|could not compile' "$log")"
