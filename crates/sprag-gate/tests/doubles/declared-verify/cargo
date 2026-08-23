@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# A `cargo` that RECORDS WHICH SUBCOMMAND IT WAS ASKED FOR and can be told to fail one of them —
+# what `the_declared_verify_cannot_pass_a_subset` puts the declared `verify` command to.
+#
+# The question that gate asks is about the command's CONTROL FLOW: does a red clause withdraw the
+# ones after it, and does a red anywhere still end red. Answering it needs the real declared text
+# run by a real shell, with only `cargo` replaced — a paraphrase of the command would be a second
+# copy of the thing under test, agreeing with whatever the test author believed.
+#
+# ⚠⚠ TRACKED rather than written by the suite — register item 467. The first version of that gate
+# wrote this script into a temp directory and chmod'ed it, which is exactly the defect: a file a
+# process holds open for writing cannot be executed, and this workspace's harness forks from
+# threads. `no_suite_runs_a_program_it_wrote` caught it in the sweep of the round that added it.
+#
+# ⚠ TWO ENVIRONMENT VARIABLES, both supplied by the caller:
+#   * `DOUBLE_CALLS` — the file each subcommand is appended to, one per line, in order.
+#   * `DOUBLE_FAIL_NTH` — 1-based index of the invocation that exits 1; `0` fails none.
+printf '%s\n' "$1" >> "$DOUBLE_CALLS"
+n=$(wc -l < "$DOUBLE_CALLS")
+if [ "$n" -eq "${DOUBLE_FAIL_NTH:-0}" ]; then
+    exit 1
+fi
+exit 0

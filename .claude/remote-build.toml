@@ -53,7 +53,7 @@ peak_gb_per_task = 2
 # What the machine has to produce before anything can be judged.
 build = "cargo test --workspace --no-run"
 
-# ⚠⚠ THE SAME FOUR GATES THIS PROJECT RUNS LOCALLY, in one command so a remote run cannot pass a
+# ⚠⚠ THE SAME GATES THIS PROJECT RUNS LOCALLY, in one command so a remote run cannot pass a
 # subset. Each is here for a reason the others do not cover:
 #
 #   1. the workspace suite, minus sprag-gui — the bulk of the evidence;
@@ -62,8 +62,31 @@ build = "cargo test --workspace --no-run"
 #      are load-bearing: without cgroup delegation the daemon otherwise tries a real session bus
 #      and the gates hang rather than fail;
 #   3. clippy over ALL targets, because a lint that only fires in a test is still a lint;
-#   4. rustdoc, because a broken intra-doc link is how this workspace's docs rot silently.
-verify = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR=/nonexistent cargo test -p sprag-gui --bins && cargo clippy --workspace --all-targets && cargo doc --workspace --no-deps"
+#   4. rustdoc, because a broken intra-doc link is how this workspace's docs rot silently;
+#   5. and the coverage of what clauses 1-2 actually reached, which their exit codes cannot say.
+#
+# ⛔⛔⛔ THE SENTENCE ABOVE WAS FALSE UNTIL 2026-08-23, AND IT SAID SO IN THE OPPOSITE DIRECTION.
+# The four clauses were joined by `&&` and none carried `--no-fail-fast`, which is a subset TWICE
+# over: `cargo test` stops at its first failing binary (measured on this workspace: 61 suites of
+# 80, register item 585), and `&&` withdraws every later clause the moment an earlier one is red —
+# so a failing suite silently removed clippy and rustdoc from the run. Both come back as the same
+# exit code a full run gives. Register item 620; four gates in
+# `crates/sprag-gate/tests/the_declared_verify_cannot_pass_a_subset.rs` hold the repair, and they
+# read THIS line rather than a copy of it — one of them RUNS it, with a tracked `cargo` double, so what is
+# checked is the control flow rather than a substring of it.
+#
+# ⚠⚠ `cmd || rc=1` RATHER THAN `&&`, AND `exit $rc` AT THE END. Every clause runs, every failure
+# is remembered, and the command still ends red. Plain `;` alone would be the naive repair and a
+# worse defect than the original: every clause would run and the shell would report the LAST
+# clause's status, so a failing suite would come back 0 — success over a failure rather than over
+# silence. The gates named above drive exactly this, with a tracked `cargo` double.
+#
+# ⚠ THE TEST OUTPUT GOES TO FILES THIS COMMAND CREATES, not to `bx`'s log: bx writes that on the
+# LOCAL side while these clauses run on the remote, so the remote has no copy to read. It is
+# `cat`ted straight afterwards so the run still streams — the files exist for `sweep-coverage`,
+# which needs both legs together to see all fifteen crates (the workspace one excludes the GPU
+# crate that the second leg is).
+verify = "rc=0 ; cargo test --workspace --exclude sprag-gui --no-fail-fast > /tmp/sprag-verify-1.log 2>&1 || rc=1 ; cat /tmp/sprag-verify-1.log ; DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR=/nonexistent cargo test -p sprag-gui --bins --no-fail-fast > /tmp/sprag-verify-2.log 2>&1 || rc=1 ; cat /tmp/sprag-verify-2.log ; cargo clippy --workspace --all-targets || rc=1 ; cargo doc --workspace --no-deps || rc=1 ; cargo run -q -p sprag-gate --bin sweep-coverage -- /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log || rc=1 ; exit $rc"
 
 # ⚠⚠⚠ MEASURED 2026-08-12, FIRST REMOTE RUN — ONE GATE DIVERGES BETWEEN TWO MACHINES AND WHY IS NOT
 # KNOWN. `sprag-host --test cli`'s `a_hooks_report_does_not_outlive_an_agent_the_pane_did_not_spawn`
@@ -184,10 +207,35 @@ verify = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS
 # tracked set. Every peak recorded here is a compiler, so nothing observed was lost this way; a
 # reading whose `worst` is a sprag binary should be taken again with that in mind.
 [peak_measured]
-date = "2026-08-20"
-host = "pc2, a 32-core 125GB build machine, rustc 1.97.1, RUST_TEST_THREADS=CARGO_BUILD_JOBS=31"
-worst = "rustdoc --crate-name sprag_gui crates/sprag-gui/src/main.rs, in the cargo doc clause of verify"
+date = "2026-08-23"
+host = "pc2, a 32-core build machine, rustc stable, via bx"
+worst = "rustc --crate-name sce_build, in the first cargo test clause of verify"
 build_cmd = "cargo test --workspace --no-run"
 build_kb = 1204328
-verify_cmd = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR=/nonexistent cargo test -p sprag-gui --bins && cargo clippy --workspace --all-targets && cargo doc --workspace --no-deps"
-verify_kb = 1233428
+verify_cmd = "rc=0 ; cargo test --workspace --exclude sprag-gui --no-fail-fast > /tmp/sprag-verify-1.log 2>&1 || rc=1 ; cat /tmp/sprag-verify-1.log ; DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR=/nonexistent cargo test -p sprag-gui --bins --no-fail-fast > /tmp/sprag-verify-2.log 2>&1 || rc=1 ; cat /tmp/sprag-verify-2.log ; cargo clippy --workspace --all-targets || rc=1 ; cargo doc --workspace --no-deps || rc=1 ; cargo run -q -p sprag-gate --bin sweep-coverage -- /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log || rc=1 ; exit $rc"
+verify_kb = 1638964
+
+# ⚠⚠⚠ THE 2026-08-23 RE-MEASUREMENT, AND WHAT IT IS AND IS NOT — register item 623.
+#
+# `verify` was rewritten (register item 620) so it can no longer pass a subset, which made the row
+# above a measurement of a command that no longer existed. The gate said so and this is its repair,
+# taken with the instrument this repository now tracks:
+#
+#     bx -- bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak verify
+#
+# ⚠ THE RUN WAS NOT GREEN AND THE NUMBER IS STILL THE RIGHT ONE. On a cold target `verify` runs
+# without `build` before it, so `sprag-tui`'s pty suite refused 99 of its cases through
+# `sprag_gate`'s own staleness guard — a binary `cargo test` never built. That is the staging of a
+# clause-by-clause measurement, not a product failure, and the note above already says why it does
+# not spoil the reading: **on this workspace the ceiling is a compilation ceiling**, and the worst
+# process was a rustc either way.
+#
+# ⚠⚠ THE NUMBER ROSE 33% (1233428 -> 1638964) AND ONLY PART OF THAT IS THIS CHANGE. The new clause
+# builds `sprag-gate`'s binaries, which the old command never did — but three days of dependency and
+# toolchain drift sit in the same difference and nothing here separates them. Recorded as one
+# reading with its date rather than split by a guess.
+#
+# ⚠⚠⚠ AND THE NEW CLAUSE EARNED ITSELF ON ITS FIRST REAL RUN: `sweep-coverage` reported *4 of 15
+# crates ran NOTHING in this sweep — sprag-detect, sprag-client, sprag-conformance, sprag-gate*.
+# Whether that is the cold run dying early or something else is UNMEASURED and is its own register
+# item; what matters here is that the exit code alone would have said none of it.

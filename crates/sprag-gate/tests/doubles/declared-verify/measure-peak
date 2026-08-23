@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# HOW `[peak_measured]` IS TAKEN — the instrument, tracked, so a re-measurement is a command rather
+# than a paragraph somebody follows.
+#
+# `a_fleet_ceiling_is_a_measurement_with_a_date` refuses a `*_cmd` that no longer matches
+# `[commands]`, and its message says to measure again. What it does NOT do — cannot do — is take the
+# measurement. That was prose until register item 623: the method lived in a comment in
+# `.claude/remote-build.toml` and every re-measurement was somebody reading it and improvising.
+#
+# ⚠⚠ TWO THINGS THE COMMENT INSISTS ON, and both are here rather than remembered:
+#   * a COLD `CARGO_TARGET_DIR` — a warm one skips the compilation whose peak is the answer;
+#   * `VmHWM` sampled from `/proc` for every compiler process, NOT `/usr/bin/time -v`, whose
+#     `ru_maxrss` of RUSAGE_CHILDREN cannot be told from the instrument measuring `cargo` itself.
+#
+# ⚠ It lives beside the `cargo` double because both belong to the same claim — what the declared
+# command IS and what it COSTS — and `sprag_gate::doubles` is the one place this workspace keeps
+# tracked, executable helpers.
+#
+# Usage:  bx -- bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak <command-name>
+# Prints: the largest VmHWM in kB and the command line that reached it, then the run's own status.
+set -u
+name="${1:?name a key from [commands], e.g. verify}"
+decl=".claude/remote-build.toml"
+[ -f "$decl" ] || { echo "run me from the workspace root; no $decl here" >&2; exit 2; }
+
+cmd=$(sed -n "s/^${name} = \"\(.*\)\"$/\1/p" "$decl")
+[ -n "$cmd" ] && [ "$(printf '%s\n' "$cmd" | wc -l)" -eq 1 ] || {
+    echo "no single-line [commands] ${name} in $decl — this instrument reads the same shape the gate does" >&2
+    exit 2
+}
+
+cold=$(mktemp -d)
+peaks=$(mktemp)
+out=$(mktemp)
+trap 'rm -rf "$cold" "$peaks" "$out"' EXIT
+
+# ⚠⚠⚠ THE RUN'S OUTPUT IS KEPT, not sent to /dev/null. The first version discarded it, and when the
+# measured run came back non-zero there was NOTHING to say why — an instrument that reports a
+# failure it cannot explain sends the next person to run the whole thing again. Register item 623's
+# own round paid that: five minutes of cold build, `RUN_STATUS=1`, and no reason anywhere.
+#
+# ⚠ It also cost the round a second way, which is worth naming here because this is where the habit
+# lives: a job that writes NOTHING looks finished to anything watching its log's mtime, and the
+# poll guard let twenty-five reads through on exactly that silence (register item 618).
+CARGO_TARGET_DIR="$cold" sh -c "$cmd" > "$out" 2>&1 &
+job=$!
+# Sample while it runs. The kernel keeps VmHWM per process, so the interval only has to catch a
+# process ALIVE — it does not have to catch it at its peak.
+# ⛔⛔⛔⛔ ONLY PROCESSES UNDER **THIS** RUN. The first version walked all of `/proc` and filtered on
+# the program name, and on a shared build machine that is somebody else's build: the reading came
+# back naming `rustc --crate-name mnemosyne_mcp`, a crate this workspace does not contain. A ceiling
+# derived from another repository's compile is not a measurement of anything here — and it reads
+# exactly like a correct one, which is what makes it worse than no number.
+#
+# Ancestry is walked rather than the process group, because `cargo` puts its children in groups of
+# their own; `PPid` chains back to `$job` for every descendant.
+mine() {
+    local pid="$1" hops=0 ppid
+    while [ "$pid" -gt 1 ] && [ "$hops" -lt 12 ]; do
+        [ "$pid" -eq "$job" ] && return 0
+        ppid=$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null) || return 1
+        [ -n "${ppid:-}" ] || return 1
+        pid="$ppid"
+        hops=$((hops + 1))
+    done
+    return 1
+}
+
+while kill -0 "$job" 2>/dev/null; do
+    for p in /proc/[0-9]*; do
+        pid="${p#/proc/}"
+        hwm=$(awk '/^VmHWM/{print $2}' "$p/status" 2>/dev/null) || continue
+        [ -n "${hwm:-}" ] || continue
+        mine "$pid" || continue
+        line=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null | cut -c1-140)
+        [ -n "$line" ] || continue
+        printf '%s\t%s\n' "$hwm" "$line" >> "$peaks"
+    done
+    sleep 0.2
+done
+wait "$job"
+rc=$?
+
+echo "MEASURED_COMMAND=$name"
+echo "RUN_STATUS=$rc"
+# ⚠ A NON-ZERO RUN IS STILL A VALID MEASUREMENT — the peak is what the work cost, not whether it
+# passed — but the reason has to travel with it or the number arrives unexplained.
+if [ "$rc" -ne 0 ]; then
+    echo "--- why it was not green (tail of the run) ---"
+    # ⚠ `-a`, because a captured build log contains bytes grep calls binary and then SKIPS THE FILE
+    # ENTIRELY, printing only *binary file matches*. Measured here: the first run with this block
+    # reported a failure and explained nothing, which is the shape it was added to remove.
+    grep -aE '^error|FAILED|panicked at|sweep-coverage:' "$out" | tail -20
+    echo "--- end ---"
+fi
+sort -rn "$peaks" | head -1 | while IFS=$'\t' read -r kb line; do
+    echo "PEAK_KB=$kb"
+    echo "PEAK_WORST=$line"
+done
