@@ -10083,6 +10083,141 @@ fn a_signalled_daemon_holding_a_live_run_is_gone_promptly() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **AND SO IS ONE WHOSE RUN IS DRIVEN IN A PROCESS OF ITS OWN** — register item 664.
+///
+/// # ⚠⚠⚠⚠⚠ Why its neighbour above cannot see this, when it drives the very same handler
+///
+/// That gate submits a run to a daemon on today's default (`run-driver-process = off`), so the run
+/// it holds is driven by a THREAD sharing the registry's flags: `cancel_all` stores into the same
+/// `AtomicBool` the worker is reading, the worker sees it at its next loop top, and the bounded
+/// join returns in milliseconds. **Nothing is published, and nothing needs to be.**
+///
+/// A driver in another process shares no memory with this daemon. Its orders are the run's ROW and
+/// it is WOKEN to re-read that row (`Event::RunOrdered`, register item 648) — and the shutdown
+/// sweep calls [`sprag_host::runs::RunRegistry::cancel_all`] on the registry DIRECTLY, past the
+/// three doors of `PluginsExternal` that announce on their accepted arms. So the flags
+/// `ProcessRun` holds are, in its own words, *pure record*: nobody wakes, nobody re-reads, the
+/// collector thread goes on waiting for a child that was never told, and the handler pays
+/// `JOIN_DEADLINE` in full before its `exit`.
+///
+/// ⚠⚠ **THE OPTION IS TURNED ON HERE RATHER THAN WAITED FOR.** Item 544's flip is what makes this
+/// the ordinary path, and item 664 is one of the two things holding that word at `off` — a gate
+/// that waited for the default would be a gate for the day after the repair.
+///
+/// ⚠⚠⚠ **THE STAGING CONTROL IS THE PROCESS TABLE**, and without it *the sweep reaches its
+/// drivers* and *this daemon never had one* are the same green: a config that failed to take, a
+/// run refused, or a driver that had not been spawned yet all produce a daemon that exits fast
+/// because there was nothing to wait for. Two `sprag-term` against this socket is what says the
+/// run really is being driven somewhere else.
+///
+/// ⚠ The pid is captured BEFORE the signal and asked about by number afterwards. [`daemon_pid`]
+/// answers *the holder that is nobody's child*, and the moment the daemon goes its orphaned driver
+/// becomes exactly that — so re-asking the question would answer the driver's pid and this gate
+/// would hang on a daemon that had already gone.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_signalled_daemon_whose_run_is_driven_elsewhere_is_gone_promptly() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-sigterm-driven-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let _guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    let config = state.join("config").join("sprag");
+    std::fs::create_dir_all(&config).expect("this test's own config directory");
+    std::fs::write(
+        config.join(sprag_host::CONFIG_FILE),
+        format!(
+            "[options]\n{} = \"on\"\n",
+            sprag_host::options::RUN_DRIVER_PROCESS
+        ),
+    )
+    .expect("a config a daemon will read");
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": pane,
+                "stimulus": "x",
+                // Never printed by a `cat`, and bounded far past any shutdown: the run must still
+                // be GOING when the signal lands or the timing below measures an empty registry.
+                "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the run is submitted");
+
+    assert!(
+        wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
+        "⚠⚠ THE PREMISE: this run is driven in a process of its own, so there are two `sprag-term` \
+         against this socket. Found {}, and the timing below would then be a measurement of a \
+         daemon holding nothing.",
+        sprag_term_processes(&sock),
+    );
+
+    let pid = daemon_pid(&sock).expect("the daemon this test spawned");
+    let signalled = Instant::now();
+    // SAFETY: `pid` was just read from the process table for a daemon this test spawned, matched by
+    // its own socket in the environment — `daemon_pid`'s doc says why that matters.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    let gone = wait_for(Duration::from_secs(10), || {
+        !sprag_terminal::procfs::pids_named("sprag-term").contains(&pid)
+    });
+    let took = signalled.elapsed();
+    assert!(gone, "the signalled daemon was still there after {took:?}");
+    assert!(
+        took < Duration::from_secs(2),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 664: the signalled daemon took {took:?} to go, which is \
+         `JOIN_DEADLINE` ({:?}) rather than the milliseconds its thread-driven neighbour costs — \
+         so the collector thread waited out a child that never stopped, and a person who \
+         signalled this daemon waited with it. ⚠⚠ TWO SEAMS CAN PRODUCE THIS, and a reader must \
+         not stop at the first: (1) THE SWEEP TOLD NOBODY — a driver in another process reads its \
+         orders off the row and is woken to re-read it, so a `cancel_all` that publishes nothing \
+         is a flag written for a reader that shares no memory with this daemon (`Orders::deliver` \
+         is where that announcement is raised, and it is raised for every order because the sweep \
+         reaches the registry directly, past the plugin surface's doors); (2) THE DAEMON COULD \
+         NOT ANSWER — what the woken driver does is CALL BACK for its row, so a shutdown holding \
+         the registry lock across its join blocks the one question it has just asked for, and the \
+         wake buys nothing (`RunRegistry::stop_all_within` takes that lock per pass for exactly \
+         this reason). Both were measured red on 2026-08-25, separately, at 5.03 s and 5.02 s.",
+        sprag_host::runs::RunRegistry::JOIN_DEADLINE,
+    );
+}
+
 /// ⚠⚠ **A FLAG NOBODY WROTE IN THIS BINARY** — the publication surface paying out for an argument
 /// that did not exist when the door was built.
 ///

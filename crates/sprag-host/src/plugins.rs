@@ -824,19 +824,6 @@ impl PluginsExternal {
         }
     }
 
-    /// Announce that a person has said something to `id` — [`on_run_ordered`](Self::on_run_ordered),
-    /// or nothing at all off a daemon.
-    ///
-    /// ⚠⚠⚠ **CALLED ONLY WHERE THE ORDER WAS ACCEPTED.** A refusal is a fact about the REQUEST —
-    /// there is no such run, or its plugin reads no such order — and waking every watcher of a
-    /// session to re-read a row that did not move is the shape this journal exists to avoid. Each
-    /// of the three doors below announces on its own success path for exactly that reason.
-    fn ordered(&self, id: RunId) {
-        if let Some(announce) = &self.on_run_ordered {
-            announce(id);
-        }
-    }
-
     /// `run` action: build the named plugin, validate its target panes, spawn
     /// it on a background thread, and return its run id.
     fn run(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
@@ -945,9 +932,13 @@ impl PluginsExternal {
             .and_then(Value::as_u64)
             .ok_or(InvokeError::TypeMismatch)?;
         if lock(&self.runs).cancel(RunId(id)) {
-            // ⚠ AFTER the registry has taken it and INSIDE the accepted arm — register item 648.
-            // See `ordered`.
-            self.ordered(RunId(id));
+            // ⚠⚠⚠ NOTHING IS ANNOUNCED HERE — register item 664, and it is a REPAIR rather than an
+            // omission. The announcement is raised by `crate::runs::Orders::deliver`, where every
+            // order passes and where the daemon's own shutdown sweep passes too; three doors each
+            // remembering to publish is what left that fourth caller silent. ⚠ And it lands more
+            // precisely there: this arm is `true` for a RESTORED run as well, whose `deliver` does
+            // nothing at all, so what used to be published was a wake to re-read a row that had
+            // not moved.
             Ok(IntrospectValue::Null)
         } else {
             Err(refused(format!("no run {id} is in flight")))
@@ -974,13 +965,11 @@ impl PluginsExternal {
         // door used to collapse three states of the world into one boolean and answer `refused: no
         // run N is in flight` for the only one it could name, while a run of a plugin with no
         // reader for the order was answered OK and drove straight on.
+        // ⚠ NOTHING IS ANNOUNCED HERE — see `cancel` above and register item 664: the delivery
+        // itself publishes, so the accepted arm is the only arm that ever could.
         lock(&self.runs)
             .stand_down(RunId(id))
-            .map(|()| {
-                // ⚠ ON THE ACCEPTED ARM ONLY — register item 648, and see `ordered`.
-                self.ordered(RunId(id));
-                IntrospectValue::Null
-            })
+            .map(|()| IntrospectValue::Null)
             .map_err(|why| refused(why.describe(RunId(id))))
     }
 
@@ -1044,16 +1033,13 @@ impl PluginsExternal {
         // ⚠⚠⚠⚠ THE REASON IS THE REGISTRY'S — items 539 and 597, its sibling door's argument
         // verbatim. This is the one the register was FILED for: a person holds an `orchestrator` to
         // read its pane, is told the pane is now still, and it is not.
+        // ⚠⚠ A REPEATED HOLD ANNOUNCES TOO, and that rule now lives where the order is written —
+        // `crate::runs::Orders::deliver`, register item 664. The event says *a person spoke*, not
+        // *the level moved*, and suppressing it would need a reader of the previous level, which
+        // was never this surface's fact to hold.
         lock(&self.runs)
             .hold(RunId(id), held)
-            .map(|()| {
-                // ⚠⚠ ON THE ACCEPTED ARM, AND A REPEATED HOLD ANNOUNCES TOO — register item 648.
-                // The event says *a person spoke*, not *the level moved*, so re-asserting a hold is
-                // a thing that happened. Suppressing it would need this door to know the previous
-                // level, which is the registry's fact and not this surface's.
-                self.ordered(RunId(id));
-                IntrospectValue::Null
-            })
+            .map(|()| IntrospectValue::Null)
             .map_err(|why| refused(why.describe(RunId(id))))
     }
 
@@ -1578,7 +1564,20 @@ impl PluginsExternal {
             // in-process, which is exactly where that knowledge should end up once a run's driver
             // can be another process. See `sprag_host::runs::RunHandle`.
             Box::new(crate::runs::ThreadRun::new(
-                cancel, order, hold, honoured, handle,
+                // ⚠⚠⚠ AND WHERE AN ORDER TO IT IS ANNOUNCED — register item 664. It used to be
+                // this surface's three doors that published, each on its own accepted arm, which
+                // left the daemon's shutdown sweep publishing nothing at all. Handed to the record
+                // instead, so *an order accepted is an order announced* is one rule rather than
+                // four callers remembering it.
+                crate::runs::Orders::new(
+                    cancel,
+                    order,
+                    hold,
+                    honoured,
+                    id,
+                    self.on_run_ordered.clone(),
+                ),
+                handle,
             )),
         )
     }
@@ -1702,11 +1701,19 @@ impl PluginsExternal {
             state,
             // ⚠⚠ THE THREE FLAGS ARE PURE RECORD HERE — nothing in this image reads them, and the
             // driver learns an order by being woken to re-read its row (register item 648).
+            //
+            // ⛔⛔⛔ **SO THE ANNOUNCER IS NOT AN EXTRA HERE, IT IS THE DELIVERY** — register item
+            // 664. Without it this run's `deliver` writes three flags nobody in either process
+            // reads, and the driver is never told anything at all.
             Box::new(crate::runs::ProcessRun::new(
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(AtomicBool::new(false)),
-                honoured,
+                crate::runs::Orders::new(
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(AtomicBool::new(false)),
+                    honoured,
+                    id,
+                    self.on_run_ordered.clone(),
+                ),
                 collector,
             )),
         ))

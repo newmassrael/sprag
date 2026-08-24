@@ -871,7 +871,14 @@ fn adopt_manifests(
 /// ⚠⚠ THE JOIN IS BOUNDED, and this is the path that number is FOR: a person who signalled the
 /// daemon has to get their prompt back even when a worker will not come back, and this handler is
 /// the last code that runs before the process ends. What the deadline costs is
-/// [`RunRegistry::join_all_within`]'s to state.
+/// [`RunRegistry::stop_all_within`]'s to state.
+///
+/// ⛔⛔⛔⛔⛔ **THE TWO LINES THAT MATTERED ARE ONE CALL NOW** — register item 664. This used to hold
+/// the registry lock, `cancel_all` it, and join under that lock, and both halves of that were
+/// wrong for a run driven in a process of its own: the sweep published nothing, so the driver was
+/// never woken; and had it been, the row it would have come back to read was behind the very lock
+/// this handler was sitting on. `stop_all_within` holds the ask-then-wait ORDER where it can be
+/// gated, and takes the lock per pass so the daemon can still answer the question it just asked.
 fn install_shutdown(runs: Arc<Mutex<RunRegistry>>) {
     let mut signals = match signal_hook::iterator::Signals::new([SIGINT, SIGTERM]) {
         Ok(signals) => signals,
@@ -879,9 +886,7 @@ fn install_shutdown(runs: Arc<Mutex<RunRegistry>>) {
     };
     thread::spawn(move || {
         if signals.forever().next().is_some() {
-            let mut runs = runs.lock().unwrap_or_else(PoisonError::into_inner);
-            runs.cancel_all();
-            let _ = runs.join_all_within(RunRegistry::JOIN_DEADLINE);
+            let _ = RunRegistry::stop_all_within(&runs, RunRegistry::JOIN_DEADLINE);
             std::process::exit(0);
         }
     });

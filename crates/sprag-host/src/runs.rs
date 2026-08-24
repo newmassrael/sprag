@@ -402,6 +402,23 @@ pub trait RunHandle: Send + Sync {
 /// go to the worker's `RunContext`, so an order delivered here is seen at its next loop top or wait
 /// poll. For a process-driven run nothing in this image reads them — they are pure record, and the
 /// row is what the driver reads. Same type, and the difference is stated rather than hidden.
+///
+/// # ⛔⛔⛔⛔⛔ Why the ANNOUNCE is in here too — register item 664
+///
+/// It was not. The three doors of `crate::plugins::PluginsExternal` each called an `ordered` hook
+/// on their own accepted arm, which is three sites remembering one rule — and the daemon's SHUTDOWN
+/// SWEEP is a fourth caller that never went through them: it asks the registry directly
+/// ([`RunRegistry::cancel_all`]), so **nothing was published, and a driver in another process was
+/// never woken to re-read the row its order had just been written into.** Measured: such a daemon
+/// takes [`RunRegistry::JOIN_DEADLINE`] to answer a signal — 5.03 s — because its collector thread
+/// waits out a child nobody told.
+///
+/// So the announcement moved to the one place every order already passes through. *An order that
+/// was accepted is announced* is now true by construction rather than by four callers each
+/// remembering, and an order that was NOT accepted still announces nothing:
+/// [`EndedRun`] holds no `Orders` at all, so a cancel aimed at a run with no driver left changes
+/// nothing and says nothing — which is this journal's own rule about never waking a reader to
+/// re-read a row that did not move.
 pub struct Orders {
     cancel: Arc<AtomicBool>,
     stand_down: Arc<AtomicBool>,
@@ -426,17 +443,35 @@ pub struct Orders {
     /// [`sprag_plugin::Plugin::honours`] said yes to, so an order added to that set is asked about
     /// with nothing here to update.
     honoured: Vec<sprag_plugin::StandingOrder>,
+    /// **WHICH RUN THIS IS**, so [`deliver`](Self::deliver) can name it to the announcer below.
+    ///
+    /// ⚠ Carried rather than passed in at `deliver`: [`RunHandle::deliver`] takes an order and
+    /// nothing else, and widening that signature so every caller could re-state a fact the record
+    /// already knows is how two answers to *which run is this* get created.
+    id: RunId,
+    /// **WHERE THE NEWS OF AN ORDER GOES** — `crate::run_announcers`' second half, or [`None`] for a
+    /// run with nowhere to announce (a registry off a daemon, and every fixture in this file).
+    ///
+    /// ⚠⚠⚠ **AN OPAQUE `Fn`, exactly as `on_run_end` is.** A journal is per SESSION and a run is not
+    /// in one — the registry is the daemon's, the pane pool is a window's — so what crosses this
+    /// boundary is a call with a run id in it, and which channel that reaches is the caller's
+    /// business. That is the discipline every hook on the plugin surface follows and it is what
+    /// lets this directory stay session-tree-free while still publishing.
+    announce: Option<crate::RunAnnounce>,
 }
 
 impl Orders {
     /// Take the three flags a driver is already sharing (or, for an out-of-process one, the three
-    /// this daemon will publish) and the plugin's own list of what it reads.
+    /// this daemon will publish), the plugin's own list of what it reads, and where an order to
+    /// this run is announced.
     #[must_use]
     pub fn new(
         cancel: Arc<AtomicBool>,
         stand_down: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
         honoured: Vec<sprag_plugin::StandingOrder>,
+        id: RunId,
+        announce: Option<crate::RunAnnounce>,
     ) -> Self {
         Self {
             cancel,
@@ -444,10 +479,12 @@ impl Orders {
             hold,
             cancelled_by: Mutex::new(None),
             honoured,
+            id,
+            announce,
         }
     }
 
-    /// Write `order` down — [`RunHandle::deliver`]'s whole body, for every driver kind.
+    /// Write `order` down and say so — [`RunHandle::deliver`]'s whole body, for every driver kind.
     fn deliver(&self, order: RunOrder) {
         // ⚠ ONE `match`, so a fourth order cannot be added without this arm being written. That is
         // the ratchet a trio of `store` calls at three call sites did not have.
@@ -468,6 +505,19 @@ impl Orders {
             }
             RunOrder::StandDown => self.stand_down.store(true, Ordering::Release),
             RunOrder::Hold(held) => self.hold.store(held, Ordering::Release),
+        }
+        // ⚠⚠⚠ AFTER THE RECORD IS WRITTEN, NEVER BEFORE — the rule a run's ENDING already follows
+        // one seam over: a reader woken by this asks for the row immediately, and an announcement
+        // that raced the write would answer about a run that had not moved yet, leaving the reader
+        // parked on an event that has already fired. Here it is sharper still, because the reader
+        // being woken may be the run's own DRIVER, and what it comes back to read is this order.
+        //
+        // ⚠⚠ A REPEATED ORDER ANNOUNCES TOO. The event says *a person spoke*, not *the level
+        // moved*, so re-asserting a hold is a thing that happened; suppressing it would need this
+        // to compare levels, and a `hold(false)` that changed nothing is still an answer somebody
+        // is waiting for.
+        if let Some(announce) = &self.announce {
+            announce(self.id);
         }
     }
 
@@ -499,17 +549,17 @@ pub struct ThreadRun {
 }
 
 impl ThreadRun {
-    /// Take the worker and the three flags it is already sharing.
+    /// Take the worker and the [`Orders`] it shares with it.
+    ///
+    /// ⚠ The record is BUILT BY THE CALLER rather than assembled from its parts here, and that is
+    /// register item 664's arity showing: `Orders` carries six things now, and a constructor taking
+    /// all of them plus a join handle would be seven positional arguments — three of which are
+    /// `Arc<AtomicBool>` and freely transposable. One named type at the call site says which flag
+    /// is which exactly once.
     #[must_use]
-    pub fn new(
-        cancel: Arc<AtomicBool>,
-        stand_down: Arc<AtomicBool>,
-        hold: Arc<AtomicBool>,
-        honoured: Vec<sprag_plugin::StandingOrder>,
-        handle: JoinHandle<()>,
-    ) -> Self {
+    pub fn new(orders: Orders, handle: JoinHandle<()>) -> Self {
         Self {
-            orders: Orders::new(cancel, stand_down, hold, honoured),
+            orders,
             handle: Some(handle),
         }
     }
@@ -554,14 +604,21 @@ impl RunHandle for ThreadRun {
 ///
 /// # ⚠⚠⚠⚠⚠ How an order reaches a driver that shares no memory with this daemon
 ///
-/// It does not reach it from here at all. [`deliver`](RunHandle::deliver) writes the order into
-/// [`Orders`] exactly as [`ThreadRun`] does, and the run's ROW publishes it (`stood_down`,
-/// `cancelled_by`). The driver is then WOKEN to re-read that row by `Event::RunOrdered`, which the
-/// registry's callers announce on their accepted arms — register item 648, built for this.
+/// [`deliver`](RunHandle::deliver) writes the order into [`Orders`] exactly as [`ThreadRun`] does,
+/// and the run's ROW publishes it (`stood_down`, `cancelled_by`). The driver is then WOKEN to
+/// re-read that row by `Event::RunOrdered` — register item 648, built for this — which [`Orders`]
+/// raises as the second half of the same delivery.
 ///
 /// ⚠⚠ So the three flags here are **pure record**: nothing in this image reads them. That is the
 /// one difference from [`ThreadRun`], where the same `Arc`s are the worker's own, and [`Orders`]
 /// says so rather than leaving it to be inferred.
+///
+/// ⛔⛔⛔ **AND THE WAKE USED TO BE SOMEBODY ELSE'S TO REMEMBER** — register item 664. It was raised
+/// by the three doors of `crate::plugins::PluginsExternal`, so a caller that reached the registry
+/// directly published nothing and this driver never heard: the daemon's own shutdown sweep is
+/// exactly such a caller, and it cost [`RunRegistry::JOIN_DEADLINE`] on every signalled daemon
+/// holding a driven run. Delivering and announcing are one act now, inside [`Orders`]'s own
+/// `deliver`.
 ///
 /// # ⚠⚠⚠ The collector thread is not a driver
 ///
@@ -582,17 +639,15 @@ pub struct ProcessRun {
 }
 
 impl ProcessRun {
-    /// Take the three flags this daemon will publish and the thread collecting the driver.
+    /// Take the [`Orders`] this daemon will publish and the thread collecting the driver.
+    ///
+    /// ⚠ [`ThreadRun::new`]'s argument for taking the record whole rather than its parts, and it
+    /// bites harder here: the announcer inside it is the ONLY way an order reaches this run's
+    /// driver at all.
     #[must_use]
-    pub fn new(
-        cancel: Arc<AtomicBool>,
-        stand_down: Arc<AtomicBool>,
-        hold: Arc<AtomicBool>,
-        honoured: Vec<sprag_plugin::StandingOrder>,
-        handle: JoinHandle<()>,
-    ) -> Self {
+    pub fn new(orders: Orders, handle: JoinHandle<()>) -> Self {
         Self {
-            orders: Orders::new(cancel, stand_down, hold, honoured),
+            orders,
             handle: Some(handle),
         }
     }
@@ -1668,6 +1723,13 @@ impl RunRegistry {
 
     /// Raise every run's cancel flag — used on host shutdown so in-flight runs abort promptly
     /// instead of being waited out and detached by [`join_all_within`](Self::join_all_within).
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND IT PUBLISHES, WHICH IS THE WHOLE OF REGISTER ITEM 664.** A run driven in a
+    /// process of its own reads its orders off its ROW and is woken to re-read it; this door used
+    /// to be the one caller that reached the flags without anything being announced, so such a
+    /// driver was never told and the bounded join below waited it out in full. Nothing is done
+    /// about that here — [`Orders`]'s own `deliver` announces, so this gets it by going through
+    /// the same delivery every other order does.
     pub fn cancel_all(&self) {
         for record in &self.runs {
             // ⚠ NOBODY DECIDED ANYTHING ABOUT THIS RUN — register item 596. The daemon is going
@@ -2160,32 +2222,94 @@ impl RunRegistry {
     /// deadlines — and every outstanding worker is asked on every pass, so one that will not come
     /// back cannot starve one that would have.
     pub fn join_all_within(&mut self, within: Duration) -> Vec<RunId> {
-        let deadline = Instant::now() + within;
-        loop {
+        let all_back = join_until(within, || {
             self.sweep();
             // ⚠ ASKED, not collected: the answer is built once, on the way out, rather than
             // allocated on each of the thousand passes a full deadline takes.
-            if !self.runs.iter().any(|record| record.run.outstanding()) {
-                return Vec::new();
-            }
-            if Instant::now() >= deadline {
-                let outstanding: Vec<RunId> = self
-                    .runs
-                    .iter()
-                    .filter(|record| record.run.outstanding())
-                    .map(|record| record.id)
-                    .collect();
-                for id in &outstanding {
-                    tracing::warn!(
-                        target: "sprag_host::runs",
-                        "run {} did not come back within {within:?}; its worker is left running",
-                        id.0,
-                    );
-                }
-                return outstanding;
-            }
-            std::thread::sleep(Self::JOIN_POLL);
+            self.runs.iter().any(|record| record.run.outstanding())
+        });
+        if all_back {
+            Vec::new()
+        } else {
+            self.detached(within)
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **ASK EVERY RUN TO STOP AND WAIT FOR THEM, WITHOUT HOLDING THIS REGISTRY SHUT** —
+    /// what a daemon on its way out calls, and the second half of register item 664.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the lock is taken per pass instead of once around the whole shutdown
+    ///
+    /// [`cancel_all`](Self::cancel_all) now publishes, so a run driven in a process of its own is
+    /// WOKEN — and what it is woken to do is **ask this daemon for its row**, because that row is
+    /// where its orders are written. A shutdown that held the registry lock across the join would
+    /// be a daemon that cannot answer the one question it has just asked its drivers to ask: the
+    /// `runs` slot blocks, the driver learns nothing, and the wake buys exactly nothing.
+    ///
+    /// Measured on 2026-08-25: with the announce in place and the lock held, a signalled daemon
+    /// still cost the full [`JOIN_DEADLINE`](Self::JOIN_DEADLINE).
+    ///
+    /// ⚠⚠ **THE ORDER IS THE POINT AND IT IS HELD HERE**, not at the call site. `install_shutdown`'s
+    /// own doc used to say the two lines that matter are an ORDER *"that nothing outside this file
+    /// can observe"* — a binary is not a place a rule can be gated, and this is.
+    ///
+    /// ⚠ [`Drop`] does not use this and cannot: it holds `&mut self` and there is no `Mutex` left
+    /// to lock. Its residue is unchanged and smaller — a registry being dropped has no daemon left
+    /// to serve anybody's row.
+    pub fn stop_all_within(shared: &Arc<Mutex<Self>>, within: Duration) -> Vec<RunId> {
+        // ⚠ THE ASK, under the lock and then released: this is where the announcements are raised,
+        // and every one of them is a driver about to come back with a question.
+        lock(shared).cancel_all();
+        let all_back = join_until(within, || {
+            let mut held = lock(shared);
+            held.sweep();
+            held.runs.iter().any(|record| record.run.outstanding())
+        });
+        if all_back {
+            Vec::new()
+        } else {
+            lock(shared).detached(within)
+        }
+    }
+
+    /// The runs whose driver is still uncollected, each named in the log — what a spent deadline
+    /// leaves behind, and the sentence [`join_all_within`](Self::join_all_within) and
+    /// [`stop_all_within`](Self::stop_all_within) must not spell twice.
+    fn detached(&self, within: Duration) -> Vec<RunId> {
+        let outstanding: Vec<RunId> = self
+            .runs
+            .iter()
+            .filter(|record| record.run.outstanding())
+            .map(|record| record.id)
+            .collect();
+        for id in &outstanding {
+            tracing::warn!(
+                target: "sprag_host::runs",
+                "run {} did not come back within {within:?}; its worker is left running",
+                id.0,
+            );
+        }
+        outstanding
+    }
+}
+
+/// **WAIT UNTIL NOTHING IS OUTSTANDING, OR UNTIL `within` IS SPENT**, answering whether everything
+/// came back — the loop [`RunRegistry::join_all_within`] and [`RunRegistry::stop_all_within`] share.
+///
+/// The two differ in ONE thing — whether the registry lock is held across the wait — so what
+/// crosses is a closure and not a receiver. It answers a BOOL rather than the outstanding runs
+/// because naming them costs an allocation and a full deadline is a thousand passes; the caller
+/// names them once, on the way out.
+fn join_until(within: Duration, mut any_outstanding: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + within;
+    loop {
+        if !any_outstanding() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(RunRegistry::JOIN_POLL);
     }
 }
 
@@ -2305,12 +2429,20 @@ mod tests {
                 opened_by_session: None,
                 state,
                 run: Box::new(ThreadRun::new(
-                    cancel,
-                    Arc::new(AtomicBool::new(false)),
-                    Arc::new(AtomicBool::new(false)),
-                    // ⚠ BOTH: this fixture is about the directory holding a record, and a handle
-                    // that refused every order would make the orders below untestable here.
-                    sprag_plugin::StandingOrder::ALL.to_vec(),
+                    Orders::new(
+                        cancel,
+                        Arc::new(AtomicBool::new(false)),
+                        Arc::new(AtomicBool::new(false)),
+                        // ⚠ BOTH: this fixture is about the directory holding a record, and a
+                        // handle that refused every order would make the orders below untestable
+                        // here.
+                        sprag_plugin::StandingOrder::ALL.to_vec(),
+                        id,
+                        // ⚠ NOWHERE TO ANNOUNCE, which is a registry off a daemon — item 664. What
+                        // this fixture measures is the record, and a channel would be a collaborator
+                        // it has no reader for.
+                        None,
+                    ),
                     handle,
                 )),
                 progress: ProgressCell::default(),
@@ -2518,12 +2650,17 @@ mod tests {
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(ThreadRun::new(
-                cancel,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(AtomicBool::new(false)),
-                // ⚠ BOTH, for the fixture above's reason: these gates are about the directory, and
-                // the refusal is driven where a real plugin answers it.
-                sprag_plugin::StandingOrder::ALL.to_vec(),
+                Orders::new(
+                    cancel,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(AtomicBool::new(false)),
+                    // ⚠ BOTH, for the fixture above's reason: these gates are about the directory,
+                    // and the refusal is driven where a real plugin answers it.
+                    sprag_plugin::StandingOrder::ALL.to_vec(),
+                    id,
+                    // ⚠ Nowhere to announce — a registry off a daemon, item 664.
+                    None,
+                ),
                 handle,
             )),
             progress: ProgressCell::default(),
@@ -3557,12 +3694,17 @@ mod tests {
             let stand = Arc::new(AtomicBool::new(false));
             let hold = Arc::new(AtomicBool::new(false));
             let run = ThreadRun::new(
-                Arc::clone(&cancel),
-                Arc::clone(&stand),
-                Arc::clone(&hold),
-                // ⚠ BOTH: this gate is about which FLAG each order reaches, so a handle that
-                // refused one would take that order's arm out of the measurement entirely.
-                sprag_plugin::StandingOrder::ALL.to_vec(),
+                Orders::new(
+                    Arc::clone(&cancel),
+                    Arc::clone(&stand),
+                    Arc::clone(&hold),
+                    // ⚠ BOTH: this gate is about which FLAG each order reaches, so a handle that
+                    // refused one would take that order's arm out of the measurement entirely.
+                    sprag_plugin::StandingOrder::ALL.to_vec(),
+                    RunId(0),
+                    // ⚠ Nowhere to announce: what this gate reads are the flags themselves.
+                    None,
+                ),
                 std::thread::spawn(|| {}),
             );
             (run, cancel, stand, hold)
