@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
-use sprag_host::remote_access::RemotePaneAccess;
+use sprag_host::plugins::PluginWorld;
+use sprag_host::remote_access::{RemotePaneAccess, RemotePluginWorld};
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
@@ -6386,6 +6387,121 @@ fn a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_ove
         !refused.degraded.pane_ids().is_empty(),
         "⚠⚠ ...and it must still be a working driver, or handing it back buys nothing",
     );
+}
+
+/// ⛔⛔⛔⛔ **THE WORLD A RUN IS CHECKED AGAINST ANSWERS THE SAME TWO THINGS FROM OUTSIDE THE
+/// DAEMON** — register items 544 and 643, and the second implementation that makes
+/// [`PluginWorld`] a seam rather than a decoration.
+///
+/// # ⚠⚠⚠⚠⚠ Why a trait with one implementation would have been the defect
+///
+/// A run's plugin is built from its request map, and the builder asks the world exactly two
+/// questions — measured over the whole of `build_plugin`, not assumed. When the driver moves out of
+/// the daemon (item 544, whose stages 1 and 2 already stand) it must build **the same plugin from
+/// the same request**, and a second builder over there would be a second answer to one question.
+/// So the builder stayed one function and the world became an argument — and an argument with a
+/// single implementation is a surface nobody reads, which is this register's item 492 wearing a
+/// trait. **This gate is the second reader.**
+///
+/// # What each answer has to survive, and why it is not the obvious thing
+///
+/// * **`has_pane` is the PANE LIST**, so it is the same set the daemon's own pool answers from.
+///   A mistyped id becomes a synchronous refusal instead of a run that dies on its first step.
+/// * **`default_size` is the DAEMON'S ARBITRATED SIZE, never this process's terminal.** A driver
+///   process has a terminal of its own and it is nobody's business: the rectangle a pane opens at
+///   is the one every client of that session lays its arrangement over, and a size chosen
+///   independently by two processes for one pane is exactly the reflow that address exists to
+///   prevent.
+#[test]
+fn the_world_a_run_is_checked_against_answers_the_same_two_things_over_the_wire() {
+    let (_host, sock) = spawn_host();
+    let (driver, mut setup) = remote_driver(&sock);
+    let spawned = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
+    let world = RemotePluginWorld::over(&driver);
+
+    // ── THE PANE THE DAEMON HOLDS, AND ONE IT DOES NOT ────────────────────────────────────────
+    // ⚠ The pair is the whole assertion: an implementation that answered `true` to everything, or
+    // `false` to everything, satisfies half of this and is useless. Only the discrimination is
+    // evidence — the shape `PaneEcho`'s own gate is built on.
+    assert!(
+        world.has_pane(spawned),
+        "⛔⛔⛔⛔ A PANE THE DAEMON IS HOLDING READS AS ABSENT FROM OUTSIDE IT. Every run checked \
+         through this world would be refused before it started, which turns item 544's driver \
+         process into one that can never drive anything",
+    );
+    assert!(
+        !world.has_pane(PaneId(spawned.0 + 1_000)),
+        "⚠⚠⚠ ...and an id nothing carries must be REFUSED. A world that says yes to everything \
+         turns a mistyped id into a run that dies on its first step instead of a refusal the \
+         caller reads at the door",
+    );
+
+    // ── AND THE SIZE IS THE DAEMON'S ──────────────────────────────────────────────────────────
+    // ⚠⚠⚠⚠⚠ **THE FIRST FORM OF THIS ARM COULD NOT GO RED, AND THE MUTATION SAID SO.** It read the
+    // published slot and compared — but with no attached client that slot is `null`, so the
+    // expectation fell back to the same 80x24 literal the product falls back to. Replacing the
+    // whole read with `(80, 24)` PASSED. **A gate whose expectation and whose subject share a
+    // fallback is measuring the fallback**, which is item 632's shape at a fixture rather than at a
+    // branch.
+    //
+    // So a client REPORTS an area first — the only thing that makes the daemon arbitrate one — and
+    // it is deliberately neither 80x24 nor the boot pane's 40x6, so no constant available to the
+    // implementation can match it by luck.
+    const REPORTED: (u16, u16) = (117, 41);
+    let mut viewer = HostConn::connect(&sock, Duration::from_secs(5)).expect("a viewing client");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "sizer" }))
+        .expect("client/hello is accepted");
+    viewer
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+    viewer
+        .call(
+            sprag_rpc::CLIENT_SIZE_METHOD,
+            json!({ "cols": REPORTED.0, "rows": REPORTED.1 }),
+        )
+        .expect("a client may say how big a window it can give");
+
+    // ⚠ The arbitration is the daemon's own act on the report, so the ADDRESS is still what this
+    // asserts against — the constant above is only what makes the two answers distinguishable.
+    let published = setup
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(sprag_host::wire::WINDOW_SIZE_SLOT) }),
+        )
+        .expect("the daemon publishes the size it arbitrated");
+    let want = published["cols"]
+        .as_u64()
+        .zip(published["rows"].as_u64())
+        .map(|(c, r)| {
+            (
+                u16::try_from(c).expect("a width fits"),
+                u16::try_from(r).expect("a height fits"),
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "⚠⚠⚠⚠ THE FIXTURE MUST MAKE THE DAEMON ARBITRATE A SIZE, or this arm compares two \
+                 fallbacks and cannot fail. Published {published}"
+            )
+        });
+    assert_ne!(
+        want,
+        (80, 24),
+        "⚠⚠⚠⚠⚠ AND IT MUST NOT BE THE FALLBACK, which is the whole reason a client reported one: \
+         an expectation equal to the product's own default is an expectation no defect can miss",
+    );
+    let (cols, rows) = world.default_size();
+    assert_eq!(
+        (cols, rows),
+        want,
+        "⛔⛔⛔ THE SIZE A PANE WOULD BE OPENED AT IS NOT THE ONE THIS SESSION IS LAID OUT OVER. \
+         A driver process has a terminal of its own, and taking it from there — or from a constant \
+         — reflows every program in the pane to a number nobody in the session chose. Published \
+         {published}, world answered {cols}x{rows}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
 }
 
 /// Type `text` into `pane` on the TEST's connection after `after` — the pane MOVING at an instant

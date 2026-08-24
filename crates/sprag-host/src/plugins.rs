@@ -512,6 +512,61 @@ pub const DEFAULT_MAX_TOKENS: u64 = 200_000;
 /// the person's to do — see `tool_orchestrate`.
 pub const DEFAULT_MAX_SECONDS: u64 = 3600;
 
+/// **WHAT BUILDING A PLUGIN NEEDS TO KNOW ABOUT THE WORLD IT WILL DRIVE** — the two questions, and
+/// no others, that `PluginsExternal::build_plugin` asks of anything outside its request map.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a trait rather than a workspace handle — register item 544
+///
+/// The run driver is moving OUT of this daemon, and a driver in another process has to build the
+/// **same plugin from the same request**. A second builder over there would be a second answer to
+/// one question — the shape this repository has paid for at every surface it duplicated — and it
+/// would drift first in whichever key one of them forgot.
+///
+/// So the builder stays ONE function and the world it consults becomes an argument. Measured before
+/// anything was moved: over the whole of `build_plugin`, exactly two facts come from outside the
+/// map — *does this pane exist* and *how big is a pane by default* — and both are answerable from
+/// either side of a socket.
+///
+/// ⚠⚠ **NEITHER IS A `PaneAccess` METHOD, deliberately.** `PaneAccess` is the surface a run DRIVES
+/// a pane through; this is what a run is CHECKED against before it starts. Folding them would put
+/// *what the daemon's default pane size is* on the trait ten implementations already carry.
+pub trait PluginWorld {
+    /// Whether `pane` is one this world holds — the fail-fast that turns a mistyped id into a
+    /// synchronous refusal instead of a run that dies on its first step.
+    fn has_pane(&self, pane: PaneId) -> bool;
+
+    /// How big a pane this world opens is, when the request does not say.
+    ///
+    /// ⚠ A WORLD-LEVEL default rather than a constant: a daemon's is arbitrated from its attached
+    /// clients, so two daemons legitimately answer differently and a driver must ask the one it is
+    /// driving.
+    fn default_size(&self) -> (u16, u16);
+}
+
+/// [`PluginWorld::has_pane`] as the REFUSAL a request gets — the sentence, spelled once.
+///
+/// ⚠ A free function rather than a default method, because the wording is what a person reads when
+/// they mistype an id and a second copy of it in a driver process is a second sentence about one
+/// fact.
+fn require_pane_in(world: &dyn PluginWorld, pane: PaneId) -> Result<(), InvokeError> {
+    if world.has_pane(pane) {
+        Ok(())
+    } else {
+        Err(refused(format!("no pane {} in this workspace", pane.0)))
+    }
+}
+
+/// The daemon's own answer: the pane pool this external was built over.
+impl PluginWorld for PluginsExternal {
+    fn has_pane(&self, pane: PaneId) -> bool {
+        lock(&self.workspace).pane(pane).is_some()
+    }
+
+    fn default_size(&self) -> (u16, u16) {
+        lock(&self.workspace).default_size()
+    }
+}
+
 /// The plugin host as a pinion `External`: starts background plugin runs over
 /// the shared [`Workspace`] and reports their outcomes as scene-as-data.
 pub struct PluginsExternal {
@@ -777,238 +832,316 @@ impl PluginsExternal {
 
     /// Parse the plugin discriminator + its args, validating target panes
     /// exist (fail fast → synchronous `Rejected`).
+    ///
+    /// ⚠ THIS EXTERNAL'S OWN WORLD, handed to the one builder — see [`plugin_from_request`].
     fn build_plugin(&self, map: &Map<String, Value>) -> Result<(PluginKind, String), InvokeError> {
-        // THROUGH THE TYPE, so a word this refuses is a word the wire does not publish. ⚠ A word no
-        // plugin spells is a MALFORMED request (`TypeMismatch`), not a rejected one: that is this
-        // wire's taxonomy for every other closed vocabulary it reads, and it was the odd one out here
-        // — `refused("this daemon has no plugin called …")` carried a friendlier message and put a
-        // grammar refusal in the class reserved for "read, and could not be honoured". The message's
-        // job belongs to the published vocabulary now, and the completeness gate can only SEE a
-        // vocabulary that refuses as malformed.
-        let named =
-            PluginName::from_wire(require_str(map, "plugin")?).ok_or(InvokeError::TypeMismatch)?;
-        match named {
-            PluginName::Orchestrator => {
-                let pane = require_pane_id(map, "pane")?;
-                self.require_pane(pane)?;
-                let stimulus = require_str(map, "stimulus")?.to_string();
-                let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
-                let ready_when = opt_ready_when(map)?;
-                let ready_within = opt_millis(map, Readiness::WIRE_KEY)?;
-                let label = format!("orchestrator pane={}", pane.0);
-                let spec = OrchestrationSpec {
-                    stimulus,
-                    sentinel,
-                    ready_when,
-                    ready_within,
-                    may_answer: opt_may_answer(map)?,
-                    attended: opt_attended(map)?,
-                    turn: opt_turn(map)?,
-                };
-                Ok((
-                    PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
-                    label,
-                ))
+        plugin_from_request(self, map)
+    }
+}
+
+/// **WHAT A RUN LEFT BEHIND** — [`drive_request`]'s answer, and the two things the daemon's own
+/// worker thread reads off a finished run today.
+///
+/// ⚠ The plugin is dropped with the run: `captured` is taken from it before it goes, because it is
+/// the one thing only the plugin can answer and nothing above this can ask afterwards.
+#[derive(Debug)]
+pub struct Driven {
+    /// How the run ended, in the driver's own vocabulary.
+    pub outcome: sprag_plugin::Outcome,
+    /// What the plugin captured — an AI adapter's reply, where there is one.
+    pub output: Option<String>,
+}
+
+/// **BUILD THE PLUGIN THIS REQUEST NAMES AND DRIVE IT TO A TERMINAL STATE** — the one door a run
+/// goes through, whichever process is holding it. Register items 544 and 643.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a door rather than two calls
+///
+/// A driver outside this daemon needs to build a plugin and drive it; it never needs to HOLD one.
+/// Handing it `PluginKind` would make that private enum public — the whole plugin vocabulary
+/// exported so one caller could pass it straight back — where what it actually wants is the
+/// outcome. So the door takes a request and answers an ending, and the enum stays where it is.
+///
+/// ⚠⚠ **THE DAEMON DOES NOT CALL THIS**, and that is deliberate rather than an oversight: it has to
+/// register the run — with its label and plugin name — BEFORE the driving starts, so it builds
+/// first and drives second. It is the same builder either way — `plugin_from_request`, private
+/// because a caller outside this crate has nothing to do with a built plugin — which is
+/// the property that matters; a shared door that forced the daemon to register afterwards would be
+/// making one caller's shape the other's problem.
+///
+/// # Errors
+///
+/// Whatever the builder refuses: a word no plugin spells, a malformed argument, or a
+/// pane this world does not hold. **All of it before a byte is typed** — that is what the world
+/// argument is for.
+pub fn drive_request(
+    world: &dyn PluginWorld,
+    request: &Map<String, Value>,
+    access: &dyn sprag_plugin::PaneAccess,
+    run: &sprag_plugin::RunContext,
+    progress: sprag_plugin::ProgressCell,
+) -> Result<Driven, InvokeError> {
+    let (plugin, _label) = plugin_from_request(world, request)?;
+    let mut plugin = plugin;
+    let guardrails = parse_guardrails(request, plugin.default_cost())?;
+    let outcome =
+        Driver::new(guardrails)
+            .reporting_to(progress)
+            .run(plugin.as_plugin(), access, run);
+    // ⚠ TAKEN BEFORE THE PLUGIN GOES, exactly as the daemon's worker does it: the capture is the
+    // plugin's own and nothing above this layer can ask once it has been dropped.
+    let output = plugin.as_plugin().captured();
+    Ok(Driven { outcome, output })
+}
+
+/// **THE ONE BUILDER, AND THE WORLD IS AN ARGUMENT** — register items 544 and 643.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a free function and not a method
+///
+/// The run driver is moving OUT of this daemon, and a driver in another process has to build the
+/// **same plugin from the same request**. A second builder over there would be a second answer to
+/// one question — the shape this repository has paid for at every surface it duplicated, drifting
+/// first in whichever key one of them forgot.
+///
+/// So the builder is one function and what it needs from the world is [`PluginWorld`]: measured
+/// over the whole of this body, exactly two facts come from outside the map — *does this pane
+/// exist* and *how big is a pane by default* — and both are answerable from either side of a
+/// socket.
+///
+/// Parse the plugin discriminator + its args, validating target panes exist (fail fast →
+/// synchronous `Rejected`).
+fn plugin_from_request(
+    world: &dyn PluginWorld,
+    map: &Map<String, Value>,
+) -> Result<(PluginKind, String), InvokeError> {
+    // THROUGH THE TYPE, so a word this refuses is a word the wire does not publish. ⚠ A word no
+    // plugin spells is a MALFORMED request (`TypeMismatch`), not a rejected one: that is this
+    // wire's taxonomy for every other closed vocabulary it reads, and it was the odd one out here
+    // — `refused("this daemon has no plugin called …")` carried a friendlier message and put a
+    // grammar refusal in the class reserved for "read, and could not be honoured". The message's
+    // job belongs to the published vocabulary now, and the completeness gate can only SEE a
+    // vocabulary that refuses as malformed.
+    let named =
+        PluginName::from_wire(require_str(map, "plugin")?).ok_or(InvokeError::TypeMismatch)?;
+    match named {
+        PluginName::Orchestrator => {
+            let pane = require_pane_id(map, "pane")?;
+            require_pane_in(world, pane)?;
+            let stimulus = require_str(map, "stimulus")?.to_string();
+            let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
+            let ready_when = opt_ready_when(map)?;
+            let ready_within = opt_millis(map, Readiness::WIRE_KEY)?;
+            let label = format!("orchestrator pane={}", pane.0);
+            let spec = OrchestrationSpec {
+                stimulus,
+                sentinel,
+                ready_when,
+                ready_within,
+                may_answer: opt_may_answer(map)?,
+                attended: opt_attended(map)?,
+                turn: opt_turn(map)?,
+            };
+            Ok((
+                PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
+                label,
+            ))
+        }
+        PluginName::Pipe => {
+            let src = require_pane_id(map, "src")?;
+            let dst = require_pane_id(map, "dst")?;
+            require_pane_in(world, src)?;
+            require_pane_in(world, dst)?;
+            let spec = PipeSpec {
+                src,
+                dst,
+                ready_when: opt_ready_when(map)?,
+                ready_within: opt_millis(map, Readiness::WIRE_KEY)?,
+                may_answer: opt_may_answer(map)?,
+                attended: opt_attended(map)?,
+            };
+            Ok((
+                PluginKind::Pipe(Pipe::new(spec)),
+                format!("pipe {}->{}", src.0, dst.0),
+            ))
+        }
+        PluginName::Agent => {
+            let pane = require_pane_id(map, "pane")?;
+            require_pane_in(world, pane)?;
+            let prompt = require_str(map, "prompt")?.to_string();
+            let mut spec = AgentSpec::new(prompt);
+            if !declined(map, "eof") {
+                // `Some`, and the wrapper carries meaning: a caller who SAID so overrides what
+                // the completion contract would have implied — see `AgentSpec::eof`.
+                spec.eof = Some(map["eof"].as_bool().ok_or(InvokeError::TypeMismatch)?);
             }
-            PluginName::Pipe => {
-                let src = require_pane_id(map, "src")?;
-                let dst = require_pane_id(map, "dst")?;
-                self.require_pane(src)?;
-                self.require_pane(dst)?;
-                let spec = PipeSpec {
-                    src,
-                    dst,
-                    ready_when: opt_ready_when(map)?,
-                    ready_within: opt_millis(map, Readiness::WIRE_KEY)?,
-                    may_answer: opt_may_answer(map)?,
-                    attended: opt_attended(map)?,
-                };
-                Ok((
-                    PluginKind::Pipe(Pipe::new(spec)),
-                    format!("pipe {}->{}", src.0, dst.0),
-                ))
+            if !declined(map, "shows_prompt") {
+                spec.shows_the_prompt = map["shows_prompt"]
+                    .as_bool()
+                    .ok_or(InvokeError::TypeMismatch)?;
             }
-            PluginName::Agent => {
-                let pane = require_pane_id(map, "pane")?;
-                self.require_pane(pane)?;
-                let prompt = require_str(map, "prompt")?.to_string();
-                let mut spec = AgentSpec::new(prompt);
-                if !declined(map, "eof") {
-                    // `Some`, and the wrapper carries meaning: a caller who SAID so overrides what
-                    // the completion contract would have implied — see `AgentSpec::eof`.
-                    spec.eof = Some(map["eof"].as_bool().ok_or(InvokeError::TypeMismatch)?);
-                }
-                if !declined(map, "shows_prompt") {
-                    spec.shows_the_prompt = map["shows_prompt"]
-                        .as_bool()
-                        .ok_or(InvokeError::TypeMismatch)?;
-                }
-                if let Some(timeout) = opt_millis(map, "timeout_ms")? {
-                    spec.timeout = timeout;
-                }
-                if let Some(done_when) = opt_done_when(map)? {
-                    spec.done_when = done_when;
-                }
-                spec.ready_when = opt_ready_when(map)?;
-                spec.ready_within = opt_millis(map, Readiness::WIRE_KEY)?;
-                spec.may_answer = opt_may_answer(map)?;
-                spec.attended = opt_attended(map)?;
-                let label = format!("agent pane={}", pane.0);
-                Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
+            if let Some(timeout) = opt_millis(map, "timeout_ms")? {
+                spec.timeout = timeout;
             }
-            PluginName::Dialogue => {
-                // Dialogue creates its own per-turn panes, so there is no target
-                // pane to validate; the endpoints are argv templates.
-                let endpoint_a = require_string_array(map, "endpoint_a")?;
-                let endpoint_b = require_string_array(map, "endpoint_b")?;
-                let seed = require_str(map, "seed")?.to_string();
-                let mut spec = DialogueSpec::new(endpoint_a, endpoint_b, seed);
-                // The wire keys stay flat (endpoint_a/label_a/format_a) — the
-                // Endpoint struct is an in-Rust cohesion fix, not a protocol
-                // change; the host bridges the flat keys into endpoints[0/1].
-                if let Some(label) = opt_str(map, "label_a")? {
-                    spec.endpoints[0].label = label.to_string();
-                }
-                if let Some(label) = opt_str(map, "label_b")? {
-                    spec.endpoints[1].label = label.to_string();
-                }
-                if let Some(format) = parse_reply_format(map, "format_a")? {
-                    spec.endpoints[0].format = format;
-                }
-                if let Some(format) = parse_reply_format(map, "format_b")? {
-                    spec.endpoints[1].format = format;
-                }
-                let (default_cols, default_rows) = lock(&self.workspace).default_size();
-                spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
-                spec.rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
-                if let Some(timeout) = opt_millis(map, "timeout_ms")? {
-                    spec.timeout = timeout;
-                }
-                // ⚠ NO readiness barrier here, and the absence is measured rather than an
-                // oversight: a dialogue passes each turn's prompt as an ARGV ARGUMENT of the pane
-                // it spawns for that turn and never injects a byte, so there is no window in which
-                // a shell could be typed into. The three plugins that DO inject all take one.
-                let label = format!(
-                    "dialogue {}<->{}",
-                    spec.endpoints[0].argv.first().map_or("?", String::as_str),
-                    spec.endpoints[1].argv.first().map_or("?", String::as_str),
-                );
-                Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
+            if let Some(done_when) = opt_done_when(map)? {
+                spec.done_when = done_when;
             }
-            PluginName::Answer => {
-                let pane = require_pane_id(map, "pane")?;
-                self.require_pane(pane)?;
-                // ⚠⚠ REQUIRED, alone among the forms — see
-                // [`PluginGrammar::MUST_ANSWER`](crate::wire::PluginGrammar::MUST_ANSWER). A run
-                // with nothing to answer would occupy a run slot to do what not calling does.
-                // Read through the SAME parser the optional key uses, so the two spellings of this
-                // contract cannot come to admit different objects.
-                let consent = opt_may_answer(map)?.ok_or_else(|| {
-                    refused(format!(
-                        "an `answer` run needs a {} — [{{{}: …, {}: …}}], quoting the peer's own \
+            spec.ready_when = opt_ready_when(map)?;
+            spec.ready_within = opt_millis(map, Readiness::WIRE_KEY)?;
+            spec.may_answer = opt_may_answer(map)?;
+            spec.attended = opt_attended(map)?;
+            let label = format!("agent pane={}", pane.0);
+            Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
+        }
+        PluginName::Dialogue => {
+            // Dialogue creates its own per-turn panes, so there is no target
+            // pane to validate; the endpoints are argv templates.
+            let endpoint_a = require_string_array(map, "endpoint_a")?;
+            let endpoint_b = require_string_array(map, "endpoint_b")?;
+            let seed = require_str(map, "seed")?.to_string();
+            let mut spec = DialogueSpec::new(endpoint_a, endpoint_b, seed);
+            // The wire keys stay flat (endpoint_a/label_a/format_a) — the
+            // Endpoint struct is an in-Rust cohesion fix, not a protocol
+            // change; the host bridges the flat keys into endpoints[0/1].
+            if let Some(label) = opt_str(map, "label_a")? {
+                spec.endpoints[0].label = label.to_string();
+            }
+            if let Some(label) = opt_str(map, "label_b")? {
+                spec.endpoints[1].label = label.to_string();
+            }
+            if let Some(format) = parse_reply_format(map, "format_a")? {
+                spec.endpoints[0].format = format;
+            }
+            if let Some(format) = parse_reply_format(map, "format_b")? {
+                spec.endpoints[1].format = format;
+            }
+            let (default_cols, default_rows) = world.default_size();
+            spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
+            spec.rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
+            if let Some(timeout) = opt_millis(map, "timeout_ms")? {
+                spec.timeout = timeout;
+            }
+            // ⚠ NO readiness barrier here, and the absence is measured rather than an
+            // oversight: a dialogue passes each turn's prompt as an ARGV ARGUMENT of the pane
+            // it spawns for that turn and never injects a byte, so there is no window in which
+            // a shell could be typed into. The three plugins that DO inject all take one.
+            let label = format!(
+                "dialogue {}<->{}",
+                spec.endpoints[0].argv.first().map_or("?", String::as_str),
+                spec.endpoints[1].argv.first().map_or("?", String::as_str),
+            );
+            Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
+        }
+        PluginName::Answer => {
+            let pane = require_pane_id(map, "pane")?;
+            require_pane_in(world, pane)?;
+            // ⚠⚠ REQUIRED, alone among the forms — see
+            // [`PluginGrammar::MUST_ANSWER`](crate::wire::PluginGrammar::MUST_ANSWER). A run
+            // with nothing to answer would occupy a run slot to do what not calling does.
+            // Read through the SAME parser the optional key uses, so the two spellings of this
+            // contract cannot come to admit different objects.
+            let consent = opt_may_answer(map)?.ok_or_else(|| {
+                refused(format!(
+                    "an `answer` run needs a {} — [{{{}: …, {}: …}}], quoting the peer's own \
                          words. Without one there is nothing it may type, which is what not \
                          calling it already does.",
-                        Consents::WIRE_KEY,
-                        Consent::ASKED_KEY,
-                        Consent::ANSWER_KEY,
-                    ))
-                })?;
-                let label = format!("answer pane={}", pane.0);
-                Ok((
-                    PluginKind::Answer(sprag_plugin::Answer::new(pane, consent)),
-                    label,
+                    Consents::WIRE_KEY,
+                    Consent::ASKED_KEY,
+                    Consent::ANSWER_KEY,
                 ))
+            })?;
+            let label = format!("answer pane={}", pane.0);
+            Ok((
+                PluginKind::Answer(sprag_plugin::Answer::new(pane, consent)),
+                label,
+            ))
+        }
+        PluginName::AiLoop => {
+            let pane = require_pane_id(map, "pane")?;
+            require_pane_in(world, pane)?;
+            // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
+            // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
+            // this crate; the manifest carries the argument. It is per RUN and not shared: a
+            // datamodel is a run's own state, and two loops sharing one interpreter would be two
+            // runs sharing their north star.
+            let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+                Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠⚠⚠ AND THE DECISIONS THIS REPOSITORY'S RUNS RUN UNDER, read off THIS
+            // repository's own document.
+            //
+            // The template used to author them, which meant sprag's standing yesses authorised
+            // every run of a file other repositories copy. They moved to `debt_loop.scxml`, so
+            // something has to carry them across — and this is that something. **It decides
+            // nothing**: it reads one document and hands the values to another, which is the
+            // whole of what the governing rule permits a driver to do with a decision.
+            //
+            // ⚠⚠ WHICH KIND IS NOT A WIRE ARGUMENT YET, and that is scope rather than design.
+            // There is one kind, so naming it would be a key with one legal value — and adding
+            // an ARGUMENT is a wire bump. The day a second kind exists, that bump is what pays
+            // for it.
+            let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+                .map_err(|why| refused(why.to_string()))?;
+            // ⚠⚠⚠⚠⚠ RESOLVED BY A FUNCTION THAT HANDS THE BRIEF BACK — register item 492. It
+            // was a hundred inline lines here, and the eight fall-throughs to the kind document
+            // inside it were held by NOTHING: `sprag_plugin`'s own gate had already measured
+            // that deleting one of them left the whole workspace green, and the ceiling's round
+            // measured it again with the same answer. A `Brief` is the observable that fixes
+            // that, and this is the only call site.
+            let brief = ai_loop_brief(map, &kind)?;
+            // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
+            // loop's first prompt goes into a pane whose program may still be starting — see
+            // `AI_LOOP_FORM`. A caller whose peer needs a different barrier overrides it.
+            let mut spec = sprag_plugin::AiLoopSpec::driving(require_str(map, "agent")?);
+            if let Some(ready_when) = opt_ready_when(map)? {
+                spec.ready_when = Some(ready_when);
             }
-            PluginName::AiLoop => {
-                let pane = require_pane_id(map, "pane")?;
-                self.require_pane(pane)?;
-                // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
-                // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
-                // this crate; the manifest carries the argument. It is per RUN and not shared: a
-                // datamodel is a run's own state, and two loops sharing one interpreter would be two
-                // runs sharing their north star.
-                let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
-                    Arc::new(sce_rust_lua::LuaEngine::new());
-                // ⚠⚠⚠ AND THE DECISIONS THIS REPOSITORY'S RUNS RUN UNDER, read off THIS
-                // repository's own document.
-                //
-                // The template used to author them, which meant sprag's standing yesses authorised
-                // every run of a file other repositories copy. They moved to `debt_loop.scxml`, so
-                // something has to carry them across — and this is that something. **It decides
-                // nothing**: it reads one document and hands the values to another, which is the
-                // whole of what the governing rule permits a driver to do with a decision.
-                //
-                // ⚠⚠ WHICH KIND IS NOT A WIRE ARGUMENT YET, and that is scope rather than design.
-                // There is one kind, so naming it would be a key with one legal value — and adding
-                // an ARGUMENT is a wire bump. The day a second kind exists, that bump is what pays
-                // for it.
-                let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
-                    .map_err(|why| refused(why.to_string()))?;
-                // ⚠⚠⚠⚠⚠ RESOLVED BY A FUNCTION THAT HANDS THE BRIEF BACK — register item 492. It
-                // was a hundred inline lines here, and the eight fall-throughs to the kind document
-                // inside it were held by NOTHING: `sprag_plugin`'s own gate had already measured
-                // that deleting one of them left the whole workspace green, and the ceiling's round
-                // measured it again with the same answer. A `Brief` is the observable that fixes
-                // that, and this is the only call site.
-                let brief = ai_loop_brief(map, &kind)?;
-                // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
-                // loop's first prompt goes into a pane whose program may still be starting — see
-                // `AI_LOOP_FORM`. A caller whose peer needs a different barrier overrides it.
-                let mut spec = sprag_plugin::AiLoopSpec::driving(require_str(map, "agent")?);
-                if let Some(ready_when) = opt_ready_when(map)? {
-                    spec.ready_when = Some(ready_when);
-                }
-                // ⚠⚠ READ AS TWO INDEPENDENT KEYS, where the `agent` form's `opt_turn` refuses a
-                // bound with no `done_when` beside it. That rule is right there and wrong here:
-                // an `agent` run's default contract is `exits`, so a bare bound would be bounding
-                // something the caller did not choose — a loop's default is
-                // `INNER_SESSION_ENDS`, the contract this document makes load-bearing, so a bare
-                // bound bounds exactly the turn the caller is thinking about.
-                // ⚠⚠⚠ AND THE INDEPENDENCE IS NOW STRUCTURAL RATHER THAN A CHOICE MADE HERE: the
-                // bound cannot be spelled on this spec at all, so the two keys could not be read
-                // together even by a caller who wanted them to be.
-                spec.done_when = opt_done_when(map)?.unwrap_or(sprag_plugin::INNER_SESSION_ENDS);
-                // ⚠⚠⚠⚠⚠ WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS, AND THIS IS THE ONLY PLACE
-                // THAT KNOWS. `sprag-plugin` used to read `$XDG_STATE_HOME` itself, one library
-                // down, which made *the daemon's state directory* mean *the home of whoever ran
-                // the process* — so the whole suite appended to a developer's `~/.local/state`
-                // (measured 2026-08-19: thirty lines from one crate, the write CI's
-                // `ambient-home-guard` was red on). The derivation is
-                // [`crate::durability::state_dir`], the one this daemon files every other durable
-                // artifact under, so the counts land beside the snapshot and the run registry
-                // rather than in a second directory of their own.
-                //
-                // ⚠⚠ NOT a wire key. A caller does not choose where this machine keeps its files,
-                // and the document already owns the two decisions that ARE a caller's: whether to
-                // keep counts at all and what to call the file (`ledger_into`, which overrides
-                // this outright when it is authored absolute).
-                spec.review_ledger = Some(crate::durability::state_dir());
-                if !declined(map, "shows_prompt") {
-                    spec.shows_the_prompt = map["shows_prompt"]
-                        .as_bool()
-                        .ok_or(InvokeError::TypeMismatch)?;
-                }
-                // ⚠⚠⚠ THE ANSWERING CONTRACT, read through the SAME two parsers every other
-                // injecting form uses. A loop is the form that needs it most and was the only one
-                // without it: every kind of real work its agent does raises a permission dialog,
-                // and a loop that met one with nothing declared stopped having judged no turns.
-                // ⚠⚠⚠ IT IS ON THE BRIEF NOW, not the spec: a consent is a decision somebody made
-                // in advance and in writing, which is what this document holds — the same move
-                // `screen_rules` made, and the end of refusal and approval living in two worlds.
-                let label = format!("ai_loop pane={}", pane.0);
-                let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
-                    .map_err(|why| refused(ai_loop_refusal(&why)))?;
-                Ok((PluginKind::AiLoop(Box::new(loops)), label))
+            // ⚠⚠ READ AS TWO INDEPENDENT KEYS, where the `agent` form's `opt_turn` refuses a
+            // bound with no `done_when` beside it. That rule is right there and wrong here:
+            // an `agent` run's default contract is `exits`, so a bare bound would be bounding
+            // something the caller did not choose — a loop's default is
+            // `INNER_SESSION_ENDS`, the contract this document makes load-bearing, so a bare
+            // bound bounds exactly the turn the caller is thinking about.
+            // ⚠⚠⚠ AND THE INDEPENDENCE IS NOW STRUCTURAL RATHER THAN A CHOICE MADE HERE: the
+            // bound cannot be spelled on this spec at all, so the two keys could not be read
+            // together even by a caller who wanted them to be.
+            spec.done_when = opt_done_when(map)?.unwrap_or(sprag_plugin::INNER_SESSION_ENDS);
+            // ⚠⚠⚠⚠⚠ WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS, AND THIS IS THE ONLY PLACE
+            // THAT KNOWS. `sprag-plugin` used to read `$XDG_STATE_HOME` itself, one library
+            // down, which made *the daemon's state directory* mean *the home of whoever ran
+            // the process* — so the whole suite appended to a developer's `~/.local/state`
+            // (measured 2026-08-19: thirty lines from one crate, the write CI's
+            // `ambient-home-guard` was red on). The derivation is
+            // [`crate::durability::state_dir`], the one this daemon files every other durable
+            // artifact under, so the counts land beside the snapshot and the run registry
+            // rather than in a second directory of their own.
+            //
+            // ⚠⚠ NOT a wire key. A caller does not choose where this machine keeps its files,
+            // and the document already owns the two decisions that ARE a caller's: whether to
+            // keep counts at all and what to call the file (`ledger_into`, which overrides
+            // this outright when it is authored absolute).
+            spec.review_ledger = Some(crate::durability::state_dir());
+            if !declined(map, "shows_prompt") {
+                spec.shows_the_prompt = map["shows_prompt"]
+                    .as_bool()
+                    .ok_or(InvokeError::TypeMismatch)?;
             }
+            // ⚠⚠⚠ THE ANSWERING CONTRACT, read through the SAME two parsers every other
+            // injecting form uses. A loop is the form that needs it most and was the only one
+            // without it: every kind of real work its agent does raises a permission dialog,
+            // and a loop that met one with nothing declared stopped having judged no turns.
+            // ⚠⚠⚠ IT IS ON THE BRIEF NOW, not the spec: a consent is a decision somebody made
+            // in advance and in writing, which is what this document holds — the same move
+            // `screen_rules` made, and the end of refusal and approval living in two worlds.
+            let label = format!("ai_loop pane={}", pane.0);
+            let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+                .map_err(|why| refused(ai_loop_refusal(&why)))?;
+            Ok((PluginKind::AiLoop(Box::new(loops)), label))
         }
     }
+}
 
+impl PluginsExternal {
     fn require_pane(&self, pane: PaneId) -> Result<(), InvokeError> {
-        if lock(&self.workspace).pane(pane).is_some() {
-            Ok(())
-        } else {
-            Err(refused(format!("no pane {} in this workspace", pane.0)))
-        }
+        require_pane_in(self, pane)
     }
 
     /// Spawn the plugin on a background thread that drives it to a terminal

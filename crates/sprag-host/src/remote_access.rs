@@ -1184,6 +1184,65 @@ impl PaneSupervision for RemotePaneAccess {
     }
 }
 
+/// **THE WORLD A DRIVER OUTSIDE THE DAEMON CHECKS A RUN AGAINST** — register items 544 and 643, and
+/// [`PluginWorld`](crate::plugins::PluginWorld)'s second implementation.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists at all: one builder, two callers
+///
+/// A run's plugin is built from its request map, and the builder asks the world exactly two
+/// questions — *does this pane exist* and *how big is a pane by default*. When the driver moves out
+/// of the daemon it has to build **the same plugin from the same request**, and a second builder
+/// over there would be a second answer to one question: it would drift first in whichever key one
+/// of them forgot, which is the shape this repository has paid for at every surface it duplicated.
+///
+/// So the builder stayed ONE function and the world became an argument. This is what that argument
+/// is when the caller is on the far side of a socket: both answers come off the wire the driver is
+/// already holding.
+///
+/// ⚠⚠ **IT IS NOT A SECOND `PaneAccess`.** The surface beside it drives panes; this is consulted
+/// once, before a run starts, to turn a mistyped id into a synchronous refusal instead of a run
+/// that dies on its first step.
+pub struct RemotePluginWorld<'a>(&'a RemotePaneAccess);
+
+impl<'a> RemotePluginWorld<'a> {
+    /// Check runs against the daemon `access` is driving.
+    #[must_use]
+    pub const fn over(access: &'a RemotePaneAccess) -> Self {
+        Self(access)
+    }
+}
+
+impl crate::plugins::PluginWorld for RemotePluginWorld<'_> {
+    /// ⚠ THE PANE LIST, which is the same set the daemon's own pool answers from — and a surface
+    /// whose daemon was replaced answers an EMPTY list, so a run against a stranger's pane is
+    /// refused rather than started. That is [`RemotePaneAccess::world_changed`]'s latch reaching
+    /// the one check that happens before any driving.
+    fn has_pane(&self, pane: PaneId) -> bool {
+        self.0.pane_ids().contains(&pane)
+    }
+
+    /// ⚠⚠ **THE DAEMON'S ARBITRATED SIZE, NOT THIS PROCESS'S TERMINAL.** A driver process has a
+    /// terminal of its own and it is nobody's business: the rectangle a pane is opened at is the
+    /// one every client of that session lays the arrangement out over
+    /// ([`WINDOW_SIZE_SLOT`](crate::wire::WINDOW_SIZE_SLOT)).
+    ///
+    /// ⚠ `null` there is *no attached client has said how big it is*, and the fallback is the same
+    /// 80×24 a daemon boots with — stated here rather than left to a caller, because a size chosen
+    /// by two different processes for one pane is the reflow this address exists to prevent.
+    fn default_size(&self) -> (u16, u16) {
+        let dim = |value: &Value, key: &str| {
+            value[key]
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .filter(|n| *n > 0)
+        };
+        self.0
+            .read(&mux_action_path(crate::wire::WINDOW_SIZE_SLOT))
+            .and_then(|size| Some((dim(&size, "cols")?, dim(&size, "rows")?)))
+            .unwrap_or((80, 24))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::scopes_that_disagree;
