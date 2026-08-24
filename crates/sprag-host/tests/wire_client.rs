@@ -9741,3 +9741,104 @@ fn a_remote_driver_reads_the_source_bytes_the_grid_cannot_give_back() {
          live child that has printed nothing yet, which is the reading a dialogue turn degrades on.",
     );
 }
+
+/// ⛔⛔⛔⛔ **EVERY OPTIONAL SUB-SURFACE THIS DRIVER OFFERS, AND THE ONE IT REFUSES ON PURPOSE** —
+/// register item 557's first clause, held by a test instead of by a comment.
+///
+/// # ⚠⚠⚠⚠⚠ Why the finished set is worth a gate that none of its own rounds was
+///
+/// Item 557 registered NINE optional sub-surfaces of [`PaneAccess`] that `RemotePaneAccess`
+/// answered `None` for, and the last three were paid one per round (register items 653, 654, 656).
+/// Nothing holds the finished set. Each of those rounds gated its OWN address — a `hands` read, a
+/// stop, a raw capture — and a surface that quietly went back to the trait's default `None` would
+/// fail none of them: every one of those gates reaches its capability THROUGH the accessor, and
+/// would simply be told there is none, which is the shape `Option` was chosen to make sayable.
+///
+/// ⚠⚠ **AND THE REFUSAL IS THE HALF NOTHING COULD HAVE READ.** `input_trail` is `None` here
+/// DELIBERATELY — register item 567: a trail carries input the terminal was told not to echo, so a
+/// read-only client holding this socket could harvest a password from it, and the one question its
+/// consumer asks (*is my marker in what was typed*) is served by `recent_input_has.<needle>`
+/// carrying a bool instead. **That `None` and an oversight are the same value**, and this is the
+/// only place that says which one it is.
+///
+/// # ⚠ The blind spot, stated rather than shrunk
+///
+/// This asserts the surfaces the trait has TODAY. A twelfth optional accessor added upstream would
+/// default to `None` here and nothing would go red — a list without a glob, which is register item
+/// 583's blind spot at another address. What the list does hold is every surface already paid for.
+#[test]
+fn a_remote_driver_offers_every_optional_sub_surface_but_the_one_it_refuses_on_purpose() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["sh"]);
+    // ⚠⚠⚠ PARKING, because that is what `crate::drive` builds — and the first draft of this gate
+    // used the plain driver and went red on `changes`, which is the product being RIGHT: that
+    // accessor is `Some` exactly when a park connection was supplied, and answering otherwise would
+    // make every wait return "nothing moved" instantly and spin. The pair below holds both halves.
+    let (remote, mut setup) = parking_remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sh", "-c", "exec cat"] }));
+
+    // ── THE CONTROL: this is a LIVE surface, not a struct answering `Some(self)` into the void ──
+    //
+    // ⚠⚠⚠ Every accessor below is an unconditional `Some(self)`, so `is_some()` would answer the
+    // same for a driver whose daemon had never existed. What makes the list mean anything is that
+    // this driver is really talking to that daemon — asserted by a read only the other side can
+    // answer.
+    assert!(
+        remote.pane_ids().contains(&pane),
+        "⚠⚠ the driver cannot see the pane the daemon just made for it, so every `is_some()` below \
+         would be a statement about a struct rather than about a wire. Read {:?}",
+        remote.pane_ids(),
+    );
+
+    // ── THE CLAIM: the ten that are served, each named so a red says WHICH ────────────────────
+    for (surface, offered, item) in [
+        ("lifecycle", remote.lifecycle().is_some(), "557"),
+        ("supervision", remote.supervision().is_some(), "557"),
+        ("input_echo", remote.input_echo().is_some(), "557"),
+        ("terminal_modes", remote.terminal_modes().is_some(), "557"),
+        ("foreground_job", remote.foreground_job().is_some(), "557"),
+        ("output_lines", remote.output_lines().is_some(), "557"),
+        ("changes", remote.changes().is_some(), "631"),
+        ("hands", remote.hands().is_some(), "653"),
+        ("job_control", remote.job_control().is_some(), "654"),
+        ("raw_capture", remote.raw_capture().is_some(), "656"),
+    ] {
+        assert!(
+            offered,
+            "⛔⛔⛔⛔ REGISTER ITEM 557: a run driven from another process is told this host has no \
+             `{surface}` at all. That word is about a DEPLOYMENT and it is false — the daemon on \
+             the other end of this socket has served that address since register item {item} paid \
+             for it. A `None` here does not fail a run; it makes one quietly do without a \
+             capability it has, which is the whole class this item exists to close.",
+        );
+    }
+
+    // ── AND `changes` IS THE ONE THAT IS CONDITIONAL, WHICH ONLY A PAIR CAN SAY ───────────────
+    //
+    // ⚠⚠⚠⚠ The nine above are unconditional `Some(self)`; this one answers for a CAPABILITY THIS
+    // CALLER SUPPLIED. A driver built without a park connection must be told so — `park_until`
+    // reads that `None` as the instruction to fall back to a clock, where an always-`Some` would
+    // hand it a wait with nowhere to park, answer *nothing moved* instantly, and spin. Asserting
+    // only the `Some` half above would leave exactly that always-`Some` passing.
+    let (unparked, _setup) = remote_driver(&sock);
+    assert!(
+        unparked.changes().is_none(),
+        "⛔⛔⛔ REGISTER ITEM 631: a driver with NO park connection must answer that it cannot say \
+         when a pane changed. Offering `PaneChanges` here would promise a wait this surface has \
+         nowhere to make, and the caller would spin on instant «nothing moved» answers instead of \
+         falling back to the clock the `None` sends it to.",
+    );
+
+    // ── AND THE ONE REFUSAL, PINNED SO IT CANNOT DECAY INTO AN OVERSIGHT ──────────────────────
+    assert!(
+        remote.input_trail().is_none(),
+        "⛔⛔⛔ REGISTER ITEM 567: this surface must NOT offer a `PaneInputTrail`. It is the one \
+         that crosses a socket, and a trail carries what the terminal was told not to echo — a \
+         password typed at a `sudo` prompt is in it and is nowhere on the grid, so a client that \
+         only READS could harvest it. Its one consumer asks *is my marker in what was typed*, and \
+         `recent_input_has.<needle>` answers that with a bool that carries nothing home. Serving \
+         the trail here would widen what this socket hands out, which is why the old address was \
+         withdrawn and why `WIRE_PROTOCOL` moved for it.",
+    );
+}
