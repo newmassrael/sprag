@@ -9990,14 +9990,19 @@ fn a_remote_driver_offers_every_optional_sub_surface_but_the_one_it_refuses_on_p
 /// it (register item 654's own measured sentence). The first green therefore arrived looking like a
 /// failure: `Broken pipe` on the next read. The run gets a pane of its own for that reason.
 ///
-/// # ⚠⚠⚠⚠ WHAT THIS GATE DOES **NOT** PROVE, stated rather than left to be assumed
+/// # ⚠⚠⚠⚠⚠ AND IT HOLDS THE JOURNAL AS THE CARRIER — but only once the race was closed
 ///
-/// It does not prove that `Event::RunOrdered` is what carries the order. **Measured, twice**:
-/// withholding that announce entirely — with a chatty peer AND with the silent one this now uses —
-/// leaves this gate GREEN. So something other than that journal event is delivering the cancel to
-/// the child, and register item 648's half-payment is **not** shown to be load-bearing here.
-/// Whatever this gate holds, it holds `read_row` reaching the right surface (mutating that back is
-/// red) and the order arriving end to end. Naming the carrier is register item 660's remainder.
+/// Withholding `Event::RunOrdered` left this gate GREEN at first, which would have made register
+/// item 648's half-payment look like scaffolding nobody leans on. It was a RACE, and finding it is
+/// what this gate is worth: a driver subscribes with `since: 0`, so its first delivered batch is
+/// the journal's HISTORY — measured, a `layout_updated` from the pane this test spawns. That stale
+/// batch can flush after the cancel, wake the watcher, and have it re-read the row and find the
+/// order — a cancel landing with nothing having announced it, at iteration 1.
+///
+/// Spending the catch-up first (the three-step wait below) makes the order's own announce the only
+/// traffic that can wake the watcher. **With that in place the mutation is red**: withhold the
+/// announce and the driver never hears the cancel. The journal is the carrier, and this gate now
+/// says so rather than assuming it.
 #[test]
 fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it_to_look() {
     // The option a person sets, at the door a person sets it — `the_daemon_drives_a_run_in_a
@@ -10059,6 +10064,25 @@ fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it
         }),
         "⚠⚠ the run never reached `running`, so the order below would be given to a run that was \
          not there to hear it. Read {:?}",
+        run_row(&mut conn, run),
+    );
+
+    // ⚠⚠⚠⚠⚠ LET THE SUBSCRIPTION CATCH UP BEFORE THE ORDER IS GIVEN, or this gate measures a RACE
+    // instead of a wake. A driver subscribes with `since: 0`, so its first delivered batch is the
+    // journal's HISTORY — here a `layout_updated` from the pane this test spawned. Measured: that
+    // stale batch can flush AFTER the cancel, wake the watcher, and have it re-read the row and
+    // find the order — so the cancel lands with nothing having announced it, and withholding
+    // `Event::RunOrdered` left this gate green. Waiting until the catch-up is spent makes the
+    // order's own announce the ONLY traffic that can wake the watcher, which is the claim.
+    assert!(
+        wait_until(Duration::from_secs(6), || {
+            run_row(&mut conn, run)["state"]["iterations"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 3
+        }),
+        "⚠⚠ the run never took three steps, so the catch-up window this gate needs was not spent \
+         and the order below would race it. Read {:?}",
         run_row(&mut conn, run),
     );
 
