@@ -354,6 +354,27 @@ pub const RUN_DRIVING_KEY: &str = "driving";
 /// are different objects (a run request, a progress report) so nothing can confuse them, and the
 /// asymmetry of trust is the whole design: **a client may not say it and a driver may.**
 pub const RUN_PLACE_KEY: &str = "place";
+/// **WHAT A DRIVER REPORTS FOR THE FACTS A ROW PUBLISHES BESIDE ITS STATE** — one key holding one
+/// object, register item 663.
+///
+/// # ⚠⚠⚠⚠⚠ Why these travel NESTED when `at` and `place` travel flat
+///
+/// A progress report becomes the `state` object of a row ([`progress_to_json`] renders it and the
+/// row republishes it whole), so a key added flat is a key published INSIDE the state. That was
+/// harmless for `at` and `place` — nothing else renders them — and it is not harmless for these
+/// five: `run_to_json` already publishes the delivery triple, the checks sentence and the driven
+/// pane BESIDE the state. Flat, they would appear twice in one row, and only for a run whose driver
+/// is another process — one number with two spellings (register item 445) and the invisible
+/// divergence [`crate::options::RUN_DRIVER_PROCESS`] promises cannot happen.
+///
+/// ⚠⚠ **SO THE REPORT IS A TRANSPORT, AND THE ROW LIFTS THIS OUT OF IT** before the rest becomes
+/// `state`. One key, one removal — a structural strip rather than a LIST of names somebody must
+/// remember to extend, which is the shape that rots the first time a sixth fact arrives.
+///
+/// ⚠ Inside it, `checks` is the TALLY (`asked` / `silent` / `why_silent`); beside the state it is
+/// the SENTENCE `checks_sentence` composes from that tally. The two can never be confused because
+/// one of them is in here.
+pub const REPORTED_BESIDE_KEY: &str = "beside";
 /// **WHERE A RUN'S MACHINE IS, IN ONE WORD FOR A PERSON** — `sprag_plugin::Plugin::at`, as a
 /// driver's progress report carries it. Register item 662.
 ///
@@ -2971,7 +2992,45 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(place) = &progress.place {
         answer[RUN_PLACE_KEY] = json!(place);
     }
+    // ⚠⚠⚠⚠⚠ **AND EVERYTHING A ROW PUBLISHES BESIDE ITS STATE** — register item 663, nested under
+    // one key for the reason [`REPORTED_BESIDE_KEY`] holds: flat, each of these would be a second
+    // spelling of a number the row already publishes from the cell.
+    //
+    // ⚠⚠ UNCONDITIONAL, unlike the two above, and the difference is what absence has to mean. A
+    // MISSING `beside` is an older driver saying nothing; a PRESENT one saying `delivered: 0` is
+    // this driver saying it has delivered nothing, which is a fact and not a silence. The row's
+    // own presence rules (a triple published only once something was typed, a sentence only once a
+    // claim was checked) stay where they are — they are about what a READER should be shown.
+    answer[REPORTED_BESIDE_KEY] = json!({
+        RUN_DELIVERED_KEY: progress.deliveries.made,
+        RUN_FOLDED_KEY: progress.deliveries.folded,
+        RUN_UNSUBMITTED_KEY: progress.deliveries.unsubmitted,
+        RUN_CHECKS_KEY: {
+            "asked": progress.checks.asked,
+            "silent": progress.checks.silent,
+            // ⚠ The checker's own words, carried rather than re-composed: `judge` is the one
+            // authority on what a silence means, and it lives on the other side of this wire.
+            "why_silent": progress.checks.why_silent,
+        },
+        RUN_DRIVING_KEY: progress.driving.map(|pane| pane.0),
+        RUN_BANKED_KEY: progress.banked.as_ref().map(|banked| json!({
+            "completed": banked.completed,
+            "unit": banked.unit.as_ref(),
+        })),
+    });
     answer
+}
+
+/// **THE PROGRESS DOCUMENT A ROW SHOWS AS ITS STATE** — everything except the facts published
+/// BESIDE the state, which the row lifts out and renders itself. Register item 663.
+///
+/// ⚠ One removal by one name: see [`REPORTED_BESIDE_KEY`] for why a structural strip beats a list
+/// of key names that has to be kept in step with the row.
+fn without_the_beside(mut progress: Value) -> Value {
+    if let Some(held) = progress.as_object_mut() {
+        held.remove(REPORTED_BESIDE_KEY);
+    }
+    progress
 }
 
 /// **WHAT A DRIVER'S PROGRESS REPORT SAYS**, for the one reader that cannot take the blob whole —
@@ -3001,12 +3060,62 @@ pub struct ReportedProgress {
     /// The whole place its machine was in — `sprag_plugin::Plugin::place`, the thing item 543's
     /// resume is entered at.
     pub place: Option<Vec<String>>,
+    /// What it said it had put into its pane — register items 663 / 617. [`None`] for a driver
+    /// whose build knew no [`REPORTED_BESIDE_KEY`], never for one that has delivered nothing.
+    pub deliveries: Option<sprag_plugin::Deliveries>,
+    /// What it said its milestone checks came to — items 663 / 601. The TALLY; the sentence a
+    /// reader gets is [`checks_sentence`]'s, composed here from this.
+    pub checks: Option<sprag_plugin::Checks>,
+    /// Which pane it said it was driving — items 663 / 540.
+    pub driving: Option<PaneId>,
+    /// How much of its work it said was complete and kept — items 663 / 616.
+    ///
+    /// ⚠ Here the two silences GENUINELY read alike — *this plugin counts no work* and *this driver
+    /// never said* both arrive as [`None`] — and that costs nothing, because the only run this is
+    /// read for is one whose cell is empty by construction. A caller that could tell them apart
+    /// would have nothing different to do.
+    pub banked: Option<sprag_plugin::Banked>,
 }
 
 /// Read a driver's progress report — see [`ReportedProgress`].
 #[must_use]
 pub fn progress_from_report(reported: &Value) -> ReportedProgress {
     let amount = reported.get("cost").and_then(Value::as_u64);
+    // ⚠ `Value::Null` when the report has none, so every read below simply answers [`None`] — an
+    // older driver needs no arm of its own.
+    let beside = reported.get(REPORTED_BESIDE_KEY).unwrap_or(&Value::Null);
+    // ⚠⚠ READ OUT OF THAT NESTED OBJECT AND NOWHERE ELSE — see [`REPORTED_BESIDE_KEY`]. Each is
+    // [`None`] for a driver whose build did not know the key, so the caller falls back to the cell
+    // rather than publishing zeros nobody reported.
+    //
+    // ⚠ **WHOLE OR NOTHING** for the two that are compound values, which is those types' own rule:
+    // `Deliveries` exists so a fold count can never travel without its denominator, and a reader
+    // that filled in the half it did not receive would be the writer those types forbid.
+    let deliveries = (|| {
+        Some(sprag_plugin::Deliveries {
+            made: small(beside.get(RUN_DELIVERED_KEY))?,
+            folded: small(beside.get(RUN_FOLDED_KEY))?,
+            unsubmitted: small(beside.get(RUN_UNSUBMITTED_KEY))?,
+        })
+    })();
+    let checks = (|| {
+        let tally = beside.get(RUN_CHECKS_KEY)?;
+        Some(sprag_plugin::Checks {
+            asked: small(tally.get("asked"))?,
+            silent: small(tally.get("silent"))?,
+            why_silent: tally
+                .get("why_silent")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    })();
+    let banked = (|| {
+        let banked = beside.get(RUN_BANKED_KEY)?;
+        Some(sprag_plugin::Banked {
+            completed: small(banked.get("completed"))?,
+            unit: std::borrow::Cow::Owned(banked.get("unit")?.as_str()?.to_owned()),
+        })
+    })();
     ReportedProgress {
         iterations: reported
             .get("iterations")
@@ -3033,7 +3142,23 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
                 .map(|word| word.as_str().map(str::to_owned))
                 .collect::<Option<Vec<_>>>()
         }),
+        deliveries,
+        checks,
+        driving: beside
+            .get(RUN_DRIVING_KEY)
+            .and_then(Value::as_u64)
+            .map(PaneId),
+        banked,
     }
+}
+
+/// A count a report carried, or [`None`] when it is absent or not a number this build can hold.
+///
+/// ⚠ Refused rather than saturated: these are counts a person reads to decide what to do, and a
+/// number too large to hold is a report this build cannot read — which is a different answer from
+/// a large count, and the only honest one.
+fn small(held: Option<&Value>) -> Option<u32> {
+    u32::try_from(held?.as_u64()?).ok()
 }
 
 /// The `running` state a row shows for a run whose driver REPORTED `progress` from another process.
@@ -3081,17 +3206,29 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
         .progress
         .cost
         .map_or((0, None), |c| (c.amount(), Some(c.unit())));
+    // ⚠⚠⚠⚠⚠ **WHAT THIS RUN'S DRIVER SAID, IF IT IS IN ANOTHER PROCESS** — register item 663. Read
+    // ONCE here and used by every beside-the-state key below, each of which prefers it and falls
+    // back to the cell. There is no report for a run this daemon drives on a thread of its own, so
+    // the fallback is not a defensive nicety: it is the arm every run takes under today's default.
+    let reported = run
+        .reported
+        .as_ref()
+        .map(progress_from_report)
+        .unwrap_or_default();
     let state_json = match &run.state {
         // ⚠⚠⚠ A REPORT IS PREFERRED OVER THE CELL, and the ordering is the whole of register item
         // 650's second half: for a run driven in another process the cell beside it NEVER MOVES,
         // so reading it first would publish zeros over a report that had already arrived. For every
         // other run there is no report and the cell is the only answer — so one arm serves both,
         // and the row cannot tell which kind of driver filled it in.
-        RunState::Running => progress_reported(
+        // ⚠⚠ AND WHAT IT CARRIED FOR THE KEYS BESIDE THE STATE IS LIFTED OUT — register item 663.
+        // The report is a TRANSPORT: leaving that object in would publish the delivery triple and
+        // the driven pane twice in one row, and only for one kind of driver.
+        RunState::Running => progress_reported(without_the_beside(
             run.reported
                 .as_ref()
                 .map_or_else(|| progress_to_json(&run.progress), Clone::clone),
-        ),
+        )),
         RunState::Done { outcome, output } => json!({
             "status": RunStatus::Done.wire_str(),
             "outcome": outcome_to_json(outcome),
@@ -3193,7 +3330,11 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     // ⚠ The absence is still a claim for a run that composed NOTHING — `pipe` and `orchestrator`
     // relay words they did not write — which is why this is a predicate over the value rather than
     // an unconditional publication of three zeroes.
-    let deliveries = run.progress.deliveries;
+    //
+    // ⚠⚠⚠⚠ THE REPORT FIRST — register item 663. For a run driven in another process the cell is
+    // all zeros for ever, so reading it first published *nothing was ever typed* about a run that
+    // had filled somebody's pane.
+    let deliveries = reported.deliveries.unwrap_or(run.progress.deliveries);
     if deliveries.made > 0 || deliveries.unsubmitted > 0 {
         entry[RUN_DELIVERED_KEY] = json!(deliveries.made);
         entry[RUN_FOLDED_KEY] = json!(deliveries.folded);
@@ -3206,13 +3347,15 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
     // checker. ⚠ The SENTENCE, because the fact a reader acts on is a comparison (`silent` against
     // `asked`) and not a pair of numbers — `delivery_sentence`'s argument one key over.
-    if let Some(said) = checks_sentence(&run.progress.checks) {
+    //
+    // ⚠ The report's TALLY, and the sentence composed here from it — one composer, item 663.
+    if let Some(said) = checks_sentence(reported.checks.as_ref().unwrap_or(&run.progress.checks)) {
         entry[RUN_CHECKS_KEY] = json!(said);
     }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
     // prose: a reader that had to parse `ai_loop pane=3` would be deriving a fact from a name.
-    if let Some(pane) = run.progress.driving {
+    if let Some(pane) = reported.driving.or(run.progress.driving) {
         entry[RUN_DRIVING_KEY] = json!(pane.0);
     }
     entry
@@ -8372,6 +8515,273 @@ mod tests {
             "⚠⚠⚠ A CONTROL FAILED: a run whose driver shares its cell and has reported nothing \
              lost what that cell said. There is no report to prefer, so the cell IS the answer — \
              and this is the arm every run takes under the default configuration. Wrote: {mine:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN DRIVEN IN ANOTHER PROCESS SHOWS WHAT IT PUT INTO ITS PANE, WHAT ITS CHECKS
+    /// CAME TO, WHICH PANE IT IS DRIVING, AND WHAT IT BANKED** — register item 663.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What item 662 left, and why it left it deliberately
+    ///
+    /// 662 taught the durable log to prefer the driver's report over a cell that never moves, and
+    /// carried `at` and `place` down that channel. It stopped there on purpose: those two are
+    /// rendered NOWHERE ELSE, so carrying them created no second spelling. These five are not like
+    /// that — `run_to_json` publishes the delivery triple (item 617), the checks sentence (601) and
+    /// the driven pane (540) BESIDE the state, out of the cell, and `persistable` writes
+    /// `deliveries` (606) and `banked` (616) from the same cell. For a run whose driver is another
+    /// process that cell is all zeros for ever, so **every one of those five was missing from both
+    /// the row and the file** — item 606's own finding (*a run is read after it ends, when its
+    /// daemon is gone*) undone for one kind of driver.
+    ///
+    /// # ⚠⚠⚠⚠ The fix is not "add keys to the report", and the first control says why
+    ///
+    /// Adding them to [`progress_to_json`] alone would put them inside `state` while the cell-fed
+    /// copies stayed beside it: one number, two places, and for in-process runs only — the
+    /// invisible divergence [`crate::options::RUN_DRIVER_PROCESS`] promises cannot happen, plus
+    /// register item 445's two-authorities shape. So the report is a **TRANSPORT**: what it carries
+    /// is taken OUT of it and published once, in the place the row already publishes it. The first
+    /// control is what holds that.
+    ///
+    /// ⚠ Three controls: a fact is published exactly ONCE; the in-process arm (every run under
+    /// today's default) still reads its cell; and an older driver's report, which knows none of
+    /// these keys, leaves the row saying nothing rather than publishing zeros nobody reported.
+    #[test]
+    fn a_run_driven_somewhere_else_shows_what_it_delivered_and_banked() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .driving_out_of_process(Arc::new(|_, _| {
+            std::process::Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        }));
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+
+        // ── CONTROL 3 FIRST: an older driver knows none of these keys ────────────────────────
+        //
+        // ⚠⚠ IT GOES FIRST so a later pass cannot be what satisfies it, and because it is the
+        // shape a REAL older driver has: the two images are the same binary only until somebody
+        // promotes one.
+        external
+            .invoke(
+                REPORT_PROGRESS_ACTION,
+                IntrospectValue::Json(json!({
+                    RUN_ID_KEY: id,
+                    PROGRESS_KEY: { "iterations": 1 },
+                })),
+            )
+            .expect("an older driver reporting only what its build knew");
+        let older = row_of(&mut external, id);
+        assert!(
+            older.get(RUN_DELIVERED_KEY).is_none()
+                && older.get(RUN_CHECKS_KEY).is_none()
+                && older.get(RUN_DRIVING_KEY).is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: a report that mentioned none of these left the row publishing \
+             them anyway. Absence must keep meaning *nobody said* — a row that answered `0 of 0` \
+             for a driver that never counted would be this daemon asserting something no process \
+             wrote down. Row: {older:?}",
+        );
+        // ⚠⚠⚠⚠⚠ **AND THE READER IS ASKED DIRECTLY, BECAUSE THE ROW ABOVE CANNOT TELL TWO THINGS
+        // APART.** *Fell back to an empty cell* and *read the silence as zeros* produce the same
+        // row here, since this run's cell is empty either way — so the assertion above is true of
+        // a reader that has stopped distinguishing them. What the rule actually says is about the
+        // DOOR: a missing `beside` yields [`None`], never a value nobody reported, and that is
+        // what lets the caller fall back to a cell that DOES hold something (control 2).
+        let silence = progress_from_report(&json!({ "iterations": 1 }));
+        assert_eq!(
+            (
+                silence.deliveries,
+                silence.checks,
+                silence.driving,
+                silence.banked
+            ),
+            (None, None, None, None),
+            "⚠⚠⚠ A CONTROL FAILED AT THE DOOR: a report carrying none of these was read as though \
+             it carried zeros. `None` here is what makes the caller's fallback reachable — with a \
+             value in its place, an older driver's silence would overwrite a cell that knew the \
+             answer.",
+        );
+
+        // ── A DRIVER SAYS WHAT IT HAS DONE, through the door a driver really uses ────────────
+        external
+            .invoke(
+                REPORT_PROGRESS_ACTION,
+                IntrospectValue::Json(json!({
+                    RUN_ID_KEY: id,
+                    PROGRESS_KEY: progress_to_json(&sprag_plugin::Progress {
+                        iterations: 9,
+                        deliveries: sprag_plugin::Deliveries {
+                            made: 5,
+                            folded: 2,
+                            unsubmitted: 1,
+                        },
+                        checks: sprag_plugin::Checks {
+                            asked: 3,
+                            silent: 2,
+                            why_silent: Some("THE-CHECKER-NEVER-ANSWERED".to_owned()),
+                        },
+                        driving: Some(pane),
+                        banked: Some(sprag_plugin::Banked {
+                            completed: 4,
+                            unit: std::borrow::Cow::Borrowed("turn"),
+                        }),
+                        ..sprag_plugin::Progress::default()
+                    }),
+                })),
+            )
+            .expect("a driver reporting its own run");
+
+        // ── THE CLAIM, HALF ONE: the ROW shows it ────────────────────────────────────────────
+        let row = row_of(&mut external, id);
+        assert_eq!(
+            (
+                row.get(RUN_DELIVERED_KEY),
+                row.get(RUN_FOLDED_KEY),
+                row.get(RUN_UNSUBMITTED_KEY),
+            ),
+            (Some(&json!(5)), Some(&json!(2)), Some(&json!(1))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 663: a run driven in another process published nothing about \
+             what it put into its pane. Item 591 built those counters and item 617 made them the \
+             only thing that explains a pane holding an unsubmitted prompt — and they were read \
+             off a cell that never moves for this kind of run. Row: {row:?}",
+        );
+        let said = row
+            .get(RUN_CHECKS_KEY)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            said.contains("THE-CHECKER-NEVER-ANSWERED"),
+            "⛔⛔⛔⛔ REGISTER ITEM 663 / 601: what this run's checks came to did not reach a \
+             reader. That sentence is the one that says an ending rests on the working agent's own \
+             word, and it is composed HERE from what the driver reported. Said: {said:?}",
+        );
+        assert_eq!(
+            row.get(RUN_DRIVING_KEY),
+            Some(&json!(pane.0)),
+            "⛔⛔⛔⛔ REGISTER ITEM 663 / 540: the row did not say which pane this run is driving, \
+             so a person looking at a busy pane cannot find out what is typing into it",
+        );
+
+        // ── THE CLAIM, HALF TWO: the FILE keeps it ───────────────────────────────────────────
+        let log = lock(&registry).persistable();
+        let saved = &log.runs[0];
+        assert_eq!(
+            saved.deliveries,
+            Some(crate::runs::PersistedDeliveries {
+                made: 5,
+                folded: 2,
+                unsubmitted: 1,
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 606: this is the column item 606 was filed for, and it \
+             came back empty for the driver kind that fills it from a report. A run is READ after \
+             it ends, when the daemon that drove it is already gone. Saved: {saved:?}",
+        );
+        assert_eq!(
+            saved.banked,
+            Some(crate::runs::PersistedBanked {
+                completed: 4,
+                unit: "turn".to_owned(),
+            }),
+            "⛔⛔⛔⛔ REGISTER ITEM 663 / 616: how much of the work was kept is what a stand-down \
+             sentence weighs, and it did not survive. Saved: {saved:?}",
+        );
+
+        // ── CONTROL 1: a fact is published EXACTLY ONCE ──────────────────────────────────────
+        //
+        // ⚠⚠⚠⚠⚠ **IT ASKS FOR THE TRANSPORT WRAPPER BY NAME, AND A GREEN MUTATION IS WHY.** The
+        // first version of this control looked for the FLAT keys inside `state` — the shape a
+        // flat-carried report would have leaked — and deleting the strip left it green, because
+        // what actually leaks is the NESTED object: `state.beside.delivered`, which no assertion
+        // about `state.delivered` can see. A control written for the design that was rejected is a
+        // control for nothing. Both are asked now: the wrapper must be gone, AND no flat copy may
+        // have been unpacked into its place.
+        assert!(
+            row["state"].get(REPORTED_BESIDE_KEY).is_none()
+                && row["state"].get(RUN_DELIVERED_KEY).is_none()
+                && row["state"].get(RUN_DRIVING_KEY).is_none(),
+            "⚠⚠⚠⚠⚠ A CONTROL FAILED, AND IT IS THE ONE THAT SHAPES THE FIX: the report is a \
+             TRANSPORT, not a fragment of the row. Splatting it into `state` while the same facts \
+             are published beside the state puts one number in two places — and only for one kind \
+             of driver, which is the invisible divergence `RUN_DRIVER_PROCESS` promises cannot \
+             happen. State: {:?}",
+            row["state"],
+        );
+
+        // ── CONTROL 2: the arm every run takes by default is untouched ───────────────────────
+        let cell = sprag_plugin::ProgressCell::default();
+        {
+            let mut moving = lock(&cell);
+            moving.deliveries = sprag_plugin::Deliveries {
+                made: 7,
+                folded: 0,
+                unsubmitted: 0,
+            };
+            moving.driving = Some(pane);
+            moving.banked = Some(sprag_plugin::Banked {
+                completed: 6,
+                unit: std::borrow::Cow::Borrowed("turn"),
+            });
+        }
+        let in_process = {
+            let mut held = lock(&registry);
+            let next = held.reserve();
+            held.submit(crate::runs::NewRun {
+                id: next,
+                label: "ai_loop pane=0".to_owned(),
+                plugin: PluginName::AiLoop,
+                request: None,
+                opened_by: None,
+                opened_by_session: None,
+                state: Arc::new(Mutex::new(RunState::Running)),
+                run: Box::new(crate::runs::EndedRun::restored(false, None)),
+                progress: Arc::clone(&cell),
+            })
+        };
+        let mine = row_of(
+            &mut external,
+            i64::try_from(in_process.0).expect("a small id"),
+        );
+        assert_eq!(
+            (mine.get(RUN_DELIVERED_KEY), mine.get(RUN_DRIVING_KEY)),
+            (Some(&json!(7)), Some(&json!(pane.0))),
+            "⚠⚠⚠ A CONTROL FAILED: a run whose driver shares its cell lost what that cell said. \
+             There is no report to prefer, so the cell IS the answer — and that is every run this \
+             daemon drives under today's default. Row: {mine:?}",
+        );
+        let both = lock(&registry).persistable();
+        let logged = both
+            .runs
+            .iter()
+            .find(|run| run.id == in_process.0)
+            .expect("the second run is in the log");
+        assert_eq!(
+            logged.banked,
+            Some(crate::runs::PersistedBanked {
+                completed: 6,
+                unit: "turn".to_owned(),
+            }),
+            "⚠⚠⚠ AND THE FILE'S HALF OF THE SAME CONTROL: an in-process run's banked work must \
+             still come off its cell. Saved: {logged:?}",
         );
     }
 

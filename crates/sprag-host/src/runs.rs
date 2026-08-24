@@ -1803,14 +1803,33 @@ impl RunRegistry {
                         // ⚠ ALWAYS `Some`, INCLUDING THE ZERO PAIR — the field above's argument.
                         // This image looked, so `made: 0` is a claim it may make; the `None` this
                         // field documents belongs to a log written before it existed.
-                        deliveries: Some(run.progress.deliveries.into()),
+                        //
+                        // ⚠⚠⚠ AND THE REPORT IS PREFERRED HERE TOO — register item 663. This is
+                        // the column item 606 was filed for, and for a run driven in another
+                        // process the cell it used to be read from is all zeros for ever: the log
+                        // said `0 of 0` about a run that had filled somebody's pane, on exactly
+                        // the runs anybody reads (a run is read after it ends, when its daemon is
+                        // already gone).
+                        deliveries: Some(
+                            reported
+                                .deliveries
+                                .unwrap_or(run.progress.deliveries)
+                                .into(),
+                        ),
                         // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
                         // is the PLUGIN's own answer (*I count no completed work*) rather than
                         // this daemon's silence, which is why it is mapped through rather than
                         // forced to `Some` the way `stood_down` above is: that field's `None` had
                         // to be reserved for an older log, and this one's is a real answer a
                         // reader must be able to see.
-                        banked: run.progress.banked.clone().map(Into::into),
+                        //
+                        // ⚠⚠ THE REPORT FIRST, the field above's argument — item 663. Note this
+                        // one keeps a real `None` (*this plugin counts no work*) on the fallback,
+                        // which is why the two are `.or`ed rather than defaulted.
+                        banked: reported
+                            .banked
+                            .map(Into::into)
+                            .or_else(|| run.progress.banked.clone().map(Into::into)),
                         // ⚠ AND HERE `None` REALLY IS *no cancel*, unlike the field above — item
                         // 596. A stand-down is a bool and needs `Some(false)` to distinguish a
                         // silent daemon from an old log; a canceller is an option already, so the
