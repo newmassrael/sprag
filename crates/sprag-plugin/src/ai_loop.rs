@@ -934,8 +934,13 @@ impl Plugin for AiLoop {
 
     /// ⚠⚠ THE WHOLE PLACE, beside the word above and for the reason the trait gives: `at` answers a
     /// person and this answers an engine. Register item 543.
+    ///
+    /// ⚠ [`None`] for a place that cannot be written down — a datamodel holding a value no flat
+    /// list of words can carry. The answer is then the honest one a run whose machine was never
+    /// saved already gets: no place, and a restart reports it `interrupted` rather than resuming it
+    /// missing what it knew.
     fn place(&self) -> Option<Vec<String>> {
-        Some(self.inner.configuration().in_words())
+        self.inner.configuration().in_words()
     }
 
     /// ⚠⚠⚠⚠⚠ **AND BACK AGAIN — the one plugin in this crate that can be put where it was.**
@@ -955,7 +960,7 @@ impl Plugin for AiLoop {
         };
         match self.inner.resume_at(&place) {
             Ok(()) => crate::plugin::Resumption::Placed,
-            Err(why) => crate::plugin::Resumption::Refused(crate::outer::refusal_in_words(&why)),
+            Err(why) => crate::plugin::Resumption::Refused(why.in_words()),
         }
     }
 
@@ -10331,28 +10336,28 @@ mod tests {
         resuming.lifecycle().expect("lifecycle").close(resumed_pane);
     }
 
-    /// ⛔⛔⛔⛔⛔ **AND THE PROMPT A RESUMED LOOP DOES PUT MUST NOT BE EMPTY** — register item 543's
-    /// UNPAID half, gated red on purpose.
+    /// ⛔⛔⛔⛔⛔ **AND THE PROMPT A RESUMED LOOP PUTS IS A REAL ONE** — register item 543's fifth
+    /// brick, end to end through a live pane.
     ///
-    /// # ⚠⚠⚠⚠⚠ Why this is committed as an ignored failure rather than left unwritten
+    /// # ⚠⚠⚠⚠⚠ What it measures, and why the byte count alone was not enough
     ///
-    /// Item 495's rule, which this register has paid for repeatedly: a residue kept as PROSE inside
-    /// a closed entry reads as a known limit rather than as work, so nothing schedules it — and
-    /// item 543 is itself the register's own example of that, mentioned three times in a closed
-    /// entry with no number. A gate that fails is a residue nothing can mistake for done.
+    /// The gate above resumes a loop and requires it not to re-type its OPENING words. That was
+    /// paid, and it left the other half exposed: a machine placed by `enter_at` has not run the
+    /// entry actions that COMPOSE its prompts, so before the datamodel crossed the log a resumed
+    /// loop's very first delivery was ONE BYTE — an empty question, and its peer answers something
+    /// the run then judges as though it were about the work. **A blank prompt is worse than a
+    /// re-typed one**, and worse than the honest `interrupted` a restart reports today.
     ///
-    /// **What it measures**: the gate above resumes a loop and its very first delivery is ONE BYTE,
-    /// against 259 for a fresh loop. The prompt is empty — `enter_at` does not re-run the entry
-    /// actions that assign what a prompt is composed from, and `LoopPlace` carries the active
-    /// configuration and nothing else. So a run resumed today asks its peer a blank question.
+    /// So this asks for the bytes AND for the words. `turn_prompt` is `<assign>`ed as
+    /// `'Continue toward: ' + milestone + …` by an entry action, which makes the brief's own
+    /// milestone a needle that can only reach that pane through the run log: the resuming loop was
+    /// built from the same document and briefed with the same brief, and it still could not
+    /// compose that sentence, because composing it is the writing `enter_at` skips.
     ///
-    /// **What makes it green**: the datamodel crossing the log beside the configuration — item
-    /// 543's own scope names both — and `resume_at` restoring it before the machine is placed.
-    ///
-    /// ⚠ `#[ignore]` and not deleted: it is run by the ignored-gate lane (`-- --ignored`), so a
-    /// build that accidentally fixes this is told, and a sweep is not held red by known work.
+    /// ⚠⚠ **THE CONTROL IS THAT IT DELIVERED AT ALL.** A run that put nothing to its peer would
+    /// satisfy *the prompt was not empty* vacuously, which is exactly what a resume that refused to
+    /// start looks like from out here.
     #[test]
-    #[ignore = "register item 543: the datamodel does not cross the log, so a resumed loop's first prompt is empty"]
     fn a_resumed_loop_composes_a_real_prompt_and_not_an_empty_one() {
         let run = RunContext::uncancellable();
         let (worked_in, worked) = standin_agent(2);
@@ -10364,29 +10369,60 @@ mod tests {
             ran.step(&working, &run).expect("a live pane takes a pass");
             passes += 1;
         }
+        assert_eq!(
+            ran.state(),
+            AiLoopState::Judging,
+            "⚠⚠ THE FIXTURE'S PRECONDITION: the run must get past its opening prompt within \
+             {passes} passes, or the place saved below is one where nothing has been composed yet \
+             and the claim measures nothing.",
+        );
         let saved = ran.place().expect("a loop says where its machine is");
         working.lifecycle().expect("lifecycle").close(worked);
+
+        // ⚠ THE DOCUMENT'S OWN COMPOSITION, not a sentence spelled here: whatever a turn prompt is
+        // reworded to say, it opens by naming the milestone it is continuing toward.
+        let needle = format!("Continue toward: {}", brief_for(40).milestone);
 
         let (resumed_in, resumed_pane) = standin_agent(2);
         let resuming = supervised(&resumed_in);
         let mut resumed = AiLoop::new(engine(), resumed_pane, &brief_for(40), &standin_spec())
             .expect("a loop builds from the same document");
-        assert_eq!(resumed.resume_at(&saved), Resumption::Placed);
+        assert_eq!(
+            resumed.resume_at(&saved),
+            Resumption::Placed,
+            "⚠⚠ the place saved above must be one this build accepts, or what follows is a fresh \
+             loop's opening and says nothing about resuming",
+        );
         let spent = resumed
             .step(&resuming, &run)
             .expect("a live pane takes a pass")
             .cost
             .amount();
         let made = resumed.deliveries().made;
+        let after = screen_showing(&resuming, resumed_pane, &needle);
         resuming.lifecycle().expect("lifecycle").close(resumed_pane);
+
+        // ── THE CONTROL: it put something to its peer ───────────────────────────────────────
         assert!(
-            made == 0 || spent > 1,
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 543, UNPAID HALF: a resumed loop delivered {made} prompt(s) \
-             worth {spent} byte(s) — an EMPTY question. `enter_at` does not re-run the entry \
-             actions that compose a prompt, and the datamodel they wrote does not cross the run \
-             log, so a machine put back has its place and none of its words. A blank prompt is \
-             worse than a re-typed one: the peer answers something, and the run judges that answer \
-             as if it were about the work.",
+            made >= 1,
+            "⚠⚠⚠ THE CONTROL FAILED: the resumed loop delivered nothing at all, so *the prompt it \
+             put was not empty* is true of a run that never spoke. {spent} byte(s) typed.",
+        );
+
+        // ── THE CLAIM: a real question, in the run's own words ──────────────────────────────
+        assert!(
+            spent > 1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a resumed loop delivered {made} prompt(s) worth {spent} \
+             byte(s) — an EMPTY question. `enter_at` does not re-run the entry actions that compose \
+             a prompt, so a machine put back without the datamodel they wrote has its place and \
+             none of its words.",
+        );
+        assert!(
+            after.contains(&needle),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543: the resumed loop typed {spent} byte(s) that are not its \
+             own question. `{needle}` is composed by an entry action this resume deliberately did \
+             not run, so it can only have reached this pane by crossing the run log — and it did \
+             not. Screen: {after:?}",
         );
     }
 }

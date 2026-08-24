@@ -2765,6 +2765,110 @@ impl Accounted {
     }
 }
 
+/// **THE DOCUMENT THIS DRIVER COMPILES**, as the bytes the build itself read.
+///
+/// ⚠⚠⚠ **IT IS HERE BECAUSE THE DOCUMENT IS THE ONLY LIST OF ITS OWN `<data>`.** SCE's codegen
+/// emits one accessor per declaration and no way to ENUMERATE them, so anything that has to walk
+/// a datamodel — carrying it across a run log is this crate's first such thing — needs the names
+/// from somewhere, and a list spelled in Rust is a second copy of the document that ages silently
+/// the first time an author adds a `<data>`.
+pub(crate) const DOCUMENT: &str = include_str!("ai_loop.scxml");
+
+/// Every `<data id="…">` `document` declares, in the order it declares them.
+///
+/// ⚠ It scans for the attribute rather than parsing XML: the ids are the only thing wanted, an id
+/// is an NCName so it cannot contain a quote, and a real parser here would be a second reading of
+/// a document this crate already compiles.
+pub(crate) fn declared_data_ids(document: &str) -> Vec<&str> {
+    document
+        .match_indices("<data id=\"")
+        .filter_map(|(at, needle)| {
+            let rest = &document[at + needle.len()..];
+            rest.find('"').map(|end| &rest[..end])
+        })
+        .collect()
+}
+
+/// **ONE DATAMODEL VALUE, WRITTEN INTO THE WORDS A RUN LOG HOLDS** — [`false`] for a value that
+/// cannot be written down at all, in which case `said` is left holding a PARTIAL encoding and the
+/// caller must discard the whole list rather than ship it.
+///
+/// # ⚠⚠⚠⚠⚠ Self-delimiting words, because the alternative is a serializer this crate refuses
+///
+/// `sprag-plugin` is deliberately serde-free — *"serialization is a host concern"* — and a place
+/// has to cross a log as a flat list of strings all the same. So each value is written as words
+/// that say their own length: a scalar is one word (`int 3`, `string …`, and everything after the
+/// first space is the text, newlines and quotes included), and an array is `array <n>` followed by
+/// `n` more values, read back by the same recursion. Nothing is escaped because nothing is nested
+/// INSIDE a word, which is what makes a prompt holding every character a person can type safe to
+/// carry.
+///
+/// ⚠⚠ **AN OBJECT, A DOM NODE AND `undefined` ARE REFUSED RATHER THAN APPROXIMATED**, and that is
+/// the rule `LoopPlace::from_words` follows at the other end: a run put back missing a value it
+/// had is worse than the honest `interrupted` a person is told today, because it spends a peer's
+/// tokens doing the wrong work. `outer::tests::everything_a_resume_would_carry_could_cross_a_run_log_as_words`
+/// is the ratchet that says the refusal is unreachable for THIS document, and goes red the day it
+/// stops being.
+///
+/// ⚠ **A NON-FINITE DOUBLE IS REFUSED FOR THE SAME REASON**: `NaN` survives the round trip as a
+/// value that is not equal to itself, so a place carrying one could never be proven to have come
+/// back whole.
+fn value_in_words(value: &ScriptValue, said: &mut Vec<String>) -> bool {
+    match value {
+        ScriptValue::Null => said.push("null".to_owned()),
+        ScriptValue::Bool(held) => said.push(format!("bool {held}")),
+        ScriptValue::Int(held) => said.push(format!("int {held}")),
+        // ⚠ `{held:?}` and NOT `{held}`: `Debug` for `f64` prints the shortest decimal that parses
+        // back to the same bits, and `Display` is free to round. The round trip is the point.
+        ScriptValue::Double(held) if held.is_finite() => said.push(format!("double {held:?}")),
+        ScriptValue::String(held) => said.push(format!("string {held}")),
+        ScriptValue::Array(members) => {
+            said.push(format!("array {}", members.len()));
+            for member in members {
+                if !value_in_words(member, said) {
+                    return false;
+                }
+            }
+        }
+        ScriptValue::Double(_)
+        | ScriptValue::Undefined
+        | ScriptValue::Object(_)
+        | ScriptValue::Dom(_) => return false,
+    }
+    true
+}
+
+/// **THE ONE READER OF [`value_in_words`]** — the next value off a place's words, or [`None`] for
+/// words this build cannot read whole.
+///
+/// ⚠ The array arm does NOT pre-allocate from the length it is told. That number comes off a file
+/// a restarted daemon did not write, and `Vec::with_capacity` on it is a stranger's claim about
+/// how much memory to take; pushing grows only for members that actually arrive.
+fn value_from_words<'a>(said: &mut impl Iterator<Item = &'a String>) -> Option<ScriptValue> {
+    let word = said.next()?;
+    let (kind, rest) = word.split_once(' ').unwrap_or((word.as_str(), ""));
+    match kind {
+        "null" if rest.is_empty() => Some(ScriptValue::Null),
+        "bool" => rest.parse().ok().map(ScriptValue::Bool),
+        "int" => rest.parse().ok().map(ScriptValue::Int),
+        "double" => rest
+            .parse::<f64>()
+            .ok()
+            .filter(|held| held.is_finite())
+            .map(ScriptValue::Double),
+        "string" => Some(ScriptValue::String(rest.to_owned())),
+        "array" => {
+            let members = rest.parse::<usize>().ok()?;
+            let mut held = Vec::new();
+            for _ in 0..members {
+                held.push(value_from_words(said)?);
+            }
+            Some(ScriptValue::Array(held))
+        }
+        _ => None,
+    }
+}
+
 /// **WHERE A LOOP'S MACHINE IS, AS ONE VALUE** — register item 543.
 ///
 /// # ⚠⚠⚠⚠⚠ Two facts, and they are one value because they are only true together
@@ -2779,15 +2883,51 @@ impl Accounted {
 /// ⚠ `current` is the ENGINE's own notion, not [`OuterLoop::state`]: that one answers the deepest
 /// leaf of the WORK region, which is what a person reads and what a row renders — and this document
 /// has regions, so the work leaf is not the machine's current state.
+///
+/// # ⚠⚠⚠⚠⚠ And a third fact, because a machine put back with no words asks a blank question
+///
+/// [`Engine::enter_at`](sce_rust_runtime::Engine::enter_at) deliberately does not re-run the
+/// `<onentry>` actions of the states it enters, which is the whole reason it is the door a resume
+/// uses — those actions are what type a prompt into somebody's pane. But in THIS document they are
+/// also what COMPOSE the prompt: `start_prompt`, `turn_prompt`, `reflect_prompt` and
+/// `done_instruction` are `<assign>`ed by entry actions, so a place carrying only the configuration
+/// puts a machine back holding four empty strings. Measured on the round that built the door: a
+/// resumed loop's first delivery was ONE BYTE where a fresh loop's is 259. **A blank question is
+/// worse than a re-typed one** — the peer answers something, and the run judges that answer as if
+/// it were about the work.
+///
+/// ⚠⚠ **WHAT CROSSES IS WHAT CHANGED, NOT THE DATAMODEL.** A resume CONSTRUCTS its loop before it
+/// places it, so everything the document declares and the brief assigns is already right by
+/// construction; carrying it again would be carrying a copy of the document through a log. The
+/// difference is not bookkeeping: this document declares one `<data>` a flat list of words cannot
+/// hold (`stop_said`, an object of four sentences) and three the brief fills with objects
+/// (`screen_rules`, `may_answer`, `judged_rules`) — all four constants as far as the run is
+/// concerned, and a place that had tried to carry the whole datamodel would refuse every run there
+/// is over values no resume needs.
 #[derive(Clone, Debug)]
 pub struct LoopPlace {
     /// The whole active set, regions included.
     configuration: sce_rust_runtime::helpers::hierarchy::StateChain<AiLoopState>,
     /// The engine's current state, which must be a member of the set above.
     current: AiLoopState,
+    /// What this run's datamodel holds that a freshly briefed loop's does not — see the type doc.
+    held: Vec<(&'static str, ScriptValue)>,
 }
 
 impl LoopPlace {
+    /// **THE WORD THAT ENDS THE STATES AND BEGINS THE VALUES**, in a place's own list.
+    ///
+    /// ⚠⚠ **IT HOLDS A SPACE ON PURPOSE, AND THAT IS THE WHOLE SAFETY OF IT.** Everything before
+    /// it is a state name and everything after is a `<data>` id, both of which are XML NCNames and
+    /// therefore cannot contain whitespace — so no document an author can write has a name that
+    /// collides with this, and the split needs no counting, no escaping and no length prefix.
+    ///
+    /// ⚠ **A PLACE WITH NO VALUES STILL SAYS IT**, which is what makes a list written before this
+    /// existed refuse rather than resume: an older log carries states and stops, and a reader that
+    /// treated its absence as *nothing changed* would put a run back holding four empty prompts —
+    /// the exact failure the values exist to end.
+    pub const AND_IT_HELD: &'static str = "and it held";
+
     /// **THIS PLACE AS THE DOCUMENT'S OWN WORDS** — what a run log can hold, register item 543.
     ///
     /// # ⚠⚠⚠⚠⚠ Words, because a log is words and a restart has nothing else
@@ -2804,18 +2944,42 @@ impl LoopPlace {
     /// that only said *which states are active* would have lost the one `enter_at` refuses without
     /// (`CurrentNotActive`). ⚠ It also appears in the configuration, where it belongs — the head is
     /// a POINTER at a member, not a state held outside the set.
+    /// ⚠⚠ **AND [`None`] FOR A PLACE THAT CANNOT BE WRITTEN DOWN**, which is a datamodel holding a
+    /// value no flat list of words can carry. The caller's answer is the honest one it already
+    /// gives a run whose machine was never saved: no place, and a restart reports `interrupted`.
+    /// Half a place written down would be a run resumed missing what it knew.
     #[must_use]
-    pub fn in_words(&self) -> Vec<String> {
+    pub fn in_words(&self) -> Option<Vec<String>> {
         use sce_rust_runtime::StatePolicy as _;
 
-        std::iter::once(AiLoopPolicy::get_state_name(self.current))
+        let mut said: Vec<String> = std::iter::once(AiLoopPolicy::get_state_name(self.current))
             .chain(
                 self.configuration
                     .iter()
                     .map(|state| AiLoopPolicy::get_state_name(*state)),
             )
             .map(str::to_owned)
-            .collect()
+            .collect();
+        said.push(Self::AND_IT_HELD.to_owned());
+        // ⚠ THE ID, THEN THE VALUE'S OWN SELF-DELIMITING WORDS — `value_in_words`'s encoding, so a
+        // reader needs no counting and no escaping to know where one value ends and the next id
+        // begins. ⚠⚠ A value that cannot be written down discards the WHOLE list: half a place is a
+        // run resumed missing what it knew, and this door's `None` is what the caller turns into
+        // the honest `interrupted`.
+        for (id, value) in &self.held {
+            said.push((*id).to_owned());
+            if !value_in_words(value, &mut said) {
+                return None;
+            }
+        }
+        Some(said)
+    }
+
+    /// **WHAT THIS RUN'S DATAMODEL HOLDS THAT A FRESHLY BRIEFED LOOP'S DOES NOT** — see the type
+    /// doc for why it is the difference rather than the whole.
+    #[must_use]
+    pub fn held(&self) -> &[(&'static str, ScriptValue)] {
+        &self.held
     }
 
     /// **THE ONE READER OF [`in_words`](Self::in_words)** — a place taken back off a log.
@@ -2834,7 +2998,9 @@ impl LoopPlace {
     pub fn from_words(said: &[String]) -> Option<Self> {
         use sce_rust_runtime::StatePolicy as _;
 
-        let (head, rest) = said.split_first()?;
+        // ⚠ The FIRST occurrence, and a list that never says it is refused — see `AND_IT_HELD`.
+        let ends = said.iter().position(|word| word == Self::AND_IT_HELD)?;
+        let (head, rest) = said[..ends].split_first()?;
         let current = AiLoopPolicy::get_state_from_name(head)?;
         let mut configuration = sce_rust_runtime::helpers::hierarchy::new_chain();
         for word in rest {
@@ -2843,12 +3009,31 @@ impl LoopPlace {
                 AiLoopPolicy::get_state_from_name(word)?,
             );
         }
+        // ⚠⚠ AN ID THIS DOCUMENT DOES NOT DECLARE IS REFUSED, on the same terms as a state name it
+        // cannot spell: a log naming a variable the machine has no `<data>` for was written by
+        // another document, and setting it would leave a run holding a value nothing reads beside a
+        // place nothing checked. ⚠ Named TWICE is refused too — a list that says a variable was two
+        // things is one no reader can be right about, and last-wins would pick one silently.
+        let declared = declared_data_ids(DOCUMENT);
+        let mut held: Vec<(&'static str, ScriptValue)> = Vec::new();
+        let mut words = said[ends + 1..].iter();
+        while let Some(word) = words.next() {
+            let id = declared
+                .iter()
+                .copied()
+                .find(|declared| *declared == word.as_str())?;
+            if held.iter().any(|(already, _)| *already == id) {
+                return None;
+            }
+            held.push((id, value_from_words(&mut words)?));
+        }
         // ⚠ The head must be IN the set: `enter_at` refuses otherwise, and refusing here names the
         // log as the liar rather than letting the engine's rejection surface one layer up wearing
         // the resume's name.
         configuration.contains(&current).then_some(Self {
             configuration,
             current,
+            held,
         })
     }
 }
@@ -2928,6 +3113,46 @@ pub fn refusal_in_words(
     }
 }
 
+/// **WHY A SAVED PLACE COULD NOT BE TAKEN** — register item 543, and it is two answers because
+/// they send a reader to two different files.
+///
+/// ⚠⚠ A refused CONFIGURATION says the log describes a shape this document cannot be in, which is
+/// a statement about the `.scxml` and the build that wrote the log. A refused VALUE says the states
+/// were fine and a `<data>` would not go back, which is a statement about the script engine. A
+/// single sentence for both would send whoever is holding the log to look in the wrong place.
+#[derive(Debug)]
+pub enum NotResumed {
+    /// The engine would not enter that configuration.
+    Place(sce_rust_runtime::ConfigurationRejection<AiLoopState>),
+    /// A value the log carried would not go back into the datamodel.
+    Value {
+        /// The `<data>` id, which is a word the log itself holds.
+        id: &'static str,
+        /// What the script engine said, which is NOT — see [`NotResumed::in_words`].
+        said: String,
+    },
+}
+
+impl NotResumed {
+    /// **THIS REFUSAL IN THE WORDS THE LOG ITSELF HOLDS** — see [`refusal_in_words`], whose whole
+    /// argument this shares: the person who meets one of these is holding a run log, and the only
+    /// vocabulary they have is the one it is written in.
+    ///
+    /// ⚠ The engine's own text is quoted for the value case rather than dropped — it is the only
+    /// account of what went wrong — but the `<data>` id leads, because that is the half of the
+    /// sentence a reader can find in the file in front of them.
+    #[must_use]
+    pub fn in_words(&self) -> String {
+        match self {
+            Self::Place(rejection) => refusal_in_words(rejection),
+            Self::Value { id, said } => format!(
+                "that place says '{id}' held a value this build could not put back, and the engine \
+                 answered {said}"
+            ),
+        }
+    }
+}
+
 /// A run of `ai_loop.scxml`'s machine against one pane.
 pub struct OuterLoop {
     /// The compiled document.
@@ -2935,6 +3160,31 @@ pub struct OuterLoop {
     /// The engine its `<data>` lives in, and the session id it files them under.
     script: Arc<dyn IScriptEngine>,
     session: String,
+    /// **EVERY `<data>` THIS DOCUMENT DECLARES, AS IT STOOD THE MOMENT THE BRIEF LANDED** — the
+    /// baseline [`configuration`](Self::configuration) subtracts, register item 543.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the brief is the line, and not construction and not now
+    ///
+    /// A resume CONSTRUCTS its loop and then places it, and construction ends with the brief:
+    /// `AiLoop::new` is `OuterLoop::new` followed by [`brief`](Self::brief), and the brief is the
+    /// only thing that can be taken once (it is refused anywhere but `idle`). So this is exactly
+    /// *what a resume gets for free* — and the difference from it is exactly *what a resume cannot
+    /// reconstruct and must be told*. Snapshotting a line earlier would put the brief's own values
+    /// into every log, including three the brief fills with OBJECTS (`screen_rules`, `may_answer`,
+    /// `judged_rules`) that no flat list of words can hold — which would refuse every place there
+    /// is, over values a resume rebuilds from the same brief anyway.
+    ///
+    /// ⚠⚠ **AN UNREADABLE `<data>` IS RECORDED AS [`ScriptValue::Undefined`] RATHER THAN OMITTED**,
+    /// which is what keeps the subtraction honest at both ends: the live read maps a failure the
+    /// same way, so a name nobody can read compares EQUAL to itself and is quietly nothing, while a
+    /// name that becomes unreadable mid-run differs and refuses the whole place (`Undefined` is not
+    /// a value `LoopPlace::in_words` can write down). An id dropped from the baseline instead would
+    /// be a value that changed and was never carried.
+    ///
+    /// ⚠ Empty until the brief lands, so a loop nobody briefed says its place holds nothing new.
+    /// Every loop this daemon builds is briefed by `AiLoop::new`, so that is a shape only this
+    /// crate's own tests construct.
+    as_briefed: Vec<(&'static str, ScriptValue)>,
     /// **THE INNER SESSION THIS LOOP IS DRIVING** — its pane, its barrier and its baseline, which are
     /// one value because `restarting` replaces all three at once. See [`Session`].
     driving: Session,
@@ -3366,6 +3616,9 @@ impl OuterLoop {
             machine,
             script,
             session,
+            // ⚠ Nothing yet: the line this is measured from is the BRIEF, which has not landed —
+            // see the field, which holds why construction is the wrong line.
+            as_briefed: Vec::new(),
             done_when: spec.done_when,
             shows_the_prompt: spec.shows_the_prompt,
             judge: spec.judge.clone(),
@@ -3754,7 +4007,23 @@ impl OuterLoop {
             // from out here. `fail` is what the document says happens to a run that cannot go on,
             // and it is what stops a caller pumping past this answer.
             self.machine.process_event(AiLoopEvent::Fail);
+            return held;
         }
+        // ⚠⚠⚠ THE LINE A RESUME IS MEASURED FROM, taken here because this is where construction
+        // ends — see [`as_briefed`](Self#structfield.as_briefed). A refused brief takes the branch
+        // above and never reaches it: that run is going to `failed`, and a baseline for a machine
+        // nobody can drive would be a place nobody can go back to.
+        self.as_briefed = declared_data_ids(DOCUMENT)
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    self.script
+                        .get_variable(&self.session, id)
+                        .unwrap_or(ScriptValue::Undefined),
+                )
+            })
+            .collect();
         held
     }
 
@@ -4015,7 +4284,34 @@ impl OuterLoop {
         LoopPlace {
             configuration: self.machine.get_active_states(),
             current: self.machine.get_current_state(),
+            held: self.written_since_briefing(),
         }
+    }
+
+    /// **WHAT THIS RUN HAS WRITTEN INTO ITS DATAMODEL SINCE IT WAS BRIEFED** — the half of a place
+    /// that is not a state, register item 543.
+    ///
+    /// ⚠⚠ Read at the ask like the configuration beside it, and against the ids the DOCUMENT
+    /// declares rather than a list in Rust: an author who adds a `<data>` gets it carried without
+    /// touching this file, and — the reason that matters — an author who adds one does not get it
+    /// silently left behind on every resume.
+    ///
+    /// ⚠ A read that fails becomes [`ScriptValue::Undefined`], which is not a value a place can be
+    /// written down with — so a `<data>` that stops being readable mid-run refuses the whole place
+    /// instead of resuming a run missing it. See
+    /// [`as_briefed`](Self#structfield.as_briefed), whose baseline maps failure the same way so
+    /// that a name nobody can read at either end is quietly nothing rather than a false change.
+    fn written_since_briefing(&self) -> Vec<(&'static str, ScriptValue)> {
+        self.as_briefed
+            .iter()
+            .filter_map(|(id, was)| {
+                let now = self
+                    .script
+                    .get_variable(&self.session, id)
+                    .unwrap_or(ScriptValue::Undefined);
+                (now != *was).then_some((*id, now))
+            })
+            .collect()
     }
 
     /// **PUT THIS LOOP'S MACHINE BACK AT `configuration`, WITHOUT RE-ENTERING IT** — register item
@@ -4031,17 +4327,39 @@ impl OuterLoop {
     /// actions, and its contract is held by
     /// `crate::probe`'s `a_saved_configuration_is_entered_without_re_running_onentry`.
     ///
+    /// # ⚠⚠⚠⚠ And it puts the run's WORDS back, which is what stops it asking a blank question
+    ///
+    /// The entry actions `enter_at` skips are the ones that compose this document's prompts, so a
+    /// machine placed with nothing else is a run that opens its next turn with an empty string.
+    /// [`LoopPlace`] carries what the run wrote since it was briefed and this is where it goes
+    /// back — after the placement and never before, so that a place the engine refuses leaves this
+    /// loop's datamodel exactly as its caller built it.
+    ///
     /// # Errors
     ///
-    /// Whatever the engine refuses — a configuration that is not one this document can be in. ⚠ The
-    /// rejection is returned rather than swallowed: a run placed at a configuration the document
-    /// does not admit would be a machine nobody can reason about, and the caller (a daemon reading
-    /// a log written by an older build) is exactly who needs to hear it.
-    pub fn resume_at(
-        &mut self,
-        place: &LoopPlace,
-    ) -> Result<(), sce_rust_runtime::ConfigurationRejection<AiLoopState>> {
-        self.machine.enter_at(&place.configuration, place.current)
+    /// Whatever the engine refuses — a configuration that is not one this document can be in, or a
+    /// value it will not take back. ⚠ The rejection is returned rather than swallowed: a run placed
+    /// at a configuration the document does not admit would be a machine nobody can reason about,
+    /// and the caller (a daemon reading a log written by an older build) is exactly who needs to
+    /// hear it.
+    ///
+    /// ⚠⚠ A loop whose values were refused is **half placed** and must not be driven: the machine
+    /// is where the log said and the datamodel is part way between two runs. Its caller's answer is
+    /// the one `crate::plugin::Plugin::resume_at`'s refusal already produces — the run does not
+    /// start.
+    pub fn resume_at(&mut self, place: &LoopPlace) -> Result<(), NotResumed> {
+        self.machine
+            .enter_at(&place.configuration, place.current)
+            .map_err(NotResumed::Place)?;
+        for (id, value) in &place.held {
+            self.script
+                .set_variable(&self.session, id, value.clone())
+                .map_err(|why| NotResumed::Value {
+                    id,
+                    said: format!("{why:?}"),
+                })?;
+        }
+        Ok(())
     }
 
     /// **IS AN ORDER TO STAND DOWN STANDING, AS THE DOCUMENT ITSELF HOLDS IT?** — register item
@@ -17161,6 +17479,363 @@ mod tests {
         );
     }
 
+    /// Whether a flat list of words could carry this value — and the word it would cross as.
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT ASKS THE PRODUCTION ENCODER RATHER THAN DECIDING AGAIN.** A classifier spelled
+    /// out here would be a second answer to *can this be carried*, and the day the two disagreed
+    /// this ratchet would be green about a value the encoder refuses — a gate measuring its own
+    /// opinion. `value_in_words` is what a real place is written with, so this is the same question
+    /// the product asks.
+    ///
+    /// ⚠⚠ `Object`, `Dom`, `Undefined` and a non-finite `Double` answer [`None`]: the structures
+    /// because `sprag-plugin` is deliberately serde-free (*"serialization is a host concern"*), and
+    /// `NaN` because it survives a round trip as a value not equal to itself. An `Array` is
+    /// carriable exactly when every member is.
+    fn carriable(value: &ScriptValue) -> Option<String> {
+        let mut said = Vec::new();
+        if !value_in_words(value, &mut said) {
+            return None;
+        }
+        let first = said.first()?;
+        Some(
+            first
+                .split_once(' ')
+                .map_or_else(|| first.clone(), |(kind, _)| kind.to_owned()),
+        )
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERYTHING A RESUME WOULD HAVE TO CARRY COULD CROSS A RUN LOG AS WORDS** —
+    /// register item 543's fifth brick, measured before it is built.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it exists — it measured the ground the encoder was then built on
+    ///
+    /// R49 measured that a resumed loop's first prompt is EMPTY: `enter_at` deliberately does not
+    /// re-run the entry actions that compose a prompt, and only the configuration crosses the run
+    /// log, so a machine put back has its place and none of its words. The repair is to carry the
+    /// datamodel too — and the first question it asks is one nobody had answered: **what would that
+    /// actually be, and can words hold it?** Answering from the `.scxml` would be a guess about
+    /// what an ENGINE ends up holding; this asks the engine, against the shipped document.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It compares a driven loop against a FRESH one, and that is the whole design
+    ///
+    /// A resumed run is CONSTRUCTED before it is placed (`AiLoop::new`, then `resume_at`), so its
+    /// datamodel is already initialised from the document. Everything still at its declared value
+    /// is therefore right by construction, and carrying it would be carrying a copy of the document
+    /// through a log. **What has to cross is exactly what changed since init** — and this measures
+    /// that set rather than the whole datamodel.
+    ///
+    /// The difference is not academic. Measured here: this document declares one `<data>` that a
+    /// flat list of words CANNOT carry — `stop_said`, an object of four sentences — and it is a
+    /// constant the document never assigns. A gate that had asked *"is the whole datamodel
+    /// carriable"* would be red today over a value no resume needs, and the fifth brick would have
+    /// been designed around a serializer it does not want.
+    ///
+    /// # ⚠⚠⚠⚠ And it is a RATCHET, not a measurement that is thrown away
+    ///
+    /// The day an `<assign>` writes a structure — or a `<data>` that holds one starts being
+    /// assigned — a word encoding built on today's answer would drop it **silently**, on the one
+    /// path whose whole subject is a run coming back with everything it had. This goes red at that
+    /// moment, which is when the decision is cheap. Same shape as `resumable_place`'s fingerprint:
+    /// not *is it right today* but *will anybody be told when it stops being*.
+    ///
+    /// ⚠⚠ **THREE CONTROLS, because each claim has its own way of being vacuously true**: something
+    /// must actually have CHANGED (or *everything that changed is carriable* is a statement about
+    /// the empty set); the CLASSIFIER must be able to answer *no* (or that same list is empty
+    /// because nothing can ever enter it); and a name the document does not declare must NOT read
+    /// (or *every declared id read cleanly* is a reader that cannot tell a variable from a typo).
+    #[test]
+    fn everything_a_resume_would_carry_could_cross_a_run_log_as_words() {
+        // ⚠ THE PRODUCTION CONSTANT, not a second `include_str!`: this asks the list the encoder
+        // itself walks, so a document swapped under one of them cannot leave the other agreeing.
+        let declared = declared_data_ids(DOCUMENT);
+        assert!(
+            declared.len() > 40,
+            "⚠⚠ THE PREMISE FAILED: {} `<data id=…>` found in the shipped document, which is too \
+             few to be this loop's datamodel — every scan below would then be green over almost \
+             nothing. Found: {declared:?}",
+            declared.len(),
+        );
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (_workspace, pane) = quiet_pane();
+        // ⚠ THE ONE A RESUME WOULD BUILD: constructed and never walked, so its datamodel holds
+        // exactly what the document declares.
+        let fresh = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("the shipped document builds a loop");
+        let mut ran = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a second loop builds from the same document");
+        // ⚠ MOVED OFF `idle` ON PURPOSE: three of the prompts are composed by `priming`'s
+        // `<onentry>`, which is precisely the writing a resume does not re-run.
+        ran.walk(AiLoopEvent::Start);
+
+        let read = |loops: &OuterLoop, id: &str| loops.script.get_variable(&loops.session, id);
+
+        let mut unreadable = Vec::new();
+        let mut changed: Vec<(&str, String)> = Vec::new();
+        let mut uncarriable = Vec::new();
+        let mut constant_and_uncarriable = Vec::new();
+        for id in &declared {
+            let (before, after) = (read(&fresh, id), read(&ran, id));
+            let (Ok(before), Ok(after)) = (before, after) else {
+                unreadable.push(*id);
+                continue;
+            };
+            match (before == after, carriable(&after)) {
+                (true, _) => {
+                    if carriable(&after).is_none() {
+                        constant_and_uncarriable.push(*id);
+                    }
+                }
+                (false, Some(kind)) => changed.push((id, kind)),
+                (false, None) => uncarriable.push((*id, format!("{after:?}"))),
+            }
+        }
+
+        assert!(
+            unreadable.is_empty(),
+            "⛔⛔⛔⛔ REGISTER ITEM 543: this document declares `<data>` the running engine will \
+             not hand back. A resume walking the declared list would carry a hole and could not \
+             know it — the run would come back missing exactly what nothing could read. \
+             Unreadable: {unreadable:?}",
+        );
+
+        // ── CONTROL 1: something CHANGED, or the claim below is about the empty set ──────────
+        assert!(
+            !changed.is_empty(),
+            "⚠⚠⚠ THE FIRST CONTROL FAILED: nothing in this datamodel differs between a fresh loop \
+             and one that has taken `start`, so *everything that changed is carriable* is \
+             vacuously true and this gate would stay green over a resume that carries nothing. \
+             Either the walk no longer writes, or the reader is answering one loop twice.",
+        );
+
+        // ── THE CLAIM ────────────────────────────────────────────────────────────────────────
+        assert!(
+            uncarriable.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543, THE FIFTH BRICK'S GROUND MOVED: something a resume would \
+             have to carry is no longer a value a flat list of words can hold. `sprag-plugin` is \
+             deliberately serde-free, so a structure here means the datamodel cannot cross a run \
+             log the way the CONFIGURATION does — and the choice (a serializer here, or the words \
+             made at the host layer) has to be taken deliberately rather than discovered by a \
+             resumed run coming back short. Uncarriable: {uncarriable:?}",
+        );
+
+        // ── CONTROL 2: the classifier can say NO ─────────────────────────────────────────────
+        //
+        // ⚠⚠⚠⚠⚠ Without this the claim above is empty for the WRONG reason. Nothing that changed
+        // is uncarriable today, so `uncarriable.is_empty()` is also what a classifier that answers
+        // *carriable* to everything would produce — and the ratchet would never fire, on exactly
+        // the day it is the only thing that could speak. The `Object` arm is not hypothetical:
+        // this very document holds one (`stop_said`), which is why it is worth a gate that the
+        // reader can TELL.
+        assert!(
+            carriable(&ScriptValue::String("a sentence".to_owned())).is_some()
+                && carriable(&ScriptValue::Int(3)).is_some(),
+            "⚠⚠ the classifier must accept the kinds a run log plainly holds, or the claim above \
+             is red for the wrong reason",
+        );
+        assert!(
+            carriable(&ScriptValue::Object(std::collections::HashMap::new())).is_none(),
+            "⚠⚠⚠ THE CLASSIFIER CANNOT SAY NO: an object is exactly what a flat list of words \
+             cannot hold, and a reader that calls it carriable makes every list above empty by \
+             construction. This document holds one today — `stop_said` — so the arm is reachable.",
+        );
+        assert!(
+            carriable(&ScriptValue::Array(vec![ScriptValue::Object(
+                std::collections::HashMap::new()
+            )]))
+            .is_none(),
+            "⚠⚠ and an array is carriable only when its MEMBERS are — `screen_rules`, `may_answer` \
+             and `judged_rules` are arrays this document assigns from `_event.data`, so a shallow \
+             answer here would wave through exactly the values a caller fills in",
+        );
+
+        // ── CONTROL 3: a name this document does not declare is not readable ─────────────────
+        let absent = read(&ran, "a_data_id_this_document_does_not_declare");
+        assert!(
+            absent.is_err() || matches!(absent, Ok(ScriptValue::Undefined | ScriptValue::Null)),
+            "⚠⚠⚠ THE THIRD CONTROL FAILED: this datamodel answers a name nobody declared, so \
+             *every declared id read cleanly* is not a fact about the document — it is a reader \
+             that cannot tell a variable from a typo, and the ratchet would never fire. Answered: \
+             {absent:?}",
+        );
+
+        println!(
+            "\n== the ai_loop datamodel, asked of a live engine ==\n  {} declared; {} CHANGED by \
+             one `start` and every one of them carriable as words: {changed:?}\n  {} declared \
+             value(s) a flat word list could not carry, and every one is a CONSTANT this document \
+             never assigns, so no resume needs them: {constant_and_uncarriable:?}\n  ⇒ item 543's \
+             fifth brick carries the CHANGES, not the datamodel\n",
+            declared.len(),
+            changed.len(),
+            constant_and_uncarriable.len(),
+        );
+    }
+
+    /// A brief a gate can hand a loop twice and get the same datamodel both times — which is the
+    /// property a resume rests on and the reason this is a function rather than two literals.
+    fn a_brief() -> Brief {
+        Brief {
+            north_star: "carry what a walk wrote across a run log".to_string(),
+            milestone: "a resumed loop holds its own prompts".to_string(),
+            reference: "register item 543".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(40)),
+            reflect_every: Some(8),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⚠ **A PLACE CARRIES THE WORDS A RESUMED LOOP CANNOT COMPOSE FOR ITSELF** — register
+    /// item 543's fifth brick, and the one that stops a resume asking a blank question.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was wrong, measured rather than argued
+    ///
+    /// The fourth brick put a machine back where a log said and re-typed nothing, which is right —
+    /// `enter_at` does not re-run `<onentry>`. But in this document the entry actions are also what
+    /// **compose** the prompts, so a machine placed with only its configuration held four empty
+    /// strings and its next delivery was ONE BYTE against a fresh loop's 259. That is worse than the
+    /// honest `interrupted` a person is told today: the peer answers the blank question, and the run
+    /// judges that answer as though it were about the work.
+    ///
+    /// # ⚠⚠⚠⚠ It crosses the WORDS, and that is the assertion rather than a detail
+    ///
+    /// The claim below resumes from `LoopPlace::from_words(&said)` and never from the place value
+    /// itself. A run log is characters on a disk read by a daemon that was not running when they
+    /// were written — often a NEWER BUILD of one — so a value that only round-trips in memory is a
+    /// resume that works in tests and dies at the restart it exists for.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE RESUMING LOOP ITSELF, BEFORE IT IS PLACED.** It is built from the
+    /// same document and briefed with the same brief, so everything it already holds is something a
+    /// resume gets for free and carrying it would prove nothing. What the claim measures is the
+    /// difference — and the control asserts that difference is real for every id carried, id by id,
+    /// rather than trusting that a walk must have written something.
+    ///
+    /// ⚠ Three more controls, because a decoder that guesses is worse than one that refuses: an id
+    /// this document does not declare, a value word this build cannot read, and a list from BEFORE
+    /// places carried values at all — which is a list of perfectly spellable states, so only the
+    /// missing marker can refuse it.
+    #[test]
+    fn a_place_carries_the_words_a_resumed_loop_cannot_compose_for_itself() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (_workspace, pane) = quiet_pane();
+        let mut ran = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("the shipped document builds a loop");
+        assert_eq!(
+            ran.brief(&a_brief()),
+            Briefed::Took,
+            "⚠⚠ THE FIXTURE'S PREMISE: the brief is the line a place is measured from, so a loop \
+             that did not take one has no baseline and would carry nothing whatever the walk wrote",
+        );
+        // ⚠ MOVED OFF `idle` ON PURPOSE: `priming`'s `<onentry>` is what composes the prompts, and
+        // it is precisely the writing `enter_at` does not re-run.
+        ran.walk(AiLoopEvent::Start);
+
+        let place = ran.configuration();
+        assert!(
+            !place.held().is_empty(),
+            "⚠⚠⚠ THE PREMISE FAILED: one `start` wrote nothing this place carries, so every claim \
+             below is a statement about the empty set — a resume that carried NOTHING would pass \
+             all of it. Either the walk stopped writing or the baseline is being taken too late.",
+        );
+        assert!(
+            place.held().iter().any(|(_, value)| {
+                matches!(value, ScriptValue::String(text) if !text.is_empty())
+            }),
+            "⚠⚠⚠ AND THE PREMISE'S OTHER HALF: nothing carried is a non-empty STRING, and the whole \
+             defect is empty prompt strings. Carried: {:?}",
+            place.held(),
+        );
+        let said = place
+            .in_words()
+            .expect("a place this document produced is one it can write down");
+
+        let mut resumed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a second loop builds from the same document");
+        assert_eq!(
+            resumed.brief(&a_brief()),
+            Briefed::Took,
+            "the resuming loop is built and briefed exactly as a daemon would build it",
+        );
+        let read = |loops: &OuterLoop, id: &str| loops.script.get_variable(&loops.session, id).ok();
+
+        // ── THE CONTROL: none of it is there yet ────────────────────────────────────────────
+        for (id, was) in place.held() {
+            assert_ne!(
+                read(&resumed, id).as_ref(),
+                Some(was),
+                "⚠⚠⚠ THE CONTROL FAILED for `{id}`: a freshly briefed loop ALREADY holds what the \
+                 walk wrote, so carrying it proves nothing and the claim below would be green \
+                 against a place that carried an empty list.",
+            );
+        }
+
+        // ── THE CLAIM: through the words, and the run gets its own words back ───────────────
+        let read_back = LoopPlace::from_words(&said)
+            .expect("words this document produced are words it can read back");
+        resumed
+            .resume_at(&read_back)
+            .expect("a place read back from words is one this loop accepts");
+        for (id, was) in place.held() {
+            assert_eq!(
+                read(&resumed, id).as_ref(),
+                Some(was),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 543: `{id}` did not survive the run log. A machine put \
+                 back without the words its entry actions wrote asks its peer a BLANK question and \
+                 then judges the answer as if it were about the work — which is worse than the \
+                 honest `interrupted` a restart reports today.",
+            );
+        }
+
+        // ── CONTROL: an id this document does not declare is refused ────────────────────────
+        let ends = said
+            .iter()
+            .position(|word| word == LoopPlace::AND_IT_HELD)
+            .expect("a place this build wrote says where its values begin");
+        let mut foreign = said.clone();
+        foreign[ends + 1] = "a_data_id_this_document_does_not_declare".to_owned();
+        assert!(
+            LoopPlace::from_words(&foreign).is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: a log naming a variable this document has no `<data>` for was \
+             written by ANOTHER document, and setting it would leave a run holding a value nothing \
+             reads beside a place nobody checked.",
+        );
+
+        // ── CONTROL: a value word this build cannot read is refused, never defaulted ────────
+        let mut garbled = said.clone();
+        garbled[ends + 2] = "notakind whatever this is".to_owned();
+        assert!(
+            LoopPlace::from_words(&garbled).is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: a value word this build cannot read must refuse the place. \
+             Reading it as some default puts a run back holding a value nobody chose, which is the \
+             `hands_of` rule at its own address — an answer this cannot read whole is one it \
+             declines to have.",
+        );
+
+        // ── CONTROL: a place from before values crossed is refused, and only the marker can ──
+        //
+        // ⚠⚠⚠⚠⚠ EVERY WORD IN IT IS A STATE THIS BUILD CAN SPELL, which is what makes it a control
+        // over the MARKER rather than over the decoder's spelling — R47's trap, where a forgery of
+        // one nonsense word was refused for a reason the mutation under test had not touched.
+        let older = said[..ends].to_vec();
+        assert!(
+            LoopPlace::from_words(&older).is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: a place written before values crossed says states and stops, \
+             and a reader that took its silence for *nothing changed* would resume a run holding \
+             four empty prompts — the exact failure this brick exists to end. Read back: {:?}",
+            LoopPlace::from_words(&older),
+        );
+    }
+
     /// ⛔⛔⛔⛔ **A LOOP CAN SAY WHERE ITS MACHINE IS, AND BE PUT BACK THERE** — register item 543's
     /// first brick, and the one nothing in this tree could do.
     ///
@@ -17203,7 +17878,10 @@ mod tests {
         );
 
         // ── THE CLAIM: words out, words in, same place ──────────────────────────────────────
-        let said = ran.configuration().in_words();
+        let said = ran
+            .configuration()
+            .in_words()
+            .expect("a place this document produced is one it can write down");
         let read = LoopPlace::from_words(&said)
             .expect("words this document produced are words it can read back");
         let mut resumed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
@@ -17238,7 +17916,8 @@ mod tests {
         let mut forged = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
             .expect("a loop builds from the same document")
             .configuration()
-            .in_words();
+            .in_words()
+            .expect("a place this document produced is one it can write down");
         forged[0] = "no-such-state-in-this-document".to_owned();
         assert!(
             LoopPlace::from_words(&forged).is_none(),
