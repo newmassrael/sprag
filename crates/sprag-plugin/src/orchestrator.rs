@@ -565,8 +565,39 @@ impl Plugin for Orchestrator {
         //
         // ⚠⚠ EVERY OTHER `PaneError` STILL PROPAGATES: an unknown pane and an unencodable key are
         // faults of the run, and the Driver's `failed` is where a reader is sent to fix one.
-        let cost = match panes.inject(self.pane, &keys) {
+        // ⚠⚠⚠⚠⚠ **THE WRITE YIELDS TO THE PERSON THE BARRIER ALREADY CLEARED THIS PANE OF** —
+        // register item 586. The barrier above asked *has somebody reached in?*; everything between
+        // that question and this line is window, and it is not a narrow one — `Completion::begin`
+        // reads the pane's supervisor, which is a lock and a detector here and a round trip over a
+        // wire. **Measured at 20% and 30% of runs on two passes of one day**, counted at the WRITE
+        // (`by_a_program` 23 when the person touched the keyboard, 24 when the run ended).
+        //
+        // ⚠⚠⚠ THE BARRIER'S OWN WATERMARK AND NOT A FRESH READ: a number taken here would ask *has
+        // anyone written since a moment ago*, which forgives exactly the write this is about. A
+        // host that cannot count hands answers `None` and the injection is the plain one — the
+        // documented degradation, which is what every host had before this line.
+        let injected = match self.ready.cleared_at() {
+            Some(seen) => panes.inject_yielding_to_a_person(self.pane, &keys, seen),
+            None => panes.inject(self.pane, &keys),
+        };
+        let cost = match injected {
             Ok(written) => written.bytes(),
+            // ⚠⚠⚠⚠ THE PERSON WON THE RACE, and this run ends the way the barrier would have ended
+            // it one step later: `TakenOver`, with the writes they made. Nothing was typed, so
+            // nothing is charged. Reporting a FAILURE here would tell its reader to fix something,
+            // and what happened is somebody doing what they are entitled to do.
+            Err(PaneError::TakenOver(_)) => {
+                // ⚠⚠ THE COUNT IS RE-READ AND MAY BE ABSENT, and the fallback is ONE rather than
+                // zero: this door refused precisely because a person's write had been counted, so
+                // *at least one* is a fact the arm already holds. Zero would say nobody reached in,
+                // about the very event that produced the refusal.
+                let interruption = self
+                    .ready
+                    .interruption(panes, self.pane)
+                    .unwrap_or_else(|| crate::readiness::Interruption::of(1));
+                let note = interruption.describe();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
+            }
             Err(PaneError::PeerGone(pane)) => {
                 let note = PaneError::PeerGone(pane).to_string();
                 return Ok(Step::new(Cost::Bytes(0), Verdict::PeerGone(pane)).noting(note));
@@ -3128,9 +3159,28 @@ mod tests {
             },
         );
 
+        // ⚠⚠⚠⚠⚠ **THE WRITE-ORDER WITNESS, TAKEN AT THE MOMENT THE PERSON REACHES IN** — register
+        // item 586, and the axis the screen witness at the end of this gate does not have.
+        //
+        // `PaneHands` counts a write WHEN IT IS MADE and records whose hand it was, so *did the run
+        // type after the person did* is answerable without asking the screen anything. The screen
+        // cannot answer it: this peer reads ONE BYTE AT A TIME with `dd` and echoes what it got, so
+        // a stimulus WRITTEN before the person's key can still be ECHOED after it — and the witness
+        // at the end of this gate counts `SAW 112` after `SAW 88` on exactly that echo. Which of
+        // the two is failing 20% of runs is what this pair measures; the repository's own rule
+        // (`a-screen-match-is-evidence-only-if-the-terminal-did-not-paint-it`) is why it is asked.
+        let typed_at: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let watermark = Arc::clone(&typed_at);
         let outcome = std::thread::scope(|watching| {
             let watcher = watching.spawn(|| {
                 crate::testing::screen_showing(&access, pane, "SAW 112");
+                // ⚠ READ BEFORE THE KEY, never after: a run write landing between this read and the
+                // keystroke must count as BEFORE, or the arm accuses the product of a write the
+                // person's own thread raced it to.
+                *watermark.lock().expect("the watermark mutex") = access
+                    .hands()
+                    .and_then(|hands| hands.pane_hands(pane))
+                    .map(sprag_terminal::Hands::by_a_program);
                 crate::testing::person_types(&access, pane, b"X");
             });
             let outcome = run(
@@ -3185,6 +3235,26 @@ mod tests {
         // round to reading — so a witness taken at the run's end is a race with the pty, and this
         // gate lost it once in two runs on a loaded machine. It is not a weaker claim: if `SAW 88`
         // never arrives the wait ends anyway and the split still answers `None`.
+        // ⚠⚠⚠⚠⚠ **THE WRITE-ORDER WITNESS IS ASKED FIRST**, because it is the one that can tell a
+        // PRODUCT defect from a reading of the screen. `by_a_program` counts a write when it is
+        // made, so this is *did the run type again after the person reached in* with no terminal in
+        // the way. Register item 586.
+        let wrote_before = typed_at
+            .lock()
+            .expect("the watermark mutex")
+            .expect("this host counts hands, or the arm below is about a fixture");
+        let wrote_after = access
+            .hands()
+            .and_then(|hands| hands.pane_hands(pane))
+            .map(sprag_terminal::Hands::by_a_program)
+            .expect("the pane is still there");
+        assert_eq!(
+            wrote_after, wrote_before,
+            "⛔⛔⛔⛔⛔ THE RUN TYPED AFTER THE PERSON REACHED IN, counted at the WRITE rather than \
+             read off the screen: {wrote_before} program writes when they touched the keyboard, \
+             {wrote_after} when the run ended. This is the product, not a terminal's ordering",
+        );
+
         crate::testing::screen_showing(&access, pane, "SAW 88");
         let witness = access.pane_full_text(pane).unwrap_or_default();
         let after = witness

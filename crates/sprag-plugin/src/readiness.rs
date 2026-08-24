@@ -1200,6 +1200,48 @@ impl Readiness {
     /// would stop every run on every host that has not implemented it.
     ///
     /// [`PaneHands`]: crate::access::PaneHands
+    /// **THE WATERMARK THIS BARRIER LAST CLEARED THE PANE AT** — [`None`] until it has armed one,
+    /// and on a host that cannot count hands at all.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a caller needs it — register item 586
+    ///
+    /// [`interrupted`](Self::interrupted) answers *has a person written since I armed?* at the TOP
+    /// of a step. The step then marks its baselines, arms its completion contract — which reads the
+    /// pane's supervisor, a lock and a detector in-process and a round trip over a wire — and only
+    /// then types. A person whose key lands anywhere in that window is typed over: **measured at
+    /// 20% and 30% of runs on two passes of one day**, counted at the WRITE.
+    ///
+    /// The caller cannot close that by asking this barrier again one statement earlier; it closes
+    /// by handing this number to
+    /// [`inject_yielding_to_a_person`](crate::access::PaneAccess::inject_yielding_to_a_person),
+    /// where the compare and the write happen in one critical section.
+    ///
+    /// ⚠⚠ It is the barrier's OWN watermark and not a fresh read, deliberately: a number taken
+    /// again here would be *has anyone written since I asked just now*, which is a different
+    /// question and would let a write that this barrier already forgave through.
+    pub(crate) const fn cleared_at(&self) -> Option<u64> {
+        self.hands_at
+    }
+
+    /// **WHAT THE PERSON DID, READ WITHOUT MOVING THE WATERMARK** — for a caller that learned about
+    /// them somewhere other than [`interrupted`](Self::interrupted).
+    ///
+    /// ⚠⚠⚠ Register item 586's other half: when the pane's own write door refuses a run's
+    /// injection, the run already KNOWS a person reached in — what it does not have is the count
+    /// its ending is supposed to carry. This answers that and nothing else.
+    ///
+    /// ⚠ It does not arm and does not re-date: `interrupted` owns the watermark, and a reader that
+    /// moved it here would forgive the very writes the caller is about to report.
+    pub(crate) fn interruption(
+        &self,
+        panes: &dyn PaneAccess,
+        pane: PaneId,
+    ) -> Option<Interruption> {
+        let now = panes.hands()?.pane_hands(pane)?.by_a_person();
+        let writes = now.checked_sub(self.hands_at?).filter(|seen| *seen > 0)?;
+        Some(Interruption { writes })
+    }
+
     fn interrupted(&mut self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Interruption> {
         let now = panes.hands()?.pane_hands(pane)?.by_a_person();
         let Some(armed) = self.hands_at else {

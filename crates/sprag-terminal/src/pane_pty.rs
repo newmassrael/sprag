@@ -1254,6 +1254,44 @@ impl PanePty {
             &self.hands,
             bytes,
             by,
+            None,
+        )
+    }
+
+    /// **WRITE, UNLESS A PERSON HAS REACHED IN SINCE `seen`** — register item 586, and the door a
+    /// run types through.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a door of its own and not a check the caller makes first
+    ///
+    /// A run asks a barrier *has a person written?*, then marks its baselines, arms its completion
+    /// contract, and only then types. A person whose key lands anywhere in that window is typed
+    /// over — **measured at 20% and 30% of runs on two passes of one day**, counted at the WRITE
+    /// (`by_a_program` 23 when they touched the keyboard, 24 when the run ended), so no terminal
+    /// ordering is involved and no screen reading can explain it away.
+    ///
+    /// A caller that re-checked just before calling [`write`](Self::write) would narrow that window
+    /// to the two statements between the check and the call. **This closes it**: the compare and
+    /// the count happen in ONE critical section over the same `Hands` a person's own write goes
+    /// through, so their key either lands before the compare — and this write is refused — or after
+    /// the count, and then it was genuinely second. There is no interleaving in which both writers
+    /// believe they were first.
+    ///
+    /// `seen` is [`Hands::by_a_person`] as the caller last read it.
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::WouldBlock`] when a person has written since `seen` — **nothing was
+    /// written, nothing was recorded, and no hand was counted**. Otherwise [`write`](Self::write)'s
+    /// own errors.
+    pub fn write_yielding_to_a_person(&self, bytes: &[u8], by: Hand, seen: u64) -> io::Result<()> {
+        write_input(
+            &self.emulator,
+            &self.device,
+            &self.echo_trail,
+            &self.hands,
+            bytes,
+            by,
+            Some(seen),
         )
     }
 
@@ -1578,6 +1616,27 @@ impl PanePtyHandle {
             &self.hands,
             bytes,
             by,
+            None,
+        )
+    }
+
+    /// **WRITE, UNLESS A PERSON HAS REACHED IN SINCE `seen`** —
+    /// [`PanePty::write_yielding_to_a_person`] through a handle, which is how a RUN types: it holds
+    /// a handle precisely so it can write without taking the workspace lock. Register item 586.
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::WouldBlock`] when a person has written since `seen` — nothing was written,
+    /// nothing recorded, no hand counted. Otherwise [`write`](Self::write)'s own errors.
+    pub fn write_yielding_to_a_person(&self, bytes: &[u8], by: Hand, seen: u64) -> io::Result<()> {
+        write_input(
+            &self.emulator,
+            &self.device,
+            &self.echo_trail,
+            &self.hands,
+            bytes,
+            by,
+            Some(seen),
         )
     }
 
@@ -2022,7 +2081,45 @@ fn write_input(
     hands: &SharedHands,
     bytes: &[u8],
     by: Hand,
+    yield_to_a_person_since: Option<u64>,
 ) -> io::Result<()> {
+    // ⚠⚠⚠⚠⚠ **THE GUARD IS TAKEN FIRST, AND UNDER THE HANDS LOCK — register item 586.**
+    //
+    // A run asks a barrier *has a person reached in?*, then marks its baselines, then arms its
+    // completion contract, and only then types. A person whose key lands anywhere in that window
+    // was typed over: **measured 20% and 30% of runs on two passes of the same day**, counted at
+    // the WRITE (`by_a_program` 23 when they touched the keyboard, 24 when the run ended) so no
+    // terminal ordering is involved. Narrowing the window would leave it; this closes it.
+    //
+    // ⚠⚠⚠ **THE COMPARE AND THE COUNT ARE ONE CRITICAL SECTION**, which is the whole property. A
+    // person's write either lands before the compare — and this one is refused — or after the
+    // count, and then it was genuinely second. There is no interleaving in which both writers
+    // believe they were first, so the race is not narrowed but unrepresentable.
+    //
+    // ⚠⚠ **NOTHING ELSE IS TOUCHED ON THE REFUSAL PATH**: the emulator is not told about input, the
+    // trail records nothing, and no hand is counted. A refusal is a write that never happened, and
+    // the trail's own doc is exact about what belongs in it.
+    //
+    // ⚠ [`None`] is *do not guard*, which is what a person's own keystroke passes and what every
+    // caller that has no barrier passes. It is not a bound so large it never fires: a guard nobody
+    // asked for is unrepresentable rather than merely inert.
+    {
+        let mut hands = lock(hands);
+        if let Some(seen) = yield_to_a_person_since
+            && hands.by_a_person() > seen
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "a person wrote into this pane after the caller last looked",
+            ));
+        }
+        // ⚠⚠⚠ COUNTED HERE, IN THE SAME SECTION AS THE COMPARE — that adjacency IS the property,
+        // and it is why this moved up from beside the trail below. It keeps both sentences that
+        // position was chosen for: counted BEFORE the device write, so a consumer that sees the
+        // echo can already see whose it was; and counted even when the write FAILS, because the
+        // bytes were offered to this pane by that hand.
+        hands.counting(by);
+    }
     lock(emulator).note_input();
     // ⚠ RECORDED BEFORE THE OFFER, so the trail can never be behind an echo that has already come
     // back. This is the ONE place a pane's input is written, which is what makes the trail complete
@@ -2047,7 +2144,6 @@ fn write_input(
     // answer different questions. `hands` is asked *has a person reached into this pane*, and a
     // refused keystroke is still somebody reaching in. The trail is asked *is this text on the grid
     // my own input coming back*, and bytes the device turned away can never come back at all.
-    lock(hands).counting(by);
     let offered = device.offer(bytes);
     if offered.is_err() {
         // ⚠⚠⚠ TAKEN BACK OUT, because a refused keystroke is not something this pane has been

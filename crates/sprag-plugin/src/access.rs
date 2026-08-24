@@ -212,6 +212,32 @@ pub enum PaneError {
     /// ⚠ It NAMES THE PANE, because a refusal that does not say which one is the other defect this
     /// workspace has paid for four rounds running (R396-R399, and item 311's own warning).
     PeerGone(PaneId) = (PaneId(0)),
+    /// ⚠⚠⚠⚠ **A PERSON REACHED INTO THIS PANE, SO NOTHING WAS TYPED INTO IT** — register item 586,
+    /// and the answer [`PaneAccess::inject_yielding_to_a_person`] gives.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a refusal, when the barrier already asks the same question
+    ///
+    /// It does ask — and then the step marks its baselines, arms its completion contract, and only
+    /// then types. A person whose key lands anywhere in that window is typed over, and **it is not
+    /// a narrow window**: arming reads the pane's supervisor, which is a lock and a detector
+    /// in-process and a round trip over a wire. Measured at **20% and 30% of runs on two passes of
+    /// one day**, counted at the WRITE (`by_a_program` 23 when the person touched the keyboard, 24
+    /// when the run ended), so no screen reading can explain it away.
+    ///
+    /// ⚠⚠ **A CHECK CANNOT CLOSE IT AND A REFUSAL CAN.** Re-asking the hands one statement before
+    /// injecting narrows the window; comparing and writing in one critical section over the same
+    /// counter a person's own write goes through makes the race unrepresentable. This word is what
+    /// that section answers with.
+    ///
+    /// ⚠⚠⚠ **AND IT IS NOT A FAILURE.** The person did what a person is entitled to do, and the
+    /// run's own contract already has a word for it — the barrier answers
+    /// [`Reached::Interrupted`](crate::readiness::Reached) and the step is
+    /// [`Verdict::TakenOver`](crate::plugin::Verdict). A caller that met this at the door should
+    /// end that way rather than report a fault: what happened is the outcome, not an error in
+    /// reaching it.
+    ///
+    /// ⚠ It NAMES THE PANE, on [`PeerGone`](Self::PeerGone)'s terms one variant up.
+    TakenOver(PaneId) = (PaneId(0)),
     /// Spawning a pane failed: no [`PaneLifecycle`] support, an empty argv, or
     /// the pseudoterminal/child could not start (the cause message).
     Spawn(String) = (String::new()),
@@ -502,6 +528,17 @@ impl std::fmt::Display for PaneError {
                  cancelled — one more line here would strand every other writer to that pane",
                 id.0,
             ),
+            // ⚠⚠⚠ IT SAYS WHOSE DECISION THIS WAS, because the reader must not fix it. Every other
+            // sentence here names something that went wrong and can be repaired; this one names a
+            // person doing what a person is entitled to do, and a caller who reads it as a fault
+            // adds a retry that types over them again. So the sentence ends on what to do instead.
+            Self::TakenOver(id) => write!(
+                f,
+                "a person reached into pane {} while this run was driving it, so nothing was typed: \
+                 the pane is theirs now, and a run that met this should end having said so rather \
+                 than try again",
+                id.0,
+            ),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),
             Self::NeverReady {
                 wanted,
@@ -642,6 +679,49 @@ pub trait PaneAccess {
     /// [`PaneError`] when the pane is unknown, a key cannot be encoded, or
     /// the write fails.
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError>;
+
+    /// **INJECT, UNLESS A PERSON HAS REACHED INTO THIS PANE SINCE `seen`** — register item 586, and
+    /// the door a RUN types through.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the unguarded door costs, measured
+    ///
+    /// A run asks its barrier *has a person written?*, then marks its baselines, arms its
+    /// completion contract, and only then types. A person whose key lands anywhere in that window
+    /// is typed over. **Measured at 20% and 30% of runs on two passes of one day**, counted at the
+    /// WRITE — `by_a_program` read 23 when the person touched the keyboard and 24 when the run
+    /// ended — so no terminal ordering and no screen reading is involved.
+    ///
+    /// ⚠⚠ **A CALLER CANNOT CLOSE THAT WINDOW BY CHECKING HARDER.** Re-asking
+    /// [`PaneHands`] immediately before [`inject`](Self::inject) narrows it to two statements and
+    /// leaves it open. Only a host that compares and writes in ONE critical section can make the
+    /// race unrepresentable, and only the host owns that section.
+    ///
+    /// # ⚠⚠⚠ The default is the DEGRADATION, named rather than hidden
+    ///
+    /// It forwards to [`inject`](Self::inject) — the behaviour every implementation had before this
+    /// method existed — so a host that cannot make the write atomic keeps working and is not
+    /// pretending. That is exactly how [`changes`](Self::changes) arrived: the capability is the
+    /// host's to offer, and its absence must read as *this build cannot* rather than as a guarantee
+    /// nobody is keeping.
+    ///
+    /// ⚠ **A HOST WITH NO [`PaneHands`] AT ALL CANNOT IMPLEMENT THIS HONESTLY** and must not try:
+    /// with no way to tell a person's write from a program's, *nobody has reached in* is a claim it
+    /// has no evidence for, and the safe reading of that absence is the default's — carry on, and
+    /// let the barrier be the only guard there is.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::TakenOver`] when a person has written since `seen` — **nothing was written**.
+    /// Otherwise [`inject`](Self::inject)'s own errors.
+    fn inject_yielding_to_a_person(
+        &self,
+        id: PaneId,
+        keys: &[KeyStroke],
+        seen: u64,
+    ) -> Result<Written, PaneError> {
+        let _ = seen;
+        self.inject(id, keys)
+    }
 
     /// The pane *lifecycle* surface (spawn/close), if this implementation
     /// supports it. `None` by default — read/inject plugins never need it, so
@@ -1646,47 +1726,20 @@ impl PaneAccess for WorkspacePaneAccess {
     }
 
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
-        // ⚠⚠⚠⚠ THE ONE DOOR, WHICH IS WHY THE REFUSAL IS HERE AND NOT IN A PLUGIN. Every plugin
-        // that types reaches a pane through this function — the comment below has said so for as
-        // long as it has existed — so one reading protects all of them, where a guard per plugin
-        // would be four copies of a decision and a fifth plugin arriving unprotected.
-        // ⚠⚠ It costs one `pane_eof` per injection: one workspace lock and an atomic load, which
-        // `PanePty::is_eof`'s own doc calls negligible.
-        //
-        // ⚠⚠⚠ **BEFORE THE WRITE AND NOT AFTER IT, WHICH IS THE WHOLE REPAIR AND IS EASY TO GET
-        // WRONG.** Asked at the end of this function it returns the IDENTICAL error and every
-        // plugin gate stays green — and the prompt has already gone into the queue that never
-        // drains, so the walk to the wall is exactly as long as it was. Measured as a mutation:
-        // the pane's input trail read `"ping\r"` where it must read `""`. Only
-        // `the_door_a_plugin_types_through_refuses_a_pane_whose_program_has_exited` separates
-        // *refuses* from *refuses before writing*.
-        //
-        // ⚠⚠ **AND A PANE NOBODY KNOWS IS A DIFFERENT SENTENCE, WHICH `pane_eof`'s OWN `Option`
-        // ALREADY KEEPS.** An unknown pane answers `None` here, never `Some(true)`, so it falls
-        // through to `UnknownPane` below. The first draft guarded this with an extra
-        // `self.handle(id).is_some() &&`, whose comment claimed to be what protected that
-        // distinction: it protected nothing `pane_eof` was not already doing, and cost a second
-        // workspace lock and a handle clone on EVERY injection — while the line above it said the
-        // cost was one atomic load. Deleted with the gate's unknown-pane arm holding the claim.
-        if self.pane_eof(id) == Some(true) {
-            return Err(PaneError::PeerGone(id));
-        }
-        let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
-        let modes = handle.input_modes();
-        let mut bytes = Vec::new();
-        for stroke in keys {
-            let encoded = encode(&stroke.key, stroke.mods, modes)
-                .ok_or_else(|| PaneError::Encode(stroke.key.clone()))?;
-            bytes.extend_from_slice(&encoded);
-        }
-        // ⚠⚠ A PROGRAM, always — this is the door a PLUGIN types through, and every caller of it is
-        // a run driving a pane rather than somebody at a keyboard. The distinction is what lets a
-        // run ask whether a PERSON has reached in ([`sprag_terminal::Hand`]); a plugin that stamped
-        // its own injections as a person's would trip its own interruption check on the next step.
-        handle
-            .write(&bytes, sprag_terminal::Hand::AProgram)
-            .map_err(|e| PaneError::Write(e.to_string()))?;
-        Ok(Written::of(bytes.len() as u64))
+        self.typing(id, keys, None)
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THIS HOST CAN MAKE THE WRITE ATOMIC, SO IT DOES** — register item 586. It holds the
+    /// panes, so the compare and the count happen in one critical section over the same `Hands` a
+    /// person's own keystroke goes through (`PanePtyHandle::write_yielding_to_a_person`), and the
+    /// race the default degrades to is unrepresentable here rather than merely narrow.
+    fn inject_yielding_to_a_person(
+        &self,
+        id: PaneId,
+        keys: &[KeyStroke],
+        seen: u64,
+    ) -> Result<Written, PaneError> {
+        self.typing(id, keys, Some(seen))
     }
 
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
@@ -1742,6 +1795,79 @@ impl PaneAccess for WorkspacePaneAccess {
     /// this workspace owns counts its changes whether or not anybody wired a repaint hook to them.
     fn changes(&self) -> Option<&dyn PaneChanges> {
         Some(self)
+    }
+}
+
+impl WorkspacePaneAccess {
+    /// **THE ONE DOOR EVERY PLUGIN TYPES THROUGH**, with the person-guard as a parameter rather
+    /// than as a second door.
+    ///
+    /// ⚠⚠⚠ **TWO DOORS WOULD HAVE UNDONE THE SENTENCE BELOW.** The gone-peer refusal is here, and
+    /// not in a plugin, precisely because there is ONE function every typing plugin reaches a pane
+    /// through — a second entry point is a second place for that reading to be forgotten, which is
+    /// the shape this crate keeps finding defects in. So the guard is an argument and the door
+    /// stays single; `None` is *no barrier asked me to yield*, which is what
+    /// [`inject`](PaneAccess::inject) passes.
+    fn typing(
+        &self,
+        id: PaneId,
+        keys: &[KeyStroke],
+        yield_to_a_person_since: Option<u64>,
+    ) -> Result<Written, PaneError> {
+        // ⚠⚠⚠⚠ THE ONE DOOR, WHICH IS WHY THE REFUSAL IS HERE AND NOT IN A PLUGIN. Every plugin
+        // that types reaches a pane through this function — the comment below has said so for as
+        // long as it has existed — so one reading protects all of them, where a guard per plugin
+        // would be four copies of a decision and a fifth plugin arriving unprotected.
+        // ⚠⚠ It costs one `pane_eof` per injection: one workspace lock and an atomic load, which
+        // `PanePty::is_eof`'s own doc calls negligible.
+        //
+        // ⚠⚠⚠ **BEFORE THE WRITE AND NOT AFTER IT, WHICH IS THE WHOLE REPAIR AND IS EASY TO GET
+        // WRONG.** Asked at the end of this function it returns the IDENTICAL error and every
+        // plugin gate stays green — and the prompt has already gone into the queue that never
+        // drains, so the walk to the wall is exactly as long as it was. Measured as a mutation:
+        // the pane's input trail read `"ping\r"` where it must read `""`. Only
+        // `the_door_a_plugin_types_through_refuses_a_pane_whose_program_has_exited` separates
+        // *refuses* from *refuses before writing*.
+        //
+        // ⚠⚠ **AND A PANE NOBODY KNOWS IS A DIFFERENT SENTENCE, WHICH `pane_eof`'s OWN `Option`
+        // ALREADY KEEPS.** An unknown pane answers `None` here, never `Some(true)`, so it falls
+        // through to `UnknownPane` below. The first draft guarded this with an extra
+        // `self.handle(id).is_some() &&`, whose comment claimed to be what protected that
+        // distinction: it protected nothing `pane_eof` was not already doing, and cost a second
+        // workspace lock and a handle clone on EVERY injection — while the line above it said the
+        // cost was one atomic load. Deleted with the gate's unknown-pane arm holding the claim.
+        if self.pane_eof(id) == Some(true) {
+            return Err(PaneError::PeerGone(id));
+        }
+        let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
+        let modes = handle.input_modes();
+        let mut bytes = Vec::new();
+        for stroke in keys {
+            let encoded = encode(&stroke.key, stroke.mods, modes)
+                .ok_or_else(|| PaneError::Encode(stroke.key.clone()))?;
+            bytes.extend_from_slice(&encoded);
+        }
+        // ⚠⚠ A PROGRAM, always — this is the door a PLUGIN types through, and every caller of it is
+        // a run driving a pane rather than somebody at a keyboard. The distinction is what lets a
+        // run ask whether a PERSON has reached in ([`sprag_terminal::Hand`]); a plugin that stamped
+        // its own injections as a person's would trip its own interruption check on the next step.
+        // ⚠⚠⚠⚠⚠ AND THE GUARD IS THE HANDLE'S, NOT A CHECK HERE — register item 586. Comparing
+        // the hands in this function and then calling `write` would leave exactly the window the
+        // item is about, one statement wide instead of three. The handle compares and counts under
+        // one lock, so a person's key is either before the compare (this is refused) or after the
+        // count (they were second).
+        match yield_to_a_person_since {
+            Some(seen) => handle
+                .write_yielding_to_a_person(&bytes, sprag_terminal::Hand::AProgram, seen)
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::WouldBlock => PaneError::TakenOver(id),
+                    _ => PaneError::Write(e.to_string()),
+                })?,
+            None => handle
+                .write(&bytes, sprag_terminal::Hand::AProgram)
+                .map_err(|e| PaneError::Write(e.to_string()))?,
+        }
+        Ok(Written::of(bytes.len() as u64))
     }
 }
 
