@@ -888,6 +888,42 @@ impl<Q> PaneWaitChannel<Q> {
 
     /// Park a question. The caller signals a pass afterwards, which is what answers it the first
     /// time — see this type's docs for why there is deliberately no separate initial check.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A SECOND PARK FROM ONE CONNECTION FOR ONE PANE REPLACES THE FIRST — register item 642
+    ///
+    /// This used to push unconditionally, and the bound on [`parked_count`](Self::parked_count) —
+    /// *one entry per pane the connection has waited on* — was an ARGUMENT resting on it. **Walked
+    /// against a real driver, the argument was false**: three quiescent panes, three laps, and this
+    /// vector held NINE waits. One per CALL, because a driver that alternates panes abandons a park
+    /// each time it changes its question and the abandoned one is released only when its pane MOVES
+    /// or its connection CLOSES — so a relay between panes that have gone quiet accumulates a
+    /// daemon-side entry per step for as long as it runs.
+    ///
+    /// The replacement is not a new promise; it is the one the CLIENT half already publishes.
+    /// [`HostConn::begin`](sprag_rpc::HostConn::begin) says it in those words — *beginning a
+    /// different request abandons this one* — and a connection that matches replies by id carries a
+    /// single outstanding question by construction. So a second park for the same pane on the same
+    /// connection can only mean the first was abandoned, and holding it was the daemon keeping a
+    /// question nobody would ever settle.
+    ///
+    /// ⚠⚠ **SCOPED TO THE SAME PANE, not to the connection.** A per-connection rule would drop a
+    /// park for a DIFFERENT pane, which a client pipelining two questions on one socket could
+    /// legitimately be holding — and this channel cannot tell such a client from the one that
+    /// abandoned. Per-pane restores exactly the bound the documentation always claimed, and touches
+    /// no wait that a well-formed second question could still want.
+    ///
+    /// ⚠ **DROPPED, NOT ANSWERED**, on [`release`](Self::release)'s terms one step along: the
+    /// answer shape here is *the pane moved to N*, and there is no movement to report. The residue
+    /// is stated rather than hidden — a client that had NOT abandoned its first question now waits
+    /// for a reply that will not come, where before it would have got one at that pane's next move.
+    /// No client in this tree is that client: the only caller of this address is
+    /// [`RemotePaneAccess`](crate::remote_access::RemotePaneAccess), which drops the abandoned
+    /// answer by id.
+    ///
+    /// ⚠ **NO [`sprag_rpc::WIRE_PROTOCOL`] BUMP.** No address, argument or answer shape moves, and
+    /// nothing reads an absence as agreement: against an older daemon a new client leaks exactly as
+    /// it did before, which is a resource bound and not a false fact. This is the daemon coming to
+    /// honour a rule its own client half had already published.
     pub fn park(
         &self,
         conn: ConnId,
@@ -897,6 +933,7 @@ impl<Q> PaneWaitChannel<Q> {
         reply: RpcReply,
     ) {
         let mut parked = self.lock();
+        parked.retain(|wait| wait.conn != conn || wait.pane != pane);
         parked.push(ParkedPaneWait {
             conn,
             pane,
@@ -988,30 +1025,32 @@ impl<Q> PaneWaitChannel<Q> {
     /// How many waits are parked — for the tests that pin a park actually parking, and a release
     /// actually releasing.
     ///
-    /// # ⚠⚠⚠⚠ AND FOR THE ONE CLAIM ABOUT THIS VECTOR THAT WAS ONLY PROSE — register item 642
+    /// # ⚠⚠⚠⚠⚠ THE CLAIM ABOUT THIS VECTOR WAS PROSE, AND THE WALK REFUTED IT — register item 642
     ///
-    /// A remote driver that changes the question it is waiting on ABANDONS the old park: the daemon
-    /// still holds it, it fires the next time that pane moves, and its answer is then dropped by id.
-    /// So abandoned parks normally clear themselves — **except at a pane that never moves again**,
-    /// where one entry stays until the connection closes. The bound is therefore *one per pane the
-    /// connection has waited on*, and it was an ARGUMENT: it rests on
-    /// [`release`](Self::release), on [`drain`](Self::drain), on a rename moving the channel, and on
-    /// every future caller of [`park`](Self::park) reaching the same conclusion. Nothing walked a
-    /// driver and read the number back.
+    /// This paragraph used to bound the vector at *one entry per pane the connection has waited on*
+    /// and to argue it: a driver that changes its question abandons the old park, the abandoned one
+    /// fires at that pane's next move, so only a pane that never moves again keeps an entry. **The
+    /// argument was wrong at its first step.** A driver that alternates panes abandons a park at
+    /// EVERY call, and nothing merges them — walked against a real driver over a real socket, three
+    /// quiescent panes and three laps left NINE waits here.
     ///
-    /// ⛔⛔⛔ **THE WALK IS STILL OWED, AND WHAT BLOCKS IT IS STRUCTURAL** — stated here rather than
-    /// left as a name pointing at nothing. This number lives INSIDE the daemon and the driver whose
-    /// walk would move it (`crate::remote_access::RemotePaneAccess`) lives in ANOTHER PROCESS, so
-    /// `tests/wire_client.rs` cannot read it. Issuing the frames by hand from `crate::rpc`'s tests
-    /// reaches the number and re-implements the driver's question-changing rule, which is register
-    /// item 617's trap — and it measures something the driver cannot even produce: two identical
-    /// parks from one connection are not deduplicated here, while the driver remembers its
-    /// outstanding question and re-settles instead of re-sending.
+    /// The bound is now the code's rather than the comment's: [`park`](Self::park) replaces the wait
+    /// this connection already holds for that pane, so the vector holds at most one entry per
+    /// (connection, pane) and the sentence this doc always made is finally true of it. What was
+    /// costing a daemon-side entry per step of any relay between quiet panes now costs one per pane.
     ///
-    /// So the walk needs either an in-process harness holding a real socket, a real
-    /// `RemotePaneAccess` and this `HostState` together, or an address that makes this number worth
-    /// something to a PERSON. Publishing it for a gate alone is the surface-nobody-reads shape this
-    /// workspace refuses.
+    /// ⚠⚠ **AND WHAT WAS RECORDED HERE AS A STRUCTURAL BLOCKER WAS NOT ONE.** This doc said the
+    /// walk could not be built — the number lives inside the daemon, the driver lives in another
+    /// process, and `sprag_rpc::mount` is a process singleton so no test could stand a socket
+    /// in-process. `mount`'s `OnceLock` owns the SIGUSR control and nothing else; the bind is
+    /// `pinion_rpc_transport::UnixSocketTransport::serve`, which `sprag-rpc`'s own tests call
+    /// directly, and `tests/grid_cost.rs` has stood a real `HostState` in a test process all along.
+    /// The walk is `tests/parked_waits.rs`, and it is the product's driver rather than hand-issued
+    /// frames — so register item 617's trap is avoided rather than argued around.
+    ///
+    /// ⚠ **The lesson is the one this workspace keeps paying for: prose that runs ahead of code
+    /// becomes its own auditor.** Both halves of this comment were confident and neither had been
+    /// executed — the bound was false, and the reason given for not measuring it was false too.
     #[must_use]
     pub fn parked_count(&self) -> usize {
         self.lock().len()

@@ -116,6 +116,11 @@ base64 = { workspace = true }
 # The durability e2e SIGKILLs the forked daemon (the reboot analogue). An integration test links
 # the crate's dev-dependencies, not its own, so libc is declared again here.
 libc = { workspace = true }
+# The in-process daemon harness (`tests/parked_waits.rs`, register item 642) binds its OWN socket
+# through pinion's transport, the way `sprag-rpc`'s own tests do. `sprag_rpc::mount` cannot serve
+# it: its `ENDPOINT` is a process-lifetime `OnceLock`, so a test binary gets one endpoint for all
+# of its threads. DEV-ONLY, and pinned with everything else pinion (`{ workspace = true }`).
+pinion-rpc-transport = { workspace = true }
 # The freshness check for a sibling binary this suite SPAWNS. Item 444's end-to-end drives the real
 # `sprag-mcp`, which belongs to another package — so `cargo test -p sprag-host` does not build it,
 # and a gate that merely joined the name onto a directory would pass against whatever was left there
