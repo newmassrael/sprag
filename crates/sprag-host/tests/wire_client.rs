@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
-use sprag_host::plugins::PluginWorld;
+use sprag_host::plugins::{PluginWorld, drive_request};
 use sprag_host::remote_access::{RemotePaneAccess, RemotePluginWorld};
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
@@ -8417,6 +8417,107 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
             .is_some_and(|screen| screen.contains("again"))),
         "⚠⚠ and it really reached that pane: the pty echoed it back. Read {:?}",
         remote.pane_collapsed(renamed),
+    );
+}
+
+/// ⛔⛔⛔⛔ **THE LOOP'S OWN PLUGIN IS BUILDABLE BY THE OUT-OF-PROCESS DRIVER, THROUGH THE ONE
+/// BUILDER AND OVER THE REMOTE WORLD** — register item 557's second clause, at the plugin the item
+/// is actually about.
+///
+/// # ⚠⚠⚠⚠⚠ Why the restart gate below does not already cover this
+///
+/// The gate under this one drives an `Orchestrator`, which is what stage 1 settled. But item 557's
+/// own text is about `ai_loop`: *"`outer.rs` and `ai_loop.rs` consult supervision, input_echo,
+/// foreground_job, output_lines, terminal_modes and lifecycle on paths a real run takes."* Between
+/// the request and any of those reads there is a step nothing held — **the loop's plugin has to be
+/// CONSTRUCTIBLE from the request, by the builder the remote driver calls, against a world whose
+/// every answer comes off a socket.** `plugin_from_request`'s `ai_loop` arm builds a Lua engine,
+/// resolves a loop KIND from this repository's own document and asks the world for two facts. A
+/// change there that reached for anything only the daemon holds would break the out-of-process
+/// driver and no gate would say so: `drive_request` is the door, and its `ai_loop` arm had no
+/// caller in any test that used a REMOTE world.
+///
+/// # ⚠⚠⚠ The pair is the claim, because «it built» alone is cheap
+///
+/// A builder that ignored the world entirely would also build. So the second half asks for a pane
+/// the daemon does not hold and requires a REFUSAL — which can only come from the world, and this
+/// world can only answer it over the socket.
+#[test]
+fn the_loops_own_plugin_is_built_from_a_request_over_a_world_that_is_a_socket() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["sh"]);
+    let (remote, _setup) = remote_driver(&sock);
+    let pane = *remote
+        .pane_ids()
+        .first()
+        .expect("the daemon's boot pane is there to drive");
+    let world = RemotePluginWorld::over(&remote);
+
+    // ⚠ THE REQUEST A CALLER REALLY SENDS — the `agent` key is required, and the barrier is derived
+    // from it because a loop's first prompt goes into a pane whose program may still be starting.
+    // ⚠⚠ The ceiling is ONE ITERATION, because this gate is about the door and not about a
+    // conversation: the run must reach a terminal state on its own rather than supervise a shell
+    // that will never answer it.
+    // ⚠⚠ THE KEYS ARE THE FORM'S OWN (`PluginGrammar::AI_LOOP_FORM`), not a guess: a loop is
+    // steered by a north star, a milestone and a reference, and the first draft of this gate sent
+    // `{plugin, pane, agent}` and was refused `TypeMismatch` — the grammar refusing an incomplete
+    // request, which is the door working.
+    let request = json!({
+        "plugin": "ai_loop",
+        "pane": pane.0,
+        "agent": "claude",
+        "north_star": "the door is what this gate is about",
+        "milestone": "be built and stepped from outside the daemon",
+        "reference": "the surfaces are served; the construction was not held",
+        // ⚠⚠ BOUNDED AT THE BARRIER, not only at the ceiling. `max_iterations` decides between
+        // turns, and the pane here holds a SHELL — so the loop's first readiness wait is what the
+        // whole run would otherwise spend, and it did: 200 seconds on the first draft of this gate.
+        "ready_timeout_ms": 300,
+        "guardrails": { "max_iterations": 1 },
+    })
+    .as_object()
+    .expect("a request is an object")
+    .clone();
+
+    // ── THE CLAIM: the loop's plugin is built AND stepped, out here ───────────────────────────
+    let context = RunContext::uncancellable();
+    let quiet: sprag_plugin::ProgressSink = std::sync::Arc::new(|_: &sprag_plugin::Progress| {});
+    let driven = drive_request(
+        &world,
+        &request,
+        &remote,
+        &context,
+        std::sync::Arc::clone(&quiet),
+    );
+    let driven = driven.unwrap_or_else(|why| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 557: the out-of-process driver cannot BUILD the loop it exists \
+             to drive. Every surface the loop reads is served over this wire now, and none of that \
+             is reachable if the plugin cannot be constructed from the request in the process that \
+             will step it — this arm refuses BEFORE a byte is typed, so a failure here is the door \
+             and not the conversation. Refused with {why:?}"
+        )
+    });
+    // ⚠⚠⚠⚠⚠ WHICH ENDING IT REACHED IS DELIBERATELY NOT ASSERTED, and saying so is the honest
+    // report. This pane holds a SHELL, so the loop correctly gets no agent to talk to and ends
+    // `Failed` — measured. Pinning that word would make this gate about the PEER, and the day
+    // somebody points it at a live agent the ending changes and a gate about the DOOR would go red
+    // for a reason that has nothing to do with the door. What is asserted is that the door opened:
+    // `drive_request` answers a terminal state instead of refusing to build.
+    let _ = &driven.outcome.state;
+
+    // ── THE CONTROL: the world is really consulted, and it is really this socket ──────────────
+    // ⚠ THE SAME REQUEST WITH ONE FIELD MOVED, so the refusal below can only be about the PANE —
+    // a differently-shaped request would be refused by the grammar and prove nothing about a world.
+    let mut missing = request.clone();
+    missing.insert("pane".to_owned(), json!(9_999_999));
+    assert!(
+        drive_request(&world, &missing, &remote, &context, quiet).is_err(),
+        "⚠⚠⚠ THE CONTROL: a pane this daemon does not hold must be refused BEFORE anything is \
+         typed, and only the world can know that. An accepted build would mean the arm above \
+         proves construction and nothing about the socket — the same green a builder that never \
+         asked the world would give.",
     );
 }
 
