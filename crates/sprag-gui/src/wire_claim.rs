@@ -372,7 +372,13 @@ pub(crate) mod grammar {
         // the daemon can be TOLD a pane moved instead of re-reading its screen. **A window does not
         // park on a pane** — it parks on `scene/waitFor`, which is the whole session — so this pin
         // moves for a seventh cause it takes no part in. Seven for seven.
-        39,
+        // ⚠⚠⚠⚠⚠ THE EIGHTH, and it is the first one a WINDOW is on the PRODUCING side of. Register
+        // item 653 added the `hands` pane slot, which answers who has written into a pane — and
+        // what makes a `person` count rise is a display client declaring `{"hand": "person"}` at
+        // one of these three write verbs. This window is that client. So the number moved for a
+        // fact THIS surface authors, read by a supervisor somewhere else, while not one argument
+        // shape here changed. Eight for eight, and the eighth is the one to read twice.
+        40,
         &[
             (
                 "the command palette",

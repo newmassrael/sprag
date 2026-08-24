@@ -33,12 +33,25 @@
 //!
 //! **THAT IS EVERY SURFACE THE LOOP READS ON A PRODUCTION PATH.**
 //!
-//! ⚠⚠⚠⚠ **Three remain [`None`]**, and none of them is a loop read: `raw_capture`, `hands` and
-//! `job_control`. Each absence is safe by that surface's OWN documentation — a host with no job
-//! control must report that it could not stop the work rather than write `0x03` and hope. **They are
-//! `None` because this build cannot ask those questions over the wire yet, not because a remote
-//! driver does not want them**, and every one of them has a consumer that already handles the
-//! absence.
+//! * `hands` — WHO has written into the pane, and how many times each. Register item 653, and it is
+//!   served for a reason none of the six above share: see below.
+//!
+//! ⚠⚠⚠⚠ **Two remain [`None`]**: `raw_capture` and `job_control`. Each of those absences is safe by
+//! that surface's OWN documentation — a host with no job control must report that it could not stop
+//! the work rather than write `0x03` and hope. **They are `None` because this build cannot ask those
+//! questions over the wire yet, not because a remote driver does not want them**, and each has a
+//! consumer that already handles the absence.
+//!
+//! ⚠⚠⚠⚠⚠ **AND THE SENTENCE ABOVE USED TO COVER `hands`, WHICH WAS FALSE — register item 653.** It
+//! said all three absences were safe. The other two are; this one was not, and the difference is
+//! WHERE the read sits. [`sprag_plugin::Readiness::reached`] asks *has a person reached into this
+//! pane* **first, ahead of the barrier and ahead of any consent**, and it asks it through
+//! [`PaneAccess::hands`]. A `None` there is not *I could not look* — the consumer has nowhere to
+//! put that — it is *nobody has reached in*. So a run driven from another process was told, for
+//! every pane and for its whole life, that the pane was unattended, and typed over whoever was
+//! there. **Measured against a real daemon before the address existed**, with the person's write
+//! declared and visibly on the screen. It is the one address on this surface whose absence moved
+//! [`sprag_rpc::WIRE_PROTOCOL`], and the one reason [`crate::drive`] now handshakes.
 //!
 //! ⚠⚠⚠⚠⚠ **The echo trail is the one read here that is NOT about the screen, and that is the point.**
 //! A pseudoterminal echoes its input, so a barrier matching a marker against the grid cannot tell
@@ -66,11 +79,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_plugin::{
-    AgentObservation, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneInputEcho,
-    PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes, Written,
+    AgentObservation, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneHands,
+    PaneInputEcho, PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes,
+    Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
-use sprag_terminal::{JobProcess, PaneEcho, PaneEndOfInput, PaneId};
+use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId};
 use sprag_vt::LinesSince;
 
 use crate::external::lock;
@@ -78,11 +92,12 @@ use crate::wire::{
     AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, DAEMON_INSTANCE_SLOT,
     FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
     KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
-    PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
+    PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
     PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT,
     SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY,
-    SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, lines_since_at,
-    mux_action_path, pane_input_path, recent_input_has, refusal, unknown_action, unknown_slot,
+    SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, hands_of,
+    lines_since_at, mux_action_path, pane_input_path, recent_input_has, refusal, unknown_action,
+    unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -758,6 +773,26 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **WHO HAS WRITTEN INTO A PANE, AND HOW MANY TIMES EACH** — register item 653, and the read a
+    /// run makes BEFORE it makes any other.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The absence this replaces was not a degradation
+    ///
+    /// [`Readiness::reached`](sprag_plugin::Readiness::reached) asks *has a person reached into this
+    /// pane* first, ahead of the barrier and ahead of any consent, and it asks it here. While this
+    /// answered `None`, a run driven from another process concluded **nobody has ever touched this
+    /// pane** — for every pane, for its whole life — and typed over whoever was there. Every other
+    /// absence on item 557's list makes its consumer degrade in the safe direction; this one made it
+    /// confident and wrong, which is why the protocol number moved for the address behind it.
+    ///
+    /// ⚠ Always `Some`, on [`foreground_job`](PaneAccess::foreground_job)'s terms: a daemon serving
+    /// this wire counts hands at every door it has. A daemon too old to publish the address cannot
+    /// be reached at all — the handshake refuses a protocol that is not this one — which is the
+    /// arrangement this surface needs and did not have while the counts were a safe-to-miss extra.
+    fn hands(&self) -> Option<&dyn PaneHands> {
+        Some(self)
+    }
+
     /// **WHAT A PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT** — register item 557.
     ///
     /// ⚠ Always `Some`, and the per-pane `None`s carry the real absence: *this host could not read
@@ -1104,6 +1139,19 @@ impl PaneForegroundJob for RemotePaneAccess {
     /// `PaneDoing::Nothing` and `PaneDoing::Unknown` are built from exactly that distinction.
     fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess> {
         serde_json::from_value(self.read_pane(id, PANE_FOREGROUND_SLOT)?).ok()
+    }
+}
+
+/// **WHO HAS WRITTEN INTO A PANE, READ OVER THE SOCKET** — register item 653.
+impl PaneHands for RemotePaneAccess {
+    /// The counts, or [`None`] for a pane this daemon does not hold.
+    ///
+    /// ⚠⚠⚠ **AND `None` FOR AN ANSWER THIS BUILD CANNOT READ, WHICH IS NOT THE SAME AS ZERO.**
+    /// [`hands_of`] refuses a value that is not the object it expects rather than defaulting its
+    /// keys, because a fabricated zero is the sentence *nobody has written here* — the one reading
+    /// this whole address exists to stop a driver reaching by accident.
+    fn pane_hands(&self, id: PaneId) -> Option<Hands> {
+        hands_of(&self.read_pane(id, PANE_HANDS_SLOT)?)
     }
 }
 

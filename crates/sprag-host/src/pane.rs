@@ -72,9 +72,9 @@ use crate::wire::{
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
     LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
-    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_REVISION_SLOT, PANE_SCHEMA, PASTE_ACTION,
-    PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT,
-    SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_REVISION_SLOT, PANE_SCHEMA,
+    PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD,
+    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -812,6 +812,19 @@ impl SpragPaneExternal {
                     .and_then(|leader| serde_json::to_value(leader).ok())
                     .map_or(IntrospectValue::Null, IntrospectValue::Json),
             ),
+            // ⚠⚠⚠⚠⚠ WHO HAS WRITTEN INTO THIS PANE — register item 653, off the SAME `Hands` the
+            // in-process reader takes. Never `Null`: a pane this daemon holds always has an answer,
+            // and zero is one. The absence a caller must be able to see is *there is no pane at
+            // this path*, which the surface itself carries — a `Null` here would say *this pane has
+            // no history of being written to*, which is the sentence a driver must never be handed
+            // for a pane a person is typing into.
+            //
+            // ⚠⚠ THROUGH THE ONE BUILDER (`wire::hands_json`), whose reader sits directly below it.
+            // The keys are `Hand`'s own published words, so the vocabulary a caller DECLARES a
+            // write with and the vocabulary it READS the counts back under cannot drift apart.
+            PANE_HANDS_SLOT => Some(IntrospectValue::Json(crate::wire::hands_json(
+                self.pty.hands(),
+            ))),
             PANE_END_OF_INPUT_SLOT => Some(
                 self.pty
                     .end_of_input()

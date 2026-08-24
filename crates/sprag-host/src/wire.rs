@@ -517,6 +517,72 @@ pub const PANE_END_OF_INPUT_SLOT: &str = "end_of_input";
 /// sampler, which is why both exist.
 pub const PANE_FOREGROUND_SLOT: &str = "foreground";
 
+/// The pane-input external query slot: **WHO HAS WRITTEN INTO THIS PANE, AND HOW MANY TIMES EACH**
+/// — [`Hands`](sprag_terminal::Hands) as an object keyed by [`Hand`](sprag_terminal::Hand)'s own
+/// published vocabulary. Register item 653.
+///
+/// # ⚠⚠⚠⚠⚠ The one absence on item 557's list that is NOT a safe degradation
+///
+/// [`Readiness::reached`](sprag_plugin::Readiness::reached) asks *has a person reached into this
+/// pane* **first, ahead of every other question**, and it asks it through
+/// [`PaneAccess::hands`](sprag_plugin::PaneAccess::hands). It is the barrier all three injecting
+/// plugins pass through on their way to a keystroke, `ai_loop` included. So a driver that cannot
+/// ask does not degrade — it concludes **nobody has ever touched this pane**, for every pane, for
+/// the run's whole life, and types over whoever is there.
+///
+/// Measured before this address existed, in the shape that is now this slot's own gate: a person's
+/// declared keystroke landed on the pane, the driver looked, and the barrier answered `Yes`.
+///
+/// # ⚠⚠⚠ Why it is COUNTS and why both hands cross
+///
+/// A flag latches; the question a run actually asks is a DELTA against a watermark it keeps itself,
+/// which is the one arrangement that stays right with several readers. And the program's count
+/// crosses beside the person's because the question one step out — *has a program OTHER THAN ME
+/// written here* — is answerable only by a caller that can compare against its own injections. See
+/// [`Hands`](sprag_terminal::Hands), where both decisions are written out.
+///
+/// ⚠ **A pane the daemon does not hold has no surface at this path at all**, which is the `None`
+/// [`PaneHands::pane_hands`](sprag_plugin::PaneHands::pane_hands) documents. A pane it does hold
+/// always has an answer, possibly zero — this slot is never `null`.
+pub const PANE_HANDS_SLOT: &str = "hands";
+
+/// **THE ONE PLACE THIS OBJECT IS SPELLED** — [`Hands`](sprag_terminal::Hands) as the daemon serves
+/// it at [`PANE_HANDS_SLOT`], keyed by the hand vocabulary rather than by two literals of its own.
+///
+/// ⚠⚠ Its reader [`hands_of`] sits directly below it, and a gate asserts the round trip. Two
+/// spellings of one object is the defect this workspace has paid for in encoder/decoder pairs each
+/// documented as the other's twin — so the keys come from [`Hand::word`](sprag_terminal::Hand::word)
+/// and a third hand added to that type reaches both sides at once or neither.
+#[must_use]
+pub fn hands_json(hands: sprag_terminal::Hands) -> Value {
+    let mut object = Map::new();
+    for hand in sprag_terminal::Hand::ALL {
+        let count = match hand {
+            sprag_terminal::Hand::APerson => hands.by_a_person(),
+            sprag_terminal::Hand::AProgram => hands.by_a_program(),
+        };
+        object.insert(hand.word().to_owned(), Value::from(count));
+    }
+    Value::Object(object)
+}
+
+/// **THE ONE READER OF [`hands_json`]** — the counts a remote surface takes off the wire.
+///
+/// `None` where the value is not that object at all: a daemon that does not serve this address, a
+/// pane it does not hold, or a reply of some other shape. ⚠⚠⚠ **A MISSING KEY IS NOT ZERO HERE**,
+/// and that is the opposite of the defaults [`LINES_LOST_KEY`] chooses: a fabricated zero would say
+/// *nobody has written here*, which is the reading this address exists to stop a driver reaching by
+/// accident. An answer this cannot read is an answer it declines to have.
+#[must_use]
+pub fn hands_of(value: &Value) -> Option<sprag_terminal::Hands> {
+    let object = value.as_object()?;
+    let count = |hand: sprag_terminal::Hand| object.get(hand.word()).and_then(Value::as_u64);
+    Some(sprag_terminal::Hands::of(
+        count(sprag_terminal::Hand::APerson)?,
+        count(sprag_terminal::Hand::AProgram)?,
+    ))
+}
+
 /// The arguments of [`LINES_SINCE_FIELD`] — the CURSOR a reader last held. `Open`, for
 /// [`FIND_ARGS`]'s reason one step along: a cursor is a number the reader carries, and a value ahead
 /// of what the pane has produced is answerable (it yields nothing) rather than out of range.
@@ -957,6 +1023,12 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // `stat`-sized reads, no table walk) rather than through the sampler beside it, because a
     // barrier asks this every 10 ms and the sampler pays a full pass over the process table.
     SchemaField::new(PANE_FOREGROUND_SLOT, "object"),
+    // ⚠⚠⚠⚠⚠ Register item 653 — WHO HAS WRITTEN INTO THIS PANE. Every slot above answers about the
+    // pane or about the program in it; this answers about the PEOPLE, and it is the read
+    // `Readiness::reached` makes FIRST, ahead of the barrier and ahead of any consent. A driver
+    // that could not ask concluded *nobody has ever touched this pane* and typed over them — not a
+    // degradation but a wrong answer, which is why this one moved the protocol number.
+    SchemaField::new(PANE_HANDS_SLOT, "object"),
     // ⚠⚠⚠⚠⚠ Register item 557 — WHAT THIS PANE HAS SAID SINCE A READER'S CURSOR. Every other read
     // on this surface answers about the pane's WHOLE output or its CURRENT screen; a relay needs
     // *what is new*, and needs to be told when a gap was evicted underneath it (a silent gap and a
@@ -7235,6 +7307,64 @@ mod tests {
     /// worth catching here. `the_cells_family_answers_the_paths_it_declares` in `rpc.rs`
     /// owns the other half — what the surface actually answers — because that needs a live
     /// pane, which is exactly why this test could never have proved it.
+    /// **THE HANDS OBJECT SURVIVES ITS OWN ROUND TRIP, AND AN UNREADABLE ONE IS NOT ZERO** —
+    /// register item 653.
+    ///
+    /// # ⚠⚠⚠ Why the pair is gated together rather than each half being read
+    ///
+    /// [`hands_json`] and [`hands_of`] are an encoder and its only decoder, which is the shape this
+    /// workspace has repeatedly found drifted apart — each one documented as the other's twin, and
+    /// neither able to say when that stopped being true. A ratchet that cannot rot reads BOTH
+    /// artefacts, so this walks a value out and back rather than asserting either side's spelling.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The second half is the one with a defect behind it
+    ///
+    /// A decoder that defaulted a missing key to zero would answer *nobody has written here* about
+    /// a daemon that never said so — which is exactly the reading item 653 exists to stop a driver
+    /// reaching. So `hands_of` refuses an object it cannot read whole, and the three arms below are
+    /// the three ways it can fail to: no object at all, one key, and a key of the wrong type.
+    #[test]
+    fn the_hands_object_is_read_back_by_its_only_reader_and_an_unreadable_one_is_not_zero() {
+        let hands = sprag_terminal::Hands::of(3, 7);
+        let wire = hands_json(hands);
+
+        // The KEYS are `Hand`'s own published words, not two literals spelled here — asserted
+        // through the type so a third hand reaches both sides or neither.
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                sprag_terminal::Hand::APerson.word(): 3,
+                sprag_terminal::Hand::AProgram.word(): 7,
+            }),
+        );
+        assert_eq!(
+            hands_of(&wire),
+            Some(hands),
+            "⚠⚠⚠ the only reader of this object must get back what the only writer put in — an \
+             encoder and its decoder that agree only by inspection are two spellings waiting to \
+             drift",
+        );
+
+        // ⚠ The three unreadable shapes, each `None` rather than a fabricated zero.
+        assert_eq!(hands_of(&serde_json::Value::Null), None, "not an object");
+        assert_eq!(
+            hands_of(&serde_json::json!({ sprag_terminal::Hand::APerson.word(): 1 })),
+            None,
+            "⛔⛔ HALF AN ANSWER IS NOT AN ANSWER: a decoder that read the missing key as zero \
+             would tell a run no program had written here on the strength of a daemon that never \
+             said so",
+        );
+        assert_eq!(
+            hands_of(&serde_json::json!({
+                sprag_terminal::Hand::APerson.word(): "1",
+                sprag_terminal::Hand::AProgram.word(): 0,
+            })),
+            None,
+            "a count that arrived as a string is a shape this build cannot read, and reading it as \
+             zero is the same false sentence one arm up",
+        );
+    }
+
     #[test]
     fn the_cells_family_declares_the_wire_words_it_uses() {
         // The template IS the definition; pin it verbatim.
@@ -8817,7 +8947,14 @@ mod tests {
             // ⚠ 39: re-stamped with every ANSWER value space unchanged. Register item 631 added a
             // slot answering an INTEGER and a method answering `{pane, revision}`. Neither is an
             // enum, so neither has an arm to widen; the surface pin is the subject again.
-            39,
+            // ⚠⚠ 40: re-stamped with every ANSWER value space unchanged, and this one is worth a
+            // sentence because it LOOKS like a vocabulary. Register item 653's `hands` answers an
+            // object whose KEYS are `Hand`'s two published words — but those words were already
+            // published, as the WRITE argument `hand`, and this pin walks the vocabularies a
+            // caller may SAY. Nothing was added to that set; a set already in it is being read
+            // back under. ⚠ The day a third hand exists it moves HERE and at the write door
+            // together, because `Hand::WIRE_WORDS` is sized from `ALL`.
+            40,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -9185,7 +9322,11 @@ mod tests {
             // ⚠ 39: re-stamped with every published REQUEST vocabulary unchanged. Register item
             // 631's park takes a pane id and a REVISION, both numbers the caller carries; and it is
             // a METHOD rather than a published verb, so it has no grammar entry here at all.
-            39,
+            // ⚠ 40: re-stamped with every published REQUEST vocabulary unchanged. Register item
+            // 653 added a READ address; a read takes no arguments, so there is no request word for
+            // this pin to see. The `hand` vocabulary its answer is keyed by has been published at
+            // the three write verbs since it existed and is listed below unchanged.
+            40,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -9494,7 +9635,10 @@ mod tests {
             // ⚠ 39: re-stamped with every published argument shape unchanged. Register item 631's
             // addition is a SLOT (no arguments at all) and a JSON-RPC METHOD, which is not a
             // published form and so has no argument shape for this pin to walk.
-            39,
+            // ⚠ 40: re-stamped with every published argument shape unchanged, for 39's reason
+            // exactly. Register item 653's `hands` is a SLOT — no arguments — so no form this pin
+            // walks gained, lost or re-typed one.
+            40,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -10115,7 +10259,13 @@ mod tests {
         // ships with the `pane/waitForRevision` PARK, and a daemon serving the read without the
         // park hands a driver a number whose only use is to poll it. The number is what lets a
         // driver tell *this daemon cannot be waited on* from *this pane has not moved*.
-        39,
+        // ⚠⚠⚠⚠⚠ 40 — REGISTER ITEM 653: `hands` ADDED, and this is the first addition on this list
+        // whose ABSENCE IS A FALSE ANSWER rather than a missing one. Every note above reasons *a
+        // name added leaves an older client working*; that rule holds because the consumer of a
+        // missing address degrades. The consumer of THIS one — `Readiness::reached`, which asks it
+        // ahead of every other question — reads *cannot ask* as *nobody has ever touched this
+        // pane*. See `WIRE_PROTOCOL`'s entry for 40.
+        40,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -10189,6 +10339,13 @@ mod tests {
             // WIRE_PROTOCOL stands — and this slot exists precisely so a client need not compile
             // the number in.
             "guardrail_defaults",
+            // ⚠⚠⚠⚠⚠ ADDED at register item 653, AND IT IS THE RARE ADDITION THAT MOVES THE NUMBER.
+            // Every other name on this list is safe to be missing: a client that never asks is
+            // unaffected, and one that asks an old daemon learns nothing it did not know. **A
+            // driver that cannot ask THIS one learns something false** — `Readiness::reached` reads
+            // an unanswerable `hands` as *nobody has ever touched this pane* and goes on typing at
+            // whoever is there. See `WIRE_PROTOCOL`'s entry for 40.
+            "hands",
             // ⚠⚠ ADDED on `stand_down`'s terms below and for its reason — register item 9. The
             // residue is the same and is stated rather than hidden: a person on a new CLI cannot
             // hold a run on an old daemon, and what they see is an unknown address rather than a

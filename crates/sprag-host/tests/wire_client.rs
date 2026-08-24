@@ -33,9 +33,9 @@ use sprag_host::wire::{
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_plugin::{
-    Attended, Delivered, Delivery, Driver, Guardrails, KeyStroke, OrchestrationSpec, Orchestrator,
-    OutcomeState, PaneAccess, PaneError, Reached, Readiness, ReadyWhen, RunContext, Written,
-    deliver,
+    Attended, Delivered, Delivery, Driver, Guardrails, Interruption, KeyStroke, OrchestrationSpec,
+    Orchestrator, OutcomeState, PaneAccess, PaneError, Reached, Readiness, ReadyWhen, RunContext,
+    Written, deliver,
 };
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
@@ -8100,6 +8100,139 @@ fn spawn_host_at(sock: &Path, program_and_args: &[&str]) -> HostChild {
         .spawn()
         .expect("spawn a sprag-term at a named socket");
     HostChild(child, sock.to_path_buf())
+}
+
+/// ⛔⛔⛔⛔ **A RUN DRIVEN FROM ANOTHER PROCESS MUST SEE THE PERSON WHO REACHED INTO ITS PANE** —
+/// register item 653, the `hands` surface, and the one absence on item 557's list that is NOT safe.
+///
+/// # ⚠⚠⚠⚠⚠ Why this absence is different from the eight beside it
+///
+/// Item 557 measured nine optional sub-surfaces missing from `RemotePaneAccess` and paid the six
+/// the loop reads for its own work, recording that *"each absence is safe by that surface's OWN
+/// documentation"*. That sentence is FALSE of this one, and the reason is where the read sits:
+/// [`Readiness::reached`] asks *has a person reached in* **first, ahead of every other question**,
+/// and it asks it through [`PaneAccess::hands`]. It is the barrier all three injecting plugins pass
+/// through on their way to a keystroke — `ai_loop` included.
+///
+/// So a driver whose `hands()` answers `None` does not degrade: it concludes **nobody has ever
+/// touched this pane**, for every pane, for the run's whole life. A person who reaches into a pane
+/// an out-of-process run is driving gets typed over, and the run's ending carries no count of what
+/// they did (register item 586's other half). The collapse is the one item 557 spent a round
+/// preventing for `supervision` — *I did not look* wearing the words of *I looked and there was
+/// nobody* — arriving one surface along.
+///
+/// # ⚠⚠⚠ THE PAIR IS THE CLAIM, and the control comes FIRST
+///
+/// The driver's own typing goes through the same pseudoterminal door a person's does, and the pane
+/// tells them apart only because the write DECLARES which hand it is (`sprag_host::pane`: the
+/// display client says `person`, the wire says `program`). So:
+///
+/// * **The control** — the driver types twice and the barrier CLEARS. An address that counted every
+///   write would report the driver interrupting itself here, and a run that stopped for its own
+///   keystroke would never take a single turn.
+/// * **The claim** — a person types once, and the very next look is `Interrupted`, carrying `1`.
+///
+/// Either half alone is passed by a wrong address: a surface hard-wired to zero passes the control,
+/// a surface counting all hands passes the claim. Both are asked of ONE pane on ONE connection.
+#[test]
+fn a_remote_barrier_sees_the_person_who_reached_in_and_not_the_driver_that_is_typing() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sh"], "cols": 60, "rows": 12 }));
+
+    assert!(
+        wait_until(Duration::from_secs(10), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains('$'))),
+        "the shell never printed a prompt, so nothing below is measuring a settled pane. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    // ── ARM. The FIRST `reached` is what takes both watermarks: the hands count this barrier will
+    // measure against, and `Prints`'s baseline. Neither is a fact a later call can recover.
+    let run = RunContext::uncancellable();
+    let mut barrier = Readiness::new(
+        Some(ReadyWhen::Prints("PROGRAMMARK".to_owned())),
+        Some(Duration::from_secs(5)),
+        None,
+        Attended::NoOne,
+    );
+    let armed = barrier.reached(&remote, pane, &run);
+    assert!(
+        matches!(
+            armed,
+            Err(PaneError::NeverReady {
+                already_showing: false,
+                ..
+            })
+        ),
+        "the barrier must not be down before anything ran, and its baseline must record that the \
+         marker was NOT already showing — otherwise the control below is about a latch rather than \
+         about a pane. Got {armed:?}",
+    );
+
+    // ── THE CONTROL, FIRST: THE DRIVER'S OWN WRITES ARE NOT AN INTERRUPTION ─────────────────────
+    // Every one of these crosses the socket as `Hand::AProgram`, which is what the wire's write
+    // door records for a caller that did not declare otherwise.
+    let _cleared = remote
+        .inject(
+            pane,
+            &[KeyStroke {
+                key: "u".to_owned(),
+                mods: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                },
+            }],
+        )
+        .expect("the driver clears the composed line");
+    let mut printing = KeyStroke::text("printf 'PROGRAM%s\\n' MARK");
+    printing.push(KeyStroke::named("Enter"));
+    let _ran = remote
+        .inject(pane, &printing)
+        .expect("the driver runs a command whose output carries the barrier's marker");
+
+    let cleared = barrier.reached(&remote, pane, &run);
+    assert_eq!(
+        cleared,
+        Ok(Reached::Yes),
+        "⚠⚠⚠⚠ THE CONTROL: the driver wrote into this pane twice and NONE of it is a person. A \
+         `hands` address that counted every write would answer `Interrupted` here, and a run that \
+         stopped for its own keystroke would never take one turn. The pane was showing:\n{}",
+        remote.pane_collapsed(pane).unwrap_or_default(),
+    );
+
+    // ── THE CLAIM: ONE WRITE BY A PERSON, DECLARED AS ONE ───────────────────────────────────────
+    setup
+        .call(
+            "scene/invoke",
+            json!({
+                "path": pane_input_path(pane.0, TEXT_ACTION),
+                "args": { "text": "PERSONHERE", "hand": "person" },
+            }),
+        )
+        .expect("a display client puts a person's keystrokes into the pane");
+    assert!(
+        wait_until(Duration::from_secs(5), || remote
+            .pane_collapsed(pane)
+            .is_some_and(|screen| screen.contains("PERSONHERE"))),
+        "⚠⚠⚠ THE NON-VACUITY: the person's write must really have reached the pane, or the verdict \
+         below is about a write that never happened. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    let verdict = barrier.reached(&remote, pane, &run);
+    assert_eq!(
+        verdict,
+        Ok(Reached::Interrupted(Interruption::of(1))),
+        "⛔⛔⛔⛔ REGISTER ITEM 653: a run driven from another process asked *has a person reached \
+         into this pane* and was told no. That is not a degradation — `Readiness::reached` asks \
+         this FIRST, ahead of every other question, so the answer stands for the run's whole life \
+         and the run types over whoever is there. The pane was showing:\n{}",
+        remote.pane_collapsed(pane).unwrap_or_default(),
+    );
+
+    let _ = std::fs::remove_file(&sock);
 }
 
 /// ⛔⛔⛔⛔ **A DRIVER DOES NOT GO ON TYPING INTO A DAEMON THAT IS NOT THE ONE IT ADOPTED** —

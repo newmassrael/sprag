@@ -1044,7 +1044,37 @@ impl ScopeAsk {
 ///
 ///   ⚠⚠ **NO ANSWER WORD OR ARGUMENT MOVED ANYWHERE ELSE.** The park's answer shape is its own
 ///   (`{pane, revision}`), modelled on [`PANE_WAIT_OUTPUT_METHOD`]'s `{pane, find}`.
-pub const WIRE_PROTOCOL: u32 = 39;
+///
+/// * **40 — A PANE SAYS WHO HAS WRITTEN INTO IT, AND THIS IS THE FIRST ADDITION WHOSE ABSENCE IS A
+///   FALSE ANSWER.** Register item 653. `pane.<id>.hands` is a new READ address answering
+///   `{person, program}` — the counts `sprag_terminal::Hands` has kept since a person's keystrokes
+///   were first told apart from a program's.
+///
+///   ⚠⚠⚠⚠⚠ **EVERY EARLIER ADDITION LEFT THE NUMBER STANDING ON ONE ARGUMENT, AND THAT ARGUMENT
+///   DOES NOT HOLD HERE.** The rule this wire has applied since version 5 is *an added address is
+///   absent-not-wrong to an old reader*: a client that never asks is unaffected, and one that asks
+///   an old daemon learns nothing it did not already know. That is true exactly when the CONSUMER
+///   of the missing answer degrades. `sprag_plugin::Readiness::reached` asks this address **first,
+///   ahead of the barrier and ahead of any consent**, and a `None` there is not *I could not look*
+///   — it is *nobody has reached in*. So a driver on an older daemon does not lose a feature: it is
+///   told, for every pane and for its whole run, that the pane is unattended.
+///
+///   ⚠⚠⚠⚠ **MEASURED BEFORE THE ADDRESS EXISTED**, in the shape that is now this address's gate: a
+///   real daemon, a real pane, a person's write DECLARED as `{"hand": "person"}` and visibly on the
+///   screen — and the out-of-process barrier's very next look answered `Yes`. The in-process reader
+///   answers `Interrupted` to the same fact, so the two halves of one product disagreed about
+///   whether somebody was at the keyboard, and only the half that types was wrong.
+///
+///   ⚠⚠⚠ **IT IS ALSO WHY THE HANDSHAKE IS THE RIGHT ENFORCEMENT AND A PER-READ FALLBACK IS NOT.**
+///   `handshake` refuses a daemon whose number is not this one, so a driver that needs this fact
+///   cannot start against a daemon that cannot supply it. A client that instead read the absence
+///   and carried on would be choosing the wrong answer at every step, quietly — which is version
+///   39's *"the fallback is INVISIBLE"* argument with the fallback no longer merely slow.
+///
+///   ⚠⚠ **NO ANSWER WORD, ARGUMENT OR FORM MOVED.** `Hand`'s two words (`person`, `program`) were
+///   already published as the WRITE argument this address's keys are taken from; nothing that
+///   already answers is touched.
+pub const WIRE_PROTOCOL: u32 = 40;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).

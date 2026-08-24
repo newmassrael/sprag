@@ -200,12 +200,36 @@ fn reporting(conn: Arc<Mutex<HostConn>>, run: u64) -> sprag_plugin::ProgressSink
     })
 }
 
-/// One scoped connection to `socket`.
+/// One scoped connection to `socket`, **through the door every other client of this daemon passes
+/// through**.
+///
+/// # ⚠⚠⚠⚠⚠ Why a driver of all clients must agree on the wire's shape before it types
+///
+/// [`HostConn::handshake`] refuses a daemon whose [`sprag_rpc::WIRE_PROTOCOL`] is not this build's,
+/// and until register item 653 this was the ONE client that skipped it — the CLI, both frontends,
+/// `sprag-mcp` and `sprag-peer` all announce and agree. That was survivable while every address a
+/// driver reads degrades safely when it is missing: it would discover a skew slot by slot and each
+/// discovery would be an absence.
+///
+/// **`hands` broke that.** A daemon too old to publish it does not leave a driver knowing less; it
+/// leaves the driver believing *nobody has ever reached into this pane* and typing over whoever is
+/// there. An address whose absence is a FALSE answer cannot be discovered at the read, so the
+/// agreement has to happen at the door — which is what the number is for and why item 653 moved it.
+///
+/// ⚠⚠ **THE SPAWNING DAEMON IS NORMALLY THE SAME IMAGE** ([`std::env::current_exe`], this module's
+/// header), so this refuses nothing on the ordinary path. What it catches is the path this
+/// repository has already paid for: a PROMOTION replacing the binary under a running daemon
+/// (register item 344), after which the next run's driver is a newer build than the daemon it was
+/// spawned by.
+///
+/// ⚠ The id names this process, not this run: a run's four connections are one logical client, and
+/// [`sprag_rpc::CLIENT_HELLO_METHOD`] groups them by exactly that.
 fn connect(socket: &std::path::Path, session: Option<&str>) -> std::io::Result<HostConn> {
     let mut conn = HostConn::connect(socket, CONNECT_WITHIN)?;
     if let Some(session) = session {
         conn.scope_to(session);
     }
+    conn.handshake(&format!("drive-{}", std::process::id()))?;
     Ok(conn)
 }
 

@@ -237,6 +237,27 @@ pub struct Hands {
 }
 
 impl Hands {
+    /// The counts `by_a_person` and `by_a_program` — **for a reader that is not holding the pane**.
+    ///
+    /// # ⚠⚠⚠ Why this exists, having been unreachable while every reader was in-process
+    ///
+    /// A driver in ANOTHER PROCESS asks this question over a socket, so something on its side has
+    /// to turn two numbers back into the type. Without a constructor the only way to answer it
+    /// remotely is to invent a second representation of *who has written here* — and a second
+    /// spelling of a fact is what this workspace keeps finding defects in.
+    ///
+    /// ⚠ The counts are the CALLER's claim about a pane it does not own, exactly as
+    /// [`Hand`] is the caller's claim about a write. A decoder that fabricated them would be
+    /// telling a run somebody is at a keyboard, which is why the only caller that should reach for
+    /// this is one holding an answer the pane itself gave.
+    #[must_use]
+    pub const fn of(by_a_person: u64, by_a_program: u64) -> Self {
+        Self {
+            by_a_person,
+            by_a_program,
+        }
+    }
+
     /// How many times a person has written into this pane with their own hands.
     #[must_use]
     pub const fn by_a_person(self) -> u64 {
