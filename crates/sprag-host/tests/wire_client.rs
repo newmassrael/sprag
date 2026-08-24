@@ -6198,6 +6198,13 @@ fn parking_remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
 struct CountingRemote {
     inner: RemotePaneAccess,
     looks: std::sync::atomic::AtomicU64,
+    /// **HOW MANY OF THOSE ASKED THE SUPERVISOR** — register items 637 and 640, and the read that
+    /// is a whole SOCKET ROUND TRIP for one pane's verdict.
+    ///
+    /// ⚠ Broken out for the reason `sprag_plugin::testing::Counted` breaks it out: a fold cannot
+    /// separate *one round that asked four times* from *four rounds that asked once*, and both of
+    /// those items are about which.
+    supervisions: std::sync::atomic::AtomicU64,
 }
 
 impl CountingRemote {
@@ -6205,6 +6212,7 @@ impl CountingRemote {
         Self {
             inner,
             looks: std::sync::atomic::AtomicU64::new(0),
+            supervisions: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -6212,9 +6220,22 @@ impl CountingRemote {
         self.looks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn supervisions(&self) -> u64 {
+        self.supervisions.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn looked(&self) {
         self.looks
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl sprag_plugin::PaneSupervision for CountingRemote {
+    fn pane_agent_state(&self, id: PaneId) -> Option<sprag_plugin::AgentObservation> {
+        self.looked();
+        self.supervisions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.supervision()?.pane_agent_state(id)
     }
 }
 
@@ -6245,6 +6266,16 @@ impl PaneAccess for CountingRemote {
 
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
         self.inner.inject(id, keys)
+    }
+
+    /// ⚠ FORWARDED, so a wait that rests on the VERDICT can be measured at all. Left to the trait's
+    /// default `None`, a completion contract driven through this instrument would find no
+    /// supervisor, answer *never satisfied*, and the number below would be about a wait nobody
+    /// makes.
+    fn supervision(&self) -> Option<&dyn sprag_plugin::PaneSupervision> {
+        self.inner
+            .supervision()
+            .map(|_| self as &dyn sprag_plugin::PaneSupervision)
     }
 
     fn changes(&self) -> Option<&dyn sprag_plugin::PaneChanges> {
@@ -6448,6 +6479,201 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
         parked_looks <= 15,
         "the parked wait's cost follows the PANE, not the clock — a second of silence must not \
          buy looks. Got {parked_looks}",
+    );
+}
+
+/// Report `state` for `pane` on the TEST's connection, as an agent's own hook would.
+///
+/// ⚠ `asked` is what moves `asked_seq`, which is the counter a completion contract pairs a rest
+/// against (register item 441). A helper that could not state one could not stage a turn ENDING at
+/// all — only a verdict changing, which is a different fact.
+fn report_agent(conn: &mut HostConn, pane: PaneId, state: &str, asked: Option<&str>) {
+    let mut args = json!({
+        "id": pane.0,
+        "source": "hook:test",
+        "state": state,
+        "name": "claude",
+    });
+    if let Some(asked) = asked {
+        args["asked"] = json!(asked);
+    }
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(REPORT_AGENT_ACTION), "args": args }),
+    )
+    .expect("the agent reports its own state over the wire");
+}
+
+/// ⛔⛔⛔⛔⛔ **A REMOTE DRIVER WAITING ON A VERDICT STOPS ASKING FOR IT EVERY SLICE** — register
+/// item 640, driven through a real daemon over a real socket.
+///
+/// # ⚠⚠⚠⚠⚠ Why item 631 did not close this, measured rather than predicted
+///
+/// Item 631 gave this surface a park connection, and the gate above measures what that bought: a
+/// wait whose predicate rests on the pane's BYTES went from 96 looks a second to 2. The register
+/// predicted the rest would follow. **It did not, and reading the product is what said so.** A wait
+/// whose predicate rests on the pane's VERDICT — which is every wait an agent loop takes, because
+/// [`DoneWhen::Settles`](sprag_plugin::DoneWhen::Settles) is the contract a loop runs on — asked
+/// `Settling::due()` and got [`Settling::Unknown`](sprag_plugin::Settling::Unknown), whose deadline
+/// is *now plus one poll interval* by construction. So the deadline fell due on every slice, the
+/// park was woken on every slice, and the parkable surface polled exactly as hard as the
+/// unparkable one.
+///
+/// `Unknown` was the honest answer while the wire carried no deadline. This gate exists because it
+/// now carries one.
+///
+/// # ⚠⚠⚠ THE CONTROL IS A DRIVER THAT CANNOT BE TOLD, and it is a real one rather than a mutation
+///
+/// [`RemotePaneAccess::over`] without [`RemotePaneAccess::parking_on`] publishes no change signal
+/// at all, so `park_until` takes its documented degradation and looks every slice. That is what the
+/// polling rate over this wire IS, staged rather than argued — and before this repair the parked
+/// arm sat on the same number, because `Unknown` bought a look every slice anyway.
+///
+/// # ⚠⚠⚠⚠ AND THE SECOND ARM IS THE ONE THAT COULD MAKE CHEAP INTO DEAF
+///
+/// `Settling::Nothing` — which is what a published, unpending verdict now crosses as — tells a
+/// waiter it may park on the pane and look no more. **A verdict that then changes with the pane
+/// producing nothing at all would be slept straight through**, and the run would report *the peer
+/// never finished* about a peer that finished. An agent's own hook reports out of band, so that is
+/// not a hypothetical: it is what every turn ending looks like at a hook-instrumented pane. The
+/// second arm drives exactly that and requires the wait to come back with [`Over::Yes`].
+#[test]
+fn a_remote_driver_waiting_on_a_verdict_stops_asking_for_it_every_slice() {
+    /// How long the measured wait may run. The peer never answers in the first arm, so this is
+    /// dead time: at the poll interval it is ~200 looks, and parked it is a handful.
+    const PATIENCE: Duration = Duration::from_secs(2);
+    /// How many supervisor reads the parked wait may cost. Well above the 1 this fixture makes it
+    /// (the pane never moves and nothing is pending) and far below what any slice-paced wait can
+    /// reach, so it separates the two behaviours rather than tolerating one of them.
+    const CEILING: u64 = 25;
+
+    /// Wait out a peer that never answers, over a driver that either can or cannot park, and
+    /// answer **how many times it asked the daemon for the verdict**.
+    fn waited_out(parkable: bool) -> (u64, sprag_plugin::Over) {
+        let (_host, sock) = spawn_host();
+        let (driver, mut setup) = if parkable {
+            parking_remote_driver(&sock)
+        } else {
+            remote_driver(&sock)
+        };
+        assert_eq!(
+            driver.changes().is_some(),
+            parkable,
+            "the two arms must differ in exactly the thing being measured",
+        );
+        // The boot pane becomes an agent by its own report — published on sight, so nothing is
+        // pending and the verdict this wait rests on can only be moved by another report.
+        report_agent(&mut setup, PaneId(0), "working", Some("go"));
+
+        let counted = CountingRemote::new(driver);
+        let mut done = sprag_plugin::Completion::new(sprag_plugin::DoneWhen::Settles);
+        // ⚠ ARMED BEFORE THE MEASUREMENT, and it must find an agent: an unarmed contract is never
+        // satisfied, which is cheap for the wrong reason.
+        done.begin(&counted, PaneId(0));
+        let entered = counted.supervisions();
+        let over = done.wait(
+            &counted,
+            PaneId(0),
+            PATIENCE,
+            None,
+            &sprag_plugin::RunContext::uncancellable(),
+        );
+        (counted.supervisions() - entered, over)
+    }
+
+    let (parked_asks, parked_end) = waited_out(true);
+    let (polled_asks, polled_end) = waited_out(false);
+
+    // ── THE CONTROLS: both really waited, at a peer that really never answered ─────────────────
+    assert_eq!(
+        (parked_end, polled_end),
+        (sprag_plugin::Over::NotYet, sprag_plugin::Over::NotYet),
+        "⚠⚠⚠⚠ THE CONTROL: a wait that ended early costs nothing either, and the number below \
+         would then be measuring a contract that answered rather than one that waited",
+    );
+
+    // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────────
+    assert!(
+        parked_asks * 5 < polled_asks,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 640: A REMOTE WAIT THAT RESTS ON THE VERDICT IS STILL ASKING FOR \
+         IT EVERY SLICE. Parked {parked_asks} reads against {polled_asks} for a driver that cannot \
+         be told anything — item 631 made this surface parkable and this arm did not get cheaper, \
+         because `Settling::Unknown`'s deadline is *now plus a poll interval* and so falls due on \
+         every one. Each of these reads is a socket round trip for one pane's verdict, on the path \
+         an agent loop walks at every step of every turn",
+    );
+    assert!(
+        parked_asks <= CEILING,
+        "⚠⚠⚠ and the parked wait's cost follows the PANE and the DEADLINE, not the clock — two \
+         seconds of silence at a settled pane must buy no reads at all. Got {parked_asks}",
+    );
+
+    // ── AND CHEAP MUST NOT MEAN DEAF ──────────────────────────────────────────────────────────
+    let (_host, sock) = spawn_host();
+    let (driver, mut setup) = parking_remote_driver(&sock);
+    report_agent(&mut setup, PaneId(0), "working", Some("go"));
+    let armed = driver
+        .supervision()
+        .expect("the daemon supervises")
+        .pane_agent_state(PaneId(0))
+        .expect("the pane reported itself an agent");
+    let mut done = sprag_plugin::Completion::new(sprag_plugin::DoneWhen::Settles);
+    done.begin(&driver, PaneId(0));
+    let sock_for_peer = sock.to_path_buf();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        let mut conn = HostConn::connect(&sock_for_peer, Duration::from_secs(5))
+            .expect("the peer's own connection");
+        // The turn: the peer takes a question (`asked_seq` moves) and then comes back to rest
+        // (`seq` moves). Neither writes a byte to the pane, which is the whole hazard.
+        report_agent(&mut conn, PaneId(0), "working", Some("the driver's prompt"));
+        report_agent(&mut conn, PaneId(0), "idle", None);
+    });
+    let answered = done.wait(
+        &driver,
+        PaneId(0),
+        PATIENCE,
+        None,
+        &sprag_plugin::RunContext::uncancellable(),
+    );
+    // ⚠⚠⚠⚠⚠ THE FIXTURE'S OWN CONTROL, ASKED AFTER THE WAIT AND ASSERTED BEFORE IT. *The peer's
+    // turn ended* and *the wait noticed* are two facts, and a gate that only checks the second
+    // cannot tell a deaf wait from a staging that never moved the peer. So the daemon is asked what
+    // it holds now, and the three terms the contract pairs on are checked against what the turn was
+    // ARMED at — if these hold and the wait still says `NotYet`, the wait is the defect.
+    let after = driver
+        .supervision()
+        .expect("the daemon supervises")
+        .pane_agent_state(PaneId(0))
+        .expect("the pane is still an agent");
+    assert_eq!(
+        (
+            after.state,
+            after.seq > armed.seq,
+            after.asked_seq > armed.asked_seq
+        ),
+        (sprag_detect::AgentState::Idle, true, true),
+        "⚠⚠⚠⚠ THE STAGING FAILED, so the assertion below would be about a peer that never \
+         answered rather than about a wait that did not hear. Armed at {armed:?}, and the daemon \
+         now holds {after:?}",
+    );
+    assert_eq!(
+        answered,
+        sprag_plugin::Over::Yes,
+        "⛔⛔⛔⛔⛔ A VERDICT THAT MOVED WITH THE PANE STANDING STILL WAS SLEPT THROUGH. \
+         `Settling::Nothing` says *park on the pane and look no more*, and an agent's own hook \
+         reports OUT OF BAND — so a turn ending at a hook-instrumented pane changes the verdict \
+         without a byte reaching the screen. The control directly above proves the peer's turn DID \
+         end: the daemon holds {after:?} against the {armed:?} this turn was armed at. A wait deaf \
+         to that reports *the peer never finished* about a peer that finished, which is worse than \
+         the polling it replaced",
+    );
+
+    println!(
+        "\n== what a remote wait on a VERDICT costs, {PATIENCE:?} at a pane that says nothing \
+         ==\n  parked, deadline published: {parked_asks} supervisor read(s)\n  control, a driver \
+         that cannot be told: {polled_asks}\n  before item 640 the parked arm sat on the control's \
+         number: `Settling::Unknown` falls due every slice\n",
     );
 }
 
@@ -6959,6 +7185,14 @@ fn a_remote_driver_reads_a_pane_agent_verdict_and_a_plain_pane_is_a_different_ab
     // duplicated shape in this repository has broken: a key added at one site and not the other,
     // with both looking perfectly well-formed. Asserted whole rather than key by key, so a key that
     // ARRIVES at one site is as red as a key that leaves.
+    //
+    // ⚠⚠⚠⚠ **ONE KEY HERE IS TIME-VARYING AND THIS COMPARISON ONLY HOLDS BECAUSE NOTHING IS
+    // PENDING** — register item 640. `settles_in_ms` is a REMAINING time computed where each answer
+    // is built, so two renderings of one PENDING verdict legitimately differ by however long
+    // separates them, and a whole-object equality across two calls would flake. This pane's verdict
+    // was REPORTED, and a report publishes on sight — so `settling` reads `nothing` at both sites
+    // and no duration is written at either. A future round that stages a settling verdict here must
+    // compare the keys it means rather than the object.
     let listed = setup
         .call(
             "scene/query",

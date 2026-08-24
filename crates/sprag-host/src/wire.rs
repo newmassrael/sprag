@@ -2434,6 +2434,95 @@ pub const AGENT_SAID_SEQ_KEY: &str = "said_seq";
 /// ALWAYS PRESENT, for [`AGENT_ASKED_SEQ_KEY`]'s reason.
 pub const AGENT_REPORTS_KEY: &str = "reports";
 
+/// The published verdict's key saying **WHETHER THIS VERDICT IS STILL WAITING TO CHANGE** — one of
+/// [`AGENT_SETTLING_NOTHING`] and [`AGENT_SETTLING_PENDING`], and register item 640's carriage.
+///
+/// # ⚠⚠⚠⚠⚠ Why a WORD beside a number, when a number alone looks like it would do
+///
+/// `sprag_plugin::Settling` has THREE answers and the whole reason it does is that two of them are
+/// a lost wakeup waiting to be written: *nothing is pending* entitles a waiter to park on the pane
+/// and look no more, and *this build cannot say* obliges it to ask again. A single optional number
+/// carries two states, so the third would have to be spelled by the key's ABSENCE — and a JSON
+/// reader cannot tell an absent key from a `null` one (`value[key]` answers `Value::Null` for
+/// both). The distinction the type exists to protect would then rest on a difference this wire's
+/// own reader cannot see.
+///
+/// So the word carries the arm and [`AGENT_SETTLES_IN_MS_KEY`] carries the payload:
+///
+/// | on the wire | what a reader builds |
+/// |---|---|
+/// | `settling: "nothing"` | `Settling::Nothing` — park on the pane |
+/// | `settling: "pending"` + `settles_in_ms` | `Settling::At` — park to the instant |
+/// | the key ABSENT, or a word this build does not know | `Settling::Unknown` — ask again |
+///
+/// ⚠ ALWAYS PRESENT, on [`AGENT_ASKED_SEQ_KEY`]'s rule and for its reason: an absent key must mean
+/// *an older daemon*, so a daemon that CAN say must always say, including when the answer is
+/// *nothing*.
+///
+/// # ⚠⚠⚠ An unknown WORD degrades where an unknown state word latches, and the difference is real
+///
+/// [`crate::agent::Verdict::Unspellable`] exists because a state word this build cannot spell has
+/// no safe reading — every fallback is a claim about a pane nobody made. This key has one: *ask
+/// again* is exactly what every reader of this surface did before the key existed, so a fourth arm
+/// invented by a newer daemon costs a remote driver the old rate and nothing else. **A conservative
+/// default is available here and was not available there**, which is why the two absences are
+/// treated differently rather than by one habit.
+///
+/// # ⚠⚠⚠⚠ Why this earned NO [`WIRE_PROTOCOL`] bump, on [`AGENT_SAID_KEY`]'s standard
+///
+/// The standard that block states is *does an older peer silently do something DIFFERENT*, not
+/// *did a key appear*.
+///
+/// * **NEW daemon → OLD client.** The two keys are additive on an ANSWER, and this wire's readers
+///   take the keys they know by name. An older driver reads the same verdict it read before and
+///   goes on spelling `Settling::Unknown` for it — which is the behaviour it had, unchanged.
+/// * **OLD daemon → NEW client.** The key is absent, which is `Unknown` by the table above — again
+///   the behaviour that shipped before this key existed, reached by the reader's own conservative
+///   arm rather than by a guess.
+///
+/// ⚠⚠ THE EXEMPTION IS CONDITIONAL, on the same terms as its neighbours': the moment a reader takes
+/// an absent `settling` as evidence ABOUT the pane — *nothing is pending* rather than *it did not
+/// say* — an older daemon starts meaning something it never meant, and the number is owed.
+pub const AGENT_SETTLING_KEY: &str = "settling";
+/// [`AGENT_SETTLING_KEY`]'s word for **NOTHING IS PENDING** — this verdict stands until the pane
+/// moves, and a waiter may park on the pane and look no more.
+///
+/// ⚠ Only a daemon that READ ITS TRACKER may say it. It is a claim, not an absence.
+pub const AGENT_SETTLING_NOTHING: &str = "nothing";
+/// [`AGENT_SETTLING_KEY`]'s word for **A CANDIDATE IS WAITING**, in which case
+/// [`AGENT_SETTLES_IN_MS_KEY`] says how long from now it publishes.
+pub const AGENT_SETTLING_PENDING: &str = "pending";
+/// The published verdict's key carrying **HOW MANY MILLISECONDS FROM THE MOMENT THIS ANSWER WAS
+/// BUILT** until the pending candidate publishes — present exactly when
+/// [`AGENT_SETTLING_KEY`] says [`AGENT_SETTLING_PENDING`].
+///
+/// # ⚠⚠⚠⚠⚠ A DURATION, because the fact it carries is an `Instant` and an `Instant` cannot travel
+///
+/// `sprag_plugin::AgentObservation::settling` holds an `Instant` deliberately — its own doc says
+/// why: *"a remaining-time reading has to be re-anchored by whoever receives it, and the anchor is
+/// a second clock read at a different moment, so two waiters reading one observation would compute
+/// two deadlines from it"*. That argument is about readers INSIDE one process, where an instant is
+/// the same fact for everybody. Across a socket there is no shared clock at all: an `Instant` is
+/// not a wall time, has no serialisation, and is meaningless in the receiving process. So the wire
+/// carries the remaining time and each end anchors it to a clock it owns.
+///
+/// # ⚠⚠⚠⚠⚠ THE ANCHOR IS THE MOMENT THE REQUEST LEFT, AND THE OTHER CHOICE FAILS DANGEROUSLY
+///
+/// A client that added this to the moment the ANSWER ARRIVED would hold a deadline late by the
+/// whole round trip — and late is the direction that sleeps through the publish it was waiting for,
+/// which is the very lost wakeup `Settling`'s third arm exists to make unrepresentable. Anchored to
+/// the moment the request went out, the deadline is early by the round trip instead: the waiter
+/// takes one look that finds nothing, which costs a look and loses nothing.
+///
+/// ⚠ The daemon's half of the same rule: the remaining time is computed where the ANSWER IS BUILT
+/// rather than where the observation was taken, so the number is as small as this end can honestly
+/// make it. See [`crate::agent::verdict_json`].
+///
+/// ⚠⚠ `crate::agent::Sent` is the type that carries the client's anchor, and it is a type rather
+/// than a bare `Instant` because the wrong instant is in scope at the same call site and choosing
+/// it fails silently.
+pub const AGENT_SETTLES_IN_MS_KEY: &str = "settles_in_ms";
+
 /// **WHICH OF FOUR THINGS IS TRUE** about the reporter that produced a pane's verdict, once the
 /// party holding both builds has compared them — [`AGENT_BUILD_KEY`]'s judgement, as data.
 ///

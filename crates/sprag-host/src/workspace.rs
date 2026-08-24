@@ -1365,6 +1365,34 @@ impl WorkspaceExternal {
             crate::config::agent_settle,
         );
         if outcome.changed {
+            // ⚠⚠⚠⚠⚠ **THE PANE MOVED, FOR THE ONE REASON THAT IS NOT A BYTE** — register item 646.
+            // A waiter parked on this pane was told by `Settling::Nothing` that the verdict stands
+            // until the pane moves, and until this line the pane's counter could only be moved by
+            // its reader thread. So a turn that ENDED here — an agent's own hook, out of band, no
+            // byte reaching the screen — was slept straight through, and the wait ran to its own
+            // bound reporting *the peer never finished* about a peer that finished. Measured
+            // through a real daemon: armed at `Working seq=1 asked_seq=1`, the daemon came to hold
+            // `Idle seq=2 asked_seq=2`, and the wait answered `NotYet`.
+            //
+            // ⚠⚠⚠ **BEFORE THE ANNOUNCE, AND THE ORDER IS THE FIX.** The announce is what fires the
+            // pass that re-evaluates every parked `pane/waitForRevision`, and that pass compares
+            // this counter against what each waiter last saw. Announced first, the pass reads the
+            // OLD number, wakes nobody, and the waiter sleeps until something unrelated moves the
+            // pane — the same lost wakeup, re-entered through the door marked *ordering*.
+            //
+            // ⚠⚠⚠⚠ **WHY THIS SITE AND `sweep_once` ARE ALL OF THEM**, counted rather than assumed:
+            // a waiter must always hold EITHER a deadline of its own OR a bump.
+            //
+            // * **A report** can move a verdict at any moment and carries no deadline — every one
+            //   arrives through `REPORT_AGENT_ACTION`, which is this function. Bumped here.
+            // * **A settling candidate** publishes on a clock, and `Settling::At` puts that instant
+            //   in the waiter's own hand, so it wakes on the deadline whoever runs the observation
+            //   that publishes it — including a READ (`crate::plugins`'s own source observes), which
+            //   is why a reader publishing does not need a bump of its own.
+            // * **The sweeper** is the observation nobody is reading the answer of, so its publish
+            //   is the one that would otherwise reach nothing. Bumped there.
+            // * **`Settling::Nothing`** means no candidate exists, so no reader can publish one.
+            self.with_pane(id, |pane| pane.pty().revision().bump());
             self.channels.announce(
                 self.scope.session(),
                 vec![crate::events::Event::AgentStateChanged(id.0)],
@@ -4971,6 +4999,12 @@ mod tests {
                 // moves while a turn is merely working, which is what tells a supervisor a slow
                 // peer from one that has stopped speaking.
                 "reports": 1,
+                // ⚠⚠⚠⚠ AND WHETHER THE VERDICT IS STILL WAITING TO CHANGE — register item 640, and
+                // it is ALWAYS PRESENT for `asked_seq`'s reason: an absent key has to mean *an
+                // older daemon that cannot say*, so a daemon that read its tracker says even when
+                // the answer is *nothing pending*. A REPORT publishes on sight, which is why this
+                // reads `nothing` and carries no duration beside it.
+                "settling": "nothing",
                 "source": "herdr:claude",
             }),
             "a pane no rule claims is published because a process inside it said so, and the answer \
@@ -4988,6 +5022,112 @@ mod tests {
                 .flatten()
                 .any(|event| event["type"] == "pane_agent_state_changed" && event["pane"] == 0),
             "the report is readable as a typed change: {batch}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A VERDICT PUBLISHED WITH NO BYTE TYPED STILL MOVES THE PANE A WAITER IS PARKED
+    /// ON** — register item 646, and this is the SHIPPED half of it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The lost wakeup, measured through a real daemon before this line existed
+    ///
+    /// `sprag_plugin::Settling::Nothing` tells a waiter *this verdict stands until the pane moves,
+    /// so park on the pane and look no more*. **The pane's counter was the PTY reader thread's**,
+    /// bumped when bytes arrived and by nothing else — and an agent's own hook reports OUT OF BAND,
+    /// so a turn ENDING changes what a supervisor reads with no byte reaching the screen at all.
+    ///
+    /// Measured 2026-08-24 over a socket: a driver armed its contract at `Working seq=1
+    /// asked_seq=1`, the peer's hook reported the turn's two halves, the daemon came to hold `Idle
+    /// seq=2 asked_seq=2` — and the wait answered **`NotYet`**, *the peer never finished*, about a
+    /// peer that had. Shipped, the bound that ends such a wait is half an hour a turn, and the
+    /// in-daemon loop parks on the same counter, so this was never a remote-only defect.
+    ///
+    /// # ⚠⚠⚠ Why the counter is widened rather than a second one added
+    ///
+    /// `PaneRevision`'s own doc refuses a second notion of *the pane moved*, and
+    /// `rpc::evaluate_revision_waits` refuses it again in as many words — *"a second notion could
+    /// tell this pass to answer while the slot said nothing had happened"*. So the ONE counter
+    /// grows a second publisher, and its contract is stated as what it always had to be: **a
+    /// permission to look**, not *the screen was written to*.
+    ///
+    /// ⚠⚠ THE RESIDUE, NAMED RATHER THAN HIDDEN, and the second arm pins it: a report that is
+    /// ACCEPTED but publishes nothing moves `reports` and can move `asked_seq` without moving this
+    /// counter. That is deliberate — the announce is what sends the pass that wakes remote waiters,
+    /// and the announce is on the published change, so bumping without it would wake the in-process
+    /// waiter and leave the remote one parked, which is a half-fix wearing a whole one's clothes.
+    /// A contract that ends a turn needs `seq` to move anyway, and `seq` moving is a publish.
+    #[test]
+    fn a_verdict_published_with_no_byte_typed_still_moves_the_pane_a_waiter_is_parked_on() {
+        /// The pane's *permission to look* counter, read straight off the pane the test spawned.
+        fn moved(ext: &WorkspaceExternal) -> u64 {
+            ext.with_pane(PaneId(0), |pane| pane.pty().revision().now())
+                .expect("the pane this test spawned")
+        }
+
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        // A plain `cat`: it prints nothing at all, so every movement of the counter below is the
+        // supervisor's rather than the child's. That is the control the whole gate rests on.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+
+        let report = |ext: &mut WorkspaceExternal, state: &str, seq: u64| {
+            ext.invoke(
+                REPORT_AGENT_ACTION,
+                IntrospectValue::Json(json!({
+                    "id": 0,
+                    "source": "hook:claude",
+                    "state": state,
+                    "name": "claude",
+                    "seq": seq,
+                })),
+            )
+            .expect("a well-formed report is taken")
+        };
+
+        let before = moved(&ext);
+        let published = report(&mut ext, "working", 1);
+        let IntrospectValue::Json(published) = published else {
+            panic!("the report answers JSON");
+        };
+        assert_eq!(
+            (
+                published["accepted"].as_bool(),
+                published["changed"].as_bool()
+            ),
+            (Some(true), Some(true)),
+            "the fixture must PUBLISH, or the claim below is about a report the daemon ignored",
+        );
+        let after_publish = moved(&ext);
+
+        // ⚠ A second report the daemon ACCEPTS and publishes nothing for — same state, later
+        // generation. It is the residue's own control and the proof that the movement above was the
+        // PUBLISH rather than a stray byte from the spawn.
+        let quiet = report(&mut ext, "working", 2);
+        let IntrospectValue::Json(quiet) = quiet else {
+            panic!("the report answers JSON");
+        };
+        assert_eq!(
+            (quiet["accepted"].as_bool(), quiet["changed"].as_bool()),
+            (Some(true), Some(false)),
+            "the second arm must be ACCEPTED and publish nothing, or it is not the residue's case",
+        );
+        let after_quiet = moved(&ext);
+
+        assert!(
+            after_publish > before,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 646: A PUBLISHED VERDICT DID NOT MOVE THE PANE. Every waiter \
+             on this pane was told by `Settling::Nothing` to park on it and look no more, and this \
+             counter is the only thing that can wake them — so a turn that ended by an agent's own \
+             hook, with no byte reaching the screen, is slept through to the wait's own bound and \
+             reported as *the peer never finished*. Counter was {before}, is {after_publish}",
+        );
+        assert_eq!(
+            after_quiet, after_publish,
+            "⚠⚠⚠ THE RESIDUE, PINNED: a report that publishes nothing must not move it either. \
+             The wake pass that serves remote waiters is sent by the ANNOUNCE, which is on the \
+             published change — so a bump without one would wake the in-process waiter and leave \
+             the remote one parked, which is the shape of a fix that looks whole and is half. Was \
+             {after_publish}, is {after_quiet}",
         );
     }
 
@@ -5263,6 +5403,13 @@ mod tests {
                 // nobody inside the pane has said anything at all — which is exactly the case a
                 // supervisor must not read as *a reporter that has gone quiet*.
                 "reports": 0,
+                // ⚠⚠⚠⚠ AND WHETHER THE VERDICT IS STILL WAITING TO CHANGE — register item 640,
+                // always present on the counters above's terms. `nothing` here is a CLAIM and a
+                // true one: a dialog is an affirmative match and publishes ON SIGHT, so the
+                // tracker holds no candidate and a waiter may park on the pane and look no more.
+                // A verdict resting on an ABSENCE — the dialog GOING — would read `pending` with a
+                // duration beside it, which is the case the whole item exists for.
+                "settling": "nothing",
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.

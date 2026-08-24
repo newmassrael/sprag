@@ -1165,13 +1165,18 @@ pub(crate) fn agent_state_source(
                 // above, which is what makes the pair unable to disagree; a waiter that asked the
                 // registry separately would hold a deadline belonging to a later observation than
                 // its own state. It is what lets a wait park to the instant instead of polling the
-                // settle window, and it never reaches the wire — see `AgentFacts::settles_at`.
+                // settle window.
                 //
-                // ⚠⚠⚠ `Nothing` RATHER THAN `Unknown` FOR THE ABSENCE, and only THIS source may
-                // say so: it read the tracker, so an empty answer is *no candidate is waiting* and
-                // a waiter is entitled to park on the pane and look no more. A surface that cannot
-                // see candidates at all — the remote one — must say `Unknown`, which is what
-                // `Settling` has three arms for.
+                // ⚠⚠⚠ `Nothing` RATHER THAN `Unknown` FOR THE ABSENCE, and only a source that READ
+                // THE TRACKER may say it: an empty answer is then *no candidate is waiting*, and a
+                // waiter is entitled to park on the pane and look no more. A surface that cannot
+                // see candidates at all must say `Unknown`, which is what `Settling` has three arms
+                // for.
+                //
+                // ⚠⚠ THE REMOTE SURFACE IS NO LONGER ONE OF THOSE — register item 640. The same
+                // fold happens on the far side of the socket now, off a REMAINING TIME the answer
+                // carries (`crate::wire::AGENT_SETTLES_IN_MS_KEY`), so this arm and that one are
+                // two spellings of one rule rather than a rule and a degradation.
                 settling: facts
                     .settles_at
                     .map_or(sprag_plugin::Settling::Nothing, sprag_plugin::Settling::At),

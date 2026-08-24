@@ -1136,19 +1136,32 @@ impl Authority {
 ///
 /// * one whose supervisor says *no candidate is waiting* — and a waiter may then park on the pane
 ///   for ever, because nothing else can move the answer;
-/// * one that **cannot see a supervisor's candidates at all** — `RemotePaneAccess` reads a verdict
-///   off a wire that carries no deadline — where parking for ever sleeps straight through the
-///   publish.
+/// * one that **cannot see a supervisor's candidates at all**, where parking for ever sleeps
+///   straight through the publish.
 ///
 /// Spelled `None` they are one word, and the second one is a **lost wakeup that only appears when
-/// somebody makes the remote surface parkable** (register item 631) — a defect planted today and
-/// paid for in a round that will have no reason to look here. This crate has the lesson written
-/// down twice over (*`None` is not `Some(0)`*, *an absence that carries the kernel's reason*), so
-/// the type carries it instead.
+/// somebody makes the remote surface parkable** (register item 631) — a defect planted then and
+/// paid for in a round that would have had no reason to look here. This crate has the lesson
+/// written down twice over (*`None` is not `Some(0)`*, *an absence that carries the kernel's
+/// reason*), so the type carries it instead.
 ///
 /// ⚠⚠ [`Unknown`](Self::Unknown) IS THE CONSERVATIVE ONE and it costs what the old wait cost: it
 /// asks again next slice. That is the honest degradation for a surface with no address for the
 /// deadline, and it goes away when the surface grows one — not before.
+///
+/// # ⚠⚠⚠⚠⚠ THE REMOTE SURFACE HAS GROWN ONE — register item 640, and this paragraph is the record
+///
+/// For four rounds the example above named `RemotePaneAccess` as the surface that *reads a verdict
+/// off a wire that carries no deadline*, and that was true and expensive: **every** observation a
+/// driver outside the daemon read answered [`Unknown`](Self::Unknown), so item 631's park bought
+/// nothing at all on the arm an agent loop's contract actually rests on — `Unknown`'s deadline is
+/// *now plus one poll interval*, which falls due on every slice by construction.
+///
+/// The wire carries it now, as a remaining time re-anchored by the client to the moment its request
+/// left (`sprag_host::wire::AGENT_SETTLES_IN_MS_KEY`). **`Unknown` did not become unreachable** and
+/// must not: it is what an OLDER daemon's silence reads as, what a word this build cannot spell
+/// reads as, and what a malformed *pending* reads as. The third arm is still the one that makes
+/// those three absences say *ask again* instead of *park for ever*.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Settling {
     /// **NOTHING IS PENDING**: this verdict stands until the pane moves.

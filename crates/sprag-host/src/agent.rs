@@ -230,12 +230,19 @@ pub struct AgentFacts {
     /// **WHEN THIS VERDICT CHANGES WITH NO FURTHER OUTPUT** — [`Tracker::pending_deadline`] as it
     /// stood on the look that produced these facts, and `None` when nothing is pending.
     ///
-    /// # ⚠⚠⚠ THE ONE FIELD HERE THAT IS NOT ON THE WIRE, and it cannot be
+    /// # ⚠⚠⚠ THE ONE FIELD HERE THAT DOES NOT CROSS AS ITSELF — register items 635 and 640
     ///
     /// An [`Instant`] is meaningless outside this process — it is not a wall clock and has no
-    /// serialisation — so this rides on the struct the pane list is built from without ever
-    /// reaching the pane list. That is stated rather than left to be discovered, because the type's
-    /// own headline says *in the shape the pane list puts on the wire* and this is the exception.
+    /// serialisation. For four rounds that made this the one field on a type whose headline says
+    /// *in the shape the pane list puts on the wire* which never reached the wire at all, and the
+    /// cost was item 640: every remote waiter read `Settling::Unknown` and polled.
+    ///
+    /// It crosses now, as a DURATION — [`AGENT_SETTLES_IN_MS_KEY`](crate::wire) — converted where
+    /// the answer is built and re-anchored by the client to the moment its request left. See
+    /// [`verdict_json`], which does the conversion, and [`Sent`], which is the anchor.
+    ///
+    /// ⚠ So the exception is now about the SPELLING and not about the fact: what rides here is an
+    /// instant this process owns, and what crosses is how long is left of it.
     ///
     /// ⚠⚠ **IT IS HERE RATHER THAN BEHIND A SECOND CALL** because the alternative loses the race
     /// it exists to win: `AgentRegistry::pending_deadline(id)` is public and one hash lookup, and a
@@ -383,7 +390,72 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
     if let Some(transcript) = &facts.transcript {
         value[crate::wire::AGENT_TRANSCRIPT_KEY] = serde_json::json!(transcript);
     }
+    // ⚠⚠⚠⚠⚠ AND WHEN THIS VERDICT CHANGES WITH THE PANE PRODUCING NOTHING AT ALL — register item
+    // 640, the half of item 630 that never left this process. The in-process waiter has parked to
+    // this instant since 630; every REMOTE waiter read `Settling::Unknown` and asked again every
+    // ten milliseconds, because nothing on this wire carried a deadline.
+    //
+    // ⚠⚠⚠ THE REMAINING TIME IS TAKEN HERE, WHERE THE ANSWER IS BUILT, and not where the
+    // observation was. Those are different moments and the difference is a real one: a number
+    // computed at observation time would be LARGER by however long the daemon took to render, and
+    // larger means a deadline the client parks PAST. Computed here it is as small as this end can
+    // honestly make it, and small is the direction that costs a look rather than a wakeup.
+    //
+    // ⚠⚠ ALWAYS WRITTEN, unlike the additive keys above and for `asked_seq`'s reason: an absent key
+    // has to mean *an older daemon that cannot say*, so a daemon that CAN say says even when the
+    // answer is *nothing pending*. See `crate::wire::AGENT_SETTLING_KEY` for the whole table.
+    match facts.settles_at {
+        None => {
+            value[crate::wire::AGENT_SETTLING_KEY] =
+                serde_json::json!(crate::wire::AGENT_SETTLING_NOTHING);
+        }
+        Some(at) => {
+            value[crate::wire::AGENT_SETTLING_KEY] =
+                serde_json::json!(crate::wire::AGENT_SETTLING_PENDING);
+            // ⚠ SATURATING: a deadline already past is `0`, which reads back as *due now* and buys
+            // the waiter one look. Anything else here would be inventing a future for a candidate
+            // whose window has already run out.
+            value[crate::wire::AGENT_SETTLES_IN_MS_KEY] = serde_json::json!(
+                u64::try_from(at.saturating_duration_since(Instant::now()).as_millis())
+                    .unwrap_or(u64::MAX)
+            );
+        }
+    }
     value
+}
+
+/// **WHEN THE REQUEST THAT PRODUCED A VERDICT LEFT THIS PROCESS** — the anchor
+/// [`AGENT_SETTLES_IN_MS_KEY`](crate::wire::AGENT_SETTLES_IN_MS_KEY)'s duration is measured from,
+/// and register item 640's other half.
+///
+/// # ⚠⚠⚠⚠⚠ Why a type, when the argument is one `Instant`
+///
+/// The WRONG instant is in scope at the only call site that takes this — the moment the answer came
+/// BACK — and choosing it compiles, runs, and produces a deadline late by the whole round trip.
+/// Late is the direction that parks past the publish, which is the lost wakeup
+/// [`Settling`](sprag_plugin::Settling)'s third arm exists to make unrepresentable; so the failure
+/// this guards is silent, in the dangerous direction, and one identifier away.
+///
+/// A bare `Instant` parameter cannot say which moment it wants. This one is named for the moment it
+/// must be, and [`now`](Self::now) is the only way to get one — so a caller who writes it after the
+/// call has written something that reads wrong rather than something that merely IS wrong.
+///
+/// ⚠ It does not enforce the ORDERING and does not pretend to: nothing in the type system can say
+/// *this clock read happened before that socket write*. What it removes is the silent choice.
+#[derive(Clone, Copy, Debug)]
+pub struct Sent(Instant);
+
+impl Sent {
+    /// Take the anchor — **called BEFORE the request goes out**, never after the answer returns.
+    #[must_use]
+    pub fn now() -> Self {
+        Self(Instant::now())
+    }
+
+    /// `within` after the moment this anchor was taken.
+    fn plus(self, within: Duration) -> Instant {
+        self.0 + within
+    }
 }
 
 /// WHAT A READER LEARNS FROM THE VERDICT AT AN ADDRESS — three answers, because two of them used to
@@ -415,8 +487,14 @@ pub enum Verdict {
 /// in-process source derives it: a reported verdict carries [`AGENT_SOURCE_KEY`](crate::wire) and a
 /// scraped one carries [`AGENT_RULE_KEY`](crate::wire). A shape carrying neither is a scrape whose
 /// rule went unnamed, which is what `Scraped { rule: None }` means.
+///
+/// ⚠⚠⚠⚠⚠ **`sent` IS THE MOMENT THE REQUEST WENT OUT, and it is an argument for the reason
+/// [`Sent`] carries**: the settling deadline crosses this wire as a REMAINING TIME, so somebody has
+/// to anchor it, and reading a clock here would anchor it to the moment the answer ARRIVED —
+/// a deadline late by the whole round trip, which is the direction that sleeps through the very
+/// publish a waiter is parked for. Register item 640.
 #[must_use]
-pub fn verdict_of(value: &serde_json::Value) -> Verdict {
+pub fn verdict_of(value: &serde_json::Value, sent: Sent) -> Verdict {
     let Some(word) = value[crate::wire::AGENT_STATE_KEY].as_str() else {
         // No state at all — a `null`, or a shape carrying no verdict. Not an agent.
         return Verdict::NotAnAgent;
@@ -450,18 +528,36 @@ pub fn verdict_of(value: &serde_json::Value) -> Verdict {
         said: text(crate::wire::AGENT_SAID_KEY),
         noticed: text(crate::wire::AGENT_NOTICED_KEY),
         transcript: text(crate::wire::AGENT_TRANSCRIPT_KEY),
-        // ⚠⚠⚠⚠⚠ **`Unknown`, AND SPELLING IT `Nothing` WOULD PLANT A LOST WAKEUP** — register
-        // items 630 and 631. This verdict comes off a WIRE that carries no deadline: the daemon's
-        // tracker may well have a candidate publishing two seconds from now, and nothing readable
-        // here says so. `Settling::Nothing` is a CLAIM — *park on the pane and look no more* — and
-        // a driver that believed it from here would sleep straight through the publish it was
-        // waiting for.
+        // ⚠⚠⚠⚠⚠ **THE DEADLINE CROSSES NOW — register item 640, and this line is the one items
+        // 630 and 631 both said would have to move first.** It read `Settling::Unknown`
+        // unconditionally while the wire carried no deadline, which was right then and is the
+        // whole cost the item was filed for: a remote waiter asked again every ten milliseconds
+        // because *cannot say* obliges it to, so making `RemotePaneAccess` parkable bought nothing
+        // on the arm that rests on the VERDICT.
         //
-        // ⚠⚠ It costs the old rate and no more: `RemotePaneAccess` publishes no
-        // `PaneChanges` either (item 631), so every wait over it asks again each slice regardless.
-        // The day that surface becomes parkable, THIS is the line that has to move first — and
-        // until it does, the type is what stops the defect being silent.
-        settling: sprag_plugin::Settling::Unknown,
+        // ⚠⚠⚠ The three arms and their two absences are `crate::wire::AGENT_SETTLING_KEY`'s table.
+        // What is decided HERE is that both absences fall to `Unknown`:
+        //
+        // * **the key is missing** — an older daemon, which is exactly what this reader answered
+        //   for every verdict before today, so nothing that ever worked stops working;
+        // * **the word is one this build does not know** — a NEWER daemon with a fourth arm, and
+        //   *ask again* is a reading that is safe under any of them.
+        //
+        // ⚠⚠ A `pending` that carries no number is the same answer, and it is the malformed case
+        // rather than a version skew: the daemon said a candidate is waiting and did not say when,
+        // so this end knows there IS something to come and must not park past it. Spelling that
+        // `Nothing` — *park on the pane and look no more* — is the lost wakeup, and it is the
+        // mutation this reader's gate turns red.
+        settling: match value[crate::wire::AGENT_SETTLING_KEY].as_str() {
+            Some(crate::wire::AGENT_SETTLING_NOTHING) => sprag_plugin::Settling::Nothing,
+            Some(crate::wire::AGENT_SETTLING_PENDING) => value
+                [crate::wire::AGENT_SETTLES_IN_MS_KEY]
+                .as_u64()
+                .map_or(sprag_plugin::Settling::Unknown, |millis| {
+                    sprag_plugin::Settling::At(sent.plus(Duration::from_millis(millis)))
+                }),
+            _ => sprag_plugin::Settling::Unknown,
+        },
     }))
 }
 
@@ -1162,6 +1258,210 @@ mod tests {
         assert_eq!(
             reported.seq, published,
             "and the answer carries that generation"
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SETTLING DEADLINE CROSSES THE WIRE, AND IT IS ANCHORED TO WHEN THE REQUEST
+    /// LEFT** — register item 640, the half of item 630 that never left this process.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What it cost not to cross, measured before this gate existed
+    ///
+    /// [`AgentFacts::settles_at`] has carried the tracker's own deadline since item 630, and every
+    /// IN-PROCESS waiter has parked to the instant since that day — 3 looks over a settle window
+    /// that used to cost ~200. The reader on the other side of this wire spelled
+    /// [`Settling::Unknown`](sprag_plugin::Settling::Unknown) unconditionally, because there was
+    /// nothing on the wire to read, and *cannot say* obliges a waiter to ask again every
+    /// `POLL_INTERVAL`. **Measured 2026-08-24 on a 600 ms settle: `Unknown` 61 looks, the published
+    /// deadline 3.** So making the remote surface parkable (item 631) bought nothing at all on the
+    /// arm that rests on the VERDICT — which is the arm an agent loop's whole contract rests on.
+    ///
+    /// # ⚠⚠⚠⚠ THE ANCHOR IS THE ONE THING HERE THAT FAILS SILENTLY, so it is the first assertion
+    ///
+    /// An [`Instant`] cannot travel, so what crosses is a REMAINING TIME and somebody has to
+    /// re-anchor it. Two moments are available in the receiving process and they differ by the
+    /// round trip: the moment the request LEFT and the moment the answer ARRIVED. Anchoring to the
+    /// arrival gives a deadline LATE by that much, and late is the direction where a waiter parks
+    /// past the publish it is waiting for — the lost wakeup
+    /// [`Settling`](sprag_plugin::Settling)'s third arm exists to make unrepresentable. Anchoring
+    /// to the departure gives one EARLY by that much, which costs a look and cannot lose a wakeup.
+    ///
+    /// The gate stages the round trip as a real delay between the two moments, so a reader that
+    /// took a clock reading of its own — the whole of the dangerous mutation — lands a
+    /// quarter-second past where it may be.
+    ///
+    /// # ⚠⚠⚠ AND FOUR ABSENCES, WHICH IS WHERE A SINGLE OPTIONAL NUMBER WOULD HAVE FAILED
+    ///
+    /// *Nothing is pending*, *this build cannot say* and *a candidate is waiting* are three
+    /// answers, and this wire's reader cannot tell an absent key from a `null` one. So the arm
+    /// travels as a WORD and the four ways it can be missing are each decided rather than
+    /// inherited: no key at all (an older daemon), a word this build does not know (a newer one),
+    /// and `pending` carrying no number (malformed) all degrade to *ask again* — while `nothing` is
+    /// a CLAIM that must survive as one, because a waiter is entitled to park on the pane and look
+    /// no more.
+    #[test]
+    fn a_settling_deadline_crosses_the_wire_anchored_to_the_moment_the_request_left() {
+        /// The round trip this gate stages between *the request left* and *the answer was read*.
+        /// Far above any real one, so a reader that anchors to the wrong end cannot be inside the
+        /// tolerance by luck.
+        const ROUND_TRIP: Duration = Duration::from_millis(250);
+        /// What the anchored deadline may differ from the true one by. Well under `ROUND_TRIP`, so
+        /// the two anchors are different answers rather than two readings of one.
+        const SLACK: Duration = Duration::from_millis(60);
+
+        let mut reg = AgentRegistry::new(Ruleset::new(vec![sprag_detect::claude()]));
+        let mut em = painted(CLAUDE_FOOTER);
+        let title = Some("✳ Claude Code");
+
+        // ── A CANDIDATE IS WAITING ─────────────────────────────────────────────────────────────
+        // The dialog publishes on sight; its GOING is an absence, so the return to rest is held for
+        // the settle window and the tracker knows exactly when it publishes. That is the state this
+        // whole item is about, staged through the product rather than by hand.
+        repaint(&mut em, DIALOG);
+        reg.observe(
+            PaneId(9),
+            em.screen(),
+            title,
+            Instant::now(),
+            Hysteresis::default,
+        )
+        .expect("the dialog claims this pane");
+        repaint(&mut em, CLAUDE_FOOTER);
+        let pending = reg
+            .observe(
+                PaneId(9),
+                em.screen(),
+                title,
+                Instant::now(),
+                Hysteresis::default,
+            )
+            .expect("still claimed");
+        let settles_at = pending.settles_at.expect(
+            "the fixture must leave a candidate WAITING, or this gate measures the empty case twice",
+        );
+
+        let rendered = verdict_json(&pending);
+        assert_eq!(
+            rendered[crate::wire::AGENT_SETTLING_KEY].as_str(),
+            Some(crate::wire::AGENT_SETTLING_PENDING),
+            "⛔⛔⛔ REGISTER ITEM 640: the daemon holds this pane's publish instant and the wire \
+             says nothing about it. Every remote waiter then reads `Settling::Unknown` and asks \
+             again every 10 ms for the whole window. Rendered {rendered}",
+        );
+        let millis = rendered[crate::wire::AGENT_SETTLES_IN_MS_KEY]
+            .as_u64()
+            .expect("a pending candidate says how long is left of it");
+        let truly_left = settles_at.saturating_duration_since(Instant::now());
+        assert!(
+            Duration::from_millis(millis) <= truly_left + SLACK,
+            "⚠⚠⚠ the number must be REMAINING time taken where the answer is built, not the whole \
+             window taken where the observation was: {millis} ms published against {truly_left:?} \
+             actually left. Too large is the dangerous direction — the client parks past the \
+             publish",
+        );
+
+        // ── THE ANCHOR ─────────────────────────────────────────────────────────────────────────
+        // `before` is a plain reading of the same moment `Sent::now()` takes, because `Sent` does
+        // not hand its instant back — deliberately, since the only thing a caller may do with it is
+        // give it to the reader.
+        let before = Instant::now();
+        let sent = Sent::now();
+        std::thread::sleep(ROUND_TRIP);
+        let Verdict::Seen(seen) = verdict_of(&rendered, sent) else {
+            panic!("a rendered verdict must read back as one: {rendered}");
+        };
+        let sprag_plugin::Settling::At(deadline) = seen.settling else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 640: a candidate WAITING on the daemon reads as \
+                 {:?} through a remote driver's surface. `Unknown` costs the polling rate the item \
+                 was filed for; `Nothing` is worse — it says *park on the pane and look no more* \
+                 about a verdict that changes with the pane producing nothing at all",
+                seen.settling,
+            );
+        };
+        assert!(
+            deadline <= before + Duration::from_millis(millis) + SLACK,
+            "⛔⛔⛔⛔⛔ THE DEADLINE IS ANCHORED TO WHEN THE ANSWER ARRIVED, NOT TO WHEN THE \
+             REQUEST LEFT. It is late by the round trip — here {ROUND_TRIP:?} of staged one — and \
+             LATE is the direction a waiter sleeps straight through the publish. Anchored at the \
+             departure it is early by the same amount, which costs one look. Deadline is {:?} past \
+             the departure, published remaining was {millis} ms",
+            deadline.saturating_duration_since(before),
+        );
+        assert!(
+            deadline >= before,
+            "⚠ and not BEFORE the request left either — a deadline already past buys a look every \
+             slice, which is the polling this item exists to remove",
+        );
+
+        // ── NOTHING IS PENDING IS A CLAIM AND MUST SURVIVE AS ONE ──────────────────────────────
+        // ⚠ The control for the arm above: if every absence read `Unknown`, the assertion on the
+        // `pending` arm would still pass and the wait would still be correct — just permanently
+        // expensive, which is the failure this whole item is.
+        repaint(&mut em, DIALOG);
+        let published = reg
+            .observe(
+                PaneId(9),
+                em.screen(),
+                title,
+                Instant::now(),
+                Hysteresis::default,
+            )
+            .expect("still claimed");
+        assert_eq!(
+            published.settles_at, None,
+            "a dialog publishes on sight, so the fixture's second arm must leave nothing waiting",
+        );
+        let rendered_nothing = verdict_json(&published);
+        let Verdict::Seen(quiet) = verdict_of(&rendered_nothing, Sent::now()) else {
+            panic!("a rendered verdict must read back as one: {rendered_nothing}");
+        };
+        assert_eq!(
+            quiet.settling,
+            sprag_plugin::Settling::Nothing,
+            "⚠⚠⚠ *nothing is pending* is what entitles a waiter to park on the pane and look no \
+             more, and only a daemon that READ ITS TRACKER may say it. Flattened to `Unknown` the \
+             remote surface polls for ever at every settled pane in the workspace",
+        );
+
+        // ── AND THE THREE WAYS IT CAN BE MISSING ALL DEGRADE, NONE OF THEM CLAIMS ──────────────
+        let unknown_from = |edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
+            let mut value = rendered.clone();
+            edit(value.as_object_mut().expect("the verdict is an object"));
+            let Verdict::Seen(seen) = verdict_of(&value, Sent::now()) else {
+                panic!("still a verdict: {value}");
+            };
+            seen.settling
+        };
+        assert_eq!(
+            unknown_from(&|object| {
+                object.remove(crate::wire::AGENT_SETTLING_KEY);
+                object.remove(crate::wire::AGENT_SETTLES_IN_MS_KEY);
+            }),
+            sprag_plugin::Settling::Unknown,
+            "⛔⛔⛔⛔ AN OLDER DAEMON SAYS NOTHING HERE, and reading its silence as *nothing is \
+             pending* is a lost wakeup at every pane it serves. This is the shape every daemon \
+             built before today publishes",
+        );
+        assert_eq!(
+            unknown_from(&|object| {
+                object.insert(
+                    crate::wire::AGENT_SETTLING_KEY.to_owned(),
+                    serde_json::json!("suspended"),
+                );
+            }),
+            sprag_plugin::Settling::Unknown,
+            "⚠⚠⚠ a word this build does not know is a NEWER daemon, and *ask again* is the one \
+             reading that is safe under any fourth arm it might have grown",
+        );
+        assert_eq!(
+            unknown_from(&|object| {
+                object.remove(crate::wire::AGENT_SETTLES_IN_MS_KEY);
+            }),
+            sprag_plugin::Settling::Unknown,
+            "⛔⛔⛔⛔⛔ AND `pending` WITH NO NUMBER MUST NOT COLLAPSE TO `Nothing`. The daemon \
+             said a candidate IS waiting and did not say when — so this end knows there is \
+             something to come and must not park past it. That collapse is the exact lost wakeup \
+             the type has three arms to prevent",
         );
     }
 

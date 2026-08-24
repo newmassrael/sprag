@@ -579,9 +579,15 @@ pub(crate) fn peer_blocked_unreadably_settling(settle: Duration) -> (WorkspacePa
 /// [`At`](crate::access::Settling::At) by
 /// `readiness::tests::a_wait_on_a_settling_verdict_costs_one_look_and_not_the_whole_window` and
 /// [`Nothing`](crate::access::Settling::Nothing) by the doubles every other gate here uses.
-/// [`Unknown`](crate::access::Settling::Unknown) had **nothing at all** — and it is the only arm a
-/// remote driver ever walks, because the wire carries no deadline (`agent::verdict_of` says so in
-/// as many words). The arm the product's own remote surface lives on was the unmeasured one.
+/// [`Unknown`](crate::access::Settling::Unknown) had **nothing at all** — and when this fixture was
+/// written it was the only arm a remote driver ever walked, because the wire carried no deadline.
+/// The arm the product's own remote surface lived on was the unmeasured one.
+///
+/// ⚠⚠⚠ **THE WIRE CARRIES ONE NOW (register item 640), AND THIS FIXTURE IS NOT OBSOLETE.** What
+/// changed is that `Unknown` stopped being the remote surface's ONLY answer; it is still what an
+/// older daemon's silence, a state word this build cannot spell, and a malformed *pending* all read
+/// as. So the arm is still walked, still degrades to the polling rate, and still has to come back —
+/// which is exactly what the gate over this fixture holds.
 ///
 /// ⚠⚠ **IT IS THE SAME PEER, DIFFERING IN THE ONE FIELD**, which is what makes the pair a
 /// measurement rather than two separate observations: identical pane, identical clock, identical
@@ -2592,6 +2598,20 @@ pub(crate) struct Counted<A: PaneAccess> {
     inner: A,
     /// How many looks have been asked for.
     looks: AtomicU64,
+    /// **HOW MANY OF THEM ASKED THE SUPERVISOR** — register item 637, and the one sub-count that
+    /// had to be broken out.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a whole-look count could not say what item 637 is about
+    ///
+    /// [`looks`](Self::looks) folds every question about a pane into one number, which is exactly
+    /// right for item 280's question (*is it looking at all?*) and blind to this one. 637 is about
+    /// a CONSTANT — how many reads one round of a contract costs — and a fold cannot separate *one
+    /// round that asked four times* from *four rounds that asked once*. Both read four.
+    ///
+    /// ⚠ It is also the read that is a ROUND TRIP over
+    /// [`RemotePaneAccess`](../../sprag_host/remote_access/struct.RemotePaneAccess.html), which is
+    /// where the constant is worth four times what it is worth in-process.
+    supervisions: AtomicU64,
 }
 
 impl<A: PaneAccess> Counted<A> {
@@ -2600,12 +2620,18 @@ impl<A: PaneAccess> Counted<A> {
         Self {
             inner,
             looks: AtomicU64::new(0),
+            supervisions: AtomicU64::new(0),
         }
     }
 
     /// How many looks it has been asked for so far.
     pub(crate) fn looks(&self) -> u64 {
         self.looks.load(Ordering::Relaxed)
+    }
+
+    /// How many of those asked the SUPERVISOR — see [`supervisions`](Self::supervisions).
+    pub(crate) fn supervisions(&self) -> u64 {
+        self.supervisions.load(Ordering::Relaxed)
     }
 
     /// Record one look.
@@ -2736,8 +2762,12 @@ impl<A: PaneAccess> PaneRawCapture for Counted<A> {
 }
 
 impl<A: PaneAccess> PaneSupervision for Counted<A> {
+    /// ⚠ COUNTED TWICE, into two numbers that answer two questions: it is a look like any other
+    /// (item 280's number), and it is the read a round of a completion contract must make exactly
+    /// once (item 637's). Neither number can be derived from the other.
     fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
         self.looked();
+        self.supervisions.fetch_add(1, Ordering::Relaxed);
         self.inner.supervision()?.pane_agent_state(id)
     }
 }

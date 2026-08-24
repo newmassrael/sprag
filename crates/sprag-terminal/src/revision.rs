@@ -25,6 +25,29 @@
 //! ⚠ A host that wires no `on_dirty` still gets the bumps. The hook is a caller's optional
 //! interest in the event; the event is the pane's own.
 //!
+//! # ⚠⚠⚠⚠⚠ A FOURTH MOMENT, AND IT IS NOT A BYTE — register item 646, measured
+//!
+//! *The screen was written to* was this counter's whole definition for as long as everything a
+//! waiter could ask about a pane was derived FROM the screen. That stopped being true when an
+//! agent's own hook began reporting what it is doing: a turn ending arrives as a REPORT, out of
+//! band, and changes what a supervisor reads about the pane **with no byte reaching it at all**.
+//!
+//! A waiter told *this verdict stands until the pane moves* then parked on a counter that could not
+//! move, and the wait ran to its own bound reporting *the peer never finished* about a peer that
+//! had finished. Measured 2026-08-24 through a real daemon: the driver's contract was armed at
+//! `Working seq=1 asked_seq=1`, the daemon came to hold `Idle seq=2 asked_seq=2`, and the wait
+//! answered `NotYet`. Shipped, that bound is half an hour a turn.
+//!
+//! So the counter's contract is **not** *the screen was written to*; it is
+//! **[a permission to look](PaneRevision::await_after) — something a reader could see about this
+//! pane has changed**, and the daemon's supervisor bumps it when it publishes a verdict. That is a
+//! bump from a thread other than the reader's, which the mutex and condvar here already carry.
+//!
+//! ⚠⚠ The alternative — a SECOND counter for verdicts — is the thing the paragraph above refuses
+//! by name, and the daemon's own revision pass refuses it again in as many words: *"a second notion
+//! of `the pane moved` could tell this pass to answer while the slot said nothing had happened"*.
+//! One counter, every reason.
+//!
 //! # ⚠⚠ What a waiter gets, and what it must still do for itself
 //!
 //! [`PaneRevision::await_after`] parks until the number passes the one the caller last saw, or
@@ -32,9 +55,10 @@
 //! timed out are told apart by comparing it — never by the return of the wait, which cannot say
 //! whether a change arrived in the same instant the bound did.
 //!
-//! ⚠⚠⚠ **IT IS A PERMISSION TO LOOK, NOT AN ANSWER.** The number says the screen was written to; it
-//! says nothing about whether what the caller is waiting for has become true. Every caller still
-//! evaluates its own predicate — this only decides *when it is worth evaluating*.
+//! ⚠⚠⚠ **IT IS A PERMISSION TO LOOK, NOT AN ANSWER.** The number says something a reader could see
+//! about this pane has changed; it says nothing about whether what the caller is waiting for has
+//! become true. Every caller still evaluates its own predicate — this only decides *when it is
+//! worth evaluating*.
 //!
 //! ⚠⚠ **AND A CALLER MUST STILL BOUND ITS OWN PARK.** Waiting here answers nothing about a
 //! cancelled run or an expired deadline, which are facts about the RUN and not about the pane. A
@@ -67,7 +91,14 @@ impl PaneRevision {
         Self::default()
     }
 
-    /// **THE PANE MOVED** — called by the reader thread beside its repaint wake.
+    /// **THE PANE MOVED** — called by the reader thread beside its repaint wake, and by the
+    /// daemon's supervisor when it publishes a verdict nobody typed a byte for (item 646).
+    ///
+    /// ⚠⚠⚠ **A CALLER THAT ALSO ANNOUNCES MUST BUMP FIRST.** The announce is what sends the pass
+    /// that re-evaluates parked waits, and that pass compares this number against what each waiter
+    /// last saw. Announce first and the pass finds the old number, answers nobody, and the waiter
+    /// sleeps until some unrelated change moves the pane — the lost wakeup this counter exists to
+    /// close, re-entered through the door marked *ordering*.
     ///
     /// ⚠ The lock is dropped BEFORE the notify. Notifying under the lock is correct and slower:
     /// every woken waiter would immediately block on the mutex the notifier still holds.

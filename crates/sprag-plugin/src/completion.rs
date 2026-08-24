@@ -55,7 +55,7 @@
 //!
 //! ⚠ Note what the barrier at the other end can already ask and this one cannot:
 //! [`ReadyWhen::Settles`](crate::readiness::ReadyWhen::Settles) reads the peer's own
-//! [`AgentObservation`](crate::access::AgentObservation) — *"this agent is at rest, waiting for
+//! [`AgentObservation`] — *"this agent is at rest, waiting for
 //! input"* — carrying an [`Authority`](crate::access::Authority) that says how much the reading is
 //! worth. **The evidence existed, it was published, and the end of the turn did not consult it.**
 //! [`DoneWhen::Settles`] is that consultation.
@@ -70,7 +70,7 @@ use std::time::{Duration, Instant};
 use sprag_detect::{AgentState, Question};
 use sprag_terminal::PaneId;
 
-use crate::access::PaneAccess;
+use crate::access::{AgentObservation, PaneAccess};
 use crate::run::{Look, RunContext, Waited, park_until};
 
 /// **HOW A TURN ENDED** — the answer [`Completion::wait`] gives, and the twin of
@@ -92,7 +92,7 @@ use crate::run::{Look, RunContext, Waited, park_until};
 ///
 /// ⚠⚠ **And the evidence was never hard to come by**, which is what made it a defect rather than a
 /// limit: the barrier at the START of the same turn has read it out of the same supervisor, about
-/// the same pane, in milliseconds, since R366. One [`AgentObservation`](crate::access::AgentObservation),
+/// the same pane, in milliseconds, since R366. One [`AgentObservation`],
 /// two ends of one turn, and only one of them was looking.
 ///
 /// # ⚠ Why a new type rather than a fourth [`Waited`] arm
@@ -528,7 +528,7 @@ impl Listening {
         }
     }
 
-    /// **HAS NOTHING SPOKEN FOR THE WHOLE BOUND?** — fed whatever [`Completion::spoken`] answered.
+    /// **HAS NOTHING SPOKEN FOR THE WHOLE BOUND?** — fed whatever [`Stands::spoken`] carried.
     ///
     /// ⚠⚠ [`None`] RESTARTS THE ANCHOR AND ANSWERS NO, which is the arm that keeps a scraped pane
     /// out of this for ever. It is not *nothing spoke*; it is *nothing here can be silent*, and the
@@ -614,6 +614,66 @@ pub struct Completion {
     addressed: Option<Addressed>,
 }
 
+/// **WHAT ONE LOOK AT A PANE SAID ABOUT THE TURN RUNNING IN IT** — the answer
+/// [`Completion::stands`] gives, and the reason a round of this contract reads its pane ONCE.
+///
+/// # ⚠⚠⚠⚠⚠ Three answers from one reading, and why they had to travel together — item 637
+///
+/// A waiting round needs all three: *has the turn ended*, *when could that answer change with the
+/// pane producing nothing*, and *has anything spoken for this pane*. Each used to have a door of
+/// its own and each door read the supervisor, so one round cost four reads — a round trip each over
+/// the wire, a workspace lock and a detector run each in-process.
+///
+/// ⚠⚠ And they were four MOMENTS, which is the part a cost gate cannot see. The deadline could
+/// belong to an observation older than the ending it is paired with, and the ending to one older
+/// than the silence; nothing said which instant the round was about. Carried together they are one
+/// instant by construction.
+///
+/// ⚠ It is deliberately not [`Copy`]: [`Over::Asking`] carries a parsed question, and a type a
+/// caller can cheaply duplicate is one a caller will read twice believing it is fresh.
+#[derive(Debug)]
+pub(crate) struct Stands {
+    /// **HOW THE TURN ENDED**, or [`None`] while it is still running.
+    pub(crate) over: Option<Over>,
+    /// **WHEN THIS ANSWER CAN CHANGE WITH THE PANE PRODUCING NOTHING AT ALL** — the supervisor's
+    /// own deadline, and [`Settling::Nothing`](crate::access::Settling::Nothing) where there is no
+    /// supervisor to ask.
+    ///
+    /// # ⚠⚠⚠ Why an ABSENT supervisor is `Nothing` here and not `Unknown`
+    ///
+    /// [`Settling`](crate::access::Settling)'s whole argument is that *nothing is pending* and
+    /// *this build cannot say* must not share a word — and this fold is the one place the two are
+    /// genuinely the same, for a reason about the CALLER rather than about the surface. `Nothing`
+    /// means [`Look::Steady`], *park on the pane*, and a host with no
+    /// supervisor has no settling verdict for that park to sleep through: everything
+    /// [`over`](Self::over) can then answer rests on the screen and on end-of-file, both of which
+    /// move the pane.
+    ///
+    /// ⚠⚠ EVERYTHING THIS CONTRACT WAITS ON RESTS ON EITHER THE VERDICT OR THE PANE —
+    /// `satisfied_of` pairs published counters, `asked_of` reads the published question, the
+    /// gone-peer check reads the child. So one deadline covers the contract, and a term added to
+    /// [`over`](Self::over) with a clock of its own would have to be answered here in the same
+    /// edit.
+    pub(crate) settles: crate::access::Settling,
+    /// **HOW MANY TIMES ANYTHING HAS SPOKEN FOR THIS PANE**, or [`None`] where nothing here CAN be
+    /// silent — no supervisor, no observation, or an observation nothing reported.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the absence is a third answer and not a zero
+    ///
+    /// [`AgentObservation::reports`](crate::access::AgentObservation::reports) answers `0` for a
+    /// pane read off its SCREEN, and its own doc says what that means: *"nothing reported it, which
+    /// is not the same as nothing speaking — what it means is this pane has no reporter to be
+    /// silent"*. A rule that read `0` as silence would hand every screen-inferred pane to a person
+    /// ten minutes into its first turn.
+    ///
+    /// ⚠⚠ So the arming is [`Authority::is_exact`](crate::access::Authority::is_exact) — the same
+    /// published question the settle arm's counter pairing is armed on, for the same reason at the
+    /// other end: *did this answer come from the pane itself*. Register item 441 is the round that
+    /// learned the cost of asking a scraped pane for a number only a reported one has, and this is
+    /// that lesson applied before the fact rather than after.
+    pub(crate) spoken: Option<u64>,
+}
+
 /// WHO this turn was given to, and what the pane's two counters read when it was.
 ///
 /// A named struct rather than a widening tuple: the third field is a SECOND counter beside the
@@ -658,26 +718,70 @@ impl Completion {
             });
     }
 
-    /// **HOW THIS TURN STANDS RIGHT NOW** — [`None`] while it is still running.
+    /// **HOW THIS TURN STANDS AFTER ONE LOOK AT ITS PANE** — the door a round of this contract goes
+    /// through, and the ONE reading everything it answers is derived from.
     ///
-    /// ⚠⚠ VISIBLE TO THE CRATE, and that is not a second door to the question. [`wait`](Self::wait)
-    /// IS `poll_until(ended)`, so a caller who needs this contract as one term of a LARGER
-    /// predicate — a step that stops either when its peer's turn is over or when the sentinel it
-    /// named appears — cannot express it through the wait without running two waits in sequence and
-    /// making the first one's bound a lie. One predicate, composed once, is what
+    /// # ⚠⚠⚠⚠⚠ Why one call answers three questions — register item 637
+    ///
+    /// The three used to be three doors, and a round that asked all of them read the supervisor
+    /// FOUR times: once for the deadline, once for the contract, once for the ask, once for the
+    /// silence. Over
+    /// [`RemotePaneAccess`](../../sprag_host/remote_access/struct.RemotePaneAccess.html) each of
+    /// those is a ROUND TRIP; in-process each takes the workspace lock and runs the detector. So a
+    /// wait that item 630 had already made park to a published instant still paid four reads for
+    /// every look it took, and the constant was invisible to every gate here because the gates
+    /// measure the SLOPE — *does the cost follow the clock* — and four is not a slope.
+    ///
+    /// ⚠⚠ **THE COUNT WAS THE CHEAP HALF.** The one that could go wrong silently is COHERENCE:
+    /// four reads are four moments, so a round could hold a deadline belonging to one observation,
+    /// an ending belonging to a second and a silence belonging to a third, with nothing saying
+    /// which moment the round was about. The old code leaned on that — it read the deadline FIRST
+    /// and argued that *a candidate publishing between the two reads leaves a deadline already
+    /// past, which buys one more look*. That argument existed only because there were two reads.
+    /// **With one there is no between**, and the ordering it defended is not a thing a future edit
+    /// can get wrong.
+    ///
+    /// ⚠ VISIBLE TO THE CRATE, and that is not a second door. [`wait`](Self::wait) IS
+    /// `park_until(this)`, so a caller who needs this contract as one term of a LARGER predicate —
+    /// a step that stops either when its peer's turn is over or when the sentinel it named appears
+    /// — cannot express it through the wait without running two waits in sequence and making the
+    /// first one's bound a lie. One predicate, composed once, is what
     /// [`Orchestrator`](crate::orchestrator::Orchestrator) does with it.
+    pub(crate) fn stands(&self, panes: &dyn PaneAccess, pane: PaneId) -> Stands {
+        // ⚠⚠⚠⚠⚠ THE ONE READING. Every term below is a function of these two values and of the
+        // caller's contract — nothing under this line asks the pane anything.
+        let seen = panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(pane));
+        // ⚠⚠ READ UNCONDITIONALLY, where the old code reached it only after `satisfied` said no.
+        // That saved one call on the round a turn ENDS — one per wait, not one per look — and cost
+        // the `DoneWhen::Exits` arm a second read on every other round, because `satisfied` and the
+        // gone-peer check each asked. Read once, both arms are one call and both see one moment.
+        let eof = panes.pane_eof(pane);
+        Stands {
+            over: self.ended_of(pane, seen.as_ref(), eof),
+            settles: Self::settles_of(seen.as_ref()),
+            spoken: Self::spoken_of(seen.as_ref()),
+        }
+    }
+
+    /// **HOW THIS TURN STANDS**, decided from the reading [`stands`](Self::stands) took — [`None`]
+    /// while it is still running.
     ///
-    /// ⚠ Still not public: the module doc's ONE-DOOR rule is about not offering a bare [`DoneWhen`]
-    /// predicate alongside this evaluator, and that stands — an outside caller gets `wait`. What
-    /// changed is that this door now answers the same RICH question the waiting one does; while it
-    /// answered a `bool`, a caller composing a union could not see the ask at all.
-    pub(crate) fn ended(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Over> {
+    /// ⚠ `pane` is carried for [`Over::PeerGone`] to NAME, and is not a second address to ask
+    /// anything at: nothing below this line reads a pane.
+    fn ended_of(
+        &self,
+        pane: PaneId,
+        seen: Option<&AgentObservation>,
+        eof: Option<bool>,
+    ) -> Option<Over> {
         // ⚠ THE CONTRACT IS ASKED FIRST. Where both could be true — a peer that asked and whose
         // pane then reached end-of-file — the evidence the CALLER named is the stronger answer:
         // the turn is over on the terms they chose and the capture is whole. The ask is what ends
         // a turn the contract CANNOT end, and asking it second is what keeps it to that job.
         //
-        if self.satisfied(panes, pane) {
+        if self.satisfied_of(seen, eof) {
             return Some(Over::Yes);
         }
         // ⚠⚠⚠⚠ AND THEN: THE PEER MAY BE GONE, which no contract left can end a turn on. See
@@ -709,10 +813,10 @@ impl Completion {
         // The two absences are different sentences: *this pane is not mine to ask about* is not
         // *this pane's program has exited*, and only the second is a fact about a peer. It is the
         // same reading [`PaneAccess::inject`] refuses on, at the other end of the same turn.
-        if panes.pane_eof(pane) == Some(true) {
+        if eof == Some(true) {
             return Some(Over::PeerGone(pane));
         }
-        self.asked(panes, pane).map(Over::Asking)
+        self.asked_of(seen).map(Over::Asking)
     }
 
     /// The question THIS TURN's peer raised, or [`None`] where it raised none.
@@ -729,7 +833,7 @@ impl Completion {
     /// would end on a dialog nobody is looking at. That is precisely the hazard this module exists
     /// for, one door along: **a state left over from before the turn is not this turn's answer.**
     ///
-    /// So it takes the same three-part evidence [`satisfied`](Self::satisfied) does — the pane's
+    /// So it takes the same three-part evidence the settle arm does — the pane's
     /// agent is the one the turn was ADDRESSED to, and its state has MOVED past what it was when
     /// the turn began. An unarmed evaluator can claim nothing, which is why this answers `None`
     /// there rather than reading the pane fresh.
@@ -741,7 +845,7 @@ impl Completion {
     ///
     /// [`Arrival`]: crate::consent
     /// ⚠⚠⚠⚠ **AND IT DELIBERATELY DOES NOT REQUIRE THE QUESTION COUNTER**, where
-    /// [`satisfied`](Self::satisfied)'s settle arm does — register item 441, and the asymmetry is a
+    /// the settle arm does — register item 441, and the asymmetry is a
     /// decision rather than an oversight.
     ///
     /// A peer that is BLOCKED may be blocked on something it was asked BEFORE this turn — indeed a
@@ -750,104 +854,63 @@ impl Completion {
     /// run would wait out its whole patience on a pane whose screen is asking a person something.
     /// **That is the fail-DANGEROUS direction**: the settle arm's guard exists to stop a rest being
     /// mistaken for an answer, and there is no equivalent harm in noticing a block early.
-    fn asked(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Option<Question>> {
+    fn asked_of(&self, seen: Option<&AgentObservation>) -> Option<Option<Question>> {
         let addressed = self.addressed.as_ref()?;
-        let seen = panes.supervision()?.pane_agent_state(pane)?;
+        let seen = seen?;
         (seen.state == AgentState::Blocked
             && seen.agent.as_deref() == Some(addressed.agent.as_str())
             && seen.seq > addressed.seq)
-            .then_some(seen.asking)
+            .then(|| seen.asking.clone())
     }
 
-    /// Whether `pane` satisfies this contract RIGHT NOW.
-    fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+    /// Whether the reading [`stands`](Self::stands) took satisfies this contract.
+    fn satisfied_of(&self, seen: Option<&AgentObservation>, eof: Option<bool>) -> bool {
         match &self.when {
             // ⚠ An UNKNOWN pane counts as over. A rule that answered "not yet" for a pane that is
             // not there would spin to the timeout on a question that can never be answered — and
             // both plugins that use this already spelled it `unwrap_or(true)`, which is the
             // behaviour this preserves exactly.
-            DoneWhen::Exits => panes.pane_eof(pane).unwrap_or(true),
+            DoneWhen::Exits => eof.unwrap_or(true),
             DoneWhen::Settles => {
                 // Never armed, no supervisor to arm from, or no agent identified in the pane the
                 // prompt went to — see `begin`. None of those is evidence that a turn ended.
                 let Some(addressed) = &self.addressed else {
                     return false;
                 };
-                panes
-                    .supervision()
-                    .and_then(|supervisor| supervisor.pane_agent_state(pane))
-                    .is_some_and(|seen| {
-                        // ⚠⚠ ALL FOUR, and the last one is what stops a peer's rest from reading as
-                        // its answer to THIS question. See the variant's doc.
-                        //
-                        // ⚠⚠⚠⚠⚠ THE PAIRING IS ASKED ONLY OF A PANE THAT CAN ANSWER IT — register
-                        // item 441, and this condition is the SECOND half of that item's cost.
-                        // `asked_seq` advances where a REPORT states an `asked`; a pane read from
-                        // its SCREEN states nothing, so the term is false there for ever and the
-                        // turn never ends. Measured against a live agent: three lines, answered in
-                        // a second, `Over::NotYet` still at the 183-second bound. `is_exact` is the
-                        // published question for exactly this — *did this answer come from the pane
-                        // itself* — and a scraped rest is judged on the three terms a scraped rest
-                        // can support. ⚠ That is a DEGRADATION, named as one: a screen-read rest
-                        // cannot be told from one belonging to earlier work. The alternative is not
-                        // a stricter loop but one that never judges anything.
-                        seen.state == AgentState::Idle
-                            && seen.agent.as_deref() == Some(addressed.agent.as_str())
-                            && seen.seq > addressed.seq
-                            && (!seen.authority.is_exact() || seen.asked_seq > addressed.asked_seq)
-                    })
+                seen.is_some_and(|seen| {
+                    // ⚠⚠ ALL FOUR, and the last one is what stops a peer's rest from reading as
+                    // its answer to THIS question. See the variant's doc.
+                    //
+                    // ⚠⚠⚠⚠⚠ THE PAIRING IS ASKED ONLY OF A PANE THAT CAN ANSWER IT — register
+                    // item 441, and this condition is the SECOND half of that item's cost.
+                    // `asked_seq` advances where a REPORT states an `asked`; a pane read from
+                    // its SCREEN states nothing, so the term is false there for ever and the
+                    // turn never ends. Measured against a live agent: three lines, answered in
+                    // a second, `Over::NotYet` still at the 183-second bound. `is_exact` is the
+                    // published question for exactly this — *did this answer come from the pane
+                    // itself* — and a scraped rest is judged on the three terms a scraped rest
+                    // can support. ⚠ That is a DEGRADATION, named as one: a screen-read rest
+                    // cannot be told from one belonging to earlier work. The alternative is not
+                    // a stricter loop but one that never judges anything.
+                    seen.state == AgentState::Idle
+                        && seen.agent.as_deref() == Some(addressed.agent.as_str())
+                        && seen.seq > addressed.seq
+                        && (!seen.authority.is_exact() || seen.asked_seq > addressed.asked_seq)
+                })
             }
         }
     }
 
-    /// **WHEN THIS PANE'S VERDICT CAN CHANGE WITH NO FURTHER OUTPUT** — the supervisor's own
-    /// answer, and [`Settling::Nothing`](crate::access::Settling::Nothing) where there is no
-    /// supervisor to ask.
-    ///
-    /// # ⚠⚠⚠ Why an ABSENT supervisor is `Nothing` here and not `Unknown`
-    ///
-    /// [`Settling`](crate::access::Settling)'s whole argument is that *nothing is pending* and
-    /// *this build cannot say* must not share a word — and this fold is the one place the two are
-    /// genuinely the same, for a reason about the CALLER rather than about the surface. `Nothing`
-    /// means [`Look::Steady`], *park on the pane*, and a host with no
-    /// supervisor has no settling verdict for that park to sleep through: everything
-    /// [`ended`](Self::ended) can then answer rests on the screen and on end-of-file, both of which
-    /// move the pane.
-    ///
-    /// ⚠⚠ EVERYTHING THIS EVALUATOR WAITS ON RESTS ON EITHER THE VERDICT OR THE PANE — `satisfied`
-    /// pairs published counters, `asked` reads the published question, `pane_eof` reads the child.
-    /// So one deadline covers the contract, and a term added to [`ended`](Self::ended) with a clock
-    /// of its own would have to be added here in the same edit.
-    ///
-    /// ⚠ VISIBLE TO THE CRATE for the same reason [`ended`](Self::ended) is: a caller composing
-    /// this contract into a LARGER predicate — [`Orchestrator`](crate::orchestrator::Orchestrator)
-    /// unions it with a sentinel and a row trail — needs the deadline that belongs to it, and
-    /// deriving a second one beside it is how two answers about one pane come to disagree.
-    pub(crate) fn settles(&self, panes: &dyn PaneAccess, pane: PaneId) -> crate::access::Settling {
-        panes
-            .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(pane))
-            .map_or(crate::access::Settling::Nothing, |seen| seen.settling)
+    /// [`Stands::settles`], folded from the one reading — the ARGUMENT for the fold, including why
+    /// an absent supervisor is `Nothing` and not `Unknown`, lives on that field.
+    fn settles_of(seen: Option<&AgentObservation>) -> crate::access::Settling {
+        seen.map_or(crate::access::Settling::Nothing, |seen| seen.settling)
     }
 
-    /// **HOW MANY TIMES ANYTHING HAS SPOKEN FOR `pane`**, or [`None`] where nothing here CAN be
-    /// silent — no supervisor, no observation, or an observation nothing reported.
-    ///
-    /// # ⚠⚠⚠⚠⚠ Why the absence is a third answer and not a zero
-    ///
-    /// [`AgentObservation::reports`](crate::access::AgentObservation::reports) answers `0` for a
-    /// pane read off its SCREEN, and its own doc says what that means: *"nothing reported it, which
-    /// is not the same as nothing speaking — what it means is this pane has no reporter to be
-    /// silent"*. A rule that read `0` as silence would hand every screen-inferred pane to a person
-    /// ten minutes into its first turn.
-    ///
-    /// ⚠⚠ So the arming is [`Authority::is_exact`](crate::access::Authority::is_exact) — the same
-    /// published question [`satisfied`](Self::satisfied)'s counter pairing is armed on, for the same
-    /// reason at the other end: *did this answer come from the pane itself*. Register item 441 is
-    /// the round that learned the cost of asking a scraped pane for a number only a reported one
-    /// has, and this is that lesson applied before the fact rather than after.
-    fn spoken(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<u64> {
-        let seen = panes.supervision()?.pane_agent_state(pane)?;
+    /// [`Stands::spoken`], folded from the one reading — the ARGUMENT for the arming, including why
+    /// the absence is a third answer rather than a zero, lives on that field.
+    fn spoken_of(seen: Option<&AgentObservation>) -> Option<u64> {
+        let seen = seen?;
         seen.authority.is_exact().then_some(seen.reports)
     }
 
@@ -927,22 +990,24 @@ impl Completion {
             // ⚠⚠ A test encoding a claim the product does not make is worse than none, so it is
             // gone rather than weakened until green.
             //
-            // ⚠⚠⚠⚠ **THE SUPERVISOR'S DEADLINE IS TAKEN BEFORE THE VERDICT IS ASKED ABOUT**, and
-            // the order is the same lost-wakeup argument [`park_until`] makes about the pane
-            // revision. A candidate publishing BETWEEN the two reads must leave this closure
-            // holding a deadline that is already past — which buys one more look, where the new
-            // verdict is seen — rather than the `None` a later read would give, which buys none at
-            // all and parks over the very change being waited for.
-            let settles = self.settles(panes, pane);
-            if let Some(over) = self.ended(panes, pane) {
+            // ⚠⚠⚠⚠⚠ **ONE READING OF THE PANE, AND EVERY TERM BELOW IS A FUNCTION OF IT** —
+            // register item 637. This used to be four reads in this order: the deadline, the
+            // contract, the ask, the silence. Four reads are four moments, and the code defended
+            // the order with a lost-wakeup argument — *a candidate publishing between the deadline
+            // read and the verdict read leaves a deadline already past, which buys one more look*.
+            // The argument was sound and it existed only because there were two reads. **There is
+            // no between now**, so the round's deadline, its ending and its silence are three
+            // answers about one instant rather than three instants agreeing by luck.
+            let stands = self.stands(panes, pane);
+            if let Some(over) = stands.over {
                 ending = over;
                 return Look::Holds;
             }
             let Some(listening) = listening.as_mut() else {
                 // ⚠ No silence bound: the only clock inside this predicate is the supervisor's.
-                return settles.not_yet();
+                return stands.settles.not_yet();
             };
-            if listening.silent(self.spoken(panes, pane)) {
+            if listening.silent(stands.spoken) {
                 ending = Over::Silent(listening.silence());
                 return Look::Holds;
             }
@@ -950,7 +1015,7 @@ impl Completion {
             // re-asks both, so taking the minimum can only cost a look that finds nothing, while
             // taking the later one would sleep through the answer the earlier was about.
             let due = listening.due();
-            Look::Settles(settles.due().map_or(due, |verdict| verdict.min(due)))
+            Look::Settles(stands.settles.due().map_or(due, |verdict| verdict.min(due)))
         });
         match waited {
             Waited::Ready => ending,
@@ -963,7 +1028,7 @@ impl Completion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{AgentObservation, Authority, WorkspacePaneAccess};
+    use crate::access::{Authority, WorkspacePaneAccess};
     use crate::readiness::{Attended, Reached, Readiness};
     use sprag_detect::{Choice, Question};
     use sprag_terminal::{CommandBuilder, Workspace};
@@ -2231,5 +2296,138 @@ mod tests {
             pane.0,
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔ **ONE ROUND OF THIS CONTRACT ASKS ITS PANE'S SUPERVISOR EXACTLY ONCE** — register
+    /// item 637, and the CONSTANT every gate beside it is blind to.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the cost gates this crate already has cannot see this
+    ///
+    /// Items 280, 630 and 632 all measure a SLOPE — *does the cost of a wait follow the clock, or
+    /// the settle window, or the patience* — and each was paid by making the answer *no*. A wait
+    /// that looks three times where it could look once has the same slope as one that looks once.
+    /// So four reads per round survived every one of those repairs, and `Counted::looks` could not
+    /// have said so either: it folds every question about a pane into one number, and *one round
+    /// that asked four times* and *four rounds that asked once* are the same fold.
+    /// `Counted::supervisions` is the instrument this item needed.
+    ///
+    /// # ⚠⚠⚠⚠ Why the number is worth four times more than it looks
+    ///
+    /// In-process each read takes the workspace lock and runs a detector. Over
+    /// [`RemotePaneAccess`](../../sprag_host/remote_access/struct.RemotePaneAccess.html) — the
+    /// surface a driver outside the daemon walks, and the one register item 544 is moving the loop
+    /// onto — each is a **socket round trip**. Four per look is four times the latency of every
+    /// wait an agent loop takes.
+    ///
+    /// # ⚠⚠ AND THE COHERENCE IS THE HALF THAT COULD GO WRONG SILENTLY
+    ///
+    /// Four reads are four MOMENTS. A round could hold a settling deadline from one observation, an
+    /// ending from a second and a silence from a third, and nothing said which instant it was
+    /// about. That is not a cost, it is an answer nobody can name — and it cannot be gated
+    /// directly, because staging three observations inside one round is a race. **What CAN be
+    /// gated is the read count, and at one read the incoherence is unrepresentable.**
+    ///
+    /// # The fixture, and why the count is exactly one rather than a ceiling
+    ///
+    /// The peer's pane runs `cat` and says nothing, its verdict is
+    /// [`Settling::Nothing`](crate::access::Settling::Nothing), and the silence bound is far above
+    /// the patience. So [`park_until`](crate::run::park_until) parks on the pane and is woken by
+    /// nothing at all: the whole wait is ONE evaluation of the predicate, and the supervisor read
+    /// count IS the per-round constant with no arithmetic in between. **Before this repair the
+    /// same wait read four times** — the deadline, the contract, the ask and the silence.
+    ///
+    /// ⚠ Both arms of [`DoneWhen`] are measured, because they consult different evidence and the
+    /// `Exits` arm folded a second read of a different surface: `satisfied` asked
+    /// [`PaneAccess::pane_eof`](crate::access::PaneAccess::pane_eof) and the gone-peer check asked
+    /// it again, one line apart.
+    #[test]
+    fn a_round_of_this_contract_reads_its_pane_supervisor_once() {
+        /// How long the wait may take. Everything here parks, so this is dead time and not looks.
+        const PATIENCE: Duration = Duration::from_millis(300);
+        /// The silence bound, far above the patience — so [`Stands::spoken`] is a LIVE term (it is
+        /// consulted every round) that can never end the wait. A gate that left it unarmed would
+        /// not be measuring the fourth read at all.
+        const QUIET: Duration = Duration::from_secs(60);
+
+        /// Arm a contract at a supervised pane, wait it out, and answer **how many times the
+        /// supervisor was asked**, how many looks in total, and how the turn ended.
+        fn cost_of(when: DoneWhen, rest: bool) -> (u64, u64, Over) {
+            let (access, pane, reported) = supervised(AgentState::Working, 1);
+            let counted = crate::testing::Counted::new(access);
+            let mut done = Completion::new(when);
+            // ⚠ ARMED BEFORE THE MEASUREMENT, exactly as a turn arms before injecting — and the
+            // baselines are taken AFTER, so `begin`'s own read is not charged to the round.
+            done.begin(&counted, pane);
+            if rest {
+                // The peer answered: it took the question and came back to rest past the counter
+                // the turn was armed on. One reading has to be enough to SEE that.
+                took(&reported);
+                moved(&reported, AgentState::Idle, 2, Some("claude"));
+            }
+            let asked = counted.supervisions();
+            let looked = counted.looks();
+            let over = done.wait(
+                &counted,
+                pane,
+                PATIENCE,
+                Quiet::of(QUIET),
+                &RunContext::uncancellable(),
+            );
+            let cost = (
+                counted.supervisions() - asked,
+                counted.looks() - looked,
+                over,
+            );
+            counted.lifecycle().expect("lifecycle").close(pane);
+            cost
+        }
+
+        let (settles_asked, settles_looks, settles_end) = cost_of(DoneWhen::Settles, false);
+        let (exits_asked, exits_looks, exits_end) = cost_of(DoneWhen::Exits, false);
+        let (answered_asked, _, answered_end) = cost_of(DoneWhen::Settles, true);
+
+        // ── THE CONTROLS: the wait really ran, and one reading really answers ──────────────────
+        assert_eq!(
+            (settles_end.clone(), exits_end.clone()),
+            (Over::NotYet, Over::NotYet),
+            "⚠⚠⚠⚠⚠ THE CONTROL: a contract that ended early costs one read too, and would make \
+             the claim below true by not waiting. Both arms must have run out their patience at a \
+             peer that never answered. Settles {settles_end:?}, Exits {exits_end:?}",
+        );
+        assert_eq!(
+            answered_end,
+            Over::Yes,
+            "⚠⚠⚠⚠ AND THE SECOND CONTROL: one reading has to be ENOUGH. A round that read once \
+             and could no longer tell that its peer took the question and came back to rest would \
+             be cheap and blind — the worse defect, and the one a read-count gate on its own would \
+             call a success. Got {answered_end:?}",
+        );
+
+        // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────
+        assert_eq!(
+            (settles_asked, exits_asked, answered_asked),
+            (1, 1, 1),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 637: ONE ROUND OF THIS CONTRACT IS ASKING ITS SUPERVISOR MORE \
+             THAN ONCE. It was four — the settling deadline, the contract, the ask and the silence, \
+             each reading for itself — and over a remote surface each of those is a socket round \
+             trip on the path an agent loop walks every step. It is also four MOMENTS folded into \
+             one answer, so the round's deadline need not belong to the round's verdict. Settles \
+             {settles_asked}, Exits {exits_asked}, answered {answered_asked}",
+        );
+        assert_eq!(
+            (settles_looks, exits_looks),
+            (2, 2),
+            "⚠⚠⚠⚠ AND THE WHOLE ROUND IS TWO READS — the supervisor and the child, once each. \
+             The `Exits` arm used to ask `pane_eof` TWICE one line apart (`satisfied` and the \
+             gone-peer check), which is the same defect on the other surface and the reason both \
+             arms are measured. Settles {settles_looks}, Exits {exits_looks}",
+        );
+
+        println!(
+            "\n== what one round of a completion contract costs ==\n  Settles: {settles_asked} \
+             supervisor read(s), {settles_looks} look(s)\n  Exits:   {exits_asked} supervisor \
+             read(s), {exits_looks} look(s)\n  before item 637 both were 4 supervisor reads, and \
+             Exits read the child twice\n",
+        );
     }
 }

@@ -1018,8 +1018,15 @@ impl PaneSupervision for RemotePaneAccess {
     /// edit apart rather than one round apart. A state word this build does not know reads as
     /// absent rather than as a guess — see that function.
     fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
+        // ⚠⚠⚠⚠⚠ **TAKEN BEFORE THE REQUEST GOES OUT** — register item 640. The settling deadline
+        // crosses this wire as a REMAINING TIME, so it has to be anchored to a clock this process
+        // owns, and the two candidate moments are not equivalent: anchored to the answer's ARRIVAL
+        // the deadline is late by the whole round trip, and late is the direction a waiter parks
+        // PAST the publish it is waiting for. Anchored here it is early by that much, which costs
+        // one look and cannot lose a wakeup. `crate::agent::Sent` is the type that says which.
+        let sent = crate::agent::Sent::now();
         let answer = self.read(&mux_action_path(&agent_slot_for(id.0)))?;
-        match crate::agent::verdict_of(&answer) {
+        match crate::agent::verdict_of(&answer, sent) {
             crate::agent::Verdict::Seen(seen) => Some(*seen),
             crate::agent::Verdict::NotAnAgent => None,
             // ⚠⚠⚠⚠⚠ A WORD THIS BUILD CANNOT SPELL TAKES THE WHOLE SURFACE DOWN, register item 564.

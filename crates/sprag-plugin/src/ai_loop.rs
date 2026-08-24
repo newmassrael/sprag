@@ -9862,7 +9862,7 @@ mod tests {
     /// condition.
     ///
     /// ⚠⚠⚠⚠ **IT IS HELD BY THE DOOR, AND DELIBERATELY NOT BY THE TURN CONTRACT.**
-    /// [`Completion::ended`](crate::completion::Completion) still asks the caller's contract BEFORE
+    /// [`Completion::stands`](crate::completion::Completion) still asks the caller's contract BEFORE
     /// `pane_eof`, and the first draft of this round had it the other way round: `Agent`'s own gate
     /// then went from `converged` with the peer's reply to `failed` with the pane, because *the
     /// peer answered and then left* is one instant where both readings are true. So a supervisor

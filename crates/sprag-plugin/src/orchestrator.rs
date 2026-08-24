@@ -14,7 +14,7 @@ use sprag_terminal::PaneId;
 #[cfg(test)]
 use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
-use crate::completion::{Completion, Over, Turn};
+use crate::completion::{Completion, Over, Stands, Turn};
 use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Attended, Reached, Readiness, ReadyWhen};
@@ -162,13 +162,21 @@ impl Orchestrator {
         // [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) until the RUN's deadline or cancel arrived:
         // 98 looks a second, ~360,000 an hour, at a peer that had said nothing.
         //
-        // ⚠⚠⚠ WHEN THE PREDICATE CAN CHANGE ON ITS OWN IS [`settling`](Self::settling)'s answer,
-        // and it is asked BEFORE the predicate for [`park_until`](crate::run::park_until)'s own
-        // lost-wakeup reason — a verdict that publishes between the two reads must leave a deadline
-        // in hand that is already past, which buys one more look.
+        // ⚠⚠⚠⚠⚠ **ONE READING OF THE CONTRACT PER ROUND, AND BOTH TERMS ARE SERVED FROM IT** —
+        // register item 637. The contract's deadline and the contract's ending used to be two
+        // calls, each reading the pane's supervisor for itself; the order between them was
+        // load-bearing for `park_until`'s lost-wakeup reason — *a verdict that publishes between
+        // the two reads leaves a deadline already past, which buys one more look*. One reading has
+        // no between, so the two terms are the same instant by construction and the ordering is no
+        // longer a thing an edit can get wrong.
+        //
+        // ⚠⚠ [`None`] IS *THIS STEP DECLARED NO CONTRACT*, and it is the only reading of it: the
+        // reading is taken from the contract itself, so a step with one always has a reading and a
+        // step without one can never be handed a stale one.
         let waited = park_until(run, panes, self.pane, self.patience(), || {
-            let settling = self.settling(panes);
-            match self.arrived(panes) {
+            let stands = self.done.as_ref().map(|done| done.stands(panes, self.pane));
+            let settling = Self::settling(stands.as_ref());
+            match self.arrived(panes, stands) {
                 Some(seen) => {
                     arrival = seen;
                     Look::Holds
@@ -212,22 +220,18 @@ impl Orchestrator {
     ///   screen does not.
     /// * the **row trail** ([`reaction`](Self::reaction)) compares this step's baseline against the
     ///   pane's rows. Same: a function of the pane's bytes.
-    /// * the **CONTRACT** ([`Completion::ended`]) rests on a supervisor's published verdict, and a
+    /// * the **CONTRACT** ([`Stands::over`]) rests on a supervisor's published verdict, and a
     ///   verdict SETTLES — it changes a window after the last output, with nothing to announce it.
     ///
-    /// So the deadline is the contract's, taken from the contract itself
-    /// ([`Completion::settles`]) rather than derived here: a second reading of one pane's
-    /// settling is exactly how two answers about it come to disagree, and this way a term added to
-    /// [`Completion::ended`] with a clock of its own arrives here in the same edit.
+    /// So the deadline is the contract's, taken from the same reading its ENDING was
+    /// ([`Stands::settles`]) rather than derived here: a second reading of one pane's settling is
+    /// exactly how two answers about it come to disagree, and this way a term added to
+    /// [`Stands::over`] with a clock of its own arrives here in the same edit.
     ///
     /// ⚠ [`Settling::Nothing`](crate::access::Settling::Nothing) with no contract is a CLAIM and a
     /// true one: with no contract the union is screen-only, so nothing but the pane can move it.
-    fn settling(&self, panes: &dyn PaneAccess) -> crate::access::Settling {
-        self.done
-            .as_ref()
-            .map_or(crate::access::Settling::Nothing, |done| {
-                done.settles(panes, self.pane)
-            })
+    fn settling(stands: Option<&Stands>) -> crate::access::Settling {
+        stands.map_or(crate::access::Settling::Nothing, |stands| stands.settles)
     }
 
     /// Whether what this step is waiting for has happened — see [`observe`](Self::observe).
@@ -249,7 +253,7 @@ impl Orchestrator {
     /// [`Arrival`] rather than a `bool`: a peer that stops to ASK has finished its turn, and the
     /// union used to be unable to say so — the term simply stayed false and the step waited out
     /// its whole patience. See [`Over`].
-    fn arrived(&self, panes: &dyn PaneAccess) -> Option<Arrival> {
+    fn arrived(&self, panes: &dyn PaneAccess, stands: Option<Stands>) -> Option<Arrival> {
         if let Some(sentinel) = self.spec.sentinel.as_deref()
             && panes
                 .pane_collapsed(self.pane)
@@ -257,11 +261,15 @@ impl Orchestrator {
         {
             return Some(Arrival::Sentinel);
         }
-        match (&self.done, self.spec.sentinel.as_deref()) {
+        match (stands, self.spec.sentinel.as_deref()) {
             // ⚠ CARRIED WHOLE rather than re-encoded into arms of this type's own. A second
             // spelling of *how did the turn end* beside [`Over`] is the shape this crate keeps
             // finding defects in, and it would go stale the day that type learns a fifth ending.
-            (Some(done), _) => done.ended(panes, self.pane).map(Arrival::Turn),
+            //
+            // ⚠⚠ `Some` HERE MEANS *THIS STEP DECLARED A CONTRACT*, which is what the contract's
+            // own reading is evidence of — so the arms below cannot fall out of step with
+            // `self.done` the way a separate `is_some()` test could.
+            (Some(stands), _) => stands.over.map(Arrival::Turn),
             // A sentinel with no contract: the wait is the sentinel's alone (R374).
             (None, Some(_)) => None,
             (None, None) => match self.reaction(panes) {
@@ -2655,7 +2663,13 @@ mod tests {
                 turn: Turn::lasting(crate::completion::DoneWhen::Settles, Some(SHORT)),
             },
         );
-        let forwarded = step.settling(&access);
+        // ⚠ THROUGH THE ONE READING the step's own wait takes — register item 637. The deadline
+        // and the ending come off the same `Stands`, so this asks exactly what a round asks.
+        let stands = step
+            .done
+            .as_ref()
+            .map(|done| done.stands(&access, supervised_pane));
+        let forwarded = Orchestrator::settling(stands.as_ref());
         access
             .lifecycle()
             .expect("lifecycle")

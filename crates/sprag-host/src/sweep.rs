@@ -271,6 +271,16 @@ pub fn sweep_once(
                 );
             });
             if agents.with(|state| state.seq(id)) != before {
+                // ⚠⚠⚠⚠⚠ **THE PANE MOVED, AND NOTHING WAS TYPED AT IT** — register item 646, and
+                // this is the SETTLE half of it: a candidate the tracker has been holding publishes
+                // on THIS pass, with the screen unchanged since the observation that raised it. A
+                // waiter parked on the pane's counter would sleep through exactly the change
+                // `Settling::At` told it to come back for.
+                //
+                // ⚠⚠ BEFORE the event is queued, for the reason the report path states at length:
+                // the announce is what sends the pass that re-evaluates parked waits, and that pass
+                // reads this counter.
+                pane.pty().revision().bump();
                 woken
                     .entry(session.clone())
                     .or_default()

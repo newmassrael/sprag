@@ -1887,6 +1887,12 @@ fn evaluate_revision_waits(state: &HostState, session: &str) {
             // THE SAME counter `pane.<id>.revision` serves and the reader thread bumps. A second
             // notion of *the pane moved* could tell this pass to answer while the slot said
             // nothing had happened.
+            //
+            // ⚠⚠⚠ AND THE SUPERVISOR BUMPS IT TOO NOW — register item 646. A verdict published
+            // with no byte reaching the pane is a change a waiter parked here is entitled to be
+            // woken for, and the counter is where that is said. It stays ONE counter, which is what
+            // the sentence above is about: the publisher bumps it before it announces, so this pass
+            // and the slot never disagree.
             let now = handle.revision().now();
             (now > *since).then_some(now)
         },
