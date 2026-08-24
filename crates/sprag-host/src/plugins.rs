@@ -202,6 +202,14 @@ pub const RUN_WHY_KEY: &str = "why";
 /// BEHALF, so *"this run answered nothing"* is a claim a reader must be able to get affirmatively
 /// rather than by not finding a key.
 pub const RUN_ANSWERED_KEY: &str = "answered";
+/// **WHAT A RUN KEPT**, on an ending — `{"completed": N, "unit": "turn"}`, or ABSENT for a plugin
+/// that counts no completed work at all.
+///
+/// ⚠⚠⚠ The absence is a claim and not a gap, which is why this follows [`RUN_CEILING_KEY`]'s
+/// omit-rather-than-null rule: *this plugin does not count* and *it counts and there was none* are
+/// two different things to tell somebody who just stood a run down, and
+/// `crate::plugins::stand_down_sentence` says two different sentences for them.
+pub const RUN_BANKED_KEY: &str = "banked";
 /// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
 ///
 /// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
@@ -2937,7 +2945,16 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
     /// that does not count leaves a person to look — and saying so is better than inventing a zero
     /// on its behalf.
     fn work_after(outcome: &Outcome) -> String {
-        match &outcome.banked {
+        banked_after(outcome.banked.as_ref())
+    }
+    /// [`work_after`]'s body, over the VALUES rather than an [`Outcome`] — so a run whose ending
+    /// arrived from another process reaches the same three sentences.
+    ///
+    /// ⚠⚠⚠ Split out rather than duplicated: these three answers are register item 604's finding,
+    /// and a second copy for reported endings would be free to swap the alarming answer for the
+    /// relieved one exactly where that item measured the cost.
+    fn banked_after(banked: Option<&sprag_plugin::Banked>) -> String {
+        match banked {
             Some(banked) if banked.completed > 0 => {
                 let unit = if banked.completed == 1 {
                     banked.unit.clone().into_owned()
@@ -3019,12 +3036,16 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
                  terms"
                     .to_owned()
             } else {
+                // ⚠⚠⚠ THE SAME TWO FACTS AND THE SAME TWO AUTHORS as the `Done` arm above —
+                // register item 650 closed. *The order was not honoured* is item 594's, and *what
+                // became of the work* is item 604's, read off the wire and composed by the ONE
+                // function that composes it. This arm used to say `this cannot say what became of
+                // the work`, honestly, because the render dropped `banked`; it carries it now.
                 format!(
                     "⚠ a person asked this run to stand down and it ended {:?} instead — this is \
-                     not what `sprag stand-down` promised. Its driver was another process and the \
-                     wire form of an ending does not carry what was kept, so this cannot say what \
-                     became of the work (register item 650)",
+                     not what `sprag stand-down` promised; {}",
                     word.unwrap_or("unreported"),
+                    banked_after(banked_reported(reported).as_ref()),
                 )
             }
         }
@@ -3046,6 +3067,33 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
             )
         }
     }
+}
+
+/// **WHAT A REPORTED ENDING SAYS IT KEPT**, or [`None`] where it counts no completed work — the one
+/// place a [`RUN_BANKED_KEY`] object becomes a [`sprag_plugin::Banked`] again.
+///
+/// # ⚠⚠⚠ Why this is the only decoder in register item 650, when the item was about four fields
+///
+/// The other three the render dropped are read by NOBODY on this side: `screened`, `deliveries` and
+/// `checks` reach a person through the run's PROGRESS, which a driver reports separately and whole.
+/// This one is different because [`stand_down_sentence`] weighs it against the ending, and a
+/// sentence cannot be composed from a value that did not arrive.
+///
+/// ⚠⚠ **AND IT NEEDS NO NEW TYPE.** [`sprag_plugin::Banked::unit`] is a `Cow` and its doc says why:
+/// *a run READ AFTER A RESTART hands over a word decoded from the daemon's log, and there is no
+/// `'static` to borrow it from*. A word off a socket is that same case, so the sentence written for
+/// the durable log pays for this too — which is what a type admitting both costs looks like when it
+/// comes good.
+///
+/// ⚠ A malformed object reads as [`None`], which is the honest answer rather than a lenient one: a
+/// report this build cannot understand is one that told it nothing, and *this run does not report
+/// completed work* is exactly what a reader must then be told.
+fn banked_reported(reported: &Value) -> Option<sprag_plugin::Banked> {
+    let banked = reported.get(RUN_BANKED_KEY)?;
+    Some(sprag_plugin::Banked {
+        completed: u32::try_from(banked.get("completed")?.as_u64()?).ok()?,
+        unit: std::borrow::Cow::Owned(banked.get("unit")?.as_str()?.to_owned()),
+    })
 }
 
 /// **WHO RAISED THE CANCEL, WEIGHED AGAINST WHAT ACTUALLY ENDED THE RUN** — register item 596, and
@@ -3326,6 +3374,27 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
     // `RUN_STOPPED_KEY`. The SENTENCE and not the variant, for the reason `failure` above is one.
     if let Some(stopped) = &outcome.stopped {
         answer[RUN_STOPPED_KEY] = json!(stopped.to_string());
+    }
+    // ⚠⚠⚠⚠⚠ AND WHAT THE RUN KEPT — register item 650, the last field this render dropped.
+    //
+    // It is here because this function stopped being a render for a person and became a TRANSPORT:
+    // a run driven by another process (items 544 / 643) computes its ending over there, and every
+    // reader on this side has to end up weighing the same one. Three of the four could already —
+    // the word, the ceiling, the capture all crossed — and `stand_down_sentence` could not, because
+    // what it asks is *what became of the work* and the answer lived only in this struct.
+    //
+    // ⚠⚠ **PRESENT ONLY WHEN THE PLUGIN COUNTS**, which is the `Option`'s whole content and must
+    // survive the trip: absent means *this plugin does not count completed work at all*, and
+    // `{"completed": 0}` means *it counts, and there was none*. `work_after` says three different
+    // things across that pair, and collapsing them would be item 604's swap in a new place.
+    //
+    // ⚠ THE VALUES AND NOT A SENTENCE. The sentence is `work_after`'s, composed on the far side of
+    // this wire from these two numbers — one author, whichever process ran the plugin.
+    if let Some(banked) = &outcome.banked {
+        answer[RUN_BANKED_KEY] = json!({
+            "completed": banked.completed,
+            "unit": banked.unit.as_ref(),
+        });
     }
     answer
 }
@@ -7113,6 +7182,98 @@ mod tests {
              daemon can read them — and with no event it can only ask on a clock, which is the \
              shape items 629/630/631/640 spent four rounds taking off the pane axis. Expected one \
              announcement per accepted order for run {id}, heard {told:?}",
+        );
+    }
+
+    /// **A RUN THAT ENDED ELSEWHERE CAN STILL SAY WHAT WAS KEPT** — register item 650, half ①, and
+    /// the last field of it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the four readers measured, and why only this one hurt
+    ///
+    /// Making a reported ending its own state made the compiler name every reader that weighs one:
+    /// the row projection, [`cancel_sentence`], the durable log, and [`stand_down_sentence`]. Three
+    /// answer at FULL STRENGTH for a reported ending, because what they read — the outcome WORD, its
+    /// ceiling, the capture — is what `outcome_to_json` has always carried.
+    ///
+    /// This one does not. It asks *what became of the work*, whose answer is `Outcome::banked`, and
+    /// that field was dropped by the render. So a person who stood a run down was told **the order
+    /// was not honoured** and then, for an out-of-process run alone, *this ending cannot say what was
+    /// kept* — where an in-process run says `the 3 turns it had already completed are BANKED`.
+    ///
+    /// ⚠⚠ Register item 604 is why that gap is a DEFECT and not a rough edge: the pair it measured
+    /// is the one where a guess swaps the alarming answer for the relieved one, and *cannot say* was
+    /// the only honest placeholder available. This closes it with the value rather than a guess.
+    ///
+    /// ⚠ And it needed no new type. `Banked` is a `Cow` and says why — *a run READ AFTER A RESTART
+    /// hands over a word decoded from the daemon's log, and there is no `'static` to borrow it
+    /// from* — so a word off the wire is a case the type already admits. That sentence was written
+    /// for the durable log and paid for this too.
+    #[test]
+    fn a_run_that_ended_elsewhere_can_still_say_what_was_kept() {
+        let banked = sprag_plugin::Banked {
+            completed: 3,
+            unit: std::borrow::Cow::Borrowed("turn"),
+        };
+        let ended = Outcome {
+            state: OutcomeState::Exhausted(sprag_plugin::Ceiling::Iterations),
+            iterations: 3,
+            cost: None,
+            failure: None,
+            stopped: None,
+            answered: 0,
+            screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
+            banked: Some(banked),
+        };
+
+        // The sentence an IN-PROCESS run gets — the standard this reported one must meet.
+        let here = stand_down_sentence(&RunState::Done {
+            outcome: Box::new(ended.clone()),
+            output: None,
+        });
+        assert!(
+            here.contains("3 turns") && here.contains("BANKED"),
+            "⚠ THE PREMISE: an in-process ending names the work it kept, or there is no standard \
+             for the arm below to meet: {here:?}",
+        );
+
+        // The same ending, having crossed a process boundary through the daemon's own renderer.
+        let there = stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&ended))));
+        assert!(
+            there.contains("3 turns") && there.contains("BANKED"),
+            "⚠⚠⚠⚠⚠ a person who stood a run down must be told what was KEPT whichever process drove \
+             it — telling them only that the order was not honoured is register item 604's swap, \
+             where the alarming half of the answer arrives without the relieving half: {there:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL: A RUN THAT BANKED NOTHING MUST NOT BE TOLD IT BANKED SOMETHING.** The
+    /// gate above passes for a renderer that hard-codes a reassuring clause. This drives the same
+    /// door with `completed: 0` — a real answer and not an absence, as `Banked::completed`'s own doc
+    /// says — and the two sentences must differ.
+    #[test]
+    fn a_reported_ending_that_banked_nothing_says_so() {
+        let nothing = Outcome {
+            state: OutcomeState::Exhausted(sprag_plugin::Ceiling::Iterations),
+            iterations: 0,
+            cost: None,
+            failure: None,
+            stopped: None,
+            answered: 0,
+            screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
+            banked: Some(sprag_plugin::Banked {
+                completed: 0,
+                unit: std::borrow::Cow::Borrowed("turn"),
+            }),
+        };
+        let said = stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&nothing))));
+        assert!(
+            said.contains("completed nothing yet"),
+            "⚠⚠⚠ a run that counted work and completed none says exactly that — a reassurance here \
+             would be worse than the silence it replaced: {said:?}",
         );
     }
 
