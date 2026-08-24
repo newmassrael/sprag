@@ -1031,7 +1031,8 @@ impl WorkspaceExternal {
         ))
     }
 
-    /// `stop_job {pane, signal?}` action: end what a pane is RUNNING, and leave the pane — see
+    /// `stop_job {pane, signal?, reach?}` action: end what a pane is RUNNING, and leave the pane —
+    /// see
     /// [`crate::wire::STOP_JOB_ACTION`] for why this is neither a `C-c` nor a close.
     ///
     /// Daemon-wide for [`rename_pane`](Self::rename_pane)'s reason: this is about the PANE, whose
@@ -1054,18 +1055,30 @@ impl WorkspaceExternal {
             }
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
+        // ⚠⚠⚠⚠⚠ HOW FAR, AND THE DEFAULT IS THE WIDE ONE — register item 654 and
+        // `STOP_JOB_REACH_KEY`, which is where the reasoning lives. A caller who names one pane on
+        // purpose is asking for what a person's own `Ctrl-C` does, and that is what every client of
+        // this verb meant before the argument existed, so an omission keeps the act it already had.
+        // The narrow one exists for the caller who is NOT a person: an automatic stop must end the
+        // work it caused and never the pane it was given.
+        let reach = match map.get(crate::wire::STOP_JOB_REACH_KEY) {
+            None | Some(Value::Null) => sprag_terminal::Reach::TheProgramToo,
+            Some(Value::String(word)) => {
+                sprag_terminal::Reach::from_wire(word).ok_or(InvokeError::TypeMismatch)?
+            }
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
         let pid = self
             .scan_panes(|pane| (pane.id() == id).then(|| pane.pty().pid()))
-            .ok_or_else(|| refused(format!("no pane {} on this host", id.0)))?
+            .ok_or_else(|| refused(crate::wire::no_such_pane(id.0)))?
             // ⚠ A pane THIS HOST HOLDS whose child has been reaped is a different correction from a
             // pane nobody knows — *your program finished* sends somebody to their scrollback, *there
             // is no such pane* sends them to their pane list — so the two `None`s do not collapse.
             .ok_or_else(|| refused(sprag_terminal::Unstopped::Gone.to_string()))?;
-        let job =
-            sprag_terminal::stop_foreground_job(pid, stop, sprag_terminal::Reach::TheProgramToo)
-                // ⚠ THE SENTENCE, not the variant — the same rule the plugin host's failures follow.
-                // A caller told `Unseen` learns nothing; one told what was not done and why can act.
-                .map_err(|why| refused(why.to_string()))?;
+        let job = sprag_terminal::stop_foreground_job(pid, stop, reach)
+            // ⚠ THE SENTENCE, not the variant — the same rule the plugin host's failures follow.
+            // A caller told `Unseen` learns nothing; one told what was not done and why can act.
+            .map_err(|why| refused(why.to_string()))?;
         let mut answer = serde_json::json!({
             crate::wire::STOP_JOB_STOP_KEY: job.stop.wire_str(),
             crate::wire::STOP_JOB_PGID_KEY: job.pgid,
@@ -1119,7 +1132,7 @@ impl WorkspaceExternal {
         // (`set_pane_name` says whether the pool held it), not a separate question asked earlier.
         let recorded = Value::from(proposed.as_ref().map(sprag_terminal::PaneName::as_str));
         if self.with_pool_of(id, |pool| pool.set_pane_name(id, proposed)) != Some(true) {
-            return Err(refused(format!("no pane {} on this host", id.0)));
+            return Err(refused(crate::wire::no_such_pane(id.0)));
         }
         // A pane's published name moved: wake the session's parked clients, which is what turns
         // this into `Event::PaneRenamed` at the dispatch funnel.
@@ -1211,7 +1224,7 @@ impl WorkspaceExternal {
             pool.set_pane_grant(id, grant)
         });
         let Some(Some(answer)) = answer else {
-            return Err(refused(format!("no pane {} on this host", id.0)));
+            return Err(refused(crate::wire::no_such_pane(id.0)));
         };
         // The kernel's answer, or the reason there is none — never the request. See the action's own
         // documentation for why echoing the argument would be this daemon agreeing with itself
@@ -1346,7 +1359,7 @@ impl WorkspaceExternal {
         };
         let Some(owner) = self.with_pane(id, |pane| bind.then(|| pane.pty().foreground_pgid()))
         else {
-            return Err(refused(format!("no pane {} on this host", id.0)));
+            return Err(refused(crate::wire::no_such_pane(id.0)));
         };
         let (outcome, seq_published) = agents.report(
             id,
@@ -1419,7 +1432,7 @@ impl WorkspaceExternal {
             return Err(refused(NO_DETECTOR));
         };
         if !self.holds_pane(id) {
-            return Err(refused(format!("no pane {} on this host", id.0)));
+            return Err(refused(crate::wire::no_such_pane(id.0)));
         }
         Ok(IntrospectValue::Json(
             serde_json::json!({ "released": agents.release(id) }),
@@ -1577,7 +1590,7 @@ impl WorkspaceExternal {
     /// Called only on the failing branch, so the extra walks cost nothing on the path that works.
     fn not_tiled(&self, id: PaneId) -> InvokeError {
         if !self.holds_pane(id) {
-            return refused(format!("no pane {} on this host", id.0));
+            return refused(crate::wire::no_such_pane(id.0));
         }
         let floating = lock(&self.registry)
             .window(self.scope.session(), self.scope.window())
@@ -9780,12 +9793,12 @@ mod tests {
         // would pass every assertion inside the gate by running none of them.
         assert_eq!(
             mux_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            34,
+            36,
             "one call per published word: four directions on each of three pane verbs (12), two \
              steps of the window ring, four places to move a window to, the three window-size \
              policies that fold clients (`manual` being the fourth and not one of them), the two \
-             axes on EACH of the two verbs that place a pane, three severities, and the three \
-             states a reporter may name",
+             axes on EACH of the two verbs that place a pane, three severities, the three states a \
+             reporter may name, and — register item 654 — the two REACHES a stop may ask for",
         );
     }
 
@@ -9814,7 +9827,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            67,
+            68,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -9828,11 +9841,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            108,
+            109,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb. The newest is `respawn`'s `pane` (item 557), the one \
-             argument of the verb a run rolls its inner session with; before it came \
-             `report_agent`'s `build` (item 412), `said` (441) and `noticed` (452). \
+             per form rather than per verb. The newest is `stop_job`'s `reach` (item 654), which \
+             decides whether a stop may take the pane with the job; before it came `respawn`'s \
+             `pane` (item 557), `report_agent`'s `build` (item 412), `said` (441), `noticed` (452). \
              ⚠ THE PER-HALF SPLIT THIS SENTENCE USED TO GIVE — «31 ask-backed and 67 inline» — WAS \
              ALREADY WRONG WHEN IT SAID 107: the two do not add up to the number beside them, and \
              nobody noticed because only the number is asserted. Removed rather than re-guessed; \

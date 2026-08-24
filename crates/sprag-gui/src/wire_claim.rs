@@ -378,7 +378,12 @@ pub(crate) mod grammar {
         // one of these three write verbs. This window is that client. So the number moved for a
         // fact THIS surface authors, read by a supervisor somewhere else, while not one argument
         // shape here changed. Eight for eight, and the eighth is the one to read twice.
-        40,
+        // ⚠⚠⚠⚠ THE NINTH, and it is an ARGUMENT on the daemon's `stop_job` verb: register item 654
+        // gave a stop a `reach`, so a run driven from outside the daemon can end the work it caused
+        // without ending the pane it was given. **A window does not stop a pane's job** — it draws
+        // panes and it types into them — so this pin moves for a ninth cause it takes no part in.
+        // Nine for nine.
+        41,
         &[
             (
                 "the command palette",

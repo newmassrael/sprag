@@ -1190,15 +1190,26 @@ impl InlineGrammar {
     pub const RESPAWN: &'static [CallForm] =
         &[CallForm::object(&[ArgGrammar::open(SPLIT_PANE_KEY, "int")])];
 
-    /// [`STOP_JOB_ACTION`] — a pane, and WHICH stop to deliver to its job. Absent `signal` asks for
-    /// the one a person's `Ctrl-C` means, because that is what *"stop this"* means to everybody who
-    /// is not thinking about signals — and the harder two must be typed out on purpose.
+    /// [`STOP_JOB_ACTION`] — a pane, WHICH stop to deliver to its job, and HOW FAR it may reach.
+    /// Absent `signal` asks for the one a person's `Ctrl-C` means, because that is what *"stop
+    /// this"* means to everybody who is not thinking about signals — and the harder two must be
+    /// typed out on purpose.
+    ///
+    /// ⚠ Absent `reach` asks for the WIDE one, on the same principle and for a second reason: it is
+    /// what this verb meant before the argument existed, so a client that never names it keeps the
+    /// act it already had. See [`STOP_JOB_REACH_KEY`] for why the narrow one had to become sayable.
     pub const STOP_JOB: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int"),
         ArgGrammar::one_of(
             STOP_JOB_SIGNAL_KEY,
             "string",
             &sprag_terminal::Stop::WIRE_WORDS,
+        )
+        .optional(),
+        ArgGrammar::one_of(
+            STOP_JOB_REACH_KEY,
+            "string",
+            &sprag_terminal::Reach::WIRE_WORDS,
         )
         .optional(),
     ])];
@@ -3767,6 +3778,25 @@ pub fn refusal(fault: &RpcFault) -> Option<io::Error> {
         .map(|reason| io::Error::new(io::ErrorKind::InvalidInput, reason.to_owned()))
 }
 
+/// **THE SENTENCE A DAEMON REFUSES WITH WHEN IT HOLDS NO SUCH PANE** — one spelling, because a
+/// client now READS it back.
+///
+/// # ⚠⚠⚠⚠ Why this is a function and not six `format!`s that happen to agree
+///
+/// Six pane verbs refused in exactly these words and each spelled them itself, which was harmless
+/// for as long as the only reader was a person. Register item 654 gave one of them a client that
+/// maps refusals back to typed causes ([`RemotePaneAccess`](crate::remote_access::RemotePaneAccess)
+/// answering `PaneError::UnknownPane`), and the moment a WORD IS MATCHED it needs one definition —
+/// [`PEER_GONE_REFUSAL`]'s rule, reached a second time by a different door.
+///
+/// ⚠ A driver that failed to recognise this sentence would read *there is no such pane* as *the
+/// stop was refused for some other reason*, and the remedy for some other reason is to try again —
+/// against a pane that does not exist, on every ending of every run.
+#[must_use]
+pub fn no_such_pane(id: u64) -> String {
+    format!("no pane {id} on this host")
+}
+
 /// What a caller says when a daemon refused `path` and STATED NOTHING — the one degradation left
 /// once [`refusal`] and [`unknown_action`] have had their turn.
 ///
@@ -4561,7 +4591,7 @@ pub const ENDED_KEY: &str = "ended";
 pub const RESIZE_ACTION: &str = "resize";
 
 /// The mux control external invoke action that STOPS WHAT A PANE IS RUNNING without ending the pane
-/// (`{pane, signal?}`), answering `{stop, pgid, job?}`.
+/// (`{pane, signal?, reach?}`), answering `{stop, pgid, job?}`.
 ///
 /// # ⚠⚠⚠ Why this is not [`KEY_ACTION`] with a `C-c`
 ///
@@ -4588,6 +4618,12 @@ pub const RESIZE_ACTION: &str = "resize";
 /// at an old daemon is refused by name at [`declares_verb`] before any handler runs — the loud
 /// failure version 15's whole-new-capability bump existed because it did NOT have (a message to a
 /// daemon with no mailbox reached nobody, with no key whose absence could say so).
+///
+/// ⚠⚠ **AND THE PARAGRAPH ABOVE IS ABOUT THE VERB, NOT ABOUT EVERY EDIT TO IT.** Register item 654
+/// gave this verb an ARGUMENT ([`STOP_JOB_REACH_KEY`]) and that DID move the number, by the rule
+/// stated there: an old daemon swallows an argument it does not know, and this one decides whether
+/// the pane survives the stop. The two rulings do not disagree — they are about a name a caller
+/// SENDS at the door, which is refused loudly, and a key inside the request, which is not.
 pub const STOP_JOB_ACTION: &str = "stop_job";
 /// The answer key of [`STOP_JOB_ACTION`] naming WHAT the pane's job answers to, absent when the
 /// group's leader has already gone and its other members keep the group alive.
@@ -4600,6 +4636,37 @@ pub const STOP_JOB_LEADER_KEY: &str = "job";
 /// The [`STOP_JOB_ACTION`] argument naming WHICH stop to deliver — a
 /// [`Stop`](sprag_terminal::Stop) word. Absent asks for the one a `Ctrl-C` means.
 pub const STOP_JOB_SIGNAL_KEY: &str = "signal";
+/// The [`STOP_JOB_ACTION`] argument naming HOW FAR the stop may reach — a
+/// [`Reach`](sprag_terminal::Reach) word. Absent asks for the wide one, which is what a person
+/// naming a pane on purpose means and what every caller of this verb meant before the argument
+/// existed.
+///
+/// # ⚠⚠⚠⚠⚠ Why the wide reach cannot be the only one this verb offers — register item 654
+///
+/// The choice is the CALLER's and cannot be inferred: *a pane whose own program is an agent CLI
+/// mid-turn and a pane whose own program is `cat` look identical to the process table, and a signal
+/// ends the turn in the first and the pane in the second.* A verb offering only the wide one
+/// therefore offers ONE act under a name that means both — and for the caller this argument was
+/// added for, an AI RUN whose clock ran out, the wrong one closes somebody's pane. Measured, in
+/// [`Unstopped::WouldEndThePane`](sprag_terminal::Unstopped)'s own words: *it closed one, and the
+/// daemon exited behind it.*
+///
+/// So the in-process driver has always asked for [`Reach::UnderTheProgram`](sprag_terminal::Reach)
+/// and, until this key, a driver on the far side of this socket could not say so. That is the
+/// asymmetry the item is about — **the same `orchestrate` request meaning two different things
+/// depending on which process drove it**.
+///
+/// # ⚠⚠⚠⚠ This one DID earn its [`WIRE_PROTOCOL`] bump (40 → 41)
+///
+/// [`CLIENT_BUILD_PARAM`] states the rule an added request key is
+/// judged by, and it is not *"arguments are additive"*: an unknown argument is SWALLOWED rather
+/// than refused, so the number moves when SOMETHING WAITS ON THE FACT. Something does here, and it
+/// is the sharpest case this wire has had — a daemon predating this key answers a narrow stop by
+/// delivering a WIDE one, which is not a degraded answer but a different act, and the pane it may
+/// take with it does not come back.
+///
+/// [`WIRE_PROTOCOL`]: sprag_rpc::WIRE_PROTOCOL
+pub const STOP_JOB_REACH_KEY: &str = "reach";
 /// The [`STOP_JOB_ACTION`] answer key echoing WHICH stop was delivered — the same vocabulary the
 /// argument takes, so a caller that omitted it learns what it got rather than having to know the
 /// default.
@@ -8954,7 +9021,12 @@ mod tests {
             // caller may SAY. Nothing was added to that set; a set already in it is being read
             // back under. ⚠ The day a third hand exists it moves HERE and at the write door
             // together, because `Hand::WIRE_WORDS` is sized from `ALL`.
-            40,
+            // ⚠ 41: re-stamped with every ANSWER value space unchanged. Register item 654's `reach`
+            // is a REQUEST word — the vocabulary pin is the subject — and `stop_job`'s answer keys
+            // (`stop`, `pgid`, `job`) are untouched. The `Unstopped` sentence a refusal carries is
+            // prose rather than an enum on this wire, and it did not gain an arm a daemon can send:
+            // `Unreachable` is what a CLIENT concludes when nothing answered it.
+            41,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -9326,7 +9398,13 @@ mod tests {
             // 653 added a READ address; a read takes no arguments, so there is no request word for
             // this pin to see. The `hand` vocabulary its answer is keyed by has been published at
             // the three write verbs since it existed and is listed below unchanged.
-            40,
+            // ⚠⚠⚠ 41: THIS PIN IS THE SUBJECT — a NEW CLOSED VOCABULARY on an existing verb
+            // (`stop_job` gains `reach=under_the_program,the_program_too`), register item 654. It is
+            // R373's `hand` case exactly: the words arrive WITH the argument that carries them, and
+            // an added argument is a bump on this wire because an older daemon swallows it. ⚠ What
+            // makes this one sharper than `hand` is what the swallowing does — the daemon then
+            // delivers the WIDE reach, which is a different act and can close the pane.
+            41,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -9366,7 +9444,11 @@ mod tests {
                 "sprag_workspace/sprag_mux/set_floating:",
                 "sprag_workspace/sprag_mux/spawn:",
                 "sprag_workspace/sprag_mux/split:dir=horizontal,vertical",
-                "sprag_workspace/sprag_mux/stop_job:signal=interrupt,terminate,kill",
+                // ⚠ `reach` BEFORE `signal`: this pin renders a verb's vocabularies in the
+                // ARGUMENT NAME's alphabetical order, not the grammar's declaration order, and the
+                // gate said so by name on the first run.
+                "sprag_workspace/sprag_mux/stop_job:reach=under_the_program,the_program_too \
+                 signal=interrupt,terminate,kill",
                 "sprag_workspace/sprag_mux/swap_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/zoom_pane:",
                 // A PANE'S INPUT, every verb. `key`'s `state` and `clipboard_answer`'s `sel` were
@@ -9638,7 +9720,10 @@ mod tests {
             // ⚠ 40: re-stamped with every published argument shape unchanged, for 39's reason
             // exactly. Register item 653's `hands` is a SLOT — no arguments — so no form this pin
             // walks gained, lost or re-typed one.
-            40,
+            // ⚠⚠ 41: re-stamped BECAUSE AN ARGUMENT SHAPE MOVED, and this pin is the subject
+            // alongside the vocabulary one. `stop_job` gained `reach`, an optional string, and the
+            // list below carries it — register item 654.
+            41,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -9696,7 +9781,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/set_floating[object]:id:int floating:bool",
                 "sprag_workspace/sprag_mux/spawn[object]:cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int?",
                 "sprag_workspace/sprag_mux/split[object]:pane:int? dir:string before:bool? cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int?",
-                "sprag_workspace/sprag_mux/stop_job[object]:pane:int signal:string?",
+                "sprag_workspace/sprag_mux/stop_job[object]:pane:int signal:string? reach:string?",
                 "sprag_workspace/sprag_mux/swap_pane[object]:pane:int? dir:string",
                 "sprag_workspace/sprag_mux/swap_pane[object]:pane:int? with:int",
                 "sprag_workspace/sprag_mux/zoom_pane[object]:pane:int? on:bool?",
@@ -10265,7 +10350,11 @@ mod tests {
         // missing address degrades. The consumer of THIS one — `Readiness::reached`, which asks it
         // ahead of every other question — reads *cannot ask* as *nobody has ever touched this
         // pane*. See `WIRE_PROTOCOL`'s entry for 40.
-        40,
+        // ⚠ 41 — REGISTER ITEM 654: re-stamped with every ADDRESS unchanged. What moved is an
+        // ARGUMENT inside `stop_job`'s form (`reach`), which lives in the blind spot named above —
+        // this pin walks names, and the argument grammar has the two ratchets that own that half.
+        // Both of them went red by name, which is the division of labour these pins exist for.
+        41,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

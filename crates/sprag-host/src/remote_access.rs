@@ -36,11 +36,24 @@
 //! * `hands` — WHO has written into the pane, and how many times each. Register item 653, and it is
 //!   served for a reason none of the six above share: see below.
 //!
-//! ⚠⚠⚠⚠ **Two remain [`None`]**: `raw_capture` and `job_control`. Each of those absences is safe by
-//! that surface's OWN documentation — a host with no job control must report that it could not stop
-//! the work rather than write `0x03` and hope. **They are `None` because this build cannot ask those
-//! questions over the wire yet, not because a remote driver does not want them**, and each has a
-//! consumer that already handles the absence.
+//! * `job_control` — ENDING what a pane is running. Register item 654, and the only act here that
+//!   is neither a read nor a keystroke: [`Driver::stop_the_work`](sprag_plugin::Driver)'s whole
+//!   reach, on the two endings that can land while a step is blocked.
+//!
+//! ⚠⚠⚠⚠ **ONE REMAINS [`None`]**: `raw_capture`. That absence is safe by its own surface's
+//! documentation, it is `None` because this build cannot ask that question over the wire yet rather
+//! than because a remote driver does not want it, and its consumer already handles it.
+//!
+//! ⚠⚠⚠⚠⚠ **AND `job_control` WAS SAFE TOO, WHICH IS WHY IT SURVIVED THREE ROUNDS OF THIS LIST —
+//! register item 654.** Unlike `hands` below, its `None` told nobody anything false: a run that
+//! cannot signal must report that it could not stop the work rather than write `0x03` and hope, and
+//! [`Stopped::Unsupported`](sprag_plugin::Stopped) is exactly that report. **The defect was not in
+//! the word; it was that only ONE OF THE TWO DRIVERS ever said it.** The same `orchestrate` request
+//! ended a peer's turn when the daemon drove it and left that turn running when this surface did,
+//! and `RUN_DRIVER_PROCESS`'s contract is that a request means one thing on both sides. ⚠ It needed
+//! no new address — `stop_job` was already a verb — and it did need a new ARGUMENT, because the verb
+//! had no [`Reach`] and always delivered the wide one, which is the single
+//! act an automatic stop must never perform: a routine timeout would have closed somebody's pane.
 //!
 //! ⚠⚠⚠⚠⚠ **AND THE SENTENCE ABOVE USED TO COVER `hands`, WHICH WAS FALSE — register item 653.** It
 //! said all three absences were safe. The other two are; this one was not, and the difference is
@@ -79,12 +92,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_plugin::{
-    AgentObservation, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneHands,
-    PaneInputEcho, PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes,
-    Written,
+    AgentObservation, JobLeader, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneHands,
+    PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision,
+    PaneTerminalModes, Signalled, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
-use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId};
+use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId, Reach, Stop, Unstopped};
 use sprag_vt::LinesSince;
 
 use crate::external::lock;
@@ -95,9 +108,10 @@ use crate::wire::{
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
     PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT,
     SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY,
-    SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, hands_of,
-    lines_since_at, mux_action_path, pane_input_path, recent_input_has, refusal, unknown_action,
-    unknown_slot,
+    SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY,
+    STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY, STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD,
+    agent_slot_for, hands_of, lines_since_at, mux_action_path, pane_input_path, recent_input_has,
+    refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -651,6 +665,55 @@ impl RemotePaneAccess {
                 .to_string(),
         )
     }
+
+    /// Turn a [`STOP_JOB_ACTION`] failure into the typed cause it names — register item 654.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Three outcomes, and only one of them is about the pane
+    ///
+    /// * **The daemon refused and said why.** Its sentence is [`Unstopped`]'s own, so it is read
+    ///   back into the refusal it names and the run publishes the SAME clause it would have
+    ///   published in-process. That round trip is gated beside the sentences, not here.
+    /// * **The daemon holds no such pane.** [`crate::wire::no_such_pane`] is the one spelling of
+    ///   that refusal, matched exactly for [`PEER_GONE_REFUSAL`]'s reason: a word a client reads
+    ///   back needs one definition. Answered as [`PaneError::UnknownPane`], which is what the
+    ///   in-process door answers, so a caller cannot tell the two hosts apart by their errors.
+    /// * **Everything else** — a dead socket, a skew, a fault this build cannot read — is
+    ///   [`Unstopped::Unreachable`]. ⚠ It is a fact about this DRIVER and none of the four
+    ///   pane-shaped refusals is true of it; borrowing one would state something about somebody's
+    ///   terminal that nobody looked at.
+    ///
+    /// ⚠ The transport's own sentence is LOGGED rather than carried, which is the residue
+    /// [`Unstopped::Unreachable`] documents: the word is [`Copy`] and every stop pays for a payload
+    /// it would use once.
+    fn stop_failed(id: PaneId, path: &str, error: &CallError) -> PaneError {
+        let fault = match error {
+            CallError::Transport(error) => {
+                tracing::debug!(target: "sprag_host", %error, %path, "a remote stop did not complete");
+                return PaneError::NotStopped(Unstopped::Unreachable);
+            }
+            CallError::Fault(fault) => fault,
+        };
+        let Some(reason) = fault.refusal() else {
+            let sentence = unknown_action(path, fault)
+                .unwrap_or_else(|| io::Error::other(fault.to_string()))
+                .to_string();
+            tracing::debug!(target: "sprag_host", %sentence, %path, "a remote stop was not performed");
+            return PaneError::NotStopped(Unstopped::Unreachable);
+        };
+        if reason == crate::wire::no_such_pane(id.0) {
+            return PaneError::UnknownPane(id);
+        }
+        Unstopped::from_sentence(reason).map_or_else(
+            || {
+                // A refusal this build's vocabulary does not hold. It is NOT guessed at — a near
+                // miss read as one of the four would be a statement about a pane nobody made — and
+                // it is not silent either, because the remedy is a person's.
+                tracing::debug!(target: "sprag_host", %reason, %path, "a remote stop was refused in words this build cannot read");
+                PaneError::NotStopped(Unstopped::Unreachable)
+            },
+            PaneError::NotStopped,
+        )
+    }
 }
 
 /// One stroke in the form [`INJECT_ACTION`] declares — the object form, with every modifier stated.
@@ -790,6 +853,27 @@ impl PaneAccess for RemotePaneAccess {
     /// be reached at all — the handshake refuses a protocol that is not this one — which is the
     /// arrangement this surface needs and did not have while the counts were a safe-to-miss extra.
     fn hands(&self) -> Option<&dyn PaneHands> {
+        Some(self)
+    }
+
+    /// **ENDING WHAT A PANE IS RUNNING** — register item 654, and the one act on this surface that
+    /// is neither a read nor a keystroke.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why an always-`Some` is the honest answer here, where a probe would not be
+    ///
+    /// A `None` on this method means *this HOST offers no way to stop a pane's job at all*, and the
+    /// run publishes [`Stopped::Unsupported`](sprag_plugin::Stopped) — a sentence about the
+    /// deployment. A daemon on the other end of this socket always can: it owns the pseudoterminal
+    /// and the child, and `stop_job` has been a published verb since long before this client. So
+    /// answering `Some` states something true, and the per-CALL failures carry every absence that
+    /// is really about this pane or this connection ([`Unstopped`]'s five words).
+    ///
+    /// ⚠⚠ **AND THE `None` THIS REPLACES WAS THE OTHER KIND OF TRUE.** It said *this host cannot
+    /// stop things* about a host that could, for every run driven from another process, on both of
+    /// the two endings that reach for it. Nothing degraded and nothing lied — which is exactly why
+    /// it survived: the sentence a person read was honest, and the DIFFERENCE between the two
+    /// drivers was measured by nothing. See the module header.
+    fn job_control(&self) -> Option<&dyn PaneJobControl> {
         Some(self)
     }
 
@@ -1123,6 +1207,112 @@ impl PaneOutputLines for RemotePaneAccess {
             // reader carry on rather than restart. A `true` invented here would throw away a cursor
             // that was perfectly good and re-deliver everything the pane retains.
             restarted: answer[LINES_RESTARTED_KEY].as_bool().unwrap_or(false),
+        })
+    }
+}
+
+/// **STOPPING THE JOB THAT OWNS A PANE'S TERMINAL, FROM OUTSIDE THE DAEMON** — register item 654,
+/// and the WRITE half of the surface below.
+///
+/// # ⚠⚠⚠⚠⚠ What the absence was, and why it was not a degradation either
+///
+/// [`Driver::stop_the_work`](sprag_plugin::Driver) is called on exactly two endings — a person's
+/// cancel and a passed deadline — and it asks [`PaneAccess::job_control`]. While this answered
+/// [`None`], a run driven from another process ALWAYS reported
+/// [`Stopped::Unsupported`](sprag_plugin::Stopped), whatever it was driving. The word is honest —
+/// *the work is still running for all anybody here can tell* is exactly what a run with no way to
+/// signal should say, and it is why this absence was safe where item 653's was not — but the
+/// SITUATION was not: the same `orchestrate` request ended a peer's turn in-process and left it
+/// running out of process, and `RUN_DRIVER_PROCESS`'s own contract is that a request means one
+/// thing on both sides.
+///
+/// # ⚠⚠⚠⚠ It needed no new address, and it did need a new ARGUMENT
+///
+/// The item's first question was whether the existing `stop_job` verb could carry this without one,
+/// and the answer is *the verb yes, its grammar no*. The verb had no
+/// [`Reach`] — it always delivered the WIDE one, which is right for the
+/// person naming a pane on purpose and is the one act an automatic stop must never perform. A
+/// driver reaching this through the old grammar would have had a routine timeout close somebody's
+/// pane. So [`STOP_JOB_REACH_KEY`] was added and [`sprag_rpc::WIRE_PROTOCOL`] moved with it.
+impl PaneJobControl for RemotePaneAccess {
+    /// Send `stop` to `id`'s foreground job, reaching no further than `reach`, over the socket.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Every failure lands on a word, and the words are not interchangeable
+    ///
+    /// This is the door where *"I could not ask"* and *"I asked and was refused"* must not collapse:
+    /// the second is a fact about somebody's pane and the first is a fact about this driver's
+    /// socket, and they send a reader to different places. So the daemon's refusal SENTENCE is read
+    /// back into the refusal it names ([`Unstopped::from_sentence`]), a pane this daemon does not
+    /// hold answers [`PaneError::UnknownPane`] exactly as the in-process door does, and everything
+    /// else — a replaced daemon, a dead socket, a skew — is [`Unstopped::Unreachable`], the one word
+    /// that says nothing was learned about the pane at all.
+    ///
+    /// # ⚠⚠⚠ A STOP IS NEVER RETRIED, and that is not [`inject`](PaneAccess::inject)'s reason
+    ///
+    /// Typing twice asks a peer its question twice; signalling twice ends the same turn once, so
+    /// repetition is not what argues against it here. What does is that the run is ALREADY OVER —
+    /// this is called on the way out — and a driver that spent its caller's shutdown re-dialling a
+    /// socket would delay the ending it was asked for in order to improve a sentence. The report
+    /// says the work may still be running, which is true, and a person who wants to be sure has the
+    /// pane in front of them.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::UnknownPane`] for a pane this daemon does not hold, and
+    /// [`PaneError::NotStopped`] for every way the stop did not land — ⚠ each of which means the
+    /// work is STILL RUNNING.
+    fn pane_stop_job(&self, id: PaneId, stop: Stop, reach: Reach) -> Result<Signalled, PaneError> {
+        // ⚠⚠⚠⚠⚠ A SURFACE WHOSE DAEMON WAS REPLACED SIGNALS NOTHING, and it says so rather than
+        // answering `None` the way the reads do. A stop that quietly did nothing would be published
+        // as an ending, and the pane whose job is still running belongs to a world this driver never
+        // adopted — signalling into it would be `inject`'s stranger's-shell hazard with a signal.
+        if self.world_changed() {
+            return Err(PaneError::NotStopped(Unstopped::Unreachable));
+        }
+        // ADOPTED BEFORE ANYTHING IS DRIVEN, from this door too — see `read`.
+        self.adopt();
+        let path = mux_action_path(STOP_JOB_ACTION);
+        let args = json!({
+            SPLIT_PANE_KEY: id.0,
+            STOP_JOB_SIGNAL_KEY: stop.wire_str(),
+            // ⚠⚠⚠⚠⚠ STATED, NEVER OMITTED, even though the caller's usual choice is the daemon's
+            // default. An omission is the request a client older than the argument makes, and this
+            // driver is not that client: it has a reach and must say which. ⚠ The wide one is the
+            // default precisely because it is what the older callers meant, so leaving the narrow
+            // one unsaid would be the one silence that inverts the act.
+            STOP_JOB_REACH_KEY: reach.wire_str(),
+        });
+        // THE ANSWER IS A VALUE BEFORE IT IS EXAMINED, for `read`'s reason — see the note there.
+        let outcome =
+            lock(&self.conn).try_call(INVOKE_METHOD, json!({ PATH_PARAM: path, ARGS_PARAM: args }));
+        let answer = match outcome {
+            Ok(answer) => answer,
+            Err(error) => return Err(Self::stop_failed(id, &path, &error)),
+        };
+        Ok(Signalled {
+            // ⚠ THE STOP THE DAEMON SAYS IT DELIVERED, not the one this asked for. They agree
+            // today; a daemon that substituted one would be reporting the act it performed, and a
+            // client echoing its own request would hide exactly that.
+            stop: answer[STOP_JOB_STOP_KEY]
+                .as_str()
+                .and_then(Stop::from_wire)
+                .unwrap_or(stop),
+            // ⚠ A ZERO here is *this client could not read which group*, and it is the safe reading
+            // rather than a refusal: the daemon ANSWERED, so the signal was delivered, and a client
+            // that turned an unreadable detail into "not stopped" would report work as running that
+            // has already been ended. Unreachable in practice — the handshake refuses a daemon
+            // whose protocol is not this one, and this one always answers both keys.
+            pgid: answer[STOP_JOB_PGID_KEY]
+                .as_u64()
+                .and_then(|group| u32::try_from(group).ok())
+                .unwrap_or(0),
+            // ⚠⚠ ONE NAME, and the type has a constructor that says so. The wire carries the
+            // spelling a REPORT leads with (`JobLeader::named`) and not both of the leader's names,
+            // so a leader rebuilt here must not claim to answer to a second one it was never told.
+            // Its absence is the daemon's fact — a group whose leader has gone — and it survives.
+            leader: answer[STOP_JOB_LEADER_KEY]
+                .as_str()
+                .map(|named| JobLeader::known_as(named.to_owned())),
         })
     }
 }

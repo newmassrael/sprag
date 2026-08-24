@@ -211,7 +211,76 @@ pub enum Unstopped {
     /// yes; here nobody answered. See
     /// [`signal_ends`](../procfs/index.html) for which platform can say and why the other cannot.
     CannotTellIfItWouldEnd,
+    /// ⚠⚠⚠⚠ **THE HOST HOLDING THE PANE COULD NOT BE ASKED AT ALL**, so nothing was sent and the
+    /// work is still running.
+    ///
+    /// # ⚠⚠⚠ Why this arm exists in a module about a local `kill(2)`
+    ///
+    /// [`stop_foreground_job`] never builds it — it holds a pid and a kernel, and both of them
+    /// answer. This is the vocabulary
+    /// [`PaneError::NotStopped`](../../sprag_plugin/access/enum.PaneError.html) speaks, and that
+    /// error is answered by every `PaneAccess` there is, INCLUDING one whose panes are held by
+    /// another process. When that party cannot be reached, none of the four arms above is true:
+    /// nothing was seen, refused, or declined — the request never arrived.
+    ///
+    /// ⚠⚠ **AND THE ARM IT WOULD OTHERWISE BORROW IS THE ONE THAT LIES.** [`Unseen`](Self::Unseen)
+    /// says *this host looked at its process table and found no group*, which a caller reads as a
+    /// fact about their PANE. A driver whose socket died learned nothing about the pane at all, and
+    /// the two send somebody to different places — the pane's shell, or the host that is not
+    /// answering.
+    ///
+    /// ⚠ It carries NO detail, and that is a residue rather than an oversight: this set is
+    /// [`Copy`] and the whole workspace's stops are passed by value, so a payload would be paid for
+    /// on every stop that succeeds. The transport's own sentence is logged where it happens, by the
+    /// surface that met it.
+    Unreachable,
 }
+}
+
+impl Unstopped {
+    /// The refusal a SENTENCE names, or [`None`] for words this vocabulary does not say.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a surface has to read a sentence back at all
+    ///
+    /// A host reached across a process boundary refuses in TEXT — that is all a fault carries — so
+    /// a driver on the far side has the same five things to tell its caller and none of the type
+    /// that separates them. Without this it would have to pick one arm for every refusal, and every
+    /// choice available is a false statement about somebody's pane (see
+    /// [`Unreachable`](Self::Unreachable), which is the one such statement this set now refuses to
+    /// make).
+    ///
+    /// ⚠⚠ **DERIVED FROM [`ALL`](Self::ALL)**, on [`Stop::from_wire`]'s rule and for its reason: the
+    /// set a reader can name and the set a writer can say are one list, so a sixth refusal cannot
+    /// be published in a sentence nothing maps back. The `errno` arm is the one exception and it is
+    /// parsed rather than enumerated, because its sentence carries a number no list can hold — the
+    /// gate beside this drives that arm with several of them.
+    #[must_use]
+    pub fn from_sentence(sentence: &str) -> Option<Self> {
+        if let Some(errno) = errno_refused(sentence) {
+            return Some(Self::Refused(errno));
+        }
+        Self::ALL
+            .into_iter()
+            .find(|why| why.to_string() == sentence)
+    }
+}
+
+/// The `errno` [`Unstopped::Refused`]'s sentence carries, or [`None`] for any other sentence.
+///
+/// ⚠ The affixes are taken from the SENTENCE ITSELF — formatted here with a number whose decimal
+/// spelling cannot occur inside either side — so an edit to the wording moves the reader in the
+/// same compile rather than one round later. The alternative, two string literals repeating the
+/// `Display` arm, is the two-spellings-of-one-vocabulary defect this workspace keeps paying for.
+fn errno_refused(sentence: &str) -> Option<i32> {
+    /// A value no affix of the sentence can contain, used only to split it.
+    const MARK: i32 = i32::MIN;
+    let shape = Unstopped::Refused(MARK).to_string();
+    let (before, after) = shape.split_once(&MARK.to_string())?;
+    sentence
+        .strip_prefix(before)?
+        .strip_suffix(after)?
+        .parse()
+        .ok()
 }
 
 sprag_vt::closed_set! {
@@ -260,9 +329,42 @@ impl std::fmt::Display for Unstopped {
                  signal would kill it, so nothing was sent — stop it by name if that is what you \
                  want",
             ),
+            Self::Unreachable => f.write_str(
+                "the host holding this pane could not be reached, so nothing was sent and nothing \
+                 was learned about the pane — the job it was running is still running",
+            ),
         }
     }
 }
+
+impl Reach {
+    /// This choice's WORD on the wire — [`Stop::wire_str`]'s rule, one address over.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a REACH has to be sayable at all
+    ///
+    /// It is the CALLER's decision and it cannot be inferred — the type's own documentation says
+    /// so, and says what the two cases look like from here (identical). A surface that offered the
+    /// stop and not the reach would therefore be offering ONE of the two acts under a name that
+    /// means both, and it would be the wide one: a bounded run that ran out of time would close
+    /// somebody's pane, which is the outcome [`Unstopped::WouldEndThePane`] exists to have made
+    /// impossible.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::UnderTheProgram => "under_the_program",
+            Self::TheProgramToo => "the_program_too",
+        }
+    }
+
+    /// The reach a caller's word names, or `None` for a word no surface publishes — derived from
+    /// [`ALL`](Self::ALL) on [`Stop::from_wire`]'s terms.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reach| reach.wire_str() == word)
+    }
+}
+
+sprag_vt::wire_words!(Reach: wire_str);
 
 /// Send `stop` to the foreground job on `pane_child`'s controlling terminal.
 ///
@@ -361,6 +463,72 @@ mod tests {
             Stop::from_wire("INTERRUPT"),
             None,
             "and the words are the published spellings, not a case-insensitive guess",
+        );
+    }
+
+    /// Every REACH has a distinct wire word, and every word round-trips — the gate one address over
+    /// from [`Stop`]'s, and for a sharper reason.
+    ///
+    /// A `Stop` that failed to round-trip is refused at the door and the caller is told. A `Reach`
+    /// that failed to would be read as the OTHER reach, because a surface that cannot spell a word
+    /// falls back to the wide one a person's `Ctrl-C` means — and the wide one can close somebody's
+    /// pane. So the round trip is not a courtesy here; it is the only thing between an automatic
+    /// stop and an ending nobody asked for.
+    #[test]
+    fn every_reach_has_its_own_word_and_the_word_finds_it_again() {
+        for reach in Reach::ALL {
+            assert_eq!(
+                Reach::from_wire(reach.wire_str()),
+                Some(reach),
+                "{reach:?}'s own word must name it again, or a caller naming the narrow reach is \
+                 silently given the wide one",
+            );
+            assert_eq!(
+                Reach::ALL
+                    .iter()
+                    .filter(|other| other.wire_str() == reach.wire_str())
+                    .count(),
+                1,
+                "{reach:?}'s word is its alone",
+            );
+        }
+        assert_eq!(
+            Reach::WIRE_WORDS.len(),
+            Reach::ALL.len(),
+            "every reach a caller may choose is a word a surface publishes",
+        );
+    }
+
+    /// **EVERY REFUSAL A HOST WRITES DOWN IS READ BACK AS THE SAME REFUSAL** — the round trip a
+    /// driver on the far side of a process boundary depends on.
+    ///
+    /// ⚠⚠ Walks [`Unstopped::ALL`], so a sixth refusal cannot be published in a sentence nothing
+    /// maps back — and the `errno` arm is driven with SEVERAL numbers, because it is the one whose
+    /// sentence carries a value and the one an enumeration cannot cover.
+    #[test]
+    fn every_refusal_written_as_a_sentence_reads_back_as_itself() {
+        for why in Unstopped::ALL {
+            assert_eq!(
+                Unstopped::from_sentence(&why.to_string()),
+                Some(why),
+                "{why:?} is written down and read back as something else, so a run driven from \
+                 another process would report the wrong reason its work is still running",
+            );
+        }
+        for errno in [0, 1, libc::EPERM, libc::ESRCH, i32::MAX, i32::MIN] {
+            let refused = Unstopped::Refused(errno);
+            assert_eq!(
+                Unstopped::from_sentence(&refused.to_string()),
+                Some(refused),
+                "the kernel's own number has to survive the trip: it is the whole content of \
+                 {refused:?}",
+            );
+        }
+        assert_eq!(
+            Unstopped::from_sentence("the pane's child has already exited"),
+            None,
+            "⚠ and a sentence this vocabulary does not say is not GUESSED at — a near miss read as \
+             a refusal would be a fact about a pane that nobody stated",
         );
     }
 

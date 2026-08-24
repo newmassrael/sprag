@@ -8550,6 +8550,339 @@ fn a_real_run_driven_from_another_process_outlives_the_daemon_it_drives() {
     );
 }
 
+/// **THE JOB THAT OWNS `pane`'s TERMINAL, read on a connection the driver has never touched.**
+///
+/// # ⚠⚠⚠⚠ Why the instrument is deliberately NOT the surface under test
+///
+/// The two gates below judge whether a stop LANDED. Reading that back through the same
+/// `RemotePaneAccess` that sent it would fold two failures into one look — a driver that never sent
+/// the stop and a driver whose read is broken produce the same answer — and this workspace has paid
+/// for that shape twice (register items 617 and 637). So this asks the daemon directly, over
+/// `pane_processes`, which is the OPERATING SYSTEM's answer and not a guess from a pane's text.
+///
+/// ⚠⚠ The GROUP and not the leader, because a shell's job control is not a constant: an interactive
+/// shell that runs `sleep 300` may put it in its own process group or keep it in the shell's, and
+/// *which* decides whether the group's leader is `sleep` or the shell. The MEMBERS answer the
+/// question either way — *is the work still there* — which is the only thing these gates ask.
+fn foreground_job_over_the_wire(
+    conn: &mut HostConn,
+    pane: PaneId,
+) -> Option<sprag_terminal::ForegroundJob> {
+    let answer = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&pane_processes_at(0)) }),
+        )
+        .ok()?;
+    let reading: PaneProcessesWire = serde_json::from_value(answer).ok()?;
+    reading
+        .panes
+        .into_iter()
+        .find(|row| row.id == pane.0)?
+        .foreground
+}
+
+/// Whether `pane`'s foreground job still holds a process with `pid` — *is the work this run started
+/// still running?*, asked of the process table.
+fn job_still_holds(conn: &mut HostConn, pane: PaneId, pid: u32) -> bool {
+    foreground_job_over_the_wire(conn, pane)
+        .is_some_and(|job| job.processes.iter().any(|process| process.pid == pid))
+}
+
+/// ⛔⛔⛔⛔ **A RUN CANCELLED FROM OUTSIDE THE DAEMON REALLY ENDS THE TURN IT STARTED** — register
+/// item 654, and the claim `Stopped::Unsupported` stood in for.
+///
+/// # ⚠⚠⚠⚠⚠ The defect, which was an HONEST sentence said by only one of two drivers
+///
+/// `Driver::stop_the_work` runs on exactly two endings — a person's cancel and a passed deadline —
+/// and asks `PaneAccess::job_control`. `RemotePaneAccess` answered `None`, so **every run driven
+/// from another process reported `Stopped::Unsupported`, whatever it was driving**. Nothing about
+/// that word is false: a host with no job control must say it could not stop the work rather than
+/// write `0x03` and hope, which is why this absence survived three rounds of item 557's list where
+/// item 653's did not. What was false was the SITUATION — the same `orchestrate` request ended a
+/// peer's turn in-process and left it running out of process, and `RUN_DRIVER_PROCESS`'s contract
+/// is that a request means one thing on both sides.
+///
+/// # ⚠⚠⚠ What is measured, and in which order
+///
+/// * **THE CONTROL FIRST** (register item 648). A run over this same surface that ENDS ON ITS OWN
+///   TERMS reaches for nothing: `stopped` is `None` and the pane's shell is left alone. Without it,
+///   a surface that signalled a pane on every run end would pass the gate below and look like a
+///   working cancel.
+/// * **THE PREMISE, ASSERTED** (register item 25's rule: a fixture states what it built). The run's
+///   stimulus starts a `sleep` and this gate does not proceed until the process table SHOWS it in
+///   the pane's foreground job — so a cancel that lands before there is any work to stop cannot be
+///   read as a cancel that stopped work.
+/// * **THE STOP ITSELF**, as the run publishes it, and
+/// * **THE WORK BEING GONE**, read off the process table afterwards — the half no outcome word can
+///   prove. A `Stopped::Job` says a signal was delivered; only the pid disappearing says the turn
+///   ended.
+/// * **AND THE PANE STILL STANDING.** Ending a turn and ending somebody's pane are different acts,
+///   and the sibling gate below is what makes that distinction load-bearing.
+#[test]
+fn a_cancelled_run_driven_from_another_process_really_ends_the_turn_it_started() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["sh"]);
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = *remote
+        .pane_ids()
+        .first()
+        .expect("the daemon's boot pane is there to drive");
+
+    // ── THE CONTROL: a run that ends on its own terms reaches for nothing ──────────────────────
+    let mut converging = Orchestrator::new(
+        pane,
+        OrchestrationSpec {
+            // The arithmetic is the SHELL's, so the sentinel cannot appear from an echo — the
+            // discriminator the gate above this one uses, and the only one a screen cannot fake.
+            stimulus: "echo run-$((6*7))".to_owned(),
+            sentinel: Some("run-42".to_owned()),
+            ready_when: None,
+            ready_within: None,
+            may_answer: None,
+            attended: Attended::NoOne,
+            turn: None,
+        },
+    );
+    let control = Driver::new(Guardrails {
+        max_iterations: 4,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(20)),
+    })
+    .run(&mut converging, &remote, &RunContext::uncancellable());
+    assert_eq!(
+        control.state,
+        OutcomeState::Converged,
+        "the control run has to CONVERGE, or the gate below is measuring a surface that cannot \
+         drive this pane at all rather than one that can stop it. Got {control:?}",
+    );
+    assert_eq!(
+        control.stopped, None,
+        "⚠⚠⚠ a run that ended on its OWN terms must not have reached for its peer's job — a \
+         surface that signalled on every ending would make the cancel below indistinguishable from \
+         no cancel at all. Got {:?}",
+        control.stopped,
+    );
+
+    // ── THE RUN THAT GETS CANCELLED MID-TURN ──────────────────────────────────────────────────
+    let mut working = Orchestrator::new(
+        pane,
+        OrchestrationSpec {
+            stimulus: "sleep 300".to_owned(),
+            // ⚠ NEVER PRINTED, so the step is still parked when the cancel lands. It is also not a
+            // word the shell could echo into being: the stimulus does not contain it.
+            sentinel: Some("this-turn-never-finishes".to_owned()),
+            ready_when: None,
+            ready_within: None,
+            may_answer: None,
+            attended: Attended::NoOne,
+            // ⚠⚠ A CONTRACT WITH NO BOUND OF ITS OWN, so `patience()` is `Duration::MAX` and this is
+            // ONE step parked until the run ends. Without it each step waits `OBSERVE_TIMEOUT` and
+            // then TYPES THE STIMULUS AGAIN — a second `sleep 300` queued at a shell that is
+            // already sleeping, which is a fixture nobody can reason about.
+            turn: sprag_plugin::Turn::lasting(sprag_plugin::DoneWhen::Exits, None),
+        },
+    );
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let run = RunContext::new(std::sync::Arc::clone(&cancel));
+    let watcher = {
+        let cancel = std::sync::Arc::clone(&cancel);
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            // ⚠ ITS OWN CONNECTION. The driver holds one and the test holds another; a watcher
+            // sharing either would be measuring a wire it is also occupying.
+            let mut watching = setup_at(&sock);
+            let armed = Instant::now();
+            let mut working_pid = None;
+            while armed.elapsed() < Duration::from_secs(20) {
+                if let Some(job) = foreground_job_over_the_wire(&mut watching, pane)
+                    && let Some(process) =
+                        job.processes.iter().find(|process| process.name == "sleep")
+                {
+                    working_pid = Some(process.pid);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // ⚠⚠ RAISED EVEN IF THE PREMISE NEVER HELD, so a fixture that failed to start any work
+            // fails this gate with a sentence instead of hanging it until the run's own deadline.
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+            working_pid
+        })
+    };
+
+    let outcome = Driver::new(Guardrails {
+        // Out of reach on purpose: the cancel must be the only ending available, or this gate
+        // measures a ceiling and reports it as a stop.
+        max_iterations: u32::MAX,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(120)),
+    })
+    .run(&mut working, &remote, &run);
+    let working_pid = watcher.join().expect("the watcher thread").expect(
+        "⚠⚠⚠ THE FIXTURE'S PREMISE: the run's stimulus never put a `sleep` in the pane's \
+             foreground job, so there was no turn to stop and nothing below is about this product",
+    );
+
+    assert_eq!(
+        outcome.state,
+        OutcomeState::Cancelled,
+        "a person's stop is the run's ending: {outcome:?}",
+    );
+    assert!(
+        outcome.stopped.is_some(),
+        "⛔⛔⛔⛔ REGISTER ITEM 654: the run driven from another process ended without REACHING for \
+         the work it started — its door closing on a room its peer is still working in. Got {:?}",
+        outcome.stopped,
+    );
+    // ⚠⚠ The exact word is asserted only where the platform can answer the question the narrow
+    // reach asks — `signal_ends` reads a disposition off `/proc`, and a host without one refuses
+    // rather than guessing. Same `cfg!` the in-process gate for this path carries, and for its
+    // reason: a macOS runner reporting an absent CAPABILITY as a failure of the DRIVER is a red
+    // that costs a day and says nothing.
+    if cfg!(target_os = "linux") {
+        match &outcome.stopped {
+            Some(sprag_plugin::Stopped::Job(signalled)) => {
+                assert!(
+                    signalled.pgid != 0,
+                    "⚠ a stop that named no process group is a report a person cannot verify: \
+                     {signalled:?}",
+                );
+                assert!(
+                    signalled.leader.is_some(),
+                    "⚠ and it must say WHAT it reached — the group's leader was readable here, so \
+                     an absence is this client dropping the name rather than the daemon lacking \
+                     one: {signalled:?}",
+                );
+            }
+            other => panic!(
+                "⛔⛔⛔⛔ REGISTER ITEM 654: a run cancelled OVER THE SOCKET must report its peer's \
+                 job SIGNALLED, exactly as the in-process driver does. `Unsupported` is the word \
+                 this item exists to have removed — it says «this host cannot stop a pane's job» \
+                 about a daemon that owns the pseudoterminal. Got {other:?}",
+            ),
+        }
+    }
+    // ⛔⛔⛔⛔ **AND THE TURN REALLY ENDED.** No outcome word can prove this: `Stopped::Job` says a
+    // signal was DELIVERED, and `stop`'s own module doc is explicit that delivery is not obedience.
+    // The pid leaving the pane's foreground job is the product's claim, read off the process table.
+    assert!(
+        wait_until(Duration::from_secs(10), || !job_still_holds(
+            &mut setup,
+            pane,
+            working_pid
+        )),
+        "⛔⛔⛔⛔ REGISTER ITEM 654: the run reported its work stopped and process {working_pid} is \
+         STILL IN THE PANE'S FOREGROUND JOB. That is the whole defect said out loud — a loop's door \
+         closed on a room that is still occupied, and the peer goes on spending after the run that \
+         started it has been reported over.",
+    );
+    // ⚠ ENDING A TURN AND ENDING A PANE ARE DIFFERENT ACTS. The sibling gate below is where that
+    // distinction is made to carry weight; here it is the cheap half of the same claim.
+    assert!(
+        remote.pane_ids().contains(&pane),
+        "⚠⚠⚠ the stop took the PANE with the turn — a cancelled run must leave its peer's pane, its \
+         shell and its scrollback exactly where it found them",
+    );
+}
+
+/// ⛔⛔⛔⛔ **A STOP THAT CROSSES THE SOCKET CARRIES THE NARROW REACH, SO A RUN THAT RAN OUT OF TIME
+/// CANNOT CLOSE SOMEBODY'S PANE** — register item 654, and the reason this needed a wire ARGUMENT
+/// rather than only a client.
+///
+/// # ⚠⚠⚠⚠⚠ The verb was already there and it was the WRONG ACT
+///
+/// The item's first question was whether `stop_job` could carry a driver's stop with no new
+/// address. It could — and its grammar could not. That verb was written for a PERSON naming one
+/// pane on purpose, so it always delivered `Reach::TheProgramToo`, and the difference is not a
+/// degree: under the wide reach a stop that would KILL the pane's own program is delivered and the
+/// pane goes with it. `sprag_terminal::stop`'s own measurement of that path is *it closed one, and
+/// the daemon exited behind it.* A run whose clock simply ran out must never be able to do that,
+/// which is what `Reach::UnderTheProgram` is for and what a remote driver had no way to say.
+///
+/// # ⚠⚠⚠ The fixture is the AI loop's own shape, not a contrived one
+///
+/// A pane opened running its peer — `open_pane`'s `cmd`, which `Unstopped::WouldEndThePane`'s doc
+/// names as the preferred path — is a pane whose OWN program owns the terminal. `sleep` stands in
+/// for the peer because it dies of a `SIGINT` and says so through `/proc`, which is exactly the
+/// condition the narrow reach declines to act on.
+///
+/// So the pass is: the run is cut short, the daemon DECLINES, the refusal crosses back as the word
+/// it left as, and **the pane is still there**. The failure it is built to catch is the opposite of
+/// a missing feature — it is a stop that worked too well.
+#[test]
+fn a_stop_that_crosses_the_socket_keeps_the_narrow_reach_and_leaves_the_pane_standing() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    // ⚠ The boot pane is a SECOND pane and is never driven. Without it the daemon's last pane is
+    // the one under test, and a mutation that closes it takes the daemon down too — which would red
+    // this gate for the right reason by the wrong mechanism, and leave the socket unreadable at the
+    // moment the assertion wants to ask about it.
+    let _host = spawn_host_at(&sock, &["cat"]);
+    let (remote, mut setup) = remote_driver(&sock);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["sleep", "300"] }));
+
+    let mut working = Orchestrator::new(
+        pane,
+        OrchestrationSpec {
+            stimulus: "a-word-for-the-peer".to_owned(),
+            sentinel: Some("this-turn-never-finishes".to_owned()),
+            ready_when: None,
+            ready_within: None,
+            may_answer: None,
+            attended: Attended::NoOne,
+            turn: sprag_plugin::Turn::lasting(sprag_plugin::DoneWhen::Exits, None),
+        },
+    );
+    // ⚠⚠ THE DEADLINE, not a cancel — the OTHER of the two endings `stop_the_work` runs on, and the
+    // one the item's sentence is about (*a routine timeout must not be able to close somebody's
+    // pane*). Between the two gates both endings are driven over this socket.
+    let outcome = Driver::new(Guardrails {
+        max_iterations: u32::MAX,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(3)),
+    })
+    .run(&mut working, &remote, &RunContext::uncancellable());
+
+    assert!(
+        outcome.stopped.is_some(),
+        "⛔⛔ a run cut short by its own clock must have REACHED for the work it started, whatever \
+         the answer was: {outcome:?}",
+    );
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            outcome.stopped,
+            Some(sprag_plugin::Stopped::Unreached(PaneError::NotStopped(
+                sprag_terminal::Unstopped::WouldEndThePane
+            ))),
+            "⛔⛔⛔⛔ REGISTER ITEM 654: the daemon had to DECLINE this stop, and the refusal had to \
+             cross back as the word it left as. Two different failures land here and both matter: \
+             a `Job(_)` means the narrow reach never reached the daemon and this run just killed \
+             the pane's own program; an `Unreachable` means the reach DID cross and the refusal did \
+             not, so a remote run publishes a different sentence from an in-process one about the \
+             same event. Got {:?}",
+            outcome.stopped,
+        );
+    }
+    // ⛔⛔⛔⛔ **THE CLAIM.** Nothing above this line distinguishes «declined» from «delivered and
+    // the pane happened to survive», and nothing below it can be satisfied by a client that merely
+    // spells the word `reach` — the pane is either still there or it is not.
+    assert!(
+        wait_until(Duration::from_secs(5), || remote.pane_ids().contains(&pane)),
+        "⛔⛔⛔⛔ REGISTER ITEM 654: A RUN THAT RAN OUT OF TIME CLOSED THE PANE IT WAS GIVEN. That is \
+         what the wide reach does to a pane whose own program is the work, it is measured in \
+         `sprag_terminal::stop` («it closed one, and the daemon exited behind it»), and it is the \
+         reason this stop had to carry a reach across the wire instead of borrowing the verb a \
+         person uses.",
+    );
+    assert!(
+        remote.pane_collapsed(pane).is_some(),
+        "⚠⚠ and the pane is still a pane this driver can read, not merely an id still in a list",
+    );
+}
+
 /// ⛔⛔⛔⛔ **A STATE WORD THIS BUILD CANNOT SPELL IS A SKEW, NOT A SHELL** — register item 564.
 ///
 /// # ⚠⚠⚠⚠⚠ The collapse, and why it goes live on an ordinary day

@@ -1074,7 +1074,36 @@ impl ScopeAsk {
 ///   ⚠⚠ **NO ANSWER WORD, ARGUMENT OR FORM MOVED.** `Hand`'s two words (`person`, `program`) were
 ///   already published as the WRITE argument this address's keys are taken from; nothing that
 ///   already answers is touched.
-pub const WIRE_PROTOCOL: u32 = 40;
+///
+/// * **41 — A STOP SAYS HOW FAR IT MAY REACH, AND THE OLD SILENCE MEANT THE WIDER OF TWO DIFFERENT
+///   ACTS.** Register item 654. `stop_job` gains a `reach` argument carrying a
+///   `sprag_terminal::Reach` word (`under_the_program`, `the_program_too`); absent still asks for
+///   the wide one, which is what every caller of this verb has always meant.
+///
+///   ⚠⚠⚠⚠⚠ **THE ADDED-ARGUMENT RULE IS [`CLIENT_BUILD_PARAM`]'S, AND THIS IS ITS SHARPEST CASE.**
+///   That rule is not *arguments are additive*: an unknown argument is SWALLOWED rather than
+///   refused, so the number moves when something WAITS ON THE FACT. What waits here is whether the
+///   pane survives. Under `Reach::UnderTheProgram` a stop that would KILL the pane's own program is
+///   declined (`Unstopped::WouldEndThePane`); under the wide reach it is delivered, and
+///   `sprag_terminal::stop`'s own measurement of that path is *it closed one, and the daemon exited
+///   behind it*. A daemon predating this key therefore does not perform a degraded version of the
+///   request — it performs a DIFFERENT one, and the pane it may take does not come back.
+///
+///   ⚠⚠⚠⚠ **AND IT IS ONLY REACHABLE BECAUSE THE STOP ITSELF NOW CROSSES.** Until this version
+///   `sprag_host::remote_access::RemotePaneAccess` offered no `job_control` at all, so a run driven
+///   from another process answered `Stopped::Unsupported` on every cancel and every passed
+///   deadline. That word was HONEST — it is what a host with no job control must say — which is why
+///   the absence survived where item 653's did not; what it was not is EQUAL, and the same
+///   `orchestrate` request meaning two things depending on which process drove it is what
+///   `RUN_DRIVER_PROCESS` forbids.
+///
+///   ⚠⚠ **THE ANSWER SHAPE DID NOT MOVE.** `{stop, pgid, job?}` is unchanged and is now READ by a
+///   second party; the refusal a caller gets back is still `Unstopped`'s own sentence, which that
+///   type now maps back to its own word (`Unstopped::from_sentence`) so a remote run publishes the
+///   clause an in-process one would.
+///
+/// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
+pub const WIRE_PROTOCOL: u32 = 41;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).
