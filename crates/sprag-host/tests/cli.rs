@@ -2452,9 +2452,9 @@ fn daemon_pid(sock: &Path) -> Option<u32> {
     // The socket is matched from the ENVIRONMENT rather than the name, because a box can be running
     // the developer's own daemon: a probe that took the first `sprag-term` it found would SIGKILL
     // somebody's terminal (R278, and this test kills what it finds).
-    sprag_terminal::procfs::pids_named("sprag-term")
+    let holding: Vec<u32> = sprag_terminal::procfs::pids_named("sprag-term")
         .into_iter()
-        .find(|&pid| {
+        .filter(|&pid| {
             pid != me
                 && sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
                     environ
@@ -2462,6 +2462,29 @@ fn daemon_pid(sock: &Path) -> Option<u32> {
                         .any(|value| value == want.as_bytes())
                 })
         })
+        .collect();
+    // ⚠⚠⚠⚠⚠ **THE ONE THAT IS NOBODY'S CHILD, AND THAT STOPPED BEING A FORMALITY ON 2026-08-24.**
+    // Until `run-driver-process` defaulted to `on`, exactly one process held this socket in its
+    // environment and the first match WAS the daemon. A driver is spawned by the daemon with the
+    // same endpoint in its environment (`crate::driver_spawn`) and is the same binary, so it
+    // matches every clause above — and the first match became a coin toss between the daemon and
+    // whichever of its runs happened to be listed first. Every caller here means the DAEMON: they
+    // SIGKILL it to stage a reboot, and killing a driver instead leaves the socket held by a daemon
+    // the test then waits for a successor to replace.
+    //
+    // ⚠ Parentage rather than argv, because `procfs` publishes `parent` and no command line — and
+    // it answers the question exactly: a driver's parent is the daemon that spawned it, and the
+    // daemon's own parent is the init process that adopted it when its intermediate forked away.
+    holding
+        .iter()
+        .copied()
+        .find(|&pid| {
+            !sprag_terminal::procfs::parent(pid).is_some_and(|parent| holding.contains(&parent))
+        })
+        // ⚠ A daemon whose only run's driver outlived it is still the answer nobody's-child gives,
+        // so this fallback is for the shape where the walk saw a torn process table, not for a
+        // shape the product produces.
+        .or_else(|| holding.first().copied())
 }
 
 /// SIGKILL `pid` and wait for it to be gone — the reboot analogue. Deliberately not a graceful
@@ -2483,10 +2506,47 @@ fn spawn_daemon(sock: &Path, state: &Path) {
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .env("SPRAG_HOST_RPC", "1")
         .env("XDG_STATE_HOME", state)
+        // ⚠⚠⚠⚠⚠ **AND ITS OPTIONS COME FROM A DIRECTORY THIS TEST OWNS, WHICH IS THE SAME RULE THE
+        // STATE HOME ABOVE IS HERE FOR.** A daemon reads `$XDG_CONFIG_HOME/sprag/config.toml`, so
+        // without this line every daemon in this file inherits **the developer's own options** —
+        // and the moment a test's subject IS an option (`run-driver-process`, register item 544)
+        // the suite would be measuring whatever is set on the box it happens to run on. Pointed at
+        // the test's own state root, which is empty unless a test writes one, so what is measured
+        // is the DEFAULT.
+        .env("XDG_CONFIG_HOME", state.join("config"))
         .stdin(Stdio::null())
         .status()
         .expect("spawn the sprag-term daemon");
     assert!(status.success(), "the daemon's parent forked cleanly");
+}
+
+/// Every `sprag-term` process holding `sock` in its environment — the daemon, plus one per run it
+/// is driving in a process of its own ([`sprag_host::options::RUN_DRIVER_PROCESS`]).
+///
+/// # ⚠⚠⚠⚠ Why the process table is the only honest observer here
+///
+/// A row deliberately cannot say which kind of driver filled it in — `RUN_DRIVER_PROCESS`'s own doc
+/// makes that a promise (*"the same request must mean the same thing either way, or the wire has
+/// grown a second answer"*). So *the driver is a process of its own* has no wire answer by design,
+/// and the only place it is true or false is the operating system.
+///
+/// ⚠ Matched on the ENVIRONMENT and not the name, [`daemon_pid`]'s rule and for its reason: a box
+/// can be running the developer's own daemon, and a probe that counted every `sprag-term` would
+/// count theirs.
+fn sprag_term_processes(sock: &Path) -> usize {
+    let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
+    let me = std::process::id();
+    sprag_terminal::procfs::pids_named("sprag-term")
+        .into_iter()
+        .filter(|&pid| pid != me)
+        .filter(|&pid| {
+            sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
+                environ
+                    .split(|byte| *byte == 0)
+                    .any(|value| value == want.as_bytes())
+            })
+        })
+        .count()
 }
 
 /// Whether any DURABLE saved pane history under `state` contains `needle`.
@@ -2883,6 +2943,163 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
          match it to anybody, and inventing a seat would hand it to whoever boots in next: {:?}",
         listed.stdout,
     );
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A DAEMON TOLD TO DRIVE ITS RUNS IN PROCESSES OF THEIR OWN DOES, AND ONE TOLD NOT TO
+/// DOES NOT** — [`sprag_host::options::RUN_DRIVER_PROCESS`]'s contract, in both directions.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists, and why it is not a gate on the DEFAULT
+///
+/// It was written as one. Item 544's end state is the opposite default, and the measurements its
+/// own doc said that decision was waiting for had arrived (items 543, 662, 663, and this item's
+/// stage 1). So the switch was flipped — and **the workspace sweep answered with eighteen
+/// failures**, then nine, then two. What is left of those two is register items 664 and 665, and
+/// either alone is a reason the word is still `off`.
+///
+/// What survives that is this: **the option must work in both directions, whichever way the default
+/// eventually goes.** A switch nobody measures is a promise nobody is keeping — and it is the WAY
+/// BACK, which is the half that matters most on the day somebody reaches for it.
+///
+/// ⚠⚠ **THE PROCESS TABLE IS THE ONLY HONEST OBSERVER.** A row deliberately cannot say which kind
+/// of driver filled it in — that is the option's own promise (*"the same request must mean the same
+/// thing either way, or the wire has grown a second answer"*) — so *the driver is a process of its
+/// own* has no wire answer by design, and is true or false only in the operating system.
+///
+/// ⚠⚠ **THE CONFIG DIRECTORY IS THE TEST'S OWN** ([`spawn_daemon`]): the subject here IS an option,
+/// so a daemon reading the developer's `config.toml` would make this suite answer differently on
+/// different boxes — and answer WRONGLY on the one box where somebody had set it.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_to_does_not() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-driver-on-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // ── A DAEMON TOLD `on` ───────────────────────────────────────────────────────────────────
+    let config = state.join("config").join("sprag");
+    std::fs::create_dir_all(&config).expect("this test's own config directory");
+    std::fs::write(
+        config.join(sprag_host::CONFIG_FILE),
+        format!(
+            "[options]\n{} = \"on\"\n",
+            sprag_host::options::RUN_DRIVER_PROCESS
+        ),
+    )
+    .expect("a config a daemon will read");
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    assert_eq!(
+        sprag_term_processes(&sock),
+        1,
+        "⚠⚠ THE PREMISE: before any run there is exactly one `sprag-term` against this socket — \
+         the daemon. If this is not 1 the count below says nothing about drivers.",
+    );
+
+    let started = |sock: &Path| {
+        let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
+        conn.call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(NEW_SESSION_ACTION),
+                "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+            }),
+        )
+        .expect("new_session answers");
+        let pane = conn
+            .call(
+                "scene/query",
+                json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("the pane list answers")
+            .as_array()
+            .and_then(|panes| panes.first().cloned())
+            .and_then(|pane| pane["id"].as_u64())
+            .expect("the session's pane");
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": "work",
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": {
+                    "plugin": "orchestrator",
+                    "pane": pane,
+                    "stimulus": "x",
+                    // ⚠ Never printed by a `cat`, so the run is certainly still going while the
+                    // process table is read — the same shape the restart gates in this file use.
+                    "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                    "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+                },
+            }),
+        )
+        .expect("the run is submitted");
+    };
+    started(&sock);
+
+    // ── THE CLAIM: the run got a process of its own ──────────────────────────────────────────
+    assert!(
+        wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 544: a daemon told `run-driver-process = on` drove this run on a \
+         THREAD of its own. Everything items 543, 662 and 663 built — a run's place and datamodel \
+         crossing the log, its counters, position and walk reaching the daemon, a boot putting it \
+         back on a driver — serves the out-of-process path, and a switch that does not reach it is \
+         a path nothing can be pointed at. Found {} `sprag-term` process(es) against this socket, \
+         and a driven run makes two.",
+        sprag_term_processes(&sock),
+    );
+
+    // ── THE CONTROL: a daemon told `off` still drives on a thread ────────────────────────────
+    //
+    // ⚠⚠⚠⚠ WITHOUT THIS, *the switch was honoured* and *this test cannot count* are the same
+    // green. And it is the arm that matters most on the day somebody reaches for it: `off` is the
+    // WAY BACK, so a switch that only ever worked in one direction is half a switch.
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-driver-off-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let off = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    let config = state.join("config").join("sprag");
+    std::fs::create_dir_all(&config).expect("this test's own config directory");
+    std::fs::write(
+        config.join(sprag_host::CONFIG_FILE),
+        format!(
+            "[options]\n{} = \"off\"\n",
+            sprag_host::options::RUN_DRIVER_PROCESS
+        ),
+    )
+    .expect("a config a daemon will read");
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the configured daemon never started serving",
+    );
+    started(&sock);
+    // ⚠ Given TIME to be wrong: the claim above waits up to twenty seconds for a second process, so
+    // a control that looked once could pass simply by reading before a child had been spawned.
+    assert!(
+        !wait_for(Duration::from_secs(5), || sprag_term_processes(&sock) > 1),
+        "⚠⚠⚠ THE CONTROL FAILED: a daemon told `run-driver-process = off` started a driver \
+         PROCESS anyway. That switch is the way back from the new default, and a switch that does \
+         nothing is worse than no switch — it is a promise nobody is keeping.",
+    );
+    drop(off);
     drop(guard);
 }
 

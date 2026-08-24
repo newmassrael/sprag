@@ -1746,8 +1746,9 @@ impl RunRegistry {
                     // is that a run is READ after it ends, when its daemon is already gone.
                     //
                     // ⚠⚠ A MISSING KEY FALLS BACK TO THE CELL AND NEVER TO A ZERO. There is no
-                    // report at all for a run this daemon drives on a thread of its own — every run
-                    // under today's default — and an older driver reports only the keys its build
+                    // report at all for a run this daemon drives on a thread of its own — since
+                    // 2026-08-24 that is a daemon told `RUN_DRIVER_PROCESS = off`, the way back
+                    // from the new default — and an older driver reports only the keys its build
                     // knew. Both are *nobody said*, and the cell is the honest answer to that.
                     let reported = run
                         .reported

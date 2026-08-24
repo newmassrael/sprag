@@ -239,6 +239,27 @@ pub struct DaemonShared {
     /// directory leaves the key absent, which is *nothing here drives panes* rather than a wrong
     /// answer.
     pub runs: Option<Arc<Mutex<runs::RunRegistry>>>,
+    /// **HOW THIS IMAGE STARTS A RUN'S DRIVER IN A PROCESS OF ITS OWN**, for a given session — or
+    /// [`None`] for a host that cannot be one. Register item 544.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the ABILITY is injected and not decided in here, measured the hard way
+    ///
+    /// [`driver_spawn`] starts [`std::env::current_exe`] with `--drive`, which is correct exactly
+    /// when the running image is `sprag-term` — *"the driver is this daemon's image by
+    /// construction"*. This crate is linked into images that are NOT: the windowed client, and
+    /// every test binary that builds an in-process host. While
+    /// [`options::RUN_DRIVER_PROCESS`] defaulted to `off` that was invisible; the day it flipped,
+    /// **eighteen tests failed** because a host was spawning its own test harness with `--drive`
+    /// and waiting for it to drive a run.
+    ///
+    /// ⚠⚠ So *can this image be a driver* is a fact only the image knows, and it says so by handing
+    /// one of these in ([`rpc::HostState::driving_out_of_process`]). The OPTION is still what
+    /// decides whether to use the ability — a daemon told `off` provides none — but an image that
+    /// cannot drive can no longer be asked to, whatever any config file says.
+    ///
+    /// ⚠ A FACTORY over the session rather than a spawner, because a driver is told which session
+    /// to scope its waits to (`-t`) and the scope is per request, while this is built once at boot.
+    pub spawn_driver: Option<DriverSpawns>,
 }
 
 /// The host's SAMPLED facts, one sampler each, shared by every arm that serves them.
@@ -589,6 +610,10 @@ fn pane_container(id: PaneId, pty: &PanePty, cells: PaneCells) -> Scene {
 /// nobody checks*: there are four of these and they are all the same call.
 pub type RunAnnounce = Arc<dyn Fn(crate::runs::RunId) + Send + Sync>;
 
+/// **HOW AN IMAGE THAT CAN BE A DRIVER STARTS ONE, FOR A SESSION** — see
+/// [`DaemonShared::spawn_driver`], which holds the whole argument for why this is injected.
+pub type DriverSpawns = Arc<dyn Fn(&str) -> plugins::DriverSpawn + Send + Sync>;
+
 /// **WHERE A RUN'S END AND A PERSON'S ORDER TO IT ARE ANNOUNCED**, for watchers of `session` —
 /// `(on_end, on_ordered)`.
 ///
@@ -648,11 +673,10 @@ pub fn workspace_scene(
     // Both are registry-FREE opaque `Fn`s (see `spawn_reaper` and `attention`), so a plugin-spawned
     // pane feeds the reaper and can ask for a person exactly like a mux one, without the plugin
     // layer ever learning what either hook does — the ISP boundary intact.
-    let plugin_exit = daemon.on_pane_exit.clone();
-    let plugin_attention = daemon.attention.clone();
-    // ...and the third: the detector, so a plugin SUPERVISING an agent reads the same verdict the
-    // pane list shows a person. Opaque at the boundary for the other two's reason.
-    let plugin_agents = daemon.agents.clone();
+    // ⚠ Cloned WHOLE rather than field by field: the plugin surface needs four of these now
+    // (the three hooks and whether this image can start a driver), and the mux surface below
+    // consumes the value — see `plugin_host`, which takes them off it.
+    let plugin_side = daemon.clone();
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
     // below cannot nest inside it.
@@ -688,9 +712,7 @@ pub fn workspace_scene(
             runs,
             scope.session(),
             channels,
-            plugin_exit,
-            plugin_attention,
-            plugin_agents,
+            &plugin_side,
         )))
         .with_tag(PLUGINS_TAG),
     ));
@@ -724,17 +746,15 @@ pub fn plugin_host(
     runs: &Arc<Mutex<RunRegistry>>,
     session: &str,
     channels: &Arc<ChannelRegistry>,
-    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
-    attention: Option<Arc<attention::AttentionRouter>>,
-    agents: Option<Arc<AgentClock>>,
+    daemon: &DaemonShared,
 ) -> plugins::PluginsExternal {
     let (on_end, on_ordered) = run_announcers(channels, session);
     let host = plugins::PluginsExternal::new(
         workspace,
         Arc::clone(runs),
-        on_pane_exit,
-        attention,
-        agents,
+        daemon.on_pane_exit.clone(),
+        daemon.attention.clone(),
+        daemon.agents.clone(),
         Some(on_end),
         Some(on_ordered),
     );
@@ -743,13 +763,20 @@ pub fn plugin_host(
     // needs to know WHICH BINARY THIS IS, WHICH ENDPOINT it serves and WHICH SESSION a client of it
     // must scope to, and the session tree is precisely what the plugin surface is free of.
     //
-    // ⚠⚠ `None` unless the option says so, so a daemon nobody configured drives runs exactly as it
-    // did before — see `crate::options::RUN_DRIVER_PROCESS` for why that default is the migration
-    // rather than the destination.
-    if config::option_is_on(options::RUN_DRIVER_PROCESS) {
-        return host.driving_out_of_process(driver_spawn(session.to_owned()));
+    // ⚠⚠ **AND THAT IS WHAT A DAEMON NOBODY CONFIGURED NOW DOES** — the option's default became
+    // `on` on 2026-08-24, on the measurements its own doc said the decision was waiting for. A
+    // daemon told `off` still drives on a thread of its own, which is the way back and is gated
+    // beside the new default (`cli`'s
+    // `a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own`).
+    //
+    // ⚠⚠⚠⚠⚠ **AND THE ABILITY IS THE CALLER'S TO GRANT, NOT THIS FUNCTION'S TO ASSUME** — see
+    // [`DaemonShared::spawn_driver`]. The option says whether to USE a driver process; whether this
+    // image can BE one is a fact only the image knows, and a host that hands none drives on a
+    // thread whatever any config file says.
+    match &daemon.spawn_driver {
+        Some(spawn) => host.driving_out_of_process(spawn(session)),
+        None => host,
     }
-    host
 }
 
 /// **HOW THIS DAEMON STARTS A RUN'S DRIVER**, scoped to `session` — register items 544 / 643 / 650.
@@ -773,7 +800,8 @@ pub fn plugin_host(
 /// refused before reading is one whose exit status is the answer, and treating the pipe as fatal
 /// would report `Broken pipe` instead — register item 471, which `sprag-gate`'s own ratchet holds
 /// every test in this tree to.
-fn driver_spawn(session: String) -> plugins::DriverSpawn {
+pub fn driver_spawn(session: &str) -> plugins::DriverSpawn {
+    let session = session.to_owned();
     Arc::new(
         move |id: crate::runs::RunId, request: &serde_json::Map<String, serde_json::Value>| {
             let mut child = std::process::Command::new(std::env::current_exe()?)

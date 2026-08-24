@@ -398,14 +398,34 @@ fn main() -> io::Result<()> {
     // ⚠ AFTER the durability saver has started, which costs nothing: a run waiting to be put back
     // is still in the registry, still `interrupted`, and still carries the place and the request
     // the log gave it — so a save that lands in this window writes exactly what it read.
+    // ⚠⚠⚠⚠⚠ **THIS IMAGE CAN BE A DRIVER, AND IT IS THE ONLY ONE THAT CAN** — register item 544.
+    // `sprag_host::driver_spawn` starts `current_exe()` with `--drive`, and this binary is the one
+    // that answers that argv. The library used to mint it for whichever host happened to be
+    // assembling a scene; the day `run-driver-process` defaulted to `on`, eighteen test binaries
+    // began spawning THEMSELVES and waiting for the copy to drive a run. So the ability is granted
+    // here, by the image that has it, and the OPTION decides whether to use it.
+    let spawn_driver: Option<sprag_host::DriverSpawns> =
+        sprag_host::config::option_is_on(sprag_host::options::RUN_DRIVER_PROCESS)
+            .then(|| Arc::new(sprag_host::driver_spawn) as sprag_host::DriverSpawns);
     if args.daemon {
-        put_back_inherited_runs(&host, &runs, &channels, &on_pane_exit, &attention, &agents);
+        put_back_inherited_runs(
+            &host,
+            &runs,
+            &channels,
+            &on_pane_exit,
+            &attention,
+            &agents,
+            spawn_driver.clone(),
+        );
     }
-    let state = HostState::new(host, channels, Some(on_pane_exit))
+    let mut state = HostState::new(host, channels, Some(on_pane_exit))
         .with_runs(runs)
         .with_attachments(attachments)
         .with_attention(attention)
         .with_agents(agents);
+    if let Some(spawn) = spawn_driver {
+        state = state.driving_out_of_process(spawn);
+    }
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client
@@ -550,6 +570,7 @@ fn put_back_inherited_runs(
     on_pane_exit: &Arc<dyn Fn() + Send + Sync>,
     attention: &Arc<sprag_host::attention::AttentionRouter>,
     agents: &Arc<AgentClock>,
+    spawn_driver: Option<sprag_host::DriverSpawns>,
 ) {
     // ⚠ The list is taken and the lock released before anything is built: putting one run back
     // takes the registry again (`put_back`), and a workspace lock before that.
@@ -589,9 +610,13 @@ fn put_back_inherited_runs(
             runs,
             &session,
             channels,
-            Some(Arc::clone(on_pane_exit)),
-            Some(Arc::clone(attention)),
-            Some(Arc::clone(agents)),
+            &sprag_host::DaemonShared {
+                on_pane_exit: Some(Arc::clone(on_pane_exit)),
+                attention: Some(Arc::clone(attention)),
+                agents: Some(Arc::clone(agents)),
+                spawn_driver: spawn_driver.clone(),
+                ..sprag_host::DaemonShared::none()
+            },
         );
         match plugins.put_back(&run) {
             Ok(()) => tracing::info!(

@@ -336,11 +336,33 @@ pub const AGENT_SETTLE_TIME: &str = "agent-settle-time";
 /// wire has grown a second answer to *what does this run do*. So this is an option and not a
 /// request key, and a caller cannot tell which kind it got.
 ///
-/// ⚠⚠ **OFF, and the default is the migration.** In-process is what every run does today, and a
-/// switch that changed that on the day it shipped would move every existing loop onto a path
-/// nothing has run in anger. The end state is the opposite default — at which point this option's
-/// job is done and it goes — but that is a decision to take on measurements, not at the moment the
-/// second path first compiles.
+/// # ⚠⚠⚠⚠⚠ STILL `off` — and 2026-08-24 turned that from a guess into a measurement
+///
+/// This shipped `off` saying the end state was the opposite default, *"a decision to take on
+/// measurements, not at the moment the second path first compiles."* Those measurements arrived:
+/// a run's place and the words its entry actions wrote cross the log and a boot puts the run back
+/// on a driver (register item 543); its counters and position reach the daemon through its report,
+/// which the durable log now prefers over a cell that cannot move (662); so do what it delivered,
+/// what its checks came to, which pane it drives, what it banked and its whole walk (663); and a
+/// driver in this path outlives the daemon it drives (item 544's stage 1). So the switch WAS
+/// flipped — and the workspace sweep answered, which is the only reason this word is still `off`.
+///
+/// ⚠⚠⚠⚠ **WHAT THE FLIP MEASURED, IN THE ORDER IT CAME OUT** — three findings, two still open:
+/// * **the ability was assumed, not granted** (fixed): the library minted a driver spawner for any
+///   host, and it starts `std::env::current_exe()` — so every image that is not `sprag-term` began
+///   spawning ITSELF. Eighteen failures. Whether an image can BE a driver is now injected
+///   ([`crate::DaemonShared::spawn_driver`]) and this option only decides whether to use it.
+/// * **the walk stopped at the process boundary** (fixed): nine more failures, because a row's
+///   journal was read off a cell that never moves for such a run.
+/// * **⛔ a shutdown does not reach an out-of-process driver** — register item 664 — and **⛔ a run
+///   driven out of process reports `blocked` where an attended one converges** — register item 665.
+///   Both are open, and either alone is a reason not to move this word: the first makes every
+///   signalled daemon pay its full join deadline, and the second takes away a person's ability to
+///   answer their own loop.
+///
+/// ⚠ **THE WAY BACK IS GATED IN BOTH DIRECTIONS** —
+/// `cli`'s `a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_to_does_not`
+/// — so whichever way this word eventually goes, the other arm is a promise somebody is keeping.
 pub const RUN_DRIVER_PROCESS: &str = "run-driver-process";
 
 /// [`DETACH_ON_DESTROY`]'s values, in tmux's documented order.
@@ -566,7 +588,9 @@ pub const OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         name: RUN_DRIVER_PROCESS,
         kind: OptionKind::Choice(ON_OFF),
-        // OFF — see the name's own doc. This is the migration's default, not the destination.
+        // OFF — still, and the name's own doc says what was measured on 2026-08-24 when this was
+        // flipped to `on` and the sweep answered. Two defects stand between here and the
+        // destination; neither is a reason to change this word before they are paid.
         default: "off",
     },
     OptionSpec {

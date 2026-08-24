@@ -598,6 +598,10 @@ impl WorkspaceExternal {
             agents,
             samplers,
             runs,
+            // ⚠ THE MUX SURFACE STARTS NO RUNS, so whether this image can be a driver is not its
+            // business — register item 544. Named rather than swept up by `..` so that a seventh
+            // field cannot arrive here unnoticed, which is what this exhaustive pattern is for.
+            spawn_driver: _,
         } = daemon;
         Self {
             registry,
@@ -3857,6 +3861,8 @@ mod tests {
                     attention: None,
                     agents: None,
                     samplers: sampler(),
+                    // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                    spawn_driver: None,
                     runs: None,
                 },
             )
@@ -4051,6 +4057,8 @@ mod tests {
                     attention: None,
                     agents: None,
                     samplers: sampler(),
+                    // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                    spawn_driver: None,
                     runs: None,
                 },
             ),
@@ -4077,6 +4085,8 @@ mod tests {
                     attention: None,
                     agents: Some(Arc::clone(&agents)),
                     samplers: sampler(),
+                    // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                    spawn_driver: None,
                     runs: None,
                 },
             ),
@@ -4207,6 +4217,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: Some(Arc::clone(&runs)),
             },
         );
@@ -4374,6 +4386,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -5217,6 +5231,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -6955,6 +6971,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -7376,6 +7394,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -7565,6 +7585,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -7631,6 +7653,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -8279,6 +8303,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         );
@@ -8768,6 +8794,8 @@ mod tests {
                 attention: None,
                 agents: None,
                 samplers: sampler(),
+                // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
+                spawn_driver: None,
                 runs: None,
             },
         )

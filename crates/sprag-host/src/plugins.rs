@@ -3017,6 +3017,14 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             "completed": banked.completed,
             "unit": banked.unit.as_ref(),
         })),
+        // ⚠⚠⚠⚠⚠ **AND THE WALK ITSELF** — register item 544's default flip is what found this. The
+        // row publishes a run's per-step journal beside its state, out of the cell, so a run driven
+        // in another process had an EMPTY walk however many steps it took — and nine tests that
+        // read what a run did step by step went red the day the option's default changed. It
+        // travels ALREADY RENDERED, unlike everything else here, because `step_to_json` is the only
+        // reader there is: `persistable` deliberately does not save a journal, so nothing downstream
+        // wants a typed `StepRecord` back.
+        RUN_JOURNAL_KEY: progress.journal.iter().map(step_to_json).collect::<Vec<_>>(),
     });
     answer
 }
@@ -3075,6 +3083,15 @@ pub struct ReportedProgress {
     /// read for is one whose cell is empty by construction. A caller that could tell them apart
     /// would have nothing different to do.
     pub banked: Option<sprag_plugin::Banked>,
+    /// What it said it did, step by step — items 663 / 544, and **the one field here that is
+    /// already JSON**.
+    ///
+    /// ⚠⚠ Everything else is typed because a durable log has named columns and needs values. A
+    /// journal has exactly one reader — the row, which renders it with `step_to_json` — and
+    /// `crate::runs::RunRegistry::persistable` deliberately keeps no journal at all. Decoding a
+    /// rendered walk back into `StepRecord`s so the same function could render it again would be a
+    /// second spelling of the walk with nothing asking for one.
+    pub journal: Option<Vec<Value>>,
 }
 
 /// Read a driver's progress report — see [`ReportedProgress`].
@@ -3149,6 +3166,10 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             .and_then(Value::as_u64)
             .map(PaneId),
         banked,
+        journal: beside
+            .get(RUN_JOURNAL_KEY)
+            .and_then(Value::as_array)
+            .cloned(),
     }
 }
 
@@ -3209,7 +3230,9 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     // ⚠⚠⚠⚠⚠ **WHAT THIS RUN'S DRIVER SAID, IF IT IS IN ANOTHER PROCESS** — register item 663. Read
     // ONCE here and used by every beside-the-state key below, each of which prefers it and falls
     // back to the cell. There is no report for a run this daemon drives on a thread of its own, so
-    // the fallback is not a defensive nicety: it is the arm every run takes under today's default.
+    // the fallback is not a defensive nicety — it is the whole answer for such a run. ⚠ Since
+    // 2026-08-24 that is the arm a daemon told `off` takes rather than the default one, and the
+    // fallback is load-bearing exactly because `off` is the way back.
     let reported = run
         .reported
         .as_ref()
@@ -3277,7 +3300,12 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
         // means the same thing whether the run is still going or over: these are the steps it
         // took. Nesting it under `running` would have made a finished run's account vanish at
         // exactly the moment somebody wants to read it.
-        RUN_JOURNAL_KEY: run.progress.journal.iter().map(step_to_json).collect::<Vec<_>>(),
+        // ⚠⚠ THE REPORT'S WALK FIRST — register items 663 / 544. A run driven in another process
+        // has an empty cell, so reading it here published *this run has taken no steps* about a run
+        // that had taken many.
+        RUN_JOURNAL_KEY: reported.journal.clone().unwrap_or_else(|| {
+            run.progress.journal.iter().map(step_to_json).collect()
+        }),
     });
     // ⚠⚠ THE SEAT IS THE CALLER'S TO RESOLVE, NOT THIS FUNCTION'S, and that is the shape of the
     // fix rather than an accident of plumbing: for a run this daemon issued it is `run.opened_by`,
@@ -8481,7 +8509,8 @@ mod tests {
         //
         // ⚠⚠⚠⚠ WITHOUT THIS, *prefer the report* is indistinguishable from *read only the report*,
         // and the second silently zeroes every run this daemon drives on a thread of its own —
-        // which is every run under today's default (`RUN_DRIVER_PROCESS` is `off`).
+        // which since 2026-08-24 is a daemon told `RUN_DRIVER_PROCESS = off`, the way back from
+        // the new default and therefore the arm that must not rot.
         let cell = sprag_plugin::ProgressCell::default();
         {
             let mut moving = lock(&cell);
@@ -8542,9 +8571,10 @@ mod tests {
     /// is taken OUT of it and published once, in the place the row already publishes it. The first
     /// control is what holds that.
     ///
-    /// ⚠ Three controls: a fact is published exactly ONCE; the in-process arm (every run under
-    /// today's default) still reads its cell; and an older driver's report, which knows none of
-    /// these keys, leaves the row saying nothing rather than publishing zeros nobody reported.
+    /// ⚠ Three controls: a fact is published exactly ONCE; the in-process arm (what a daemon told
+    /// `RUN_DRIVER_PROCESS = off` takes) still reads its cell; and an older driver's report, which
+    /// knows none of these keys, leaves the row saying nothing rather than publishing zeros nobody
+    /// reported.
     #[test]
     fn a_run_driven_somewhere_else_shows_what_it_delivered_and_banked() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
@@ -8629,6 +8659,15 @@ mod tests {
                     RUN_ID_KEY: id,
                     PROGRESS_KEY: progress_to_json(&sprag_plugin::Progress {
                         iterations: 9,
+                        // ⚠ ONE STEP, because the claim is that a WALK crosses at all — item 544's
+                        // default flip found this one empty for every out-of-process run.
+                        journal: vec![sprag_plugin::StepRecord {
+                            iteration: 1,
+                            cost: sprag_plugin::Cost::Bytes(3),
+                            verdict: sprag_plugin::Verdict::Continue,
+                            note: Some("A-STEP-THIS-DRIVER-TOOK".to_owned()),
+                            walked: Vec::new(),
+                        }],
                         deliveries: sprag_plugin::Deliveries {
                             made: 5,
                             folded: 2,
@@ -8680,6 +8719,15 @@ mod tests {
             Some(&json!(pane.0)),
             "⛔⛔⛔⛔ REGISTER ITEM 663 / 540: the row did not say which pane this run is driving, \
              so a person looking at a busy pane cannot find out what is typing into it",
+        );
+        assert!(
+            row[RUN_JOURNAL_KEY].as_array().is_some_and(
+                |walk| walk.len() == 1 && walk[0]["note"] == json!("A-STEP-THIS-DRIVER-TOOK")
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 544: a run driven in another process published an EMPTY walk. \
+             Nine tests read what a run did step by step, and the day the option's default flipped \
+             every one of them was reading a journal that stops at the process boundary. Walk: {:?}",
+            row[RUN_JOURNAL_KEY],
         );
 
         // ── THE CLAIM, HALF TWO: the FILE keeps it ───────────────────────────────────────────
@@ -8765,8 +8813,8 @@ mod tests {
             (mine.get(RUN_DELIVERED_KEY), mine.get(RUN_DRIVING_KEY)),
             (Some(&json!(7)), Some(&json!(pane.0))),
             "⚠⚠⚠ A CONTROL FAILED: a run whose driver shares its cell lost what that cell said. \
-             There is no report to prefer, so the cell IS the answer — and that is every run this \
-             daemon drives under today's default. Row: {mine:?}",
+             There is no report to prefer, so the cell IS the answer — and that is every run on a \
+             daemon told `run-driver-process = off`, which is the way back. Row: {mine:?}",
         );
         let both = lock(&registry).persistable();
         let logged = both

@@ -109,6 +109,10 @@ pub struct HostState {
     /// (which measures the pane list, so a detector it did not ask for would land in the instrument)
     /// and the test harnesses. Nothing outside this crate builds a [`HostState`] at all.
     agents: Option<Arc<crate::AgentClock>>,
+    /// **HOW THIS IMAGE STARTS A RUN'S DRIVER IN A PROCESS OF ITS OWN**, or [`None`] for a host that
+    /// cannot be one — see [`driving_out_of_process`](Self::driving_out_of_process) and
+    /// [`crate::DaemonShared::spawn_driver`].
+    spawn_driver: Option<crate::DriverSpawns>,
     /// The daemon's attention router ([`crate::attention`]), shared into the mux control surface per
     /// assembly like [`Self::attachments`], so every pane the daemon spawns is wired to it. `None`
     /// for a host with no wire clients to address — see [`crate::DaemonShared::attention`].
@@ -143,6 +147,10 @@ impl HostState {
             on_pane_exit,
             attachments: Arc::new(Mutex::new(AttachmentRegistry::default())),
             agents: None,
+            // ⚠ A host cannot drive out of process until its IMAGE says it can — register item
+            // 544, and see `driving_out_of_process`. `None` is the honest default for the three
+            // owners that are not `sprag-term`.
+            spawn_driver: None,
             attention: None,
         }
     }
@@ -191,6 +199,21 @@ impl HostState {
         self
     }
 
+    /// **THIS IMAGE CAN START A RUN'S DRIVER IN A PROCESS OF ITS OWN, AND HERE IS HOW** — register
+    /// item 544. See [`crate::DaemonShared::spawn_driver`], which holds the whole argument.
+    ///
+    /// A builder for [`with_agents`](Self::with_agents)'s reason and a sharper one: of this
+    /// project's host owners exactly ONE is an image a `--drive` argv means anything to, and the
+    /// others must not be able to say otherwise by accident. `crate::driver_spawn` starts
+    /// `std::env::current_exe()`, so a host that installed this without being `sprag-term` would
+    /// spawn ITSELF and wait for it to drive a run — measured on the day the option's default
+    /// flipped, as eighteen test binaries doing exactly that.
+    #[must_use]
+    pub fn driving_out_of_process(mut self, spawn: crate::DriverSpawns) -> Self {
+        self.spawn_driver = Some(spawn);
+        self
+    }
+
     /// Use `runs` as this state's run registry instead of the empty one [`Self::new`] built.
     ///
     /// What a daemon needs in order to hand its predecessor's run records to the surface that
@@ -231,6 +254,9 @@ impl HostState {
             // which answers *nothing is driving this pane* about every pane on a working daemon —
             // the reassuring wrong answer item 595 is about.
             runs: Some(Arc::clone(self.runs())),
+            // ⚠⚠⚠ AND WHETHER THIS IMAGE CAN BE A DRIVER — register item 544. Absent on every host
+            // that did not say so, which is every host but the daemon: see the field.
+            spawn_driver: self.spawn_driver.clone(),
         }
     }
 
