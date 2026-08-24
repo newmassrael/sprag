@@ -3560,6 +3560,8 @@ mod tests {
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
+                // ⚠ An older log carries no place, which is this fixture's shape — item 543.
+                place: None,
             }],
         };
 
@@ -3686,6 +3688,8 @@ mod tests {
                 cancelled_by: None,
                 deliveries,
                 banked: None,
+                // ⚠ An older log carries no place, which is this fixture's shape — item 543.
+                place: None,
             }
         };
         lock(&registry).restore(&crate::runs::RunLog {

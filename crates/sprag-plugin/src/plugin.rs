@@ -683,6 +683,27 @@ pub trait Plugin {
         None
     }
 
+    /// **THE WHOLE PLACE THIS PLUGIN'S MACHINE IS IN**, in the document's own words — register item
+    /// 543. [`None`] for a plugin that walks no statechart, which is every one but the loop.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is not [`at`](Self::at) with more words in it
+    ///
+    /// `at` answers a PERSON: *was my run mid-turn, or waiting on me?* — one name, and the whole of
+    /// what a row renders. This answers an ENGINE: `enter_at` takes the active set **and** the
+    /// current state, and refuses a current that is not a member of that set. A record holding only
+    /// `at` is therefore a run that can be reported and never resumed, which is exactly item 543.
+    ///
+    /// ⚠⚠ **OWNED `String`s, where `at` is `&'static str`.** Both come from documents compiled into
+    /// this binary, so both COULD be static — but a configuration is assembled per call from a live
+    /// machine, and handing back borrowed names would tie this answer's lifetime to the plugin at
+    /// the one moment a caller wants to put it somewhere and let the plugin go. `Cow` would carry
+    /// the distinction and nothing here reads it; the allocation happens once per persisted run.
+    ///
+    /// ⚠ The [`Driver`](crate::driver::Driver) records it and never reads it — `at`'s own rule.
+    fn place(&self) -> Option<Vec<String>> {
+        None
+    }
+
     /// **EVERY TRANSITION THE LAST [`step`](Self::step) TOOK**, in order — see [`Edge`].
     ///
     /// # ⚠⚠⚠⚠⚠ Why a step's path stopped being a sentence

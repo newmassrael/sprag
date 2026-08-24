@@ -558,6 +558,9 @@ pub struct Driver {
     /// **WHERE THE PLUGIN'S OWN MACHINE IS** — [`Plugin::at`]'s last answer, asked once per
     /// completed step. [`None`] before the first step and for a plugin that walks no statechart.
     at: Option<&'static str>,
+    /// **THE WHOLE PLACE THAT MACHINE IS IN** — [`Plugin::place`]'s last answer, asked beside
+    /// [`at`](Self::at) and for the same steps. Register item 543.
+    place: Option<Vec<String>>,
     /// WHETHER THE RUN WAS CUT SHORT — ended by a cancel or a passed deadline rather than by its
     /// own logic. [`Driver::ended_from_outside`] is the only writer, so this cannot disagree with
     /// the decision that was actually taken.
@@ -700,6 +703,14 @@ pub struct Progress {
     /// [`STATECHARTS_FINGERPRINT`](crate::STATECHARTS_FINGERPRINT) beside it. `None` before the
     /// first step completes, and for a plugin that walks no statechart.
     pub at: Option<&'static str>,
+    /// **THE WHOLE PLACE THE MACHINE IS IN**, in the document's own words — [`crate::Plugin::place`],
+    /// register item 543. `None` for a plugin that walks no statechart and before the first step.
+    ///
+    /// ⚠ It travels beside [`at`](Self::at) rather than replacing it: that one answers a person and
+    /// this one is what `Engine::enter_at` can be handed. Anything that RECORDS it must record
+    /// [`STATECHARTS_FINGERPRINT`](crate::STATECHARTS_FINGERPRINT) beside it, `at`'s own rule —
+    /// more so, because a configuration read against a foreign document decodes cleanly and lies.
+    pub place: Option<Vec<String>>,
     /// ⚠⚠⚠⚠⚠ **WHAT THIS RUN HAS PUT INTO ITS PANE AND HOW MUCH OF IT NOBODY CAN SEE THERE** —
     /// [`crate::plugin::Plugin::deliveries`], register item 591.
     ///
@@ -814,6 +825,7 @@ impl Driver {
             forward: None,
             journal: Vec::new(),
             at: None,
+            place: None,
             cut_short: false,
             stopped: None,
             exhausted_by: None,
@@ -867,6 +879,7 @@ impl Driver {
             answered: self.answered,
             screened: self.screened,
             at: self.at,
+            place: self.place.clone(),
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked.clone(),
@@ -1065,6 +1078,10 @@ impl Driver {
                     // where it last said*. Asked here, after the step and before the publish, it
                     // cannot be missed and cannot be stale.
                     self.at = plugin.at();
+                    // ⚠ BESIDE `at` AND AT THE SAME MOMENT — register item 543. Two readings of one
+                    // machine taken a step apart would be a record whose word and whose
+                    // configuration describe different places, and nothing downstream could tell.
+                    self.place = plugin.place();
                     // ⚠⚠⚠ AND WHAT ITS DELIVERIES CAME TO, asked in the same breath and for the
                     // same reason — register item 591. Two totals read a moment apart from one
                     // plugin are two facts about two moments, which is this repository's *비교하는

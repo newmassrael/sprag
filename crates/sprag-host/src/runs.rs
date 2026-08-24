@@ -1006,6 +1006,28 @@ pub struct PersistedRun {
     /// ⚠ Compared for EQUALITY only; it is an identity and never an ordering.
     #[serde(default)]
     pub document: Option<String>,
+    /// ⚠⚠⚠⚠⚠ **THE WHOLE PLACE THE MACHINE WAS IN** — `sprag_plugin::LoopPlace::in_words`, the
+    /// active configuration led by the current state, in the document's own names. [`None`] for a
+    /// run whose plugin walks no statechart, one that never took a step, or a log written before
+    /// this field existed.
+    ///
+    /// # ⚠⚠⚠⚠ Why [`at`](Self::at) exists beside it and cannot replace it — register item 543
+    ///
+    /// `at` is ONE word and it is for a PERSON: *was my run mid-turn, or waiting on me?* A machine
+    /// cannot be put back with it. `Engine::enter_at` takes the whole active set **and** the
+    /// current state, and refuses a current that is not a member of that set — so a record holding
+    /// a single word is, structurally, a run that can be reported and never resumed. The two are
+    /// not redundant: one answers a question, the other re-enters a document.
+    ///
+    /// ⚠⚠ **READ ONLY THROUGH [`resumable_place`](Self::resumable_place)**, which compares
+    /// [`document`](Self::document) first. A configuration is even more a fact about a document
+    /// than a word is: rename one state and the set still decodes, still looks well-formed, and
+    /// names a place that is gone.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — `build`'s argument verbatim, an optional field with a
+    /// default reads in both directions.
+    #[serde(default)]
+    pub place: Option<Vec<String>>,
     /// ⚠⚠⚠⚠ **WHETHER A PERSON HAD STOOD THIS RUN DOWN** — register item 594. [`None`] for a log
     /// written before this field existed, which is NOT the same answer as `Some(false)`: one is
     /// *nobody recorded whether an order was given*, the other is *no order was given*.
@@ -1197,6 +1219,31 @@ impl PersistedRun {
         let at = self.at.as_deref()?;
         let document = self.document.as_deref()?;
         (document == sprag_plugin::STATECHARTS_FINGERPRINT).then_some(at)
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE PLACE THIS RUN'S MACHINE WAS IN, IF IT IS A PLACE IN *THESE* DOCUMENTS** —
+    /// [`resumable_here`](Self::resumable_here)'s door, for the thing an engine can actually be
+    /// re-entered at. Register item 543.
+    ///
+    /// # Why it is its own reader and not a second field somebody must remember to check
+    ///
+    /// Same argument as the word beside it, one step sharper: a configuration read against a
+    /// document it did not come from **decodes cleanly and is wrong**. Nothing here migrates a
+    /// configuration between documents and nothing guesses; a changed document simply yields no
+    /// place, which is item 544's *a changed document is a NEW run* taken by construction rather
+    /// than by a rule a caller has to remember.
+    ///
+    /// ⚠⚠ **AN EMPTY LIST IS NOT A PLACE** and is refused here rather than handed on: `enter_at`
+    /// would take it as a configuration with no members, and the first thing it would reject is
+    /// the current state's membership — an engine's error where the record is what was wrong.
+    ///
+    /// ⚠ Whether the machine can then be ENTERED at it is `sprag_plugin::OuterLoop::resume_at`'s
+    /// answer, not this one. This says only *these words are in my vocabulary*.
+    #[must_use]
+    pub fn resumable_place(&self) -> Option<&[String]> {
+        let place = self.place.as_deref().filter(|words| !words.is_empty())?;
+        let document = self.document.as_deref()?;
+        (document == sprag_plugin::STATECHARTS_FINGERPRINT).then_some(place)
     }
 }
 
@@ -1511,10 +1558,15 @@ impl RunRegistry {
                         // recorded position records no document either, so a reader never sees a
                         // fingerprint vouching for nothing.
                         at: run.progress.at.map(str::to_owned),
-                        document: run
-                            .progress
-                            .at
-                            .map(|_| sprag_plugin::STATECHARTS_FINGERPRINT.to_owned()),
+                        // ⚠⚠⚠ AND THE WHOLE PLACE BESIDE THE WORD — register item 543. `at` is what
+                        // a person reads; this is what an engine can be re-entered at, and the run
+                        // log is the only thing a successor daemon has.
+                        place: run.progress.place.clone(),
+                        // ⚠ VOUCHED FOR BY EITHER, because either alone is a position: a document
+                        // recorded for neither would be a fingerprint standing over nothing, and a
+                        // place recorded without one is a vocabulary nobody can check.
+                        document: (run.progress.at.is_some() || run.progress.place.is_some())
+                            .then(|| sprag_plugin::STATECHARTS_FINGERPRINT.to_owned()),
                         // ⚠⚠⚠ ALWAYS `Some`, INCLUDING `false` — item 594. This image DID look, so
                         // `Some(false)` is a claim it is entitled to make; the `None` this field
                         // documents belongs to a log written before the field existed, and only a
@@ -1689,6 +1741,14 @@ impl RunRegistry {
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
                     cost,
+                    // ⚠⚠⚠⚠⚠ **THE PLACE IS CARRIED FORWARD, AND ONLY THROUGH THE DOOR THAT CHECKS
+                    // THE DOCUMENT** — register items 543 and 544. `saved.place` is words from
+                    // whatever build wrote the log; `resumable_place` hands them back only when
+                    // they came from the documents THIS image compiled. A restored run that
+                    // carried a foreign configuration would look resumable and place a machine
+                    // somewhere nobody chose, which is worse than the honest `interrupted` it
+                    // comes back as today.
+                    place: saved.resumable_place().map(<[String]>::to_vec),
                     // ⚠ THE JOURNAL IS NOT PERSISTED. It is the per-step account of a run that is
                     // over and unresumable, and keeping it would grow the file with every step of
                     // every run this daemon ever ran. The totals survive; the steps do not.
@@ -2592,6 +2652,7 @@ mod tests {
                 deliveries: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
+                place: None,
             }],
         };
         let on_disk = serde_json::to_string(&log).expect("the run log encodes");
@@ -2824,6 +2885,9 @@ mod tests {
             deliveries: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
+            // ⚠ This fixture is about the WORD, so it carries no place — which is also the
+            // shape of every log written before item 543's field existed.
+            place: None,
         };
 
         // ── THE WORD SURVIVES THE ROUND TRIP THROUGH THE FILE, which is the whole point: this is
@@ -2879,6 +2943,92 @@ mod tests {
             "0000000000000000",
             "this build's documents must have a fingerprint of their own, or the comparison above \
              measured nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **THE WHOLE PLACE CROSSES THE LOG, NOT JUST THE WORD A PERSON READS** — register
+    /// item 543's third brick.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why [`PersistedRun::at`] cannot be what a restart re-enters
+    ///
+    /// `at` is ONE state name and it exists for a person: *was my run mid-turn, or waiting on me?*
+    /// A machine cannot be put back with it. `Engine::enter_at` takes the whole active set AND the
+    /// current state, and it REFUSES a current that is not a member of that set — so a record
+    /// carrying one word has, structurally, no way to become a resumed run. This is the field that
+    /// carries what the engine actually takes, in the document's own words.
+    ///
+    /// ⚠⚠ **IT IS GATED ON THE SAME FINGERPRINT, THROUGH THE SAME KIND OF DOOR.** A configuration
+    /// is even more a fact *about a document* than a single word is: rename one state and the set
+    /// still decodes, still looks well-formed, and names a place that no longer exists. So
+    /// `resumable_place` compares `document` exactly as `resumable_here` does, and a foreign
+    /// document yields nothing at all — item 544's *a changed document is a new run*, as data.
+    #[test]
+    fn a_run_that_outlived_its_daemon_hands_back_the_whole_place_or_nothing() {
+        let saved = |place: Option<Vec<String>>, document: Option<&str>| PersistedRun {
+            id: 9,
+            label: "a loop that was interrupted mid-turn".to_string(),
+            iterations: 12,
+            cost: None,
+            unit: None,
+            finished: false,
+            outcome: None,
+            ceiling: None,
+            output: None,
+            build: None,
+            opened_by_session: None,
+            at: None,
+            document: document.map(str::to_owned),
+            stood_down: None,
+            cancelled_by: None,
+            deliveries: None,
+            banked: None,
+            place,
+        };
+        // ⚠ THE WORDS ARE THE PLUGIN'S OWN, taken from a real place rather than spelled here — a
+        // fixture that invented state names would round-trip its own invention and say nothing
+        // about whether this record can carry what a loop actually produces.
+        let words = vec![
+            "working".to_owned(),
+            "work".to_owned(),
+            "working".to_owned(),
+        ];
+
+        // ── IT SURVIVES THE FILE, because the reader is a SUCCESSOR daemon ──────────────────
+        let log = RunLog {
+            version: RUN_LOG_VERSION,
+            runs: vec![saved(
+                Some(words.clone()),
+                Some(sprag_plugin::STATECHARTS_FINGERPRINT),
+            )],
+        };
+        let on_disk = serde_json::to_string(&log).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        assert_eq!(
+            read_back.runs[0].resumable_place(),
+            Some(words.as_slice()),
+            "⛔⛔⛔⛔ REGISTER ITEM 543: a run's PLACE must survive the log. A daemon that restarts \
+             has words on a disk and nothing else — a place that lives only in the process that \
+             wrote it is exactly the run that dies with its daemon, which is this item.",
+        );
+
+        // ── AND A PLACE FROM SOMEBODY ELSE'S DOCUMENT IS NOT HANDED BACK AT ALL ─────────────
+        assert_eq!(
+            saved(Some(words.clone()), Some("0000000000000000")).resumable_place(),
+            None,
+            "⛔⛔⛔⛔ REGISTER ITEM 544: a configuration from documents this build did not compile \
+             must not be readable as a place. It still DECODES — that is the danger — and naming a \
+             state that has moved would put a resumed run somewhere nobody chose.",
+        );
+        assert_eq!(
+            saved(Some(words), None).resumable_place(),
+            None,
+            "⚠⚠⚠ a place with no document names a vocabulary nobody can check",
+        );
+        assert_eq!(
+            saved(None, Some(sprag_plugin::STATECHARTS_FINGERPRINT)).resumable_place(),
+            None,
+            "⚠⚠ and a fingerprint vouching for no place must answer nothing rather than an empty \
+             something — `Some(&[])` would be a place the engine is entitled to be handed",
         );
     }
 
@@ -3194,6 +3344,7 @@ mod tests {
                 deliveries: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
+                place: None,
             }],
         });
 

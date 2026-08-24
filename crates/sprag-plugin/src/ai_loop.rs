@@ -932,6 +932,12 @@ impl Plugin for AiLoop {
         Some(AiLoopPolicy::get_state_name(self.state()))
     }
 
+    /// ⚠⚠ THE WHOLE PLACE, beside the word above and for the reason the trait gives: `at` answers a
+    /// person and this answers an engine. Register item 543.
+    fn place(&self) -> Option<Vec<String>> {
+        Some(self.inner.configuration().in_words())
+    }
+
     /// ⚠ DELEGATED and never re-counted here — register item 591. The driver that puts the prompts
     /// in is the only thing that sees what proved each one arrived, so a second tally at this layer
     /// would be a number that agrees with the first until the day it does not.
