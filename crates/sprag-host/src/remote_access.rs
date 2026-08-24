@@ -80,9 +80,9 @@ use crate::wire::{
     KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
     PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT,
-    SCREEN_ROWS_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_NAME_KEY,
-    SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, lines_since_at, mux_action_path,
-    pane_input_path, recent_input_has, refusal, unknown_action, unknown_slot,
+    SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY,
+    SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, SUPER_FIELD, agent_slot_for, lines_since_at,
+    mux_action_path, pane_input_path, recent_input_has, refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -170,6 +170,81 @@ struct Parked {
     asked: Option<(PaneId, u64, Outstanding)>,
 }
 
+/// **THE TWO CONNECTIONS ANSWER DIFFERENT SESSIONS** — what
+/// [`RemotePaneAccess::parking_on`] refuses with, and register item 641's word.
+///
+/// # ⚠⚠⚠ It carries the SURFACE, not only the complaint
+///
+/// The refusal happens at a builder that has taken `self` by value, so an error that carried only
+/// the two names would destroy the thing the caller spent two connections making — and a caller
+/// that decides *park-less is better than stopping* is making a legitimate choice, not recovering
+/// from a bug. Handing the surface back is what lets that choice cost nothing.
+///
+/// ⚠⚠ Both names are carried because a person reading *"the park connection is on the wrong
+/// session"* cannot act on it: which one is wrong depends on which one they meant, and this type
+/// has no opinion about that. The same reason [`RemotePaneAccess::unspellable_state`] carries the
+/// word verbatim rather than a verdict.
+pub struct MisScoped {
+    /// The session the READ connection resolves to, as the daemon answered it.
+    pub read: String,
+    /// The session the PARK connection resolves to — different, which is the whole of this type.
+    pub park: String,
+    /// The surface itself, WITHOUT a park connection: the documented degradation, built and ready.
+    pub degraded: RemotePaneAccess,
+}
+
+/// ⚠⚠ WRITTEN OUT, and the alternative was to give [`RemotePaneAccess`] a derive. It holds live
+/// SOCKETS and a latched daemon identity, and a surface that can be printed is one that ends up in
+/// a log — so the error names the two sessions, which is the whole of what a reader can act on, and
+/// says the surface is here rather than rendering it.
+impl std::fmt::Debug for MisScoped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MisScoped")
+            .field("read", &self.read)
+            .field("park", &self.park)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for MisScoped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a park connection scoped to session {:?} cannot serve a driver reading session {:?}: \
+             the daemon refuses a park naming a pane the scoped session does not hold, and that \
+             refusal retires the park connection — leaving the driver polling for the rest of its \
+             run with nothing to say why",
+            self.park, self.read,
+        )
+    }
+}
+
+impl std::error::Error for MisScoped {}
+
+/// **THE TWO ANSWERS, JUDGED** — `Some((read, park))` exactly when they are a refusal, and
+/// [`None`] every other way. Register item 641.
+///
+/// # ⚠⚠⚠⚠⚠ A function of its own, because the ABSENCE arm has no fixture at the door
+///
+/// [`RemotePaneAccess::parking_on`]'s end-to-end gate drives two real connections to a real daemon
+/// — **and this build's daemon always answers**, so *a daemon too old to serve the address* is a
+/// branch no fixture there can enter. A gate that cannot reach an arm says nothing about it, and
+/// the arm in question is the one that decides whether every park against an older daemon is
+/// refused. Lifted out, the decision is where it can be asked all four ways.
+///
+/// The rule: **only two answers that DISAGREE refuse.** An absence is *this build cannot say*, and
+/// reading it as *these are different* would refuse exactly the surface that most needs a park —
+/// the `None` is not `Some(0)` lesson, applied at the door rather than after it.
+fn scopes_that_disagree<'a>(
+    read: Option<&'a str>,
+    park: Option<&'a str>,
+) -> Option<(&'a str, &'a str)> {
+    match (read, park) {
+        (Some(read), Some(park)) if read != park => Some((read, park)),
+        _ => None,
+    }
+}
+
 /// How long a redial waits for the socket to accept.
 ///
 /// ⚠ Short on purpose. A daemon that is coming back binds within milliseconds of starting; a longer
@@ -208,20 +283,75 @@ impl RemotePaneAccess {
     /// session would park on a revision no pane of its own can move — a wait that never wakes, and
     /// one nothing about this type could have got right on its own.
     ///
-    /// ⚠⚠ **IT MUST BE SCOPED THE WAY THE READ CONNECTION IS**, and that is the one obligation this
-    /// hands to the caller. The daemon refuses a park naming a pane the SCOPED session does not
-    /// hold, so a mis-scoped connection fails loudly at the first park rather than silently — which
-    /// is why the refusal exists and is worth its own sentence in `handle_revision_wait`.
+    /// ⚠⚠ **IT MUST BE SCOPED THE WAY THE READ CONNECTION IS, AND THIS ASKS RATHER THAN TRUSTING**
+    /// — register item 641.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the obligation cost while it was the caller's word, measured
+    ///
+    /// The daemon refuses a park naming a pane the SCOPED session does not hold, so a mis-scoped
+    /// connection does fail LOUDLY — once. What happens next is the cost: a refused park is a
+    /// transport failure to [`pane_moved_after`](sprag_plugin::PaneChanges::pane_moved_after),
+    /// which drops the park connection (it must — a failed frame may be half-read), and from that
+    /// instant [`changes`](PaneAccess::changes) answers [`None`] **for the rest of the run**. The
+    /// driver is back to polling a screen a hundred times a second and nothing anywhere says why.
+    /// One mistyped session name, one loud refusal nobody was reading, and a silent permanent
+    /// degradation — which is the shape this repository keeps paying for.
+    ///
+    /// # ⚠⚠⚠ Why an ANSWER and not a promise, now that one is available
+    ///
+    /// [`SESSION_SLOT`] is *"the daemon's own answer to which session is this about"*, resolved by
+    /// the scope AT THE DOOR — so both connections can simply be ASKED, and the comparison is the
+    /// daemon's own two answers rather than this type's guess about the caller's intent. The
+    /// [`Result`] is what makes it unignorable: a caller that drops it fails the workspace's own
+    /// `-D warnings`, where a latched flag would need somebody to remember to read it.
+    ///
+    /// # ⚠⚠⚠⚠ ONLY TWO ANSWERS THAT DISAGREE REFUSE — an absence is not a disagreement
+    ///
+    /// A daemon too old to serve the address answers nothing, and *this build cannot say* must not
+    /// become *these are different*: that would refuse every park against an older daemon, which is
+    /// precisely the surface that most needs one. The rule is the type-level lesson this crate has
+    /// paid for twice (`None` is not `Some(0)`), applied before the fact.
     ///
     /// ⚠ A caller with only one connection is not wrong, it is DEGRADED, and the degradation is
     /// named at [`PaneChanges`](sprag_plugin::PaneChanges) rather than hidden here.
-    #[must_use]
-    pub fn parking_on(self, parks: HostConn) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`MisScoped`] when the two connections answer DIFFERENT session names — carrying both names
+    /// and the surface itself, so a caller that would rather degrade than stop keeps what it built.
+    pub fn parking_on(self, mut parks: HostConn) -> Result<Self, Box<MisScoped>> {
+        let read = Self::scope_of(&mut lock(&self.conn));
+        let park = Self::scope_of(&mut parks);
+        if let Some((read, park)) = scopes_that_disagree(read.as_deref(), park.as_deref()) {
+            return Err(Box::new(MisScoped {
+                read: read.to_owned(),
+                park: park.to_owned(),
+                degraded: self,
+            }));
+        }
         *lock(&self.parks) = Some(Parked {
             conn: parks,
             asked: None,
         });
-        self
+        Ok(self)
+    }
+
+    /// **WHICH SESSION `conn`'s REQUESTS RESOLVE TO**, as the daemon answers it — [`None`] where
+    /// this daemon does not serve the address or the call did not come back.
+    ///
+    /// ⚠ The daemon's answer and not the connection's [`ScopeAsk`](sprag_rpc::ScopeAsk): a
+    /// connection scoped to its ATTACHMENT holds no name at all, so asking the connection would
+    /// answer nothing for exactly the client that has one — and a NAMED scope pointing at a session
+    /// that has since been retired resolves to something else entirely. The scope resolved it once,
+    /// at the door; this reads that.
+    fn scope_of(conn: &mut HostConn) -> Option<String> {
+        conn.call(
+            QUERY_METHOD,
+            json!({ PATH_PARAM: mux_action_path(SESSION_SLOT) }),
+        )
+        .ok()?
+        .as_str()
+        .map(str::to_owned)
     }
 
     /// **THE AGENT STATE WORD THIS DAEMON SPOKE THAT THIS BUILD CANNOT SPELL**, once one has been
@@ -1051,5 +1181,66 @@ impl PaneSupervision for RemotePaneAccess {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scopes_that_disagree;
+
+    /// ⛔⛔⛔⛔ **ONLY TWO ANSWERS THAT DISAGREE REFUSE A PARK CONNECTION** — register item 641, and
+    /// the three absences its end-to-end gate cannot reach.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is here and not only there
+    ///
+    /// `a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_over` drives two
+    /// real connections to a real daemon, which is the right shape for the DISAGREEMENT — and it
+    /// is structurally blind to the rest, because **this build's daemon always answers**. *A daemon
+    /// too old to serve the address* is not a state that fixture can stage, so the arm deciding
+    /// whether every park against an older daemon is refused had no gate at all. That is the
+    /// register's own recorded shape — a gate that lives only on the branch its fixture enters says
+    /// less than it looks like it does (item 632).
+    ///
+    /// # ⚠⚠⚠ And the mutation the next round is tempted by
+    ///
+    /// `read != park` on the `Option`s directly — one character shorter, and it reads *an absence
+    /// disagrees with a name*. Under it, a driver whose park connection reaches a daemon that
+    /// cannot answer this address is refused, so item 631's whole repair is unreachable against
+    /// exactly the builds a driver most often meets after a rebuild (item 412). It turns the third
+    /// and fourth rows below red and nothing else in this workspace notices.
+    #[test]
+    fn only_two_session_answers_that_disagree_refuse_a_park() {
+        assert_eq!(
+            scopes_that_disagree(Some("0"), Some("work")),
+            Some(("0", "work")),
+            "⛔⛔⛔⛔⛔ TWO NAMES THAT DIFFER ARE THE REFUSAL, and both travel: a park on another \
+             session is refused by the daemon at its first wait, and that refusal retires the park \
+             connection — leaving the driver polling for the rest of its run",
+        );
+        assert_eq!(
+            scopes_that_disagree(Some("work"), Some("work")),
+            None,
+            "⚠⚠⚠ THE CONTROL: agreement must be accepted, or the check refuses everything and \
+             register item 631's repair is unreachable",
+        );
+        assert_eq!(
+            scopes_that_disagree(None, Some("work")),
+            None,
+            "⛔⛔⛔⛔ A READ CONNECTION THAT CANNOT SAY IS NOT A DISAGREEMENT — *this build cannot \
+             tell you* and *these are different* are two facts, and only one of them is a reason to \
+             refuse somebody's park",
+        );
+        assert_eq!(
+            scopes_that_disagree(Some("work"), None),
+            None,
+            "⛔⛔⛔⛔ ...and neither is a PARK connection that cannot say. An older daemon serves no \
+             such address, and refusing there would refuse every park against exactly the builds a \
+             driver meets after a rebuild",
+        );
+        assert_eq!(
+            scopes_that_disagree(None, None),
+            None,
+            "⚠⚠ and two silences agree about nothing at all, which is still not a disagreement",
+        );
     }
 }

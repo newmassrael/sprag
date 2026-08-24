@@ -987,6 +987,31 @@ impl<Q> PaneWaitChannel<Q> {
 
     /// How many waits are parked — for the tests that pin a park actually parking, and a release
     /// actually releasing.
+    ///
+    /// # ⚠⚠⚠⚠ AND FOR THE ONE CLAIM ABOUT THIS VECTOR THAT WAS ONLY PROSE — register item 642
+    ///
+    /// A remote driver that changes the question it is waiting on ABANDONS the old park: the daemon
+    /// still holds it, it fires the next time that pane moves, and its answer is then dropped by id.
+    /// So abandoned parks normally clear themselves — **except at a pane that never moves again**,
+    /// where one entry stays until the connection closes. The bound is therefore *one per pane the
+    /// connection has waited on*, and it was an ARGUMENT: it rests on
+    /// [`release`](Self::release), on [`drain`](Self::drain), on a rename moving the channel, and on
+    /// every future caller of [`park`](Self::park) reaching the same conclusion. Nothing walked a
+    /// driver and read the number back.
+    ///
+    /// ⛔⛔⛔ **THE WALK IS STILL OWED, AND WHAT BLOCKS IT IS STRUCTURAL** — stated here rather than
+    /// left as a name pointing at nothing. This number lives INSIDE the daemon and the driver whose
+    /// walk would move it (`crate::remote_access::RemotePaneAccess`) lives in ANOTHER PROCESS, so
+    /// `tests/wire_client.rs` cannot read it. Issuing the frames by hand from `crate::rpc`'s tests
+    /// reaches the number and re-implements the driver's question-changing rule, which is register
+    /// item 617's trap — and it measures something the driver cannot even produce: two identical
+    /// parks from one connection are not deduplicated here, while the driver remembers its
+    /// outstanding question and re-settles instead of re-sending.
+    ///
+    /// So the walk needs either an in-process harness holding a real socket, a real
+    /// `RemotePaneAccess` and this `HostState` together, or an address that makes this number worth
+    /// something to a PERSON. Publishing it for a gate alone is the surface-nobody-reads shape this
+    /// workspace refuses.
     #[must_use]
     pub fn parked_count(&self) -> usize {
         self.lock().len()

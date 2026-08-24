@@ -6182,7 +6182,13 @@ fn remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
 fn parking_remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
     let (driver, setup) = remote_driver(sock);
     let parks = HostConn::connect(sock, Duration::from_secs(5)).expect("the driver's park socket");
-    (driver.parking_on(parks), setup)
+    // ⚠ Both connections are unscoped and reach the same daemon, so the scope check register item
+    // 641 added cannot refuse here — and `expect` is right rather than lenient: a refusal would
+    // mean the check itself is wrong, which is a thing every gate below deserves to hear about.
+    let driver = driver
+        .parking_on(parks)
+        .expect("two connections to one daemon, both unscoped, resolve to one session");
+    (driver, setup)
 }
 
 /// **A [`PaneAccess`] THAT COUNTS THE READS A WAIT MAKES** — the instrument this gate's number is.
@@ -6281,6 +6287,105 @@ impl PaneAccess for CountingRemote {
     fn changes(&self) -> Option<&dyn sprag_plugin::PaneChanges> {
         self.inner.changes()
     }
+}
+
+/// ⛔⛔⛔⛔ **A PARK CONNECTION ON ANOTHER SESSION IS REFUSED WHERE IT IS HANDED OVER** — register
+/// item 641, and the obligation that used to be the caller's word.
+///
+/// # ⚠⚠⚠⚠⚠ What the promise cost while nothing checked it
+///
+/// The daemon DOES refuse a park naming a pane the scoped session does not hold, so a mis-scoped
+/// connection fails loudly — **once**. What follows is the cost: to
+/// [`PaneChanges::pane_moved_after`] that refusal is a transport failure, and a transport failure
+/// retires the park connection (it must — a failed frame may be half-read). From that instant
+/// [`PaneAccess::changes`] answers `None` **for the whole run**: the driver is back to reading a
+/// screen a hundred times a second, and the one loud sentence that explained it went by in a wait
+/// nobody was watching. One wrong session name buys a silent, permanent degradation.
+///
+/// # ⚠⚠⚠ Why the check is the DAEMON's answer and not this type's guess
+///
+/// [`SESSION_SLOT`] is *"the daemon's own answer to which session is this about"*, resolved by the
+/// scope at the door — so both connections are simply asked. Asking the CONNECTION instead would
+/// answer nothing for a client scoped to its attachment, which holds no name by design, and would
+/// mis-answer a named scope whose session has since been retired.
+///
+/// # ⚠⚠ The three arms, and why the third is the one that would break an older daemon
+///
+/// * **DISAGREE ⇒ refused**, carrying both names and the surface itself, so a caller that would
+///   rather degrade than stop keeps what it built.
+/// * **AGREE ⇒ parkable**, which is the control: a check that refused everything would pass the
+///   first arm and destroy the feature.
+/// * **An ABSENCE is not a disagreement** — a daemon too old to serve the address answers nothing,
+///   and refusing there would refuse every park against exactly the surface that most needs one.
+///   That arm is argued rather than staged: this test's daemon is this build, so it always answers.
+#[test]
+fn a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_over() {
+    let (_host, sock) = spawn_host();
+    let mut setup = HostConn::connect(&sock, Duration::from_secs(5)).expect("the test's own");
+    setup
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("a second session for the park connection to be wrong about");
+
+    // ── THE CONTROL FIRST: two connections that agree are parkable ─────────────────────────────
+    // ⚠ Before the claim, deliberately. A check that refused every park would satisfy the claim
+    // below and leave item 631's whole repair unreachable — and a control placed after the defect
+    // is a control that can be read as passing when the feature is gone.
+    let (agreeing, _) = parking_remote_driver(&sock);
+    assert!(
+        agreeing.changes().is_some(),
+        "⚠⚠⚠⚠ THE CONTROL: two connections to one daemon, both unscoped, must still yield a \
+         parkable surface. If this refuses, the check refuses everything and register item 631's \
+         repair is unreachable",
+    );
+
+    // ── THE CLAIM: a park connection on another session is refused, by name ────────────────────
+    let driving = HostConn::connect(&sock, Duration::from_secs(5)).expect("the driver's own");
+    let mut parks = HostConn::connect(&sock, Duration::from_secs(5)).expect("the park socket");
+    parks.scope_to("work");
+    let refused = RemotePaneAccess::over(driving)
+        .parking_on(parks)
+        .err()
+        .unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 641: a park connection scoped to a DIFFERENT session was \
+                 accepted. Its first park names a pane that session does not hold, the daemon \
+                 refuses it, the refusal retires the connection — and the driver polls for the \
+                 rest of its run with nothing anywhere saying why. The obligation was the \
+                 caller's word and nothing asked the daemon, which answers this at \
+                 `SESSION_SLOT` and always could"
+            )
+        });
+    // ⚠ The park side is asserted by NAME because this test chose it; the read side is asserted by
+    // its PROPERTIES rather than by a guessed default-session name — a gate that hard-codes what it
+    // did not author is a gate that goes red the day the daemon renames its boot session, which
+    // would say nothing about item 641.
+    assert_eq!(
+        refused.park, "work",
+        "⚠⚠⚠ the park side must be named, and it is the one this test scoped: {refused:?}",
+    );
+    assert!(
+        !refused.read.is_empty() && refused.read != refused.park,
+        "⚠⚠⚠ BOTH NAMES, because which one is wrong depends on which the caller meant — a refusal \
+         that said only *the park connection is on the wrong session* cannot be acted on, and one \
+         that carried an empty read side is that refusal wearing two fields. Got {refused:?}",
+    );
+
+    // ── AND THE SURFACE SURVIVES ITS OWN REFUSAL ──────────────────────────────────────────────
+    // ⚠⚠ The builder took `self` by value, so an error carrying only the complaint would destroy
+    // what two connections were spent making. A caller that chooses *park-less over stopping* is
+    // making a legitimate decision, and this is what makes that decision free.
+    assert!(
+        refused.degraded.changes().is_none(),
+        "⚠⚠⚠ the surface handed back must be the DOCUMENTED degradation — parkable would mean the \
+         refusal kept the very connection it refused",
+    );
+    assert!(
+        !refused.degraded.pane_ids().is_empty(),
+        "⚠⚠ ...and it must still be a working driver, or handing it back buys nothing",
+    );
 }
 
 /// Type `text` into `pane` on the TEST's connection after `after` — the pane MOVING at an instant

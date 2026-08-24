@@ -415,9 +415,15 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
             // ⚠ SATURATING: a deadline already past is `0`, which reads back as *due now* and buys
             // the waiter one look. Anything else here would be inventing a future for a candidate
             // whose window has already run out.
+            // ⚠⚠⚠⚠ AND A REMAINING TIME THIS TYPE CANNOT SPELL FALLS TO `0`, NOT TO `u64::MAX`.
+            // Both are unreachable — a settle window is milliseconds — and they are opposite
+            // directions of unreachable: `0` reads back as *due now* and buys the waiter one look,
+            // where `u64::MAX` reads back as a deadline 584 million years out, which is
+            // `Settling::Nothing` wearing a number. **A default nothing can reach is still a
+            // decision about which way to be wrong.**
             value[crate::wire::AGENT_SETTLES_IN_MS_KEY] = serde_json::json!(
                 u64::try_from(at.saturating_duration_since(Instant::now()).as_millis())
-                    .unwrap_or(u64::MAX)
+                    .unwrap_or(0)
             );
         }
     }
@@ -453,8 +459,15 @@ impl Sent {
     }
 
     /// `within` after the moment this anchor was taken.
-    fn plus(self, within: Duration) -> Instant {
-        self.0 + within
+    /// ⚠⚠⚠⚠⚠ **CHECKED, BECAUSE THE DURATION CAME OFF A WIRE AND NOTHING BOUNDS IT.** `Instant +
+    /// Duration` PANICS on overflow, and the number added here is whatever a daemon wrote — a
+    /// skewed one, a newer one with a different unit, or a malformed frame. A driver that panicked
+    /// on a number it was sent would take the run down over a field whose entire purpose is to save
+    /// it some looks. [`None`] is the honest answer and its caller spells it
+    /// [`Settling::Unknown`](sprag_plugin::Settling::Unknown) — *ask again*, the degradation this
+    /// whole surface lived on before item 640.
+    fn plus(self, within: Duration) -> Option<Instant> {
+        self.0.checked_add(within)
     }
 }
 
@@ -553,9 +566,8 @@ pub fn verdict_of(value: &serde_json::Value, sent: Sent) -> Verdict {
             Some(crate::wire::AGENT_SETTLING_PENDING) => value
                 [crate::wire::AGENT_SETTLES_IN_MS_KEY]
                 .as_u64()
-                .map_or(sprag_plugin::Settling::Unknown, |millis| {
-                    sprag_plugin::Settling::At(sent.plus(Duration::from_millis(millis)))
-                }),
+                .and_then(|millis| sent.plus(Duration::from_millis(millis)))
+                .map_or(sprag_plugin::Settling::Unknown, sprag_plugin::Settling::At),
             _ => sprag_plugin::Settling::Unknown,
         },
     }))
@@ -1462,6 +1474,40 @@ mod tests {
              said a candidate IS waiting and did not say when — so this end knows there is \
              something to come and must not park past it. That collapse is the exact lost wakeup \
              the type has three arms to prevent",
+        );
+
+        // ── AND A NUMBER NOTHING BOUNDS ───────────────────────────────────────────────────────
+        // ⚠⚠⚠⚠⚠ The duration is whatever a DAEMON wrote and this end bounds it nowhere, while
+        // `Instant + Duration` PANICS on overflow. A driver that DIED on a field whose whole
+        // purpose is to save it some looks would be worse than every behaviour item 640 replaced.
+        //
+        // ⚠⚠⚠⚠ **THIS ARM'S FIRST FORM ASSERTED `Unknown` AND THE GATE REFUTED IT**, which is why
+        // it is written the way it is. `u64::MAX` milliseconds is ~584 million years and
+        // `Instant::checked_add` ACCEPTS it here — so the reachable outcome is not an overflow, it
+        // is a deadline so far out that the waiter is woken by the pane and by nothing else. That
+        // is behaviourally `Settling::Nothing`, and it is the DAEMON's claim to make: this reader
+        // has no principled threshold above which a settle window becomes a lie, and inventing one
+        // would be this end deciding a question the wire answered.
+        //
+        // So what is pinned is the property that survives: **it does not panic, and it does not
+        // silently become an absence**. `checked_add` is what holds the first, and it is
+        // unreachable through `from_millis` by arithmetic — kept because the day this key's unit
+        // changes (`from_secs(u64::MAX)` DOES overflow) it stops being unreachable, and the
+        // alternative is a panic in a driver over a number somebody else wrote.
+        assert!(
+            matches!(
+                unknown_from(&|object| {
+                    object.insert(
+                        crate::wire::AGENT_SETTLES_IN_MS_KEY.to_owned(),
+                        serde_json::json!(u64::MAX),
+                    );
+                }),
+                sprag_plugin::Settling::At(_)
+            ),
+            "⛔⛔⛔⛔ A DURATION NOTHING BOUNDS MUST NOT TAKE THE DRIVER DOWN, and it must still be \
+             a DEADLINE rather than an absence — a far-off `At` wakes on the pane exactly as \
+             `Nothing` does, where a `Nothing` invented here would be this reader overruling what \
+             the daemon said was coming",
         );
     }
 
