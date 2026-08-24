@@ -4049,6 +4049,40 @@ impl SessionRegistry {
                 .map(|window| (session.name.clone(), Arc::clone(window.workspace())))
         })
     }
+
+    /// **WHICH SESSION HOLDS `pool`** — [`pool_holding`](Self::pool_holding)'s mirror, for the
+    /// caller that has the workspace in hand and needs the NAME.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a caller holding a pool cannot answer this from its own scope
+    ///
+    /// A request arrives scoped to the session the CLIENT is on, and that is not always the session
+    /// the work is about: `new_session` creates one and then births its first pane through the
+    /// spawn door of the requesting connection, whose scope is still the client's default session.
+    /// Anything that derived a session name from the scope at that point named the wrong one — and
+    /// the failure is SILENT, because the pool is right and only the NAME is wrong. `sprag_host`'s
+    /// register item 665 is what that cost: a pane's output bumped a token nothing about its
+    /// session was parked on, so every wait on that session slept through the pane it was about.
+    ///
+    /// Identity rather than a name comparison, which is the whole point: the pool IS the window's,
+    /// so [`Arc::ptr_eq`] answers about the object and cannot be fooled by a rename.
+    ///
+    /// ⚠ FIRST match and no check for a second, [`pool_holding`](Self::pool_holding)'s rule: a
+    /// workspace belongs to exactly one window by construction, so a scan that kept looking would
+    /// be guarding against a registry that is already broken.
+    ///
+    /// ⚠⚠ [`None`] means no window of any session holds it — a pool detached from the registry
+    /// (its session was killed under the caller), which is a real answer rather than an oversight:
+    /// a caller that needed a name for it has nowhere to publish.
+    #[must_use]
+    pub fn session_holding(&self, pool: &Arc<Mutex<Workspace>>) -> Option<&str> {
+        self.sessions.iter().find_map(|session| {
+            session
+                .windows
+                .iter()
+                .any(|window| Arc::ptr_eq(window.workspace(), pool))
+                .then_some(session.name.as_str())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -4202,6 +4236,53 @@ mod tests {
             row.windows, 2,
             "⚠⚠ and it is a COUNT of the pinned ones, not a claim about the session's window count \
              — one of these two windows still follows its clients: {row:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A POOL SAYS WHICH SESSION HOLDS IT, AND A DETACHED ONE SAYS NOBODY** —
+    /// `sprag_host`'s register item 665, at the lookup that item's repair rests on.
+    ///
+    /// Both arms, because the caller acts on each: a name is what a pane's wake token is minted
+    /// from, and [`None`] is what makes a birth into a destroyed session a REFUSAL instead of a
+    /// pane whose output can wake nobody. The `None` arm is unreachable from the wire — a request
+    /// cannot hold a pool the registry has dropped — so this is the only place it is measured.
+    ///
+    /// ⚠ The second window is the discrimination that matters: a session's pools are per WINDOW, so
+    /// an implementation that only ever looked at `current_window` would answer `None` about a pool
+    /// its own session is holding, and every pane born into any other window would go deaf.
+    #[test]
+    fn a_pool_names_the_session_holding_it_and_a_dropped_one_names_nobody() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let created = reg
+            .new_window(&default, None, WindowBirth::default())
+            .expect("the default session takes a second window");
+        let second = reg
+            .window_workspace(&default, &created)
+            .expect("the window just created resolves");
+
+        assert_eq!(
+            reg.session_holding(&pool(&reg)),
+            Some(default.as_str()),
+            "the CURRENT window's pool is held by the default session",
+        );
+        assert_eq!(
+            reg.session_holding(&second),
+            Some(default.as_str()),
+            "⚠⚠ AND SO IS EVERY OTHER WINDOW'S. A lookup that only asked about the current window \
+             would answer `None` here, and a pane born into any window but the front one would \
+             wire its output to a token nobody parks on",
+        );
+
+        // ── THE OTHER ARM: a pool the registry no longer holds ──
+        let orphan = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        assert_eq!(
+            reg.session_holding(&orphan),
+            None,
+            "⚠⚠⚠ A WORKSPACE NO SESSION HOLDS MUST ANSWER NOBODY, not the nearest session. This \
+             is a pool whose session was destroyed under its caller, and a name invented for it \
+             would be a pane publishing to a session that is not its own — which is the very \
+             failure this lookup exists to remove",
         );
     }
 

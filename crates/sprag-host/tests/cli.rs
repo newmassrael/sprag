@@ -11177,6 +11177,448 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **AND THE SUPERVISED HALF OF THAT CONTRACT WHEN THE RUN IS DRIVEN IN A PROCESS OF ITS
+/// OWN** — register item 665.
+///
+/// # ⚠⚠⚠⚠⚠ Why its neighbour above cannot see this, when it drives the very same code
+///
+/// That gate submits to a daemon on today's default (`run-driver-process = off`), so its runs are
+/// driven by a THREAD inside the daemon: the wait for a person parks on a `PaneChanges` backed by
+/// the daemon's own pane pool, and the question is re-read out of the same process that owns the
+/// pseudoterminal. Nothing crosses a socket, so nothing can be stale, absent or scoped wrong.
+///
+/// A driver in another process asks every one of those questions down a wire. Measured on
+/// 2026-08-24 with the option flipped: this half — and only this half — came back `blocked`, with
+/// `asking.why = "unattended"` and `answered = 1`. The run answered the question it had a clause
+/// for, met the one it did not, waited out its whole patience with a person standing at the pane
+/// typing, and concluded that nobody was there. **That is a person losing the ability to answer
+/// their own loop**, which is the AI loop's central act and the heavier of the two reasons item
+/// 544's default is still `off`.
+///
+/// ⚠⚠ **THE OPTION IS TURNED ON HERE RATHER THAN WAITED FOR.** A gate that waited for the default
+/// to flip would be a gate for the day after the repair.
+///
+/// ⚠⚠⚠ **THE STAGING CONTROL IS THE PROCESS TABLE** — register item 664's reason, and it bites
+/// harder here: *the wait reached its person* and *this run was never driven anywhere else* are
+/// otherwise the same green, and a config that failed to take would produce the second while
+/// reading as the first.
+///
+/// ⚠ The person is a SEPARATE CLIENT typing through the same `send-keys` a human at the keyboard
+/// uses, and they wait for the SECOND question rather than for a clock: the first is the run's to
+/// answer, and a person who typed during it would answer it for them — which would make this gate
+/// pass with the wait never happening at all.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_supervised_run_driven_elsewhere_waits_for_its_person_and_goes_on() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-consent-driven-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    let config = state.join("config").join("sprag");
+    std::fs::create_dir_all(&config).expect("this test's own config directory");
+    std::fs::write(
+        config.join(sprag_host::CONFIG_FILE),
+        format!(
+            "[options]\n{} = \"on\"\n",
+            sprag_host::options::RUN_DRIVER_PROCESS
+        ),
+    )
+    .expect("a config a daemon will read");
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "watched", "cmd": ["sh", "-c", ASKING_CLAUDE_TWICE] },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "watched", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+    // ⚠ THE BEHAVIOURAL TRIGGER, its neighbour's verbatim: wait for the DAEMON to say the pane is
+    // blocked, not for a clock. A run submitted before the detector settled would be racing.
+    assert!(
+        wait_for(Duration::from_secs(20), || conn
+            .call(
+                "scene/query",
+                json!({ "session": "watched", "path": mux_action_path(PANES_SLOT) }),
+            )
+            .ok()
+            .and_then(|panes| panes.as_array().and_then(|list| list.first().cloned()))
+            .is_some_and(|entry| entry["agent"]["state"] == "blocked")),
+        "the daemon's own detector must call this pane blocked, or the gate is about nothing",
+    );
+
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "watched",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": pane,
+                "stimulus": "ping",
+                "sentinel": "ANSWERED-OK",
+                // Six for its neighbour's reason: a supervised run spends one iteration on the WAIT
+                // itself, so the budget that fits an unattended half would end this one `exhausted`.
+                "guardrails": { "max_iterations": 6, "max_seconds": 120 },
+                sprag_plugin::Consents::WIRE_KEY: [{
+                    sprag_plugin::Consent::ASKED_KEY: "Do you want to proceed?",
+                    sprag_plugin::Consent::ANSWER_KEY: "Yes",
+                }],
+                sprag_plugin::Attended::WIRE_KEY: 60_000,
+            },
+        }),
+    )
+    .expect("the run is submitted");
+
+    assert!(
+        wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
+        "⚠⚠ THE PREMISE: this run is driven in a process of its own, so there are two `sprag-term` \
+         against this socket. Found {}, and everything below would then be a measurement of the \
+         in-process driver its neighbour already gates.",
+        sprag_term_processes(&sock),
+    );
+
+    // ⛔⛔⛔⛔⛔ **THE INSTRUMENT, AND WHY IT IS READ AFTER THE RUN HAS ENDED — register item 665.**
+    // A red below has two possible seams and the outcome cannot tell them apart: the run's wait
+    // parks on the pane moving and never hears, or it hears, re-asks, and the DAEMON goes on
+    // answering with the same question. The address that separates them is the one the driver
+    // itself re-reads through, `agent.<pane>`.
+    //
+    // ⚠⚠⚠⚠⚠ **IT MUST NOT BE READ WHILE THE RUN IS STILL WAITING, AND THAT IS A MEASUREMENT.**
+    // That address is served by `AgentClock::observe`, which advances the tracker and publishes —
+    // and a supervisor that publishes BUMPS THE PANE'S REVISION (register item 646), which is
+    // precisely the signal the run's wait is parked on. Sampled inside the wait, this instrument
+    // wakes the run it is supposed to be observing: measured 2026-08-25, the same gate went from
+    // four reds in five to twenty-three greens in twenty-four the moment this call was added
+    // inside the person's thread, on two different machines. **An instrument that supplies the
+    // wake is not measuring the product, it is being it.**
+    //
+    // ⚠⚠ R58 named the mechanism, and it is worth keeping because it is not the obvious one: this
+    // read raises a settle CANDIDATE, the daemon's own waker publishes it at that deadline, and a
+    // publish announces on the session THE REGISTRY says holds the pane. While the pane's own
+    // output was bumping the requesting scope's token instead, that announcement was the only
+    // thing this wait's park was ever armed by — so the instrument was not merely early, it was
+    // the entire wake path.
+    let after = std::sync::Mutex::new(Value::Null);
+    let outcome = std::thread::scope(|watching| {
+        watching.spawn(|| {
+            let mut theirs = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+            let showed = wait_for(Duration::from_secs(60), || {
+                theirs
+                    .call(
+                        "scene/query",
+                        json!({
+                            "session": "watched",
+                            "path": sprag_host::pane_input_path(
+                                pane,
+                                sprag_host::wire::FULL_TEXT_SLOT,
+                            ),
+                        }),
+                    )
+                    .ok()
+                    .and_then(|text| text.as_str().map(str::to_owned))
+                    .is_some_and(|text| text.contains("make this edit"))
+            });
+            assert!(showed, "the peer never reached its second question");
+            // ⚠⚠⚠⚠⚠ **NOTHING GOES BETWEEN THE SIGHTING AND THE KEYSTROKE — register item 665, and
+            // it is a MEASUREMENT rather than a style.** This person types the instant the question
+            // is on the pane, which is what its thread-driven neighbour does and what a person at a
+            // keyboard does. A single extra round trip here — one `runs` read, asserting the run
+            // had not already ended — moved the gate from 4-red-in-5 to 6-green-in-6 on
+            // 2026-08-25, twice. The window this gate is about is that narrow, so anything added
+            // here is not a check: it is the repair.
+            let typed = sprag(
+                &sock,
+                &["send-keys", "-t", "watched", &pane.to_string(), "-l", "1"],
+            );
+            assert!(typed.ok, "the person's keystroke: {}", typed.stderr);
+            // ⛔⛔⛔⛔⛔ **THE DISCRIMINATOR — register item 665, and without it the red below names
+            // TWO defects at once.** *The person's key never reached the peer* and *the peer took
+            // it and the RUN never noticed* produce the same `unattended`, and only the first is
+            // about the daemon's input path. The peer prints its sentinel once BOTH questions are
+            // answered, so this pane going to `ANSWERED-OK` is the pane's own statement that the
+            // person's half of the work is done and everything left is the run's reading of it.
+            let took = wait_for(Duration::from_secs(30), || {
+                theirs
+                    .call(
+                        "scene/query",
+                        json!({
+                            "session": "watched",
+                            "path": sprag_host::pane_input_path(
+                                pane,
+                                sprag_host::wire::FULL_TEXT_SLOT,
+                            ),
+                        }),
+                    )
+                    .ok()
+                    .and_then(|text| text.as_str().map(str::to_owned))
+                    .is_some_and(|text| text.contains("ANSWERED-OK"))
+            });
+            assert!(
+                took,
+                "⚠⚠ THE PREMISE OF THE WHOLE GATE: the person typed and the peer did NOT move off \
+                 its dialog, so the daemon's input path is what is broken and the run's reading of \
+                 the pane has not been measured at all",
+            );
+        });
+        let mut last = Value::Null;
+        let finished = wait_for(Duration::from_secs(120), || {
+            last = conn
+                .call(
+                    "scene/query",
+                    json!({
+                        "session": "watched",
+                        "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+                    }),
+                )
+                .expect("the runs slot answers");
+            last.as_array()
+                .and_then(|runs| runs.last().cloned())
+                .is_some_and(|run| run["state"]["status"] == "done")
+        });
+        assert!(finished, "the run never finished: {last}");
+        last.as_array()
+            .and_then(|runs| runs.last().cloned())
+            .expect("the run's entry")
+    })["state"]["outcome"]
+        .clone();
+
+    // Sampled now, with the run over and nothing left for a wake to reach — see this instrument's
+    // own note. What it answers is whether the DAEMON was still calling this pane blocked on the
+    // question the person had already answered.
+    *after
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = conn
+        .call(
+            "scene/query",
+            json!({
+                "session": "watched",
+                "path": mux_action_path(&sprag_host::wire::agent_slot_for(pane)),
+            }),
+        )
+        .unwrap_or(Value::Null);
+
+    assert_eq!(
+        outcome["state"],
+        "converged",
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 665: a run driven in a process of its own answered the question \
+         it had a clause for, and then could not be answered by the PERSON on the one it did not. \
+         A `blocked` with `{}` = `unattended` says it waited out its whole patience while somebody \
+         was typing at the pane.\n\
+         ⛔ READ `a_pane_born_with_its_session_wakes_a_wait_parked_on_that_session` FIRST. That is \
+         the deterministic gate for the seam this turned out to be in R58 — a pane born with its \
+         session wiring its output to the REQUESTING scope's revision token, so the wait parked on \
+         the session that holds it was woken only by unrelated traffic — and it answers in three \
+         seconds where this one takes sixty. Its thread-driven neighbour \
+         (`a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_not`) makes \
+         this exact claim and is green: {outcome}\n\
+         ⛔ THE INSTRUMENT — what `agent.{pane}` said once the peer had provably left the dialog, \
+         which is the address the run's own wait re-reads through: {}",
+        sprag_host::plugins::RUN_WHY_KEY,
+        after
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    assert_eq!(
+        outcome[sprag_host::plugins::RUN_ANSWERED_KEY],
+        1,
+        "⚠⚠⚠ and the tally counts what THE RUN answered — ONE. The person's answer is not the \
+         machine's, and a run that claimed it has lost the distinction that makes every approval \
+         on this wire traceable to whoever made it: {outcome}",
+    );
+    drop(conn);
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A PANE'S OWN OUTPUT MUST WAKE THE WAITS PARKED ON THE SESSION THAT HOLDS IT** —
+/// register item 665, and the seam its whole 60-second symptom turned out to be.
+///
+/// # ⚠⚠⚠⚠⚠ What was actually broken, measured in the daemon's own log
+///
+/// [`sprag_host::bump_on_dirty`]'s doc has always said `revision` *"must be the token of the
+/// session the pane is being spawned INTO"*. `new_session` births its first pane through the
+/// spawn door of the REQUESTING connection, whose scope is that client's default session (`"0"`
+/// for a client that named none) and not the session just created. So every pane born with its
+/// session bumped a token nothing about that session was parked on:
+///
+/// ```text
+/// PROBE bump  at=6 session=watched     <- a mutation on the session (the person typing)
+/// PROBE evaluate session="watched" pane=0 since=2 now=2
+/// PROBE bump  at=5 session=0           <- the PANE'S OWN OUTPUT, one millisecond later
+///   (nothing whatever for sixty seconds)
+/// ```
+///
+/// A wait parked on `watched` was therefore woken only by UNRELATED traffic on that session, and
+/// answered only if such traffic happened to land after the pane had moved. That is why item 665
+/// read as a race: a supervised run's wait for its person was woken by the person's own keystroke
+/// (a mutation) and then never again by the peer's reply to it.
+///
+/// # ⚠⚠⚠ Why this gate and not the run-level one alone
+///
+/// The run-level gate above measures the same defect through a driver, a peer, a detector and a
+/// person, and it is a coin toss which of two events lands first — so it can only ever say
+/// *something in this stack is late*. This one holds nothing but the claim: **a pane speaks, and
+/// what is parked on its session hears it.** No run, no agent, no keystroke, and nothing that
+/// mutates the session at all between the park and the answer — which is what makes a failure here
+/// name one seam.
+///
+/// ⚠⚠ **THE STAGING CONTROL IS THE PANE'S OWN COUNTER, READ AFTER THE WAIT.** *The wake was lost*
+/// and *the pane never spoke* are otherwise the same red, and only the first is about this seam.
+/// `pane.<id>.revision` is a pure counter read — it observes no agent and publishes nothing — so
+/// asking it afterwards cannot be the thing that supplies the answer.
+#[test]
+fn a_pane_born_with_its_session_wakes_a_wait_parked_on_that_session() {
+    let sock = socket_path();
+    let state = isolated_state_home(&sock);
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ⚠ THE FIXTURE SPEAKS TWICE, ON ITS OWN CLOCK AND NOBODY ELSE'S. The first line says the pane
+    // is alive; the second lands well after the park below, with no client having asked for it —
+    // which is the only kind of output that can prove the hook rather than the traffic around it.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "spoken",
+                "cmd": ["sh", "-c", "printf 'FIRST-LINE\\n'; sleep 3; printf 'LATE-LINE\\n'; exec cat"],
+            },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "spoken", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+    let text = |conn: &mut HostConn| {
+        conn.call(
+            "scene/query",
+            json!({
+                "session": "spoken",
+                "path": pane_input_path(pane, sprag_host::wire::FULL_TEXT_SLOT),
+            }),
+        )
+        .ok()
+        .and_then(|text| text.as_str().map(str::to_owned))
+        .unwrap_or_default()
+    };
+    assert!(
+        wait_for(Duration::from_secs(10), || text(&mut conn)
+            .contains("FIRST-LINE")),
+        "the fixture never started, so nothing below would be about a pane that speaks",
+    );
+    let revision = |conn: &mut HostConn| {
+        conn.call(
+            "scene/query",
+            json!({
+                "session": "spoken",
+                "path": pane_input_path(pane, sprag_host::wire::PANE_REVISION_SLOT),
+            }),
+        )
+        .expect("the pane's revision answers")
+        .as_u64()
+        .expect("the revision is a number")
+    };
+    let since = revision(&mut conn);
+    assert!(
+        !text(&mut conn).contains("LATE-LINE"),
+        "⚠⚠ THE PREMISE: the second line must still be TO COME when the wait is parked, or the \
+         park is asking about a move that already happened and would answer without any hook at \
+         all",
+    );
+
+    // ⚠⚠⚠⚠⚠ **A SECOND CONNECTION, AND NOTHING IS ASKED OF THE DAEMON WHILE THIS IS OUTSTANDING.**
+    // A `HostConn` carries one question at a time (`sprag_host::remote_access::RemotePaneAccess`
+    // opens a park connection of its own for exactly this reason), and — more to the point here —
+    // every INVOKE on this session bumps its revision through the dispatch funnel. A gate that
+    // chattered while parked would be supplying the very wake it is measuring.
+    let mut parking = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let parked = parking
+        .begin(
+            sprag_host::wire::PANE_WAIT_REVISION_METHOD,
+            json!({
+                "session": "spoken",
+                sprag_host::wire::PANE_PARAM: pane,
+                sprag_host::wire::SINCE_PARAM: since,
+            }),
+        )
+        .expect("the park is accepted");
+    let answer = parking
+        .settle(&parked, Duration::from_secs(15))
+        .expect("the park did not fault");
+
+    // THE STAGING CONTROL, read now that the wait is over: the pane really did speak, and its own
+    // counter really did move past what the wait named. Both are pure reads.
+    let said = text(&mut conn);
+    let now = revision(&mut conn);
+    assert!(
+        said.contains("LATE-LINE"),
+        "⚠⚠ THE CONTROL: the fixture never printed its second line, so this measured a silent \
+         pane and not a lost wake. What it showed: {said:?}",
+    );
+    assert!(
+        now > since,
+        "⚠⚠ THE CONTROL: `{}` never moved past {since}, so the pane's own counter is what is \
+         broken and the wake path has not been measured at all",
+        sprag_host::wire::PANE_REVISION_SLOT,
+    );
+    assert_eq!(
+        answer
+            .as_ref()
+            .and_then(|answer| answer[sprag_host::wire::PANE_REVISION_FIELD].as_u64()),
+        Some(now),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 665: this pane printed a line entirely of its own accord, its \
+         own revision moved from {since} to {now}, and the `{}` parked on the session that HOLDS \
+         it was never woken. A pane born with its session must bump that session's token — \
+         `sprag_host::bump_on_dirty`'s own contract — or every wait parked there sleeps through \
+         the pane it is about and is answered only by unrelated traffic. The park answered: \
+         {answer:?}",
+        sprag_host::wire::PANE_WAIT_REVISION_METHOD,
+    );
+    drop(parking);
+    drop(conn);
+    drop(guard);
+}
+
 /// ⚠⚠⚠ **A PERSON ANSWERS A BLOCKED AGENT FROM THE COMMAND LINE, IN THE AGENT'S OWN WORDS** —
 /// R369's claim at the shell, where `sprag agent` had been able to SHOW the dialog for a round and
 /// the only thing to do about it was `sprag send-keys`.

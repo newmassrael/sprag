@@ -851,6 +851,29 @@ impl WorkspaceExternal {
     /// `$SHELL`, an argv it cannot `exec`), DISTINCT from the malformed request
     /// [`parse_spawn`](Self::parse_spawn) already rejected. Does NOT bump the revision — the caller signals its set change once (a
     /// plain `spawn`, or the create that births this pane), so the two never double-bump or drift.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The wake hook's session is the REGISTRY's answer, not this request's scope
+    ///
+    /// [`crate::bump_on_dirty`] has always said its token must be *the session the pane is being
+    /// spawned INTO*, and for three of this door's four callers that happened to be the requesting
+    /// scope. **For [`new_session`](Self::new_session) it never was**: that request creates a
+    /// session and then births its first pane here, while the connection's scope is still the
+    /// client's default session (`"0"` for a client that named none). So every pane born with its
+    /// session wired its output to a token nothing about that session was parked on — register item
+    /// 665, measured in the daemon's own log as a `pane/waitForRevision` on the right session
+    /// sleeping through sixty seconds of a pane that had spoken and gone quiet.
+    ///
+    /// The repair is [`attention::Raised`](crate::attention)'s, which met this same hazard from the
+    /// other side and wrote down the answer: **ask the registry who holds it.** That is the only
+    /// authority, so the wrong session becomes unrepresentable rather than merely fixed at one
+    /// birth site — and a door added later inherits the correctness instead of having to remember a
+    /// rule. ⚠ Unlike the attention hook, the question is asked ONCE PER PANE at its birth and
+    /// never on the reader thread, so R296's *"nothing expensive per output batch"* is untouched.
+    ///
+    /// ⚠⚠ A pool no session holds is REFUSED rather than given the scope's name: it means the
+    /// session was killed under this request, and a pane born into a detached workspace is one
+    /// nothing can address, wake or reap. Naming it `Rejected` says so where the old shape would
+    /// have spawned it deaf.
     fn spawn_parsed(
         &self,
         pool: &Arc<Mutex<Workspace>>,
@@ -869,12 +892,25 @@ impl WorkspaceExternal {
         if let Some(cwd) = cwd {
             command.cwd(cwd);
         }
-        // The three reader-thread hooks a DAEMON's pane gets, as one value: the wake over THIS
-        // session's token (sound because a pane cannot change session), the reaper's death signal,
-        // and the attention signal — which names no session, because the router asks the registry
-        // who holds the pane (see `attention::Raised`).
+        // ⛔⛔⛔⛔⛔ THE SESSION THIS PANE IS BEING BORN INTO — see this function's own note. Read
+        // and released before the pool below is locked, which is the registry->workspace order this
+        // file keeps everywhere and never nests across a fork/exec.
+        let into = lock(&self.registry)
+            .session_holding(pool)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                refused(
+                    "no session holds the workspace this pane would be born into, so its output \
+                     could wake nobody and its death would reach no reaper — the session was \
+                     destroyed while this request was in flight",
+                )
+            })?;
+        // The three reader-thread hooks a DAEMON's pane gets, as one value: the wake over the
+        // holding session's token (sound because a pane cannot change session), the reaper's death
+        // signal, and the attention signal — which names no session either, because the router asks
+        // the registry who holds the pane (see `attention::Raised`).
         let hooks = sprag_terminal::PaneBirthHooks {
-            on_dirty: Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
+            on_dirty: Some(bump_on_dirty(&self.channels.revision(&into))),
             on_exit: self.on_pane_exit.as_ref().map(crate::pane_exit_hook),
             on_attention: self.attention.as_ref().map(crate::pane_attention_hook),
         };
