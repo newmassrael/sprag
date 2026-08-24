@@ -574,6 +574,35 @@ pub enum Event {
     /// for a run to stop learns it HAS stopped from the same event it would have been woken by if
     /// the run had converged, which is what makes one wait sufficient.
     RunFinished(u64),
+    /// **A PERSON SAID SOMETHING TO THIS RUN** — a cancel, a stand-down, or a hold taken up or
+    /// given back. Register item 648.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a run needed this at all, measured
+    ///
+    /// Every other subject on this journal reports its CHANGES; a run reported only its ENDING.
+    /// That was enough while the only driver was a thread inside this process, reading three
+    /// `AtomicBool`s that the order sites set directly. **It stops being enough the moment the
+    /// driver is another process** (item 544): a driver outside this daemon can READ its orders —
+    /// the run row publishes [`RUN_STOOD_DOWN_KEY`](crate::plugins::RUN_STOOD_DOWN_KEY) and
+    /// [`RUN_CANCELLED_BY_KEY`](crate::plugins::RUN_CANCELLED_BY_KEY) — and had **no way to be told**
+    /// one had arrived, so it would have to ask on a clock.
+    ///
+    /// ⚠⚠ That is the shape register items 629, 630, 631 and 640 spent four rounds removing from the
+    /// PANE axis, ending at *a remote wait that cost 181 reads over two seconds now costs 1*.
+    /// Building the run driver out-of-process without this would have re-created it one axis over.
+    ///
+    /// ⚠ **AND THE LATENCY IS THE COST, not the reads.** An order is not *something is coming* — it
+    /// is *a person has just spoken*. A cancel that arrives a poll interval late is a peer that was
+    /// typed at for a poll interval longer, and a budget spent on work somebody had already stopped.
+    ///
+    /// # Named by its subject, carrying nothing — this module's rule, and here it is load-bearing
+    ///
+    /// Three orders share one variant because a reader turns any of them into the same act: re-read
+    /// this run's row. Splitting them would put the order vocabulary on the event stream as a second
+    /// copy — exactly what [`RunFinished`](Self::RunFinished) refuses to do with the OUTCOME
+    /// vocabulary one variant up — and a hold, which can be taken back, has no stable word to be
+    /// split under anyway.
+    RunOrdered(u64),
     /// The window's ACTIVE pane moved to this one — tmux `select-pane`, and the pane-level twin of
     /// [`Event::WindowSelected`].
     ///
@@ -646,6 +675,7 @@ impl Event {
             Self::LayoutUpdated => EventKind::LayoutUpdated,
             Self::WindowsReordered => EventKind::WindowsReordered,
             Self::RunFinished(_) => EventKind::RunFinished,
+            Self::RunOrdered(_) => EventKind::RunOrdered,
         }
     }
 
@@ -661,7 +691,7 @@ impl Event {
             | Self::AgentStateChanged(id)
             | Self::PaneJobChanged(id) => Some(Subject::Pane(*id)),
             Self::PaneMoved { pane, .. } => Some(Subject::Pane(*pane)),
-            Self::RunFinished(id) => Some(Subject::Run(*id)),
+            Self::RunFinished(id) | Self::RunOrdered(id) => Some(Subject::Run(*id)),
             Self::WindowCreated(name) | Self::WindowClosed(name) | Self::WindowSelected(name) => {
                 Some(Subject::Window(name.clone()))
             }
@@ -1065,6 +1095,8 @@ sprag_terminal::closed_set! {
         WindowsReordered,
         /// [`Event::RunFinished`].
         RunFinished,
+        /// [`Event::RunOrdered`].
+        RunOrdered,
     }
 }
 
@@ -1099,6 +1131,7 @@ impl EventKind {
             Self::LayoutUpdated => "layout_updated",
             Self::WindowsReordered => "windows_reordered",
             Self::RunFinished => "run_finished",
+            Self::RunOrdered => "run_ordered",
         }
     }
 
@@ -1143,7 +1176,7 @@ impl EventKind {
             Self::SessionCreated | Self::SessionClosed | Self::SessionRenamed => {
                 Some(Subject::SESSION_KEY)
             }
-            Self::RunFinished => Some(Subject::RUN_KEY),
+            Self::RunFinished | Self::RunOrdered => Some(Subject::RUN_KEY),
             // An arrangement is ONE object: see `Event::LayoutUpdated` and
             // `Event::WindowsReordered`, which is the same argument one level up.
             Self::LayoutUpdated | Self::WindowsReordered => None,
@@ -2046,6 +2079,7 @@ mod tests {
             EventKind::LayoutUpdated => Event::LayoutUpdated,
             EventKind::WindowsReordered => Event::WindowsReordered,
             EventKind::RunFinished => Event::RunFinished(7),
+            EventKind::RunOrdered => Event::RunOrdered(7),
         }
     }
 
@@ -2209,6 +2243,13 @@ mod tests {
             (
                 EventKind::RunFinished,
                 json!({ "type": "run_finished", "run": 7 }),
+            ),
+            // ⚠ R24 / register item 648: the run subject's SECOND kind, and the first that is
+            // about somebody else — a person spoke to this run. It rides the same `run` key,
+            // carries nothing, and a reader turns it into the same act the row already serves.
+            (
+                EventKind::RunOrdered,
+                json!({ "type": "run_ordered", "run": 7 }),
             ),
         ];
         assert_eq!(

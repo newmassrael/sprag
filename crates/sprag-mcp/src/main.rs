@@ -849,7 +849,13 @@ fn tools_list() -> Value {
                     `orchestrate` reached a terminal state — converged, exhausted a guardrail, \
                     failed, or was cancelled; the `run` key is its id. THIS IS HOW TO WAIT FOR \
                     YOUR OWN LOOP: waiting costs you one call, and polling `list_runs` costs you \
-                    one per look, which is the expense `orchestrate` exists to save) — each \
+                    one per look, which is the expense `orchestrate` exists to save), \
+                    `run_ordered` (a PERSON said something to a run — cancelled it, asked it to \
+                    stand down, or held it between turns; the `run` key is its id. Re-read \
+                    `list_runs` for what they said: the row carries `stood_down` and \
+                    `cancelled_by`. One event for all three because the act you take is the same \
+                    one either way, and a hold can be taken back so it has no stable word of its \
+                    own. It fires when the order is ACCEPTED, never when it is refused) — each \
                     naming its SUBJECT, not its new value, except the three that MOVE AN ADDRESS: a \
                     rename and a pane's move also carry the one fact no later read could recover. \
                     Follow up with agent_state, pane_processes or list_panes to read the subject a \

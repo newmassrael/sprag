@@ -540,6 +540,27 @@ pub struct PluginsExternal {
     /// (Interface Segregation — see [`crate::workspace_scene`]). The scope that built this external
     /// closed over its own session name; what crosses the boundary is a call with a run id in it.
     on_run_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
+    /// **WHAT TO DO WHEN A PERSON SAYS SOMETHING TO A RUN** — register item 648, and
+    /// [`on_run_end`](Self::on_run_end)'s sibling on exactly its terms.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why an order needed a door of its own, measured
+    ///
+    /// The three orders below ([`cancel`](Self::cancel), [`stand_down`](Self::stand_down),
+    /// [`hold_run`](Self::hold_run)) move a flag and announce nothing. That was enough while the
+    /// only driver was a THREAD in this process reading those flags directly. It stops being enough
+    /// the moment the driver is another process (register item 544): such a driver can READ its
+    /// orders — the run row publishes [`RUN_STOOD_DOWN_KEY`] and [`RUN_CANCELLED_BY_KEY`] — and had
+    /// **nothing to be woken by**, so it would have to ask on a clock.
+    ///
+    /// ⚠⚠ That is the shape register items 629, 630, 631 and 640 spent four rounds removing from
+    /// the PANE axis, ending at *a remote wait that cost 181 reads over two seconds now costs 1*.
+    /// Standing the driver out-of-process without this would have rebuilt it one axis over.
+    ///
+    /// ⚠ **A SEPARATE HOOK RATHER THAN A WIDENED ONE.** `on_run_end` announces an ENDING and this
+    /// announces A PERSON SPEAKING; folding them would make one call site mean two things and force
+    /// every reader to re-read a row to find out which. That is the same reason the hooks above it
+    /// are separate.
+    on_run_ordered: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
     /// The daemon's agent-state memory ([`crate::AgentClock`]), or `None` off a daemon — what lets
     /// a plugin SUPERVISE the agent in a pane instead of guessing from its text.
     ///
@@ -561,6 +582,7 @@ impl PluginsExternal {
         on_attention: Option<Arc<crate::attention::AttentionRouter>>,
         agents: Option<Arc<crate::AgentClock>>,
         on_run_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
+        on_run_ordered: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
     ) -> Self {
         Self {
             workspace,
@@ -568,7 +590,21 @@ impl PluginsExternal {
             on_pane_exit,
             on_attention,
             on_run_end,
+            on_run_ordered,
             agents,
+        }
+    }
+
+    /// Announce that a person has said something to `id` — [`on_run_ordered`](Self::on_run_ordered),
+    /// or nothing at all off a daemon.
+    ///
+    /// ⚠⚠⚠ **CALLED ONLY WHERE THE ORDER WAS ACCEPTED.** A refusal is a fact about the REQUEST —
+    /// there is no such run, or its plugin reads no such order — and waking every watcher of a
+    /// session to re-read a row that did not move is the shape this journal exists to avoid. Each
+    /// of the three doors below announces on its own success path for exactly that reason.
+    fn ordered(&self, id: RunId) {
+        if let Some(announce) = &self.on_run_ordered {
+            announce(id);
         }
     }
 
@@ -659,6 +695,9 @@ impl PluginsExternal {
             .and_then(Value::as_u64)
             .ok_or(InvokeError::TypeMismatch)?;
         if lock(&self.runs).cancel(RunId(id)) {
+            // ⚠ AFTER the registry has taken it and INSIDE the accepted arm — register item 648.
+            // See `ordered`.
+            self.ordered(RunId(id));
             Ok(IntrospectValue::Null)
         } else {
             Err(refused(format!("no run {id} is in flight")))
@@ -687,7 +726,11 @@ impl PluginsExternal {
         // reader for the order was answered OK and drove straight on.
         lock(&self.runs)
             .stand_down(RunId(id))
-            .map(|()| IntrospectValue::Null)
+            .map(|()| {
+                // ⚠ ON THE ACCEPTED ARM ONLY — register item 648, and see `ordered`.
+                self.ordered(RunId(id));
+                IntrospectValue::Null
+            })
             .map_err(|why| refused(why.describe(RunId(id))))
     }
 
@@ -721,7 +764,14 @@ impl PluginsExternal {
         // read its pane, is told the pane is now still, and it is not.
         lock(&self.runs)
             .hold(RunId(id), held)
-            .map(|()| IntrospectValue::Null)
+            .map(|()| {
+                // ⚠⚠ ON THE ACCEPTED ARM, AND A REPEATED HOLD ANNOUNCES TOO — register item 648.
+                // The event says *a person spoke*, not *the level moved*, so re-asserting a hold is
+                // a thing that happened. Suppressing it would need this door to know the previous
+                // level, which is the registry's fact and not this surface's.
+                self.ordered(RunId(id));
+                IntrospectValue::Null
+            })
             .map_err(|why| refused(why.describe(RunId(id))))
     }
 
@@ -2767,6 +2817,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             );
             let mut request = json!({
                 "plugin": "orchestrator",
@@ -2905,6 +2956,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let listed = read_runs(&external);
         assert!(
@@ -2984,6 +3036,7 @@ mod tests {
         let external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
+            None,
             None,
             None,
             None,
@@ -3198,6 +3251,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let asked = ai_loop_request(pane, json!({}));
@@ -3236,6 +3290,7 @@ mod tests {
         let external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
+            None,
             None,
             None,
             None,
@@ -3324,6 +3379,7 @@ mod tests {
         let mut external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
+            None,
             None,
             None,
             None,
@@ -3445,6 +3501,7 @@ mod tests {
             let mut external = PluginsExternal::new(
                 Arc::clone(&workspace),
                 Arc::clone(&registry),
+                None,
                 None,
                 None,
                 None,
@@ -3606,6 +3663,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             );
             let started = external
                 .invoke(
@@ -3763,6 +3821,7 @@ mod tests {
         let mut external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
+            None,
             None,
             None,
             None,
@@ -4045,6 +4104,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         // ⚠⚠⚠ A LOOP ALLOWED NO TURN, which is the one arm of this refusal that is left.
@@ -4248,6 +4308,7 @@ mod tests {
         let mut external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
+            None,
             None,
             None,
             None,
@@ -5496,6 +5557,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         claim(crate::wire::PLUGINS_GRAMMAR, &mut |action, args| {
             external.invoke(action, args)
@@ -5820,6 +5882,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let mut ask = |opener: u64| {
             external.invoke(
@@ -5874,6 +5937,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let accepted = external.invoke(
             RUN_ACTION,
@@ -5910,6 +5974,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(
             sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
@@ -5928,8 +5993,15 @@ mod tests {
     fn host_with_a_pane() -> (PluginsExternal, Arc<Mutex<RunRegistry>>, PaneId) {
         let (workspace, pane) = pane_painting("");
         let registry = Arc::new(Mutex::new(RunRegistry::default()));
-        let external =
-            PluginsExternal::new(workspace, Arc::clone(&registry), None, None, None, None);
+        let external = PluginsExternal::new(
+            workspace,
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         (external, registry, pane)
     }
 
@@ -6102,6 +6174,7 @@ mod tests {
         let mut external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
+            None,
             None,
             None,
             None,
@@ -6365,6 +6438,120 @@ mod tests {
         assert!(
             format!("{wrong_unit:?}").contains("bytes"),
             "and it says which unit this run spends: {wrong_unit:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A PERSON SPEAKING TO A RUN IS AN EVENT, AND A REFUSED ORDER IS NOT** — register
+    /// item 648.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a run needed this and a pane did not
+    ///
+    /// Every other subject on this daemon's journal reports its CHANGES; a run reported only its
+    /// ENDING (`Event::RunFinished`). That was enough while the only driver was a THREAD in this
+    /// process, reading the three order flags directly out of shared memory. **It stops being
+    /// enough the moment the driver is another process** — register item 544, whose stages 1 and 2
+    /// are already standing. Such a driver can READ its orders (the run row publishes
+    /// [`RUN_STOOD_DOWN_KEY`] and [`RUN_CANCELLED_BY_KEY`]) and had **nothing to be woken by**, so
+    /// it would have to ask on a clock.
+    ///
+    /// ⚠⚠ **THAT IS THE SHAPE FOUR ROUNDS WERE SPENT REMOVING FROM THE PANE AXIS** — items 629,
+    /// 630, 631 and 640, ending at *a remote wait that cost 181 reads over two seconds now costs
+    /// 1*. Building the out-of-process driver without this would have rebuilt it one axis over,
+    /// which is why this gate comes BEFORE that driver rather than after it.
+    ///
+    /// ⚠ **AND THE COST HERE IS LATENCY, NOT READS.** An order is not *something is coming*, it is
+    /// *a person has just spoken*. A cancel that arrives a poll interval late is a peer typed at
+    /// for a poll interval longer and a budget spent on work somebody had already stopped.
+    ///
+    /// # The control is the half that could go wrong silently
+    ///
+    /// Announcing on EVERY call — including the refusals — would look identical from the accepted
+    /// side and would wake every watcher of the session to re-read a row that never moved. So the
+    /// gate drives a REFUSED order at an id no run carries and asserts the journal stayed put.
+    #[test]
+    fn an_order_a_person_gives_a_run_reaches_the_journal_and_a_refused_one_does_not() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        // The hook the daemon mints in `crate::workspace_scene`, as a recorder: what crosses the
+        // boundary is a call with a run id in it, which is exactly what this collects.
+        let heard: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let announced = {
+            let heard = Arc::clone(&heard);
+            Some(Arc::new(move |id: RunId| lock(&heard).push(id.0))
+                as Arc<dyn Fn(RunId) + Send + Sync>)
+        };
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            announced,
+        );
+
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+        // ⚠ THE ORDER GOES TO A RUN THAT IS PROVABLY DRIVING, its sibling gates' rule: an order at a
+        // run that has not started yet would be answered by the registry rather than by this door.
+        drop(driving(&external, id, Duration::from_secs(30)));
+
+        // ── THE CONTROL FIRST: a refused order announces nothing ───────────────────────────────
+        // ⚠⚠ Before the claim, deliberately. A hook that fired on every call would satisfy the
+        // claim below and be wrong in the way that costs — waking every watcher of a session to
+        // re-read a row nothing touched.
+        let missing = id + 1_000;
+        external
+            .invoke(
+                CANCEL_ACTION,
+                IntrospectValue::Json(json!({ "id": missing })),
+            )
+            .expect_err("no run carries that id");
+        assert!(
+            lock(&heard).is_empty(),
+            "⚠⚠⚠⚠ A REFUSED ORDER IS A FACT ABOUT THE REQUEST, NOT ABOUT ANY RUN. Announcing it \
+             wakes every watcher of this session to re-read a row that never moved — and it is \
+             indistinguishable from the accepted case at the assertion below, which is what makes \
+             it the half that goes wrong silently. Heard {:?}",
+            lock(&heard),
+        );
+
+        // ── THE CLAIM: each of the three orders reaches the journal ───────────────────────────
+        external
+            .invoke(HOLD_RUN_ACTION, IntrospectValue::Json(json!({ "id": id })))
+            .expect("a run can be held");
+        external
+            .invoke(
+                STAND_DOWN_ACTION,
+                IntrospectValue::Json(json!({ "id": id })),
+            )
+            .expect("an ai_loop run reads a stand-down");
+        external
+            .invoke(CANCEL_ACTION, IntrospectValue::Json(json!({ "id": id })))
+            .expect("a run in flight can be cancelled");
+
+        let told = lock(&heard).clone();
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+        assert_eq!(
+            told,
+            vec![id, id, id],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 648: A PERSON SPOKE TO A RUN AND THE JOURNAL SAID NOTHING. \
+             All three orders move a flag the run row already publishes, so a driver OUTSIDE this \
+             daemon can read them — and with no event it can only ask on a clock, which is the \
+             shape items 629/630/631/640 spent four rounds taking off the pane axis. Expected one \
+             announcement per accepted order for run {id}, heard {told:?}",
         );
     }
 }

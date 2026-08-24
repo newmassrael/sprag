@@ -643,6 +643,21 @@ pub fn workspace_scene(
             channels.announce(&session, vec![events::Event::RunFinished(id.0)]);
         }) as Arc<dyn Fn(crate::runs::RunId) + Send + Sync>)
     };
+    // AND WHERE A PERSON SPEAKING TO A RUN IS ANNOUNCED — register item 648, minted here on the
+    // sentence above's exact terms and for a sharper reason: the reader this exists for is not in
+    // this process at all.
+    //
+    // ⚠⚠⚠ A run's ORDERS were readable and unannounceable. The row publishes `stood_down` and
+    // `cancelled_by`, so a driver outside this daemon (item 544) could ASK — and had nothing to be
+    // woken by, which means asking on a clock. Items 629/630/631/640 spent four rounds taking
+    // exactly that off the PANE axis; this is what stops the run axis being where it comes back.
+    let plugin_run_ordered = {
+        let channels = Arc::clone(channels);
+        let session = scope.session().to_owned();
+        Some(Arc::new(move |id: crate::runs::RunId| {
+            channels.announce(&session, vec![events::Event::RunOrdered(id.0)]);
+        }) as Arc<dyn Fn(crate::runs::RunId) + Send + Sync>)
+    };
     children.push(Scene::External(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
             Arc::clone(workspace),
@@ -651,6 +666,7 @@ pub fn workspace_scene(
             plugin_attention,
             plugin_agents,
             plugin_run_end,
+            plugin_run_ordered,
         )))
         .with_tag(PLUGINS_TAG),
     ));
