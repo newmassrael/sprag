@@ -2765,6 +2765,28 @@ impl Accounted {
     }
 }
 
+/// **WHERE A LOOP'S MACHINE IS, AS ONE VALUE** — register item 543.
+///
+/// # ⚠⚠⚠⚠⚠ Two facts, and they are one value because they are only true together
+///
+/// [`Engine::enter_at`](sce_rust_runtime::Engine::enter_at) takes a configuration AND the current
+/// state, and it REFUSES a `current` that is not a member of that configuration
+/// (`CurrentNotActive`). Measured: handing it the resuming loop's own `state()` is exactly that
+/// refusal, because a fresh machine's leaf is nowhere in the saved set. So a caller that carried
+/// the chain alone would have half a place and no way to tell — which is the shape this workspace
+/// has paid for at every pair of adjacent fields it let drift apart.
+///
+/// ⚠ `current` is the ENGINE's own notion, not [`OuterLoop::state`]: that one answers the deepest
+/// leaf of the WORK region, which is what a person reads and what a row renders — and this document
+/// has regions, so the work leaf is not the machine's current state.
+#[derive(Clone, Debug)]
+pub struct LoopPlace {
+    /// The whole active set, regions included.
+    configuration: sce_rust_runtime::helpers::hierarchy::StateChain<AiLoopState>,
+    /// The engine's current state, which must be a member of the set above.
+    current: AiLoopState,
+}
+
 /// A run of `ai_loop.scxml`'s machine against one pane.
 pub struct OuterLoop {
     /// The compiled document.
@@ -3833,6 +3855,52 @@ impl OuterLoop {
     /// milestone would make a run's ending depend on which of two messages arrived first.
     pub fn stand_down(&mut self) {
         self.walk(AiLoopEvent::StandDown);
+    }
+
+    /// **WHERE THIS LOOP'S MACHINE IS, AS THE WHOLE ACTIVE SET** — register item 543's first door.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the configuration and not [`state`](Self::state)
+    ///
+    /// `state` answers the deepest leaf **of the work region**, which is what a person reads and
+    /// what a row renders. It is not what a machine can be put back at: this document has REGIONS,
+    /// so the orders region's leaf is live beside the work one, and a resume handed a single state
+    /// would come back having forgotten whether somebody had ordered a stand-down. The whole chain
+    /// is what `Engine::enter_at` takes and what a restart has to hand back.
+    ///
+    /// ⚠ Read at the ask and never cached — the machine moves under this loop on every walk, and a
+    /// configuration remembered from an earlier step is a statement about a place it has left.
+    #[must_use]
+    pub fn configuration(&self) -> LoopPlace {
+        LoopPlace {
+            configuration: self.machine.get_active_states(),
+            current: self.machine.get_current_state(),
+        }
+    }
+
+    /// **PUT THIS LOOP'S MACHINE BACK AT `configuration`, WITHOUT RE-ENTERING IT** — register item
+    /// 543's other door, and the one that makes a restart a resume.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It does not walk, and that is the entire point
+    ///
+    /// Driving a fresh machine through the same events would land in the same place and **re-fire
+    /// every `<onentry>` on the way** — and this document's entry actions are what type a prompt
+    /// into somebody's pane. A resume that re-types is not a resume; it is a second run wearing the
+    /// first one's id, and it spends the peer's tokens saying what was already said. `enter_at`
+    /// (SCE `f3765c95c9`, item 549's ask) is the door that places a machine without running entry
+    /// actions, and its contract is held by
+    /// `crate::probe`'s `a_saved_configuration_is_entered_without_re_running_onentry`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the engine refuses — a configuration that is not one this document can be in. ⚠ The
+    /// rejection is returned rather than swallowed: a run placed at a configuration the document
+    /// does not admit would be a machine nobody can reason about, and the caller (a daemon reading
+    /// a log written by an older build) is exactly who needs to hear it.
+    pub fn resume_at(
+        &mut self,
+        place: &LoopPlace,
+    ) -> Result<(), sce_rust_runtime::ConfigurationRejection<AiLoopState>> {
+        self.machine.enter_at(&place.configuration, place.current)
     }
 
     /// **IS AN ORDER TO STAND DOWN STANDING, AS THE DOCUMENT ITSELF HOLDS IT?** — register item
@@ -16949,6 +17017,77 @@ mod tests {
              is silent in exactly the way the headline's is; the only difference is that its \
              document declined to bound silence. A driver holding a constant of its own passes the \
              headline and fails here: {declined_walk:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A LOOP CAN SAY WHERE ITS MACHINE IS, AND BE PUT BACK THERE** — register item 543's
+    /// first brick, and the one nothing in this tree could do.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is the brick and not the feature
+    ///
+    /// Item 543 is *a run's machine is never persisted, so every daemon restart kills every run*.
+    /// Its Done-when needs a daemon restarted under a live run. **Nothing can persist what the
+    /// plugin will not say**: `OuterLoop::machine` is private and the loop published no way to read
+    /// its active configuration or to be constructed at one, so the feature had no floor to stand
+    /// on. This gate is that floor — a round trip through the loop's own doors, with no daemon, no
+    /// socket and no file.
+    ///
+    /// # ⚠⚠⚠ The second assertion is the one 543 is actually about
+    ///
+    /// Coming back in the same PLACE is easy to fake — a fresh machine driven through the same
+    /// events lands there too, and would have re-typed every prompt on the way. So the resumed loop
+    /// is required to have walked NOTHING: `walked()` is empty, which is *it was placed there*
+    /// rather than *it went there again*. That is the difference between resuming a run and
+    /// restarting one, and it is the whole of what a person loses today.
+    ///
+    /// ⚠ It rests on SCE `f3765c95c9`'s `Engine::enter_at`, whose *does not re-run `<onentry>`*
+    /// contract is held next door by `probe::tests::a_saved_configuration_is_entered_without_re_running_onentry`.
+    #[test]
+    fn a_loop_says_where_its_machine_is_and_can_be_put_back_there() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (_workspace, pane) = quiet_pane();
+        let mut ran = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("the shipped document builds a loop");
+
+        // Drive it OFF its initial configuration, so what is saved is a real place and not the one
+        // any fresh machine is already in.
+        ran.walk(AiLoopEvent::Start);
+        let moved = ran.state();
+        let fresh = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a loop builds from the same document")
+            .state();
+        assert_ne!(
+            moved, fresh,
+            "⚠⚠ the loop never left the state a FRESH one is already in, so the round trip below \
+             would be asking whether a new machine is where a new machine already is — which is \
+             true of a door that does nothing at all. The premise is compared against a fresh \
+             loop rather than a state name spelled here, so the document may rename its states.",
+        );
+
+        // ── THE CLAIM: it says where it is, and a FRESH loop can be put there ────────────────
+        let saved = ran.configuration();
+        let mut resumed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a second loop builds from the same document");
+        resumed
+            .resume_at(&saved)
+            .expect("a configuration this document produced is one it accepts");
+        assert_eq!(
+            resumed.state(),
+            moved,
+            "⛔⛔⛔⛔ REGISTER ITEM 543: a loop handed the configuration it was saved in did not \
+             come back there. Without this, a restarted daemon has nothing to re-enter and every \
+             run it inherits is dead — which is what makes promotion a destructive act and item \
+             526 a dilemma rather than a chore.",
+        );
+
+        // ── AND IT WAS PLACED, NOT REPLAYED ─────────────────────────────────────────────────
+        assert!(
+            resumed.walked().is_empty(),
+            "⛔⛔⛔ REGISTER ITEM 543: the resumed loop WALKED to get there. Arriving by walking is \
+             re-running the document, which re-fires `<onentry>` — and this document's entry \
+             actions are what type a prompt into somebody's pane. A resume that re-types is not a \
+             resume, it is a second run wearing the first one's id. Walked: {:?}",
+            resumed.walked(),
         );
     }
 }
