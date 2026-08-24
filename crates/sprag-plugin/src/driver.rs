@@ -1603,6 +1603,99 @@ mod tests {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **A DRIVER FORWARDS THE SAME PROGRESS ITS CELL GOT, AND THAT INCLUDES WHERE THE
+    /// MACHINE IS** — `sprag-host`'s register item 662, first link.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this link had to be measured and was not
+    ///
+    /// [`Driver::forwarding_to`] is how a run driven in ANOTHER PROCESS says anything at all: its
+    /// daemon shares no cell with it, so the sink is the only channel, and what does not go down it
+    /// is a fact the daemon can never learn. Item 662 measured the far end of that channel (the
+    /// daemon dropped `at` and `place` on the floor) and closed it — and this end, *the driver puts
+    /// them on the channel in the first place*, was held by a comment and nothing else. Nothing
+    /// anywhere called `forwarding_to` outside the product.
+    ///
+    /// ⚠⚠ **THE CLAIM IS THAT THE TWO READERS AGREE**, not merely that the sink saw something: the
+    /// cell and the sink are the same person looking at one run through two windows, so the
+    /// assertion compares them rather than checking each against a literal. A forwarder that built
+    /// its own `Progress` a line later is the defect this shape exists to prevent, and it would
+    /// pass a gate that only asked *did the sink get a place*.
+    #[test]
+    fn a_driver_forwards_the_very_progress_its_cell_got() {
+        /// A plugin that says where its machine is, the way `AiLoop` does.
+        struct Placed;
+        impl Plugin for Placed {
+            fn step(&mut self, _: &dyn PaneAccess, _: &RunContext) -> Result<Step, PaneError> {
+                Ok(Step::new(Cost::Bytes(3), Verdict::Continue))
+            }
+            fn at(&self) -> Option<&'static str> {
+                Some("judging")
+            }
+            fn place(&self) -> Option<Vec<String>> {
+                Some(vec!["judging".to_owned(), "running".to_owned()])
+            }
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
+        }
+
+        let cell: ProgressCell = ProgressCell::default();
+        let heard: Arc<Mutex<Vec<Progress>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let heard = Arc::clone(&heard);
+            Arc::new(move |progress: &Progress| {
+                heard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(progress.clone());
+            }) as ProgressSink
+        };
+        // ⚠ The OUTCOME is not what this measures — what the two watchers were told is.
+        let _ = Driver::new(Guardrails {
+            max_iterations: 2,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .forwarding_to(sink)
+        .run(
+            &mut Placed,
+            &RecordingPanes::new(),
+            &RunContext::uncancellable(),
+        );
+
+        let heard = heard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let last = heard
+            .last()
+            .expect("⚠⚠ THE PREMISE: a run that took steps must have published at least once");
+        assert_eq!(
+            last.place.as_deref(),
+            Some(["judging".to_owned(), "running".to_owned()].as_slice()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 662: a driver in another process forwarded its counters and \
+             NOT where its machine was. That sink is the only channel such a run has, so a place \
+             left off it is a place its daemon can never learn — and item 543's whole resume ends \
+             at exactly that driver. Heard: {last:?}",
+        );
+        assert_eq!(
+            last.at,
+            Some("judging"),
+            "⚠⚠ and the word a person reads beside it, which is the other half of the pair a run \
+             log keeps",
+        );
+        assert_eq!(
+            *last,
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "⚠⚠⚠ AND THE TWO READERS MUST AGREE. A forwarder that assembles its own `Progress` \
+             is free to drift from the cell one field at a time, and the two readers are the same \
+             person looking at one run through two windows.",
+        );
+    }
+
     /// A plugin that never converges, DRIVES pane 1, and can be told to block for a while — the
     /// stand-in for "a step is in flight when the run ends".
     struct Driving {

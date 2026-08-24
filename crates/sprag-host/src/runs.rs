@@ -1735,15 +1735,36 @@ impl RunRegistry {
                         ),
                         RunState::Panicked(why) => (true, Some(why.clone()), None, None),
                     };
+                    // ⚠⚠⚠⚠⚠ **A DRIVER'S REPORT IS PREFERRED OVER THE CELL, AND THE ROW HAD ALREADY
+                    // DECIDED THIS** — register item 662. For a run driven in another process the
+                    // cell NEVER MOVES (`spawn_driven_run` files an empty one and says so), so
+                    // reading it first wrote a durable record of `iterations: 0, place: None` for a
+                    // run that had been going for hours. `crate::plugins::run_to_json` prefers the
+                    // report for exactly this reason (item 650) — so before this line one daemon
+                    // answered the same question two ways depending on who asked, and the FILE, the
+                    // answer that outlives the process, was the wrong one. Item 606's whole finding
+                    // is that a run is READ after it ends, when its daemon is already gone.
+                    //
+                    // ⚠⚠ A MISSING KEY FALLS BACK TO THE CELL AND NEVER TO A ZERO. There is no
+                    // report at all for a run this daemon drives on a thread of its own — every run
+                    // under today's default — and an older driver reports only the keys its build
+                    // knew. Both are *nobody said*, and the cell is the honest answer to that.
+                    let reported = run
+                        .reported
+                        .as_ref()
+                        .map(crate::plugins::progress_from_report)
+                        .unwrap_or_default();
+                    let cost = reported.cost.or(run.progress.cost);
+                    // ⚠⚠⚠ WHERE IT WAS, MERGED BEFORE `document` IS STAMPED, because that
+                    // fingerprint vouches for whichever of these two is present — see the field.
+                    let at = reported.at.or_else(|| run.progress.at.map(str::to_owned));
+                    let place = reported.place.or_else(|| run.progress.place.clone());
                     PersistedRun {
                         id: run.id.0,
                         label: run.label.clone(),
-                        iterations: run.progress.iterations,
-                        cost: run.progress.cost.map(sprag_plugin::Cost::amount),
-                        unit: run
-                            .progress
-                            .cost
-                            .map(|c| sprag_plugin::Cost::unit(c).to_owned()),
+                        iterations: reported.iterations.unwrap_or(run.progress.iterations),
+                        cost: cost.map(sprag_plugin::Cost::amount),
+                        unit: cost.map(|c| sprag_plugin::Cost::unit(c).to_owned()),
                         finished,
                         outcome,
                         ceiling,
@@ -1756,15 +1777,22 @@ impl RunRegistry {
                         // build whose documents produced the word beside it. A run with no
                         // recorded position records no document either, so a reader never sees a
                         // fingerprint vouching for nothing.
-                        at: run.progress.at.map(str::to_owned),
+                        //
+                        // ⚠⚠⚠⚠ **AND THE FINGERPRINT IS STILL HONEST WHEN THE WORD CAME OFF A
+                        // DRIVER PROCESS** — register item 662. `crate::drive`'s whole design is
+                        // that a driver IS this daemon's image (`std::env::current_exe`), so the
+                        // documents that produced a reported word are the documents this constant
+                        // names. A driver built from another image would be a different question,
+                        // and there is no way to start one.
+                        at: at.clone(),
                         // ⚠⚠⚠ AND THE WHOLE PLACE BESIDE THE WORD — register item 543. `at` is what
                         // a person reads; this is what an engine can be re-entered at, and the run
                         // log is the only thing a successor daemon has.
-                        place: run.progress.place.clone(),
+                        place: place.clone(),
                         // ⚠ VOUCHED FOR BY EITHER, because either alone is a position: a document
                         // recorded for neither would be a fingerprint standing over nothing, and a
                         // place recorded without one is a vocabulary nobody can check.
-                        document: (run.progress.at.is_some() || run.progress.place.is_some())
+                        document: (at.is_some() || place.is_some())
                             .then(|| sprag_plugin::STATECHARTS_FINGERPRINT.to_owned()),
                         // ⚠⚠⚠ ALWAYS `Some`, INCLUDING `false` — item 594. This image DID look, so
                         // `Some(false)` is a claim it is entitled to make; the `None` this field
@@ -1800,7 +1828,13 @@ impl RunRegistry {
                         // reader will take, so a log from an older daemon (request present, rule
                         // absent) is still read safely, while a log this daemon wrote carries
                         // nothing it could not use.
-                        request: (!finished && run.progress.place.is_some())
+                        //
+                        // ⚠⚠⚠ IT READS THE MERGED PLACE AND NOT THE CELL — register item 662. A run
+                        // driven in another process has its place only in its report, so a rule
+                        // that asked the cell here would record a place beside no request for
+                        // exactly the driver kind that can read one, and item 543's resume would
+                        // stop at the last step for the runs it was built for.
+                        request: (!finished && place.is_some())
                             .then(|| record.request.clone())
                             .flatten(),
                     }
