@@ -9943,3 +9943,130 @@ fn a_remote_driver_offers_every_optional_sub_surface_but_the_one_it_refuses_on_p
          withdrawn and why `WIRE_PROTOCOL` moved for it.",
     );
 }
+
+/// ⛔⛔⛔⛔ **A PERSON'S CANCEL REACHES A DRIVER IN ANOTHER PROCESS, AND REACHES IT AS A WAKE** —
+/// register item 648's remaining half.
+///
+/// # ⚠⚠⚠⚠⚠ What was already paid, and what this is
+///
+/// Item 648 measured that `EventKind`'s seventeen variants carry every PANE, WINDOW, SESSION and
+/// LAYOUT change and exactly one run fact (`RunFinished`) — so a run's ORDERS were not journal
+/// events at all. Half of it was paid the same round: `Event::RunOrdered` exists and the three
+/// order doors publish it from their accepted arms. **The other half could not be measured then**,
+/// in the item's own words — *"a driver verb has to stand first"* — because the thing that must
+/// wake lives in a process this daemon had no way to start. Register item 643 stood that up.
+///
+/// So this is the half that was owed: not *does the order reach the journal* (gated already) but
+/// **does a driver that is not in this process act on it**.
+///
+/// # ⚠⚠⚠ Why the pane axis is the reason this matters
+///
+/// Register items 629, 630, 631 and 640 spent four rounds removing exactly this shape from the PANE
+/// axis — *do not let the cost of a wait follow a clock* — and a run axis with no wake would have a
+/// child driver POLLING its own row. A poll is not merely slower here: an order is not *something
+/// that will arrive*, it is **a person who has just spoken**, so every period of latency is spent
+/// typing at a peer nobody wants answered any more, and paying for it.
+///
+/// # ⚠⚠ What the window is and is not
+///
+/// The ten seconds below is not a latency claim — register item 613 is this workspace's own scar
+/// about wall-clock assertions on a shared runner. It is generous enough that a woken driver always
+/// makes it.
+///
+/// # ⛔⛔⛔⛔⛔ THIS GATE IS RED AGAINST THE SHIPPED PRODUCT — register item 660
+///
+/// It is `#[ignore]`d for that reason and for no other: it is the MEASUREMENT of a live defect, not
+/// a gate waiting on a fixture. **Un-ignore it the day 660 is paid; do not weaken it.** Measured
+/// 2026-08-24, three runs:
+///
+/// * The daemon has the order — the row carries `cancelled_by` with a person's sentence in it.
+/// * The driver is ALIVE and stepping — the same row's `iterations` keeps climbing (19 in the
+///   first ten seconds), so its reporting connection is working.
+/// * And the run does not stop. Not in ten seconds, not in **sixty**.
+/// * ⚠⚠ Nor does it stop at a `max_seconds` of **20** — so whatever is not hearing the order is
+///   also not hearing the CLOCK, which points at a step that blocks rather than at the journal.
+///
+/// Four candidate causes were driven out rather than argued: the daemon does wire the announce
+/// (`lib.rs`'s `plugin_run_ordered` → `channels.announce(RunOrdered)`); an absent `match` key means
+/// `EventFilter::Everything`, so the subscription admits it; `HostConn::call` sets notifications
+/// ASIDE for `next_notification` rather than dropping them, so `read_row` sharing the subscribed
+/// connection does not eat the wake; and `watch_orders` parks rather than polls.
+#[test]
+#[ignore = "register item 660: RED against the shipped product — a person's cancel does not reach an out-of-process driver"]
+fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it_to_look() {
+    // The option a person sets, at the door a person sets it — `the_daemon_drives_a_run_in_a
+    // _process_of_its_own`'s reason: there is no environment path to it, and inventing one would be
+    // a second way to turn this on that production does not have.
+    let config = config_home(&format!(
+        "[options]\n{} = \"on\"\n",
+        sprag_host::options::RUN_DRIVER_PROCESS
+    ));
+    let (_host, sock) = spawn_host_with(
+        &["sh", "-c", COUNTING_PEER],
+        &[("XDG_CONFIG_HOME", config.to_str().expect("a utf-8 path"))],
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let pane = *pane_ids(&mut conn).first().expect("the boot pane");
+
+    // ⚠⚠ A SENTINEL THIS PEER NEVER SAYS, so nothing but the order can end the run inside the
+    // window below. `COUNTING_PEER` answers `ANSWER:<n>:<line>` and cannot produce this word; the
+    // ceilings are set far past the window for the same reason.
+    let started = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": sprag_host::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": {
+                    "plugin": "orchestrator",
+                    "pane": pane,
+                    "stimulus": "wait-for-an-order",
+                    "sentinel": "A-WORD-THIS-PEER-NEVER-SAYS",
+                    "guardrails": { "max_iterations": 200, "max_seconds": 120 },
+                },
+            }),
+        )
+        .expect("the daemon starts a run");
+    let run = started.as_u64().expect("a run answers its id");
+
+    // ── THE CONTROL: it is really RUNNING when the order is given ────────────────────────────
+    //
+    // ⚠⚠⚠ Without this the cancel could be "ending" a run that had already stopped on its own, and
+    // every claim below would be about nothing. The run must be seen in flight FIRST.
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            run_row(&mut conn, run)["state"]["status"] == json!("running")
+        }),
+        "⚠⚠ the run never reached `running`, so the order below would be given to a run that was \
+         not there to hear it. Read {:?}",
+        run_row(&mut conn, run),
+    );
+
+    // ── THE ORDER, at the door a person uses ─────────────────────────────────────────────────
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::plugins_path(sprag_host::plugins::CANCEL_ACTION),
+            "args": { "id": run },
+        }),
+    )
+    .expect("a person cancels the run");
+
+    // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────────
+    let stopped = wait_until(Duration::from_secs(10), || {
+        run_row(&mut conn, run)["state"]["status"] == json!("done")
+    });
+    let row = run_row(&mut conn, run);
+    assert!(
+        stopped,
+        "⛔⛔⛔⛔ REGISTER ITEM 648: a person cancelled a run driven from another process and the \
+         driver did not hear it. The order reached this daemon's registry — that half was paid — \
+         but the JOURNAL is how it crosses to a driver that is not in this process, and a driver \
+         that cannot be woken has to look instead. Read {row:?}",
+    );
+    assert_eq!(
+        row["state"]["outcome"]["state"],
+        json!("cancelled"),
+        "⚠⚠⚠ the run ended, but not as CANCELLED — so something other than the person's order \
+         stopped it and this gate would be green for the wrong reason. Read {row:?}",
+    );
+}
