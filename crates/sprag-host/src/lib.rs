@@ -150,7 +150,7 @@ pub use scope::{ScopeError, SessionScope};
 pub use ssh::{PortForward, SshTarget, SshTargetError};
 pub use sweep::{SweepReport, sweep_once};
 pub use window::{WindowSize, arbitrate};
-pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
+pub use wire::{mux_action_path, pane_container_tag, pane_input_path, plugins_path};
 pub use workspace::WorkspaceExternal;
 
 use std::borrow::Cow;
@@ -659,19 +659,91 @@ pub fn workspace_scene(
             channels.announce(&session, vec![events::Event::RunOrdered(id.0)]);
         }) as Arc<dyn Fn(crate::runs::RunId) + Send + Sync>)
     };
+    let mut plugin_host = plugins::PluginsExternal::new(
+        Arc::clone(workspace),
+        Arc::clone(runs),
+        plugin_exit,
+        plugin_attention,
+        plugin_agents,
+        plugin_run_end,
+        plugin_run_ordered,
+    );
+    // ⚠⚠⚠⚠⚠ AND WHERE A RUN'S DRIVER IS PUT IN A PROCESS OF ITS OWN — register items 544 / 643 /
+    // 650, minted here on the two hooks above's exact terms and for their reason: starting a driver
+    // needs to know WHICH BINARY THIS IS, WHICH ENDPOINT it serves and WHICH SESSION a client of it
+    // must scope to, and the session tree is precisely what the plugin surface is free of.
+    //
+    // ⚠⚠ `None` unless the option says so, so a daemon nobody configured drives runs exactly as it
+    // did before — see `crate::options::RUN_DRIVER_PROCESS` for why that default is the migration
+    // rather than the destination.
+    if config::option_is_on(options::RUN_DRIVER_PROCESS) {
+        plugin_host = plugin_host.driving_out_of_process(driver_spawn(scope.session().to_owned()));
+    }
     children.push(Scene::External(
-        ExternalNode::new(Box::new(plugins::PluginsExternal::new(
-            Arc::clone(workspace),
-            Arc::clone(runs),
-            plugin_exit,
-            plugin_attention,
-            plugin_agents,
-            plugin_run_end,
-            plugin_run_ordered,
-        )))
-        .with_tag(PLUGINS_TAG),
+        ExternalNode::new(Box::new(plugin_host)).with_tag(PLUGINS_TAG),
     ));
     Scene::Container(ContainerNode::new(children).with_tag(WORKSPACE_TAG))
+}
+
+/// **HOW THIS DAEMON STARTS A RUN'S DRIVER**, scoped to `session` — register items 544 / 643 / 650.
+///
+/// # ⚠⚠⚠ The three facts it closes over, and why each has to be closed over here
+///
+/// * **Which binary.** [`std::env::current_exe`], so *the driver is this daemon's image* is true by
+///   construction rather than by a version check — `crate::drive`'s module doc argues that at
+///   length. A named artefact would be a second thing to ship and a second version to skew.
+/// * **Which endpoint.** Passed in the child's environment under the same name every other client
+///   of this daemon reads ([`sprag_rpc::HOST_SOCKET`]'s override), so the two can never disagree
+///   about which host they mean.
+/// * **Which session.** `-t`, because a park is served from ONE session's revision channel and the
+///   daemon refuses a wait for a pane that session does not hold. Reading and typing are addressed
+///   by global pane id and would not need it; the WAIT does.
+///
+/// # ⚠⚠ The request goes on stdin, and the pipe is closed
+///
+/// A brief carries prose somebody wrote, and quoting a paragraph through a command line is a class
+/// of bug this avoids rather than handles. ⚠ The write TOLERATES a broken pipe: a driver that
+/// refused before reading is one whose exit status is the answer, and treating the pipe as fatal
+/// would report `Broken pipe` instead — register item 471, which `sprag-gate`'s own ratchet holds
+/// every test in this tree to.
+fn driver_spawn(session: String) -> plugins::DriverSpawn {
+    Arc::new(
+        move |id: crate::runs::RunId, request: &serde_json::Map<String, serde_json::Value>| {
+            let mut child = std::process::Command::new(std::env::current_exe()?)
+                .arg(drive::DRIVE_FLAG)
+                .arg(id.0.to_string())
+                .arg("-t")
+                .arg(&session)
+                // ⚠ THE ENDPOINT'S OWN ENV NAME, taken from the endpoint rather than spelled here:
+                // `HOST_SOCKET` carries both the path policy and the variable that overrides it, so a
+                // driver reads the socket through the same door every other client of this daemon does.
+                .env(
+                    sprag_rpc::HOST_SOCKET.path_env,
+                    sprag_rpc::socket_path(sprag_rpc::HOST_SOCKET),
+                )
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            {
+                use std::io::Write as _;
+                let mut stdin = child.stdin.take().ok_or_else(|| {
+                    std::io::Error::other(
+                        "a driver is spawned with a piped stdin, and this one has none",
+                    )
+                })?;
+                let brief = serde_json::Value::Object(request.clone()).to_string();
+                match stdin.write_all(brief.as_bytes()) {
+                    Ok(()) => {}
+                    // ⚠ THE WHOLE POINT — see this function's own note. The child refused before
+                    // reading, and its exit status is what the collector came for.
+                    Err(why) if why.kind() == std::io::ErrorKind::BrokenPipe => {}
+                    Err(why) => return Err(why),
+                }
+            }
+            Ok(child)
+        },
+    )
 }
 
 /// The scene a request whose SESSION SCOPE COULD NOT BE RESOLVED is offered before it is refused:

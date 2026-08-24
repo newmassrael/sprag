@@ -31,7 +31,7 @@
 //! ⚠⚠ And it does not weaken what 544 wanted: a changed loop document rebuilds the binary, the
 //! daemon keeps running with the image it started with, and the NEXT run spawns the new one.
 //!
-//! # The three channels, and why none of them is a new wire address
+//! # The four channels, and why only one of them is a new wire address
 //!
 //! * **In** — the run's request arrives on STDIN as the same JSON object `run` takes. Not argv: a
 //!   brief carries prose a person wrote, and quoting somebody's paragraph through a command line is
@@ -48,10 +48,19 @@
 //!   spent four rounds taking clock-paced waiting off the pane axis, ending at *a remote wait that
 //!   cost 181 reads over two seconds now costs 1*; a driver that polled its own orders would put it
 //!   straight back one axis over.
+//! * **Progress** — and this one IS a new address ([`REPORT_PROGRESS_ACTION`], register item 650),
+//!   because it is the one fact whose reader is neither this process nor the parent's pipe: it is
+//!   whoever is watching the run's ROW while the work is still going. The daemon reads a running
+//!   run's counters out of a `ProgressCell` it SHARES with an in-process worker, and a driver out
+//!   here shares no memory with it — so without an address such a run's row sits at zero for its
+//!   whole life, which is the difference between a supervised loop and a black box.
+//!   ⚠ **PUSHED, not sampled**, for the reason the orders channel above is a subscription.
+//!
+//! [`REPORT_PROGRESS_ACTION`]: crate::plugins::REPORT_PROGRESS_ACTION
 
 use std::io::{Read, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -85,13 +94,18 @@ const CONNECT_WITHIN: Duration = Duration::from_secs(5);
 pub fn drive(socket: &std::path::Path, session: Option<&str>, run: u64) -> std::io::Result<()> {
     let request = read_request()?;
 
-    // ⚠⚠⚠ THREE CONNECTIONS, AND EACH IS A DIFFERENT OUTSTANDING QUESTION. A `HostConn` matches
+    // ⚠⚠⚠ FOUR CONNECTIONS, AND EACH IS A DIFFERENT OUTSTANDING QUESTION. A `HostConn` matches
     // replies by id and carries ONE request at a time, so a park that is deliberately unanswered
     // would eat an ordinary read's reply (register item 631 measured that), and a subscription that
     // pushes unprompted must not land in the middle of somebody's call.
     let reading = connect(socket, session)?;
     let parking = connect(socket, session)?;
     let watching = connect(socket, session)?;
+    // ⚠⚠⚠ A FOURTH, for the reason the three above are three: a `HostConn` carries ONE outstanding
+    // request. Progress is pushed from the driving thread at every step, and the read connection is
+    // BUSY at exactly those moments — it is what the step is reading the pane through. Sharing one
+    // would make a report wait on a read (or worse, collect its reply).
+    let reporting_on = Arc::new(Mutex::new(connect(socket, session)?));
 
     let access = RemotePaneAccess::over(reading)
         .parking_on(parking)
@@ -121,7 +135,7 @@ pub fn drive(socket: &std::path::Path, session: Option<&str>, run: u64) -> std::
         &request,
         &access,
         &context,
-        sprag_plugin::ProgressCell::default(),
+        reporting(reporting_on, run),
     )
     .map_err(|why| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{why:?}")))?;
 
@@ -131,6 +145,59 @@ pub fn drive(socket: &std::path::Path, session: Option<&str>, run: u64) -> std::
     // for it would be waiting for a wake nobody is going to send.
     drop(orders);
     report(&driven)
+}
+
+/// **WHERE THIS DRIVER'S PROGRESS GOES** — a call that puts it on the wire, for
+/// [`drive_request`]'s `report` argument.
+///
+/// # ⚠⚠⚠⚠⚠ It sends what the DAEMON's renderer produces
+///
+/// [`progress_to_json`](crate::plugins::progress_to_json) is called here, not a shape spelled over
+/// here — the rule [`report`] already follows for the outcome. So the daemon stores the object
+/// without reading it apart, and a key that renderer grows reaches the row with nothing in either
+/// process to update.
+///
+/// # ⚠⚠ A failed report is DROPPED — but never SILENTLY
+///
+/// Progress is a level: the next publish carries the whole of it, so a call that could not be made
+/// costs a watcher the freshness of one step and nothing else. Failing the RUN because a status
+/// update did not land would let a reporting problem end work that is going fine — and the run's
+/// real answer travels on stdout, which this is not.
+///
+/// ⚠⚠⚠⚠⚠ **THE FIRST FORM OF THIS DROPPED THE ERROR TOO, AND THAT COST A ROUND.** Every report of a
+/// three-turn run failed, the row never moved, and the gate could not tell *the driver is not
+/// sending* from *the daemon is not storing* — because the only party who knew said nothing. A
+/// swallowed error is register item 492's shape wearing a different coat: something happened and
+/// nobody can read it. So a refusal is written to stderr ONCE, which is what `watch_orders` beside
+/// this already does for the same reason and is all a driver can do about it.
+fn reporting(conn: Arc<Mutex<HostConn>>, run: u64) -> sprag_plugin::ProgressSink {
+    // ⚠ ONCE, not per step: a driver whose reports are all refused would otherwise fill the
+    // daemon's log with one line per turn, which buries the first one — the only one that says
+    // anything new.
+    let said = Arc::new(AtomicBool::new(false));
+    Arc::new(move |progress: &sprag_plugin::Progress| {
+        let mut held = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sent = held.call(
+            "scene/invoke",
+            json!({
+                "path": crate::plugins_path(crate::plugins::REPORT_PROGRESS_ACTION),
+                "args": {
+                    "id": run,
+                    crate::plugins::PROGRESS_KEY: crate::plugins::progress_to_json(progress),
+                },
+            }),
+        );
+        if let Err(why) = sent
+            && !said.swap(true, Ordering::Release)
+        {
+            eprintln!(
+                "sprag-term --drive {run}: this daemon refused a progress report, so the run's row \
+                 will not move while it works. Reported once; later refusals are silent. {why}"
+            );
+        }
+    })
 }
 
 /// One scoped connection to `socket`.

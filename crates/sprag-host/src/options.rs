@@ -326,6 +326,23 @@ pub const REWRAP: &str = "rewrap";
 
 pub const AGENT_SETTLE_TIME: &str = "agent-settle-time";
 
+/// **WHETHER A RUN IS DRIVEN BY A PROCESS OF ITS OWN** rather than by a thread of this daemon —
+/// register items 544 and 643.
+///
+/// # ⚠⚠⚠⚠⚠ Why the DAEMON decides this and not the caller who starts the run
+///
+/// Where a run's driver lives is a deployment fact, not something the person asking for a run has
+/// an opinion about: the same `orchestrate` request must mean the same thing either way, or the
+/// wire has grown a second answer to *what does this run do*. So this is an option and not a
+/// request key, and a caller cannot tell which kind it got.
+///
+/// ⚠⚠ **OFF, and the default is the migration.** In-process is what every run does today, and a
+/// switch that changed that on the day it shipped would move every existing loop onto a path
+/// nothing has run in anger. The end state is the opposite default — at which point this option's
+/// job is done and it goes — but that is a decision to take on measurements, not at the moment the
+/// second path first compiles.
+pub const RUN_DRIVER_PROCESS: &str = "run-driver-process";
+
 /// [`DETACH_ON_DESTROY`]'s values, in tmux's documented order.
 ///
 /// The vocabulary lives HERE and the policy lives in the client that acts on it (`sprag-client`
@@ -545,6 +562,12 @@ pub const OPTIONS: &[OptionSpec] = &[
         // ON, because the case it covers is one this project MEASURED as text a person cannot
         // reach — see the name's own doc for the numbers and for why `off` is still a real want.
         default: "on",
+    },
+    OptionSpec {
+        name: RUN_DRIVER_PROCESS,
+        kind: OptionKind::Choice(ON_OFF),
+        // OFF — see the name's own doc. This is the migration's default, not the destination.
+        default: "off",
     },
     OptionSpec {
         name: WINDOW_SIZE,

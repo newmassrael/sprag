@@ -34,6 +34,8 @@
 //! reports the ceiling `turns` — a word whose remedy is in the request rather than in `guardrails`.
 
 use std::fmt;
+use std::io;
+use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -82,6 +84,25 @@ pub const STAND_DOWN_ACTION: &str = "stand_down";
 /// reach an address it does not know, so this earns no `WIRE_PROTOCOL` bump. A client newer than its
 /// daemon gets `UnknownPath`, which is the daemon saying it does not serve that address.
 pub const HOLD_RUN_ACTION: &str = "hold_run";
+/// **A RUN'S OWN DRIVER SAYING WHAT IT HAS DONE SO FAR** — register item 650, and the only action
+/// here a PERSON never calls.
+///
+/// # ⚠⚠⚠⚠⚠ Why a run driven elsewhere needs an address at all
+///
+/// The four actions above are things somebody says TO a run. This is the run talking BACK, and it
+/// exists because `run_to_json` reads a running run's counters out of a
+/// [`sprag_plugin::ProgressCell`] — shared memory, which a driver in another process does not
+/// share. Without it such a run's row sits at zero for its whole life while the work really happens,
+/// which is the difference between a supervised loop and a black box.
+///
+/// ⚠⚠ **PUSHED, NEVER POLLED.** The driver sends this when its own step count moves; nothing here
+/// asks it on a clock. Register items 629, 630, 631 and 640 spent four rounds taking exactly that
+/// off the pane axis (*a remote wait that cost 181 reads over two seconds now costs 1*), and a
+/// daemon that sampled its drivers would rebuild it one axis over.
+///
+/// ⚠ ADDITIVE, on [`STAND_DOWN_ACTION`]'s terms and for its reason — an older client cannot reach
+/// an address it does not know, so this earns no `WIRE_PROTOCOL` bump.
+pub const REPORT_PROGRESS_ACTION: &str = "report_progress";
 /// The slot reporting every run this daemon holds.
 pub const RUNS_SLOT: &str = "runs";
 /// The slot listing the plugins a `run` may name.
@@ -181,6 +202,14 @@ pub const RUN_WHY_KEY: &str = "why";
 /// BEHALF, so *"this run answered nothing"* is a claim a reader must be able to get affirmatively
 /// rather than by not finding a key.
 pub const RUN_ANSWERED_KEY: &str = "answered";
+/// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
+///
+/// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
+/// is [`progress_to_json`]'s output, and this daemon stores it WITHOUT reading it apart — so a key
+/// added to that renderer reaches the row with nothing here to update. Spread flat, each new key
+/// would need a line here too, and the day somebody forgot one it would go missing for
+/// out-of-process runs alone.
+pub const PROGRESS_KEY: &str = "progress";
 /// The answer key carrying WHAT EACH STEP DID — the last [`sprag_plugin::JOURNAL_LIMIT`] of them.
 ///
 /// A run reported its total and its terminal state and nothing about the steps between, so a loop
@@ -567,6 +596,15 @@ impl PluginWorld for PluginsExternal {
     }
 }
 
+/// **HOW A RUN IS STARTED IN A PROCESS OF ITS OWN** — what
+/// [`PluginsExternal::driving_out_of_process`] takes, and see that field for what is on each side
+/// of it.
+///
+/// It takes the two facts about the RUN (its id, and the request it was asked with) and answers the
+/// child. Which binary, which endpoint and which session scope are closed over by whoever minted
+/// it, because those are facts about the DAEMON and this surface is deliberately free of them.
+pub type DriverSpawn = Arc<dyn Fn(RunId, &Map<String, Value>) -> io::Result<Child> + Send + Sync>;
+
 /// The plugin host as a pinion `External`: starts background plugin runs over
 /// the shared [`Workspace`] and reports their outcomes as scene-as-data.
 pub struct PluginsExternal {
@@ -624,9 +662,44 @@ pub struct PluginsExternal {
     /// disagree with the row a person is looking at. It crosses into the plugin layer as an opaque
     /// `Fn` ([`agent_state_source`]), so that layer stays registry-free.
     agents: Option<Arc<crate::AgentClock>>,
+    /// **HOW TO START A RUN IN A PROCESS OF ITS OWN**, or `None` where this host drives runs on
+    /// threads of its own — register items 544 and 643.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What is on each side of this closure, and why the line falls there
+    ///
+    /// Starting a driver needs four things. Two are facts about THIS DAEMON — which binary it is,
+    /// and which endpoint and session scope a client of it must use — and the session tree is
+    /// exactly what this surface is deliberately free of (the argument
+    /// [`on_run_ordered`](Self::on_run_ordered) and the three hooks above it all make). The other
+    /// two are facts about the RUN — its id and the request it was asked with — and this layer is
+    /// the only place holding those.
+    ///
+    /// So the closure is minted where the scope is (`crate::workspace_scene`) and CALLED where the
+    /// run is. What crosses is a run id and a request map; what never crosses is a session name.
+    ///
+    /// ⚠⚠ **IT RETURNS THE CHILD AND NOTHING ELSE.** What becomes of a driver — reading its
+    /// outcome, writing [`crate::runs::RunState::Done`], announcing the end — is this layer's, and
+    /// is byte-for-byte what an in-process worker does at its own end. A closure that also did that
+    /// would be a second spelling of a run's ending, free to drift from the first.
+    spawn_driver: Option<DriverSpawn>,
 }
 
 impl PluginsExternal {
+    /// **DRIVE RUNS IN PROCESSES OF THEIR OWN**, using `spawn` to start each one.
+    ///
+    /// A setter rather than an eighth constructor argument, the way
+    /// [`sprag_plugin::WorkspacePaneAccess`]'s own optional collaborators are taken: seven
+    /// positional arguments is already a shape where a caller can transpose two `Option`s of the
+    /// same type and compile.
+    ///
+    /// ⚠ The DAEMON decides whether to call this — see
+    /// [`crate::options::RUN_DRIVER_PROCESS`] for why that is not the run requester's choice.
+    #[must_use]
+    pub fn driving_out_of_process(mut self, spawn: DriverSpawn) -> Self {
+        self.spawn_driver = Some(spawn);
+        self
+    }
+
     /// Build the host over the shared workspace + run registry, plus the daemon's
     /// `on_pane_exit` death-signal (`None` off a daemon).
     #[must_use]
@@ -647,6 +720,10 @@ impl PluginsExternal {
             on_run_end,
             on_run_ordered,
             agents,
+            // ⚠ IN-PROCESS is what a host built without saying otherwise does — see
+            // `driving_out_of_process`, and `crate::options::RUN_DRIVER_PROCESS` for why that is
+            // the default rather than the destination.
+            spawn_driver: None,
         }
     }
 
@@ -676,7 +753,26 @@ impl PluginsExternal {
         // `session_in`. This is what survives the daemon, so it is resolved while the pane is still
         // here to answer.
         let opened_by_session = self.session_in(opened_by);
-        let id = self.spawn_run(label, opened_by, opened_by_session, plugin, guardrails);
+        // ⚠⚠⚠⚠⚠ THE FORK IS HERE AND NOT IN `spawn_run`, and the reason is what is still in hand:
+        // the REQUEST MAP. A driver in another process builds its own plugin from it (one builder —
+        // `plugin_from_request`), and `spawn_run` takes a plugin that is already built, so a fork
+        // down there would have nothing to hand it.
+        //
+        // ⚠⚠ EVERYTHING ABOVE HAS ALREADY HAPPENED EITHER WAY. The plugin was built here to
+        // VALIDATE — a word no plugin spells, a pane this daemon does not hold, a malformed
+        // guardrail — so a bad request is refused synchronously whichever driver would have taken
+        // it. The out-of-process arm then throws that plugin away and the driver builds it again
+        // from the same map: two builds of one plugin, and that is the property rather than the
+        // cost (`crate::options::RUN_DRIVER_PROCESS` promises the same request means the same
+        // thing either way, and one builder is how).
+        let id = match &self.spawn_driver {
+            Some(spawn) => {
+                self.spawn_driven_run(spawn, map, label, opened_by, opened_by_session, &mut {
+                    plugin
+                })?
+            }
+            None => self.spawn_run(label, opened_by, opened_by_session, plugin, guardrails),
+        };
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
         ))
@@ -789,6 +885,38 @@ impl PluginsExternal {
             .map_err(|why| refused(why.describe(RunId(id))))
     }
 
+    /// **A RUN'S OWN DRIVER SAYS WHAT IT HAS DONE SO FAR** — [`REPORT_PROGRESS_ACTION`], register
+    /// item 650.
+    ///
+    /// ⚠⚠⚠ **IT ANNOUNCES NOTHING**, and that is the difference between this and the three orders
+    /// beside it. Those carry *a person spoke*, which every watcher of a session must be woken for.
+    /// This carries *the work moved*, which is a LEVEL — a reader that looks and sees the same
+    /// numbers has learned that nothing happened, and waking every client on every step of every
+    /// run would be this journal's own *do not announce what a re-read would show* rule inverted.
+    ///
+    /// ⚠⚠ The progress object is stored WITHOUT being read apart — see `RunRecord::reported`. What
+    /// arrives is [`progress_to_json`]'s output, so a key that renderer grows reaches the row with
+    /// nothing here to update.
+    ///
+    /// ⚠ A run this daemon does not hold is REFUSED rather than ignored: a driver reporting for an
+    /// id nobody has is a driver that has outlived its run, and telling it so is what lets it stop.
+    fn report_progress(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = map
+            .get(RUN_ID_KEY)
+            .and_then(Value::as_u64)
+            .ok_or(InvokeError::TypeMismatch)?;
+        let progress = match map.get(PROGRESS_KEY) {
+            Some(Value::Object(progress)) => Value::Object(progress.clone()),
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        if lock(&self.runs).report(RunId(id), progress) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(refused(format!("this daemon holds no run {id}")))
+        }
+    }
+
     /// **HALT A RUN BETWEEN TURNS, OR LET IT GO AGAIN** — [`HOLD_RUN_ACTION`], and the word a person
     /// did not have (register item 9).
     ///
@@ -869,6 +997,19 @@ pub struct Driven {
 /// the property that matters; a shared door that forced the daemon to register afterwards would be
 /// making one caller's shape the other's problem.
 ///
+/// # ⚠⚠⚠⚠ `report` IS A CALL AND NOT A CELL, and that is register item 650 being repaired
+///
+/// The first form of this door took a [`sprag_plugin::ProgressCell`], because that is what the
+/// daemon's own worker shares with its `Driver`. Its one caller — the out-of-process driver — had no
+/// reader for such a cell and handed it `ProgressCell::default()`: **progress written on every step
+/// and read by nobody**, which is register item 492's shape (*a number authored and never read*) in
+/// the feature whose whole subject is a run somebody can watch.
+///
+/// A cell is right for a watcher that shares memory and wrong for one across a socket, so the
+/// parameter is the thing that is true in both places: **where this run's progress goes**. The
+/// driver hands a call that puts it on the wire ([`REPORT_PROGRESS_ACTION`]); an in-process caller
+/// would hand one that writes its cell.
+///
 /// # Errors
 ///
 /// Whatever the builder refuses: a word no plugin spells, a malformed argument, or a
@@ -879,14 +1020,14 @@ pub fn drive_request(
     request: &Map<String, Value>,
     access: &dyn sprag_plugin::PaneAccess,
     run: &sprag_plugin::RunContext,
-    progress: sprag_plugin::ProgressCell,
+    report: sprag_plugin::ProgressSink,
 ) -> Result<Driven, InvokeError> {
     let (plugin, _label) = plugin_from_request(world, request)?;
     let mut plugin = plugin;
     let guardrails = parse_guardrails(request, plugin.default_cost())?;
     let outcome =
         Driver::new(guardrails)
-            .reporting_to(progress)
+            .forwarding_to(report)
             .run(plugin.as_plugin(), access, run);
     // ⚠ TAKEN BEFORE THE PLUGIN GOES, exactly as the daemon's worker does it: the capture is the
     // plugin's own and nothing above this layer can ask once it has been dropped.
@@ -1246,6 +1387,153 @@ impl PluginsExternal {
             progress,
         })
     }
+
+    /// **START THIS RUN IN A PROCESS OF ITS OWN** and register it — register items 544 / 643.
+    ///
+    /// # ⚠⚠⚠ What is the same as [`spawn_run`](Self::spawn_run), and what is not
+    ///
+    /// The same: the plugin's own list of standing orders is taken BEFORE the plugin goes (items 539
+    /// / 597), the id is reserved before anything can announce under it, and the registry is told
+    /// *a run* rather than *a driver and three flags* (item 544's stage 2).
+    ///
+    /// Not the same: the three flags are **pure record** here — nothing in this image reads them,
+    /// and the driver learns an order by being woken to re-read its row (`Event::RunOrdered`, item
+    /// 648). And the outcome is not computed here but READ from the child, which is what the
+    /// collector thread below is for.
+    ///
+    /// # Errors
+    ///
+    /// A driver that could not be started. That is a REFUSAL rather than a malformed request: the
+    /// request was read and could not be honoured, which is this surface's taxonomy for exactly
+    /// that. ⚠ And it happens before the run is registered, so a failed spawn leaves no row
+    /// claiming a run nobody is driving.
+    fn spawn_driven_run(
+        &self,
+        spawn: &DriverSpawn,
+        request: &Map<String, Value>,
+        label: String,
+        opened_by: Option<u64>,
+        opened_by_session: Option<String>,
+        plugin: &mut PluginKind,
+    ) -> Result<RunId, InvokeError> {
+        // ⚠⚠ ASKED OF THE PLUGIN THIS DAEMON BUILT TO VALIDATE, which is the only copy on this side
+        // of the seam — the driver's own is built over there and is unreachable from here. Both are
+        // `plugin_from_request`'s answer for the same map, so the list is the same list.
+        let honoured: Vec<sprag_plugin::StandingOrder> = sprag_plugin::StandingOrder::ALL
+            .into_iter()
+            .filter(|order| plugin.as_plugin().honours(*order))
+            .collect();
+        let name = plugin.name();
+
+        // The id BEFORE the child, because the child is TOLD it (`--drive <id>`) and reports its
+        // progress under it — `spawn_run`'s reason, one seam further out.
+        let id = lock(&self.runs).reserve();
+        let child = spawn(id, request).map_err(|why| {
+            refused(format!(
+                "this daemon could not start a driver process for the run: {why}"
+            ))
+        })?;
+
+        let state = Arc::new(Mutex::new(RunState::Running));
+        let on_end = self.on_run_end.clone();
+        let collector = collect_driver(child, id, Arc::clone(&state), on_end);
+
+        Ok(lock(&self.runs).submit(crate::runs::NewRun {
+            id,
+            label,
+            plugin: name,
+            opened_by,
+            opened_by_session,
+            state,
+            run: Box::new(crate::runs::ProcessRun::new(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                honoured,
+                collector,
+            )),
+            // ⚠⚠⚠ AN EMPTY CELL, AND IT STAYS EMPTY — see `RunRecord::reported`. This run's counters
+            // are computed in another process and arrive by `report_progress`; the row prefers that
+            // report over this cell precisely because this one can never move.
+            progress: sprag_plugin::ProgressCell::default(),
+        }))
+    }
+}
+
+/// **WAIT FOR A DRIVER PROCESS, THEN END ITS RUN THE WAY A WORKER ENDS ITS OWN.**
+///
+/// # ⚠⚠⚠ This thread is not a driver
+///
+/// A thread per run in this daemon looks like it gives back what moving the driver out was meant to
+/// win. It does not: what register item 544 is about is the PLUGIN LOGIC — a loop's turn model, a
+/// sentinel rule — living where it can be replaced without restarting the thing that holds the
+/// PTYs. None of that is here. This blocks on a child and then writes what the child said.
+///
+/// ⚠⚠ **AND IT BLOCKS RATHER THAN SAMPLES.** `wait_with_output` IS the wake. Items 629/630/631/640
+/// spent four rounds taking clock-paced waiting off the pane axis; a daemon that polled `try_wait`
+/// on its drivers would put it straight back on the run axis.
+///
+/// ⚠ The announcement is AFTER the state is written, which is `spawn_run`'s rule and its reason: a
+/// client woken by it asks `runs` immediately, and an announcement that raced the write would answer
+/// `running` about a run the wake said had finished.
+fn collect_driver(
+    child: Child,
+    id: RunId,
+    state: Arc<Mutex<RunState>>,
+    on_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let ended = match child.wait_with_output() {
+            Ok(output) => {
+                // ⚠⚠⚠⚠⚠ THE DRIVER'S OWN DIAGNOSTICS, AND THEY WERE BEING THROWN AWAY. A driver
+                // writes to stderr when it cannot do something it was asked to — `watch_orders`
+                // says so for a subscription it could not open, and `reporting` for a progress
+                // report the daemon refused. On a run that CONVERGED, `driver_ending` reads only
+                // stdout, so every one of those sentences went nowhere: authored and never read
+                // (register item 492), and it cost a round of not knowing why a row stayed still.
+                //
+                // ⚠ At `warn` and not on the row: this is about the DRIVER's difficulty, not the
+                // run's answer, and an operator's log is where a reader looks for the first.
+                let said = String::from_utf8_lossy(&output.stderr);
+                let said = said.trim();
+                if !said.is_empty() {
+                    tracing::warn!(
+                        target: "sprag_host::plugins",
+                        run = id.0,
+                        "a run's driver process said: {said}",
+                    );
+                }
+                driver_ending(&output)
+            }
+            // ⚠ A child this daemon could not even collect is not a run that failed — it is one
+            // whose ending is unknowable, and `Panicked` is this registry's word for that.
+            Err(why) => RunState::Panicked(format!("collecting a run's driver process: {why}")),
+        };
+        *lock(&state) = ended;
+        if let Some(announce) = on_end {
+            announce(id);
+        }
+    })
+}
+
+/// What a driver process's exit MEANS, as a run state.
+///
+/// ⚠⚠⚠⚠⚠ **SILENCE IS AN OUTCOME AND IT IS NOT `converged`.** A driver that died — killed, panicked,
+/// out of memory — writes no JSON, and `crate::drive`'s own module doc calls that *"the honest
+/// outcome"* the fused design could not express. Reading an empty stdout as anything but a failure
+/// would manufacture an ending nobody reported.
+fn driver_ending(output: &std::process::Output) -> RunState {
+    match serde_json::from_slice::<Value>(&output.stdout) {
+        Ok(Value::Object(reported)) => RunState::Reported(Box::new(Value::Object(reported))),
+        _ => RunState::Panicked(format!(
+            "a run's driver process ended {} without reporting an outcome{}",
+            output.status,
+            match String::from_utf8_lossy(&output.stderr).trim() {
+                "" => String::new(),
+                said => format!(": {said}"),
+            }
+        )),
+    }
 }
 
 /// The daemon's detector, as the opaque per-pane read the plugin layer takes.
@@ -1434,6 +1722,24 @@ impl ExternalIntrospect for PluginsExternal {
                     SchemaField::action(CANCEL_ACTION, "action"),
                     SchemaField::action(STAND_DOWN_ACTION, "action"),
                     SchemaField::action(HOLD_RUN_ACTION, "action"),
+                    // ⚠⚠⚠⚠⚠ AN ADDRESS NOT PUBLISHED HERE IS NOT SERVED — the dispatch arm below is
+                    // unreachable without this line, and a caller gets `UnknownInvokePath`. That is
+                    // this surface being honest rather than a redundancy: the schema is what a
+                    // client discovers, so an action reachable but undiscoverable would be folklore.
+                    //
+                    // ⚠ It cost a round to learn HERE because the only caller is a driver in
+                    // another process, and its refusal went to a stderr nobody read (register item
+                    // 492 again). The fix for that is beside `collect_driver`.
+                    // ⚠⚠⚠⚠⚠ AN ADDRESS NOT PUBLISHED HERE IS NOT SERVED — the dispatch arm below is
+                    // unreachable without this line, and a caller gets `UnknownInvokePath`. That is
+                    // this surface being honest rather than a redundancy: the schema is what a
+                    // client discovers, so an action reachable but undiscoverable would be folklore.
+                    //
+                    // ⚠ It cost a round to learn HERE because the only caller is a driver in
+                    // another process, and its refusal went to a stderr nobody read (register item
+                    // 492 again). The fix for that is beside `collect_driver`, and removing this
+                    // line now reds `the_daemon_drives_a_run_in_a_process_of_its_own` — measured.
+                    SchemaField::action(REPORT_PROGRESS_ACTION, "action"),
                     SchemaField::new(RUNS_SLOT, "list"),
                     SchemaField::new(PLUGINS_SLOT, "list"),
                     SchemaField::new(GUARDRAIL_DEFAULTS_SLOT, "object"),
@@ -1476,6 +1782,7 @@ impl ExternalIntrospect for PluginsExternal {
             CANCEL_ACTION => self.cancel(&args),
             STAND_DOWN_ACTION => self.stand_down(&args),
             HOLD_RUN_ACTION => self.hold_run(&args),
+            REPORT_PROGRESS_ACTION => self.report_progress(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -2227,6 +2534,57 @@ fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<C
     Ok(Some(bound))
 }
 
+/// **WHAT A RUNNING RUN HAS DONE SO FAR**, as the row publishes it — register item 650.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function and not four lines inside the row builder
+///
+/// A run driven by another process (register items 544 / 643) computes these numbers over there,
+/// and this daemon has to end up publishing the same ones. Written inline, the driver would have to
+/// spell the shape a second time — and a second speller of one shape is what the driver module's
+/// own outcome report already refuses, using [`outcome_to_json`] rather than writing
+/// `{"state": …}` over there.
+///
+/// So this is the one renderer, both kinds of driver feed it, and the row cannot learn which kind
+/// filled it in.
+///
+/// ⚠⚠ **IT TAKES THE NUMBERS AND NOT A [`sprag_plugin::Progress`]**, deliberately. That type is
+/// built out of `&'static str` — `at`, and three per journal `Edge` — because it was only ever read
+/// in this process; rebuilding one from the wire means interning a statechart vocabulary that is
+/// upstream's to publish. Nothing is rebuilt: what crosses is what this produced.
+pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
+    // ⚠ THE SAME THREE KEYS THE OUTCOME USES (`iterations`, `cost`, `unit`), so a reader that polls
+    // a running run and then reads its outcome meets ONE vocabulary rather than two. A run that has
+    // not finished a step yet answers zero with a null unit, which is the same shape a run that was
+    // cancelled before any step reports — both mean "nothing measured yet".
+    let (cost, unit) = progress
+        .cost
+        .map_or((0, None), |c| (c.amount(), Some(c.unit())));
+    json!({
+        "iterations": progress.iterations,
+        "cost": cost,
+        "unit": unit,
+        // ⚠⚠ AND THE ANSWER TALLY MID-FLIGHT, under the outcome's own name. The comment above says
+        // these keys exist so a reader who polls a run and then reads its outcome meets ONE
+        // vocabulary — and this is the key where the polling matters MOST: the other two are
+        // watched to tell progress from stuck, this one is watched to see a decision being taken on
+        // your behalf while there is still time to cancel.
+        RUN_ANSWERED_KEY: progress.answered,
+    })
+}
+
+/// The `running` state a row shows for a run whose driver REPORTED `progress` from another process.
+///
+/// ⚠⚠⚠ `reported` is what [`progress_to_json`] produced over there, carried whole rather than
+/// re-read key by key: a reader here that picked out `iterations` and forgot `answered` the day a
+/// key was added would publish a row that silently lost it — and lose it only for out-of-process
+/// runs, which is the invisible divergence `crate::options::RUN_DRIVER_PROCESS` promises cannot
+/// happen.
+fn progress_reported(reported: Value) -> Value {
+    let mut state = reported;
+    state["status"] = json!(RunStatus::Running.wire_str());
+    state
+}
+
 /// Render one run as JSON for `query("runs")`.
 ///
 /// `seat` is the pane to publish as `opened_by`, already resolved by the caller: `run.opened_by`
@@ -2255,32 +2613,44 @@ fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<C
 /// ⚠ Ask [`sprag_rpc::WIRE_PROTOCOL`]'s own doc rather than this paragraph if the question comes up
 /// again; this records the judgement taken for THIS change, not the rule.
 fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
-    // ⚠ THE SAME THREE KEYS THE OUTCOME USES (`iterations`, `cost`, `unit`), so a reader that polls
-    // a running run and then reads its outcome meets ONE vocabulary rather than two. A run that has
-    // not finished a step yet answers zero with a null unit, which is the same shape a run that was
-    // cancelled before any step reports — both mean "nothing measured yet".
     let (cost, unit) = run
         .progress
         .cost
         .map_or((0, None), |c| (c.amount(), Some(c.unit())));
     let state_json = match &run.state {
-        RunState::Running => json!({
-            "status": RunStatus::Running.wire_str(),
-            "iterations": run.progress.iterations,
-            "cost": cost,
-            "unit": unit,
-            // ⚠⚠ AND THE ANSWER TALLY MID-FLIGHT, under the outcome's own name. The comment above
-            // says these keys exist so a reader who polls a run and then reads its outcome meets
-            // ONE vocabulary — and this is the key where the polling matters MOST: the other two
-            // are watched to tell progress from stuck, this one is watched to see a decision being
-            // taken on your behalf while there is still time to cancel.
-            RUN_ANSWERED_KEY: run.progress.answered,
-        }),
+        // ⚠⚠⚠ A REPORT IS PREFERRED OVER THE CELL, and the ordering is the whole of register item
+        // 650's second half: for a run driven in another process the cell beside it NEVER MOVES,
+        // so reading it first would publish zeros over a report that had already arrived. For every
+        // other run there is no report and the cell is the only answer — so one arm serves both,
+        // and the row cannot tell which kind of driver filled it in.
+        RunState::Running => progress_reported(
+            run.reported
+                .as_ref()
+                .map_or_else(|| progress_to_json(&run.progress), Clone::clone),
+        ),
         RunState::Done { outcome, output } => json!({
             "status": RunStatus::Done.wire_str(),
             "outcome": outcome_to_json(outcome),
             "output": output,
         }),
+        // ⚠⚠⚠⚠⚠ `done`, AND THE SAME KEYS — a client asked *what became of this run*, and *whose
+        // process computed the answer* is not part of that question. A fifth `status` word would be
+        // a break no address or shape pin can see (item 342), for a distinction no reader wants.
+        //
+        // ⚠⚠ The reported object is spliced WHOLE and its `output` lifted to where a `Done` run
+        // publishes it, because that is where every existing reader looks. The driver produced it
+        // with THIS daemon's own `outcome_to_json`, so the two arms cannot drift into two shapes.
+        RunState::Reported(reported) => {
+            let mut outcome = (**reported).clone();
+            let output = outcome
+                .as_object_mut()
+                .and_then(|fields| fields.remove("output"));
+            json!({
+                "status": RunStatus::Done.wire_str(),
+                "outcome": outcome,
+                "output": output,
+            })
+        }
         RunState::Panicked(message) => {
             json!({ "status": RunStatus::Panicked.wire_str(), "error": message })
         }
@@ -2630,6 +3000,34 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
                 )
             }
         }
+        // ⚠⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 and 544. The ending WORD
+        // crossed the wire, so the first half of this sentence is as sound as its `Done` sibling's.
+        //
+        // ⚠⚠⚠ **WHAT BECAME OF THE WORK DID NOT CROSS, AND THIS SAYS SO RATHER THAN GUESSING.**
+        // `outcome_to_json` does not carry `banked`, so `work_after`'s three answers are
+        // unavailable here — and the pair register item 604 measured is exactly the pair where a
+        // guess swaps the alarming answer for the relieved one. An honest *this ending cannot say*
+        // is the one thing that is never wrong in that direction, and it names the repair.
+        crate::runs::RunState::Reported(reported) => {
+            let word = reported.get("state").and_then(Value::as_str);
+            // ⚠⚠⚠ ASKED OF THE TYPE, never spelled here — `outcome_word`'s own rule, and it matters
+            // more on this arm than on its sibling: a literal `"converged"` in this file would be a
+            // SECOND author of a word `OutcomeState::wire_str` already owns, and the two would
+            // drift the day upstream renamed it, silently and only for out-of-process runs.
+            if word == Some(OutcomeState::Converged.wire_str()) {
+                "a person asked this run to stand down and it converged, so it ended on its own \
+                 terms"
+                    .to_owned()
+            } else {
+                format!(
+                    "⚠ a person asked this run to stand down and it ended {:?} instead — this is \
+                     not what `sprag stand-down` promised. Its driver was another process and the \
+                     wire form of an ending does not carry what was kept, so this cannot say what \
+                     became of the work (register item 650)",
+                    word.unwrap_or("unreported"),
+                )
+            }
+        }
         // ⚠ A DRIVER THAT DIED IS NOT AN ENDING THE DOCUMENT CHOSE, so it gets its own clause: the
         // remedy is to look at why the thread went, where the arm above sends a reader to the
         // outcome word.
@@ -2700,6 +3098,27 @@ pub fn cancel_sentence(who: crate::runs::Canceller, state: &crate::runs::RunStat
                      cancel: {raised}",
                     outcome_word(outcome),
                 )
+            }
+        }
+        // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS, AND THIS ARM LOSES NOTHING — unlike its
+        // `stand_down_sentence` counterpart, which had to admit that what was KEPT did not cross.
+        // What this weighs is the ending WORD against the cancel, and the word is the one thing
+        // `outcome_to_json` has always carried. So a reported ending answers here at full strength,
+        // and the difference between the two arms is a fact about the wire form rather than about
+        // where the driver lived (register item 650).
+        crate::runs::RunState::Reported(reported) => {
+            match reported.get("state").and_then(Value::as_str) {
+                // ⚠ `describe` for the same reason the `Done` arm uses it: this run really was
+                // finished by this cancel. Asked of the type, never spelled here.
+                Some(word) if word == OutcomeState::Cancelled.wire_str() => {
+                    who.describe().to_owned()
+                }
+                word => format!(
+                    "⚠ a cancel was raised over this run and it ended {:?} instead, so the cancel \
+                     is NOT what finished it and the ending is the thing to read. Who raised the \
+                     cancel: {raised}",
+                    word.unwrap_or("unreported"),
+                ),
             }
         }
         // ⚠ A DRIVER THAT DIED, and a DAEMON that died, each get the `stand_down_sentence` arm of
@@ -5869,11 +6288,20 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            119,
+            121,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, THIRTY-ONE to run an AI loop, one to cancel, and ONE TO STAND \
-             A RUN DOWN. ⚠⚠⚠⚠⚠ THE NEWEST IS THE LOOP'S THIRTY-FIRST, `hold_within_ms` (item 534), \
+             TEN to answer a pane, THIRTY-ONE to run an AI loop, one to cancel, one to stand a run \
+             down, and TWO TO REPORT A RUN'S PROGRESS. \
+             ⚠⚠⚠⚠⚠ THE NEWEST TWO ARE `report_progress`'s `id` AND `progress` (item 650), and this \
+             gate reaches them for a reason the verbs above it do not have: the only caller is a \
+             DRIVER IN ANOTHER PROCESS, so a key this host declared and swallowed would be a \
+             counter nobody could ever see move, reported `ok` by both sides. ⚠⚠ `progress` is \
+             declared as a bare OBJECT and this gate is what keeps that honest: the host must READ \
+             it, and it does — whole, into the run's record, without unpacking it. Declaring its \
+             keys instead would make this pin the second author of a shape `progress_to_json` \
+             already owns. THE OLD SENTENCE FOLLOWS. THE LOOP'S THIRTY-FIRST WAS `hold_within_ms` \
+             (item 534), \
              and this gate is what makes it more than a declaration for its two predecessors' \
              reason: a published argument the host does not READ is a key the surface swallows \
              while the run reports `ok`. ⚠⚠ IT IS ON THIS FORM ALONE, unlike the two person keys it \
@@ -6686,5 +7114,154 @@ mod tests {
              shape items 629/630/631/640 spent four rounds taking off the pane axis. Expected one \
              announcement per accepted order for run {id}, heard {told:?}",
         );
+    }
+
+    /// **A RUN DRIVEN SOMEWHERE ELSE IS STILL WATCHABLE FROM HERE** — register item 650, half ②.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect this is written against, and it is one I shipped
+    ///
+    /// `run_to_json` reads a running run's counters out of [`sprag_plugin::ProgressCell`], which is
+    /// SHARED MEMORY with an in-process worker. A driver in another process writes its own cell over
+    /// there, and register item 643's first driver was handed `ProgressCell::default()` — a cell
+    /// nobody reads. So the row of an out-of-process run sits at zero for its whole life, and the
+    /// two gates that shipped with it were both green because they asked about the ENDING.
+    ///
+    /// That is register item 492's shape (*a number authored and never read*), re-planted in the
+    /// repository that keeps a memory file about it — and it is the difference between a supervised
+    /// loop and a black box, which is the side of that line this project exists on.
+    ///
+    /// # ⚠⚠ Why the daemon is handed JSON and never a `Progress`
+    ///
+    /// [`sprag_plugin::Progress`] is built out of `&'static str` — `at`, and three per journal
+    /// [`sprag_plugin::Edge`] — because it was only ever read in this process. Rebuilding one from
+    /// the wire means interning every statechart word, whose vocabulary is upstream's.
+    ///
+    /// So nothing is rebuilt. The driver sends **what this daemon's own renderer produces**, the way
+    /// `crate::drive::report` already sends `outcome_to_json`'s output rather than a shape spelled
+    /// over there — one renderer, and the row cannot learn which kind of driver filled it.
+    #[test]
+    fn a_run_driven_somewhere_else_still_moves_its_row() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+
+        // ⚠⚠ THE PREMISE, ASSERTED RATHER THAN ASSUMED. A row that already showed 4 would make
+        // every claim below true with nothing having crossed — which is exactly how register item
+        // 643's own gate was green while a read had been replaced by a constant.
+        let before = row_of(&mut external, id);
+        assert_eq!(
+            before["state"]["iterations"],
+            json!(0),
+            "a run nobody has reported for shows nothing done: {before:?}",
+        );
+
+        external
+            .invoke(
+                REPORT_PROGRESS_ACTION,
+                IntrospectValue::Json(json!({
+                    RUN_ID_KEY: id,
+                    PROGRESS_KEY: { "iterations": 4, "cost": 128, "unit": "bytes",
+                                    RUN_ANSWERED_KEY: 1 },
+                })),
+            )
+            .expect("a driver reporting its own run");
+
+        let after = row_of(&mut external, id);
+        assert_eq!(
+            after["state"]["iterations"],
+            json!(4),
+            "⚠⚠⚠⚠⚠ a run whose driver is another process must still show what it has done — a row \
+             frozen at zero for the run's whole life is the black box this feature must not \
+             build: {after:?}",
+        );
+        assert_eq!(
+            after["state"][RUN_ANSWERED_KEY],
+            json!(1),
+            "⚠⚠ and the answer tally most of all: it is the one a person watches to see a decision \
+             being taken for them WHILE THERE IS STILL TIME TO CANCEL — `run_to_json` says so \
+             itself: {after:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL, AND IT IS WHAT MAKES THE GATE ABOVE MEAN ANYTHING.** A row that
+    /// answered `4` from a constant satisfies every claim up there, and so does one that stored the
+    /// first report and never replaced it. This sends a SECOND report through the same door: what a
+    /// row shows is what its driver LAST said.
+    #[test]
+    fn a_row_shows_the_numbers_its_driver_last_sent() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+
+        for iterations in [4, 9] {
+            external
+                .invoke(
+                    REPORT_PROGRESS_ACTION,
+                    IntrospectValue::Json(json!({
+                        RUN_ID_KEY: id,
+                        PROGRESS_KEY: { "iterations": iterations, RUN_ANSWERED_KEY: 1 },
+                    })),
+                )
+                .expect("a driver reporting its own run");
+        }
+
+        let row = row_of(&mut external, id);
+        assert_eq!(
+            row["state"]["iterations"],
+            json!(9),
+            "⚠⚠⚠ the LATEST report is what a row shows — a first one that stuck would leave the \
+             gate beside this proving only that something was stored once: {row:?}",
+        );
+    }
+
+    /// This run's row, read back through the slot a client reads.
+    fn row_of(external: &mut PluginsExternal, id: i64) -> Value {
+        let IntrospectValue::Json(runs) = external.query(RUNS_SLOT).expect("the runs slot answers")
+        else {
+            panic!("the runs slot is JSON");
+        };
+        runs.as_array()
+            .expect("a list of runs")
+            .iter()
+            .find(|run| run[RUN_ID_KEY] == json!(id))
+            .unwrap_or_else(|| panic!("run {id} is in the listing: {runs:?}"))
+            .clone()
     }
 }

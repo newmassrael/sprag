@@ -538,6 +538,21 @@ pub struct Driver {
     cost: Option<Cost>,
     failure: Option<PaneError>,
     progress: Option<ProgressCell>,
+    /// **WHERE THIS RUN'S PROGRESS GOES WHEN THE READER IS NOT IN THIS PROCESS**, or [`None`] for
+    /// every run whose watcher shares [`progress`](Self::progress) above.
+    ///
+    /// # ⚠⚠⚠ Why a cell was not enough, when [`ProgressCell`]'s own doc argues for one
+    ///
+    /// That argument is about a READER: progress is a level, so a watcher that looks twice and sees
+    /// the same numbers has learned something, and a missed edge costs it nothing. It holds. What it
+    /// assumes is that the reader can SEE the cell — and a run driven by a process of its own
+    /// (sprag's register items 544 / 650) has a reader on the other side of a socket, for whom a
+    /// level in this process's memory is not a level at all.
+    ///
+    /// So this does not replace the cell; it carries the same value to somebody who cannot read it.
+    /// A forwarder that drops a call loses nothing for the same reason a missed edge costs a local
+    /// watcher nothing: the next publish carries the level.
+    forward: Option<ProgressSink>,
     /// What each step did, bounded to the last [`JOURNAL_LIMIT`].
     journal: Vec<StepRecord>,
     /// **WHERE THE PLUGIN'S OWN MACHINE IS** — [`Plugin::at`]'s last answer, asked once per
@@ -777,6 +792,14 @@ pub struct StepRecord {
 /// nothing.
 pub type ProgressCell = Arc<Mutex<Progress>>;
 
+/// **WHERE A RUN'S PROGRESS GOES WHEN THE WATCHER CANNOT READ A CELL** — see
+/// [`Driver::forwarding_to`].
+///
+/// A sibling of [`ProgressCell`] rather than a replacement: that one is right for a watcher sharing
+/// this process's memory, and this one is what a watcher across a socket needs. Both carry the same
+/// value from the same call.
+pub type ProgressSink = Arc<dyn Fn(&Progress) + Send + Sync>;
+
 impl Driver {
     /// A driver bounded by `guardrails`.
     #[must_use]
@@ -788,6 +811,7 @@ impl Driver {
             cost: None,
             failure: None,
             progress: None,
+            forward: None,
             journal: Vec::new(),
             at: None,
             cut_short: false,
@@ -815,28 +839,50 @@ impl Driver {
         self
     }
 
+    /// Also hand this run's progress to `forward` as it goes — for a watcher that cannot read the
+    /// cell because it is in another process. See [`ProgressSink`] for why a call rather than a
+    /// second cell.
+    ///
+    /// ⚠ Called from the same place and at the same moment as the cell write, so the two can never
+    /// disagree about WHEN a number became true.
+    #[must_use]
+    pub fn forwarding_to(mut self, forward: ProgressSink) -> Self {
+        self.forward = Some(forward);
+        self
+    }
+
     /// Write the counters out, if anybody is watching.
     ///
     /// ⚠ Called after the accumulate and NOT before the step: a reader must never see an iteration
     /// counted before the work it counts has happened, which is the same ordering rule the run-end
     /// announcement follows one layer up.
     fn publish(&self) {
+        if self.progress.is_none() && self.forward.is_none() {
+            return;
+        }
+        let progress = Progress {
+            iterations: self.iterations,
+            cost: self.cost,
+            journal: self.journal.clone(),
+            answered: self.answered,
+            screened: self.screened,
+            at: self.at,
+            deliveries: self.deliveries,
+            checks: self.checks.clone(),
+            banked: self.banked.clone(),
+            driving: self.driving,
+        };
         if let Some(cell) = &self.progress {
             let mut held = cell
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *held = Progress {
-                iterations: self.iterations,
-                cost: self.cost,
-                journal: self.journal.clone(),
-                answered: self.answered,
-                screened: self.screened,
-                at: self.at,
-                deliveries: self.deliveries,
-                checks: self.checks.clone(),
-                banked: self.banked.clone(),
-                driving: self.driving,
-            };
+            *held = progress.clone();
+        }
+        // ⚠⚠ THE SAME VALUE THE CELL GOT, AND FROM THE SAME CALL. A forwarder that built its own
+        // `Progress` a line later could differ from what a local reader sees — and the two readers
+        // are the same person looking at one run through two windows.
+        if let Some(forward) = &self.forward {
+            forward(&progress);
         }
     }
 

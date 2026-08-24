@@ -8848,6 +8848,28 @@ fn no_published_pane_address_hands_back_input_the_terminal_did_not_echo() {
 /// on it converged because A PEER SPOKE.
 const ANSWERING_PEER: &str = "while read line; do echo \"ANSWER:$line\"; done";
 
+/// A peer that COUNTS its answers and takes its time — for the gate that must watch a run while it
+/// is still going.
+///
+/// # ⚠⚠⚠⚠⚠ Why a run has to be slow to be watchable, measured
+///
+/// The first form of [`the_daemon_drives_a_run_in_a_process_of_its_own`] used [`ANSWERING_PEER`] and
+/// a sentinel the peer satisfies on its FIRST answer. The run converged in one turn, before the
+/// first read of the row — so the row went `0` → `done` with no observable middle, and the
+/// mid-flight claim failed against a product that was working. ⚠ A gate that cannot see the state
+/// it is about is not measuring the product.
+///
+/// So this one answers `ANSWER:1:`, `ANSWER:2:`, … and pauses before each, which makes *three turns*
+/// a real interval rather than a race. The sentinel below names the third.
+const COUNTING_PEER: &str =
+    "n=0; while read line; do n=$((n+1)); sleep 0.4; echo \"ANSWER:$n:$line\"; done";
+
+/// The sentinel only [`COUNTING_PEER`]'s THIRD answer carries.
+///
+/// ⚠ A word the typist cannot produce, for [`PEER_ANSWERED`]'s reason, and one no EARLIER answer
+/// carries either — so a run that converged on turn 1 could not have satisfied it.
+const PEER_ANSWERED_THRICE: &str = "ANSWER:3:";
+
 /// The prefix [`ANSWERING_PEER`] wears, and the sentinel the runs below wait for.
 const PEER_ANSWERED: &str = "ANSWER:";
 
@@ -8948,6 +8970,143 @@ fn a_driver_given_a_request_no_plugin_spells_reports_nothing_and_fails() {
     );
 
     let _ = std::fs::remove_file(&sock);
+}
+
+/// **THE DAEMON PUTS A RUN IN A PROCESS OF ITS OWN, AND THE ROW STILL TELLS YOU EVERYTHING** —
+/// register items 544, 643 and 650, end to end.
+///
+/// # ⚠⚠⚠⚠⚠ What this is the first of, and why the two claims are one gate
+///
+/// Every earlier gate here spawned the driver ITSELF. This one asks the DAEMON to, through the
+/// ordinary `run` action with `run-driver-process` on — so the seam under test is the one a person
+/// actually reaches, which is the distinction register item 373 paid a round for learning to make.
+///
+/// And it asks the row TWICE for a reason:
+///
+/// 1. **While it runs**, the row must MOVE. A run whose driver is elsewhere writes its counters into
+///    a `ProgressCell` on the other side of a socket, and the shipped first driver was handed one
+///    nobody reads — so this row sat at zero for a run's whole life. That is register item 492's
+///    shape in the feature whose subject is a run somebody can watch.
+/// 2. **When it ends**, the row must carry the OUTCOME, published as `done` like any other run's.
+///    An ending that crossed a process boundary and arrived as a fifth status word would be a break
+///    no client could see coming (item 342).
+///
+/// ⚠⚠ Nothing here says `--drive`, names a socket, or reads a child's stdout. If this passes while
+/// the daemon quietly drove the run in-process, claim 1 is what notices: an in-process run's row
+/// moves too. So the gate below asserts the PREMISE — that the option is what is in force — by
+/// reading the run's own build/driver evidence rather than trusting the environment it set.
+#[test]
+fn the_daemon_drives_a_run_in_a_process_of_its_own() {
+    // ⚠ THE OPTION IS SET THE WAY A PERSON SETS IT — a config file the daemon reads — because it is
+    // read through `config::option_is_on` and there is no environment path to it. An env var of its
+    // own would be a second way to turn this on, testable and unlike production.
+    let config = config_home(&format!(
+        "[options]\n{} = \"on\"\n",
+        sprag_host::options::RUN_DRIVER_PROCESS
+    ));
+    let (_host, sock) = spawn_host_with(
+        &["sh", "-c", COUNTING_PEER],
+        &[("XDG_CONFIG_HOME", config.to_str().expect("a utf-8 path"))],
+    );
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let pane = *pane_ids(&mut conn).first().expect("the boot pane");
+
+    let started = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": sprag_host::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": {
+                    "plugin": "orchestrator",
+                    "pane": pane,
+                    "stimulus": "driven-by-the-daemon",
+                    "sentinel": PEER_ANSWERED_THRICE,
+                    "guardrails": { "max_iterations": 20, "max_seconds": 30 },
+                },
+            }),
+        )
+        .expect("the daemon starts a run");
+    let run = started.as_u64().expect("a run answers its id");
+
+    // Claim 1 — it moves WHILE IT RUNS.
+    //
+    // ⚠⚠⚠ READ OFF THE `running` ARM AND NOWHERE ELSE. Once a run is `done` its counters move under
+    // `outcome`, so accepting them from there would let a run that reported NOTHING mid-flight pass
+    // on the strength of its ending — which is exactly the half this claim exists to separate.
+    let mut seen: Option<Value> = None;
+    let moved = wait_until(Duration::from_secs(20), || {
+        let row = run_row(&mut conn, run);
+        let running = row["state"]["status"] == json!("running");
+        let done_so_far = row["state"]["iterations"].as_u64().unwrap_or(0);
+        if running && done_so_far > 0 {
+            seen = Some(row);
+            return true;
+        }
+        false
+    });
+    assert!(
+        moved,
+        "⚠⚠⚠⚠⚠ a run the daemon put in another process must show what it has done WHILE IT IS \
+         STILL GOING — a row frozen at zero for the run's whole life is the black box this feature \
+         must not build. Last row: {:?}",
+        run_row(&mut conn, run),
+    );
+    // ⚠⚠ AND THE ANSWER TALLY IS THERE TOO, which is what proves the report crossed WHOLE rather
+    // than one key of it: `progress_to_json` publishes four keys and the daemon stores the object
+    // without reading it apart, so a row missing this one would mean somebody unpacked it.
+    let mid = seen.expect("the row that satisfied the wait");
+    assert!(
+        mid["state"][sprag_host::plugins::RUN_ANSWERED_KEY].is_u64(),
+        "⚠⚠⚠ the report a driver sent is spliced WHOLE — a mid-flight row without the answer tally \
+         means a reader here unpacked it key by key and forgot one: {mid:?}",
+    );
+
+    // Claim 2 — it ends, and the ending is on the row under the same word every run uses.
+    let ended = wait_until(Duration::from_secs(40), || {
+        run_row(&mut conn, run)["state"]["status"] == json!("done")
+    });
+    let row = run_row(&mut conn, run);
+    assert!(ended, "the run ends inside its own clock: {row:?}");
+    assert_eq!(
+        row["state"]["outcome"]["state"],
+        json!("converged"),
+        "⚠⚠⚠ and it converged on the peer's answer, read off the row rather than a child's pipe: \
+         {row:?}",
+    );
+}
+
+/// A config directory holding `text` as this daemon's `config.toml`, unique to this CALL.
+///
+/// ⚠ Unique per call for [`socket_path`]'s reason: these tests are parallel threads of one binary,
+/// and a shared directory would have them reading each other's options.
+fn config_home(text: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("sprag-wire-cfg-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sprag")).expect("a temp config dir");
+    std::fs::write(
+        dir.join("sprag").join(sprag_host::config::CONFIG_FILE),
+        text,
+    )
+    .expect("write the config");
+    dir
+}
+
+/// One run's row over the wire, or `Null` where the daemon does not hold it.
+fn run_row(conn: &mut HostConn, run: u64) -> Value {
+    conn.call(
+        "scene/query",
+        json!({ "path": sprag_host::plugins_path(sprag_host::plugins::RUNS_SLOT) }),
+    )
+    .ok()
+    .and_then(|runs| {
+        runs.as_array()?
+            .iter()
+            .find(|row| row["id"] == json!(run))
+            .cloned()
+    })
+    .unwrap_or(Value::Null)
 }
 
 /// Everything pane `pane` has on its screen and in its scrollback, read over the wire.

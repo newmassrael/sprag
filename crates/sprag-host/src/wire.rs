@@ -2052,6 +2052,22 @@ impl PluginGrammar {
         ArgGrammar::open("id", "int"),
         ArgGrammar::open("held", "bool").optional(),
     ])];
+
+    /// [`REPORT_PROGRESS_ACTION`](crate::plugins::REPORT_PROGRESS_ACTION) — the run, and what its
+    /// driver has done so far.
+    ///
+    /// ⚠⚠⚠ **THE ONE VERB HERE A PERSON NEVER CALLS**, and it is described anyway. Its caller is a
+    /// driver in another process, which is a client of this daemon like any other and reads the same
+    /// grammar — and an address an agent can walk to but cannot learn the arguments of is folklore,
+    /// whoever the caller turns out to be.
+    ///
+    /// ⚠⚠ The object under `progress` is `crate::plugins::progress_to_json`'s own output, and is
+    /// described as an OBJECT rather than by its keys on purpose: this daemon stores it without
+    /// reading it apart, so a key that renderer grows must not need a line here too.
+    pub const REPORT_PROGRESS: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open("id", "int"),
+        ArgGrammar::open(crate::plugins::PROGRESS_KEY, "object"),
+    ])];
 }
 
 /// The request grammar of the PANE-INPUT verbs — the six ways a client drives what is inside a pane.
@@ -2879,6 +2895,11 @@ pub const PLUGINS_GRAMMAR: &[ActionGrammar] = &[
     ActionGrammar {
         action: crate::plugins::HOLD_RUN_ACTION,
         forms: PluginGrammar::HOLD_RUN,
+        from_ask: false,
+    },
+    ActionGrammar {
+        action: crate::plugins::REPORT_PROGRESS_ACTION,
+        forms: PluginGrammar::REPORT_PROGRESS,
         from_ask: false,
     },
 ];
@@ -9259,6 +9280,10 @@ mod tests {
                 // every verb the surface serves, not only the ones with enumerations: a verb
                 // missing from this list is a verb whose value space nothing is watching.
                 "sprag_workspace/sprag_plugins/hold_run:",
+                // ⚠ ADDED at register item 650, and it WIDENS nothing: the verb carries no closed
+                // vocabulary at all (its two arguments are an int and an opaque object), so the
+                // colon is bare. `WIRE_PROTOCOL` stands — see the verb-count pin's own note.
+                "sprag_workspace/sprag_plugins/report_progress:",
                 "sprag_workspace/sprag_plugins/stand_down:",
             ],
         );
@@ -9618,6 +9643,12 @@ mod tests {
                 // it — which is exactly why the two are separate addresses rather than one with a
                 // mode.
                 "sprag_workspace/sprag_plugins/hold_run[object]:id:int held:bool?",
+                // ⚠⚠ ADDED at register item 650. `progress` is published as an OBJECT rather than
+                // by its keys ON PURPOSE: what goes in it is `plugins::progress_to_json`'s own
+                // output and this daemon stores it without reading it apart, so a key that renderer
+                // grows must not need a line here — describing the keys would make this pin the
+                // second author of a shape that already has one.
+                "sprag_workspace/sprag_plugins/report_progress[object]:id:int progress:object",
                 "sprag_workspace/sprag_plugins/stand_down[object]:id:int",
             ],
         );
@@ -10221,6 +10252,12 @@ mod tests {
             "rename_window",
             "resize",
             "report_agent",
+            // ⚠⚠ ADDED at register item 650: the address a run's driver reports its progress to,
+            // when that driver is a process of its own. **WIRE_PROTOCOL DOES NOT MOVE** — a name
+            // ADDED leaves every older client's requests working, and this one has no caller a
+            // client would notice missing: the only party that calls it is a driver this daemon
+            // spawned from its own image, which is by construction the same build.
+            "report_progress",
             "resize_pane",
             "resize_window",
             // ⚠⚠ ADDED at register item 557: the verb a run rolls its inner session with. A name
@@ -10656,14 +10693,15 @@ mod tests {
                 SURFACES,
             )
             .count_or_panic(),
-            41,
+            42,
             "the whole write half of this crate's wire: the multiplexer's verbs, the pane's, and \
-             the plugin host's FOUR — run, cancel, stand_down and hold_run. ⚠ The newest is the \
-             mux's `respawn`, the act a RUN DRIVER rolls its inner session with (register item \
-             557): the SAME program in the SAME world and the SAME seat, which the `close` + \
-             `spawn` a client would compose loses three ways. Before it came the pane's `inject`. \
-             Both are verbs ADDED, so an older client — which never calls either — is unaffected \
-             and `WIRE_PROTOCOL` stands",
+             the plugin host's FIVE — run, cancel, stand_down, hold_run and report_progress. \
+             ⚠ The newest is `report_progress` (register item 650), and it is the only verb here a \
+             PERSON never calls: a run whose driver is a process of its own reports its counters \
+             through it, because the daemon's own progress cell is shared memory such a driver does \
+             not share. Before it came the mux's `respawn` (item 557) and the pane's `inject`. \
+             ⚠ All three are verbs ADDED, so an older client — which never calls any of them — is \
+             unaffected and `WIRE_PROTOCOL` stands",
         );
     }
 

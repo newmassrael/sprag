@@ -40,7 +40,7 @@ const NEEDLES: [&str; 2] = [".stdin.take()", ".stdin.as_mut()"];
 /// ⚠⚠⚠ Every entry is re-measured by [`every_exemption_is_still_load_bearing`]: an exemption whose
 /// line has gone is a hole held open for a file that no longer needs one, and this project's
 /// standing lesson is that a list nobody re-measures ages silently.
-const EXEMPT: [(&str, &str); 4] = [
+const EXEMPT: [(&str, &str); 5] = [
     (
         "crates/sprag-gate/src/feeding.rs",
         "the one place: it takes the handle, tolerates the child having gone, and closes it so a \
@@ -62,6 +62,14 @@ const EXEMPT: [(&str, &str); 4] = [
         "crates/sprag-host/src/bin/sprag-agent-peer.rs",
         "product code that already carries the error rather than panicking on it — `map_err(...)?` \
          on the request write, `let _ = ...` on the hook payload, both deliberate",
+    ),
+    (
+        "crates/sprag-host/src/lib.rs",
+        "the daemon handing a run's driver its request (register item 650). PRODUCT code, so \
+         `feeding::feed` is the wrong door — that one panics on a write error and a daemon must \
+         not. It carries what this gate is about instead: the BrokenPipe arm is matched and \
+         tolerated by name, every other error is returned, and the handle is dropped so a driver \
+         that does read sees end-of-file",
     ),
 ];
 

@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use sprag_plugin::{Outcome, Progress, ProgressCell};
 
 use crate::external::lock;
@@ -41,6 +42,30 @@ pub enum RunState {
         outcome: Box<Outcome>,
         output: Option<String>,
     },
+    /// **THE RUN FINISHED IN ANOTHER PROCESS AND THIS IS WHAT IT REPORTED** — register items 650
+    /// and 544.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a fifth state and not a [`Done`](Self::Done) with a rebuilt `Outcome`
+    ///
+    /// An [`Outcome`] has no way back from the wire. `crate::plugins::outcome_to_json` is a one-way
+    /// RENDER: it drops `screened`, `deliveries`, `checks` and `banked`, so a daemon that
+    /// "reconstructed" one would be asserting four facts it was never told. A `Done` built that way
+    /// would be **indistinguishable from a real one and quietly wrong** — an out-of-process run
+    /// losing what an in-process one keeps, which is the invisible divergence
+    /// [`crate::options::RUN_DRIVER_PROCESS`] promises cannot happen.
+    ///
+    /// So the honest shape is a state that says *this ending was reported, not computed here*, and
+    /// carries exactly what arrived. Every reader that weighs an outcome then has to say what it
+    /// does with a reported one — and the compiler makes it, which is the whole reason this is a
+    /// variant rather than a field.
+    ///
+    /// ⚠⚠ **THE WIRE DOES NOT LEARN A FIFTH WORD.** The row publishes `done` with the reported
+    /// object spliced in, because a client asked *what became of this run* and *whose process
+    /// computed the answer* is not part of that question. Item 342's rule — an added `status` word
+    /// is a break no address pin can see — is exactly why this stays on this side.
+    ///
+    /// ⚠ Boxed for [`Done`](Self::Done)'s reason: the payload matters once, at the end.
+    Reported(Box<Value>),
     /// The worker thread panicked (defensive — a plugin step should not).
     Panicked(String),
     /// ⚠⚠ THE DAEMON THAT WAS DRIVING THIS RUN DIED. It was `Running` when its process ended, and
@@ -358,13 +383,26 @@ pub trait RunHandle: Send + Sync {
     fn outstanding(&self) -> bool;
 }
 
-/// A run driven by **A THREAD IN THIS PROCESS** — the only kind that exists today, and the one
-/// register item 544 is about moving out.
+/// **WHAT A PERSON HAS SAID TO ONE RUN** — the daemon's record of it, and the half of a
+/// [`RunHandle`] that is the same whatever kind of driver the run has.
 ///
-/// The three flags are shared with the worker's `RunContext`, so an order delivered here is seen at
-/// the driver's next loop top or wait poll. That sharing is why they are handed in rather than made
-/// here: the same `Arc`s go to the worker at spawn.
-pub struct ThreadRun {
+/// # ⚠⚠⚠⚠⚠ Why this is a type and not a second copy of four fields
+///
+/// Every implementation of [`RunHandle`] with a live driver answers `deliver` / `cancelled_by` /
+/// `stood_down` / `honours` **identically** — an order is written down here, and how the driver
+/// LEARNS of it is the part that differs. [`ThreadRun`] shares the flags with a worker in this
+/// process; [`ProcessRun`] publishes them in the run's row and the driver is woken to re-read it
+/// (`Event::RunOrdered`, register item 648). Neither of those differences reaches this record.
+///
+/// Written twice, the two `deliver`s would be free to drift — and `deliver`'s body carries the
+/// write ORDER that register item 596 paid for (who first, flag second). A rule that has to be
+/// remembered at two sites is the shape this repository keeps finding defects in.
+///
+/// ⚠⚠ **THE THREE FLAGS ARE HANDED IN, NEVER MADE HERE.** For a thread-driven run the same `Arc`s
+/// go to the worker's `RunContext`, so an order delivered here is seen at its next loop top or wait
+/// poll. For a process-driven run nothing in this image reads them — they are pure record, and the
+/// row is what the driver reads. Same type, and the difference is stated rather than hidden.
+pub struct Orders {
     cancel: Arc<AtomicBool>,
     stand_down: Arc<AtomicBool>,
     hold: Arc<AtomicBool>,
@@ -388,18 +426,17 @@ pub struct ThreadRun {
     /// [`sprag_plugin::Plugin::honours`] said yes to, so an order added to that set is asked about
     /// with nothing here to update.
     honoured: Vec<sprag_plugin::StandingOrder>,
-    handle: Option<JoinHandle<()>>,
 }
 
-impl ThreadRun {
-    /// Take the worker and the three flags it is already sharing.
+impl Orders {
+    /// Take the three flags a driver is already sharing (or, for an out-of-process one, the three
+    /// this daemon will publish) and the plugin's own list of what it reads.
     #[must_use]
     pub fn new(
         cancel: Arc<AtomicBool>,
         stand_down: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
         honoured: Vec<sprag_plugin::StandingOrder>,
-        handle: JoinHandle<()>,
     ) -> Self {
         Self {
             cancel,
@@ -407,12 +444,10 @@ impl ThreadRun {
             hold,
             cancelled_by: Mutex::new(None),
             honoured,
-            handle: Some(handle),
         }
     }
-}
 
-impl RunHandle for ThreadRun {
+    /// Write `order` down — [`RunHandle::deliver`]'s whole body, for every driver kind.
     fn deliver(&self, order: RunOrder) {
         // ⚠ ONE `match`, so a fourth order cannot be added without this arm being written. That is
         // the ratchet a trio of `store` calls at three call sites did not have.
@@ -441,16 +476,60 @@ impl RunHandle for ThreadRun {
     }
 
     /// ⚠ THE PLUGIN'S OWN ANSWER, replayed. Nothing here decides it: the list was taken from
-    /// `sprag_plugin::Plugin::honours` at submit, before the plugin moved into the worker thread.
+    /// `sprag_plugin::Plugin::honours` at submit, before the plugin left this image.
     fn honours(&self, order: sprag_plugin::StandingOrder) -> bool {
         self.honoured.contains(&order)
     }
 
     fn stood_down(&self) -> bool {
-        // ⚠ THE SAME FLAG THE WORKER'S `RunContext` IS SHARING, read rather than copied — see the
-        // struct's own note on why the three `Arc`s are handed in. A second bool set beside the
+        // ⚠ THE SAME FLAG THE WORKER'S `RunContext` IS SHARING, read rather than copied — see this
+        // type's own note on why the three `Arc`s are handed in. A second bool set beside the
         // `store` above could disagree with what the driver is reading.
         self.stand_down.load(Ordering::Acquire)
+    }
+}
+
+/// A run driven by **A THREAD IN THIS PROCESS** — the kind that was the only one, and the one
+/// register item 544 is about moving out. Its out-of-process sibling is [`ProcessRun`].
+pub struct ThreadRun {
+    /// What a person said to it — see [`Orders`], and note that the flags in there ARE the
+    /// worker's, shared with its `RunContext`.
+    orders: Orders,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ThreadRun {
+    /// Take the worker and the three flags it is already sharing.
+    #[must_use]
+    pub fn new(
+        cancel: Arc<AtomicBool>,
+        stand_down: Arc<AtomicBool>,
+        hold: Arc<AtomicBool>,
+        honoured: Vec<sprag_plugin::StandingOrder>,
+        handle: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            orders: Orders::new(cancel, stand_down, hold, honoured),
+            handle: Some(handle),
+        }
+    }
+}
+
+impl RunHandle for ThreadRun {
+    fn deliver(&self, order: RunOrder) {
+        self.orders.deliver(order);
+    }
+
+    fn cancelled_by(&self) -> Option<Canceller> {
+        self.orders.cancelled_by()
+    }
+
+    fn honours(&self, order: sprag_plugin::StandingOrder) -> bool {
+        self.orders.honours(order)
+    }
+
+    fn stood_down(&self) -> bool {
+        self.orders.stood_down()
     }
 
     fn reapable(&self) -> bool {
@@ -463,6 +542,93 @@ impl RunHandle for ThreadRun {
             .join()
             .err()
             .map(|_| "plugin run panicked".to_string())
+    }
+
+    fn outstanding(&self) -> bool {
+        self.handle.is_some()
+    }
+}
+
+/// A run driven by **ANOTHER PROCESS** — register item 544's whole point, and the third
+/// [`RunHandle`].
+///
+/// # ⚠⚠⚠⚠⚠ How an order reaches a driver that shares no memory with this daemon
+///
+/// It does not reach it from here at all. [`deliver`](RunHandle::deliver) writes the order into
+/// [`Orders`] exactly as [`ThreadRun`] does, and the run's ROW publishes it (`stood_down`,
+/// `cancelled_by`). The driver is then WOKEN to re-read that row by `Event::RunOrdered`, which the
+/// registry's callers announce on their accepted arms — register item 648, built for this.
+///
+/// ⚠⚠ So the three flags here are **pure record**: nothing in this image reads them. That is the
+/// one difference from [`ThreadRun`], where the same `Arc`s are the worker's own, and [`Orders`]
+/// says so rather than leaving it to be inferred.
+///
+/// # ⚠⚠⚠ The collector thread is not a driver
+///
+/// A thread per run in this daemon looks like it gives back what moving out was meant to win. It
+/// does not: what item 544 is about is the PLUGIN LOGIC — an AI loop's turn model, a sentinel
+/// rule — living somewhere it can be replaced without restarting the thing that holds the PTYs.
+/// This thread holds none of that. It blocks on the child, and when the child ends it writes the
+/// outcome and announces, which is byte-for-byte what a thread-driven run's worker does at ITS end.
+///
+/// ⚠ And it blocks rather than samples. `wait` IS the wake — no clock, which is what items
+/// 629/630/631/640 spent four rounds establishing on the pane axis and what this must not undo on
+/// the run axis.
+pub struct ProcessRun {
+    /// What a person said to it, published in the row for a reader that is not in this process.
+    orders: Orders,
+    /// The thread collecting the driver — see this type's note on why it is not a driver.
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ProcessRun {
+    /// Take the three flags this daemon will publish and the thread collecting the driver.
+    #[must_use]
+    pub fn new(
+        cancel: Arc<AtomicBool>,
+        stand_down: Arc<AtomicBool>,
+        hold: Arc<AtomicBool>,
+        honoured: Vec<sprag_plugin::StandingOrder>,
+        handle: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            orders: Orders::new(cancel, stand_down, hold, honoured),
+            handle: Some(handle),
+        }
+    }
+}
+
+impl RunHandle for ProcessRun {
+    fn deliver(&self, order: RunOrder) {
+        self.orders.deliver(order);
+    }
+
+    fn cancelled_by(&self) -> Option<Canceller> {
+        self.orders.cancelled_by()
+    }
+
+    fn honours(&self, order: sprag_plugin::StandingOrder) -> bool {
+        self.orders.honours(order)
+    }
+
+    fn stood_down(&self) -> bool {
+        self.orders.stood_down()
+    }
+
+    fn reapable(&self) -> bool {
+        self.handle.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
+    /// ⚠ THE COLLECTOR is what is joined, not the child — it has already reaped the child and
+    /// written the outcome by the time it finishes. A panic here is this daemon's own failure to
+    /// collect, which is a different sentence from a driver that died badly: that one reaches the
+    /// row as the run's OUTCOME, where a reader is looking for it.
+    fn reap(&mut self) -> Option<String> {
+        let handle = self.handle.take()?;
+        handle
+            .join()
+            .err()
+            .map(|_| "collecting a run's driver process panicked".to_string())
     }
 
     fn outstanding(&self) -> bool {
@@ -620,6 +786,25 @@ struct RunRecord {
     /// could not tell progress from stuck and could not see spend until it was spent — see
     /// [`sprag_plugin::Progress`].
     progress: ProgressCell,
+    /// **WHAT A DRIVER IN ANOTHER PROCESS LAST REPORTED**, or [`None`] for a run whose driver
+    /// shares the cell above — register item 650.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a second place and not the cell beside it
+    ///
+    /// [`sprag_plugin::Progress`] is built out of `&'static str` — its `at`, and three per journal
+    /// `Edge` — because it was only ever read in this process. Filling the cell from a wire message
+    /// means either interning a statechart vocabulary that is UPSTREAM's to publish, or quietly
+    /// dropping the fields that are words. Both are worse than holding what arrived.
+    ///
+    /// ⚠⚠ So this holds [`crate::plugins::progress_to_json`]'s own output, **verbatim and never
+    /// read apart**. A key that renderer grows reaches the row with nothing here to update; a
+    /// daemon that unpacked it would need a line per key, and the day one was forgotten it would go
+    /// missing for out-of-process runs alone — the invisible divergence
+    /// [`crate::options::RUN_DRIVER_PROCESS`] promises cannot happen.
+    ///
+    /// ⚠ A LEVEL, like the cell: each report REPLACES the last, because what a reader wants is what
+    /// the run has done so far and a missed report costs nothing once the next one lands.
+    reported: Arc<Mutex<Option<serde_json::Value>>>,
     /// WHICH BUILD DROVE THIS RUN — [`crate::wire::BUILD`] for a run this daemon started, the dead
     /// daemon's for one taken from a predecessor's log, and [`None`] for a log written before this
     /// field existed.
@@ -661,6 +846,14 @@ pub struct RunSummary {
     /// What it has spent so far — meaningful while [`state`](Self::state) is
     /// [`RunState::Running`], and the last reading the driver took once it is not.
     pub progress: Progress,
+    /// **WHAT A DRIVER IN ANOTHER PROCESS LAST REPORTED** — `RunRecord::reported`, republished so
+    /// the row can show a run this daemon is not spending for. [`None`] means the driver shares
+    /// [`progress`](Self::progress) above, which is every run today.
+    ///
+    /// ⚠ A reader takes this AHEAD of `progress` when it is here, and that ordering is the whole
+    /// point: for such a run the cell beside it never moves, so preferring the cell would publish
+    /// zeros over a report that had arrived.
+    pub reported: Option<serde_json::Value>,
     /// WHICH BUILD DROVE IT, or [`None`] when nothing recorded one — see `RunRecord::build` for
     /// why those are different answers and why a reader must not fill the second one in.
     pub build: Option<String>,
@@ -1087,12 +1280,34 @@ impl RunRegistry {
             state: run.state,
             run: run.run,
             progress: run.progress,
+            // ⚠ NOTHING REPORTED YET, whatever kind of driver this run has. A run whose driver is
+            // another process fills this on its first `report_progress`; until then its row shows
+            // the cell above, which is honestly zero — the run has not said it did anything.
+            reported: Arc::new(Mutex::new(None)),
             // ⚠ STAMPED HERE AND NOWHERE ELSE ON THIS PATH — see `RunRecord::build`. The worker
             // about to run is inside THIS image, so this image is the only honest answer, and it
             // is read from the constant the same binary published at `client/hello`.
             build: Some(crate::wire::BUILD.to_owned()),
         });
         id
+    }
+
+    /// **A DRIVER IN ANOTHER PROCESS SAYS WHAT ITS RUN HAS DONE** — register item 650. Returns
+    /// whether such a run exists, the answer [`cancel`](Self::cancel) gives for its reason.
+    ///
+    /// ⚠⚠ `progress` is stored WITHOUT being read apart — see `RunRecord::reported`. It is
+    /// `crate::plugins::progress_to_json`'s own output, so a key that renderer grows reaches the
+    /// row with nothing here to update.
+    ///
+    /// ⚠ EACH REPORT REPLACES THE LAST. What a reader wants is what the run has done so far, and a
+    /// report that arrived late or not at all costs nothing once the next one lands — the same
+    /// *this is a LEVEL* reasoning [`sprag_plugin::ProgressCell`] states for itself.
+    pub fn report(&self, id: RunId, progress: serde_json::Value) -> bool {
+        let Some(record) = self.runs.iter().find(|run| run.id == id) else {
+            return false;
+        };
+        *lock(&record.reported) = Some(progress);
+        true
     }
 
     /// Raise the cancel flag for run `id`, returning whether such a run exists.
@@ -1246,6 +1461,31 @@ impl RunRegistry {
                             Some(crate::plugins::outcome_word(outcome).to_owned()),
                             crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
                             output.clone(),
+                        ),
+                        // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 / 544, and
+                        // the durable log loses NOTHING here: what it keeps of an ending is the
+                        // word, the ceiling and the capture, and all three are what
+                        // `outcome_to_json` has always carried. Read out of the report rather than
+                        // recomputed, because the process that computed them is gone.
+                        //
+                        // ⚠ `PersistedRun`'s own fields are `Option<String>`, so a key the report
+                        // does not carry lands as [`None`] — which this log already reads as
+                        // *nobody wrote that down* rather than as a zero. An older daemon reading
+                        // this file meets exactly the shape it meets for a thread-driven run.
+                        RunState::Reported(reported) => (
+                            true,
+                            reported
+                                .get("state")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            reported
+                                .get(crate::plugins::RUN_CEILING_KEY)
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            reported
+                                .get("output")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
                         ),
                         RunState::Panicked(why) => (true, Some(why.clone()), None, None),
                     };
@@ -1498,6 +1738,11 @@ impl RunRegistry {
                     // compared, once, by something that can see both.
                     at: None,
                 })),
+                // ⚠⚠ NOTHING REPORTED, and here that is the CORRECT answer rather than a lossy
+                // one — `driving: None`'s argument two comments up. A restored run's driver died
+                // with its daemon, whichever kind it was, so nothing is going to say what it is
+                // doing now. What it MANAGED is above, taken from the log.
+                reported: Arc::new(Mutex::new(None)),
                 // ⚠⚠⚠ AND THIS ONE IS TAKEN FROM THE LOG RATHER THAN STAMPED, which is the
                 // opposite decision to every field above and the reason the field exists. The rest
                 // of this record is about a run that is over, so inventing a value would assert
@@ -1521,6 +1766,10 @@ impl RunRegistry {
                 opened_by_session: record.opened_by_session.clone(),
                 state: lock(&record.state).clone(),
                 progress: lock(&record.progress).clone(),
+                // ⚠ SAME PASS as the two above, for their reason: a row weighs what a run has done
+                // against where it has got to, and reading them a moment apart is this
+                // repository's *비교하는 두 값은 같은 순간에* rule broken at its cheapest.
+                reported: lock(&record.reported).clone(),
                 build: record.build.clone(),
                 // ⚠ ASKED OF THE HANDLE, on the same pass that reads the state — item 594's
                 // sentence weighs the two against each other, and reading them a moment apart is
