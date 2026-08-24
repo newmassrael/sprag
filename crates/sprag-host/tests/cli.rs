@@ -2623,23 +2623,27 @@ fn still_running(pid: u32) -> bool {
 /// take its driver process down with it and the count would be a race rather than a claim. The
 /// guardrails are far past anything a gate waits out for the same reason.
 ///
-/// ⚠ Its two callers ask OPPOSITE questions of it (a daemon told `on`, and one told nothing), which
-/// is exactly why one spelling: a fixture that drifted between them would make the two answers
-/// incomparable while both stayed green.
-fn start_a_run_that_cannot_converge(sock: &Path) {
+/// ⚠ Its callers ask OPPOSITE questions of it (a daemon told `on`, one told nothing, and one that
+/// kills a driver to see what the run becomes), which is exactly why one spelling: a fixture that
+/// drifted between them would make those answers incomparable while all of them stayed green.
+///
+/// ⚠⚠ `session` is a PARAMETER because one caller needs TWO of these against one daemon — a subject
+/// and a control — and a session name is unique per daemon. Every caller that wants only one passes
+/// `work`, which is the name this fixture used to hard-code.
+fn start_a_run_that_cannot_converge(sock: &Path, session: &str) {
     let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
     conn.call(
         "scene/invoke",
         json!({
             "path": mux_action_path(NEW_SESSION_ACTION),
-            "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+            "args": { "name": session, "cmd": ["sh", "-c", "stty -echo; exec cat"] },
         }),
     )
     .expect("new_session answers");
     let pane = conn
         .call(
             "scene/query",
-            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+            json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
         )
         .expect("the pane list answers")
         .as_array()
@@ -2649,7 +2653,7 @@ fn start_a_run_that_cannot_converge(sock: &Path) {
     conn.call(
         "scene/invoke",
         json!({
-            "session": "work",
+            "session": session,
             "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
             "args": {
                 "plugin": "orchestrator",
@@ -3121,7 +3125,7 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
          the daemon. If this is not 1 the count below says nothing about drivers.",
     );
 
-    start_a_run_that_cannot_converge(&sock);
+    start_a_run_that_cannot_converge(&sock, "work");
 
     // ── THE CLAIM: the run got a process of its own ──────────────────────────────────────────
     assert!(
@@ -3157,7 +3161,7 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
         "the configured daemon never started serving",
     );
-    start_a_run_that_cannot_converge(&sock);
+    start_a_run_that_cannot_converge(&sock, "work");
     // ⚠ Given TIME to be wrong: the claim above waits up to twenty seconds for a second process, so
     // a control that looked once could pass simply by reading before a child had been spawned.
     assert!(
@@ -3231,7 +3235,7 @@ fn a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own() {
          the daemon. If this is not 1 the count below says nothing about drivers.",
     );
 
-    start_a_run_that_cannot_converge(&sock);
+    start_a_run_that_cannot_converge(&sock, "work");
 
     assert!(
         wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
@@ -3811,6 +3815,168 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
         interrupted(&rows, 2),
         "⚠⚠⚠ THE CONTROL FAILED: a run whose plugin walks no statechart came back alive, so these \
          rows would say `running` whatever had happened to the work. Rows: {rows:?}",
+    );
+    drop(conn);
+    drop(guard);
+}
+
+/// ⚠⚠⚠⚠⚠ **A RUN WHOSE DRIVER PROCESS IS KILLED REACHES THE ROW AS A FAILURE, INSTEAD OF GOING
+/// QUIET** — register item 671, the first of the two residues item 544 left behind when it moved a
+/// driver out of the daemon.
+///
+/// # ⚠⚠⚠ What the fused design got for free, and what a process boundary took away
+///
+/// While a run was driven on a THREAD of this daemon's own, a driver that died was a thread that
+/// panicked, and `RunRegistry::sweep` turned that into the run's outcome without anybody having to
+/// decide it should. A driver that is a PROCESS can be killed by an OOM killer, by a person reading
+/// `ps`, or by a bug in the image it runs, and item 544's own text filed *who notices* as a residue.
+/// Since the default moved on 2026-08-25 (register item 544) that is where every daemon nobody has
+/// configured now stands.
+///
+/// # ⚠⚠⚠⚠ The register entry's own sentence is what this measures, and it may have been wrong
+///
+/// Item 671 was filed saying such a run *"is not even `interrupted`, it is simply quiet"*. The
+/// product's answer is `collect_driver` BLOCKING on the child and `crate::plugins`'s `driver_ending`
+/// reading a death that reported no outcome as `RunState::Panicked` — but that is a sentence about
+/// code somebody read, and a register entry that is believed rather than measured is exactly what
+/// this repository keeps paying for. **Only killing one says what a live daemon does.**
+///
+/// # ⚠⚠⚠⚠ The control is a second run that nobody touches
+///
+/// Without it this gate passes against a daemon that fails every run it holds the moment anything
+/// dies — and a daemon HAS such a door: the shutdown sweep raises a cancel on every run there is.
+/// The two runs are the same fixture and only one is killed, so the answer separates *this run's
+/// driver died* from *something happened on this daemon*.
+///
+/// ⚠⚠ The subject's driver is named BEFORE the control is submitted, which is the rule the
+/// promotion gate above paid a red to learn: a process table publishes parentage, not which run a
+/// driver belongs to, so WHEN a pid is read is what names it.
+///
+/// ⚠ And the daemon's own pid is checked across the kill, because a gate that let the daemon die
+/// with its driver would be register item 543's restart question wearing a second name.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_run_whose_driver_process_is_killed_reaches_the_row_as_a_failure() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-driver-killed-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    let daemon = daemon_pid(&sock).expect("the daemon is running");
+
+    // ── THE SUBJECT, whose driver is named while it is the only driver there is ──────────────
+    start_a_run_that_cannot_converge(&sock, "subject");
+    assert!(
+        wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 1),
+        "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
+         the run above should be driven by a process of its own and there is nothing here to kill. \
+         Found {:?}.",
+        driver_pids(&sock),
+    );
+    let subject = driver_pids(&sock)[0];
+
+    // ── THE CONTROL: the same fixture, and nothing at all is done to it ──────────────────────
+    start_a_run_that_cannot_converge(&sock, "control");
+    assert!(
+        wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
+        "⚠⚠ THE PREMISE FAILED: the control run got no driver of its own, so a `running` row for \
+         it below would be saying nothing about a process at all. Found {:?}.",
+        driver_pids(&sock),
+    );
+
+    // THE KILL: outright and from outside, which is what an OOM killer and a person with `ps` both
+    // do — nothing gets to write a tidy outcome on the way out.
+    //
+    // SAFETY: `subject` was read from the process table as a driver of THIS test's own daemon,
+    // started beside a socket this test made.
+    unsafe { libc::kill(subject as libc::pid_t, libc::SIGKILL) };
+    assert!(
+        wait_for(Duration::from_secs(10), || !still_running(subject)),
+        "the driver process {subject} did not die",
+    );
+    assert_eq!(
+        daemon_pid(&sock),
+        Some(daemon),
+        "⚠⚠ THE PREMISE FAILED: the daemon did not survive its driver, so what is measured below \
+         is a restart (register item 543) and not a driver's death",
+    );
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    // ⚠ THE SESSION SCOPES THE CONNECTION, NOT THE ANSWER: this slot lists every run this daemon
+    // holds, which is why both rows are read out of one call.
+    let rows_of = |conn: &mut HostConn| {
+        conn.call(
+            "scene/query",
+            json!({
+                "session": "subject",
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            }),
+        )
+        .expect("the runs slot answers")
+        .as_array()
+        .expect("a list of runs")
+        .clone()
+    };
+    let status_of = |rows: &[Value], id: u64| -> Value {
+        rows.iter()
+            .find(|run| run["id"] == json!(id))
+            .unwrap_or_else(|| panic!("run {id} is not in the rows at all: {rows:?}"))["state"]
+            .clone()
+    };
+
+    // ── THE CLAIM: the subject's row STOPS saying `running`, and says what happened ──────────
+    let answered = wait_for(Duration::from_secs(30), || {
+        status_of(&rows_of(&mut conn), 0)["status"] != json!("running")
+    });
+    let rows = rows_of(&mut conn);
+    assert!(
+        answered,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: A RUN WHOSE DRIVER PROCESS WAS KILLED IS STILL SAYING \
+         `running`. The daemon is alive and answering, the process that was driving run 0 is gone, \
+         and the only thing a reader is told is the answer a run that is going fine gives. \
+         `collect_driver` is where a driver's ending is supposed to become the run's. Rows: \
+         {rows:?}",
+    );
+    let subject_state = status_of(&rows, 0);
+    assert_eq!(
+        subject_state["status"],
+        json!("panicked"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: a killed driver's run left the row in a word nobody decided \
+         on. `panicked` is what `driver_ending` reads a death with no reported outcome as, and it \
+         is the word this gate was written against — a DIFFERENT one here is the product having \
+         changed its mind, which is a decision to re-take and write down, not a red to paper over. \
+         Rows: {rows:?}",
+    );
+    assert!(
+        subject_state["error"]
+            .as_str()
+            .is_some_and(|why| why.contains("driver")),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: the row failed the run without saying that its DRIVER died. \
+         A person reading this sees a run that broke and no way to tell a plugin's own failure \
+         from the process that was stepping it being killed out from under it. State: \
+         {subject_state:?}",
+    );
+
+    // ── AND THE CONTROL, WHICH NOTHING TOUCHED, IS STILL RUNNING ─────────────────────────────
+    let control_state = status_of(&rows, 1);
+    assert_eq!(
+        control_state["status"],
+        json!("running"),
+        "⚠⚠⚠ THE CONTROL FAILED: a run whose driver was never killed stopped running too, so the \
+         answer above is about this daemon rather than about one dead driver. State: \
+         {control_state:?}",
     );
     drop(conn);
     drop(guard);
