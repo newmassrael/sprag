@@ -1287,6 +1287,11 @@ mod tests {
     /// deadline 3.** So making the remote surface parkable (item 631) bought nothing at all on the
     /// arm that rests on the VERDICT — which is the arm an agent loop's whole contract rests on.
     ///
+    /// ⚠⚠ **THE 61 IS THIS HOST'S, NOT THE PRODUCT'S** — register item 666. It is one look per
+    /// `POLL_INTERVAL` only where a wake really costs 10 ms; the same arm scored 11 on a loaded
+    /// macOS runner. The gate over it therefore asserts a RATIO between two settle windows, and
+    /// anything here that reasons from the absolute number is reasoning about the build machine.
+    ///
     /// # ⚠⚠⚠⚠ THE ANCHOR IS THE ONE THING HERE THAT FAILS SILENTLY, so it is the first assertion
     ///
     /// An [`Instant`] cannot travel, so what crosses is a REMAINING TIME and somebody has to

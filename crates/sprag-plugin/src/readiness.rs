@@ -3275,18 +3275,32 @@ mod tests {
     ///   say when must still come back when the verdict flips. A mutant that treated the unknown
     ///   as an absence — `Settling::due` answering `None` for it — parks for ever and reports that
     ///   nobody came.
-    /// * **It costs the OLD rate, and the number is recorded rather than bounded.** This gate does
+    /// * **It costs the OLD rate, and the claim is a RATIO rather than a count.** This gate does
     ///   NOT assert a ceiling, because `Unknown` is *supposed* to poll; asserting a small number
-    ///   here would be asserting the defect away. What it asserts is that the count is
-    ///   **materially larger than the published-deadline arm's** — which is the whole content of
-    ///   item 631, stated as a measurement instead of a sentence.
+    ///   here would be asserting the defect away. What it asserts is that the cost **follows the
+    ///   window** — which is what polling MEANS — and that it is still above the arm that is told
+    ///   when, which is the whole content of item 631 stated as a measurement.
     ///
-    /// # ⚠⚠⚠⚠⚠ MEASURED 2026-08-24 — this is register item 631's `before`
+    /// # ⛔⛔⛔⛔⛔ Why two WINDOWS and not two ARMS at one window — register item 666
     ///
-    /// Over a 600 ms settle, the same peer: **`Unknown` cost 61 looks, the published deadline cost
-    /// 3.** The day `RemotePaneAccess` grows a deadline, this gate is where the improvement shows
-    /// up — the two counts converge, the assertion below goes red, and its message is what says
-    /// item 631 is paid rather than a sentence in a register claiming so.
+    /// This gate used to compare the two arms' ABSOLUTE counts over a single 600 ms settle and
+    /// demand the blind one cost four times the parked one. **That reading is the runner's speed,
+    /// not this product's behaviour.** A look costs ~10 ms on the build machine and the arm scored
+    /// **61 against 3**; on a loaded macOS runner one look took ~55 ms, the same arm scored
+    /// **11 against 3**, and the gate went red at `e855ef9` — a commit that did not touch this
+    /// crate at all. A gate that fails over the host it runs on is one people learn to re-run.
+    ///
+    /// ⚠⚠⚠ **AND THE MACHINE-INDEPENDENT FORM WAS ALREADY ONE SCREEN ABOVE**, in
+    /// `a_wait_on_a_settling_verdict_costs_one_look_and_not_the_whole_window`: two settle windows a
+    /// factor of four apart, and the RATIO is the claim. This is that meter's MIRROR — a parked
+    /// arm's cost does not follow the window and a polling arm's does — because a slow host
+    /// stretches both windows alike, so a ratio survives exactly what a count could not.
+    ///
+    /// # ⚠⚠⚠⚠ Register item 631's tripwire is preserved, and it is the LAST assertion
+    ///
+    /// The day `RemotePaneAccess` grows a deadline this arm stops following the window AND stops
+    /// costing more than the parked one: both claims go red, and their messages are what say item
+    /// 631 is paid rather than a sentence in a register claiming so.
     ///
     /// ⛔⛔⛔ **AND THE MUTATION IS THE ONE THAT ROUND WILL BE TEMPTED BY.** Making
     /// [`Settling::due`](crate::access::Settling::due) answer `None` for
@@ -3295,22 +3309,31 @@ mod tests {
     /// Measured, not argued.
     #[test]
     fn the_arm_a_remote_driver_walks_still_ends_its_wait_and_pays_the_old_rate() {
-        /// How long the fixture's supervisor calls the pane blocked.
-        const SETTLES_AFTER: Duration = Duration::from_millis(600);
-        /// Far above it, so *the verdict changed* and *the patience ran out* are different answers.
+        /// The short arm's settle window — its neighbour's, so the two meters read one peer.
+        const SHORT: Duration = Duration::from_millis(400);
+        /// The long arm's, four times it.
+        const LONG: Duration = Duration::from_millis(1_600);
+        /// Far above both, so *the verdict changed* and *the patience ran out* are different
+        /// answers.
         const PATIENCE: Duration = Duration::from_secs(8);
-        /// How many times more a polling arm must cost than the parked one before this gate calls
-        /// them different. ⚠ Low on purpose: the claim is *materially larger*, not a ratio, and a
-        /// loaded runner must not be able to turn it over. At the poll interval the real gap over
-        /// this settle is ~60 against ~3.
-        const AT_LEAST: u64 = 4;
+        /// What the long window must cost the short one before this gate calls the count a
+        /// FUNCTION OF THE WINDOW. ⚠⚠ Half the honest reading against a window four times longer,
+        /// and that headroom is the whole of register item 666: what must not be able to turn this
+        /// over is the host it runs on, and a host that halves the look rate between two arms
+        /// taken back to back is a host that has stopped measuring anything.
+        ///
+        /// **Measured 2026-08-25 on the build machine: 42 looks over `SHORT`, 159 over `LONG` — a
+        /// ratio of 3.79 against the 2 demanded.** ⚠ Those two counts are the HOST'S, and a slower
+        /// one scores lower on both; the ratio between them is what this asserts and what survives.
+        const GROWTH: u64 = 2;
 
-        /// Wait out the same peer over a surface that either can or cannot say WHEN.
-        fn waited_out(publishes: bool) -> (u64, Waited) {
+        /// Wait out the same peer over a surface that either can or cannot say WHEN — answering
+        /// how many looks the wait cost, how long it took, and how it ended.
+        fn waited_out(publishes: bool, after: Duration) -> (u64, Duration, Waited) {
             let (access, pane) = if publishes {
-                crate::testing::peer_blocked_unreadably_settling(SETTLES_AFTER)
+                crate::testing::peer_blocked_unreadably_settling(after)
             } else {
-                crate::testing::peer_blocked_unreadably_unknown(SETTLES_AFTER)
+                crate::testing::peer_blocked_unreadably_unknown(after)
             };
             let counted = crate::testing::Counted::new(access);
             let run = RunContext::uncancellable();
@@ -3318,43 +3341,60 @@ mod tests {
             // arms wait the same thing and the count starts after it.
             let _ = moved_on(&counted, pane, None);
             let entered = counted.looks();
+            let began = Instant::now();
             let waited = park_until(&run, &counted, pane, PATIENCE, || {
                 moved_on(&counted, pane, None)
             });
+            let took = began.elapsed();
             let looked = counted.looks() - entered;
             counted.lifecycle().expect("lifecycle").close(pane);
-            (looked, waited)
+            (looked, took, waited)
         }
 
-        let (blind_looks, blind_end) = waited_out(false);
-        let (told_looks, told_end) = waited_out(true);
+        let (short_looks, short_took, short_end) = waited_out(false, SHORT);
+        let (long_looks, long_took, long_end) = waited_out(false, LONG);
+        let (told_looks, _, told_end) = waited_out(true, LONG);
 
         assert_eq!(
-            blind_end,
-            Waited::Ready,
+            (short_end, long_end),
+            (Waited::Ready, Waited::Ready),
             "⛔⛔⛔⛔⛔ A SURFACE THAT CANNOT SAY *WHEN* MUST STILL COME BACK. `Settling::Unknown` is \
              the honest degradation — ask again — and it is what every observation a remote driver \
              reads answers today. Read as an ABSENCE it becomes *park on the pane and look no \
              more*, and this peer's pane produces nothing at all after its first line, so the run \
              would wait out its whole patience and report that nobody came. That is the lost \
-             wakeup `Settling`'s third arm exists to make unrepresentable",
+             wakeup `Settling`'s third arm exists to make unrepresentable. short {short_end:?}, \
+             long {long_end:?}",
         );
         assert_eq!(
             told_end,
             Waited::Ready,
             "⚠⚠ THE CONTROL: the same peer over a surface that CAN say when must end the same way, \
-             or the two counts below are not comparable",
+             or the counts below are not comparable",
+        );
+        assert!(
+            short_took >= SHORT && long_took >= LONG,
+            "⚠⚠⚠ AND EACH ARM MUST REALLY HAVE WAITED OUT ITS OWN WINDOW, or *cheap* was bought by \
+             not waiting — short {short_took:?} of {SHORT:?}, long {long_took:?} of {LONG:?}",
         );
 
-        // ── the measurement item 631 will be judged against, recorded rather than bounded ──
+        // ── the claim: THIS ARM'S COST FOLLOWS THE WINDOW, which is what polling MEANS ──
         assert!(
-            blind_looks >= told_looks.saturating_mul(AT_LEAST).max(AT_LEAST),
-            "⚠⚠⚠⚠ THE TWO ARMS HAVE STOPPED BEING DIFFERENT, and that is news either way. \
-             `Unknown` cost {blind_looks} looks where the published deadline cost {told_looks}. \
-             Either a remote surface has grown a deadline — in which case register item 631 is \
-             PAID and this gate is what says so — or the published-deadline arm has regressed into \
-             polling, which the two gates above are about. Re-read both before touching this \
-             number",
+            long_looks >= short_looks.saturating_mul(GROWTH),
+            "⚠⚠⚠⚠ THE ARM A REMOTE DRIVER WALKS HAS STOPPED FOLLOWING THE WINDOW, and that is news \
+             either way. A {LONG:?} window cost {long_looks} looks where a {SHORT:?} one cost \
+             {short_looks}, and a wait that POLLS costs four times as many when the window is four \
+             times longer. Either a remote surface has grown a deadline — in which case register \
+             item 631 is PAID and this gate is what says so — or `Settling::Unknown` is being read \
+             as *nothing pending*, which is the lost wakeup above. ⚠ Register item 666: absolute \
+             look counts are the RUNNER'S speed, so the ratio is the only honest reading here",
+        );
+        assert!(
+            long_looks > told_looks,
+            "⚠⚠⚠ AND IT STILL COSTS MORE THAN THE ARM THAT IS TOLD WHEN — {long_looks} against \
+             {told_looks} over the same {LONG:?} window, on the same peer, differing in one field. \
+             This is item 631's tripwire: the day the remote surface publishes a deadline these two \
+             converge, and this line is what says so",
         );
     }
 
