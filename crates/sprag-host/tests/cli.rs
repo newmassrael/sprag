@@ -2564,6 +2564,16 @@ fn daemon_told(state: &Path, options: &[(&str, &str)]) {
 /// can be running the developer's own daemon, and a probe that counted every `sprag-term` would
 /// count theirs.
 fn sprag_term_processes(sock: &Path) -> usize {
+    sprag_term_pids(sock).len()
+}
+
+/// The pids behind [`sprag_term_processes`], because a COUNT cannot say whether the two processes
+/// you are looking at are the two you were looking at before.
+///
+/// Register item 526 needs the difference: a daemon replaced under a live loop must leave that
+/// loop's driver ALIVE — the same process, not a fresh one with the same tally — and a boot that
+/// put the run back on a second driver would keep the count right while driving one pane twice.
+fn sprag_term_pids(sock: &Path) -> Vec<u32> {
     let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
     let me = std::process::id();
     sprag_terminal::procfs::pids_named("sprag-term")
@@ -2576,7 +2586,30 @@ fn sprag_term_processes(sock: &Path) -> usize {
                     .any(|value| value == want.as_bytes())
             })
         })
-        .count()
+        .collect()
+}
+
+/// The pids of the DRIVER processes against `sock` — every `sprag-term` holding this endpoint
+/// except the daemon itself.
+///
+/// ⚠ Only honest while the daemon is ALIVE: [`daemon_pid`] finds the daemon by being nobody's
+/// child, and once it is killed its drivers are re-parented to init and answer that description
+/// too. So a caller reads this BEFORE a kill and checks the pids it got are still there after.
+fn driver_pids(sock: &Path) -> Vec<u32> {
+    let daemon = daemon_pid(sock);
+    sprag_term_pids(sock)
+        .into_iter()
+        .filter(|pid| Some(*pid) != daemon)
+        .collect()
+}
+
+/// Whether `pid` is still a live `sprag-term`.
+///
+/// ⚠ Through `procfs::pids_named` rather than `/proc/<pid>`, which is what [`kill_daemon`] reads —
+/// the question is portable and the answer should be too, and a pid that has been REUSED by some
+/// other program is not this driver coming back from the dead.
+fn still_running(pid: u32) -> bool {
+    sprag_terminal::procfs::pids_named("sprag-term").contains(&pid)
 }
 
 /// Open a session on `sock` and submit a run over its pane that **cannot finish while anybody is
@@ -3432,6 +3465,352 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
          request were both on disk, and the loop came back dead. Every brick before this one is a \
          capability nothing calls: the place crossed the log, the words its entry actions wrote \
          crossed beside them, and the boot did not pick them up. Rows: {rows:?}",
+    );
+    drop(conn);
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A DAEMON REPLACED UNDER SEVERAL INDEPENDENT LOOPS BRINGS THEM ALL BACK, AND NONE OF
+/// THEM TWICE** — register item 526, which is the *other people's work* half of item 543.
+///
+/// # ⚠⚠⚠⚠⚠ What this is about, in the owner's own words
+///
+/// *"넷이 돌면 데몬·세션도 넷이어야 승격이 되는 것 아닌가"*. Four repositories' loops share one
+/// daemon on this machine, and only ONE of them (sprag's) ever needs the binary swapped. Because a
+/// promotion is a DAEMON act, promoting sprag's build used to kill three other repositories' work —
+/// so item 526's cheap route was a second daemon, paid for with a second GUI (item 285) and a second
+/// binary copy (item 412), and the owner refused that once.
+///
+/// Item 526's own «done when» named the larger way out: *"408's residue is paid (persist the
+/// machine, not the summary) so a restart stops being a run's death and the whole reason to split
+/// disappears."* It was paid — item 543 — and item 544 then took the driver out of the daemon
+/// altogether. **This gate is what says the reason to split is actually gone**, and it is a
+/// different sentence from 543's: that one asks whether A loop comes back, this one asks whether
+/// SOMEBODY ELSE'S does when the promotion was not theirs.
+///
+/// # ⚠⚠⚠⚠ Two mechanisms could each carry it, and the gate holds BOTH ends on purpose
+///
+/// Since item 544's default moved, a loop's driver is a process of its own, so a daemon that dies
+/// does not take it with it — the driver latches and re-adopts. And independently, the boot reads
+/// the runs log and puts an unfinished run back on a driver. **Either alone would make the rows
+/// below say `running`.** Run together carelessly they are worse than either: a survivor plus a
+/// freshly spawned one is ONE PANE WITH TWO DRIVERS, which no row can show because a row
+/// deliberately cannot say which kind of driver filled it in.
+///
+/// **Measured before any of this was decided: five `sprag-term` against one socket for two loops,
+/// where three is right.** The row said `running` throughout, both times.
+///
+/// # ⚠⚠⚠⚠⚠ Which of the two the product keeps, and the fact that settles it
+///
+/// The leftover is the one that goes, and the argument is not tidiness — it is the ANSWER CHANNEL.
+/// A driver reports its outcome on the stdout pipe of the process that spawned it (`crate::drive`'s
+/// module doc: *"the parent spawned this process, so the pipe is already theirs"*), so a driver
+/// whose daemon is gone can finish hours of work that no successor will ever be able to read, while
+/// the run log goes on saying it is running. The LOG is what survives a restart, so the run comes
+/// back through the log and `put_back_inherited_runs` ends the leftover first.
+///
+/// ⚠ The residue, stated rather than hidden: whatever the loop did since its last persist is lost.
+/// That is the cost item 543 already accepted for a restart, paid here for the same reason.
+///
+/// So the process table is read on both sides of the kill:
+/// * afterwards there is exactly ONE driver per loop plus the replacement daemon — fewer means
+///   somebody's work stopped, which is the whole of item 526, and more means a pane with two;
+/// * and no pid from before is still alive — the leftovers were ENDED, not left typing.
+///
+/// ⚠ `driver_pids` is read while the first daemon is alive for the reason its own doc gives.
+///
+/// # ⚠⚠ The control is a run with no machine, and it must still come back dead
+///
+/// Without it this gate would pass against a daemon that marked everything `running` on boot —
+/// which is the failure mode 543's own control exists for, and it is not less likely here.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-promoted-under-guests-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    /// A session whose pane runs a stand-in agent that announces itself and echoes, so a loop gets
+    /// past readiness and takes real steps — a run that never stepped records no place.
+    fn loop_session(conn: &mut HostConn, name: &str) -> u64 {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(NEW_SESSION_ACTION),
+                "args": {
+                    "name": name,
+                    "cmd": ["sh", "-c",
+                            "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+                },
+            }),
+        )
+        .expect("new_session answers");
+        conn.call(
+            "scene/query",
+            json!({ "session": name, "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane")
+    }
+
+    /// Submit an `ai_loop` over `pane` in `session`, effectively unbounded so it is certainly still
+    /// going when the daemon is replaced under it.
+    fn start_loop(conn: &mut HostConn, session: &str, pane: u64, star: &str) {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": {
+                    "plugin": "ai_loop",
+                    "pane": pane,
+                    "agent": "claude",
+                    "north_star": star,
+                    "milestone": "still be running after somebody else's promotion",
+                    "reference": "register item 526",
+                    "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                    // ⚠ The stand-in paints only whole lines, so a delivery cannot be confirmed on
+                    // screen before the newline that submits it.
+                    "shows_prompt": false,
+                    "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+                },
+            }),
+        )
+        .expect("the loop is submitted");
+    }
+
+    // ── OURS: the loop whose repository is the one being promoted ────────────────────────────
+    let ours = loop_session(&mut conn, "ours");
+    start_loop(
+        &mut conn,
+        "ours",
+        ours,
+        "the repository whose build is being swapped",
+    );
+    // ── THE GUEST: somebody else's work, which did not ask for any of this ───────────────────
+    let guest = loop_session(&mut conn, "guest");
+    start_loop(&mut conn, "guest", guest, "another repository entirely");
+
+    // ⚠⚠⚠⚠⚠ **THE LOOPS' OWN DRIVERS ARE IDENTIFIED HERE, BEFORE ANYTHING ELSE IS STARTED, AND
+    // THE FIRST FORM OF THIS GATE GOT IT WRONG.** Every run gets a driver process now, the control
+    // below included — and the control's driver is SUPPOSED to die with its daemon, because a
+    // plugin that walks no statechart has nowhere to be put back. Reading the pids after the
+    // control was submitted made this gate report that death as *a promotion killed somebody
+    // else's loop*, which is a true sentence about the wrong process. The process table does not
+    // say which run a driver belongs to (`procfs` publishes parentage, not a command line), so
+    // WHEN they are read is what names them.
+    assert!(
+        wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
+        "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
+         the two loops above should be two processes of their own. Found {:?}.",
+        driver_pids(&sock),
+    );
+    let loops = driver_pids(&sock);
+
+    // ── THE CONTROL: a run whose plugin walks no statechart ──────────────────────────────────
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "control", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    let quiet = conn
+        .call(
+            "scene/query",
+            json!({ "session": "control", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the control session's pane");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "control",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": quiet,
+                "stimulus": "x",
+                "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the control run is submitted");
+    drop(conn);
+
+    // ⚠⚠ THE FILE IS FOUND BY SCANNING THIS TEST'S OWN STATE DIR — `runs_path` resolves
+    // `XDG_STATE_HOME` in the CALLING process, and this process's is the developer's.
+    let runs_dir = state.join("sprag");
+    let resumable = |want: usize| {
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
+            .any(|entry| {
+                sprag_host::load_runs(&entry.path()).is_some_and(|log| {
+                    log.runs
+                        .iter()
+                        .filter(|run| {
+                            !run.finished
+                                && run.resumable_place().is_some()
+                                && run.resumable_request().is_some()
+                        })
+                        .count()
+                        >= want
+                })
+            })
+    };
+    assert!(
+        wait_for(Duration::from_secs(90), || resumable(2)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+         and a request under {}. With fewer, the answers below are about one loop and this gate is \
+         item 543 wearing a second name.",
+        runs_dir.display(),
+    );
+    assert!(
+        wait_for(Duration::from_secs(60), || std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json"))),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no panes and no run could be put back over one",
+    );
+
+    // ⚠⚠⚠ READ WHILE THE DAEMON IS ALIVE, which is the only time `driver_pids` can tell a driver
+    // from the daemon. This is every driver, the control's included — it is the CEILING the count
+    // below is compared against, while `loops` above is the set that has to survive.
+    let before = driver_pids(&sock);
+    assert!(
+        before.len() > loops.len(),
+        "⚠⚠ THE PREMISE FAILED: the control run got no driver of its own, so the ceiling below is \
+         not the one this gate reasoned about. Loops {loops:?}, all {before:?}.",
+    );
+
+    // THE PROMOTION: outright, so nothing writes a tidy terminal state on the way out — a build
+    // swap is not a courtesy shutdown.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the replacement daemon never started serving",
+    );
+
+    // ── THE CLAIM, PART ONE: every loop is driven again, and by EXACTLY ONE process each ─────
+    //
+    // ⚠⚠⚠⚠⚠ COUNTED AS A TOTAL, NOT THROUGH `driver_pids` — the first form of this assertion used
+    // that helper and was WRONG about which process was missing. Once the first daemon is killed
+    // its leftover drivers are re-parented to init, so `daemon_pid`'s *nobody's child* rule can
+    // pick a DRIVER as the daemon; that helper's own doc says it is honest only while the daemon
+    // is alive. A total needs no such judgement: one replacement daemon, one driver per loop, and
+    // no driver for the control because a run with no machine has nowhere to be put back.
+    let after = sprag_term_pids(&sock);
+    let want = 1 + loops.len();
+    assert_eq!(
+        after.len(),
+        want,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 526: A PROMOTION LEFT THE WRONG NUMBER OF PROCESSES DRIVING. \
+         Wanted the replacement daemon and one driver for each of the {} loops, which is {want}; \
+         found {:?}. MORE means a pane with two drivers — the leftover kept typing and the boot \
+         started another beside it, which no ROW can show because a row deliberately cannot say \
+         which kind of driver filled it in. FEWER means somebody's loop is not being driven at \
+         all, which is the promotion killing other people's work that this item was filed for.",
+        loops.len(),
+        after,
+    );
+
+    // ── THE CLAIM, PART TWO: and the leftovers are GONE rather than still typing ─────────────
+    //
+    // ⚠⚠⚠⚠⚠ **THIS IS A DECISION, NOT AN ACCIDENT, AND IT COST THIS ROUND A RED TO TAKE.** The
+    // first form of this gate asserted the opposite — that the pids seen before the kill were all
+    // still alive after — because item 544's stage 1 made a driver outlive its daemon on purpose.
+    // What settles it is the ANSWER CHANNEL: a driver reports its outcome on the stdout pipe of
+    // the process that spawned it, so a leftover can finish hours of work that no successor can
+    // ever read, while the run log — which does survive — says the run is still going. So the run
+    // comes back through the log and the leftover process is ended by the boot.
+    //
+    // ⚠⚠ The residue, stated rather than hidden: whatever the loop did since its last persist is
+    // lost. That is the same cost register item 543 already accepted for a restart, and it is
+    // paid here for the same reason.
+    let alive: Vec<u32> = loops
+        .iter()
+        .copied()
+        .filter(|pid| still_running(*pid))
+        .collect();
+    assert!(
+        alive.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 526: A DRIVER THE PREDECESSOR LEFT IS STILL TYPING. Driver(s) \
+         {alive:?} of {loops:?} outlived the daemon that spawned them and were not ended by the \
+         boot, so the agent they are driving now has two processes talking to it and the older \
+         one's outcome goes to a pipe nobody holds. `put_back_inherited_runs` is where this is \
+         supposed to be decided.",
+    );
+
+    // ── AND THE ROWS AGREE, in both directions ───────────────────────────────────────────────
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let rows_of = |conn: &mut HostConn, session: &str| {
+        conn.call(
+            "scene/query",
+            json!({
+                "session": session,
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            }),
+        )
+        .expect("the runs slot answers")
+        .as_array()
+        .expect("a list of runs")
+        .clone()
+    };
+    let rows = rows_of(&mut conn, "guest");
+    let interrupted = |rows: &[Value], id: u64| {
+        rows.iter()
+            .find(|run| run["id"] == json!(id))
+            .unwrap_or_else(|| panic!("run {id} survived the promotion as a row: {rows:?}"))["state"]
+            ["status"]
+            == json!("interrupted")
+    };
+    assert!(
+        !interrupted(&rows, 1),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 526: the GUEST's loop came back dead from a promotion it had no \
+         part in. Rows: {rows:?}",
+    );
+    assert!(
+        !interrupted(&rows, 0),
+        "and so did ours, which means this is item 543 regressing rather than 526: {rows:?}",
+    );
+    assert!(
+        interrupted(&rows, 2),
+        "⚠⚠⚠ THE CONTROL FAILED: a run whose plugin walks no statechart came back alive, so these \
+         rows would say `running` whatever had happened to the work. Rows: {rows:?}",
     );
     drop(conn);
     drop(guard);

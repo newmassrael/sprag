@@ -381,6 +381,26 @@ pub trait RunHandle: Send + Sync {
 
     /// Whether a driver of this run is still uncollected — what a shutdown's bounded join waits on.
     fn outstanding(&self) -> bool;
+
+    /// **THE PROCESS DRIVING THIS RUN, WHEN THE DRIVER IS ONE** — register item 526, and the field
+    /// that makes [`RunRegistry`] a directory of PROCESSES rather than a directory that says it is.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a successor daemon cannot do without it
+    ///
+    /// Since register item 544's default moved, a driver is a process of its own and does not die
+    /// with the daemon that started it — item 544's stage 1 built that on purpose, so a promotion
+    /// does not stop other people's work mid-step. But the boot ALSO reads the run log and puts an
+    /// unfinished run back on a driver (item 543), and those two together were **measured on
+    /// 2026-08-25 to leave two processes typing at one agent**: five `sprag-term` against one
+    /// socket where three was right. No ROW can show that — a row deliberately cannot say which
+    /// kind of driver filled it in — so without this the successor has no way to ask.
+    ///
+    /// ⚠⚠ [`None`] for a run driven on a thread, for a run that is over, and for a log written
+    /// before this field existed. All three mean *there is no process to ask about*, and a boot
+    /// reads them the same way.
+    fn driver_pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// **WHAT A PERSON HAS SAID TO ONE RUN** — the daemon's record of it, and the half of a
@@ -636,19 +656,27 @@ pub struct ProcessRun {
     orders: Orders,
     /// The thread collecting the driver — see this type's note on why it is not a driver.
     handle: Option<JoinHandle<()>>,
+    /// **WHERE THE DRIVER IS** — see [`RunHandle::driver_pid`], which is where the reason lives.
+    pid: u32,
 }
 
 impl ProcessRun {
-    /// Take the [`Orders`] this daemon will publish and the thread collecting the driver.
+    /// Take the [`Orders`] this daemon will publish, the thread collecting the driver, and the pid
+    /// of the driver itself.
     ///
     /// ⚠ [`ThreadRun::new`]'s argument for taking the record whole rather than its parts, and it
     /// bites harder here: the announcer inside it is the ONLY way an order reaches this run's
     /// driver at all.
+    ///
+    /// ⚠⚠ The PID is taken beside the collector rather than read off it, because a `JoinHandle`
+    /// knows nothing about the child it is waiting on — the only moment both facts are in one hand
+    /// is the spawn, and this constructor is the shape that says so.
     #[must_use]
-    pub fn new(orders: Orders, handle: JoinHandle<()>) -> Self {
+    pub fn new(orders: Orders, handle: JoinHandle<()>, pid: u32) -> Self {
         Self {
             orders,
             handle: Some(handle),
+            pid,
         }
     }
 }
@@ -688,6 +716,10 @@ impl RunHandle for ProcessRun {
 
     fn outstanding(&self) -> bool {
         self.handle.is_some()
+    }
+
+    fn driver_pid(&self) -> Option<u32> {
+        Some(self.pid)
     }
 }
 
@@ -732,6 +764,16 @@ pub struct EndedRun {
     /// [`Canceller::Shutdown`] — a daemon sweeping runs on its way out — and a reader must be able
     /// to tell *nobody decided this* from *nobody wrote it down*.
     cancelled_by: Option<Canceller>,
+    /// **THE PROCESS THE DEAD DAEMON HAD DRIVING IT**, as the log recorded it — register item 526,
+    /// and the one field in here that may describe something still ALIVE.
+    ///
+    /// ⚠⚠⚠ That is not a contradiction with this type's name. *No driver LEFT* is a statement about
+    /// what THIS daemon holds: it inherited a row and holds no channel to anything. A driver
+    /// process outliving the daemon that spawned it is exactly what register item 544's stage 1
+    /// built — and it is why a successor has to be able to ask, because that process is still
+    /// typing at somebody's agent and its ending can no longer be read by anyone (its outcome
+    /// travels on the pipe of a parent that is gone).
+    driver: Option<u32>,
 }
 
 impl EndedRun {
@@ -740,10 +782,15 @@ impl EndedRun {
     /// ⚠ Named rather than a struct literal at the call site: `EndedRun { stood_down: false }`
     /// reads as a decision somebody took, and these are the values a restore may not guess at.
     #[must_use]
-    pub const fn restored(stood_down: bool, cancelled_by: Option<Canceller>) -> Self {
+    pub const fn restored(
+        stood_down: bool,
+        cancelled_by: Option<Canceller>,
+        driver: Option<u32>,
+    ) -> Self {
         Self {
             stood_down,
             cancelled_by,
+            driver,
         }
     }
 }
@@ -777,6 +824,10 @@ impl RunHandle for EndedRun {
 
     fn outstanding(&self) -> bool {
         false
+    }
+
+    fn driver_pid(&self) -> Option<u32> {
+        self.driver
     }
 }
 
@@ -1022,6 +1073,14 @@ pub struct InheritedRun {
     /// over would be measured against a ceiling nobody set. What survives the restart whole is the
     /// run's place, which is the thing the work is actually made of.
     pub progress: ProgressCell,
+    /// **THE PROCESS THE DEAD DAEMON HAD DRIVING IT, IF THE LOG RECORDED ONE** — register item 526.
+    ///
+    /// ⚠⚠⚠ The boot has to END this before it starts a driver of its own, and the reason is not
+    /// tidiness: a driver that outlived its daemon (item 544's stage 1) goes on typing at the
+    /// agent, while its OUTCOME travels on the stdout pipe of a parent that is gone — so it can
+    /// finish work nobody will ever be able to read. The run log is the channel that survives a
+    /// restart, which is why the run comes back through the log and the leftover process does not.
+    pub driver: Option<u32>,
 }
 
 /// ONE RUN AS IT SURVIVES ITS DAEMON — the durable mirror of a live run record.
@@ -1067,6 +1126,19 @@ pub struct PersistedRun {
     /// the same trade the wire's own *added answer key* rule declines.
     #[serde(default)]
     pub build: Option<String>,
+    /// **WHICH PROCESS WAS DRIVING IT** — register item 526, [`RunHandle::driver_pid`]'s value put
+    /// where a successor daemon can read it.
+    ///
+    /// ⚠⚠⚠⚠⚠ **A SUCCESSOR MUST NOT START A SECOND DRIVER OVER A PANE THAT ALREADY HAS ONE**, and
+    /// before this field it had no way to tell. Measured 2026-08-25: a daemon replaced under two
+    /// live loops left **five** `sprag-term` against one socket where three was right — the two
+    /// drivers that outlived it (item 544's stage 1, on purpose) plus two the boot spawned to put
+    /// the same two runs back (item 543). Two processes typing at one agent, invisible to every row.
+    ///
+    /// ⚠⚠ [`None`] for a thread-driven run and for a log written before this field existed —
+    /// [`RUN_LOG_VERSION`] does not move for it, on [`build`](Self::build)'s argument.
+    #[serde(default)]
+    pub driver: Option<u32>,
     /// **WHICH CONVERSATION ASKED FOR IT** — `RunRecord::opened_by_session`, and the ONE piece of
     /// provenance that means anything to a successor daemon.
     ///
@@ -1532,6 +1604,7 @@ impl RunRegistry {
                     place,
                     request: record.request.clone()?,
                     progress: Arc::clone(&record.progress),
+                    driver: record.run.driver_pid(),
                 })
             })
             .collect()
@@ -1833,6 +1906,12 @@ impl RunRegistry {
                         ceiling,
                         output,
                         build: run.build.clone(),
+                        // ⚠⚠⚠ ASKED OF THE HANDLE, NOT OF THE SNAPSHOT — register item 526. The
+                        // snapshot is what a READER is told about a run, and where its driver lives
+                        // is deliberately not part of that (`RUN_DRIVER_PROCESS`'s own promise is
+                        // that a request means the same thing either way). This is a fact the
+                        // directory keeps for its SUCCESSOR, and the handle is what holds it.
+                        driver: record.run.driver_pid(),
                         opened_by_session: run.opened_by_session.clone(),
                         // ⚠⚠⚠ WHERE IT WAS, AND WHOSE WORD THAT IS — register items 543 and 544,
                         // written as a PAIR because either alone misleads. The fingerprint is
@@ -2080,6 +2159,10 @@ impl RunRegistry {
                     // restart would be unanswerable: `Shutdown` is raised by a daemon that then
                     // exits, so the only daemon left to be asked is this one.
                     saved.cancelled_by,
+                    // ⚠⚠⚠ ITEM 526: the process the dead daemon had driving it, which may still be
+                    // ALIVE — a driver outlives the daemon that spawned it (item 544's stage 1),
+                    // and the boot has to know before it starts a second one over the same pane.
+                    saved.driver,
                 )),
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
@@ -2913,7 +2996,7 @@ mod tests {
                 outcome: Box::new(an_outcome()),
                 output: None,
             })),
-            run: Box::new(EndedRun::restored(false, None)),
+            run: Box::new(EndedRun::restored(false, None, None)),
             progress,
         });
 
@@ -2995,7 +3078,7 @@ mod tests {
                 }),
                 output: None,
             })),
-            run: Box::new(EndedRun::restored(false, None)),
+            run: Box::new(EndedRun::restored(false, None, None)),
             progress,
         });
         // ⚠⚠⚠ **NO ORDER IS GIVEN HERE, AND NONE IS NEEDED.** The assertions below call
@@ -3076,6 +3159,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                driver: None,
                 opened_by_session: Some(A_CONVERSATION.to_owned()),
                 at: None,
                 document: None,
@@ -3312,6 +3396,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            driver: None,
             opened_by_session: None,
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
@@ -3413,6 +3498,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            driver: None,
             opened_by_session: None,
             at: None,
             document: document.map(str::to_owned),
@@ -3780,6 +3866,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                driver: None,
                 opened_by_session: None,
                 at: None,
                 document: None,
@@ -3904,7 +3991,7 @@ mod tests {
                 })),
                 // ⚠ No worker: what this reads is what the registry WRITES, and a thread would only
                 // add a join for the drop to wait out.
-                run: Box::new(EndedRun::restored(false, None)),
+                run: Box::new(EndedRun::restored(false, None, None)),
                 progress,
             });
             let bytes = serde_json::to_string(&registry.persistable()).expect("a log serialises");

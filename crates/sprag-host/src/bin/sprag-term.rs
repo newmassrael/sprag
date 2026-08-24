@@ -563,6 +563,33 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 /// neither: `pool_holding` answers which window's pool a pane is sitting in, and that is the pool a
 /// pane access must speak. A pane the restore did not bring back has no pool, and that is the
 /// honest reason not to resume the run that drove it.
+/// Whether `pid` is a `sprag-term` DRIVER left over from a predecessor daemon on `endpoint` —
+/// register item 526.
+///
+/// # ⚠⚠⚠⚠⚠ Three conditions, and dropping any one of them makes this dangerous
+///
+/// It ends what it identifies, so it may not identify anything else. **The name** keeps it from
+/// signalling whatever program has since been given a recycled pid. **The endpoint, read from the
+/// process's own environment**, is what makes it OURS: sockets split the world (register item 526's
+/// own reasoning), so a `sprag-term` holding a different one belongs to a different daemon and a
+/// different person's panes — `daemon_pid`'s note in the `cli` suite records the round where a
+/// probe that skipped this SIGKILLed a developer's own terminal. And **not this process**, because
+/// this daemon holds that endpoint too.
+///
+/// ⚠ It cannot be a live daemon: this boot only reaches it having found the socket free to take.
+fn leftover_driver(pid: u32, endpoint: &std::path::Path) -> bool {
+    if pid == std::process::id() {
+        return false;
+    }
+    let want = format!("SPRAG_HOST_RPC_SOCK={}", endpoint.display());
+    sprag_terminal::procfs::pids_named("sprag-term").contains(&pid)
+        && sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
+            environ
+                .split(|byte| *byte == 0)
+                .any(|value| value == want.as_bytes())
+        })
+}
+
 fn put_back_inherited_runs(
     host: &Host,
     runs: &Arc<Mutex<RunRegistry>>,
@@ -578,7 +605,41 @@ fn put_back_inherited_runs(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .inherited();
+    let endpoint = sprag_rpc::socket_path(HOST_SOCKET);
     for run in inherited {
+        // ⛔⛔⛔⛔⛔ **FIRST, END WHAT THE PREDECESSOR LEFT DRIVING THIS RUN** — register item 526,
+        // and it is the difference between a promotion and two processes typing at one agent.
+        //
+        // A driver is a process of its own (register item 544) and outliving its daemon is a
+        // property that item's stage 1 built ON PURPOSE, so somebody else's loop is not stopped
+        // mid-step by a build swap that was not theirs. What that does NOT survive is the run's
+        // ANSWER: a driver reports its outcome on the stdout pipe of the process that spawned it,
+        // and that process is gone — so a leftover driver can finish hours of work that nobody
+        // will ever be able to read, while this boot puts the same run back on a second driver
+        // beside it. **Measured 2026-08-25 before this existed: five `sprag-term` against one
+        // socket for two loops, where three is right.**
+        //
+        // ⚠⚠ So the LOG is the channel that survives a restart, and the run comes back through it.
+        // The leftover process does not: it is ended here, deliberately and not as tidying.
+        if let Some(pid) = run.driver
+            && leftover_driver(pid, &endpoint)
+        {
+            tracing::warn!(
+                target: "sprag_host::runs",
+                run = run.id.0,
+                driver = pid,
+                "ending the driver process this daemon's predecessor left behind, so the run is \
+                 put back on one driver rather than two",
+            );
+            // SAFETY: `pid` was recorded by a predecessor of THIS daemon as this run's driver, and
+            // `leftover_driver` has just confirmed it is a live `sprag-term` holding this daemon's
+            // own endpoint in its environment — which is what makes it ours to end.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until && leftover_driver(pid, &endpoint) {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
         let Some(pane) = sprag_host::plugins::pane_named(&run.request) else {
             tracing::warn!(
                 target: "sprag_host::runs",

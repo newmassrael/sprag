@@ -1695,6 +1695,10 @@ impl PluginsExternal {
                 "this daemon could not start a driver process for the run: {why}"
             ))
         })?;
+        // ⚠⚠⚠ READ BEFORE THE CHILD IS HANDED TO THE COLLECTOR, because this is the only moment it
+        // is in one hand — register item 526. A successor daemon reads it out of the run log to
+        // find out whether this process is still typing at the pane before it starts another.
+        let pid = child.id();
         let state = Arc::new(Mutex::new(RunState::Running));
         let collector = collect_driver(child, id, Arc::clone(&state), self.on_run_end.clone());
         Ok((
@@ -1715,6 +1719,7 @@ impl PluginsExternal {
                     self.on_run_ordered.clone(),
                 ),
                 collector,
+                pid,
             )),
         ))
     }
@@ -4182,6 +4187,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                driver: None,
                 opened_by_session: Some(RESUMED.to_owned()),
                 at: None,
                 document: None,
@@ -4321,6 +4327,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                driver: None,
                 opened_by_session: None,
                 at: None,
                 document: None,
@@ -8146,6 +8153,7 @@ mod tests {
                     ceiling: None,
                     output: None,
                     build: None,
+                    driver: None,
                     opened_by_session: None,
                     at: None,
                     document: document.map(str::to_owned),
@@ -8535,7 +8543,7 @@ mod tests {
                 opened_by: None,
                 opened_by_session: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
-                run: Box::new(crate::runs::EndedRun::restored(false, None)),
+                run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
                 progress: Arc::clone(&cell),
             })
         };
@@ -8808,7 +8816,7 @@ mod tests {
                 opened_by: None,
                 opened_by_session: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
-                run: Box::new(crate::runs::EndedRun::restored(false, None)),
+                run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
                 progress: Arc::clone(&cell),
             })
         };
