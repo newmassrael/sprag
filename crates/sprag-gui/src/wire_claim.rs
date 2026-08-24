@@ -383,7 +383,13 @@ pub(crate) mod grammar {
         // without ending the pane it was given. **A window does not stop a pane's job** — it draws
         // panes and it types into them — so this pin moves for a ninth cause it takes no part in.
         // Nine for nine.
-        41,
+        // ⚠⚠⚠⚠ THE TENTH, and it is a READ the window is on neither side of: register item 656
+        // added the `raw_output` pane slot, which answers what a pane's child WROTE before the grid
+        // touched it, so a run driven from outside the daemon can parse a structured reply instead
+        // of publishing an empty one. **A window renders the grid — it is the party the source
+        // bytes are needed to route AROUND** — so this pin moves for a tenth cause it takes no part
+        // in. Ten for ten, and the eighth is still the only one this surface authors.
+        42,
         &[
             (
                 "the command palette",

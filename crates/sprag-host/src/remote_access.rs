@@ -40,9 +40,28 @@
 //!   is neither a read nor a keystroke: [`Driver::stop_the_work`](sprag_plugin::Driver)'s whole
 //!   reach, on the two endings that can land while a step is blocked.
 //!
-//! ⚠⚠⚠⚠ **ONE REMAINS [`None`]**: `raw_capture`. That absence is safe by its own surface's
-//! documentation, it is `None` because this build cannot ask that question over the wire yet rather
-//! than because a remote driver does not want it, and its consumer already handles it.
+//! * `raw_capture` — WHAT A PANE'S CHILD WROTE, before the grid touched it. Register item 656, and
+//!   **NONE REMAIN**: this was the last of the nine sub-surfaces item 557 measured, and the third
+//!   of them whose absence turned out not to be safe.
+//!
+//! ⚠⚠⚠⚠⚠ **AND ITS ABSENCE WAS CALLED SAFE HERE UNTIL IT WAS COUNTED — register item 656.** This
+//! paragraph used to read *that absence is safe by its own surface's documentation … and its
+//! consumer already handles it*. The consumer does handle it, and what handling means is
+//! `unwrap_or_default()`: empty bytes, which parse as no envelope, which land in the raw-text arm,
+//! whose raw text is the empty string. So a `claude -p --output-format json` turn driven from
+//! another process published a reply of `""`, a spend of `Cost::Tokens(0)` and no session to
+//! resume, while the same turn driven in-process published the model's text, its real billed tokens
+//! and its session. **Nobody is told, because every one of those is a value the caller reads rather
+//! than an error it handles.** ⚠⚠ And the zero is the sharper half: `Guardrails::max_cost` binds
+//! when the accumulated spend REACHES it, so a dialogue driven from another process could not reach
+//! any ceiling it was given — the guardrail was not merely unreported, it could not fire.
+//!
+//! ⚠⚠⚠ **The lesson is the one item 653 paid for, at the address that looked safest**: an absence
+//! is safe when the CONSUMER of the missing answer degrades, and *degrades* has to be measured at
+//! the consumer rather than read off the surface's own documentation. This surface's documentation
+//! was accurate — a truncated or unparsable capture really does degrade to the raw text — and the
+//! degradation it describes assumes the bytes EXIST. With no capture at all there is no raw text to
+//! fall back to, so the graceful path degrades to nothing at all.
 //!
 //! ⚠⚠⚠⚠⚠ **AND `job_control` WAS SAFE TOO, WHICH IS WHY IT SURVIVED THREE ROUNDS OF THIS LIST —
 //! register item 654.** Unlike `hands` below, its `None` told nobody anything false: a run that
@@ -106,12 +125,12 @@ use crate::wire::{
     FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
     KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
-    PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT,
-    SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY,
-    SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY,
-    STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY, STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD,
-    agent_slot_for, hands_of, lines_since_at, mux_action_path, pane_input_path, recent_input_has,
-    refusal, unknown_action, unknown_slot,
+    PANE_RAW_OUTPUT_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION,
+    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION,
+    SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, STOP_JOB_ACTION,
+    STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY, STOP_JOB_SIGNAL_KEY,
+    STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for, hands_of, lines_since_at, mux_action_path,
+    pane_input_path, raw_output_of, recent_input_has, refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -877,6 +896,29 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **THE SOURCE BYTES A PANE'S CHILD WROTE** — register item 656, and the last of the nine
+    /// sub-surfaces item 557 measured to answer this trait's default `None`.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The absence this replaces was the FALSE kind, and the reader that shows it is a decoder
+    ///
+    /// A `None` here means *this HOST captures nothing* — a sentence about the deployment, and
+    /// false of a daemon that owns the pseudoterminal and every byte through it. What it cost is
+    /// not an error anybody sees: `sprag_plugin`'s dialogue decoder `unwrap_or_default()`s the
+    /// capture, and empty bytes parse as no envelope, so a `--output-format json` turn driven from
+    /// another process published an EMPTY reply and a spend of
+    /// [`Cost::Tokens(0)`](sprag_plugin::Cost) while the same turn in-process published the model's
+    /// text and its real billed tokens. ⚠⚠ A spend of zero never reaches
+    /// [`Guardrails::max_cost`](sprag_plugin::Guardrails), so the ceiling on such a run did not
+    /// merely go unreported — it could not bind.
+    ///
+    /// ⚠ Always `Some`, on [`hands`](PaneAccess::hands)'s terms: a daemon serving this wire
+    /// captures at every pane it holds, and one too old to publish the address cannot be reached at
+    /// all — the handshake refuses a protocol that is not this one. The per-pane `None` below
+    /// carries the absence that is really about a pane.
+    fn raw_capture(&self) -> Option<&dyn sprag_plugin::PaneRawCapture> {
+        Some(self)
+    }
+
     /// **WHAT A PANE'S TERMINAL DOES WITH WHAT IS WRITTEN INTO IT** — register item 557.
     ///
     /// ⚠ Always `Some`, and the per-pane `None`s carry the real absence: *this host could not read
@@ -1342,6 +1384,27 @@ impl PaneHands for RemotePaneAccess {
     /// this whole address exists to stop a driver reaching by accident.
     fn pane_hands(&self, id: PaneId) -> Option<Hands> {
         hands_of(&self.read_pane(id, PANE_HANDS_SLOT)?)
+    }
+}
+
+/// **WHAT A PANE'S CHILD WROTE, READ OVER THE SOCKET** — register item 656, and the read on this
+/// surface that is deliberately NOT about the screen.
+///
+/// A structured reply is one long logical line; the grid breaks it at every wrap and trims the
+/// trailing space off each row, and neither is reversible. So the address this reads is the only
+/// one whose answer a parser can use, and every screen read beside it would hand back an envelope
+/// that no longer parses.
+impl sprag_plugin::PaneRawCapture for RemotePaneAccess {
+    /// The capture, or [`None`] for a pane this daemon does not hold.
+    ///
+    /// ⚠⚠⚠ **AND `None` FOR AN ANSWER THIS BUILD CANNOT READ, WHICH IS NOT THE SAME AS EMPTY.**
+    /// [`raw_output_of`] refuses a value that is not the object it expects rather than defaulting
+    /// its keys: fabricated empty bytes are the sentence *this child wrote nothing*, and a
+    /// fabricated `truncated: false` is *and that is all of it*. ⚠ The one consumer collapses this
+    /// `None` into empty bytes anyway — that is its documented degradation — which is why the
+    /// protocol number, and not this arm, is what keeps a driver off a daemon that cannot answer.
+    fn pane_raw_output(&self, id: PaneId) -> Option<sprag_terminal::RawOutput> {
+        raw_output_of(&self.read_pane(id, PANE_RAW_OUTPUT_SLOT)?)
     }
 }
 

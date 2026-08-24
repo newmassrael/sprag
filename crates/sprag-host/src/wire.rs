@@ -583,6 +583,99 @@ pub fn hands_of(value: &Value) -> Option<sprag_terminal::Hands> {
     ))
 }
 
+/// The pane-input external query slot: **THE SOURCE BYTES THIS PANE'S CHILD WROTE**, before the
+/// emulator rendered any of them — [`RawOutput`](sprag_terminal::RawOutput) as
+/// `{bytes: "<base64>", truncated: bool}`. Register item 656.
+///
+/// # ⚠⚠⚠⚠⚠ Why no rendered address can answer this, and why its absence was a FALSE ANSWER
+///
+/// [`FULL_LINES_SLOT`] answers what the pane SAYS; this answers what its child WROTE, and the two
+/// differ by everything the grid does on the way: it breaks a long logical line at each wrap,
+/// trailing-trims every row, and strips the control bytes. None of that is reversible, so a
+/// structured envelope — a `claude -p --output-format json` reply, one long logical line — cannot
+/// be reconstructed from any screen read. `sprag_plugin`'s dialogue decoder says exactly that in
+/// its own words and routes around the grid for it.
+///
+/// A driver that could not ask reached that decoder's `unwrap_or_default()` instead, and **empty
+/// bytes are not an error anybody handles**: they parse as no envelope, land in the raw-text arm,
+/// and publish a turn whose reply is the EMPTY STRING and whose spend is
+/// [`Cost::Tokens(0)`](sprag_plugin::Cost). The in-process half of the same product publishes the
+/// model's text, its real billed tokens and the session to resume. ⚠⚠ And a spend of zero is worse
+/// than a lost number: [`Guardrails::max_cost`](sprag_plugin::Guardrails) binds when the
+/// accumulated cost REACHES it, so a dialogue driven from another process could never reach any
+/// ceiling it was given. See [`sprag_rpc::WIRE_PROTOCOL`]'s entry for this bump.
+///
+/// # ⚠⚠ Read ON DEMAND, never from a poll
+///
+/// The capture is bounded by `RAW_CAPTURE_CAP` (256 KiB) and rides base64, so one read can be a
+/// third of a megabyte. That is [`IMAGE_DATA_FIELD`]'s rule — a payload this size belongs at an
+/// address somebody asks for and never in the per-poll panes summary — and it fits what the one
+/// consumer does: a dialogue asks ONCE, at the end of a turn, about a per-turn pane whose child has
+/// exited.
+///
+/// ⚠ **A pane the daemon does not hold has no surface at this path at all**, which is the `None`
+/// [`PaneRawCapture::pane_raw_output`](sprag_plugin::PaneRawCapture::pane_raw_output) documents. A
+/// pane it does hold always has an answer, and a child that has printed nothing has an EMPTY one —
+/// this slot is never `null`, for [`PANE_HANDS_SLOT`]'s reason at another address.
+pub const PANE_RAW_OUTPUT_SLOT: &str = "raw_output";
+
+/// The [`PANE_RAW_OUTPUT_SLOT`] key carrying the captured bytes, **base64**.
+///
+/// ⚠⚠ Base64 rather than a JSON string, and that is not a size decision: this is the child's SOURCE
+/// stream, which carries escape sequences and can be cut mid-UTF-8 at the cap. A JSON string cannot
+/// hold those bytes, and the lossy replacement that would make it fit is the corruption this whole
+/// address exists to route around.
+pub const RAW_OUTPUT_BYTES_KEY: &str = "bytes";
+
+/// The [`PANE_RAW_OUTPUT_SLOT`] key carrying **whether the capture stopped at its cap** — the bytes
+/// are then a prefix of what the child wrote rather than the whole of it.
+///
+/// ⚠ Carried rather than inferred from the length: the cap is the DAEMON's constant, and a reader
+/// deciding this against a copy of it would be re-deriving a fact its peer already holds.
+pub const RAW_OUTPUT_TRUNCATED_KEY: &str = "truncated";
+
+/// **THE ONE PLACE THIS OBJECT IS SPELLED** — [`RawOutput`](sprag_terminal::RawOutput) as the
+/// daemon serves it at [`PANE_RAW_OUTPUT_SLOT`]. Its reader [`raw_output_of`] sits directly below
+/// it and a gate asserts the round trip, on [`hands_json`]'s rule: two spellings of one object is
+/// the defect this workspace has paid for at every encoder documented as some decoder's twin.
+#[must_use]
+pub fn raw_output_json(raw: &sprag_terminal::RawOutput) -> Value {
+    use base64::Engine as _;
+    let mut object = Map::new();
+    object.insert(
+        RAW_OUTPUT_BYTES_KEY.to_owned(),
+        Value::from(base64::engine::general_purpose::STANDARD.encode(&raw.bytes)),
+    );
+    object.insert(
+        RAW_OUTPUT_TRUNCATED_KEY.to_owned(),
+        Value::from(raw.truncated),
+    );
+    Value::Object(object)
+}
+
+/// **THE ONE READER OF [`raw_output_json`]** — the capture a remote surface takes off the wire.
+///
+/// `None` where the value is not that object at all: a daemon that does not serve this address, a
+/// pane it does not hold, a reply of some other shape, or bytes that are not base64.
+///
+/// ⚠⚠⚠ **A MISSING KEY IS NOT A CHEAP DEFAULT HERE**, which is [`hands_of`]'s rule at a second
+/// address. An absent `bytes` read as empty is the sentence *this child wrote nothing*, and an
+/// absent `truncated` read as `false` is the sentence *and that is all of it* — the two claims this
+/// address exists to stop a driver reaching by accident. An answer this cannot read whole is an
+/// answer it declines to have.
+#[must_use]
+pub fn raw_output_of(value: &Value) -> Option<sprag_terminal::RawOutput> {
+    use base64::Engine as _;
+    let object = value.as_object()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(object.get(RAW_OUTPUT_BYTES_KEY)?.as_str()?)
+        .ok()?;
+    Some(sprag_terminal::RawOutput {
+        bytes,
+        truncated: object.get(RAW_OUTPUT_TRUNCATED_KEY)?.as_bool()?,
+    })
+}
+
 /// The arguments of [`LINES_SINCE_FIELD`] — the CURSOR a reader last held. `Open`, for
 /// [`FIND_ARGS`]'s reason one step along: a cursor is a number the reader carries, and a value ahead
 /// of what the pane has produced is answerable (it yields nothing) rather than out of range.
@@ -1029,6 +1122,13 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // that could not ask concluded *nobody has ever touched this pane* and typed over them — not a
     // degradation but a wrong answer, which is why this one moved the protocol number.
     SchemaField::new(PANE_HANDS_SLOT, "object"),
+    // ⚠⚠⚠⚠⚠ Register item 656 — WHAT THIS PANE'S CHILD WROTE, before the grid touched it. Every
+    // other read on this surface answers about the RENDERING; a structured envelope survives none
+    // of it (a wrap becomes a newline, a trailing space is trimmed away), so the one reader that
+    // parses machine output has to have the source. A driver that could not ask did not lose the
+    // reply — it published an EMPTY one and a spend of zero, which is a ceiling that can never
+    // bind. Not a degradation, which is why this one moved the protocol number.
+    SchemaField::new(PANE_RAW_OUTPUT_SLOT, "object"),
     // ⚠⚠⚠⚠⚠ Register item 557 — WHAT THIS PANE HAS SAID SINCE A READER'S CURSOR. Every other read
     // on this surface answers about the pane's WHOLE output or its CURRENT screen; a relay needs
     // *what is new*, and needs to be told when a gap was evicted underneath it (a silent gap and a
@@ -7432,6 +7532,82 @@ mod tests {
         );
     }
 
+    /// **THE RAW-OUTPUT OBJECT SURVIVES ITS OWN ROUND TRIP, BYTE FOR BYTE, AND AN UNREADABLE ONE IS
+    /// NOT EMPTY** — register item 656, and [`hands_json`]'s pairing rule at a second address.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The payload is chosen to fail, not to pass
+    ///
+    /// The bytes here are what the grid would eat and what a JSON string cannot hold: an escape
+    /// sequence, a `\n` inside the payload, trailing spaces, and a byte that is not valid UTF-8.
+    /// A carrier that stringified the capture would come back with `U+FFFD` where the last byte was
+    /// and would still look like a working round trip against ASCII — which is the shape of the
+    /// corruption this whole address exists to route around, so it is the shape the gate carries.
+    ///
+    /// # ⚠⚠⚠ And the second half is the one with a defect behind it
+    ///
+    /// A decoder that defaulted a missing `bytes` to empty would say *this child wrote nothing*,
+    /// and one that defaulted a missing `truncated` to `false` would say *and that is all of it*.
+    /// Both are sentences about a daemon that never spoke, which is exactly what the consumer's
+    /// `unwrap_or_default()` cannot tell apart — so this decoder declines an answer it cannot read
+    /// whole, and the four arms below are the four ways it can fail to.
+    #[test]
+    fn the_raw_output_object_is_read_back_byte_for_byte_and_an_unreadable_one_is_not_empty() {
+        let raw = sprag_terminal::RawOutput {
+            // ⚠ `0xFF` is not valid UTF-8 in any position: a string carrier replaces it and the
+            // assertion below is the only thing that would notice.
+            bytes: vec![
+                0x1b, b'[', b'0', b'm', b'{', b'"', b'r', b'"', b':', b'1', b'}', b'\n', b' ',
+                b' ', 0xFF,
+            ],
+            truncated: false,
+        };
+        let wire = raw_output_json(&raw);
+
+        assert_eq!(
+            raw_output_of(&wire),
+            Some(raw.clone()),
+            "⚠⚠⚠ the only reader of this object must get back exactly what the only writer put in \
+             — and «exactly» is the whole address: a capture that arrives changed is the defect \
+             wearing the fix's name, because an envelope the transport corrupted fails to parse in \
+             the same silence as one the grid corrupted",
+        );
+
+        // The truncated flag travels as itself, not as something inferred from a length here.
+        let capped = sprag_terminal::RawOutput {
+            bytes: b"{\"r\"".to_vec(),
+            truncated: true,
+        };
+        assert_eq!(raw_output_of(&raw_output_json(&capped)), Some(capped));
+
+        // ⚠ The four unreadable shapes, each `None` rather than a fabricated empty capture.
+        assert_eq!(
+            raw_output_of(&serde_json::Value::Null),
+            None,
+            "not an object"
+        );
+        assert_eq!(
+            raw_output_of(&serde_json::json!({ RAW_OUTPUT_TRUNCATED_KEY: false })),
+            None,
+            "⛔⛔ A CAPTURE WITH NO BYTES KEY IS NOT AN EMPTY CAPTURE: reading it as empty tells a \
+             dialogue its peer said nothing, on the strength of a daemon that never said so",
+        );
+        assert_eq!(
+            raw_output_of(&serde_json::json!({ RAW_OUTPUT_BYTES_KEY: "" })),
+            None,
+            "⛔⛔ AND A MISSING `truncated` IS NOT `false`: that word claims the bytes are the \
+             WHOLE of what the child wrote, which is a promise no absent key can make",
+        );
+        assert_eq!(
+            raw_output_of(&serde_json::json!({
+                RAW_OUTPUT_BYTES_KEY: "not base64!!",
+                RAW_OUTPUT_TRUNCATED_KEY: false,
+            })),
+            None,
+            "bytes this build cannot decode are bytes it does not have, and handing back the empty \
+             capture instead is the same false sentence two arms up",
+        );
+    }
+
     #[test]
     fn the_cells_family_declares_the_wire_words_it_uses() {
         // The template IS the definition; pin it verbatim.
@@ -9026,7 +9202,11 @@ mod tests {
             // (`stop`, `pgid`, `job`) are untouched. The `Unstopped` sentence a refusal carries is
             // prose rather than an enum on this wire, and it did not gain an arm a daemon can send:
             // `Unreachable` is what a CLIENT concludes when nothing answered it.
-            41,
+            // ⚠ 42: re-stamped with every ANSWER value space unchanged. Register item 656's
+            // `raw_output` answers an object of two keys, and neither is a word from a set — one
+            // is BASE64 (an encoding, not a vocabulary: every byte string has a spelling) and the
+            // other is a bool. A caller decoding it whole cannot meet an arm it does not know.
+            42,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -9404,7 +9584,11 @@ mod tests {
             // an added argument is a bump on this wire because an older daemon swallows it. ⚠ What
             // makes this one sharper than `hand` is what the swallowing does — the daemon then
             // delivers the WIDE reach, which is a different act and can close the pane.
-            41,
+            // ⚠ 42: re-stamped with every published REQUEST vocabulary unchanged, for 40's reason
+            // exactly. Register item 656 added a READ address; a read takes no arguments, so there
+            // is no request word for this pin to see, and its answer is keyed by two literals of
+            // its own rather than by any vocabulary a caller may say.
+            42,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -9723,7 +9907,10 @@ mod tests {
             // ⚠⚠ 41: re-stamped BECAUSE AN ARGUMENT SHAPE MOVED, and this pin is the subject
             // alongside the vocabulary one. `stop_job` gained `reach`, an optional string, and the
             // list below carries it — register item 654.
-            41,
+            // ⚠ 42: re-stamped with every published argument shape unchanged, for 39's and 40's
+            // reason exactly. Register item 656's `raw_output` is a SLOT — no arguments — so no
+            // form this pin walks gained, lost or re-typed one.
+            42,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -10354,7 +10541,14 @@ mod tests {
         // ARGUMENT inside `stop_job`'s form (`reach`), which lives in the blind spot named above —
         // this pin walks names, and the argument grammar has the two ratchets that own that half.
         // Both of them went red by name, which is the division of labour these pins exist for.
-        41,
+        // ⚠⚠⚠⚠⚠ 42 — REGISTER ITEM 656: `raw_output` ADDED, and it is the SECOND addition on this
+        // list whose ABSENCE IS A FALSE ANSWER rather than a missing one. Version 40 is the first,
+        // and the two fail in the same direction: the consumer of the missing address does not stop
+        // — it concludes. `Readiness::reached` concluded *nobody has touched this pane*; the
+        // dialogue decoder concludes *the peer said nothing and spent nothing*, and a spend that is
+        // always zero can never reach the ceiling that was supposed to bound it. See
+        // `WIRE_PROTOCOL`'s entry for 42.
+        42,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -10483,6 +10677,14 @@ mod tests {
             "project.",
             "project.<pane>",
             "prompt_marks",
+            // ⚠⚠⚠⚠⚠ ADDED at register item 656, AND IT IS THE SECOND ADDITION ON THIS LIST THAT
+            // MOVES THE NUMBER. `hands` above is the first, and the two share a shape: the consumer
+            // of the missing address does not stop, it CONCLUDES. A dialogue's decoder reads *no
+            // capture* as no envelope, and the raw-text arm it falls into has no raw text to give —
+            // so a turn driven from another process published an empty reply and a spend of zero,
+            // and a spend of zero can never reach the ceiling meant to bound the run. See
+            // `WIRE_PROTOCOL`'s entry for 42.
+            "raw_output",
             // ⚠⚠ ADDED at register item 557: what was written INTO a pane, which no screen address
             // can answer. ⚠⚠⚠⚠⚠ NARROWED at register item 567, and the old name is WITHDRAWN: the
             // trail is the one text a wire read reaches that a screen read cannot — input the

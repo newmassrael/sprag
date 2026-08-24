@@ -1102,8 +1102,38 @@ impl ScopeAsk {
 ///   type now maps back to its own word (`Unstopped::from_sentence`) so a remote run publishes the
 ///   clause an in-process one would.
 ///
+/// * **42 — A PANE SAYS WHAT ITS CHILD WROTE, AND THE ABSENCE PUBLISHED AN EMPTY REPLY AND A SPEND
+///   OF ZERO.** Register item 656. `pane.<id>.raw_output` is a new READ address answering
+///   `{bytes: "<base64>", truncated: bool}` — the capture `sprag_terminal::RawOutput` has held
+///   since a structured reply first had to be parsed from something the grid had not touched.
+///
+///   ⚠⚠⚠⚠⚠ **VERSION 40'S TEST, AT THE ADDRESS THAT LOOKED SAFEST.** The rule is *an added address
+///   is absent-not-wrong to an old reader*, and it holds exactly when the CONSUMER of the missing
+///   answer degrades. This consumer's documentation says it degrades — *no raw capture, a truncated
+///   buffer, or an unparsable envelope → the raw text and `Tokens(0)`* — and that sentence is true
+///   of the last two and empty of the first: **there is no raw text to fall back to when there are
+///   no bytes.** `sprag_plugin`'s dialogue decoder `unwrap_or_default()`s the capture, so a
+///   `claude -p --output-format json` turn driven from another process published a reply of `""`,
+///   a spend of `Cost::Tokens(0)` and no session to resume, while the same turn in-process
+///   published the model's text, its real billed tokens and its session. One request, two answers,
+///   nobody told — which is what `RUN_DRIVER_PROCESS` forbids.
+///
+///   ⚠⚠⚠⚠ **AND THE ZERO IS THE HALF THAT IS NOT MERELY LOST DATA.** `sprag_plugin::Guardrails`
+///   ends a run when the accumulated cost REACHES `max_cost`, and a dialogue's unit is tokens. A
+///   turn that reports zero every time never accumulates, so a run driven from another process
+///   could not reach ANY ceiling it was given: the guardrail was not unreported, it could not fire.
+///   Version 39's *"the fallback is INVISIBLE"* with the fallback no longer merely slow, and
+///   version 40's *"confident and wrong"* with a budget behind it.
+///
+///   ⚠⚠ **NO ANSWER WORD, ARGUMENT OR FORM MOVED.** The address is new, its object is spelled in
+///   one place (`sprag_host::wire::raw_output_json`) and read in one (`raw_output_of`), and
+///   nothing that already answers is touched. The bytes ride base64 because a child's SOURCE
+///   stream carries escape sequences and can be cut mid-UTF-8 at the capture cap — a JSON string
+///   cannot hold them, and the lossy replacement that would make it fit is the corruption this
+///   address exists to route around.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 41;
+pub const WIRE_PROTOCOL: u32 = 42;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).

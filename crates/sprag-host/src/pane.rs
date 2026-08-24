@@ -72,9 +72,9 @@ use crate::wire::{
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
     LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
-    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_REVISION_SLOT, PANE_SCHEMA,
-    PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD,
-    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_REVISION_SLOT,
+    PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD,
+    REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -824,6 +824,17 @@ impl SpragPaneExternal {
             // write with and the vocabulary it READS the counts back under cannot drift apart.
             PANE_HANDS_SLOT => Some(IntrospectValue::Json(crate::wire::hands_json(
                 self.pty.hands(),
+            ))),
+            // ⚠⚠⚠⚠⚠ WHAT THIS PANE'S CHILD WROTE — register item 656, off the SAME
+            // `PanePtyHandle::raw_output` the in-process `PaneRawCapture` takes, so the two halves
+            // of one product cannot come to hold different bytes. Never `Null`: a pane this daemon
+            // holds always has a capture, and an empty one is an answer. The absence a caller must
+            // be able to see is *there is no pane at this path*, which the surface itself carries.
+            //
+            // ⚠⚠ THROUGH THE ONE BUILDER (`wire::raw_output_json`), whose reader sits directly
+            // below it — the bytes ride base64 because a source stream is not a JSON string.
+            PANE_RAW_OUTPUT_SLOT => Some(IntrospectValue::Json(crate::wire::raw_output_json(
+                &self.pty.raw_output(),
             ))),
             PANE_END_OF_INPUT_SLOT => Some(
                 self.pty

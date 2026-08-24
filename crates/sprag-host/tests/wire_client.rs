@@ -9626,3 +9626,118 @@ fn drive_child(sock: &Path, run: u64, request: &Value) -> std::process::Output {
     sprag_gate::feeding::feed(&mut child, request.to_string().as_bytes());
     child.wait_with_output().expect("reap the driver process")
 }
+
+/// **A DRIVER IN ANOTHER PROCESS READS THE CHILD'S SOURCE BYTES, NOT THE GRID'S RENDERING OF
+/// THEM** — register item 656, the last of `RemotePaneAccess`'s nine sub-surfaces still answering
+/// the trait's default `None`.
+///
+/// # ⚠⚠⚠⚠⚠ Why this absence is a FALSE ANSWER and not a degradation
+///
+/// `dialogue::decode_claude_json` asks `raw_capture()` for the pane's source stream and
+/// `unwrap_or_default()`s what it gets. A `None` therefore becomes EMPTY BYTES, which parse as no
+/// envelope, which lands in the `None => raw_text()` arm — and `raw_text()` of nothing is the empty
+/// string. So a `claude -p --output-format json` turn driven from another process publishes an
+/// EMPTY reply, `Cost::Tokens(0)`, and no session id, while the same turn driven in-process
+/// publishes the model's text, its real billed tokens, and the session to resume. Nobody is told:
+/// every one of those is a value the caller reads, not an error it handles.
+///
+/// # ⚠⚠ The fixture makes its own premise, and asserts it
+///
+/// The bytes are produced by the pane's CHILD (spawned with a `cmd`, so nothing was typed and the
+/// PTY echoes nothing — R27's trap), and the segment words are the SHELL's arithmetic, so no
+/// screen and no echo can put `seg-77` into this pane. They are padded so a wrap boundary lands
+/// inside a run of spaces: the grid trailing-trims each row, so the rendered read cannot
+/// reconstruct the source — which is asserted BELOW, before the claim, because a lossless grid
+/// would make the claim measure nothing.
+#[test]
+fn a_remote_driver_reads_the_source_bytes_the_grid_cannot_give_back() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["sh"]);
+    let (remote, mut setup) = remote_driver(&sock);
+
+    // 12 segments of 15 columns each = 180 bytes over a 40-column pane: every row boundary but the
+    // last falls inside a segment's padding, so the grid loses spaces it can never give back.
+    let payload: String = (0..12).map(|i| format!("seg-{:<11}", i * 7)).collect();
+    let pane = spawn_pane(
+        &mut setup,
+        json!({
+            "cmd": ["sh", "-c", "i=0; while [ $i -lt 12 ]; do printf 'seg-%-11s' \"$((i*7))\"; i=$((i+1)); done"],
+            "cols": 40,
+            "rows": 6,
+        }),
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(20), || remote.pane_eof(pane)
+            == Some(true)),
+        "⚠⚠ the fixture child never finished, so everything below would be a claim about a capture \
+         that is still filling. Read {:?}",
+        remote.pane_collapsed(pane),
+    );
+
+    // ── THE CONTROL: the bytes really were written, and this wire really can read the pane ─────
+    let rendered = remote
+        .pane_full_lines(pane)
+        .expect("the daemon serves this pane's rendered lines")
+        .join("");
+    assert!(
+        rendered.contains("seg-77"),
+        "⚠⚠ the child never wrote its last segment, so «the grid cannot reconstruct it» below \
+         would pass for the wrong reason — an empty pane cannot reconstruct anything. Read {rendered:?}",
+    );
+
+    // ── THE PREMISE, ASSERTED: the rendering is LOSSY, which is why a source read has to exist ──
+    assert!(
+        !rendered.contains(&payload),
+        "⚠⚠⚠ the grid gave the source bytes back verbatim, so this pane cannot tell a raw-capture \
+         surface from a screen scrape and the gate below measures nothing. Re-pad the fixture so a \
+         wrap boundary falls inside a run of spaces. Read {rendered:?}",
+    );
+
+    // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────────
+    let raw = remote.raw_capture().unwrap_or_else(|| {
+        panic!(
+            "⛔⛔⛔⛔ REGISTER ITEM 656: a driver in another process is told this host has NO raw \
+             capture at all. That word is about a DEPLOYMENT, and it is false here — the daemon on \
+             the other end of this socket owns the pseudoterminal and captures every byte its child \
+             writes. What it costs is not an error anybody sees: `decode_claude_json` \
+             `unwrap_or_default()`s this absence into empty bytes, so a `--output-format json` turn \
+             driven from another process publishes an EMPTY reply, `Tokens(0)` and no session id, \
+             while the same turn in-process publishes the model's text, its real tokens and its \
+             session. One driver, two answers, nobody told."
+        )
+    });
+    let sprag_terminal::RawOutput { bytes, truncated } =
+        raw.pane_raw_output(pane).unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔⛔ REGISTER ITEM 656: the surface answered, but this PANE has no source \
+                 bytes — and it is the pane whose child just wrote 180 of them and reached EOF. A \
+                 per-pane `None` here says «that pane is not capturing», which is the other \
+                 absence entirely, and a caller cannot tell them apart."
+            )
+        });
+    assert!(
+        !truncated,
+        "⛔⛔ 180 bytes cannot have hit `RAW_CAPTURE_CAP`, so a truncated flag crossing this wire \
+         means the flag is being invented rather than carried — and a structured reader treats \
+         truncated as unparseable, which would degrade every remote turn that is not over-cap.",
+    );
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&payload),
+        "⛔⛔⛔⛔ REGISTER ITEM 656: the source bytes crossed the socket CHANGED. The whole reason \
+         this address exists is that the envelope is parsed from bytes the grid corrupts, so a \
+         capture that arrives grid-shaped is the defect wearing the fix's name — a JSON envelope \
+         wrapped across rows would still fail to parse. Wanted the child's 180 verbatim bytes \
+         within, got {:?}",
+        String::from_utf8_lossy(&bytes),
+    );
+
+    // ── AND THE TWO ABSENCES STAY APART (register item 641's rule, at this address) ────────────
+    assert!(
+        raw.pane_raw_output(PaneId(9_999_999)).is_none(),
+        "⛔⛔⛔ a pane id no session holds must be `None` here. Answering a default `RawOutput` \
+         would hand a caller EMPTY BYTES for a pane that does not exist — indistinguishable from a \
+         live child that has printed nothing yet, which is the reading a dialogue turn degrades on.",
+    );
+}
