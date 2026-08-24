@@ -9973,26 +9973,32 @@ fn a_remote_driver_offers_every_optional_sub_surface_but_the_one_it_refuses_on_p
 /// about wall-clock assertions on a shared runner. It is generous enough that a woken driver always
 /// makes it.
 ///
-/// # ⛔⛔⛔⛔⛔ THIS GATE IS RED AGAINST THE SHIPPED PRODUCT — register item 660
+/// # ⛔⛔⛔⛔⛔ It was RED, and what it found was a WRONG SURFACE — register item 660
 ///
-/// It is `#[ignore]`d for that reason and for no other: it is the MEASUREMENT of a live defect, not
-/// a gate waiting on a fixture. **Un-ignore it the day 660 is paid; do not weaken it.** Measured
-/// 2026-08-24, three runs:
+/// Built red on purpose and left `#[ignore]`d for one round, because the defect it measures was
+/// live: a person's cancel never reached a run driven from another process, and the same was true
+/// of stand-down and hold, silently, for every such run.
 ///
-/// * The daemon has the order — the row carries `cancelled_by` with a person's sentence in it.
-/// * The driver is ALIVE and stepping — the same row's `iterations` keeps climbing (19 in the
-///   first ten seconds), so its reporting connection is working.
-/// * And the run does not stop. Not in ten seconds, not in **sixty**.
-/// * ⚠⚠ Nor does it stop at a `max_seconds` of **20** — so whatever is not hearing the order is
-///   also not hearing the CLOCK, which points at a step that blocks rather than at the journal.
+/// **The cause was one line.** `drive::read_row` asked the MULTIPLEXER for the `runs` listing, and
+/// that listing is the PLUGIN HOST's — so the watcher, woken correctly by the journal, could never
+/// read the row it had been woken to re-read, and answered `None` every time. Four other causes
+/// were driven out first and are recorded on `read_row` itself so nobody re-walks them.
 ///
-/// Four candidate causes were driven out rather than argued: the daemon does wire the announce
-/// (`lib.rs`'s `plugin_run_ordered` → `channels.announce(RunOrdered)`); an absent `match` key means
-/// `EventFilter::Everything`, so the subscription admits it; `HostConn::call` sets notifications
-/// ASIDE for `next_notification` rather than dropping them, so `read_row` sharing the subscribed
-/// connection does not eat the wake; and `watch_orders` parks rather than polls.
+/// ⚠⚠⚠ **The fixture had a defect of its own, and it hid the fix for two runs.** This drove the
+/// daemon's BOOT pane. A cancel that lands makes the driver stop the work — and the work IS that
+/// pane's program, so stopping it closes the pane, and a daemon whose last pane closes exits behind
+/// it (register item 654's own measured sentence). The first green therefore arrived looking like a
+/// failure: `Broken pipe` on the next read. The run gets a pane of its own for that reason.
+///
+/// # ⚠⚠⚠⚠ WHAT THIS GATE DOES **NOT** PROVE, stated rather than left to be assumed
+///
+/// It does not prove that `Event::RunOrdered` is what carries the order. **Measured, twice**:
+/// withholding that announce entirely — with a chatty peer AND with the silent one this now uses —
+/// leaves this gate GREEN. So something other than that journal event is delivering the cancel to
+/// the child, and register item 648's half-payment is **not** shown to be load-bearing here.
+/// Whatever this gate holds, it holds `read_row` reaching the right surface (mutating that back is
+/// red) and the order arriving end to end. Naming the carrier is register item 660's remainder.
 #[test]
-#[ignore = "register item 660: RED against the shipped product — a person's cancel does not reach an out-of-process driver"]
 fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it_to_look() {
     // The option a person sets, at the door a person sets it — `the_daemon_drives_a_run_in_a
     // _process_of_its_own`'s reason: there is no environment path to it, and inventing one would be
@@ -10006,7 +10012,22 @@ fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it
         &[("XDG_CONFIG_HOME", config.to_str().expect("a utf-8 path"))],
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
-    let pane = *pane_ids(&mut conn).first().expect("the boot pane");
+    // ⚠⚠⚠⚠⚠ A PANE OF ITS OWN, AND NOT THE BOOT PANE — measured, register item 660. A cancel that
+    // lands makes the driver STOP THE WORK, and the work here IS the pane's own program; under the
+    // wide reach that closes the pane, and a daemon whose last pane closes EXITS behind it (register
+    // item 654 wrote that sentence from its own measurement). Driving the boot pane therefore turns
+    // a WORKING cancel into `Broken pipe` on the next read — which is exactly what this gate saw,
+    // and it read like the cancel had failed when it had in fact succeeded all the way through.
+    // ⚠⚠⚠⚠⚠ A SILENT PEER, and that is what makes this gate measure register item 648 AT ALL.
+    // `cat` with nothing to say produces no further output once it has echoed the stimulus, so the
+    // session goes QUIET — and a quiet session is the only place the order's own journal event can
+    // be told apart from the traffic around it. Measured: with a chatty peer, withholding
+    // `Event::RunOrdered` left this gate GREEN, because the watcher was woken by that peer's noise
+    // and re-read the row anyway. A gate that cannot fail without the mechanism is not measuring it.
+    let pane = spawn_pane(
+        &mut conn,
+        json!({ "cmd": ["sh", "-c", "exec cat"], "name": "ordered" }),
+    );
 
     // ⚠⚠ A SENTINEL THIS PEER NEVER SAYS, so nothing but the order can end the run inside the
     // window below. `COUNTING_PEER` answers `ANSWER:<n>:<line>` and cannot produce this word; the
@@ -10018,7 +10039,7 @@ fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it
                 "path": sprag_host::plugins_path(sprag_host::plugins::RUN_ACTION),
                 "args": {
                     "plugin": "orchestrator",
-                    "pane": pane,
+                    "pane": pane.0,
                     "stimulus": "wait-for-an-order",
                     "sentinel": "A-WORD-THIS-PEER-NEVER-SAYS",
                     "guardrails": { "max_iterations": 200, "max_seconds": 120 },

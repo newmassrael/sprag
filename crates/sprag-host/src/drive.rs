@@ -319,11 +319,28 @@ fn watch_orders(
 }
 
 /// This run's row from the daemon's `runs` listing, or [`None`] where it is not there to read.
+///
+/// # ⛔⛔⛔⛔⛔ The surface is the PLUGIN HOST's, not the multiplexer's — register item 660
+///
+/// [`RUNS_SLOT`](crate::plugins::RUNS_SLOT) is served by `PluginsExternal` and reached at
+/// [`plugins_path`](crate::plugins_path). This asked the MUX for it, and a mux that does not serve
+/// that name answers nothing — so **every** read here returned [`None`], for every run, for the
+/// whole life of the out-of-process driver. What that cost is the whole of register item 648's
+/// remaining half: the order reached the journal, the subscription woke this watcher, and the
+/// watcher then failed to read the row it had been woken to re-read — so a person's cancel,
+/// stand-down and hold never reached a run driven from another process, silently, because
+/// `read_row`'s `None` is indistinguishable here from *the run is not listed yet*.
+///
+/// ⚠⚠ Measured rather than reasoned: with the watcher instrumented, one `subscribed`, one `woken`,
+/// and one `read_row=None` — the wake was arriving and the read was the thing that failed. ⚠ A
+/// dedicated second connection for this read was tried first, on the theory that a call was
+/// colliding with the park, and it changed nothing; that hypothesis is refuted and the path was the
+/// cause.
 fn read_row(conn: &mut HostConn, run: u64) -> Option<Map<String, Value>> {
     let listing = conn
         .call(
             "scene/query",
-            json!({ "path": crate::mux_action_path(crate::plugins::RUNS_SLOT) }),
+            json!({ "path": crate::plugins_path(crate::plugins::RUNS_SLOT) }),
         )
         .ok()?;
     listing
