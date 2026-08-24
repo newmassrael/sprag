@@ -704,6 +704,19 @@ type StartedDriver = (Arc<Mutex<RunState>>, Box<dyn crate::runs::RunHandle>);
 
 /// The plugin host as a pinion `External`: starts background plugin runs over
 /// the shared [`Workspace`] and reports their outcomes as scene-as-data.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is [`Clone`], which is a decision and not a convenience — register item 671
+///
+/// Every field is a handle to something SHARED — the pane pool, the run directory, the daemon's
+/// four hooks, the driver spawner — so a clone is the same surface over the same things and not a
+/// second one. What that buys is the answer to *who puts a run back when its driver process dies
+/// under a living daemon*: the thread collecting that driver holds a clone, so it can call
+/// [`put_back`](Self::put_back) with the same pane pool, the same session's announcements and the
+/// same spawner the run started under. A hook passed down from the daemon instead would have to
+/// carry all four of those and be handed back INTO the layer it came from, and the replacement
+/// driver's own collector would need it again — a cycle this closes by construction, because the
+/// clone the new collector takes is made the same way the first one was.
+#[derive(Clone)]
 pub struct PluginsExternal {
     workspace: Arc<Mutex<Workspace>>,
     runs: Arc<Mutex<RunRegistry>>,
@@ -1700,7 +1713,18 @@ impl PluginsExternal {
         // find out whether this process is still typing at the pane before it starts another.
         let pid = child.id();
         let state = Arc::new(Mutex::new(RunState::Running));
-        let collector = collect_driver(child, id, Arc::clone(&state), self.on_run_end.clone());
+        // ⚠⚠⚠⚠⚠ **AND THE COLLECTOR TAKES A SURFACE, NOT ONLY AN ANNOUNCE** — register item 671.
+        // This clone is what lets the thread that watches this child put the run back on a new one
+        // if the child dies without saying anything, over the same pool and through the same door
+        // a boot uses. See this type's own note on why it is `Clone`.
+        let reviving = self.clone();
+        let collector = collect_driver(
+            child,
+            id,
+            Arc::clone(&state),
+            self.on_run_end.clone(),
+            Some(Arc::new(move |lost| reviving.put_back_a_lost_driver(lost))),
+        );
         Ok((
             state,
             // ⚠⚠ THE THREE FLAGS ARE PURE RECORD HERE — nothing in this image reads them, and the
@@ -1842,6 +1866,61 @@ impl PluginsExternal {
             inherited.id.0
         )))
     }
+
+    /// **A RUN'S DRIVER PROCESS DIED WITHOUT AN OUTCOME, SO PUT THE RUN BACK ON A NEW ONE** —
+    /// register item 671, and the half of item 544's residue that asks *who supervises the
+    /// supervisor*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The decision this takes, and the fact that settles it
+    ///
+    /// A boot already does exactly this for every run a DEAD daemon left behind (register item
+    /// 543). Doing nothing here would give one run two different fates for the same fact — *nothing
+    /// is driving it* — decided by whether the daemon happened to restart, which is an accident and
+    /// not an answer. So the live daemon answers it the same way, through the same door, at the
+    /// same cost: what the run did since its last report is lost, which is the price item 543
+    /// already accepted for a restart.
+    ///
+    /// ⚠⚠ **AND IT IS BOUNDED BY WHAT THE REPLACEMENT SAYS, NOT BY A COUNT** — see
+    /// [`crate::runs::RunRegistry::revival`]. A driver that dies without ever reporting is a broken
+    /// image or a request its own door refuses, and respawning it is a spin; a driver that reported
+    /// and then died is a run doing work, and there is no number of times that stops being true.
+    ///
+    /// ⚠ Every refusal is written into the ROW by that same door, so this only has to say it in the
+    /// operator's log — where *which run and why* belongs.
+    fn put_back_a_lost_driver(&self, id: RunId) {
+        // ⚠⚠⚠ THE GUARD IS DROPPED BEFORE `put_back`, WHICH TAKES IT AGAIN. One statement, so the
+        // temporary dies at the semicolon — a `match` over the call directly would hold the
+        // directory locked through building a plugin and spawning a process, and `put_back`'s own
+        // last act is to lock it.
+        let verdict = lock(&self.runs).revival(id);
+        let inherited = match verdict {
+            crate::runs::Revival::PutBack(inherited) => inherited,
+            other => {
+                tracing::warn!(
+                    target: "sprag_host::runs",
+                    run = id.0,
+                    "a run's driver process died without reporting an outcome and the run was not \
+                     put back on a new one: {}",
+                    other.not_put_back().unwrap_or("no reason was given"),
+                );
+                return;
+            }
+        };
+        match self.put_back(&inherited) {
+            Ok(()) => tracing::warn!(
+                target: "sprag_host::runs",
+                run = id.0,
+                "a run's driver process died without reporting an outcome, so the run was put back \
+                 on a new driver where its last report said it was: {}",
+                inherited.label,
+            ),
+            Err(why) => tracing::warn!(
+                target: "sprag_host::runs",
+                run = id.0,
+                "a run whose driver process died could not be put back on a new one: {why:?}",
+            ),
+        }
+    }
 }
 
 /// **WAIT FOR A DRIVER PROCESS, THEN END ITS RUN THE WAY A WORKER ENDS ITS OWN.**
@@ -1865,6 +1944,7 @@ fn collect_driver(
     id: RunId,
     state: Arc<Mutex<RunState>>,
     on_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
+    on_lost: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let ended = match child.wait_with_output() {
@@ -1893,7 +1973,21 @@ fn collect_driver(
             // whose ending is unknowable, and `Panicked` is this registry's word for that.
             Err(why) => RunState::Panicked(format!("collecting a run's driver process: {why}")),
         };
+        // ⚠⚠⚠⚠⚠ **A DEATH WITH NO OUTCOME IS ASKED ABOUT BEFORE ANYBODY IS WOKEN** — register item
+        // 671. `driver_ending` reads silence as `Panicked`, and that is the shape a run whose
+        // driver was killed arrives in; every other ending is the driver's own answer and nobody
+        // supervises an answer.
+        //
+        // ⚠⚠ THE ORDER IS THE WHOLE OF WHAT A READER CAN TRUST. Written, then decided, then
+        // announced — so the first row anybody is woken to look at is already the FINAL one: put
+        // back and running, or failed and carrying the reason nothing picked it up. Announcing
+        // first would wake every watcher onto a `panicked` this daemon was in the middle of
+        // undoing, which is the *two readings with a gap between them* register item 637 is about.
+        let lost = matches!(ended, RunState::Panicked(_));
         *lock(&state) = ended;
+        if let Some(revive) = on_lost.filter(|_| lost) {
+            revive(id);
+        }
         if let Some(announce) = on_end {
             announce(id);
         }
@@ -8282,12 +8376,16 @@ mod tests {
         // failure message — so locking in both places deadlocks on exactly the run that FAILS,
         // which is a gate that hangs instead of reporting. Measured here.
         let started = lock(&handed).clone();
-        assert_eq!(
-            started.len(),
-            1,
-            "⚠⚠ the fixture's premise: exactly one driver was started, so the request examined \
-             below is the one this resume handed it",
+        assert!(
+            !started.is_empty(),
+            "⚠⚠ the fixture's premise: a driver was started, so `started[0]` is the request this \
+             resume handed it.",
         );
+        // ⚠⚠⚠ IT USED TO SAY *EXACTLY ONE*, AND THAT STOPPED BEING THE FIXTURE'S PREMISE — register
+        // item 671. `wait_with_output` closes the child's stdin, so this stand-in `cat` ends at
+        // once with nothing reported, and a driver that dies without an outcome is now PUT BACK on
+        // a new one. So a second start is the product working, and the first is still the resume's.
+        // The count is not what this arm measures; the place on `started[0]` is.
         assert_eq!(
             started[0].get(RUN_PLACE_KEY),
             Some(&json!(place)),
@@ -8299,6 +8397,12 @@ mod tests {
         );
 
         // ── AND THE STRIP: a CLIENT saying the same word is not obeyed ───────────────────────
+        // ⚠⚠⚠ A RECORDER OF ITS OWN, AND THE SHARED ONE COST A RED TO LEARN — register item 671.
+        // Both arms used to push into `handed` and this half read `both[1]`, which is a POSITION
+        // rather than a fact: the moment a dead driver started being put back (item 671) the entry
+        // at that index could be the resume's rescue instead of the client's run, and the strip
+        // this measures would be asserted against the wrong request.
+        let by_a_client: Arc<Mutex<Vec<Map<String, Value>>>> = Arc::new(Mutex::new(Vec::new()));
         let mut client = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::new(Mutex::new(RunRegistry::default())),
@@ -8309,7 +8413,7 @@ mod tests {
             None,
         )
         .driving_out_of_process(Arc::new({
-            let handed = Arc::clone(&handed);
+            let handed = Arc::clone(&by_a_client);
             move |_: RunId, request: &Map<String, Value>| {
                 lock(&handed).push(request.clone());
                 std::process::Command::new("cat")
@@ -8324,20 +8428,21 @@ mod tests {
         client
             .invoke(RUN_ACTION, IntrospectValue::Json(Value::Object(asking)))
             .expect("a run a client asks for, with a word it is not entitled to say");
-        let both = lock(&handed).clone();
+        let both = lock(&by_a_client).clone();
         assert_eq!(
             both.len(),
-            2,
-            "the fixture's premise: the client's run started a second driver",
+            1,
+            "the fixture's premise: the client's run started a driver of its own, and a run whose \
+             place was stripped records none — so nothing puts it back and this stays at one",
         );
         assert_eq!(
-            both[1].get(RUN_PLACE_KEY),
+            both[0].get(RUN_PLACE_KEY),
             None,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a CLIENT said where a run should start and the daemon \
              passed it on. This wire swallows arguments it does not publish, so that is an \
              unpublished verb — *begin this loop already at `judging`* — and the only thing \
              entitled to say it is a boot repeating what its own log recorded. Handed: {:?}",
-            both[1],
+            both[0],
         );
 
         // ── THE CLAIM: the run this daemon inherited is driven again, under its own id ────────

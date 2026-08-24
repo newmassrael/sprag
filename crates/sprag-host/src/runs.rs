@@ -10,7 +10,7 @@
 //! holds only that cell (never the registry), so reading the registry never
 //! blocks behind a running plugin.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -942,6 +942,81 @@ struct RunRecord {
     /// build would date every restored run to whoever happened to read it — the exact wrong answer
     /// that decodes cleanly which this field exists to prevent.
     build: Option<String>,
+    /// **HOW MANY PROGRESS REPORTS THIS RUN HAS TAKEN** — register item 671's watermark, and the
+    /// only monotonic thing a driver in another process gives this daemon.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the count and not what the reports SAY
+    ///
+    /// The obvious watermark is the run's own `iterations`, and it is wrong: a driver put back at a
+    /// saved place counts ITS OWN steps from one (see [`InheritedRun::progress`], which says so as
+    /// a property rather than a bug), so a replacement that had worked for minutes would still read
+    /// as *behind where the last one got to*. This counter belongs to the RECORD, is never reported
+    /// by anybody, and only ever goes up — so *did the driver I started say anything at all* has an
+    /// answer that no driver's own bookkeeping can confuse.
+    ///
+    /// ⚠ [`AtomicU64`] because [`RunRegistry::report`] takes `&self`: a report is a message from
+    /// another process and the directory it lands in is shared.
+    reports: AtomicU64,
+    /// **WHAT [`reports`](Self::reports) STOOD AT WHEN THIS RUN WAS LAST PUT BACK AFTER LOSING ITS
+    /// DRIVER** — register item 671, and the whole of the bound on reviving.
+    ///
+    /// [`None`] for a run that has never lost one, which is why a FIRST death is always answered:
+    /// a run that can be put back at all has a place, and a place is written by a machine that took
+    /// a step. What this stops is the second death of a driver that never said anything — a broken
+    /// image, a request its own door refuses — where respawning is a spin nobody asked for and the
+    /// honest answer is to leave the run failed and say so.
+    revived_at: Option<u64>,
+}
+
+/// **WHAT A DAEMON SHOULD DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT AN OUTCOME** — register
+/// item 671, and [`RunRegistry::revival`]'s answer.
+///
+/// # ⚠⚠⚠⚠ Four words and not a `bool`, because each names a different thing to tell a person
+///
+/// A daemon that could only say *yes* or *no* here would write one log line for four situations a
+/// reader has to tell apart: the run is coming back; nobody knows the run; it never recorded a
+/// place to come back to; and its replacement died without saying anything, so this daemon has
+/// stopped trying. Collapsing the last three is the shape register item 641 names — *an absence
+/// written as one word is a trap the next round walks into*.
+pub enum Revival {
+    /// **PUT IT BACK**, on the run as this daemon now knows it. The record has already been moved
+    /// to [`RunState::Interrupted`], which is the one state
+    /// [`put_back`](RunRegistry::put_back) accepts a driver for.
+    PutBack(Box<InheritedRun>),
+    /// This daemon holds no run with that id.
+    NoSuchRun,
+    /// It recorded no place, so there is nowhere to put it back — a run whose plugin walks no
+    /// statechart, or one whose driver died before it took a step.
+    NoPlace,
+    /// It recorded no request, so nothing here knows what to build — a run restored from a log
+    /// whose brief this image could not read.
+    NoRequest,
+    /// Its last driver was started by this same door and said NOTHING before dying, so starting a
+    /// third would be a spin. See `RunRecord::revived_at`, which holds the watermark.
+    NoProgress,
+}
+
+impl Revival {
+    /// **WHY THE RUN IS NOT COMING BACK**, as one clause, or [`None`] when it is.
+    ///
+    /// ⚠⚠ THE ONE SPELLING OF EACH REASON, read twice on purpose: [`RunRegistry::revival`] writes
+    /// it into the ROW so the person watching a stopped run learns that nothing will pick it up,
+    /// and `crate::plugins::PluginsExternal::put_back_a_lost_driver` writes it to the operator's
+    /// log beside the run id. Two sentences here would be free to drift into disagreeing about the
+    /// same run.
+    #[must_use]
+    pub const fn not_put_back(&self) -> Option<&'static str> {
+        match self {
+            Self::PutBack(_) => None,
+            Self::NoSuchRun => Some("this daemon holds no run with that id"),
+            Self::NoPlace => Some("it recorded no place to be put back at"),
+            Self::NoRequest => Some("nothing recorded what it was asked with"),
+            Self::NoProgress => Some(
+                "the driver this daemon started for it died without reporting a single step, so \
+                 starting a third would be a spin",
+            ),
+        }
+    }
 }
 
 /// ONE RUN as the `runs` slot reports it.
@@ -1575,6 +1650,9 @@ impl RunRegistry {
             // about to run is inside THIS image, so this image is the only honest answer, and it
             // is read from the constant the same binary published at `client/hello`.
             build: Some(crate::wire::BUILD.to_owned()),
+            // ⚠ A FRESH RUN HAS SAID NOTHING AND HAS LOST NOTHING — register item 671.
+            reports: AtomicU64::new(0),
+            revived_at: None,
         });
         id
     }
@@ -1614,7 +1692,21 @@ impl RunRegistry {
     /// in this file that turns an ending back into a beginning.
     ///
     /// Returns whether it happened: [`false`] both for a run this daemon does not hold and for one
-    /// that is not [`RunState::Interrupted`], which is the only state a driver may be handed to.
+    /// in a state a driver may not be handed to.
+    ///
+    /// # ⚠⚠⚠⚠ The two states that may take one, and why they are exactly two
+    ///
+    /// [`RunState::Interrupted`] is what a predecessor's log restores to, and
+    /// [`RunState::Panicked`] is what a driver that died without an outcome leaves behind
+    /// (register item 671) — **both mean NOTHING IS DRIVING THIS RUN**, which is the only property
+    /// this door actually needs. `Running` must be refused because a second driver over one pane is
+    /// two processes typing at one agent (register item 526), and the two finished states must be
+    /// refused because a run that ENDED is not waiting for anything.
+    ///
+    /// ⚠ The `Panicked` arm was added rather than having the caller write `Interrupted` first: that
+    /// left a window in which the row said *interrupted* while a rescue was already under way, and
+    /// a reader who looked into it saw a state nobody was ever in for a reason. Measured — it broke
+    /// `plugins`'s own resume gate, which reads the row straight after a put-back.
     ///
     /// # ⚠⚠⚠⚠⚠ Why the row is replaced rather than a second one submitted
     ///
@@ -1643,7 +1735,12 @@ impl RunRegistry {
             .runs
             .iter_mut()
             .find(|record| record.id == id)
-            .filter(|record| matches!(*lock(&record.state), RunState::Interrupted));
+            .filter(|record| {
+                matches!(
+                    *lock(&record.state),
+                    RunState::Interrupted | RunState::Panicked(_)
+                )
+            });
         let Some(record) = taken else {
             // ⚠⚠⚠ THE DRIVER THIS DOOR WILL NOT INSTALL IS STOOD DOWN BEFORE IT IS DROPPED. A
             // caller builds the driver first — it cannot know what plugin to name until it has —
@@ -1680,7 +1777,95 @@ impl RunRegistry {
             return false;
         };
         *lock(&record.reported) = Some(progress);
+        // ⚠⚠⚠ AND THE COUNT GOES UP EVEN THOUGH THE VALUE ABOVE WAS REPLACED — register item 671.
+        // What the row shows is a LEVEL and each report overwrites the last; what
+        // [`Self::revival`] needs is the opposite question — *has the driver I started said
+        // anything at all* — and only something that never goes down can answer it.
+        record.reports.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// **WHAT TO DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT REPORTING AN OUTCOME** — register
+    /// item 671, and the door the daemon's *supervisor of the supervisor* goes through.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a live daemon has to answer this at all
+    ///
+    /// A run driven on a thread of this daemon's own could not lose its driver without the daemon
+    /// losing everything; register item 544 moved the driver into a process, and the answer went
+    /// with it. A boot already puts back every run a DEAD daemon left
+    /// ([`crate::plugins::PluginsExternal::put_back`], reached from `put_back_inherited_runs`), so
+    /// without this the same run gets two different fates depending on an accident nobody chose:
+    /// the daemon happening to restart. This makes the answer depend on the RUN.
+    ///
+    /// # ⚠⚠⚠⚠ The place is read from what the driver REPORTED, not from the cell
+    ///
+    /// [`Self::inherited`] reads `progress.place` because a restored record's cell is filled from
+    /// the log. A run driven in another process never moves that cell at all — its counters arrive
+    /// by [`report`](Self::report) and the row prefers them (register item 662) — so reading the
+    /// cell here would answer *no place* for every live run there is. The fallback is kept for the
+    /// run this daemon drives on a thread, whose cell IS the truth.
+    ///
+    /// ⚠ **AND NO FINGERPRINT IS CHECKED**, unlike the boot's path: these words were written by
+    /// THIS image's own driver minutes ago, so *did a different build spell this place* is a
+    /// question that cannot arise. `PersistedRun::resumable_place` exists for words that crossed a
+    /// file.
+    ///
+    /// ⚠⚠ **A REFUSAL IS WRITTEN INTO THE ROW, NOT ONLY RETURNED.** The person who meets one of
+    /// these is looking at a run that has stopped, and *its driver died* without *and nothing is
+    /// going to pick it up* leaves them waiting for a daemon that has already decided not to.
+    pub fn revival(&mut self, id: RunId) -> Revival {
+        let Some(record) = self.runs.iter_mut().find(|record| record.id == id) else {
+            return Revival::NoSuchRun;
+        };
+        /// Say in the ROW that nothing is coming, on top of what the ending already says.
+        ///
+        /// ⚠ Only over the death this door is about: any other state is somebody else's sentence
+        /// about this run and appending to it would be this daemon talking over them.
+        fn stays_dead(record: &RunRecord, why: &str) {
+            let mut state = lock(&record.state);
+            if let RunState::Panicked(said) = &*state {
+                *state = RunState::Panicked(format!(
+                    "{said}; and this daemon did not put it back on a new driver: {why}"
+                ));
+            }
+        }
+        let said = record.reports.load(Ordering::Relaxed);
+        let place = lock(&record.reported)
+            .as_ref()
+            .and_then(|reported| crate::plugins::progress_from_report(reported).place)
+            .or_else(|| lock(&record.progress).place.clone());
+        let outcome = if record.revived_at.is_some_and(|watermark| said <= watermark) {
+            Revival::NoProgress
+        } else if let Some(place) = place {
+            if let Some(request) = record.request.clone() {
+                record.revived_at = Some(said);
+                // ⚠⚠⚠⚠⚠ AND THE ROW IS LEFT EXACTLY AS THE DEATH FOUND IT — see
+                // [`Self::put_back`], which takes a `Panicked` record for this reason. Writing
+                // `Interrupted` here first read better and was worse: it put the row through a
+                // word nobody was ever in, and a reader who looked into that window was told the
+                // run was over while its replacement was being built. The row moves once, from
+                // *its driver died* straight to *it is running again*.
+                Revival::PutBack(Box::new(InheritedRun {
+                    id: record.id,
+                    label: record.label.clone(),
+                    place,
+                    request,
+                    progress: Arc::clone(&record.progress),
+                    // ⚠ NOTHING TO END. The field exists so a BOOT can kill a driver that outlived
+                    // the daemon which spawned it (register item 526); the driver this answer is
+                    // about died in front of the thread asking, which is how the question got here.
+                    driver: None,
+                }))
+            } else {
+                Revival::NoRequest
+            }
+        } else {
+            Revival::NoPlace
+        };
+        if let Some(why) = outcome.not_put_back() {
+            stays_dead(record, why);
+        }
+        outcome
     }
 
     /// Raise the cancel flag for run `id`, returning whether such a run exists.
@@ -2236,6 +2421,14 @@ impl RunRegistry {
                 // drove it. Stamping this daemon's here would date a dead daemon's work to its
                 // successor — which is precisely the confusion register item 438 was filed for.
                 build: saved.build.clone(),
+                // ⚠⚠ NOT CARRIED OVER, AND THAT IS THE CORRECT ANSWER — register item 671. The
+                // count is *what THIS daemon has been told*, and it has been told nothing about a
+                // run it is reading out of a file; the watermark beside it is what THIS daemon has
+                // already tried, and it has tried nothing. A boot's own `put_back` is a different
+                // act from reviving a driver that died under a living daemon, and starting this
+                // record at zero is what keeps the two from being counted as one.
+                reports: AtomicU64::new(0),
+                revived_at: None,
             });
         }
     }
@@ -2776,6 +2969,74 @@ mod tests {
         assert!(
             waited < RunRegistry::JOIN_DEADLINE * 2,
             "the drop did not come back: {waited:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE BOUND ON PUTTING A RUN BACK IS ASKED OF THE DIRECTORY, BECAUSE NOTHING ELSE CAN
+    /// REACH IT** — register item 671.
+    ///
+    /// The end-to-end gate (`cli`'s `a_run_whose_driver_process_dies_is_put_back_on_a_new_one`)
+    /// kills a driver and watches a new one appear, and it cannot stage the arm that matters most:
+    /// a REPLACEMENT that dies without ever saying anything, which is what a broken image or a
+    /// request its own door refuses looks like. Staging that means winning a race against a driver
+    /// that reports twice a second, so the verdict is asked here instead — register item 641's
+    /// rule, *an arm an end-to-end gate cannot reach is a verdict a function has to answer*.
+    ///
+    /// # ⚠⚠⚠⚠ Why the watermark is the REPORT COUNT and not the run's own iterations
+    ///
+    /// A driver put back at a saved place counts ITS OWN steps from one — [`InheritedRun::progress`]
+    /// says so as a property rather than a bug — so `iterations` goes DOWN across a rescue and a
+    /// replacement that had worked for minutes would read as *behind where the last one got to*.
+    /// The count in the record only ever goes up and nobody reports it, which is what makes *did
+    /// the driver I started say anything at all* answerable.
+    ///
+    /// ⚠ And the third answer is asserted too: a report between two deaths puts the run back in
+    /// business, because there is no number of deaths that makes a run doing work not worth
+    /// resuming.
+    #[test]
+    fn a_replacement_driver_that_reported_nothing_is_not_replaced_again() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let cell = ProgressCell::default();
+        lock(&cell).place = Some(vec!["judging".to_owned()]);
+        registry.submit(NewRun {
+            request: Some(serde_json::Map::new()),
+            progress: cell,
+            ..parked_run(id, "a loop".to_string(), std::thread::spawn(|| {}))
+        });
+
+        assert!(
+            matches!(registry.revival(id), Revival::PutBack(_)),
+            "a FIRST death is always answered: a run with a place took a step to write it",
+        );
+        // What a driver that died at its own door leaves behind: the run is exactly as it was, and
+        // nothing new has been said about it.
+        *lock(&registry.runs[0].state) = RunState::Panicked("it said nothing".to_owned());
+        let verdict = registry.revival(id);
+        assert!(
+            matches!(verdict, Revival::NoProgress),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 671: a daemon put a run back on a THIRD driver having heard \
+             nothing at all from the second. Nothing about the run changed between the two deaths, \
+             so nothing about the next one will either — this is a spin that costs a process per \
+             turn of it, and the person watching is told the run is running each time.",
+        );
+        let said = lock(&registry.runs[0].state);
+        assert!(
+            matches!(&*said, RunState::Panicked(why) if why.contains(verdict.not_put_back().unwrap_or("!"))),
+            "the row does not carry the reason nothing is coming: {said:?}",
+        );
+        drop(said);
+
+        // ── AND A REPORT PUTS IT BACK IN BUSINESS ───────────────────────────────────────────
+        assert!(
+            registry.report(id, serde_json::json!({ "iterations": 1 })),
+            "the run takes a report"
+        );
+        assert!(
+            matches!(registry.revival(id), Revival::PutBack(_)),
+            "⛔⛔⛔ a driver that reported and then died is a run DOING WORK, and there is no \
+             number of times that stops being true — this bound is *did the last one say \
+             anything*, not *how many have there been*",
         );
     }
 

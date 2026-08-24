@@ -2669,6 +2669,89 @@ fn start_a_run_that_cannot_converge(sock: &Path, session: &str) {
     .expect("the run is submitted");
 }
 
+/// A session whose pane runs a stand-in agent that announces itself and echoes, so a loop over it
+/// gets past readiness and takes real steps — and **a run that never stepped records no place**,
+/// which is the difference between a run that can be put back and one that cannot.
+///
+/// ⚠ Hoisted out of the promotion gate when a second gate needed the same fixture (register item
+/// 671): two spellings of *what a loop's pane is* would let the two gates measure different things
+/// while both stayed green, which is [`start_a_run_that_cannot_converge`]'s own argument.
+fn loop_session(conn: &mut HostConn, name: &str) -> u64 {
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": name,
+                "cmd": ["sh", "-c",
+                        "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+            },
+        }),
+    )
+    .expect("new_session answers");
+    conn.call(
+        "scene/query",
+        json!({ "session": name, "path": mux_action_path(PANES_SLOT) }),
+    )
+    .expect("the pane list answers")
+    .as_array()
+    .and_then(|panes| panes.first().cloned())
+    .and_then(|pane| pane["id"].as_u64())
+    .expect("the session's pane")
+}
+
+/// Submit an `ai_loop` over `pane` in `session`, effectively unbounded so it is certainly still
+/// going when whatever is driving it is taken away.
+fn start_loop(conn: &mut HostConn, session: &str, pane: u64, star: &str) {
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "ai_loop",
+                "pane": pane,
+                "agent": "claude",
+                "north_star": star,
+                "milestone": "still be running after the thing driving it was replaced",
+                "reference": "register items 526 and 671",
+                "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                // ⚠ The stand-in paints only whole lines, so a delivery cannot be confirmed on
+                // screen before the newline that submits it.
+                "shows_prompt": false,
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the loop is submitted");
+}
+
+/// Whether the run log under `state` holds at least `want` unfinished runs that carry BOTH halves
+/// of what a resume needs — the place a machine was at and the request that built it.
+///
+/// ⚠⚠ THE FILE IS FOUND BY SCANNING THE TEST'S OWN STATE DIR, because `runs_path` resolves
+/// `XDG_STATE_HOME` in the CALLING process and this process's is the developer's.
+fn resumable_runs(state: &Path, want: usize) -> bool {
+    std::fs::read_dir(state.join("sprag"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
+        .any(|entry| {
+            sprag_host::load_runs(&entry.path()).is_some_and(|log| {
+                log.runs
+                    .iter()
+                    .filter(|run| {
+                        !run.finished
+                            && run.resumable_place().is_some()
+                            && run.resumable_request().is_some()
+                    })
+                    .count()
+                    >= want
+            })
+        })
+}
+
 /// Whether any DURABLE saved pane history under `state` contains `needle`.
 ///
 /// "Durable" is the whole point, and it is why the file filter is
@@ -3549,58 +3632,6 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
-    /// A session whose pane runs a stand-in agent that announces itself and echoes, so a loop gets
-    /// past readiness and takes real steps — a run that never stepped records no place.
-    fn loop_session(conn: &mut HostConn, name: &str) -> u64 {
-        conn.call(
-            "scene/invoke",
-            json!({
-                "path": mux_action_path(NEW_SESSION_ACTION),
-                "args": {
-                    "name": name,
-                    "cmd": ["sh", "-c",
-                            "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
-                },
-            }),
-        )
-        .expect("new_session answers");
-        conn.call(
-            "scene/query",
-            json!({ "session": name, "path": mux_action_path(PANES_SLOT) }),
-        )
-        .expect("the pane list answers")
-        .as_array()
-        .and_then(|panes| panes.first().cloned())
-        .and_then(|pane| pane["id"].as_u64())
-        .expect("the session's pane")
-    }
-
-    /// Submit an `ai_loop` over `pane` in `session`, effectively unbounded so it is certainly still
-    /// going when the daemon is replaced under it.
-    fn start_loop(conn: &mut HostConn, session: &str, pane: u64, star: &str) {
-        conn.call(
-            "scene/invoke",
-            json!({
-                "session": session,
-                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
-                "args": {
-                    "plugin": "ai_loop",
-                    "pane": pane,
-                    "agent": "claude",
-                    "north_star": star,
-                    "milestone": "still be running after somebody else's promotion",
-                    "reference": "register item 526",
-                    "ready_when": { "match": "shows", "marker": "AGENT-READY" },
-                    // ⚠ The stand-in paints only whole lines, so a delivery cannot be confirmed on
-                    // screen before the newline that submits it.
-                    "shows_prompt": false,
-                    "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
-                },
-            }),
-        )
-        .expect("the loop is submitted");
-    }
-
     // ── OURS: the loop whose repository is the one being promoted ────────────────────────────
     let ours = loop_session(&mut conn, "ours");
     start_loop(
@@ -3668,28 +3699,8 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     // ⚠⚠ THE FILE IS FOUND BY SCANNING THIS TEST'S OWN STATE DIR — `runs_path` resolves
     // `XDG_STATE_HOME` in the CALLING process, and this process's is the developer's.
     let runs_dir = state.join("sprag");
-    let resumable = |want: usize| {
-        std::fs::read_dir(&runs_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
-            .any(|entry| {
-                sprag_host::load_runs(&entry.path()).is_some_and(|log| {
-                    log.runs
-                        .iter()
-                        .filter(|run| {
-                            !run.finished
-                                && run.resumable_place().is_some()
-                                && run.resumable_request().is_some()
-                        })
-                        .count()
-                        >= want
-                })
-            })
-    };
     assert!(
-        wait_for(Duration::from_secs(90), || resumable(2)),
+        wait_for(Duration::from_secs(90), || resumable_runs(&state, 2)),
         "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
          and a request under {}. With fewer, the answers below are about one loop and this gate is \
          item 543 wearing a second name.",
@@ -3820,9 +3831,9 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     drop(guard);
 }
 
-/// ⚠⚠⚠⚠⚠ **A RUN WHOSE DRIVER PROCESS IS KILLED REACHES THE ROW AS A FAILURE, INSTEAD OF GOING
-/// QUIET** — register item 671, the first of the two residues item 544 left behind when it moved a
-/// driver out of the daemon.
+/// ⚠⚠⚠⚠⚠ **A RUN WHOSE DRIVER PROCESS DIES UNDER A LIVING DAEMON IS PUT BACK ON A NEW ONE, AND A
+/// RUN THAT CANNOT BE IS TOLD SO** — register item 671, the first of the two residues item 544 left
+/// behind when it moved a driver out of the daemon.
 ///
 /// # ⚠⚠⚠ What the fused design got for free, and what a process boundary took away
 ///
@@ -3833,22 +3844,33 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
 /// Since the default moved on 2026-08-25 (register item 544) that is where every daemon nobody has
 /// configured now stands.
 ///
-/// # ⚠⚠⚠⚠ The register entry's own sentence is what this measures, and it may have been wrong
+/// # ⚠⚠⚠⚠⚠ The decision this gate holds, and the fact that took it
 ///
-/// Item 671 was filed saying such a run *"is not even `interrupted`, it is simply quiet"*. The
-/// product's answer is `collect_driver` BLOCKING on the child and `crate::plugins`'s `driver_ending`
-/// reading a death that reported no outcome as `RunState::Panicked` — but that is a sentence about
-/// code somebody read, and a register entry that is believed rather than measured is exactly what
-/// this repository keeps paying for. **Only killing one says what a live daemon does.**
+/// A BOOT already puts back every run a dead daemon left (register item 543,
+/// `put_back_inherited_runs`). Leaving a live daemon to do nothing gives one run two different
+/// fates for the same fact — *nothing is driving it* — decided by whether the daemon happened to
+/// restart, which is an accident and not an answer. So the live daemon answers it the same way,
+/// through the same door, at the same price: what the run did since its last report is lost, which
+/// is the cost item 543 already accepted.
 ///
-/// # ⚠⚠⚠⚠ The control is a second run that nobody touches
+/// ⚠ The gate's first form measured the OLD answer — the row reaching a reader as `panicked` — and
+/// it was green. That is not what makes this one right; what makes it right is that the two
+/// answers to one fact were being decided by an accident. The word in the row moved because the
+/// product changed its mind on purpose.
 ///
-/// Without it this gate passes against a daemon that fails every run it holds the moment anything
-/// dies — and a daemon HAS such a door: the shutdown sweep raises a cancel on every run there is.
-/// The two runs are the same fixture and only one is killed, so the answer separates *this run's
-/// driver died* from *something happened on this daemon*.
+/// # ⚠⚠⚠⚠ The second arm is not a control, it is the BOUNDARY, and it is race-free
 ///
-/// ⚠⚠ The subject's driver is named BEFORE the control is submitted, which is the rule the
+/// A daemon that put every dead driver's run back would spin on a run that cannot come back at all,
+/// so the refusal is half the decision and is measured beside it: a plugin that walks no statechart
+/// records no place, so there is nowhere to put it back, and the row has to SAY that rather than
+/// leaving a person watching a stopped run for a rescue that was already declined.
+///
+/// ⚠⚠ And the refusal is what makes the *no new driver was started* assertion an observation rather
+/// than a guess: `RunRegistry::revival` writes that sentence into the row BEFORE the collector
+/// announces anything, so by the time a reader can see the sentence the decision is already taken.
+/// A gate reading a count after a plain `panicked` would be racing the daemon.
+///
+/// ⚠⚠ The subject's driver is named BEFORE the second run is submitted, which is the rule the
 /// promotion gate above paid a red to learn: a process table publishes parentage, not which run a
 /// driver belongs to, so WHEN a pid is read is what names it.
 ///
@@ -3856,10 +3878,10 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
 /// with its driver would be register item 543's restart question wearing a second name.
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn a_run_whose_driver_process_is_killed_reaches_the_row_as_a_failure() {
+fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(
-        "sprag-driver-killed-{}-{:?}",
+        "sprag-driver-lost-{}-{:?}",
         std::process::id(),
         std::thread::current().id(),
     ));
@@ -3875,25 +3897,46 @@ fn a_run_whose_driver_process_is_killed_reaches_the_row_as_a_failure() {
         "the daemon never started serving",
     );
     let daemon = daemon_pid(&sock).expect("the daemon is running");
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
-    // ── THE SUBJECT, whose driver is named while it is the only driver there is ──────────────
-    start_a_run_that_cannot_converge(&sock, "subject");
+    // ── THE SUBJECT: a LOOP, because only a run with a machine records a place ───────────────
+    let pane = loop_session(&mut conn, "subject");
+    start_loop(
+        &mut conn,
+        "subject",
+        pane,
+        "a loop that outlives its driver",
+    );
     assert!(
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 1),
         "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
-         the run above should be driven by a process of its own and there is nothing here to kill. \
-         Found {:?}.",
+         the loop above should be driven by a process of its own and there is nothing here to \
+         kill. Found {:?}.",
         driver_pids(&sock),
     );
     let subject = driver_pids(&sock)[0];
 
-    // ── THE CONTROL: the same fixture, and nothing at all is done to it ──────────────────────
-    start_a_run_that_cannot_converge(&sock, "control");
+    // ── THE BOUNDARY: a run whose plugin walks no statechart, so it records no place ─────────
+    start_a_run_that_cannot_converge(&sock, "nowhere");
     assert!(
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
-        "⚠⚠ THE PREMISE FAILED: the control run got no driver of its own, so a `running` row for \
-         it below would be saying nothing about a process at all. Found {:?}.",
+        "⚠⚠ THE PREMISE FAILED: the second run got no driver of its own, so there is nothing to \
+         kill for the refusal arm. Found {:?}.",
         driver_pids(&sock),
+    );
+    let nowhere = driver_pids(&sock)
+        .into_iter()
+        .find(|pid| *pid != subject)
+        .expect("the second run's driver");
+
+    // ⚠⚠⚠ THE PREMISE THE WHOLE SUBJECT ARM RESTS ON: the loop has taken a step and written a
+    // place down. A run with no place IS the refusal arm, so without this the gate could be
+    // measuring the same answer twice and calling one of them a rescue.
+    assert!(
+        wait_for(Duration::from_secs(90), || resumable_runs(&state, 1)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted a live run carrying BOTH a place and a \
+         request under {}, so the subject is not a run that can be put back at all.",
+        state.join("sprag").display(),
     );
 
     // THE KILL: outright and from outside, which is what an OOM killer and a person with `ps` both
@@ -3913,7 +3956,6 @@ fn a_run_whose_driver_process_is_killed_reaches_the_row_as_a_failure() {
          is a restart (register item 543) and not a driver's death",
     );
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
     // ⚠ THE SESSION SCOPES THE CONNECTION, NOT THE ANSWER: this slot lists every run this daemon
     // holds, which is why both rows are read out of one call.
     let rows_of = |conn: &mut HostConn| {
@@ -3936,47 +3978,69 @@ fn a_run_whose_driver_process_is_killed_reaches_the_row_as_a_failure() {
             .clone()
     };
 
-    // ── THE CLAIM: the subject's row STOPS saying `running`, and says what happened ──────────
-    let answered = wait_for(Duration::from_secs(30), || {
-        status_of(&rows_of(&mut conn), 0)["status"] != json!("running")
+    // ── THE CLAIM, PART ONE: a NEW process is driving the same run ───────────────────────────
+    //
+    // ⚠ Counted as *a pid that is neither of the two this test started*, because the process table
+    // cannot say which run a driver belongs to — the promotion gate above records the round that
+    // learned it.
+    let replacement = || {
+        driver_pids(&sock)
+            .into_iter()
+            .find(|pid| *pid != subject && *pid != nowhere)
+    };
+    assert!(
+        wait_for(Duration::from_secs(30), || replacement().is_some()),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: A RUN WHOSE DRIVER PROCESS DIED WAS NEVER PUT BACK ON A NEW \
+         ONE. The daemon is alive and answering, the loop has a place and a request in its own run \
+         log, and a BOOT would have put this exact run back (register item 543) — so the same run \
+         gets two different fates depending on whether the daemon happened to restart. Drivers \
+         now: {:?}, killed {subject}.",
+        driver_pids(&sock),
+    );
+    let replacement = replacement().expect("the replacement driver");
+    let rows = rows_of(&mut conn);
+    assert_eq!(
+        status_of(&rows, 0)["status"],
+        json!("running"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: a replacement driver is running but the ROW does not say the \
+         run is. A reader watching this loop is told it is dead while a process types at its \
+         agent, which is worse than either answer alone. Rows: {rows:?}",
+    );
+
+    // ── THE CLAIM, PART TWO: and the run that CANNOT come back is told so ────────────────────
+    //
+    // SAFETY: as above — a driver of this test's own daemon, read from the process table.
+    unsafe { libc::kill(nowhere as libc::pid_t, libc::SIGKILL) };
+    assert!(
+        wait_for(Duration::from_secs(10), || !still_running(nowhere)),
+        "the driver process {nowhere} did not die",
+    );
+    let told = wait_for(Duration::from_secs(30), || {
+        status_of(&rows_of(&mut conn), 1)["error"]
+            .as_str()
+            .is_some_and(|why| why.contains("did not put it back on a new driver"))
     });
     let rows = rows_of(&mut conn);
     assert!(
-        answered,
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: A RUN WHOSE DRIVER PROCESS WAS KILLED IS STILL SAYING \
-         `running`. The daemon is alive and answering, the process that was driving run 0 is gone, \
-         and the only thing a reader is told is the answer a run that is going fine gives. \
-         `collect_driver` is where a driver's ending is supposed to become the run's. Rows: \
-         {rows:?}",
+        told,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: a run whose driver died and which this daemon is NOT going to \
+         put back says only that it failed. The person reading it cannot tell *a rescue is coming* \
+         from *nothing is coming*, and the only difference that matters to them is whether to \
+         start it again themselves. `RunRegistry::revival` is where the reason is supposed to be \
+         written into the row. Rows: {rows:?}",
     );
-    let subject_state = status_of(&rows, 0);
     assert_eq!(
-        subject_state["status"],
+        status_of(&rows, 1)["status"],
         json!("panicked"),
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: a killed driver's run left the row in a word nobody decided \
-         on. `panicked` is what `driver_ending` reads a death with no reported outcome as, and it \
-         is the word this gate was written against — a DIFFERENT one here is the product having \
-         changed its mind, which is a decision to re-take and write down, not a red to paper over. \
-         Rows: {rows:?}",
+        "the refused run left the row in a word nobody decided on: {rows:?}",
     );
-    assert!(
-        subject_state["error"]
-            .as_str()
-            .is_some_and(|why| why.contains("driver")),
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: the row failed the run without saying that its DRIVER died. \
-         A person reading this sees a run that broke and no way to tell a plugin's own failure \
-         from the process that was stepping it being killed out from under it. State: \
-         {subject_state:?}",
-    );
-
-    // ── AND THE CONTROL, WHICH NOTHING TOUCHED, IS STILL RUNNING ─────────────────────────────
-    let control_state = status_of(&rows, 1);
     assert_eq!(
-        control_state["status"],
-        json!("running"),
-        "⚠⚠⚠ THE CONTROL FAILED: a run whose driver was never killed stopped running too, so the \
-         answer above is about this daemon rather than about one dead driver. State: \
-         {control_state:?}",
+        driver_pids(&sock),
+        vec![replacement],
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 671: this daemon started a driver for a run it had just told the \
+         person it would not put back. A run with no place has nowhere to be put back to, so \
+         whatever that process is doing, it is not resuming anything — and it will die and be \
+         replaced forever. Killed {nowhere}, expected only the subject's replacement.",
     );
     drop(conn);
     drop(guard);
