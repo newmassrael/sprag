@@ -5039,6 +5039,28 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
         }
     }
 
+    // ⚠⚠⚠⚠⚠ A PANE IS RESOLVED HERE, THROUGH THE DOOR EVERY OTHER PANE VERB USES — register item
+    // 542. The published grammar declares this argument an `int`, so a NAME reached `build_call` as
+    // a type error and was refused before the daemon was ever asked — on the ONE verb whose target
+    // a person types least often and remembers least well. ⚠ And a number was not merely the
+    // inconvenient spelling: `resolve_pane` looks across the scoped SESSION, where a bare number
+    // used to be read against the current window, so an operator standing elsewhere was told there
+    // was no such pane about a number that was correct one window over.
+    //
+    // ⚠⚠ MATCHED BY NAME, and the residue is stated rather than hidden: `pipe`'s `src`/`dst` are
+    // panes too and are NOT resolved here. The grammar gives nothing to detect pane-ness with —
+    // every one of them is published as `int` — so widening this would be a second hardcoded list
+    // rather than a rule, and item 542 asks for `--pane`.
+    for flag in &mut flags {
+        if sprag_rpc::call::same_name(&flag.name, sprag_rpc::PANE_PARAM)
+            && let Some(raw) = flag.value.as_deref()
+            && raw.parse::<u64>().is_err()
+        {
+            let site = resolve_pane(&mut conn, session.as_deref(), raw, "orchestrate")?;
+            flag.value = Some(site.id.to_string());
+        }
+    }
+
     let call = sprag_rpc::build_call(&forms, &flags).map_err(|error| {
         bad_input(&format!(
             "orchestrate: {error}\n{}",

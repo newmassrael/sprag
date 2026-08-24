@@ -10816,3 +10816,82 @@ fn the_cli_says_a_blocked_pane_it_cannot_read_needs_a_person() {
         anyway.stdout,
     );
 }
+
+/// ⛔⛔⛔⛔ **`orchestrate --pane` TAKES A NAME, LIKE EVERY OTHER PANE ARGUMENT ON THIS CLI** —
+/// register item 542.
+///
+/// # ⚠⚠⚠⚠⚠ Why the one verb that refused a name is the worst one to refuse it
+///
+/// Every other pane-taking verb resolves through `resolve_pane`, and so does the MCP surface. This
+/// one handed its flags straight to `sprag_rpc::build_call`, whose grammar declares `pane` as an
+/// `int` — so `--pane wz-inner` was a TYPE ERROR. It is the verb whose target a person types least
+/// often and remembers least well, and an operator paid for that live.
+///
+/// ⚠⚠ **And a number is not merely inconvenient here, it is wrong more often**: `--pane` used to be
+/// read against the CURRENT window, so an operator standing on another window is told `no pane 8 in
+/// this workspace` about a number that is correct somewhere else. A NAME does not have that failure
+/// mode, which is the argument for fixing this rather than documenting it.
+///
+/// # ⚠⚠⚠ The pair is the claim
+///
+/// A CLI that shrugged at anything would pass the first half. So the second half hands it a name no
+/// pane has, and requires a refusal that says so — the acceptance means nothing without it.
+#[test]
+fn orchestrate_starts_a_run_on_a_pane_named_rather_than_numbered() {
+    let (_guard, sock, pane) = daemon_with_one_pane("orchestrate-by-name");
+    let named = sprag(
+        &sock,
+        &["rename-pane", &pane.to_string(), "driven", "-t", "work"],
+    );
+    assert!(named.ok, "naming the pane failed: {}", named.stderr);
+
+    // ── THE CLAIM: the NAME is accepted where the number always was ──────────────────────────
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            "driven",
+            "--stimulus",
+            "echo named",
+            "--max-iterations",
+            "1",
+            "--wait",
+        ],
+    );
+    assert!(
+        started.ok,
+        "⛔⛔⛔⛔ REGISTER ITEM 542: `orchestrate` refused a pane NAME that every other verb on \
+         this CLI takes. The grammar calls this argument an `int`, so a name is a type error before \
+         the daemon is ever asked — and this is the one verb whose target a person types least \
+         often and remembers least well. Refused with: {}",
+        started.stderr,
+    );
+
+    // ── THE CONTROL: a name no pane has must be REFUSED, and say so ─────────────────────────
+    let nobody = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            "no-such-pane-here",
+            "--stimulus",
+            "echo named",
+            "--max-iterations",
+            "1",
+        ],
+    );
+    assert!(
+        !nobody.ok,
+        "⚠⚠⚠ THE CONTROL: a name nothing holds must be refused. A CLI that accepted it would make \
+         the claim above a statement about a shell that shrugs at whatever it is handed, which is \
+         exactly the failure mode a derived surface has. Answered: {} {}",
+        nobody.stdout, nobody.stderr,
+    );
+}
