@@ -4004,6 +4004,51 @@ impl SessionRegistry {
             .find(|w| w.name == window)
             .map(|w| Arc::clone(w.workspace()))
     }
+
+    /// **WHICH SESSION HOLDS `pane`, AND THE POOL IT IS SITTING IN** — cloned, for
+    /// [`window_workspace`](Self::window_workspace)'s reason.
+    ///
+    /// # ⚠⚠⚠ Why neither of the two above can answer this
+    ///
+    /// Both of them ask *which pool does this NAME address*, which is what a scoped request needs
+    /// because a request arrives carrying a session. A caller holding only a PANE ID has no name to
+    /// offer, and the two ways of guessing one are both wrong: `workspace_of` resolves the session's
+    /// CURRENT window, so a pane sitting in any other window of it is simply absent; and a pane id
+    /// is global, so the session cannot be inferred from the number either.
+    ///
+    /// The caller this exists for is a daemon BOOT putting an inherited run back on a driver
+    /// (`sprag_host`'s register item 543): all it has is a pane id out of a run log. [`None`] means
+    /// no window of any session holds that pane — which after a restore means the pane did not come
+    /// back, and is the honest reason not to resume a run that would have driven it.
+    ///
+    /// # ⚠⚠ Two facts as one value, because a caller that asked twice could be told two things
+    ///
+    /// The pool is what a pane ACCESS speaks and the session name is what a run's announcements are
+    /// published on, and a boot needs both about the same pane. Two walks a moment apart could
+    /// answer about two different windows if anything moved the pane between them — so the walk
+    /// that finds it says everything it found.
+    ///
+    /// ⚠ FIRST match and no check for a second: a pane belongs to exactly one window by
+    /// construction (`join_pane` moves it rather than sharing it), so a scan that kept looking
+    /// would be guarding against a registry that is already broken.
+    #[must_use]
+    pub fn pool_holding(&self, pane: PaneId) -> Option<(String, Arc<Mutex<Workspace>>)> {
+        self.sessions.iter().find_map(|session| {
+            session
+                .windows
+                .iter()
+                .find(|window| {
+                    window
+                        .workspace()
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .panes()
+                        .iter()
+                        .any(|held| held.id() == pane)
+                })
+                .map(|window| (session.name.clone(), Arc::clone(window.workspace())))
+        })
+    }
 }
 
 #[cfg(test)]

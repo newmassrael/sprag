@@ -2886,6 +2886,229 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **A DAEMON RESTARTED UNDER A LIVE LOOP BRINGS THAT LOOP BACK RUNNING** — register item
+/// 543's own «done when», end to end through two real daemons.
+///
+/// # ⚠⚠⚠⚠⚠ What it ends, and why the bill was never only about runs
+///
+/// *"A run's machine is never persisted, so every restart kills every run."* Because a restart kills
+/// runs, promoting this daemon's own build is a DESTRUCTIVE act; four supervisors share one daemon
+/// (register item 196), so promoting sprag's build killed three other repositories' loops; and
+/// because of that, item 526's cheap route was to split daemons — buying the split at the price of a
+/// second GUI (item 285), which the owner has refused once. A restart that resumes runs is a
+/// promotion nobody has to schedule around, which is why this gate is the item's payoff rather than
+/// one more assertion about serialization.
+///
+/// # ⚠⚠⚠⚠ The control is the OTHER run, under the same kill, and it is what makes this a claim
+///
+/// A gate that only watched the loop could be passed by a daemon that brought EVERYTHING back
+/// running — which would be a lie about every plugin that walks no statechart and has no place to
+/// be put back at. So a second run is started beside it, on its own pane, with a plugin that has no
+/// machine, and it must still come back **interrupted**. One restart, two runs, opposite answers:
+/// that is the difference between *resuming* and *forgetting to mark things dead*.
+///
+/// ⚠⚠ **THE WAIT BEFORE THE KILL IS ON WHAT THE ASSERTIONS READ**, both halves of it: the loop is on
+/// disk with a place AND a request, and the control is on disk with neither. The save loop is on a
+/// timer, so anything else here would be a race dressed as a wait. The kill is outright, so nothing
+/// gets to write a tidy terminal state on the way out.
+///
+/// ⚠ The loop's pane comes back as a plain SHELL — `sh` is not on the restore allowlist — so the
+/// resumed run drives a peer that will never answer it. That is fine and is deliberate: what is
+/// under test is whether the run is DRIVEN again, not whether it converges. Its id and its seat are
+/// the same; only the occupant is not.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-resumed-run-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let pane_of = |conn: &mut HostConn, session: &str| {
+        conn.call(
+            "scene/query",
+            json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane")
+    };
+
+    // The loop's peer: a stand-in agent that announces itself and echoes, so the loop gets past
+    // readiness and takes real steps — a run that never stepped records no place.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "work",
+                "cmd": ["sh", "-c",
+                        "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+            },
+        }),
+    )
+    .expect("new_session answers");
+    let peer = pane_of(&mut conn, "work");
+    // And the CONTROL's own pane, so the two runs never type into each other's peer.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "control", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    let quiet = pane_of(&mut conn, "control");
+
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "ai_loop",
+                "pane": peer,
+                "agent": "claude",
+                "north_star": "a run outlives the daemon that started it",
+                "milestone": "come back running where the log said",
+                "reference": "register item 543",
+                "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                // ⚠ The stand-in paints only whole lines, so a delivery cannot be confirmed on
+                // screen before the newline that submits it.
+                "shows_prompt": false,
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the loop is submitted");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "control",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": quiet,
+                "stimulus": "x",
+                "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the control run is submitted");
+    drop(conn);
+
+    // ⚠⚠ THE FILE IS FOUND BY SCANNING THIS TEST'S OWN STATE DIR — `runs_path` resolves
+    // `XDG_STATE_HOME` in the CALLING process, and this process's is the developer's, so asking it
+    // for the path would point the wait at some other daemon's file (the sibling gate above paid
+    // for that once).
+    let runs_dir = state.join("sprag");
+    let both_on_disk = || {
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
+            .any(|entry| {
+                sprag_host::load_runs(&entry.path()).is_some_and(|log| {
+                    log.runs.iter().any(|run| {
+                        !run.finished
+                            && run.resumable_place().is_some()
+                            && run.resumable_request().is_some()
+                    }) && log
+                        .runs
+                        .iter()
+                        .any(|run| !run.finished && run.place.is_none())
+                })
+            })
+    };
+    assert!(
+        wait_for(Duration::from_secs(60), both_on_disk),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted BOTH a live loop carrying a place and a \
+         request AND a live run carrying neither, under {}. Without both, the pair of answers below \
+         would be a pair of accidents.",
+        runs_dir.display(),
+    );
+    // And the panes have to survive too, or the loop comes back to no pool and nothing could put it
+    // anywhere. The shape is saved by the same loop on the same timer, one file along.
+    assert!(
+        wait_for(Duration::from_secs(60), || std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json"))),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no panes and no run could be put back over one",
+    );
+
+    // THE KILL: outright, so nothing writes a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the second daemon never started serving",
+    );
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let listed = conn
+        .call(
+            "scene/query",
+            json!({
+                "session": "work",
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            }),
+        )
+        .expect("the runs slot answers");
+    let rows = listed.as_array().expect("a list of runs").clone();
+    let row_of = |id: u64| {
+        rows.iter()
+            .find(|run| run["id"] == json!(id))
+            .unwrap_or_else(|| panic!("run {id} survived the restart as a row: {rows:?}"))
+            .clone()
+    };
+
+    // ── THE CONTROL: a run with no machine still comes back dead ─────────────────────────────
+    assert_eq!(
+        row_of(1)["state"]["status"],
+        json!("interrupted"),
+        "⚠⚠⚠ THE CONTROL FAILED: a run whose plugin walks no statechart came back alive. Nothing \
+         recorded where it was, so there was nowhere to put it — a daemon that started it again \
+         would be starting a SECOND run under the first one's id. Rows: {rows:?}",
+    );
+
+    // ── THE CLAIM: the loop is driven again ──────────────────────────────────────────────────
+    assert_ne!(
+        row_of(0)["state"]["status"],
+        json!("interrupted"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a daemon was restarted under a live loop whose place AND \
+         request were both on disk, and the loop came back dead. Every brick before this one is a \
+         capability nothing calls: the place crossed the log, the words its entry actions wrote \
+         crossed beside them, and the boot did not pick them up. Rows: {rows:?}",
+    );
+    drop(conn);
+    drop(guard);
+}
+
 /// ⚠⚠ **A RUN WHOSE DAEMON DIED IS ACCOUNTED FOR** — the record that used to vanish with the
 /// process that was keeping it.
 ///

@@ -327,17 +327,32 @@ pub const RUN_DRIVING_KEY: &str = "driving";
 /// [`sprag_rpc::WIRE_PROTOCOL`] where it is, because nothing a client can say or read changed.
 ///
 /// ⚠⚠⚠ **AND NOTHING IN THIS DAEMON WRITES IT YET, which is said here rather than left to be
-/// discovered.** The only thing entitled to is a boot putting an INHERITED run back at the place
-/// its run log recorded, and that is item 543's next brick — deliberately not built, because a
-/// resume today would hand its peer an EMPTY prompt (`sprag_plugin`'s
-/// `a_resumed_loop_composes_a_real_prompt_and_not_an_empty_one`, red on purpose). Until then the
-/// reader below is reached by `sprag-term --drive` alone, which is a person handing a driver a
-/// request directly.
+/// discovered** — but the reason changed on the round that built the boot, so it is restated rather
+/// than left to age. It is no longer *a resume would hand its peer an empty prompt*: that was item
+/// 543's fifth brick and it is paid (`sprag_plugin`'s
+/// `a_resumed_loop_composes_a_real_prompt_and_not_an_empty_one`, green). A boot DOES put inherited
+/// runs back now — [`PluginsExternal::put_back`] — and it does so **in this process**, by calling
+/// `sprag_plugin::Plugin::resume_at` on a plugin it holds, so nothing has to travel as a key.
+///
+/// ⚠⚠⚠⚠ **WHAT WOULD WRITE IT IS A BOOT RESUMING AN OUT-OF-PROCESS RUN, AND THAT CANNOT HAPPEN
+/// YET — measured.** [`progress_to_json`] carries neither `at` nor `place`, so a run whose driver is
+/// another process reports its counters and never its position; its row publishes them from a cell
+/// that never moves, and `crate::runs::RunRegistry::persistable` therefore writes such a run's log
+/// with **no place in it at all**. There is consequently nothing for a boot to put back for exactly
+/// the runs whose driver reads this key, and `put_back` refuses on such a daemon rather than
+/// quietly driving one somewhere its own daemon says drivers do not live.
 ///
 /// ⚠⚠ It is the DRIVER's side that reads it ([`drive_request`]), because that is where the plugin
 /// is built. An empty list is refused rather than treated as *no place*, on
 /// `crate::runs::PersistedRun::resumable_place`'s exact rule.
 pub const RUN_PLACE_KEY: &str = "place";
+/// **WHICH PANE A RUN DRIVES**, as every pane-driving form on this surface names it.
+///
+/// ⚠⚠ A constant so the one reader that is NOT a parse — [`pane_named`], which a boot uses to find
+/// the pool a pane is sitting in — cannot drift from the parse. The wire grammar spells the word
+/// too and is a separate authority on purpose (it publishes what a caller may say); what this ties
+/// together is the two places in THIS file that read it.
+pub const RUN_PANE_KEY: &str = "pane";
 /// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
 /// gave one, the rule [`RUN_CEILING_KEY`] follows.
 ///
@@ -809,7 +824,7 @@ impl PluginsExternal {
                     plugin
                 })?
             }
-            None => self.spawn_run(label, opened_by, opened_by_session, plugin, guardrails),
+            None => self.spawn_run(label, opened_by, opened_by_session, plugin, guardrails, map),
         };
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
@@ -1111,6 +1126,28 @@ pub fn drive_request(
     Ok(Driven { outcome, output })
 }
 
+/// **WHICH PANE A REQUEST'S RUN WOULD DRIVE** — [`RUN_PANE_KEY`], or [`None`] for a request that
+/// names none under it. Register item 543's sixth brick.
+///
+/// # ⚠⚠⚠⚠⚠ It is a LOCATOR and not a second parse, and the difference is what it may be wrong about
+///
+/// `plugin_from_request` is the one authority on what a request means, and this does not pretend
+/// to be a second one: it exists because a daemon BOOT has to find the pane POOL before it can build
+/// anything at all — a pane access speaks one pool, and the pool is chosen by where the pane is
+/// (`sprag_terminal::SessionRegistry::pool_holding`). The builder cannot answer that, because
+/// building is what it needs the answer for.
+///
+/// ⚠⚠ **SO ITS ONLY FAILURE MODE IS DECLINING TO RESUME.** A request whose plugin names its pane
+/// some other way (`pipe` names two, `src` and `dst`) answers [`None`] here, and a boot then leaves
+/// that run the honest `interrupted` it already had. It cannot send a run to the WRONG pool: the
+/// builder re-reads the key itself and `require_pane_in` refuses a pane the pool does not hold.
+///
+/// ⚠ Tied to the builder at the KEY, which is the drift that could actually happen — a rename that
+/// touched one and not the other would otherwise leave every inherited loop unresumable in silence.
+pub fn pane_named(map: &Map<String, Value>) -> Option<PaneId> {
+    map.get(RUN_PANE_KEY).and_then(Value::as_u64).map(PaneId)
+}
+
 /// **THE ONE BUILDER, AND THE WORLD IS AN ARGUMENT** — register items 544 and 643.
 ///
 /// # ⚠⚠⚠⚠⚠ Why this is a free function and not a method
@@ -1142,7 +1179,7 @@ fn plugin_from_request(
         PluginName::from_wire(require_str(map, "plugin")?).ok_or(InvokeError::TypeMismatch)?;
     match named {
         PluginName::Orchestrator => {
-            let pane = require_pane_id(map, "pane")?;
+            let pane = require_pane_id(map, RUN_PANE_KEY)?;
             require_pane_in(world, pane)?;
             let stimulus = require_str(map, "stimulus")?.to_string();
             let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
@@ -1182,7 +1219,7 @@ fn plugin_from_request(
             ))
         }
         PluginName::Agent => {
-            let pane = require_pane_id(map, "pane")?;
+            let pane = require_pane_id(map, RUN_PANE_KEY)?;
             require_pane_in(world, pane)?;
             let prompt = require_str(map, "prompt")?.to_string();
             let mut spec = AgentSpec::new(prompt);
@@ -1249,7 +1286,7 @@ fn plugin_from_request(
             Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
         }
         PluginName::Answer => {
-            let pane = require_pane_id(map, "pane")?;
+            let pane = require_pane_id(map, RUN_PANE_KEY)?;
             require_pane_in(world, pane)?;
             // ⚠⚠ REQUIRED, alone among the forms — see
             // [`PluginGrammar::MUST_ANSWER`](crate::wire::PluginGrammar::MUST_ANSWER). A run
@@ -1273,7 +1310,7 @@ fn plugin_from_request(
             ))
         }
         PluginName::AiLoop => {
-            let pane = require_pane_id(map, "pane")?;
+            let pane = require_pane_id(map, RUN_PANE_KEY)?;
             require_pane_in(world, pane)?;
             // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
             // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
@@ -1368,9 +1405,58 @@ impl PluginsExternal {
         label: String,
         opened_by: Option<u64>,
         opened_by_session: Option<String>,
+        plugin: PluginKind,
+        guardrails: Guardrails,
+        request: &Map<String, Value>,
+    ) -> RunId {
+        let name = plugin.name();
+        // The id BEFORE the thread, because the announcement names it and the worker cannot ask the
+        // registry for its own id without taking the lock the registry is being written under.
+        let id = lock(&self.runs).reserve();
+        // The cell the driver writes its counters into, shared with the registry so `runs` can
+        // answer them while the run is still spending.
+        let progress = sprag_plugin::ProgressCell::default();
+        let (state, run) = self.drive_on_a_thread(id, &progress, plugin, guardrails);
+        lock(&self.runs).submit(crate::runs::NewRun {
+            id,
+            label,
+            plugin: name,
+            // ⚠⚠⚠⚠⚠ **AND WHAT IT WAS ASKED WITH, SO A SUCCESSOR CAN ASK AGAIN** — register item
+            // 543's sixth brick. The map is the only thing a restart cannot re-derive: the plugin
+            // it describes lives on a thread that will not outlive this daemon, and
+            // `plugin_from_request` is the one way to make another one. What the registry does
+            // with it is `crate::runs::PersistedRun::request`'s rule, not this layer's.
+            request: Some(request.clone()),
+            opened_by,
+            opened_by_session,
+            state,
+            run,
+            progress,
+        })
+    }
+
+    /// **DRIVE `plugin` TO A TERMINAL STATE ON A THREAD OF THIS DAEMON'S OWN** — the worker half of
+    /// [`spawn_run`](Self::spawn_run), and the half a RESUME needs on its own.
+    ///
+    /// # ⚠⚠⚠ Why it is separate from the registration around it
+    ///
+    /// A run being started and a run being PUT BACK ([`put_back`](Self::put_back), register item
+    /// 543) want the same driver and different bookkeeping: one reserves an id and submits a new
+    /// row, the other is handed an id and a cell that already exist and REPLACES a row's driver. A
+    /// second copy of this body for the second case would be a second answer to *what does driving
+    /// a run in this daemon mean* — free to drift in whichever hook one of them forgot, exactly the
+    /// shape `plugin_from_request`'s own doc argues against one seam further out.
+    ///
+    /// `id` is taken rather than reserved here because the worker ANNOUNCES under it, and the two
+    /// callers get it from different places. `progress` likewise: a fresh run makes one, a resumed
+    /// run is handed the cell its row is already publishing.
+    fn drive_on_a_thread(
+        &self,
+        id: RunId,
+        progress: &sprag_plugin::ProgressCell,
         mut plugin: PluginKind,
         guardrails: Guardrails,
-    ) -> RunId {
+    ) -> (Arc<Mutex<RunState>>, Box<dyn crate::runs::RunHandle>) {
         // ⚠⚠⚠⚠ ASKED BEFORE THE PLUGIN MOVES INTO THE WORKER — register items 539 and 597. Once
         // the thread owns it there is nothing left here to ask, so the plugin's own answer is taken
         // now and replayed by `ThreadRun::honours`.
@@ -1378,7 +1464,6 @@ impl PluginsExternal {
         // ⚠⚠ WALKED FROM `StandingOrder::ALL` rather than listed: an order added to that set is
         // asked about here with nothing to remember, which is this repository's *a list with no
         // glob decides alone* rule pointed the other way — the glob is the type's own list.
-        let name = plugin.name();
         let honoured: Vec<sprag_plugin::StandingOrder> = sprag_plugin::StandingOrder::ALL
             .into_iter()
             .filter(|order| plugin.as_plugin().honours(*order))
@@ -1418,13 +1503,7 @@ impl PluginsExternal {
                 Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
             }));
         let on_end = self.on_run_end.clone();
-        // The id BEFORE the thread, because the announcement names it and the worker cannot ask the
-        // registry for its own id without taking the lock the registry is being written under.
-        let id = lock(&self.runs).reserve();
-        // The cell the driver writes its counters into, shared with the registry so `runs` can
-        // answer them while the run is still spending.
-        let progress = sprag_plugin::ProgressCell::default();
-        let worker_progress = Arc::clone(&progress);
+        let worker_progress = Arc::clone(progress);
         let handle = thread::spawn(move || {
             let outcome = Driver::new(guardrails).reporting_to(worker_progress).run(
                 plugin.as_plugin(),
@@ -1446,22 +1525,16 @@ impl PluginsExternal {
                 announce(id);
             }
         });
-        lock(&self.runs).submit(crate::runs::NewRun {
-            id,
-            label,
-            plugin: name,
-            opened_by,
-            opened_by_session,
+        (
             state,
             // ⚠⚠⚠ THE REGISTRY IS TOLD *A RUN*, NOT *A THREAD AND THREE FLAGS* — register item
             // 544's stage 2. This is the one place in the product that knows the driver is
             // in-process, which is exactly where that knowledge should end up once a run's driver
             // can be another process. See `sprag_host::runs::RunHandle`.
-            run: Box::new(crate::runs::ThreadRun::new(
+            Box::new(crate::runs::ThreadRun::new(
                 cancel, order, hold, honoured, handle,
             )),
-            progress,
-        })
+        )
     }
 
     /// **START THIS RUN IN A PROCESS OF ITS OWN** and register it — register items 544 / 643.
@@ -1532,6 +1605,12 @@ impl PluginsExternal {
             id,
             label,
             plugin: name,
+            // ⚠⚠ THE STRIPPED MAP, which is the same decision the line above it makes: what is
+            // recorded is *the request that starts this run from the top*, and where it resumes is
+            // never part of that — a boot writes the place it read out of ITS OWN log. Recording
+            // `request` with a place on it would let one restart's answer become the next
+            // restart's question. Register item 543's sixth brick.
+            request: Some(handed.clone()),
             opened_by,
             opened_by_session,
             state,
@@ -1547,6 +1626,98 @@ impl PluginsExternal {
             // report over this cell precisely because this one can never move.
             progress: sprag_plugin::ProgressCell::default(),
         }))
+    }
+
+    /// ⚠⚠⚠⚠⚠ **PUT A RUN A DEAD DAEMON LEFT BEHIND BACK ON A DRIVER, WHERE ITS LOG SAYS IT WAS** —
+    /// register item 543's sixth brick, and the moment a restart stops being a death.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What each of the five bricks before this one bought, and what is left for here
+    ///
+    /// A loop can say where its machine is and be put back there (`sprag_plugin::OuterLoop`); that
+    /// place survives being written down as words; the words cross a run log and come back only
+    /// through a door that checks the document that wrote them
+    /// (`crate::runs::PersistedRun::resumable_place`); a plugin takes them
+    /// (`sprag_plugin::Plugin::resume_at`); and the words a machine's entry actions wrote cross
+    /// beside the states, so a resumed loop composes a real prompt instead of a blank one. Every
+    /// one of those is a capability, and until this function existed **nothing in the product
+    /// called any of them at boot** — which is register item 492's shape (*authored and never
+    /// read*) spread over five rounds.
+    ///
+    /// # ⚠⚠⚠⚠ It refuses on a daemon that drives runs OUT of process, and that is not a gap
+    ///
+    /// Measured on the round that wrote this: a driver in another process reports its counters
+    /// through [`progress_to_json`], and that renderer carries **neither `at` nor `place`** — so
+    /// such a run's row publishes them from a cell that never moves, and `persistable` writes a log
+    /// with no place in it at all. There is therefore nothing to resume for those runs today, and
+    /// resuming them HERE — on a thread of this daemon's — would answer a question nobody asked:
+    /// [`crate::options::RUN_DRIVER_PROCESS`] is the daemon's statement about where its drivers
+    /// live, and a boot that quietly drove one differently would be the invisible divergence that
+    /// option promises cannot happen. The refusal is the honest `interrupted` such a run already
+    /// gets, and the residue is written down rather than hidden.
+    ///
+    /// # ⚠⚠⚠ Everything is checked BEFORE the row is touched
+    ///
+    /// The plugin is built, the guardrails parsed and the machine placed while the run is still
+    /// `interrupted`; only then does the row get a driver. A resume that failed half way would
+    /// otherwise leave a row claiming to be running with a plugin nobody could step — strictly
+    /// worse than the ending it already had.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the builder refuses (a pane this daemon no longer holds, a plugin word this build
+    /// no longer spells, a malformed guardrail), whatever the machine refuses about the place, and
+    /// a row that stopped being resumable between [`crate::runs::RunRegistry::inherited`] and here.
+    pub fn put_back(&self, inherited: &crate::runs::InheritedRun) -> Result<(), InvokeError> {
+        if self.spawn_driver.is_some() {
+            return Err(refused(
+                "this daemon drives its runs in processes of their own, and an inherited run put \
+                 back on a thread here would be driven somewhere its own daemon says runs do not \
+                 live"
+                    .to_owned(),
+            ));
+        }
+        let (mut plugin, _label) = plugin_from_request(self, &inherited.request)?;
+        let guardrails = parse_guardrails(&inherited.request, plugin.default_cost())?;
+        // ⚠⚠⚠⚠ THE SAME FOUR ANSWERS `drive_request` READS, and they are worth spelling separately
+        // here rather than collapsing to *it did not work*: the person who meets one of these is
+        // holding a run log and a daemon that has just decided not to bring their run back.
+        match plugin.as_plugin().resume_at(&inherited.place) {
+            sprag_plugin::Resumption::Placed => {}
+            sprag_plugin::Resumption::NoMachine => {
+                return Err(refused(format!(
+                    "run {} was to be put back at a saved place and {} has no machine to put back",
+                    inherited.id.0,
+                    plugin.name().wire_str()
+                )));
+            }
+            sprag_plugin::Resumption::NotThisDocument => {
+                return Err(refused(format!(
+                    "run {}'s saved place is not spelled in this build's statecharts",
+                    inherited.id.0
+                )));
+            }
+            sprag_plugin::Resumption::Refused(why) => {
+                return Err(refused(format!(
+                    "this build's own machine will not be put back where run {} was: {why}",
+                    inherited.id.0
+                )));
+            }
+        }
+        let name = plugin.name();
+        let (state, run) =
+            self.drive_on_a_thread(inherited.id, &inherited.progress, plugin, guardrails);
+        if lock(&self.runs).put_back(inherited.id, name, state, run) {
+            return Ok(());
+        }
+        // ⚠⚠⚠ THE ROW WOULD NOT TAKE IT, AND THE DRIVER WAS ALREADY GOING. Unreachable at a boot,
+        // which is single-threaded and acts on a list it has just asked for — and answered anyway,
+        // because the alternative to saying this is a caller told nothing. The worker itself is
+        // stood down by the door that refused it, which is where the handle is.
+        Err(refused(format!(
+            "run {} stopped being resumable while its driver was being built, so the driver was \
+             stood down again",
+            inherited.id.0
+        )))
     }
 }
 
@@ -3646,6 +3817,9 @@ mod tests {
             runs: vec![crate::runs::PersistedRun {
                 id: 0,
                 label: "agent pane=0".to_owned(),
+                // ⚠ An older log records no request either — item 543. This fixture's run is
+                // therefore one nobody could put back, which is what every log held before it.
+                request: None,
                 iterations: 1,
                 cost: None,
                 unit: None,
@@ -3782,6 +3956,9 @@ mod tests {
             crate::runs::PersistedRun {
                 id,
                 label: "ai_loop pane=2".to_owned(),
+                // ⚠ FINISHED, so item 543's door would refuse a request even if one were here: a
+                // run whose ending was recorded is over, and nothing puts one back.
+                request: None,
                 iterations: 1,
                 cost: None,
                 unit: None,
@@ -7522,6 +7699,219 @@ mod tests {
             json!(9),
             "⚠⚠⚠ the LATEST report is what a row shows — a first one that stuck would leave the \
              gate beside this proving only that something was stored once: {row:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN A DEAD DAEMON LEFT BEHIND COMES BACK ON A DRIVER OF THIS ONE'S** — register
+    /// item 543's sixth brick, at the door a boot puts an inherited run through.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was true before this, and it was true for five rounds of building
+    ///
+    /// A loop could say where its machine was and be put back there; the place survived being
+    /// written down as words; the words crossed a run log and came back only through a door that
+    /// checked the document that wrote them; a plugin took them; and the datamodel crossed beside
+    /// them so a resumed loop composes a real prompt. **Every one of those is green, and nothing
+    /// called any of them at boot** — register item 492's shape (*authored and never read*) spread
+    /// over five rounds. This is the gate that says something does.
+    ///
+    /// # ⚠⚠⚠⚠ What it measures, and what it deliberately leaves to the layer below
+    ///
+    /// It measures the WIRING: a run that came back `interrupted` from a predecessor's log is
+    /// handed a driver again, under its own id, having been offered the place that log recorded.
+    /// **That the machine honours those words is not asserted here** — that is
+    /// `sprag_plugin`'s `a_resumed_loop_is_placed_rather_than_walked_and_does_not_re_open_with_its_prompt`
+    /// and `a_place_carries_the_words_a_resumed_loop_cannot_compose_for_itself`, which drive a loop
+    /// against a stand-in peer and can see it. The two together are the chain; neither alone is.
+    ///
+    /// # ⚠⚠⚠ Four controls, because each half of the pair has its own way of being vacuous
+    ///
+    /// * a place from ANOTHER build's documents is not inherited at all (or the fingerprint is
+    ///   decoration and a restart would enter a run into a document it never ran in);
+    /// * a log with a place and NO request is not inherited (or *the request crossed* is a claim
+    ///   about a field nothing reads);
+    /// * a place this build cannot spell is REFUSED at the door and the row stays `interrupted` (or
+    ///   `put_back` never reads the place, and a resume is a restart from the top wearing its name);
+    /// * a daemon that drives its runs in processes of their own refuses (or a boot would put a run
+    ///   back somewhere that daemon's own configuration says drivers do not live).
+    #[test]
+    fn a_run_a_dead_daemon_left_behind_is_put_back_on_a_driver_of_this_ones() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        // ⚠ ONE ITERATION: what this gate measures happens before the first step either way, and a
+        // driver left running past the assertions is a thread typing into a dropped fixture.
+        let asked = ai_loop_request(
+            pane,
+            json!({ "guardrails": { "max_iterations": 1, "max_seconds": 5 } }),
+        );
+        let asked = asked.as_object().expect("a request is an object").clone();
+
+        // ⚠⚠ THE PLACE A REAL LOOP SAYS IT IS IN, asked of the product's own builder over this very
+        // request. A fixture that spelled state names here would round-trip its own invention and
+        // say nothing about whether a boot can carry what a loop actually produces.
+        let aside = Arc::new(Mutex::new(RunRegistry::default()));
+        let building =
+            PluginsExternal::new(Arc::clone(&workspace), aside, None, None, None, None, None);
+        let (mut built, label) =
+            plugin_from_request(&building, &asked).expect("the shipped document builds a loop");
+        // ⚠⚠⚠⚠⚠ **IT IS STEPPED FIRST, AND THAT IS THE FIXTURE'S OWN HONESTY RATHER THAN A
+        // CEREMONY.** A machine that has been CONSTRUCTED and never driven is not in a settled
+        // configuration — measured on the round that wrote this: its `place` names a compound state
+        // as current, and `enter_at` refuses it (*"not somewhere a settled machine stops"*). Nothing
+        // in the product ever writes such a place down (`Driver` asks the plugin AFTER each step,
+        // so a log carries only settled ones), so a fixture that saved one would be measuring this
+        // gate against a record no daemon can produce.
+        built
+            .as_plugin()
+            .step(
+                &sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace)),
+                &sprag_plugin::RunContext::uncancellable(),
+            )
+            .expect("a live pane takes a pass");
+        let place = built
+            .as_plugin()
+            .place()
+            .expect("an ai_loop says where its machine is");
+
+        let here = sprag_plugin::STATECHARTS_FINGERPRINT;
+        let saved = |place: Option<Vec<String>>,
+                     document: Option<&str>,
+                     request: Option<Map<String, Value>>| {
+            crate::runs::RunLog {
+                version: crate::runs::RUN_LOG_VERSION,
+                runs: vec![crate::runs::PersistedRun {
+                    id: 7,
+                    label: label.clone(),
+                    request,
+                    iterations: 4,
+                    cost: None,
+                    unit: None,
+                    finished: false,
+                    outcome: None,
+                    ceiling: None,
+                    output: None,
+                    build: None,
+                    opened_by_session: None,
+                    at: None,
+                    document: document.map(str::to_owned),
+                    stood_down: None,
+                    cancelled_by: None,
+                    deliveries: None,
+                    banked: None,
+                    place,
+                }],
+            }
+        };
+        // ⚠ A SUCCESSOR PER CASE: its own registry, restored from its own predecessor's log, which
+        // is what a boot is. Sharing one would let an earlier case's row answer a later one.
+        let inheriting = |log: &crate::runs::RunLog| {
+            let runs = Arc::new(Mutex::new(RunRegistry::default()));
+            lock(&runs).restore(log);
+            runs
+        };
+        let over = |runs: &Arc<Mutex<RunRegistry>>| {
+            PluginsExternal::new(
+                Arc::clone(&workspace),
+                Arc::clone(runs),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        // ── CONTROL 1: a place from ANOTHER build's documents is not inherited ───────────────
+        let foreign = inheriting(&saved(
+            Some(place.clone()),
+            Some("0000000000000000"),
+            Some(asked.clone()),
+        ));
+        assert!(
+            lock(&foreign).inherited().is_empty(),
+            "⚠⚠⚠ A CONTROL FAILED: a run whose place was recorded against a document this build \
+             does not have was offered for resuming. Nothing migrates a configuration between \
+             documents, so putting that run back would enter it into a document it never ran in — \
+             register item 544's whole finding.",
+        );
+
+        // ── CONTROL 2: a place with no request is not inherited ──────────────────────────────
+        let placeless = inheriting(&saved(Some(place.clone()), Some(here), None));
+        assert!(
+            lock(&placeless).inherited().is_empty(),
+            "⚠⚠⚠ A CONTROL FAILED: a run with a place and nothing to rebuild its plugin from was \
+             offered for resuming. If this passes while the claim below does too, *the request \
+             crossed the log* is a statement about a field nobody reads.",
+        );
+
+        // ── CONTROL 3: a place this build cannot spell is refused, and the row does not move ──
+        //
+        // ⚠⚠⚠⚠ THE FORGERY IS SHAPED LIKE A REAL RECORD — every word but the head is the loop's
+        // own — for the reason item 543's own rounds measured twice: a single junk word is refused
+        // for the WRONG reason (a head that is not among the states it names), so it stays green
+        // against a door that has stopped reading names at all. ⚠ It cannot occur naturally, since
+        // a matching fingerprint means matching documents; that is exactly why it is constructed.
+        let mut forged = place.clone();
+        forged[0] = "a-state-no-document-in-this-build-has".to_owned();
+        let unreadable = inheriting(&saved(Some(forged), Some(here), Some(asked.clone())));
+        let offered = lock(&unreadable).inherited();
+        assert_eq!(
+            offered.len(),
+            1,
+            "⚠⚠ THE CONTROL'S OWN PREMISE: the record has both halves, so the registry must offer \
+             it and the refusal below must come from the door rather than from the offering.",
+        );
+        let mut external = over(&unreadable);
+        let refused = external.put_back(&offered[0]);
+        assert!(
+            refused.is_err(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a place this build cannot read was SWALLOWED and the run \
+             was put back anyway — which means put back AT THE TOP, firing every `<onentry>` on the \
+             way down and re-typing the loop's opening prompt into somebody's pane. A door that \
+             never reads the place answers `Ok` here exactly as it does below.",
+        );
+        assert_eq!(
+            row_of(&mut external, 7)["state"]["status"],
+            json!(RunStatus::Interrupted.wire_str()),
+            "⚠⚠⚠ AND THE ROW MUST NOT HAVE MOVED: a refusal that still swapped the driver would \
+             leave a row claiming to run with nothing driving it, which is strictly worse than the \
+             ending it already had.",
+        );
+
+        // ── CONTROL 4: a daemon that drives runs in processes of their own refuses ────────────
+        let elsewhere = inheriting(&saved(Some(place.clone()), Some(here), Some(asked.clone())));
+        let offered = lock(&elsewhere).inherited();
+        let out_of_process = over(&elsewhere).driving_out_of_process(Arc::new(|_, _| {
+            Err(std::io::Error::other(
+                "this gate's daemon is never asked to start a driver",
+            ))
+        }));
+        assert!(
+            out_of_process.put_back(&offered[0]).is_err(),
+            "⚠⚠⚠ A CONTROL FAILED: a daemon configured to drive its runs in processes of their own \
+             put an inherited one back on a THREAD of its own. `RUN_DRIVER_PROCESS` promises the \
+             same request means the same thing either way, and a boot is not exempt from it.",
+        );
+
+        // ── THE CLAIM: the run this daemon inherited is driven again, under its own id ────────
+        let runs = inheriting(&saved(Some(place.clone()), Some(here), Some(asked)));
+        let offered = lock(&runs).inherited();
+        assert_eq!(offered.len(), 1, "the log's one resumable run is offered");
+        assert_eq!(offered[0].id.0, 7, "and it keeps the id its log gave it");
+        assert_eq!(
+            offered[0].place, place,
+            "⚠⚠ and the words offered are the ones the log held, not a re-derivation of them",
+        );
+        let mut external = over(&runs);
+        external
+            .put_back(&offered[0])
+            .expect("a run whose place and request both survived is one this daemon can put back");
+        let row = row_of(&mut external, 7);
+        assert_ne!(
+            row["state"]["status"],
+            json!(RunStatus::Interrupted.wire_str()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543: the daemon read a place, read a request, built the plugin, \
+             placed the machine — and the run is still `interrupted`. A restart that can resume and \
+             does not is the same dead run with more code behind it. Row: {row:?}",
         );
     }
 

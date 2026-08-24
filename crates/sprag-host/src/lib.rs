@@ -582,6 +582,59 @@ fn pane_container(id: PaneId, pty: &PanePty, cells: PaneCells) -> Scene {
 /// [`Omitted`](PaneCells::Omitted) and the assembly stops being proportional to the pane set
 /// at all — see `rpc::pane_cells_for` for which callers those are and why the answer is
 /// decidable from the method alone.
+/// **A CALL THAT ANNOUNCES SOMETHING ABOUT ONE RUN**, as the plugin surface takes it.
+///
+/// A named type rather than the shape spelled at each site, for the reason clippy states as
+/// `type_complexity` and this workspace states as *a signature nobody can read is a signature
+/// nobody checks*: there are four of these and they are all the same call.
+pub type RunAnnounce = Arc<dyn Fn(crate::runs::RunId) + Send + Sync>;
+
+/// **WHERE A RUN'S END AND A PERSON'S ORDER TO IT ARE ANNOUNCED**, for watchers of `session` —
+/// `(on_end, on_ordered)`.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function and not two closures at the one call site it used to have
+///
+/// It has two call sites now. [`workspace_scene`] mints these per request, and a daemon BOOT mints
+/// them again for a run it is putting back on a driver (register item 543's sixth brick) — and a
+/// resumed run whose end nobody announced would be a row that stops moving with every watcher of it
+/// still parked. Two spellings of *where a run's news goes* is the shape this workspace has paid for
+/// at every surface it duplicated, drifting first in whichever event one of them forgot.
+///
+/// ⚠⚠ **THE SAME OPAQUE-`Fn` DISCIPLINE THE PLUGIN SURFACE'S OTHER HOOKS FOLLOW**, and for a sharper
+/// reason here: a journal is per SESSION and a run is not in one (the registry is the daemon's, the
+/// pane pool is a window's). What crosses the boundary is a call with a run id in it; which channel
+/// that reaches is this side's business.
+///
+/// ⚠ The name is captured rather than borrowed: the caller is a throwaway projection and the worker
+/// that will announce outlives it.
+///
+/// ⚠⚠⚠ A run's ORDERS were readable and unannounceable — register item 648. The row publishes
+/// `stood_down` and `cancelled_by`, so a driver outside this daemon (item 544) could ASK, and had
+/// nothing to be woken by, which means asking on a clock. Items 629/630/631/640 spent four rounds
+/// taking exactly that off the PANE axis; the second of these is what stops the run axis being where
+/// it comes back.
+#[must_use]
+pub fn run_announcers(
+    channels: &Arc<ChannelRegistry>,
+    session: &str,
+) -> (RunAnnounce, RunAnnounce) {
+    let on_end = {
+        let channels = Arc::clone(channels);
+        let session = session.to_owned();
+        Arc::new(move |id: crate::runs::RunId| {
+            channels.announce(&session, vec![events::Event::RunFinished(id.0)]);
+        }) as RunAnnounce
+    };
+    let on_ordered = {
+        let channels = Arc::clone(channels);
+        let session = session.to_owned();
+        Arc::new(move |id: crate::runs::RunId| {
+            channels.announce(&session, vec![events::Event::RunOrdered(id.0)]);
+        }) as RunAnnounce
+    };
+    (on_end, on_ordered)
+}
+
 #[must_use]
 pub fn workspace_scene(
     scope: &SessionScope,
@@ -629,47 +682,64 @@ pub fn workspace_scene(
     // plugin-spawned pane feeds the reaper exactly like a mux one without the plugin layer ever
     // learning what the hook does, so no pane category can leave a lingering daemon and the ISP
     // boundary is intact.
-    // WHERE A RUN'S END IS ANNOUNCED, minted here so the plugin surface never learns what a session
-    // is. The scope's name is captured now — the external is a throwaway projection and the worker
-    // outlives it, so the closure owns the name rather than borrowing the scope.
-    //
-    // ⚠ THE SAME OPAQUE-`Fn` DISCIPLINE as the three hooks above, and for a sharper reason here: a
-    // journal is per SESSION and a run is not in one (the registry is the daemon's, the pane pool is
-    // the scope's). What crosses the boundary is a call with a run id in it; which channel that
-    // reaches is this side's business.
-    let plugin_run_end = {
-        let channels = Arc::clone(channels);
-        let session = scope.session().to_owned();
-        Some(Arc::new(move |id: crate::runs::RunId| {
-            channels.announce(&session, vec![events::Event::RunFinished(id.0)]);
-        }) as Arc<dyn Fn(crate::runs::RunId) + Send + Sync>)
-    };
-    // AND WHERE A PERSON SPEAKING TO A RUN IS ANNOUNCED — register item 648, minted here on the
-    // sentence above's exact terms and for a sharper reason: the reader this exists for is not in
-    // this process at all.
-    //
-    // ⚠⚠⚠ A run's ORDERS were readable and unannounceable. The row publishes `stood_down` and
-    // `cancelled_by`, so a driver outside this daemon (item 544) could ASK — and had nothing to be
-    // woken by, which means asking on a clock. Items 629/630/631/640 spent four rounds taking
-    // exactly that off the PANE axis; this is what stops the run axis being where it comes back.
-    let plugin_run_ordered = {
-        let channels = Arc::clone(channels);
-        let session = scope.session().to_owned();
-        Some(Arc::new(move |id: crate::runs::RunId| {
-            channels.announce(&session, vec![events::Event::RunOrdered(id.0)]);
-        }) as Arc<dyn Fn(crate::runs::RunId) + Send + Sync>)
-    };
-    let mut plugin_host = plugins::PluginsExternal::new(
-        Arc::clone(workspace),
+    children.push(Scene::External(
+        ExternalNode::new(Box::new(plugin_host(
+            Arc::clone(workspace),
+            runs,
+            scope.session(),
+            channels,
+            plugin_exit,
+            plugin_attention,
+            plugin_agents,
+        )))
+        .with_tag(PLUGINS_TAG),
+    ));
+    Scene::Container(ContainerNode::new(children).with_tag(WORKSPACE_TAG))
+}
+
+/// **THE PLUGIN SURFACE THIS DAEMON SERVES OVER ONE PANE POOL** — the ONE spelling of it.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is a function, and what its second caller is
+///
+/// It had one caller — [`workspace_scene`], per request — right up until a daemon BOOT needed one
+/// too, to put the runs it inherited back on drivers (register item 543's sixth brick). Assembling
+/// it a second time over there would have been a second answer to *what plugin surface does this
+/// daemon serve*, and the key that answer turns on is [`options::RUN_DRIVER_PROCESS`] — so the
+/// second copy would have been free to resume a run on a thread inside a daemon whose whole
+/// configuration says drivers live in processes of their own. That is the invisible divergence that
+/// option's own doc promises cannot happen, and one function is how.
+///
+/// ⚠⚠ **`session` IS FOR THE ANNOUNCEMENTS AND THE DRIVER, NEVER FOR THE PLUGIN.** The surface
+/// itself speaks only the pool: a plugin has no business knowing about the session tree (Interface
+/// Segregation). What the name is needed for is where a run's news is published
+/// ([`run_announcers`]) and which session a driver process must scope its waits to — both of them
+/// this side's business, carried in as opaque `Fn`s and a `-t` flag.
+///
+/// ⚠ The three hooks are taken as arguments rather than a `DaemonShared`, because the boot holds
+/// them individually and an in-process host holds none of them — `None` is a host with no wire
+/// clients to address, which is what each of those fields already documents.
+#[must_use]
+pub fn plugin_host(
+    workspace: Arc<Mutex<sprag_terminal::Workspace>>,
+    runs: &Arc<Mutex<RunRegistry>>,
+    session: &str,
+    channels: &Arc<ChannelRegistry>,
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    attention: Option<Arc<attention::AttentionRouter>>,
+    agents: Option<Arc<AgentClock>>,
+) -> plugins::PluginsExternal {
+    let (on_end, on_ordered) = run_announcers(channels, session);
+    let host = plugins::PluginsExternal::new(
+        workspace,
         Arc::clone(runs),
-        plugin_exit,
-        plugin_attention,
-        plugin_agents,
-        plugin_run_end,
-        plugin_run_ordered,
+        on_pane_exit,
+        attention,
+        agents,
+        Some(on_end),
+        Some(on_ordered),
     );
     // ⚠⚠⚠⚠⚠ AND WHERE A RUN'S DRIVER IS PUT IN A PROCESS OF ITS OWN — register items 544 / 643 /
-    // 650, minted here on the two hooks above's exact terms and for their reason: starting a driver
+    // 650, minted here on the announcements' exact terms and for their reason: starting a driver
     // needs to know WHICH BINARY THIS IS, WHICH ENDPOINT it serves and WHICH SESSION a client of it
     // must scope to, and the session tree is precisely what the plugin surface is free of.
     //
@@ -677,12 +747,9 @@ pub fn workspace_scene(
     // did before — see `crate::options::RUN_DRIVER_PROCESS` for why that default is the migration
     // rather than the destination.
     if config::option_is_on(options::RUN_DRIVER_PROCESS) {
-        plugin_host = plugin_host.driving_out_of_process(driver_spawn(scope.session().to_owned()));
+        return host.driving_out_of_process(driver_spawn(session.to_owned()));
     }
-    children.push(Scene::External(
-        ExternalNode::new(Box::new(plugin_host)).with_tag(PLUGINS_TAG),
-    ));
-    Scene::Container(ContainerNode::new(children).with_tag(WORKSPACE_TAG))
+    host
 }
 
 /// **HOW THIS DAEMON STARTS A RUN'S DRIVER**, scoped to `session` — register items 544 / 643 / 650.

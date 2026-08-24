@@ -739,6 +739,19 @@ struct RunRecord {
     /// successor daemon does not know and does not guess. Such a run has no driver either, so the
     /// order would be refused regardless — see [`RunRegistry::standing_order`].
     plugin: Option<crate::plugins::PluginName>,
+    /// **THE REQUEST THIS RUN WAS ASKED WITH**, or [`None`] for a run nothing could rebuild —
+    /// register item 543's sixth brick. See [`PersistedRun::request`], which is where it goes.
+    ///
+    /// ⚠⚠ **KEPT SO A SUCCESSOR CAN BUILD THE SAME PLUGIN**, and for nothing else in this process:
+    /// the plugin it describes is already built and already running here. It is the one thing a
+    /// restart cannot re-derive — [`plugin`](Self::plugin) is a word, and a word does not carry a
+    /// brief, a pane or a set of guardrails.
+    ///
+    /// ⚠ [`None`] on a run RESTORED from a log that carried no request, and on one whose place this
+    /// build cannot read: `PersistedRun::resumable_request` is the only door it comes back through,
+    /// so a record that could not be acted on does not hold a person's prose for a second daemon's
+    /// lifetime either.
+    request: Option<serde_json::Map<String, serde_json::Value>>,
     /// WHO ASKED for this run — the pane whose occupant wanted it, or [`None`] for a run nobody
     /// claims (what a person starting one from a shell is).
     ///
@@ -891,6 +904,10 @@ pub struct NewRun {
     /// **WHICH PLUGIN THIS RUN IS** — see `RunRecord::plugin` for why it is a type rather than a
     /// word parsed back out of [`label`](Self::label).
     pub plugin: crate::plugins::PluginName,
+    /// **THE REQUEST IT WAS ASKED WITH** — see `RunRecord::request`. A caller that holds no map
+    /// hands [`None`] and gets a run its successor cannot put back, which is what every run in
+    /// this daemon was before register item 543's sixth brick.
+    pub request: Option<serde_json::Map<String, serde_json::Value>>,
     /// The pane whose occupant asked for it, or [`None`] for a run nobody claims.
     pub opened_by: Option<u64>,
     /// **WHICH CONVERSATION ASKED** — the asking pane's `agent_session`, resolved by the caller
@@ -904,6 +921,51 @@ pub struct NewRun {
     /// registry is not allowed to know which kind it got (register item 544).
     pub run: Box<dyn RunHandle>,
     /// Where the driver writes what it has spent so far.
+    pub progress: ProgressCell,
+}
+
+/// **A RUN A PREDECESSOR DAEMON LEFT BEHIND THAT THIS ONE COULD PICK UP** — register item 543's
+/// sixth brick, and everything [`crate::plugins::PluginsExternal::put_back`] needs to do it.
+///
+/// # ⚠⚠⚠⚠⚠ Why the registry hands this out instead of resuming anything itself
+///
+/// Putting a run back means building a plugin, and a plugin needs a pane, a script engine and a
+/// world to validate against — none of which this directory has or should have. What it does have
+/// is the only copy of what a predecessor wrote down. So the split is the one this file already
+/// makes for orders: **finding the run is the directory's job, and knowing what to do with it is
+/// somebody else's.**
+///
+/// ⚠⚠ **AND IT IS HANDED OUT AFTER THE ROW ALREADY EXISTS**, never instead of one. A restored run
+/// is listed the moment [`RunRegistry::restore`] reads it, `interrupted` and honest; a boot that
+/// then puts it back replaces the driver ([`RunRegistry::put_back`]). Holding these back out of the
+/// list until a boot decided would make a daemon that crashed mid-boot answer *there is no such
+/// run* about a run its own log carries.
+#[derive(Clone)]
+pub struct InheritedRun {
+    /// The id it had, and keeps. A resumed run is the SAME run — a new id would make a reader who
+    /// is watching one row watch a row that has stopped moving.
+    pub id: RunId,
+    /// What the run is, in a reader's terms — the predecessor's own label, kept so a resumed row
+    /// does not rename itself under whoever was reading it.
+    pub label: String,
+    /// **WHERE ITS MACHINE WAS**, as `sprag_plugin::Plugin::place`'s words — already checked against
+    /// this image's documents by `PersistedRun::resumable_place`.
+    pub place: Vec<String>,
+    /// **WHAT IT WAS ASKED WITH** — `crate::plugins::plugin_from_request`'s map. Already checked
+    /// against the place by `PersistedRun::resumable_request`.
+    pub request: serde_json::Map<String, serde_json::Value>,
+    /// The cell the restored row already publishes, so a new driver writes where the row reads.
+    ///
+    /// ⚠⚠ **HANDED OVER RATHER THAN REPLACED, AND WHAT THAT BUYS IS EXACTLY ONE THING**: the row
+    /// goes on showing what the predecessor recorded until the new driver's FIRST STEP, instead of
+    /// dropping to zero the moment the run comes back. A fresh cell would make a person watching
+    /// the row see the run's history vanish at the instant it was rescued.
+    ///
+    /// ⚠ From that first step the counters are the NEW driver's own and the inherited ones are
+    /// gone — written down because it is a real loss and not an oversight. It is also the right
+    /// answer: the guardrails this driver runs under bound THIS driver's work, so a total carried
+    /// over would be measured against a ceiling nobody set. What survives the restart whole is the
+    /// run's place, which is the thing the work is actually made of.
     pub progress: ProgressCell,
 }
 
@@ -1092,6 +1154,29 @@ pub struct PersistedRun {
     /// nothing was banked. [`RUN_LOG_VERSION`] does not move, [`build`](Self::build)'s argument.
     #[serde(default)]
     pub banked: Option<PersistedBanked>,
+    /// ⚠⚠⚠⚠⚠ **THE REQUEST THIS RUN WAS ASKED WITH** — the map `crate::plugins::drive_request`
+    /// builds a plugin from, so a successor daemon can build the SAME plugin and put it back at
+    /// [`place`](Self::place). Register item 543's sixth brick.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a place alone was a record nobody could act on
+    ///
+    /// Everything else in this file describes what BECAME of a run, and that is all a reader needs
+    /// to be told what happened. Resuming is a different question: a machine cannot be put back
+    /// into a plugin that does not exist, and this daemon's whole way of making a plugin is
+    /// `plugin_from_request` — ONE builder, over a map. Without the map a successor holds a
+    /// configuration and nothing to enter it.
+    ///
+    /// ⚠⚠ **WRITTEN ONLY FOR A RUN THAT COULD ACTUALLY BE PUT BACK**, which is the pair rule
+    /// [`resumable_request`](Self::resumable_request) reads at the other end: unfinished, and with
+    /// a place recorded beside it. A brief is prose somebody wrote, and keeping it on every
+    /// finished `agent` run would put a person's words on disk for the life of a log that could
+    /// never use them.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument verbatim, an
+    /// optional field with a default reads in both directions, and a log written before this
+    /// existed simply describes runs nobody can resume.
+    #[serde(default)]
+    pub request: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// **THE STORED SHAPE OF [`sprag_plugin::Deliveries`]** — register item 606.
@@ -1245,6 +1330,33 @@ impl PersistedRun {
         let document = self.document.as_deref()?;
         (document == sprag_plugin::STATECHARTS_FINGERPRINT).then_some(place)
     }
+
+    /// ⚠⚠⚠⚠⚠ **THE REQUEST TO REBUILD THIS RUN'S PLUGIN FROM, IF THERE IS ANYTHING TO PUT BACK** —
+    /// register item 543's sixth brick, and the door [`RunRegistry::inherited`] reads.
+    ///
+    /// # Why it is guarded by the PLACE and not merely by its own presence
+    ///
+    /// The two halves are only useful together, and each alone is a way of being wrong. A request
+    /// with no readable place would have a successor build a plugin and start it **from the top**,
+    /// which re-fires every `<onentry>` and re-types the loop's opening prompt into somebody's
+    /// pane — the exact failure item 543 exists to end. A place with no request is a configuration
+    /// nothing can be entered into.
+    ///
+    /// So one door hands back either a request a caller has earned the right to act on or nothing
+    /// at all, on [`resumable_place`](Self::resumable_place)'s own argument: a rule prose states and
+    /// nothing enforces is a rule this file has already watched go unread.
+    ///
+    /// ⚠⚠ **AND A FINISHED RUN IS NOT RESUMABLE, WHATEVER IT CARRIES.** A run whose ending was
+    /// recorded is over; putting one back would be this daemon starting work nobody asked for,
+    /// under an id whose outcome a reader has already seen.
+    #[must_use]
+    pub fn resumable_request(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        if self.finished {
+            return None;
+        }
+        self.resumable_place()?;
+        self.request.as_ref()
+    }
 }
 
 /// The versioned file a daemon leaves behind for its successor.
@@ -1322,6 +1434,7 @@ impl RunRegistry {
             id,
             label: run.label,
             plugin: Some(run.plugin),
+            request: run.request,
             opened_by: run.opened_by,
             opened_by_session: run.opened_by_session,
             state: run.state,
@@ -1337,6 +1450,91 @@ impl RunRegistry {
             build: Some(crate::wire::BUILD.to_owned()),
         });
         id
+    }
+
+    /// **EVERY RUN A PREDECESSOR LEFT THAT THIS DAEMON COULD PICK UP** — register item 543's sixth
+    /// brick, in submit order.
+    ///
+    /// A run appears here exactly when [`restore`](Self::restore) kept both halves of what a resume
+    /// needs — a place spelled in this image's documents and the request that built the plugin —
+    /// which is `PersistedRun::resumable_request`'s rule, taken once at read time. Everything else
+    /// a predecessor left is a record of something that is over.
+    ///
+    /// ⚠ It says nothing about whether any of them CAN be resumed: the pane may be gone, the brief
+    /// may name a plugin this build no longer has, and the machine may refuse the place. Those are
+    /// answers only the layer holding a workspace can give — see
+    /// [`crate::plugins::PluginsExternal::put_back`], which gives them one at a time.
+    #[must_use]
+    pub fn inherited(&self) -> Vec<InheritedRun> {
+        self.runs
+            .iter()
+            .filter(|record| matches!(*lock(&record.state), RunState::Interrupted))
+            .filter_map(|record| {
+                let place = lock(&record.progress).place.clone()?;
+                Some(InheritedRun {
+                    id: record.id,
+                    label: record.label.clone(),
+                    place,
+                    request: record.request.clone()?,
+                    progress: Arc::clone(&record.progress),
+                })
+            })
+            .collect()
+    }
+
+    /// **THIS RESTORED RUN HAS A DRIVER AGAIN** — register item 543's sixth brick, and the one door
+    /// in this file that turns an ending back into a beginning.
+    ///
+    /// Returns whether it happened: [`false`] both for a run this daemon does not hold and for one
+    /// that is not [`RunState::Interrupted`], which is the only state a driver may be handed to.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the row is replaced rather than a second one submitted
+    ///
+    /// A resumed run is the SAME run. Submitting a new one would leave the old row standing as
+    /// `interrupted` for ever beside a new id doing its work — two rows for one piece of work, and
+    /// the reader watching the first would watch it not move. Ids are the thing every reader holds
+    /// on to (`cancel` takes one, an agent's own-run filter compares one), so the id is what must
+    /// survive the restart, exactly as it survives the log.
+    ///
+    /// ⚠⚠ **AND `Interrupted` IS A GUARD AND NOT A FORMALITY.** It is the one state that means *no
+    /// process is driving this*, so it is the only one where swapping the handle cannot orphan a
+    /// live driver — a `Running` row's worker would go on stepping a plugin nothing could then
+    /// cancel, because the flags a cancel reaches would be the new handle's.
+    ///
+    /// ⚠ The progress cell is NOT replaced: the caller was handed it by
+    /// [`inherited`](Self::inherited) precisely so the new driver writes where the row already
+    /// reads.
+    pub fn put_back(
+        &mut self,
+        id: RunId,
+        plugin: crate::plugins::PluginName,
+        state: Arc<Mutex<RunState>>,
+        run: Box<dyn RunHandle>,
+    ) -> bool {
+        let taken = self
+            .runs
+            .iter_mut()
+            .find(|record| record.id == id)
+            .filter(|record| matches!(*lock(&record.state), RunState::Interrupted));
+        let Some(record) = taken else {
+            // ⚠⚠⚠ THE DRIVER THIS DOOR WILL NOT INSTALL IS STOOD DOWN BEFORE IT IS DROPPED. A
+            // caller builds the driver first — it cannot know what plugin to name until it has —
+            // so a refusal here would otherwise leave a worker stepping a plugin that no row can
+            // cancel, hold or read. `Shutdown` and not `Person`, because nobody decided anything
+            // about this run (register item 596).
+            run.deliver(RunOrder::Cancel(Canceller::Shutdown));
+            return false;
+        };
+        record.state = state;
+        record.run = run;
+        // ⚠ NAMED AGAIN, where `restore` left it `None`: there is a driver now, so *which plugin
+        // would an order reach* has an answer again — see `RunRecord::plugin`.
+        record.plugin = Some(plugin);
+        // ⚠⚠ AND THE BUILD IS THIS ONE NOW. `restore` kept the dead daemon's stamp because that
+        // image is what drove the work being reported; from here the work is THIS image's, and
+        // register item 438 is exactly the confusion of dating one daemon's work to another.
+        record.build = Some(crate::wire::BUILD.to_owned());
+        true
     }
 
     /// **A DRIVER IN ANOTHER PROCESS SAYS WHAT ITS RUN HAS DONE** — register item 650. Returns
@@ -1498,9 +1696,10 @@ impl RunRegistry {
         RunLog {
             version: RUN_LOG_VERSION,
             runs: self
-                .snapshot()
+                .runs
                 .iter()
-                .map(|run| {
+                .zip(self.snapshot())
+                .map(|(record, run)| {
                     let (finished, outcome, ceiling, output) = match &run.state {
                         RunState::Running | RunState::Interrupted => (false, None, None, None),
                         RunState::Done { outcome, output } => (
@@ -1589,6 +1788,21 @@ impl RunRegistry {
                         // silent daemon from an old log; a canceller is an option already, so the
                         // absent case carries its own meaning and needs no second one.
                         cancelled_by: run.cancelled_by,
+                        // ⚠⚠⚠⚠⚠ AND WHAT WOULD BE NEEDED TO START IT AGAIN — register item 543's
+                        // sixth brick, and it is written under the SAME condition its reader
+                        // checks: a run still going, with a place recorded beside it. Either half
+                        // missing and a successor could do nothing with this but hold somebody's
+                        // prose on disk — see `PersistedRun::request`, which holds the argument.
+                        //
+                        // ⚠⚠ THE PAIR IS DECIDED HERE AND READ AT `resumable_request`, which is
+                        // two places agreeing rather than one deciding — deliberately, and the
+                        // asymmetry is the reason: this end can only ever write LESS than the
+                        // reader will take, so a log from an older daemon (request present, rule
+                        // absent) is still read safely, while a log this daemon wrote carries
+                        // nothing it could not use.
+                        request: (!finished && run.progress.place.is_some())
+                            .then(|| record.request.clone())
+                            .flatten(),
                     }
                 })
                 .collect(),
@@ -1710,7 +1924,20 @@ impl RunRegistry {
                 // of the run, not the request that started it, and the label is prose. A restored
                 // run has no driver either, so an order over it is refused as `NoDriver` whatever
                 // plugin it once was — this `None` costs a reader nothing they could have used.
+                //
+                // ⚠⚠ AND IT IS STILL `None` THOUGH THE REQUEST BELOW MAY NAME ONE, which is not an
+                // oversight but the same rule one line down: this record describes a run with no
+                // driver, and the word is read by `standing_order` to say what an order would
+                // reach. What names the plugin again is `crate::plugins::PluginsExternal::put_back`
+                // — the moment a driver exists to be named.
                 plugin: None,
+                // ⚠⚠⚠⚠⚠ **AND HERE IS WHAT MAKES A RESTORED RUN MORE THAN A HEADSTONE** — register
+                // item 543's sixth brick. Through the door and only the door: `resumable_request`
+                // hands this back exactly when the run is unfinished AND its place is spelled in
+                // THIS image's documents, so a request that survived beside a foreign
+                // configuration is dropped here rather than carried to a boot that would build a
+                // plugin and start it from the top.
+                request: saved.resumable_request().cloned(),
                 // ⚠ THE SEAT IS DROPPED AND THE CONVERSATION IS KEPT — rule 1 above. A successor
                 // cannot know who is sitting in pane 3; it can know which conversation asked, and
                 // `crate::plugins` re-derives the seat from that at read time.
@@ -2017,6 +2244,9 @@ mod tests {
                 id,
                 label: "test".to_string(),
                 plugin: crate::plugins::PluginName::Orchestrator,
+                // ⚠ Not what this gate measures — item 543. A run submitted with no request is one
+                // a successor cannot put back, which every run in this file was before it.
+                request: None,
                 opened_by: Some(7),
                 opened_by_session: None,
                 state,
@@ -2228,6 +2458,8 @@ mod tests {
             // ⚠ Stated rather than defaulted, for the recorder fixture's reason: these gates are
             // about workers and joins, and the plugin is not what any of them measures.
             plugin: crate::plugins::PluginName::Orchestrator,
+            // ⚠ Nor is what a successor could rebuild it from — item 543.
+            request: None,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
@@ -2481,6 +2713,9 @@ mod tests {
             id,
             label: "ai_loop pane=2".to_owned(),
             plugin: crate::plugins::PluginName::AiLoop,
+            // ⚠ These gates read what a FINISHED run persists, and item 543's door refuses a
+            // finished run whatever it carries — so there is nothing here to carry.
+            request: None,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Done {
@@ -2551,6 +2786,9 @@ mod tests {
             id,
             label: "ai_loop pane=2".to_owned(),
             plugin: crate::plugins::PluginName::AiLoop,
+            // ⚠ These gates read what a FINISHED run persists, and item 543's door refuses a
+            // finished run whatever it carries — so there is nothing here to carry.
+            request: None,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Done {
@@ -2636,6 +2874,9 @@ mod tests {
             runs: vec![PersistedRun {
                 id: 4,
                 label: "agent pane=3".to_owned(),
+                // ⚠ Nothing to put this run back with — item 543. What this fixture measures is
+                // what a restored run REPORTS, which is a different question from resuming one.
+                request: None,
                 iterations: 2,
                 cost: None,
                 unit: None,
@@ -2869,6 +3110,9 @@ mod tests {
         let saved = |at: Option<&str>, document: Option<&str>| PersistedRun {
             id: 7,
             label: "a loop that was interrupted".to_string(),
+            // ⚠ This gate is about the WORD a person reads (`resumable_here`), not about putting
+            // anything back, so the run carries nothing to be put back with — item 543.
+            request: None,
             iterations: 12,
             cost: None,
             unit: None,
@@ -2967,6 +3211,9 @@ mod tests {
         let saved = |place: Option<Vec<String>>, document: Option<&str>| PersistedRun {
             id: 9,
             label: "a loop that was interrupted mid-turn".to_string(),
+            // ⚠ The PLACE is what this gate reads, and `resumable_place` answers without one —
+            // the pair rule lives at `resumable_request`, which has its own gate.
+            request: None,
             iterations: 12,
             cost: None,
             unit: None,
@@ -3106,6 +3353,8 @@ mod tests {
             // ⚠ THE PLUGIN IS IRRELEVANT TO THESE GATES and is stated rather than defaulted: the
             // handle is a recorder that honours everything, so what is measured is FORWARDING.
             plugin: crate::plugins::PluginName::Orchestrator,
+            // ⚠ And neither is what would rebuild it — item 543.
+            request: None,
             opened_by: None,
             opened_by_session: None,
             state: Arc::new(Mutex::new(RunState::Running)),
@@ -3324,6 +3573,9 @@ mod tests {
             runs: vec![PersistedRun {
                 id: 4,
                 label: "from a dead daemon".to_string(),
+                // ⚠ Nothing to rebuild it from — item 543. This fixture is a log written before
+                // requests crossed one, which is what every log on disk today is.
+                request: None,
                 iterations: 3,
                 cost: None,
                 unit: None,
@@ -3393,6 +3645,141 @@ mod tests {
                 .is_empty(),
             "⚠⚠⚠ a run with no driver must not be something a shutdown waits for, or every \
              restart would pay the join deadline for runs that ended with the daemon before it",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT COULD BE PUT BACK RECORDS WHAT WOULD PUT IT BACK — AND NOTHING ELSE
+    /// DOES** — register item 543's sixth brick, at the WRITING end.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the pair is what is asserted, at both ends, rather than the field
+    ///
+    /// A request and a place are only useful together. A request with no readable place would have
+    /// a successor build the plugin and start it **from the top** — firing every `<onentry>` and
+    /// re-typing the loop's opening prompt into somebody's pane, the exact failure item 543 exists
+    /// to end. A place with no request is a configuration nothing can be entered into. So one rule
+    /// decides at each end, and this is the one that decides what is WRITTEN.
+    ///
+    /// ⚠⚠ **AND IT IS A REQUEST, WHICH IS TO SAY IT IS A PERSON'S PROSE.** A brief is paragraphs
+    /// somebody wrote; keeping it beside every finished `agent` run would put those paragraphs on
+    /// disk for the life of a log that could never use them. The rule is not only correctness — it
+    /// is what makes the field affordable.
+    ///
+    /// ⚠⚠⚠ **IT GOES THROUGH THE FILE'S OWN SHAPE**, not through the struct: what a successor
+    /// daemon has is bytes on a disk written by a build that is gone, so a round trip that stayed
+    /// in memory would be green over a field serde silently drops.
+    ///
+    /// ⚠ Two controls, one for each half of the rule, because either alone would leave the claim
+    /// true of a log that records everybody's brief for ever.
+    #[test]
+    fn only_a_run_that_could_be_put_back_records_what_would_put_it_back() {
+        let asked: serde_json::Map<String, serde_json::Value> = serde_json::json!({
+            "plugin": "ai_loop",
+            "pane": 3,
+            "north_star": "A BRIEF SOMEBODY WROTE, WHICH IS WHY IT IS NOT KEPT FOR EVER",
+        })
+        .as_object()
+        .expect("a request is an object")
+        .clone();
+        // ⚠ Only the SHAPE matters here — that words were recorded at all. Whether a machine can be
+        // entered at them is `PersistedRun::resumable_place`'s question and `OuterLoop::resume_at`'s
+        // answer, and both have gates of their own.
+        let words = vec![
+            "working".to_owned(),
+            "work".to_owned(),
+            "working".to_owned(),
+        ];
+
+        let written = |place: Option<Vec<String>>, ended: bool| {
+            let mut registry = RunRegistry::default();
+            let id = registry.reserve();
+            let progress = ProgressCell::default();
+            lock(&progress).place = place;
+            registry.submit(NewRun {
+                id,
+                label: "ai_loop pane=3".to_owned(),
+                plugin: crate::plugins::PluginName::AiLoop,
+                request: Some(asked.clone()),
+                opened_by: None,
+                opened_by_session: None,
+                state: Arc::new(Mutex::new(if ended {
+                    RunState::Reported(Box::new(serde_json::json!({ "state": "converged" })))
+                } else {
+                    RunState::Running
+                })),
+                // ⚠ No worker: what this reads is what the registry WRITES, and a thread would only
+                // add a join for the drop to wait out.
+                run: Box::new(EndedRun::restored(false, None)),
+                progress,
+            });
+            let bytes = serde_json::to_string(&registry.persistable()).expect("a log serialises");
+            serde_json::from_str::<RunLog>(&bytes).expect("and a successor reads it back")
+        };
+
+        // ── THE CLAIM: still going, with a place — so the request crosses ────────────────────
+        let resumable = written(Some(words.clone()), false);
+        assert_eq!(
+            resumable.runs[0].place.as_deref(),
+            Some(words.as_slice()),
+            "⚠⚠ THE PREMISE: this run's place must reach the log, or the claim below is about a \
+             record nothing could act on whatever request it carried",
+        );
+        assert_eq!(
+            resumable.runs[0].resumable_request(),
+            Some(&asked),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a run still going, whose machine's place was recorded, \
+             left its successor NOTHING to rebuild its plugin from. A place alone is a \
+             configuration with nothing to enter it into — five rounds of carrying one, and the \
+             restart still kills the run.",
+        );
+
+        // ── CONTROL 1: a run whose ending was recorded carries nothing ───────────────────────
+        let over = written(Some(words.clone()), true);
+        assert!(
+            over.runs[0].request.is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: a run whose ending is on the record kept somebody's brief on \
+             disk. It cannot be resumed — a reader has already seen its outcome — so the prose is \
+             being kept for a successor that may never do anything with it. Wrote: {:?}",
+            over.runs[0].request,
+        );
+        assert!(
+            over.runs[0].resumable_request().is_none(),
+            "⚠⚠⚠ AND THE READING END MUST AGREE: a finished run is not resumable whatever it \
+             carries, or an older log's request would start work nobody asked for.",
+        );
+
+        // ── CONTROL 2: THE DOOR ITSELF refuses a place from another build's documents ────────
+        //
+        // ⚠⚠⚠⚠⚠ **THIS CONTROL EXISTS BECAUSE A MUTATION WAS GREEN WITHOUT IT.** Deleting
+        // `resumable_request`'s check of `resumable_place` changed nothing measurable, and the
+        // reason is that its one caller today (`RunRegistry::restore`) fills the record's place
+        // from that same guarded door and then `inherited` requires a place — so the rule was
+        // being enforced twice downstream and never here. That is a door standing open behind two
+        // closed ones: **this is a `pub` reader whose whole contract is *a request a caller has
+        // earned the right to act on, or nothing*,** and the next caller is under no obligation to
+        // re-check what it already promised. So the door is measured directly.
+        //
+        // ⚠ It is built by MOVING one field of the record above, so everything else about it is a
+        // record this daemon really wrote — a hand-made fixture could be refused for some other
+        // reason and look like this passing.
+        let mut foreign = resumable.runs[0].clone();
+        foreign.document = Some("0000000000000000".to_owned());
+        assert!(
+            foreign.resumable_request().is_none(),
+            "⛔⛔⛔⛔ REGISTER ITEM 544: a request was handed back beside a place recorded against \
+             documents this build does not have. Nothing migrates a configuration between \
+             documents, so acting on that pair enters a run into a document it never ran in — and \
+             the two halves are only ever useful together, which is why one door decides.",
+        );
+
+        // ── CONTROL 3: a run with no place carries nothing either ────────────────────────────
+        let placeless = written(None, false);
+        assert!(
+            placeless.runs[0].request.is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: a run whose machine was never saved kept its request. Nothing \
+             could resume it — there is no place to put it back at — so this is a person's brief \
+             recorded for a reader that cannot use it, on EVERY run this daemon ever drives that \
+             walks no statechart. Wrote: {:?}",
+            placeless.runs[0].request,
         );
     }
 }

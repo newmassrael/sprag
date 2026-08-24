@@ -388,6 +388,19 @@ fn main() -> io::Result<()> {
         Arc::clone(&channels),
         manifests,
     );
+    // ⚠⚠⚠⚠⚠ **AND HERE A RESTART STOPS KILLING THE RUNS IT INHERITED** — register item 543's sixth
+    // brick, and the reason it is HERE rather than beside the `restore` that read the log: that
+    // call happens before a single pane has come back, and a run cannot be put back on a driver
+    // whose pane does not exist. Everything a resume needs is in hand at this point and at no
+    // earlier one — the restored panes, the agent clock a pane access reads verdicts from, and the
+    // channels a resumed run's news is announced on.
+    //
+    // ⚠ AFTER the durability saver has started, which costs nothing: a run waiting to be put back
+    // is still in the registry, still `interrupted`, and still carries the place and the request
+    // the log gave it — so a save that lands in this window writes exactly what it read.
+    if args.daemon {
+        put_back_inherited_runs(&host, &runs, &channels, &on_pane_exit, &attention, &agents);
+    }
     let state = HostState::new(host, channels, Some(on_pane_exit))
         .with_runs(runs)
         .with_attachments(attachments)
@@ -507,6 +520,97 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 /// A transient save error is logged and retried next tick (the last-saved state is left
 /// unchanged), so a full disk or a momentary permission glitch does not silently stop persistence.
 /// The two halves fail INDEPENDENTLY: an unwritable history must not cost the workspace its shape.
+/// ⚠⚠⚠⚠⚠ **PUT EVERY RUN THIS DAEMON INHERITED BACK ON A DRIVER, WHERE ITS OWN LOG SAYS IT WAS** —
+/// register item 543's sixth brick, and the point of the five before it.
+///
+/// # ⚠⚠⚠⚠⚠ What this ends
+///
+/// *"A run's machine is never persisted, so every restart kills every run."* That sentence was prose
+/// inside a closed register entry for three days before it got a number, and it is what makes
+/// promoting this daemon's own build a destructive act — four supervisors share one daemon (item
+/// 196), so a promotion killed three other repositories' loops and the cheap way round it was to
+/// split daemons and pay for a second GUI (items 526 / 285). A restart that resumes runs is a
+/// promotion nobody has to schedule around.
+///
+/// # ⚠⚠⚠ Each run is answered on its own, and a refusal is not a boot failure
+///
+/// One inherited run whose pane did not come back must not cost the others theirs, and none of them
+/// may cost the daemon its boot: everything here degrades to the honest `interrupted` such a run
+/// already reports. What each refusal costs a person is one log line saying which run and why —
+/// which is the whole difference from the silence this replaces.
+///
+/// ⚠⚠ **THE POOL IS FOUND FROM THE PANE, NOT FROM A SESSION NAME**, because a run log records
+/// neither: `pool_holding` answers which window's pool a pane is sitting in, and that is the pool a
+/// pane access must speak. A pane the restore did not bring back has no pool, and that is the
+/// honest reason not to resume the run that drove it.
+fn put_back_inherited_runs(
+    host: &Host,
+    runs: &Arc<Mutex<RunRegistry>>,
+    channels: &Arc<ChannelRegistry>,
+    on_pane_exit: &Arc<dyn Fn() + Send + Sync>,
+    attention: &Arc<sprag_host::attention::AttentionRouter>,
+    agents: &Arc<AgentClock>,
+) {
+    // ⚠ The list is taken and the lock released before anything is built: putting one run back
+    // takes the registry again (`put_back`), and a workspace lock before that.
+    let inherited = runs
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .inherited();
+    for run in inherited {
+        let Some(pane) = sprag_host::plugins::pane_named(&run.request) else {
+            tracing::warn!(
+                target: "sprag_host::runs",
+                run = run.id.0,
+                "a run was inherited with a place but its request names no pane, so nothing \
+                 could say which pane pool to put it back over",
+            );
+            continue;
+        };
+        let held = host
+            .registry()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pool_holding(pane);
+        let Some((session, pool)) = held else {
+            tracing::info!(
+                target: "sprag_host::runs",
+                run = run.id.0,
+                pane = pane.0,
+                "the pane a run was driving did not come back, so the run stays interrupted",
+            );
+            continue;
+        };
+        // ⚠⚠ THE SAME SURFACE A REQUEST GETS, built by the same function — see
+        // `sprag_host::plugin_host`. A second assembly here could resume a run on a thread inside
+        // a daemon configured to drive runs in processes of their own.
+        let plugins = sprag_host::plugin_host(
+            pool,
+            runs,
+            &session,
+            channels,
+            Some(Arc::clone(on_pane_exit)),
+            Some(Arc::clone(attention)),
+            Some(Arc::clone(agents)),
+        );
+        match plugins.put_back(&run) {
+            Ok(()) => tracing::info!(
+                target: "sprag_host::runs",
+                run = run.id.0,
+                pane = pane.0,
+                "put a run this daemon inherited back where its log said: {}",
+                run.label,
+            ),
+            Err(why) => tracing::warn!(
+                target: "sprag_host::runs",
+                run = run.id.0,
+                pane = pane.0,
+                "a run this daemon inherited stays interrupted: {why:?}",
+            ),
+        }
+    }
+}
+
 fn spawn_durability_saver(
     registry: Arc<Mutex<SessionRegistry>>,
     path: PathBuf,

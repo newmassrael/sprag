@@ -4230,6 +4230,9 @@ mod tests {
             // is about a pane saying a run drives it, so the plugin only has to be the one the
             // label names, said in the form nothing has to parse.
             plugin: crate::plugins::PluginName::AiLoop,
+            // ⚠ Not what this gate measures — item 543. It asks what a PANE says about the run
+            // driving it, and a request is what a successor daemon would need instead.
+            request: None,
             opened_by: None,
             opened_by_session: None,
             state: Arc::clone(&state),
