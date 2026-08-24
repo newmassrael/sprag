@@ -6273,6 +6273,74 @@ fn print_into_pane_after(sock: &Path, pane: PaneId, after: Duration, text: &'sta
     });
 }
 
+/// ⛔⛔⛔⛔ **A PARK THAT CANNOT BE SERVED DEGRADES TO A CLOCK RATHER THAN TO A LIE** — register
+/// item 631, and the arm nothing exercised until this gate.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is the dangerous arm, and why the whole gate is about ONE return value
+///
+/// [`PaneChanges::pane_moved_after`]'s two "nothing happened" answers look alike and mean opposite
+/// things. `Some(seen)` is **the pane did not move — park again**; `None` is **this surface cannot
+/// tell you when it moves — go back to a clock**. A repair that answered `Some(seen)` when the park
+/// failed would read as a perfectly quiet pane, and `park_until` would go on parking on a signal
+/// that is never coming — a wait that ends only at its own timeout, on a pane that may have moved
+/// a hundred times.
+///
+/// The daemon's own refusal is what stages it: a park naming a pane this session does not hold is
+/// answered `INVALID_PARAMS`, which is exactly the shape a daemon too old to serve the address
+/// gives. So this drives the real failure rather than a mock of it.
+///
+/// ⚠⚠ **AND THE PARK CONNECTION IS DROPPED**, which the second half asserts through
+/// [`PaneAccess::changes`]: a transport that failed may have left half a frame in the stream, so
+/// keeping it would answer `None` for ever while still LOOKING like a capability. A surface that
+/// says it can be waited on and never can is worse than one that never claimed it.
+#[test]
+fn a_park_the_daemon_refuses_degrades_the_wait_instead_of_reporting_a_still_pane() {
+    let (_host, sock) = spawn_host();
+    let (driver, _setup) = parking_remote_driver(&sock);
+    assert!(
+        driver.changes().is_some(),
+        "the precondition: this driver CAN park, so what follows is about the refusal and not \
+         about a surface that never offered",
+    );
+
+    // A pane this session does not hold. The daemon refuses the park by name.
+    let absent = PaneId(4242);
+    let answered =
+        sprag_plugin::PaneChanges::pane_moved_after(&driver, absent, 0, Duration::from_millis(200));
+    assert_eq!(
+        answered, None,
+        "a refused park is *I cannot tell you when this pane moves*, NEVER *it did not move*: \
+         Some(seen) here is a driver parked for ever on a signal that is not coming",
+    );
+    assert!(
+        driver.changes().is_none(),
+        "and the park connection is gone, so the surface stops claiming a capability it no longer \
+         has — a `Some` here would offer a park that answers None for ever",
+    );
+
+    // ⚠ THE CONTROL, and it is what stops this passing on a build where nothing works: a driver
+    // that has NOT met a refusal still parks on a pane the session does hold, and still answers
+    // the contract's *nothing happened* rather than the degradation.
+    let (fresh, _fresh_setup) = parking_remote_driver(&sock);
+    let quiet = sprag_plugin::PaneChanges::pane_revision(&fresh, PaneId(0))
+        .expect("the boot pane has a revision");
+    assert_eq!(
+        sprag_plugin::PaneChanges::pane_moved_after(
+            &fresh,
+            PaneId(0),
+            quiet,
+            Duration::from_millis(200)
+        ),
+        Some(quiet),
+        "a served park that simply timed out answers the revision UNCHANGED — the other word for \
+         nothing happened, and the one that keeps the caller parked",
+    );
+    assert!(
+        fresh.changes().is_some(),
+        "and that driver keeps its park connection: a timeout is not a failure",
+    );
+}
+
 /// ⛔⛔⛔⛔ **A RUN DRIVEN OVER THE WIRE WAITS ON A PANE INSTEAD OF RE-READING ITS SCREEN** —
 /// register item 631, and the number it was open for.
 ///

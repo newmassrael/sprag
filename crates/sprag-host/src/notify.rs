@@ -1211,6 +1211,13 @@ impl ChannelRegistry {
         // ⚠ AND THE REVISION WAITS. A pane of a session that has ended will never move again, so a
         // park left here is one no bump can ever reach — the exact state the two drains above
         // exist to prevent, one channel over.
+        //
+        // ⚠⚠⚠ **IT IS NOT REDUNDANT WITH THE `remove` BELOW, AND A GREEN MUTATION IS WHAT SAID SO.**
+        // Removing the map entry frees the parked waits only if nothing else holds the channel —
+        // and [`revisions`](Self::revisions) hands out `Arc` CLONES, so a dispatch owner mid-pass
+        // holds one. A `close` that only removed would leave that holder's copy carrying waits in a
+        // channel no bump can reach, for as long as the holder lives. The gate had to be re-aimed
+        // at a clone taken BEFORE the close to see the difference at all.
         entry.revisions.drain();
         self.lock().remove(session);
     }
@@ -1846,6 +1853,116 @@ mod tests {
             }),
         );
         replies
+    }
+
+    /// [`park_output`]'s sibling for a REVISION wait — register item 631.
+    fn park_revision(
+        channels: &ChannelRegistry,
+        session: &str,
+        conn: ConnId,
+    ) -> Arc<std::sync::Mutex<Vec<String>>> {
+        let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&replies);
+        channels.revisions(session).park(
+            conn,
+            PaneId(0),
+            7,
+            Some(RequestId::Num(1)),
+            RpcReply::new(move |reply| {
+                sink.lock().expect("the reply sink").push(reply);
+            }),
+        );
+        replies
+    }
+
+    /// ⚠⚠⚠⚠ **A REVISION WAIT SURVIVES A RENAME, IS RELEASED BY A DISCONNECT, AND IS DRAINED BY A
+    /// KILL** — the three lifecycle facts the OUTPUT channel already had gates for, asked of the
+    /// channel register item 631 added.
+    ///
+    /// Each is carried by construction — `rename` moves the whole [`SessionChannel`], `release` and
+    /// `close` walk all three channels — and *by construction* is exactly the claim that rots when
+    /// somebody adds a fourth channel and wires two of the three. **The output channel's own gates
+    /// exist because this went wrong for it**; a new channel with no gates is the same bet taken
+    /// again.
+    ///
+    /// ⚠ A REVISION wait is the one that needs the disconnect most: a driver holds one open BY
+    /// DESIGN across the slices of `park_until`, so a run whose process died leaves one behind on a
+    /// pane that may never move again.
+    #[test]
+    fn a_revision_wait_survives_a_rename_and_is_released_by_a_disconnect() {
+        let channels = ChannelRegistry::default();
+        let conn = ConnId::allocate();
+        let replies = park_revision(&channels, "work", conn);
+        assert_eq!(channels.revisions("work").parked_count(), 1, "parked");
+
+        channels.rename("work", "prod");
+        assert_eq!(
+            channels.revisions("prod").parked_count(),
+            1,
+            "the rename CARRIED it — a wait left on the old key is one no bump can ever reach, \
+             because the panes bump the token that moved with the channel",
+        );
+        assert_eq!(
+            channels.revisions("work").parked_count(),
+            0,
+            "and the retired name mints a fresh, empty channel",
+        );
+        assert_eq!(answered(&replies), 0, "carried, not answered");
+
+        assert_eq!(
+            channels.release(conn),
+            1,
+            "the disconnect released it, and COUNTED it — a registry that walked only two of its \
+             three channels would answer 0 here and leak the entry for the daemon's life",
+        );
+        assert_eq!(channels.revisions("prod").parked_count(), 0);
+        assert_eq!(
+            answered(&replies),
+            0,
+            "a gone connection is not written to: the release drops, it does not answer",
+        );
+    }
+
+    /// ...and a session ENDING **drains** it, on [`ChannelRegistry::close`]'s own argument: a pane
+    /// of a dead session will never move again, so a park left here is one no bump can reach.
+    ///
+    /// # ⛔⛔⛔ THE FIRST VERSION OF THIS GATE WAS BLIND, AND A GREEN MUTATION IS WHAT SAID SO
+    ///
+    /// It asked `channels.revisions("work").parked_count()` AFTER the close — and `close` REMOVES
+    /// the map entry, so that lookup **mints a fresh empty channel**. The answer was 0 whether or
+    /// not the drain ran, and the mutation that deleted the drain outright stayed green. The
+    /// comment written beside it even claimed the two readings were "the same fact"; they are not.
+    ///
+    /// ⚠⚠ **The clone taken BEFORE the close is what discriminates**, and it is not a contrivance:
+    /// [`ChannelRegistry::revisions`] hands out `Arc` clones by design, so a dispatch owner mid-pass
+    /// is holding exactly this. Under a `close` that only removed, that holder's copy would keep
+    /// its waits parked in a channel nothing can ever bump again.
+    #[test]
+    fn a_revision_wait_is_drained_when_its_session_ends() {
+        let channels = ChannelRegistry::default();
+        let replies = park_revision(&channels, "work", ConnId::allocate());
+        // HELD ACROSS THE CLOSE, which is the whole discrimination — see this test's own doc.
+        let held = channels.revisions("work");
+        assert_eq!(held.parked_count(), 1, "parked");
+
+        channels.close("work");
+
+        assert_eq!(
+            held.parked_count(),
+            0,
+            "the channel a holder still has must be DRAINED, not merely unreachable: removing the \
+             map entry frees nothing while somebody holds a clone",
+        );
+        assert_eq!(
+            answered(&replies),
+            0,
+            "drained rather than answered: a revision wait's answer shape is a NUMBER, and there \
+             is no number to report about a session that has gone",
+        );
+        // ⚠ AND THE FRESH LOOKUP IS ALSO EMPTY — kept as the weaker half rather than deleted,
+        // because it is what a CLIENT observes, and a repair that drained the holder's copy while
+        // leaving the name resolving to the old channel would pass the assertion above alone.
+        assert_eq!(channels.revisions("work").parked_count(), 0);
     }
 
     /// A recording output sink installed on `channels` — every session it was fired for, in order.

@@ -4746,6 +4746,41 @@ mod tests {
     }
 
     #[test]
+    fn a_revision_wait_without_a_pane_is_refused_and_says_what_the_key_holds() {
+        // The companion of the cursor refusal, and it is its own test rather than a second arm of
+        // that one: the two keys fail for different reasons and a caller that sent NEITHER must be
+        // told about the one it is missing. A handler that read an absent pane as 0 would park on
+        // the boot pane of whatever session the request was scoped to — an answer about a pane the
+        // caller never named.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        revision_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ SINCE_PARAM: 0 }),
+            &sink,
+        );
+        let reply = only_reply(&sink);
+        assert_eq!(
+            reply["error"]["code"], INVALID_PARAMS,
+            "refused by CODE, never by wording: {reply}",
+        );
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(PANE_PARAM),
+            "and the refusal names the key that is missing: {reply}",
+        );
+        assert_eq!(
+            state.channels().revisions(BOOT).parked_count(),
+            0,
+            "nothing parked — and in particular not on pane 0, which is what reading an absent \
+             pane as a zero would have done",
+        );
+    }
+
+    #[test]
     fn a_revision_wait_on_a_pane_of_another_session_is_refused_rather_than_parked() {
         // The output wait's own argument, one channel over: a park hangs off ONE session's
         // revision, so a pane elsewhere moves a token this wait does not listen to.

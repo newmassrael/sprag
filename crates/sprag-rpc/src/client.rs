@@ -1582,15 +1582,13 @@ pub struct Outstanding {
     /// The JSON-RPC id this request went out under.
     id: u64,
     /// What [`request_label`] called it — the sentence a later failure is prefixed with.
+    ///
+    /// ⚠ NOT published through an accessor. A first draft had one and nothing read it, which is
+    /// this repository's own recorded shape (register item 492: a number authored and never read).
+    /// The label exists to be SPENT by [`HostConn::settle`]'s error messages; a caller that wants to
+    /// name the request it is waiting on already holds the method and params it passed to
+    /// [`HostConn::begin`].
     label: String,
-}
-
-impl Outstanding {
-    /// What this request was, in the form every other failure on this wire names itself with.
-    #[must_use]
-    pub fn label(&self) -> &str {
-        &self.label
-    }
 }
 
 impl HostConn {
