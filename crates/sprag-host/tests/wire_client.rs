@@ -6604,13 +6604,32 @@ fn a_park_the_daemon_refuses_degrades_the_wait_instead_of_reporting_a_still_pane
 /// reads rather than one per ten milliseconds. The register records that lesson twice (items 280
 /// and 630, where a gate measuring only the ENDING stayed green under a polling mutation).
 ///
-/// # ⚠⚠⚠ MEASURED, 2026-08-24, on the build machine (32 cores, 125 GB)
+/// # ⛔⛔⛔⛔⛔ Why TWO WINDOWS PER ARM and not two arms at one window — register item 668
+///
+/// This gate used to wait one 1000 ms window on each arm and demand the parked one cost a fifth of
+/// the polling one. **That reading is the runner's speed, not this product's behaviour.** A look
+/// here is a whole SCREEN across a socket plus a detector run over it, so it is far dearer than the
+/// 10 ms slice that paces it: on the build machine the polling arm scored 96, but a runner where
+/// one look costs 100 ms scores 10 over the same second, and the assertion asked for more than 10.
+/// Nothing about the park would have changed. Register item 666 is the same defect measured in
+/// `sprag-plugin`, where it turned a macOS lane red at a commit that touched no plugin — and where
+/// the lane then went GREEN at the next commit with the defect still in place, which is why a
+/// lane's colour is not evidence about a gate of this shape and the ratio is.
+///
+/// ⚠⚠⚠ **So each arm is now waited out over TWO windows a factor of four apart, and what is
+/// asserted is the SHAPE of each arm's cost.** A slow host stretches both windows alike, so the
+/// ratio survives exactly what the count could not:
+///
+/// * **the parked arm's cost does NOT follow the window** — the claim, and item 631's whole content;
+/// * **the polling arm's cost DOES** — the staging control, which is what says the windows really
+///   buy looks on this runner and that the line above was not made true by a fixture that waits for
+///   nothing (register item 646).
+///
+/// # ⚠⚠⚠ MEASURED 2026-08-24 on the build machine (32 cores, 125 GB), and it is the HOST'S number
 ///
 /// A one-second wait over a real `sprag-term`, ended by the pane printing a marker:
-/// **parked 2 looks, polling 96.** Each look is a whole screen across the socket plus a detector
-/// run over the result. The numbers are here rather than in the assertions because an assertion
-/// that named them would be a claim about this machine's speed; what is ASSERTED is the ratio and
-/// a generous ceiling, which is what survives a shared runner (register item 613).
+/// **parked 2 looks, polling 96.** ⚠ Both counts are that machine's; a slower one scores lower on
+/// both and the ratio between the two windows is what this gate reads.
 ///
 /// # ⚠⚠⚠ THE RIVAL, measured rather than remembered — herdr at `9a4ce5e1`, read 2026-08-24
 ///
@@ -6628,28 +6647,54 @@ fn a_park_the_daemon_refuses_degrades_the_wait_instead_of_reporting_a_still_pane
 ///
 /// # ⚠⚠⚠ And the CONTROL is the same wait over a surface with no park connection
 ///
-/// An absolute number here would be a claim about this machine's speed. The discriminator is the
-/// RATIO against a driver holding one connection instead of two — same daemon, same pane, same
-/// predicate, same marker, and the only difference is whether the wait could be told. A repair that
-/// broke the park would not merely miss a target; it would land on the control's own number.
+/// Same daemon, same pane, same predicate, same markers, and the only difference is whether the
+/// wait could be told. A repair that broke the park would not merely miss a target; it would make
+/// the parked arm's cost grow with the window exactly as the control's does.
 #[test]
 fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
-    /// Long enough that a polling wait pays visibly for it, short enough to keep the gate quick.
-    const BEFORE_IT_SPEAKS: Duration = Duration::from_millis(1000);
-    const MARKER: &str = "PANE-MOVED-631";
+    /// The short window each arm is waited out over.
+    const SHORT: Duration = Duration::from_millis(250);
+    /// The long one, FOUR TIMES it — the pair whose ratio is this gate's whole claim.
+    const LONG: Duration = Duration::from_millis(1000);
+    /// ⚠⚠ ONE MARKER PER WINDOW, because the pane keeps what it printed: a second wait looking for
+    /// the first window's marker would find it already on the screen and end before it began,
+    /// scoring one look and reporting the park as perfect.
+    const SHORT_MARKER: &str = "PANE-MOVED-631-SHORT";
     /// ⚠ WITH ITS NEWLINE. The boot pane runs `cat`, so the line discipline echoes the text and
     /// `cat` writes it back — but only a completed line reaches `cat` at all, and a gate that
     /// depended on the echo alone would be measuring the TERMINAL rather than the program.
-    const TYPED: &str = "PANE-MOVED-631\n";
+    const SHORT_TYPED: &str = "PANE-MOVED-631-SHORT\n";
+    const LONG_MARKER: &str = "PANE-MOVED-631-LONG";
+    const LONG_TYPED: &str = "PANE-MOVED-631-LONG\n";
+    /// What the long window may cost the PARKED arm over the short one before this gate calls that
+    /// cost a function of the window. ⚠ Generous on purpose: the claim is *flat*, and a park that
+    /// woke a handful of extra times would still be a park.
+    const SLACK: u64 = 8;
+    /// What the long window must cost the POLLING arm over the short one before this gate believes
+    /// the windows buy looks at all. ⚠⚠ Half the honest reading against a window four times longer,
+    /// and that headroom is the whole of register item 668: what must not be able to turn this over
+    /// is the host it runs on.
+    const GROWTH: u64 = 2;
 
-    let wait_for_marker = |driver: CountingRemote, sock: &Path, pane: PaneId| {
-        print_into_pane_after(sock, pane, BEFORE_IT_SPEAKS, TYPED);
+    /// Wait out one window on one driver, answering **how many looks it cost**, how long it took,
+    /// and how it ended.
+    fn waited_out(
+        driver: RemotePaneAccess,
+        sock: &Path,
+        pane: PaneId,
+        window: Duration,
+        marker: &'static str,
+        typed: &'static str,
+    ) -> (u64, Duration, sprag_plugin::run::Waited) {
+        let driver = CountingRemote::new(driver);
+        print_into_pane_after(sock, pane, window, typed);
         let run = RunContext::uncancellable();
+        let began = Instant::now();
         let ended =
             sprag_plugin::run::park_until(&run, &driver, pane, Duration::from_secs(20), || {
                 let seen = driver
                     .pane_rows(pane)
-                    .is_some_and(|rows| rows.iter().any(|row| row.text.contains(MARKER)));
+                    .is_some_and(|rows| rows.iter().any(|row| row.text.contains(marker)));
                 if seen {
                     sprag_plugin::run::Look::Holds
                 } else {
@@ -6659,47 +6704,122 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
                     sprag_plugin::run::Look::Steady
                 }
             });
-        (ended, driver.looks())
-    };
+        (driver.looks(), began.elapsed(), ended)
+    }
 
+    // ── the arm this gate is about: a driver holding a park connection, over both windows ──
     let (_host, sock) = spawn_host();
-    let (driver, _setup) = parking_remote_driver(&sock);
+    let (short_driver, _short_setup) = parking_remote_driver(&sock);
     assert!(
-        driver.changes().is_some(),
-        "a driver given a park connection publishes a change signal — without that the number \
-         below measures the control twice",
+        short_driver.changes().is_some(),
+        "a driver given a park connection publishes a change signal — without that this arm is \
+         the control measured twice",
     );
-    let (parked_end, parked_looks) = wait_for_marker(CountingRemote::new(driver), &sock, PaneId(0));
-
-    let (_control_host, control_sock) = spawn_host();
-    let (control, _control_setup) = remote_driver(&control_sock);
+    let (parked_short, parked_short_took, parked_short_end) = waited_out(
+        short_driver,
+        &sock,
+        PaneId(0),
+        SHORT,
+        SHORT_MARKER,
+        SHORT_TYPED,
+    );
+    let (long_driver, _long_setup) = parking_remote_driver(&sock);
     assert!(
-        control.changes().is_none(),
+        long_driver.changes().is_some(),
+        "⚠⚠ AND THE SECOND WINDOW'S DRIVER PARKS TOO — the two readings are one arm, so a park \
+         that failed to be granted here would report itself as a product regression below",
+    );
+    let (parked_long, parked_long_took, parked_long_end) =
+        waited_out(long_driver, &sock, PaneId(0), LONG, LONG_MARKER, LONG_TYPED);
+
+    // ── the staging control: the same wait over a surface that cannot be told, over both ──
+    let (_control_host, control_sock) = spawn_host();
+    let (control_short_driver, _control_short_setup) = remote_driver(&control_sock);
+    assert!(
+        control_short_driver.changes().is_none(),
         "the CONTROL is a driver that cannot be told, and its `None` is what makes it one",
     );
-    let (control_end, control_looks) =
-        wait_for_marker(CountingRemote::new(control), &control_sock, PaneId(0));
+    let (control_short, control_short_took, control_short_end) = waited_out(
+        control_short_driver,
+        &control_sock,
+        PaneId(0),
+        SHORT,
+        SHORT_MARKER,
+        SHORT_TYPED,
+    );
+    let (control_long_driver, _control_long_setup) = remote_driver(&control_sock);
+    let (control_long, control_long_took, control_long_end) = waited_out(
+        control_long_driver,
+        &control_sock,
+        PaneId(0),
+        LONG,
+        LONG_MARKER,
+        LONG_TYPED,
+    );
 
+    // ── the controls: all four really came back, and all four really waited ──
     assert_eq!(
-        parked_end,
-        sprag_plugin::run::Waited::Ready,
-        "the parked wait must END — a cheap wait that never woke is the failure this pairs against",
-    );
-    assert_eq!(
-        control_end,
-        sprag_plugin::run::Waited::Ready,
-        "and so must the control, or the two numbers are not about the same wait",
+        (
+            parked_short_end,
+            parked_long_end,
+            control_short_end,
+            control_long_end
+        ),
+        (
+            sprag_plugin::run::Waited::Ready,
+            sprag_plugin::run::Waited::Ready,
+            sprag_plugin::run::Waited::Ready,
+            sprag_plugin::run::Waited::Ready
+        ),
+        "⛔⛔⛔⛔⛔ EVERY WAIT MUST END BECAUSE THE PANE REALLY PRINTED ITS MARKER. *Cheap* and \
+         *deaf* are one reading when all you count is looks — a park that never woke would score \
+         best of all — so this is the half of the pair the numbers below mean nothing without \
+         (register items 280 and 630)",
     );
     assert!(
-        parked_looks * 5 < control_looks,
-        "a wait that can be TOLD the pane moved must cost a fraction of one that asks: parked \
-         {parked_looks} looks, polling {control_looks}. Each look here is a whole screen across a \
-         socket plus a detector run over it.",
+        parked_short_took >= SHORT
+            && parked_long_took >= LONG
+            && control_short_took >= SHORT
+            && control_long_took >= LONG,
+        "⚠⚠⚠ AND EACH ARM MUST REALLY HAVE WAITED OUT ITS OWN WINDOW, or *cheap* was bought by not \
+         waiting — parked {parked_short_took:?}/{parked_long_took:?}, polling \
+         {control_short_took:?}/{control_long_took:?} against {SHORT:?}/{LONG:?}",
+    );
+
+    // ── the staging control's claim: A WINDOW REALLY DOES BUY LOOKS ON THIS RUNNER ──
+    assert!(
+        control_long >= control_short.saturating_mul(GROWTH),
+        "⚠⚠⚠⚠ THE STAGING CONTROL: a surface that cannot be told MUST pay for the window, or this \
+         host is not buying looks with time and the claim below is true of a fixture rather than \
+         of a park. A {LONG:?} window cost {control_long} looks where a {SHORT:?} one cost \
+         {control_short}",
+    );
+
+    // ── the claim: A PARKED WAIT'S COST DOES NOT FOLLOW THE WINDOW ──
+    assert!(
+        parked_long <= parked_short + SLACK,
+        "⛔⛔⛔⛔⛔ THE PARKED WAIT IS PAYING FOR THE CLOCK AGAIN — register item 631's repair is \
+         undone. A {LONG:?} window cost {parked_long} looks where a {SHORT:?} one cost \
+         {parked_short}, and the control over the same two windows cost {control_short} and \
+         {control_long}: this arm has taken the control's SHAPE. Each look is a whole screen \
+         across a socket plus a detector run over it. ⚠ Register item 668: the absolute counts \
+         are the runner's speed, so the shape is the only honest reading here",
     );
     assert!(
-        parked_looks <= 15,
+        parked_long <= 15,
         "the parked wait's cost follows the PANE, not the clock — a second of silence must not \
-         buy looks. Got {parked_looks}",
+         buy looks. Got {parked_long}",
+    );
+
+    // ⚠⚠⚠ PRINTED RATHER THAN ASSERTED, and printed rather than left to be re-derived by a round
+    // that raises a bound to read it: the four numbers are what say how much headroom the two
+    // shapes above have on THIS host, and register item 668 exists because a past round reasoned
+    // from counts it had not read. Absolute counts are the runner's; the shapes are the product's.
+    println!(
+        "\n== what one wire-driven wait costs, per window ==\n  parked:  {parked_short} look(s) \
+         over {SHORT:?}, {parked_long} over {LONG:?}\n  polling: {control_short} look(s) over \
+         {SHORT:?}, {control_long} over {LONG:?}\n  the claim is the SHAPE of each row, never the \
+         numbers in it\n",
     );
 }
 
