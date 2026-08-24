@@ -2520,6 +2520,36 @@ fn spawn_daemon(sock: &Path, state: &Path) {
     assert!(status.success(), "the daemon's parent forked cleanly");
 }
 
+/// Set one option for the daemon [`spawn_daemon`] will start under `state`, by writing the config
+/// file that daemon reads.
+///
+/// # ⚠⚠⚠⚠⚠ A test that depends on a path rather than on a word must SAY the word
+///
+/// [`spawn_daemon`] points a daemon at the test's own config root precisely so that what it gets is
+/// the shipped DEFAULT — which is the right answer for almost every gate in this file, and the
+/// wrong one for a gate whose argument names a path. On 2026-08-25
+/// [`sprag_host::options::RUN_DRIVER_PROCESS`]'s default moved from `off` to `on` (register item
+/// 544) and two gates that had never mentioned the option **silently changed which path they
+/// measure**: both are the in-process half of a pair, and both went on passing, so the sweep could
+/// not say so. Their partners had pinned `on` from the first line; the halves that assumed a
+/// default had nothing written down at all.
+///
+/// ⚠ So the rule this exists to make cheap: **if a gate's own doc says which side of a switch it is
+/// on, it pins the switch.** A default is a fact about what ships, not a fixture.
+fn daemon_told(state: &Path, options: &[(&str, &str)]) {
+    if options.is_empty() {
+        return;
+    }
+    let config = state.join("config").join("sprag");
+    std::fs::create_dir_all(&config).expect("this test's own config directory");
+    let mut written = String::from("[options]\n");
+    for (name, value) in options {
+        written.push_str(&format!("{name} = \"{value}\"\n"));
+    }
+    std::fs::write(config.join(sprag_host::CONFIG_FILE), written)
+        .expect("a config a daemon will read");
+}
+
 /// Every `sprag-term` process holding `sock` in its environment — the daemon, plus one per run it
 /// is driving in a process of its own ([`sprag_host::options::RUN_DRIVER_PROCESS`]).
 ///
@@ -2547,6 +2577,59 @@ fn sprag_term_processes(sock: &Path) -> usize {
             })
         })
         .count()
+}
+
+/// Open a session on `sock` and submit a run over its pane that **cannot finish while anybody is
+/// looking** — the fixture the [`RUN_DRIVER_PROCESS`](sprag_host::options::RUN_DRIVER_PROCESS)
+/// gates count processes against.
+///
+/// # ⚠⚠⚠ Every part of it is load-bearing, so it is spelled once rather than per gate
+///
+/// The pane runs `cat` with its echo turned off and the sentinel is a line `cat` can never produce,
+/// so the run is CERTAINLY still going while the process table is read — a run that converged would
+/// take its driver process down with it and the count would be a race rather than a claim. The
+/// guardrails are far past anything a gate waits out for the same reason.
+///
+/// ⚠ Its two callers ask OPPOSITE questions of it (a daemon told `on`, and one told nothing), which
+/// is exactly why one spelling: a fixture that drifted between them would make the two answers
+/// incomparable while both stayed green.
+fn start_a_run_that_cannot_converge(sock: &Path) {
+    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": pane,
+                "stimulus": "x",
+                // ⚠ Never printed by a `cat`, so the run is certainly still going while the
+                // process table is read — the same shape the restart gates in this file use.
+                "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the run is submitted");
 }
 
 /// Whether any DURABLE saved pane history under `state` contains `needle`.
@@ -2949,17 +3032,24 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
 /// ⛔⛔⛔⛔⛔ **A DAEMON TOLD TO DRIVE ITS RUNS IN PROCESSES OF THEIR OWN DOES, AND ONE TOLD NOT TO
 /// DOES NOT** — [`sprag_host::options::RUN_DRIVER_PROCESS`]'s contract, in both directions.
 ///
-/// # ⚠⚠⚠⚠⚠ Why this exists, and why it is not a gate on the DEFAULT
+/// # ⚠⚠⚠⚠⚠ Why this exists, and why it is NOT the gate on the default
 ///
 /// It was written as one. Item 544's end state is the opposite default, and the measurements its
 /// own doc said that decision was waiting for had arrived (items 543, 662, 663, and this item's
 /// stage 1). So the switch was flipped — and **the workspace sweep answered with eighteen
-/// failures**, then nine, then two. What is left of those two is register items 664 and 665, and
-/// either alone is a reason the word is still `off`.
+/// failures**, then nine, then two, which became register items 664 and 665 and sent the word back
+/// to `off` for a day. Both are paid; the word is `on` since 2026-08-25.
 ///
-/// What survives that is this: **the option must work in both directions, whichever way the default
-/// eventually goes.** A switch nobody measures is a promise nobody is keeping — and it is the WAY
+/// What survives all of that is this: **the option must work in both directions, whichever way the
+/// default points.** A switch nobody measures is a promise nobody is keeping — and it is the WAY
 /// BACK, which is the half that matters most on the day somebody reaches for it.
+///
+/// ⚠⚠⚠ **AND BOTH ARMS HERE WRITE A CONFIG FILE, SO THIS GATE IS BLIND TO THE DEFAULT BY
+/// CONSTRUCTION** — neither of its daemons ever reads one. That is deliberate and it is also why it
+/// cannot be the only gate: the day the shipped word moves, the thing that moved would have nothing
+/// watching it. [`a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own`] is that
+/// one, and the mutation says the two are different sentences — put the default back to `off` and
+/// it goes red while this stays green.
 ///
 /// ⚠⚠ **THE PROCESS TABLE IS THE ONLY HONEST OBSERVER.** A row deliberately cannot say which kind
 /// of driver filled it in — that is the option's own promise (*"the same request must mean the same
@@ -2985,16 +3075,7 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
     };
 
     // ── A DAEMON TOLD `on` ───────────────────────────────────────────────────────────────────
-    let config = state.join("config").join("sprag");
-    std::fs::create_dir_all(&config).expect("this test's own config directory");
-    std::fs::write(
-        config.join(sprag_host::CONFIG_FILE),
-        format!(
-            "[options]\n{} = \"on\"\n",
-            sprag_host::options::RUN_DRIVER_PROCESS
-        ),
-    )
-    .expect("a config a daemon will read");
+    daemon_told(&state, &[(sprag_host::options::RUN_DRIVER_PROCESS, "on")]);
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
@@ -3007,45 +3088,7 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
          the daemon. If this is not 1 the count below says nothing about drivers.",
     );
 
-    let started = |sock: &Path| {
-        let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
-        conn.call(
-            "scene/invoke",
-            json!({
-                "path": mux_action_path(NEW_SESSION_ACTION),
-                "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
-            }),
-        )
-        .expect("new_session answers");
-        let pane = conn
-            .call(
-                "scene/query",
-                json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
-            )
-            .expect("the pane list answers")
-            .as_array()
-            .and_then(|panes| panes.first().cloned())
-            .and_then(|pane| pane["id"].as_u64())
-            .expect("the session's pane");
-        conn.call(
-            "scene/invoke",
-            json!({
-                "session": "work",
-                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
-                "args": {
-                    "plugin": "orchestrator",
-                    "pane": pane,
-                    "stimulus": "x",
-                    // ⚠ Never printed by a `cat`, so the run is certainly still going while the
-                    // process table is read — the same shape the restart gates in this file use.
-                    "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
-                    "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
-                },
-            }),
-        )
-        .expect("the run is submitted");
-    };
-    started(&sock);
+    start_a_run_that_cannot_converge(&sock);
 
     // ── THE CLAIM: the run got a process of its own ──────────────────────────────────────────
     assert!(
@@ -3075,22 +3118,13 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
         sock: sock.clone(),
         state: state.clone(),
     };
-    let config = state.join("config").join("sprag");
-    std::fs::create_dir_all(&config).expect("this test's own config directory");
-    std::fs::write(
-        config.join(sprag_host::CONFIG_FILE),
-        format!(
-            "[options]\n{} = \"off\"\n",
-            sprag_host::options::RUN_DRIVER_PROCESS
-        ),
-    )
-    .expect("a config a daemon will read");
+    daemon_told(&state, &[(sprag_host::options::RUN_DRIVER_PROCESS, "off")]);
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
         "the configured daemon never started serving",
     );
-    started(&sock);
+    start_a_run_that_cannot_converge(&sock);
     // ⚠ Given TIME to be wrong: the claim above waits up to twenty seconds for a second process, so
     // a control that looked once could pass simply by reading before a child had been spawned.
     assert!(
@@ -3100,6 +3134,83 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
          nothing is worse than no switch — it is a promise nobody is keeping.",
     );
     drop(off);
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A DAEMON NOBODY CONFIGURED DRIVES ITS RUNS IN PROCESSES OF THEIR OWN** — register
+/// item 544's destination, held as the DEFAULT rather than as a switch somebody threw.
+///
+/// # ⚠⚠⚠⚠⚠ Why the switch's own gate cannot cover this, and it is not a matter of taste
+///
+/// [`a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_to_does_not`]
+/// writes a config file in BOTH of its arms, deliberately: it is the OPTION's contract, and it must
+/// hold whichever way the default points. That makes it blind to this question **by construction** —
+/// change [`sprag_host::options::RUN_DRIVER_PROCESS`]'s default word and neither of its daemons
+/// notices, because neither of them ever reads a default. So the day the word moved, the thing that
+/// moved had no gate at all. **Two gates, two sentences**, and the mutation says so: with the
+/// default back at `off` that gate passes and this one fails.
+///
+/// ⚠⚠ **THE PREMISE IS THAT THERE WAS NOTHING TO READ, AND IT IS ASSERTED RATHER THAN ARRANGED.**
+/// [`spawn_daemon`] points the daemon's `XDG_CONFIG_HOME` at this test's own state root for exactly
+/// this reason; this gate then checks the file is absent before the daemon starts. Without that
+/// check a developer with `run-driver-process` set in their own `config.toml` would have this pass
+/// on their box and answer about their setting, not about the shipped word.
+///
+/// ⚠⚠ **THE COUNT IS A BEFORE AND AN AFTER ON ONE DAEMON**, which is what makes it about drivers:
+/// one process while nothing is running, two once a run is going. A single reading could be a box
+/// with somebody else's daemon on it — [`sprag_term_processes`] filters by this socket for that
+/// reason, and the pair closes what is left.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-driver-default-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    let configured = state
+        .join("config")
+        .join("sprag")
+        .join(sprag_host::CONFIG_FILE);
+    assert!(
+        !configured.exists(),
+        "⚠⚠ THE PREMISE: this daemon must have NOTHING to read, or the count below is about \
+         somebody's setting rather than about the word this product ships. Found a config at \
+         {configured:?}",
+    );
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    assert_eq!(
+        sprag_term_processes(&sock),
+        1,
+        "⚠⚠ THE PREMISE: before any run there is exactly one `sprag-term` against this socket — \
+         the daemon. If this is not 1 the count below says nothing about drivers.",
+    );
+
+    start_a_run_that_cannot_converge(&sock);
+
+    assert!(
+        wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 544: A DAEMON NOBODY CONFIGURED DROVE THIS RUN ON A THREAD INSIDE \
+         ITSELF. That is the fusion this item exists to end — a run's supervisor sharing a process \
+         with the thing that holds the PTYs, so changing how a loop reflects means restarting \
+         somebody's terminals, and a panic in a driver takes the panes down with it. The switch \
+         has worked in both directions since 2026-08-24; what this gate holds is that a person who \
+         sets nothing gets the unfused one. Found {} `sprag-term` process(es) against this socket, \
+         and a driven run makes two.",
+        sprag_term_processes(&sock),
+    );
     drop(guard);
 }
 
@@ -9810,7 +9921,16 @@ fn show_grammar_says_what_it_takes_when_a_caller_gets_it_wrong() {
 /// Returns the guard (which kills the daemon and clears its state on drop), the socket, and the
 /// host id of the pane a run can name. The ID rather than a number, because `run` takes the id the
 /// daemon knows and `sprag panes` is what a person reads.
+///
+/// ⚠ This one takes the shipped defaults. A gate whose argument names a SIDE of a switch wants
+/// [`daemon_with_one_pane_told`] instead — see [`daemon_told`] for what that distinction cost.
 fn daemon_with_one_pane(label: &str) -> (DaemonGuard, PathBuf, u64) {
+    daemon_with_one_pane_told(label, &[])
+}
+
+/// [`daemon_with_one_pane`], with `options` written into the config that daemon reads before it
+/// starts — for a gate that is about one side of a switch rather than about what ships.
+fn daemon_with_one_pane_told(label: &str, options: &[(&str, &str)]) -> (DaemonGuard, PathBuf, u64) {
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(
         "sprag-{label}-{}-{:?}",
@@ -9822,6 +9942,7 @@ fn daemon_with_one_pane(label: &str) -> (DaemonGuard, PathBuf, u64) {
         sock: sock.clone(),
         state: state.clone(),
     };
+    daemon_told(&state, options);
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
@@ -10004,6 +10125,15 @@ fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
 /// **A DAEMON HOLDING A LIVE RUN IS GONE SOON AFTER SIGTERM** — `install_shutdown`, which is the
 /// path `RunRegistry::JOIN_DEADLINE` exists for, driven for the first time.
 ///
+/// ⚠⚠⚠⚠⚠ **THE RUN HERE IS DRIVEN ON A THREAD, AND SINCE 2026-08-25 THAT HAS TO BE ASKED FOR.**
+/// This is the IN-PROCESS half of a pair whose other half is
+/// [`a_signalled_daemon_whose_run_is_driven_elsewhere_is_gone_promptly`] — the two shapes
+/// differ in whether the order can reach the driver through shared memory, which is the whole of
+/// register item 664. The partner pinned `run-driver-process = on` from its first line; this half
+/// said nothing and took the default, so when that default MOVED (item 544) this gate quietly
+/// started measuring its partner's path and went on passing. Pinned now, and [`daemon_told`] says
+/// why that is a rule rather than a patch.
+///
 /// Register item 305's repair is gated eight ways at the registry, and every one of those gates
 /// builds its own `RunRegistry` and drops it. **None of them asks the question a person asks**: I
 /// signalled a daemon that was in the middle of something — is it gone? The handler is three lines
@@ -10029,7 +10159,10 @@ fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
 // socket, and the process table it reads is portable.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_signalled_daemon_holding_a_live_run_is_gone_promptly() {
-    let (_guard, sock, pane) = daemon_with_one_pane("sigterm");
+    let (_guard, sock, pane) = daemon_with_one_pane_told(
+        "sigterm",
+        &[(sprag_host::options::RUN_DRIVER_PROCESS, "off")],
+    );
     let started = sprag(
         &sock,
         &[
@@ -10064,6 +10197,18 @@ fn a_signalled_daemon_holding_a_live_run_is_gone_promptly() {
         "the run never came up, so nothing was holding the shutdown: {}",
         sprag(&sock, &["runs", "-t", "work"]).stdout,
     );
+    // ⚠⚠⚠⚠⚠ AND THE PIN IS A CLAIM RATHER THAN A COMMENT. This gate's whole argument is that the
+    // order reaches its driver through SHARED MEMORY; take the pin away and the daemon spawns a
+    // driver process, which is its partner's path, and this would go on passing while measuring
+    // the other half. One process against this socket is what *driven on a thread* looks like from
+    // outside — see `sprag_term_processes`, and register item 544 for the day the default moved.
+    assert_eq!(
+        sprag_term_processes(&sock),
+        1,
+        "⚠⚠ THE PREMISE: a daemon told `run-driver-process = off` drives its runs on threads of \
+         its own, so exactly one `sprag-term` holds this socket while the run is live. More than \
+         one means this gate is measuring the out-of-process path its partner exists for.",
+    );
 
     let pid = daemon_pid(&sock).expect("the daemon this test spawned");
     let signalled = Instant::now();
@@ -10087,7 +10232,7 @@ fn a_signalled_daemon_holding_a_live_run_is_gone_promptly() {
 ///
 /// # ⚠⚠⚠⚠⚠ Why its neighbour above cannot see this, when it drives the very same handler
 ///
-/// That gate submits a run to a daemon on today's default (`run-driver-process = off`), so the run
+/// That gate submits a run to a daemon PINNED to `run-driver-process = off`, so the run
 /// it holds is driven by a THREAD sharing the registry's flags: `cancel_all` stores into the same
 /// `AtomicBool` the worker is reading, the worker sees it at its next loop top, and the bounded
 /// join returns in milliseconds. **Nothing is published, and nothing needs to be.**
@@ -10897,6 +11042,11 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         sock: sock.clone(),
         state: state.clone(),
     };
+    // ⚠⚠⚠ PINNED, and this is the IN-PROCESS half of register item 665's pair — see the partner's
+    // doc and [`daemon_told`]. It used to take the default and say so in prose; the day that
+    // default moved (item 544) this gate would have started measuring the partner's path instead,
+    // still green, with nothing anywhere to say the pair had collapsed into one arm.
+    daemon_told(&state, &[(sprag_host::options::RUN_DRIVER_PROCESS, "off")]);
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
@@ -10949,6 +11099,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     /// its `runs` entry. `awaits` names a person watching the pane, for the supervised half.
     fn drive(
         conn: &mut HostConn,
+        sock: &Path,
         session: &str,
         pane: u64,
         consent: Option<Value>,
@@ -10981,7 +11132,12 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         )
         .expect("the run is submitted");
         let mut last = Value::Null;
+        // ⚠⚠⚠ SAMPLED WHILE THE RUN IS ALIVE, because that is the only window in which *driven on
+        // a thread* is observable at all: the pin above is this gate's premise, and a premise
+        // nothing reads is a comment. The MAXIMUM over the whole wait, not one reading.
+        let mut most = 0;
         let finished = wait_for(Duration::from_secs(90), || {
+            most = most.max(sprag_term_processes(sock));
             last = conn
                 .call(
                     "scene/query",
@@ -10996,6 +11152,12 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
                 .is_some_and(|run| run["state"]["status"] == "done")
         });
         assert!(finished, "the run never finished: {last}");
+        assert_eq!(
+            most, 1,
+            "⚠⚠ THE PREMISE: a daemon told `run-driver-process = off` drives on threads of its \
+             own, so one `sprag-term` holds this socket for the whole of a run. {most} means this \
+             gate has drifted onto the out-of-process path its partner exists for (item 544).",
+        );
         last.as_array()
             .and_then(|runs| runs.last().cloned())
             .expect("the run's entry")
@@ -11005,6 +11167,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     let pane = blocked_pane(&mut conn, "answered", ASKING_CLAUDE);
     let outcome = drive(
         &mut conn,
+        &sock,
         "answered",
         pane,
         Some(json!([{
@@ -11040,6 +11203,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     let pane = blocked_pane(&mut conn, "twice", ASKING_CLAUDE_TWICE);
     let outcome = drive(
         &mut conn,
+        &sock,
         "twice",
         pane,
         Some(json!([
@@ -11118,6 +11282,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         });
         drive(
             &mut conn,
+            &sock,
             "supervised",
             pane,
             Some(json!([{
@@ -11145,7 +11310,8 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
 
     // ── THE CONTROL: the same everything, minus the consent.
     let pane = blocked_pane(&mut conn, "unanswered", ASKING_CLAUDE);
-    let outcome = drive(&mut conn, "unanswered", pane, None, None)["state"]["outcome"].clone();
+    let outcome =
+        drive(&mut conn, &sock, "unanswered", pane, None, None)["state"]["outcome"].clone();
     assert_eq!(
         outcome["state"], "blocked",
         "⚠⚠⚠ WITHOUT a consent the run must answer nothing at all. This is the control that stops \
@@ -11182,7 +11348,7 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
 ///
 /// # ⚠⚠⚠⚠⚠ Why its neighbour above cannot see this, when it drives the very same code
 ///
-/// That gate submits to a daemon on today's default (`run-driver-process = off`), so its runs are
+/// That gate submits to a daemon PINNED to `run-driver-process = off`, so its runs are
 /// driven by a THREAD inside the daemon: the wait for a person parks on a `PaneChanges` backed by
 /// the daemon's own pane pool, and the question is re-read out of the same process that owns the
 /// pseudoterminal. Nothing crosses a socket, so nothing can be stale, absent or scoped wrong.
@@ -11192,11 +11358,13 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
 /// `asking.why = "unattended"` and `answered = 1`. The run answered the question it had a clause
 /// for, met the one it did not, waited out its whole patience with a person standing at the pane
 /// typing, and concluded that nobody was there. **That is a person losing the ability to answer
-/// their own loop**, which is the AI loop's central act and the heavier of the two reasons item
-/// 544's default is still `off`.
+/// their own loop**, which is the AI loop's central act and was the heavier of the two reasons item
+/// 544's default stayed `off` for a day longer. Both were paid on 2026-08-25 and the word moved.
 ///
-/// ⚠⚠ **THE OPTION IS TURNED ON HERE RATHER THAN WAITED FOR.** A gate that waited for the default
-/// to flip would be a gate for the day after the repair.
+/// ⚠⚠ **THE OPTION IS TURNED ON HERE RATHER THAN LEFT TO THE DEFAULT**, and it was pinned before
+/// there was a default to lean on. Pinning is what keeps this gate meaning the same thing on the
+/// day the shipped word moves again — [`daemon_told`] is that rule, and this gate's partner is
+/// where the round learned it.
 ///
 /// ⚠⚠⚠ **THE STAGING CONTROL IS THE PROCESS TABLE** — register item 664's reason, and it bites
 /// harder here: *the wait reached its person* and *this run was never driven anywhere else* are

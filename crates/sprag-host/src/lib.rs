@@ -763,12 +763,15 @@ pub fn plugin_host(
     // needs to know WHICH BINARY THIS IS, WHICH ENDPOINT it serves and WHICH SESSION a client of it
     // must scope to, and the session tree is precisely what the plugin surface is free of.
     //
-    // ⚠⚠ **AND A DAEMON NOBODY CONFIGURED STILL DRIVES ON A THREAD.** The default was flipped to
-    // `on` on 2026-08-24 and flipped BACK the same day: the workspace sweep answered with eighteen
-    // failures, then nine, then two, and what is left of those two is register items 664 and 665.
-    // What is gated is the OPTION rather than the default, in both directions — `cli`'s
-    // `a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_to_does_not`,
-    // which says why a switch's WAY BACK is the half that matters most.
+    // ⚠⚠ **AND SINCE 2026-08-25 A DAEMON NOBODY CONFIGURED TAKES THIS BRANCH.** The default was
+    // flipped to `on` on 2026-08-24 and flipped BACK the same day — the workspace sweep answered
+    // with eighteen failures, then nine, then two, and those two were register items 664 and 665.
+    // Both are paid, and the word moved on a sweep with nothing left in it. Two gates hold the two
+    // different sentences: `cli`'s
+    // `a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_to_does_not` is
+    // the OPTION's contract in both directions and cannot see a default at all, and
+    // `a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own` is the one that reads
+    // the shipped word.
     //
     // ⚠⚠⚠⚠⚠ **AND THE ABILITY IS THE CALLER'S TO GRANT, NOT THIS FUNCTION'S TO ASSUME** — see
     // [`DaemonShared::spawn_driver`]. The option says whether to USE a driver process; whether this
