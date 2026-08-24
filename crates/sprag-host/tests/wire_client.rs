@@ -8837,3 +8837,167 @@ fn no_published_pane_address_hands_back_input_the_terminal_did_not_echo() {
 
     let _ = std::fs::remove_file(&sock);
 }
+
+/// A boot pane that ANSWERS rather than echoes: every line it reads comes back wearing a prefix
+/// the typist never typed.
+///
+/// ⚠⚠⚠ Why not `cat`, which every other test here uses. A pseudoterminal echoes its own input, so
+/// with `cat` the sentinel a run waits for would be satisfied by the run's own keystrokes — a
+/// control that shares a word with the failure it is meant to separate. `ANSWER:` can only be on
+/// that screen because the program on the far side of the PTY put it there, so a run that converges
+/// on it converged because A PEER SPOKE.
+const ANSWERING_PEER: &str = "while read line; do echo \"ANSWER:$line\"; done";
+
+/// The prefix [`ANSWERING_PEER`] wears, and the sentinel the runs below wait for.
+const PEER_ANSWERED: &str = "ANSWER:";
+
+/// **A RUN DRIVEN BY A SEPARATE PROCESS CONVERGES AGAINST A REAL DAEMON** — register item 643.
+///
+/// # ⚠⚠⚠⚠⚠ What this is the first of
+///
+/// `RemotePaneAccess` has been exercised by tests since it was written, and by nothing else. This
+/// is its first PRODUCTION caller: `sprag-term --drive` builds the same plugin from the same
+/// request the daemon would have built (`drive_request`, one builder), against a world answered
+/// over the socket (`RemotePluginWorld`), typing at a pane it does not own and cannot see except
+/// through the wire.
+///
+/// So what a red here means is not "the driver binary is broken" but "a run cannot leave this
+/// process" — which is the whole of item 544's premise.
+///
+/// # ⚠⚠ The two claims, and why the second one is here
+///
+/// 1. The driver exits 0 and reports a `converged` outcome on stdout.
+/// 2. **The peer's answer is on the pane.** Without it, claim 1 is satisfiable by a driver that
+///    reported convergence without typing anything at all — and a driver that reports without
+///    driving is the exact defect an out-of-process run makes possible.
+///
+/// ⚠⚠⚠⚠⚠ **CLAIM 2 IS NOT DECORATION, AND IT TOOK FOUR MUTATIONS TO SHOW IT.** Silencing
+/// `RemotePaneAccess::inject` reds claim 1, never claim 2 — a run that types nothing never moves the
+/// pane, and this plugin READS ONLY AFTER THE PANE MOVES, so a forged read is not even consulted.
+/// The only mutation that separates the two is REAL TYPING + A SILENT PEER + A FORGED SENTINEL
+/// READ, and then claim 1 stays green while this one reds. ⚠ The forgery has to target
+/// `SCREEN_COLLAPSED_SLOT`: the sentinel is checked through `PaneAccess::pane_collapsed`, and a
+/// draft of that mutation aimed at the pane's TEXT address and changed nothing at all.
+#[test]
+fn a_run_driven_by_a_separate_process_converges_against_a_real_daemon() {
+    let (_host, sock) = spawn_host_running(&["sh", "-c", ANSWERING_PEER]);
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let pane = *pane_ids(&mut conn).first().expect("the boot pane");
+
+    let request = json!({
+        "plugin": "orchestrator",
+        "pane": pane,
+        "stimulus": "driven-from-another-process",
+        "sentinel": PEER_ANSWERED,
+        "guardrails": { "max_iterations": 20, "max_seconds": 30 },
+    });
+
+    let driven = drive_in_a_child(&sock, 1, &request);
+
+    assert_eq!(
+        driven["state"],
+        json!("converged"),
+        "⚠⚠⚠ a run driven from another process must converge on the peer's answer: {driven:?}",
+    );
+
+    // Claim 2. The daemon is asked, not the child — the pane is the daemon's, and its screen is the
+    // only place a keystroke that actually crossed the socket can show up.
+    let answered = wait_until(Duration::from_secs(5), || {
+        pane_text(&mut conn, pane).contains(PEER_ANSWERED)
+    });
+    assert!(
+        answered,
+        "⚠⚠⚠⚠⚠ the run reported convergence but the peer never answered on the pane — a driver \
+         that reports without typing is exactly what an out-of-process run makes possible, and \
+         claim 1 alone cannot tell the two apart",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// **A REQUEST NO PLUGIN SPELLS IS REFUSED BEFORE A BYTE IS TYPED** — the control for the gate
+/// above.
+///
+/// ⚠ Its own claim, not decoration: the driver's builder runs BEFORE its three connections do any
+/// work, and a malformed request that reached the typing stage would be a run driving a pane on a
+/// plan nobody could read. A non-zero exit and an empty stdout are the two halves of "it did not
+/// pretend to have an outcome".
+#[test]
+fn a_driver_given_a_request_no_plugin_spells_reports_nothing_and_fails() {
+    let (_host, sock) = spawn_host_running(&["sh", "-c", ANSWERING_PEER]);
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let pane = *pane_ids(&mut conn).first().expect("the boot pane");
+
+    let out = drive_child(
+        &sock,
+        2,
+        &json!({ "plugin": "no-such-plugin-lives-here", "pane": pane }),
+    );
+
+    assert!(
+        !out.status.success(),
+        "⚠⚠⚠ a request the builder refuses must fail the driver process, not exit 0 with nothing",
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "⚠⚠⚠ a refused request has no outcome to report, and a driver that writes one is \
+         manufacturing an answer: {:?}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// Everything pane `pane` has on its screen and in its scrollback, read over the wire.
+fn pane_text(conn: &mut HostConn, pane: u64) -> String {
+    conn.call(
+        "scene/query",
+        json!({ "path": pane_input_path(pane, FULL_TEXT_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| v.as_str().map(ToOwned::to_owned))
+    .unwrap_or_default()
+}
+
+/// Run `sprag-term --drive <run>` against `sock` with `request` on its stdin, and return what it
+/// reported — failing the test if it did not exit cleanly.
+fn drive_in_a_child(sock: &Path, run: u64, request: &Value) -> Value {
+    let out = drive_child(sock, run, request);
+    assert!(
+        out.status.success(),
+        "⚠⚠⚠ the driver process failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|why| {
+        panic!(
+            "⚠⚠⚠ a driver reports one JSON object on stdout ({why}): {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+/// The raw child, for the callers that are asking about a FAILURE.
+///
+/// ⚠ The socket reaches the driver the way it reaches every other client of this daemon — through
+/// `SPRAG_HOST_RPC_SOCK`, which is what the daemon itself will pass when it spawns one. A flag of
+/// its own here would be a second answer to "which host", testable and wrong.
+fn drive_child(sock: &Path, run: u64, request: &Value) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
+        .arg(sprag_host::drive::DRIVE_FLAG)
+        .arg(run.to_string())
+        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the driver process");
+    // ⚠⚠ THROUGH `feed`, NEVER a hand-rolled `stdin.take()` + `write_all` — register item 471, and
+    // the caller below is exactly its case: a driver handed a request no plugin spells REFUSES
+    // BEFORE IT READS, so the write meets a closed pipe and a fixture that treats that as fatal
+    // reports `Broken pipe` instead of the exit status it came for. `sprag-gate`'s ratchet caught
+    // this file the first time it was written the other way.
+    sprag_gate::feeding::feed(&mut child, request.to_string().as_bytes());
+    child.wait_with_output().expect("reap the driver process")
+}

@@ -13,7 +13,14 @@
 //!
 //! ```text
 //! sprag-term [--daemon] [--size COLSxROWS] [-- <program> [args...]]
+//! sprag-term --drive <run-id> [-t <session>]
 //! ```
+//!
+//! The second form is a DIFFERENT PROGRAM wearing the same image: not a multiplexer at all but a
+//! client of one, driving a single already-registered run over the wire and reporting its outcome
+//! on stdout. It is what the daemon spawns to put a run in its own process; see
+//! [`sprag_host::drive`] for what it connects and why. The split happens before any argument is
+//! parsed, because the terminal's parser reads an unknown first word as a pane command.
 //!
 //! With no command the initial pane runs `$SHELL` (else `/bin/sh`). Socket
 //! policy: `$XDG_RUNTIME_DIR/sprag-host.sock` (override `SPRAG_HOST_RPC_SOCK`),
@@ -88,7 +95,81 @@ use tracing_subscriber::{EnvFilter, fmt};
 /// looked up by that name before `HostState` exists to answer for it.
 const BOOT_SESSION: &str = "0";
 
+/// What a `--drive` argv asked this image to drive.
+struct DriveOrder {
+    /// The id the daemon registered the run under — what an order names when it reaches the
+    /// driver, and what the driver re-reads the run's row by.
+    run: u64,
+    /// The session every connection this driver opens is scoped to, or the daemon's unscoped
+    /// default. It must be the scope the run's panes live in: a park scoped elsewhere is refused
+    /// at the door (`RemotePaneAccess::parking_on`).
+    session: Option<String>,
+}
+
+/// **WHICH PROGRAM THIS IMAGE IS** — a driver order, or `None` for the terminal.
+///
+/// ⚠⚠⚠ This is read BEFORE [`parse_args`], and cannot move into it. That parser treats the first
+/// word it does not know as the PROGRAM TO RUN IN THE BOOT PANE, so a `--drive` reaching it would
+/// not be a mis-parse the user sees — it would silently open a terminal running a pane called
+/// `--drive`. A driver is a different program wearing the same image, and the split belongs where
+/// no parse has happened yet.
+///
+/// # Errors
+///
+/// A `--drive` with no run id after it, a run id that is not a number, or a `-t`/`--session` with
+/// no name after it. **All three fail rather than fall back to booting a terminal** — a daemon that
+/// spawned a driver and got a multiplexer would hold a socket nobody asked it to hold.
+fn drive_order<I: Iterator<Item = String>>(mut args: I) -> io::Result<Option<DriveOrder>> {
+    let mut run: Option<u64> = None;
+    let mut session: Option<String> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            sprag_host::drive::DRIVE_FLAG => {
+                let raw = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{} takes the run id to drive",
+                            sprag_host::drive::DRIVE_FLAG
+                        ),
+                    )
+                })?;
+                run = Some(raw.parse::<u64>().map_err(|why| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{raw:?} is not a run id: {why}"),
+                    )
+                })?);
+            }
+            "-t" | "--session" => {
+                session = Some(args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} takes the session name to scope to"),
+                    )
+                })?);
+            }
+            // Anything else belongs to the terminal's own parser. A driver argv is written by the
+            // daemon, not by hand, so there is nothing else here to understand.
+            _ => {}
+        }
+    }
+
+    Ok(run.map(|run| DriveOrder { run, session }))
+}
+
 fn main() -> io::Result<()> {
+    // ⚠⚠⚠⚠⚠ THE DRIVER SPLIT IS THE FIRST THING `main` DOES. Everything below boots a
+    // multiplexer — a lock, a log, a pane, a socket — and a driver wants none of it: it is a client
+    // of a daemon that already exists, and it reaches that daemon by the SAME endpoint resolution
+    // (`SPRAG_HOST_RPC_SOCK`, inherited from the daemon that spawned it), so the two can never
+    // disagree about which host they mean.
+    if let Some(order) = drive_order(std::env::args().skip(1))? {
+        let sock = sprag_rpc::socket_path(HOST_SOCKET);
+        return sprag_host::drive::drive(&sock, order.session.as_deref(), order.run);
+    }
+
     let args = parse_args();
 
     // The endpoint path resolved ONCE, the same way `mount` resolves it — the daemon's single

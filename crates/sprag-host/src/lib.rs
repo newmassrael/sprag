@@ -56,6 +56,7 @@ pub mod config;
 /// the platform that has cgroups, and the crate that has the bus client.
 #[cfg(target_os = "linux")]
 pub mod delegation;
+pub mod drive;
 pub mod durability;
 pub mod events;
 mod external;
