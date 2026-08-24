@@ -73,7 +73,7 @@ const SESSION_RAIL_TAG: &str = "sprag_gui.srail";
 /// `↑`/`↓` move a cursor between sessions, `Enter` switches, `Delete` arms a kill — see
 /// [`handle_sidebar_key`]). Distinct from [`SESSION_RAIL_TAG`] (the whole rail, which also holds the
 /// separately-focusable "+" footer) so Tab lands on the list ONCE, not on every row.
-const SESSION_TABLIST_TAG: &str = "sprag_gui.stablist";
+pub(crate) const SESSION_TABLIST_TAG: &str = "sprag_gui.stablist";
 /// The "+" (new session) button tag.
 const NEW_SESSION_TAG: &str = "sprag_gui.snew";
 /// The per-row SWITCH tag prefix; row `i`'s body (a click switches this client to it) is tagged

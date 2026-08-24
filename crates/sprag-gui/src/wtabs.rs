@@ -23,6 +23,7 @@
 //! switches), so a fire-only-on-change selector would drop exactly the "switch back to the tab
 //! I was on" click. Per-tab buttons keep the host authoritative and every click live.
 
+use pinion_a11y::{AccessNode, AriaRole};
 use pinion_core::scene::{ContainerNode, Rect, TextNode};
 use pinion_core::style::{
     AlignItems, BoxStyle, FlexDirection, JustifyContent, LayoutStyle, Size, SizeValue, TextStyle,
@@ -45,6 +46,11 @@ const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
 const CLOSE_WINDOW_TAG: &str = "sprag_gui.wclose";
 /// The per-tab tag prefix; tab `i` is tagged `{TAB_TAG_PREFIX}{i}`.
 const TAB_TAG_PREFIX: &str = "sprag_gui.wtab.";
+/// The strip's WAI-ARIA `tablist` container — see [`window_strip_access_nodes`].
+///
+/// ⚠ Named like the session rail's (`sprag_gui.stablist`) because it is the same kind of thing on
+/// the other axis, and an AT meeting both should not have to learn two conventions.
+const TABLIST_TAG: &str = "sprag_gui.wtablist";
 /// The event a [`ButtonExternal`] emits on activation — pinion scopes it as `{tag}.click`.
 const CLICK_EVENT: &str = "click";
 
@@ -166,6 +172,51 @@ fn tab_node(i: usize, name: &str, current: bool, theme: &Theme) -> Scene {
         (Color::TRANSPARENT, theme.resolve(ColorRole::OnSurfaceMuted))
     };
     clickable(tab_tag(i), name, fill, fg)
+}
+
+/// **THE WINDOW STRIP AS A WAI-ARIA TABLIST** — register item 582, and the thing a person could not
+/// be told.
+///
+/// # ⚠⚠⚠⚠⚠ Why a strip that PAINTS the answer still has to publish it
+///
+/// [`tab_node`] marks the current window with two colours and nothing else. That is enough for eyes
+/// and it is the whole answer for nobody else: a screen reader can say which SESSION this client is
+/// on ([`crate::stabs::session_sidebar_access_nodes`], a tablist since R179) and could not say which
+/// WINDOW. Two strips, one axis each, and only one of them speaks.
+///
+/// ⚠⚠ It is also what made the owner's symptom ungateable. The report was *the chrome says pinion
+/// and the pixels are sce*; comparing those needs the chrome's claim as a VALUE, and a colour in a
+/// frame buffer is not one. So this is published for a person first and a gate second — the order
+/// matters, because an address minted so a test can see something is the shape register item 642
+/// measured this workspace refusing.
+///
+/// ⚠ Built like the session rail deliberately: a `TabList` container naming its children, then one
+/// `Tab` per window carrying `selected` and its position in the set. A second spelling of *what a
+/// tab strip is* would drift from the one an AT already meets on the other axis.
+pub(crate) fn window_strip_access_nodes(slots: &crate::slotview::SlotView) -> Vec<AccessNode> {
+    let windows = slots.windows();
+    let count = windows.len().min(MAX_WINDOW_TABS);
+    let mut nodes: Vec<AccessNode> = Vec::with_capacity(count + 3);
+    let mut tablist = AccessNode::new(TABLIST_TAG, AriaRole::TabList).with_name("Windows");
+    for i in 0..count {
+        tablist = tablist.with_child(tab_tag(i));
+    }
+    nodes.push(tablist);
+    for (i, window) in windows.iter().enumerate().take(MAX_WINDOW_TABS) {
+        nodes.push(
+            AccessNode::new(tab_tag(i), AriaRole::Tab)
+                .with_name(window.name.clone())
+                // ⚠⚠⚠ READ FROM THE WINDOW, never from an index. `SlotView`'s mirror is the single
+                // source of truth for which window is current (this module's own doc says so), and
+                // the strip's FIRST TAB IS NOT THE CURRENT ONE — the pixel smoke paid a round for
+                // that assumption before this existed.
+                .with_selected(window.current)
+                .with_set_position(i, count),
+        );
+    }
+    nodes.push(AccessNode::new(NEW_WINDOW_TAG, AriaRole::Button).with_name("New window"));
+    nodes.push(AccessNode::new(CLOSE_WINDOW_TAG, AriaRole::Button).with_name("Close window"));
+    nodes
 }
 
 /// One clickable action button (the "+" / "×"), tagged so its click routes to its [`ButtonExternal`].
@@ -509,6 +560,112 @@ mod tests {
             assert!(
                 crate::confirm::is_open(),
                 "it armed the confirmation instead"
+            );
+        });
+    }
+
+    /// **WHICH WINDOW A CLIENT IS ON IS A FACT IT PUBLISHES, NOT A COLOUR** — register item 582.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The owner's symptom, and why nothing could gate it
+    ///
+    /// The report was *the chrome says pinion and the pixels are sce* — a header naming one window
+    /// while the panes of another are painted. Four gates now drive that gesture and every one of
+    /// them is green, because each asks about ONE side: the window LIST moves (it always did), or
+    /// the PANES move (they do now). **Nothing asks whether the two agree**, and the only way to ask
+    /// is to read what the chrome claims.
+    ///
+    /// That could not be read. [`tab_node`] renders currentness as `SurfaceContainerHighest` +
+    /// `Accent` and nothing else — so *which window is current* existed, in this client, **only as
+    /// two colours in a frame buffer**.
+    ///
+    /// # ⚠⚠ And that is a defect of its own, which is why this is fixed BEFORE the comparison gate
+    ///
+    /// The session rail publishes exactly this (`AriaRole::Tab` + `with_selected`), so a screen
+    /// reader can say which SESSION it is on and cannot say which WINDOW. Publishing it is therefore
+    /// worth doing for a person — and doing it in that order is what keeps this from being an
+    /// address minted so a test could see something, which is the shape register item 642 measured
+    /// this workspace refusing.
+    #[test]
+    fn the_window_strip_publishes_which_window_is_current() {
+        Owner::new().run(|| {
+            seed_live_host();
+            let slots = &use_terminal().slots;
+            slots.new_window();
+            let windows = slots.windows();
+            assert!(
+                windows.len() > 1,
+                "two windows, so 'which one' is a real question: {windows:?}",
+            );
+
+            let nodes = window_strip_access_nodes(slots);
+            let tabs: Vec<_> = nodes
+                .iter()
+                .filter(|node| node.role == AriaRole::Tab)
+                .collect();
+            assert_eq!(
+                tabs.len(),
+                windows.len(),
+                "one tab node per live window: {nodes:?}",
+            );
+
+            // ⚠ THE CLAIM: exactly one tab says it is the current one, and it is the one the window
+            // list says is current. A strip that marked none would leave a screen reader where it
+            // was; one that marked several would be the divergence this item is about, published.
+            let current = windows
+                .iter()
+                .position(|w| w.current)
+                .expect("the window list names a current window");
+            let said: Vec<usize> = tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, node)| node.selected == Some(true))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                said,
+                vec![current],
+                "⚠⚠⚠⚠⚠ the strip must say WHICH window is current, and say it about the same one \
+                 the window list does — the owner's symptom was a chrome naming one window while \
+                 another's panes were painted, and a fact kept only as a colour cannot be compared \
+                 with anything: {nodes:?}",
+            );
+        });
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL: THE ANSWER MUST FOLLOW THE WINDOW, NOT AN INDEX.** The gate above
+    /// passes for a strip that hard-codes `selected` on tab 0 — which is exactly the stale-first-tab
+    /// assumption the pixel smoke already paid a round for. This selects a different window and
+    /// requires the answer to move with it.
+    #[test]
+    fn the_published_current_window_moves_when_the_window_does() {
+        Owner::new().run(|| {
+            seed_live_host();
+            let slots = &use_terminal().slots;
+            slots.new_window();
+
+            let first = window_strip_access_nodes(slots)
+                .iter()
+                .position(|n| n.selected == Some(true))
+                .expect("some tab is current to begin with");
+
+            let names: Vec<String> = slots.windows().iter().map(|w| w.name.clone()).collect();
+            let other = names
+                .iter()
+                .enumerate()
+                .find(|(i, _)| *i != first)
+                .map(|(_, name)| name.clone())
+                .expect("a second window to move to");
+            slots.select_window(&sprag_host::wire::WindowRef::Named(other));
+
+            let moved = window_strip_access_nodes(slots)
+                .iter()
+                .position(|n| n.selected == Some(true))
+                .expect("some tab is current after the switch");
+            assert_ne!(
+                moved, first,
+                "⚠⚠⚠ selecting another window must move what the strip SAYS is current — an answer \
+                 pinned to an index would be green here and wrong in exactly the way the pixel \
+                 smoke's first cut was (its 'first tab' was not the window the client was on)",
             );
         });
     }

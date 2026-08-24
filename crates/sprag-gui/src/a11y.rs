@@ -64,6 +64,27 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
                 &terminal.slots,
                 focused,
             ));
+            // ⚠⚠⚠⚠⚠ AND THE WINDOW STRIP — register item 582. It is here for the session rail's
+            // reason (it paints on the main window only) and it was MISSING for no reason at all:
+            // the two strips are one axis each, and an AT could say which session this client was
+            // on and not which window.
+            //
+            // ⚠⚠ **PUBLISHING WITHOUT COLLECTING IS THE DEFECT, NOT HALF OF THE FIX** — measured:
+            // with `window_strip_access_nodes` written and this line absent, every gate in
+            // `crate::wtabs` stayed green while a screen reader heard nothing, because those gates
+            // call the builder directly. That is register item 492's shape (authored and never
+            // read), and it is why `the_window_strip_reaches_the_accessibility_tree` asks about
+            // THIS function rather than the builder.
+            //
+            // ⚠ MEASURED BOTH WAYS in one round: removing this line was GREEN across the whole GUI
+            // suite before that gate existed, and is RED after. That flip is the gate's proof — not
+            // that it was added, but that something which used to pass no longer does.
+            nodes.extend(crate::wtabs::window_strip_access_nodes(&terminal.slots));
+            // ⚠⚠⚠⚠⚠ AND THE WINDOW STRIP — register item 582. It is here for the session rail's
+            // reason (it paints on the main window only) and it was MISSING for no reason at all:
+            // the two strips are one axis each, and an AT could say which session this client was
+            // on and not which window. ⚠ Publishing without collecting would be a fact authored and
+            // never read (item 492), which is why the two land in one round.
             nodes.extend(docked_panes());
             nodes
         }
@@ -534,10 +555,16 @@ mod tests {
             // Boot: all docked -> main advertises every pane.
             assert_eq!(main_pane_nodes().len(), n);
             // ...and the session sidebar rides alongside — a `tablist` — on the MAIN window only.
+            //
+            // ⚠⚠⚠ BY TAG AND NOT BY ROLE, since register item 582 gave the WINDOW strip a tablist
+            // too. `any(role == TabList)` was unambiguous while the sidebar was the only one and
+            // became a claim about *some* tablist the moment it was not — a gate that would stay
+            // green if the sidebar's vanished and the window strip's remained.
             assert!(
                 access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None)
                     .iter()
-                    .any(|node| node.role == AriaRole::TabList),
+                    .any(|node| node.role == AriaRole::TabList
+                        && node.tag == crate::stabs::SESSION_TABLIST_TAG),
                 "the main window advertises the session tablist",
             );
 
@@ -562,6 +589,69 @@ mod tests {
             assert!(
                 undock.iter().all(|node| node.role != AriaRole::TabList),
                 "an undock window carries no session tablist",
+            );
+        });
+    }
+
+    /// **THE WINDOW STRIP REACHES THE TREE, AND NOT ONLY THE BUILDER** — register items 582 and 492.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this exists beside the gates in `crate::wtabs`, which look sufficient
+    ///
+    /// Those two call `window_strip_access_nodes` DIRECTLY, so they prove the nodes are correct and
+    /// say nothing about whether anybody collects them. Measured: with the builder written and the
+    /// `extend` in [`access_nodes_for_window`] absent, **every gate in that module stayed green
+    /// while a screen reader heard nothing.** A fact authored and never read is register item 492's
+    /// shape, and this session met it four times in one day — a driver's progress cell, a dropped
+    /// error, a discarded stderr, and this.
+    ///
+    /// ⚠⚠ So the door under test is the one the CLIENT calls, and the claim is the whole chain:
+    /// the strip is here, it says which window is current, and — the half a role check cannot see —
+    /// it is a DIFFERENT tablist from the session rail's.
+    ///
+    /// REVERT-PROOF: drop the `extend` and every assertion below fails; pin `with_selected` to an
+    /// index and the last one does.
+    #[test]
+    fn the_window_strip_reaches_the_accessibility_tree() {
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::split::sync_layout(&use_terminal().slots);
+            let main = access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None);
+
+            let strip: Vec<_> = main
+                .iter()
+                .filter(|node| node.tag.starts_with("sprag_gui.wtab"))
+                .collect();
+            assert!(
+                strip
+                    .iter()
+                    .any(|node| node.role == AriaRole::TabList
+                        && node.tag == "sprag_gui.wtablist"),
+                "⚠⚠⚠⚠⚠ the window strip must be IN the tree, not merely buildable — a screen reader \
+                 that can say which SESSION this client is on and not which WINDOW is the defect \
+                 item 582 is about: {main:?}",
+            );
+            assert!(
+                strip.iter().any(|node| node.role == AriaRole::Tab),
+                "and it carries a tab per window: {strip:?}",
+            );
+            assert_eq!(
+                strip
+                    .iter()
+                    .filter(|node| node.selected == Some(true))
+                    .count(),
+                1,
+                "⚠⚠⚠ exactly one window is current, and the tree says WHICH — the owner's symptom \
+                 was a chrome naming one window while another's panes were painted, and that \
+                 comparison needs this value to exist at all: {strip:?}",
+            );
+
+            // ⚠ The session rail is still its own tablist, on its own tag. Two strips, one axis
+            // each — a single `role == TabList` check could not tell them apart, which is why the
+            // partition gate above now names the sidebar's tag.
+            assert!(
+                main.iter()
+                    .any(|node| node.tag == crate::stabs::SESSION_TABLIST_TAG),
+                "the session rail is untouched by this: {main:?}",
             );
         });
     }
