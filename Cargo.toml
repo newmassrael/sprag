@@ -74,38 +74,38 @@ repository = "https://github.com/newmassrael/sprag"
 # so the single shared SCE instance is preserved (see the SCE block). `package=` is
 # omitted (dep key == crate name; pinion crates are workspace members of the repo).
 # (DESIGN.md §5's "path deps — unpublished" rationale is superseded here by PR-22.)
-pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
-pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
-pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
+pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
+pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 # pinion-gpu (R1537): the wgpu device pinion owns so it can request TIMESTAMP_QUERY,
 # which vello's own RenderContext cannot carry. NOT a dependency sprag chose: the
 # `vello_renderer_impl!` expansion names `::pinion_gpu::{GpuError, GpuContext,
 # FrameTimer, GpuFrameClock}` in the crate root, so every macro consumer declares it.
 # sprag-gui alone, like every other GPU dep here.
-pinion-gpu = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-gpu = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 # pinion-runtime: the shell's input/focus runtime. sprag-gui uses it only as a
 # DEV-dependency, for `PointerId` in the end-to-end click-to-focus test (the
 # shell's pointer methods take it); not a runtime dependency of any sprag crate.
-pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 # Backend-agnostic widget paint helpers (GPU-free; deps core/text/a11y, already
 # under pinion-shell). sprag-gui uses `view_splitter` + `SplitterExternal` for
 # the draggable pane dividers (R38).
-pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 # Platform clipboard bridge (arboard: X11 PRIMARY/CLIPBOARD, Wayland, mac, Win).
 # sprag-gui uses `use_app_clipboard` for mouse-select copy + paste (R139).
-pinion-platform-clipboard = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
-pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-platform-clipboard = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
+pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection
 # crates stay free of its heavy transitive deps (DESIGN.md §3/§5: the data
 # path needs no display).
-pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 # pinion-rpc-transport (PR-47/R1263): the reusable Unix-socket adapter over
 # pinion's winit-free RpcIngress seam. sprag-gui mounts it via the shell's
 # `on_rpc_ingress` hook so the RPC endpoint is a fixed-path socket (always
 # there, execution-independent) instead of the process's stdin. Depends only
 # on the seam, so it stays free of the shell's GPU deps.
-pinion-rpc-transport = { git = "https://github.com/newmassrael/pinion.git", rev = "38c908b23ebafeb6e649c76e88b78de850b94115" }
+pinion-rpc-transport = { git = "https://github.com/newmassrael/pinion.git", rev = "3591819b75b2e9d9b7a0bb84e1e7639e64680199" }
 
 # VT toolkit (DESIGN.md §4): termwiz is the embedded verified escape
 # parser + cell/color/input primitives. The emulator state machine is
@@ -214,8 +214,8 @@ vello = "0.9"
 # change the rev HERE and in pinion's workspace deps to the SAME value.
 # sce-build is a build-dependency (build.rs codegen); the runtime carries the
 # generated state machine. default-features off keeps http-send out.
-sce-build = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "084dfdbf4702169e7874bd18ad372e8b798ef3d7" }
-sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "084dfdbf4702169e7874bd18ad372e8b798ef3d7", default-features = false }
+sce-build = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "035c2dae1e37c00540b31fe00653ca5423c96339" }
+sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "035c2dae1e37c00540b31fe00653ca5423c96339", default-features = false }
 # The ONE IScriptEngine implementation SCE ships at this rev. A statechart whose
 # datamodel is anything but `null` is generated against a script engine the
 # CONSUMER supplies (`Policy::new(Arc<dyn IScriptEngine>)`), and Lua is the only
@@ -223,7 +223,7 @@ sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git
 # "future". Held here as a MEASUREMENT dependency (sprag-plugin takes it as a
 # dev-dependency only) until something in the product needs to CONSTRUCT the
 # machine: see `sprag_plugin::ai_loop`'s gates and PR-86's item 5.
-sce-rust-lua = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "084dfdbf4702169e7874bd18ad372e8b798ef3d7" }
+sce-rust-lua = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "035c2dae1e37c00540b31fe00653ca5423c96339" }
 # ⚠⚠⚠ PR-86 WAS DELIVERED AT THIS REV AND `log` IS GONE FROM THIS FILE. It was an
 # INTERIM sprag never called: SCE's Rust codegen used to emit bare `log::error!` on
 # every datamodel error path, so a machine with a script datamodel did not COMPILE

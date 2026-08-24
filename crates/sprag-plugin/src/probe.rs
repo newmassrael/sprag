@@ -1650,19 +1650,28 @@ mod tests {
     /// [`sce_publishes_no_door_to_enter_a_machine_at_a_configuration`]'s six spellings against the
     /// new revision — that is the whole transaction the gate below exists to force.
     ///
-    /// # ⚠⚠ WHAT WAS READ AT `084dfdbf`, so the next reader can tell a reading from a bump
+    /// # ⚠⚠ WHAT WAS READ AT `035c2dae`, so the next reader can tell a reading from a bump
     ///
     /// The whole `impl<P: StatePolicy> Engine<P>` block was enumerated rather than the six names
     /// searched for, because the gate's own limit 1 is that a SEVENTH spelling is invisible to a
     /// name list. `enter_at` is there and is item 549 delivered (already consumed by
-    /// `a_saved_configuration_is_entered_without_re_running_onentry`); nothing else in the block
-    /// takes a configuration. The rev's additions are `schedule_host_send_at`, `pop_ready_act_at`
-    /// and `note_payload_reading` — the scheduler and the payload meter, not a door.
+    /// `a_saved_configuration_is_entered_without_re_running_onentry`); **nothing else in the block
+    /// takes a configuration.** This rev's additions are all one subject and it is not a door:
+    /// `register_invoker`, `has_invoker`, `perform_host_invoke`, `cancel_host_invoke`,
+    /// `perform_host_send`, `has_event_processor`, `schedule_host_send` — a host serving `<invoke>`
+    /// and `<send>`.
     ///
     /// ⚠ And the second half the gate's message asks for: **no trait is implemented for `Engine`
     /// at all** at this rev, so nothing shadows the method resolution the probe's verdict is made
     /// of.
-    const DOORS_READ_AT_SCE_REV: &str = "084dfdbf4702169e7874bd18ad372e8b798ef3d7";
+    ///
+    /// ⚠⚠⚠ **THE DOOR THIS REV DID ADD IS ON THE POLICY, NOT THE ENGINE** —
+    /// `StatePolicy::get_state_from_name` (SCE `ef6c6d4c`), which is sprag's own SCE-PR92 delivered
+    /// and is what makes `enter_at`'s argument buildable from a recorded name. The reading above
+    /// stands unchanged BECAUSE of where it landed: the probe asks about `Engine`, and this is the
+    /// second time a door has arrived on the policy instead — the blind spot the `set_active_states`
+    /// note below already named. **That is the finding to carry forward, not a name to add here.**
+    const DOORS_READ_AT_SCE_REV: &str = "035c2dae1e37c00540b31fe00653ca5423c96339";
 
     /// ⛔⛔⛔⛔ **THE DOOR PROBE'S NAME LIST IS RE-READ WHENEVER THE ENGINE PIN MOVES** — register
     /// item 583, and the mechanism its `Done when` asked for.
