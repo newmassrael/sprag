@@ -2787,6 +2787,72 @@ pub struct LoopPlace {
     current: AiLoopState,
 }
 
+impl LoopPlace {
+    /// **THIS PLACE AS THE DOCUMENT'S OWN WORDS** — what a run log can hold, register item 543.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Words, because a log is words and a restart has nothing else
+    ///
+    /// A run log is read by a daemon that was not running when it was written, and possibly by a
+    /// NEWER BUILD of one. A place carried as numbers would be a promise about the generated
+    /// enum's discriminants — which the document's own author changes by adding a state — so a log
+    /// written on Monday would place Tuesday's daemon somewhere nobody chose. The names are the
+    /// document's, come from [`StatePolicy::get_state_name`](sce_rust_runtime::StatePolicy), and
+    /// are read back through its inverse.
+    ///
+    /// ⚠⚠ **THE CURRENT STATE IS FIRST**, and that is the encoding rather than a convention worth
+    /// forgetting: [`from_words`](Self::from_words) has to hand `enter_at` both facts, and a list
+    /// that only said *which states are active* would have lost the one `enter_at` refuses without
+    /// (`CurrentNotActive`). ⚠ It also appears in the configuration, where it belongs — the head is
+    /// a POINTER at a member, not a state held outside the set.
+    #[must_use]
+    pub fn in_words(&self) -> Vec<String> {
+        use sce_rust_runtime::StatePolicy as _;
+
+        std::iter::once(AiLoopPolicy::get_state_name(self.current))
+            .chain(
+                self.configuration
+                    .iter()
+                    .map(|state| AiLoopPolicy::get_state_name(*state)),
+            )
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// **THE ONE READER OF [`in_words`](Self::in_words)** — a place taken back off a log.
+    ///
+    /// [`None`] for words this document cannot spell, for an empty list, or for a head that is not
+    /// among the states it names.
+    ///
+    /// # ⚠⚠⚠ A word this build cannot spell is refused, never defaulted
+    ///
+    /// The alternative is placing a restarted run at a state nobody chose, which is worse than the
+    /// `interrupted` a person is told today: an honest loss is something they can act on, and a run
+    /// silently resumed in the wrong place spends a peer's tokens doing the wrong work. This is the
+    /// same rule `wire::hands_of` and `raw_output_of` follow at their own addresses — **an answer
+    /// this cannot read whole is an answer it declines to have.**
+    #[must_use]
+    pub fn from_words(said: &[String]) -> Option<Self> {
+        use sce_rust_runtime::StatePolicy as _;
+
+        let (head, rest) = said.split_first()?;
+        let current = AiLoopPolicy::get_state_from_name(head)?;
+        let mut configuration = sce_rust_runtime::helpers::hierarchy::new_chain();
+        for word in rest {
+            sce_rust_runtime::helpers::hierarchy::push_chain(
+                &mut configuration,
+                AiLoopPolicy::get_state_from_name(word)?,
+            );
+        }
+        // ⚠ The head must be IN the set: `enter_at` refuses otherwise, and refusing here names the
+        // log as the liar rather than letting the engine's rejection surface one layer up wearing
+        // the resume's name.
+        configuration.contains(&current).then_some(Self {
+            configuration,
+            current,
+        })
+    }
+}
+
 /// A run of `ai_loop.scxml`'s machine against one pane.
 pub struct OuterLoop {
     /// The compiled document.
@@ -17042,6 +17108,75 @@ mod tests {
     ///
     /// ⚠ It rests on SCE `f3765c95c9`'s `Engine::enter_at`, whose *does not re-run `<onentry>`*
     /// contract is held next door by `probe::tests::a_saved_configuration_is_entered_without_re_running_onentry`.
+    #[test]
+    fn a_place_survives_being_written_down_as_words() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (_workspace, pane) = quiet_pane();
+        let mut ran = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("the shipped document builds a loop");
+        ran.walk(AiLoopEvent::Start);
+        let moved = ran.state();
+
+        // ── THE PREMISE: the place is a real one, and it is not where a fresh loop sits ──────
+        let fresh = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a loop builds from the same document")
+            .state();
+        assert_ne!(
+            moved, fresh,
+            "⚠⚠ the loop never left a fresh machine's place, so the round trip below would carry \
+             nothing worth carrying",
+        );
+
+        // ── THE CLAIM: words out, words in, same place ──────────────────────────────────────
+        let said = ran.configuration().in_words();
+        let read = LoopPlace::from_words(&said)
+            .expect("words this document produced are words it can read back");
+        let mut resumed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a third loop builds from the same document");
+        resumed
+            .resume_at(&read)
+            .expect("a place read back from words is one the engine accepts");
+        assert_eq!(
+            resumed.state(),
+            moved,
+            "⛔⛔⛔⛔ REGISTER ITEM 543: a place did not survive being written down. A run log is \
+             words on a disk — a daemon that restarts reads them and has nothing else — so a place \
+             that only exists in memory is a run that dies with its process, which is this item.",
+        );
+        assert!(
+            resumed.walked().is_empty(),
+            "⛔⛔⛔ and it must still arrive by being PLACED. Words that round-trip into a replay \
+             re-fire `<onentry>` and re-type the prompt, which is the failure this whole item is \
+             about. Walked: {:?}",
+            resumed.walked(),
+        );
+
+        // ── THE CONTROL: words this document cannot spell are REFUSED, not guessed ──────────
+        //
+        // ⚠⚠⚠⚠⚠ THE FORGERY IS OTHERWISE WELL-FORMED, and that took a second attempt to get right.
+        // A control of `["no-such-state"]` ALONE is refused by this decoder for the wrong reason —
+        // the head is not among the states it names — so it stayed green against a decoder that had
+        // stopped refusing unspellable words entirely (measured: defaulting the head left that
+        // control passing). So the forgery keeps a REAL configuration behind the bad head, one
+        // whose members include what a default would land on: then only the name refusal can
+        // produce the `None`, and a decoder that guesses is red here.
+        let mut forged = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("a loop builds from the same document")
+            .configuration()
+            .in_words();
+        forged[0] = "no-such-state-in-this-document".to_owned();
+        assert!(
+            LoopPlace::from_words(&forged).is_none(),
+            "⚠⚠⚠ THE CONTROL: a name this build cannot spell must be refused. Reading it as some \
+             default would place a restarted run at a state nobody chose — and a run whose machine \
+             is somewhere the log did not say is worse than one that admits it was interrupted, \
+             which is what happens today. Read back: {:?}",
+            LoopPlace::from_words(&forged),
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **A LOOP CAN SAY WHERE ITS MACHINE IS, AND BE PUT BACK THERE** — register item 543's
+    /// first brick.
     #[test]
     fn a_loop_says_where_its_machine_is_and_can_be_put_back_there() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
