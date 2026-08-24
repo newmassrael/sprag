@@ -938,6 +938,27 @@ impl Plugin for AiLoop {
         Some(self.inner.configuration().in_words())
     }
 
+    /// ⚠⚠⚠⚠⚠ **AND BACK AGAIN — the one plugin in this crate that can be put where it was.**
+    /// Register item 543's fourth brick: the words a run log carried become a placed machine here.
+    ///
+    /// Two refusals and they are kept apart on the trait's own terms: `from_words` answers *these
+    /// are not my document's words* (a promotion changed the `.scxml`, which is item 544's ordinary
+    /// case), and the engine answers *these words are mine and this is not a place I can be in* —
+    /// which can only be this build having written a record its own engine rejects.
+    ///
+    /// ⚠ Nothing is stepped and nothing is entered: `OuterLoop::resume_at` is `enter_at`, whose
+    /// whole contract is that `<onentry>` does not re-fire. A resume that re-typed its prompts
+    /// would be a second run wearing the first one's id.
+    fn resume_at(&mut self, place: &[String]) -> crate::plugin::Resumption {
+        let Some(place) = crate::outer::LoopPlace::from_words(place) else {
+            return crate::plugin::Resumption::NotThisDocument;
+        };
+        match self.inner.resume_at(&place) {
+            Ok(()) => crate::plugin::Resumption::Placed,
+            Err(why) => crate::plugin::Resumption::Refused(crate::outer::refusal_in_words(&why)),
+        }
+    }
+
     /// ⚠ DELEGATED and never re-counted here — register item 591. The driver that puts the prompts
     /// in is the only thing that sees what proved each one arrived, so a second tally at this layer
     /// would be a number that agrees with the first until the day it does not.
@@ -1424,11 +1445,11 @@ mod tests {
     // them drove the layer UNDER the door in order to reach a state the door refused. The door no
     // longer refuses it, so the PLUGIN reaches it, which is the only height a caller has.
     use crate::outer::{AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS};
-    use crate::plugin::{Accounting, Cost, Plugin, Verdict};
+    use crate::plugin::{Accounting, Cost, Plugin, Resumption, Verdict};
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
     use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
-    use crate::testing::{standin_agent, standin_agent_that_leaves, supervised};
+    use crate::testing::{screen_showing, standin_agent, standin_agent_that_leaves, supervised};
 
     /// The document's own composed prompt, as a person reading the file expects it.
     const COMPOSED_START_PROMPT: &str = "North star: ";
@@ -10038,5 +10059,334 @@ mod tests {
         );
         access.lifecycle().expect("lifecycle").close(pane);
         live.lifecycle().expect("lifecycle").close(live_pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PLUGIN IS PUT BACK WHERE A LOG SAID IT WAS, THROUGH THE DOOR A HOST HAS** —
+    /// register item 543's fourth brick.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is not `outer`'s gate said again one layer up
+    ///
+    /// `outer::tests::a_loop_says_where_its_machine_is_and_can_be_put_back_there` drives
+    /// `OuterLoop` and hands it a `LoopPlace` — a type from this crate's insides. **A daemon has
+    /// neither.** It holds `Vec<String>` off a run log and a plugin it built from a request, and
+    /// the only thing it may say to one is what [`Plugin`] publishes. So the question this gate
+    /// asks is the daemon's question: *does the door I actually have put a machine back?*
+    ///
+    /// It measures four answers, because [`Resumption`] is four for a reason:
+    ///
+    /// 1. **the claim** — a loop handed the words another loop wrote answers `Placed` and IS there;
+    /// 2. **the control that the claim is not vacuous** — a fresh loop is somewhere ELSE, so
+    ///    *"it came back"* is not *"a new machine is where a new machine already is"*;
+    /// 3. **a foreign document is refused AND NOTHING MOVES** — half-placing a machine and then
+    ///    reporting a refusal would be the worst of the four outcomes, and it is the one no reader
+    ///    could detect;
+    /// 4. **a plugin with no machine says so** — `NoMachine`, not a quiet success, because a boot
+    ///    that read a place onto a `pipe` as *placed* would report a resume that never happened.
+    #[test]
+    fn a_plugins_machine_is_put_back_where_the_words_of_a_log_say_it_was() {
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let run = RunContext::uncancellable();
+
+        // ── THE PREMISE: drive a loop OFF the place a fresh one is in, through the plugin door ──
+        let mut ran = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let mut passes = 0;
+        while ran.state() != AiLoopState::Judging && passes < 40 {
+            ran.step(&access, &run).expect("a live pane takes a pass");
+            passes += 1;
+        }
+        let saved = ran.place().expect("a loop says where its machine is");
+        let fresh = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document")
+            .place()
+            .expect("a loop says where its machine is");
+        assert_ne!(
+            saved, fresh,
+            "⚠⚠ THE PREMISE FAILED: this loop never left the place a FRESH one is already in, so \
+             the resume below would be asking whether a new machine is where a new machine already \
+             is — which is true of a door that does nothing at all. Compared against a fresh \
+             loop rather than a state name spelled here, so the document may rename its states. \
+             Took {passes} passes.",
+        );
+
+        // ── THE CLAIM: a loop that never took those passes is put there ─────────────────────
+        let mut resumed = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document");
+        assert_eq!(
+            resumed.resume_at(&saved),
+            Resumption::Placed,
+            "⛔⛔⛔⛔ REGISTER ITEM 543: the words a run log carries were refused by the very build \
+             that wrote them. Everything downstream of this — a daemon that restarts without \
+             killing its runs, and so a promotion nobody has to schedule around — rests on this \
+             one call.",
+        );
+        assert_eq!(
+            resumed.place().as_deref(),
+            Some(saved.as_slice()),
+            "⛔⛔⛔⛔ and it must be THERE. `Placed` carries no words on purpose — where a plugin \
+             is, is `place`'s answer — so a door that reported success while leaving the machine \
+             at its initial configuration would be caught here and nowhere else.",
+        );
+
+        // ── CONTROL 1: a place from a document this build does not have ─────────────────────
+        //
+        // ⚠⚠⚠⚠⚠ THE FORGERY IS OTHERWISE REAL, which item 543's own round had to learn twice: a
+        // list of one junk word is refused for the WRONG reason (its head is not among the states
+        // it names), so it stays green against a decoder that has stopped checking names at all.
+        // Keeping a real configuration behind a renamed head makes the NAME the only thing that
+        // can produce the refusal.
+        let mut renamed = saved.clone();
+        renamed[0] = "a-state-this-document-does-not-have".to_owned();
+        let mut untouched = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document");
+        assert_eq!(
+            untouched.resume_at(&renamed),
+            Resumption::NotThisDocument,
+            "⚠⚠⚠ THE CONTROL: a word this build cannot spell must be refused, never defaulted. A \
+             run silently resumed at a state nobody chose spends a peer's tokens doing the wrong \
+             work — worse than the honest `interrupted` a person is told today.",
+        );
+        assert_eq!(
+            untouched.place(),
+            Some(fresh.clone()),
+            "⛔⛔⛔ AND A REFUSED RESUME MUST NOT HAVE MOVED IT. A door that placed what it could \
+             and then said no would leave a machine half in a document it does not belong to, and \
+             the refusal its caller logged would be the reason nobody went looking.",
+        );
+
+        // ── CONTROL 2: a plugin with no machine does not claim to have been placed ───────────
+        let mut relay = crate::pipe::Pipe::new(crate::pipe::PipeSpec {
+            src: pane,
+            dst: pane,
+            ready_when: None,
+            ready_within: None,
+            may_answer: None,
+            attended: crate::readiness::Attended::NoOne,
+        });
+        assert_eq!(
+            relay.resume_at(&saved),
+            Resumption::NoMachine,
+            "⚠⚠⚠ THE SECOND CONTROL: a plugin that relays bytes has no place to be put back in, \
+             and must say which of the four answers that is. A boot reading `Placed` off a `pipe` \
+             would put a run back on the row as running with nothing resumed.",
+        );
+
+        // ── CONTROL 3: words this document CAN spell that are not a place it can BE in ───────
+        //
+        // ⚠⚠⚠⚠⚠ This is the fourth answer, and it is the one no other arm here can reach. The
+        // decoder only asks whether the words are spellable and whether the head is among them, so
+        // a set that is spellable and NOT ancestor-closed gets past it and the ENGINE refuses —
+        // which is a different author of a different problem, and the whole reason `Refused`
+        // carries a sentence rather than being a second `NotThisDocument`.
+        //
+        // ⚠⚠ **AND THE SENTENCE MUST BE IN THE LOG'S OWN VOCABULARY.** `ConfigurationRejection`'s
+        // `Debug` prints the GENERATED enum's identifiers, which are not the names the record is
+        // written in, so a refusal spelled that way names a state the reader never saw. That is
+        // what `refusal_in_words` exists for and this is the only thing that measures it.
+        let mut broken = saved.clone();
+        let dropped = broken
+            .iter()
+            .position(|word| *word != saved[0])
+            .expect("a place holds more than its head");
+        let dropped = broken.remove(dropped);
+        let mut unclosed = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document");
+        match unclosed.resume_at(&broken) {
+            Resumption::Refused(why) => {
+                assert!(
+                    !why.contains('{'),
+                    "⚠⚠⚠ the engine's refusal reached a reader spelled as a Rust value. The words \
+                     a run log holds come from `get_state_name`; a sentence naming \
+                     `CurrentNotActive {{ current: Idle }}` names something nobody wrote down and \
+                     nobody can go and look for. Said: {why:?}",
+                );
+                assert!(
+                    saved.iter().any(|word| why.contains(word)),
+                    "⚠⚠ and it must name a word from the place it was given, or the reader cannot \
+                     tell WHICH part of their record was wrong. Dropped {dropped:?}; said {why:?}",
+                );
+            }
+            other => panic!(
+                "⚠⚠ THE THIRD CONTROL'S PREMISE FAILED: dropping {dropped:?} out of {saved:?} was \
+                 meant to leave words this document spells that are not a configuration it can \
+                 hold, and the answer was {other:?} instead. Pick a different member — the arm \
+                 being measured is the ENGINE's refusal, which nothing else here reaches.",
+            ),
+        }
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RESUMED LOOP IS PLACED RATHER THAN WALKED, AND DOES NOT RE-OPEN WITH ITS FIRST
+    /// PROMPT** — register item 543's hard half, in the sentence the item has been written in since
+    /// it was filed: *"`onentry` actions must NOT re-fire (the loop would re-type its prompts)"*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Two claims, because either alone is satisfied by something broken
+    ///
+    /// *It did not re-type* is also true of a loop that cannot reach its pane. *It was placed* is
+    /// also true of a placement that then walked itself back down. So this asserts both: nothing
+    /// was WALKED on the way in (`walked()` is empty, which is what `enter_at` buys), and the pane
+    /// never receives the words a fresh loop opens with.
+    ///
+    /// ⚠⚠ **THE NEEDLE IS THE BRIEF'S OWN NORTH STAR**, taken from `brief_for` rather than spelled
+    /// here, and the CONTROL is a fresh loop's pane really showing it. Without that control the
+    /// absence below is *the stand-in never came up* and would be green for a fixture that typed
+    /// nothing anywhere.
+    ///
+    /// # ⛔⛔⛔⛔⛔ WHAT THIS GATE MEASURED THAT NOBODY HAD ASKED — the datamodel does not cross
+    ///
+    /// The first draft asserted a resumed pass delivers NO prompt, and measured **one delivery of
+    /// one byte** where a fresh pass delivers 259. Both halves of that are findings:
+    ///
+    /// * *one delivery* is CORRECT and the draft's claim was wrong — a resumed loop carrying on
+    ///   from `judging` moves to `working`, and putting the NEXT turn's prompt is the whole point.
+    /// * *one byte* is a **defect this brick does not fix**: the prompt it delivered is EMPTY. The
+    ///   words a working prompt is composed from are assigned by entry actions, and `enter_at`
+    ///   deliberately does not re-run them — so a machine put back without its datamodel asks its
+    ///   peer a blank question.
+    ///
+    /// Item 543's own scope names both halves (*"the active configuration **plus** the
+    /// datamodel"*). This brick pays the first. The second is held by the `#[ignore]`d gate below,
+    /// which is red on purpose and names what will make it green.
+    #[test]
+    fn a_resumed_loop_is_placed_rather_than_walked_and_does_not_re_open_with_its_prompt() {
+        let run = RunContext::uncancellable();
+
+        // ── WHERE A RUN GOT TO: drive one past its opening prompt and keep its place ─────────
+        let (worked_in, worked) = standin_agent(2);
+        let working = supervised(&worked_in);
+        let mut ran = AiLoop::new(engine(), worked, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let mut passes = 0;
+        while ran.state() != AiLoopState::Judging && passes < 40 {
+            ran.step(&working, &run).expect("a live pane takes a pass");
+            passes += 1;
+        }
+        assert_eq!(
+            ran.state(),
+            AiLoopState::Judging,
+            "⚠⚠ THE FIXTURE'S PRECONDITION: this loop must get past its opening prompt within \
+             {passes} passes, or the place saved below is one where typing is still owed and the \
+             claim measures nothing.",
+        );
+        let saved = ran.place().expect("a loop says where its machine is");
+        working.lifecycle().expect("lifecycle").close(worked);
+
+        // ── THE CONTROL: a FRESH loop opens with its prompt, and the pane SHOWS it ───────────
+        //
+        // ⚠ The needle is the brief's own north star, so a gate renaming nothing still holds when
+        // the document rewords the prompt around it.
+        let needle = brief_for(40).north_star;
+        let (fresh_in, fresh_pane) = standin_agent(2);
+        let freshly = supervised(&fresh_in);
+        let mut fresh = AiLoop::new(engine(), fresh_pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document");
+        let typed = fresh
+            .step(&freshly, &run)
+            .expect("a live pane takes a pass")
+            .cost
+            .amount();
+        let opened_with = screen_showing(&freshly, fresh_pane, &needle);
+        assert!(
+            opened_with.contains(&needle),
+            "⚠⚠⚠ THE CONTROL FAILED: a loop starting at the top never put its opening words into \
+             its pane ({typed} bytes typed), so the ABSENCE the claim below asserts would be true \
+             of this whole fixture and would say nothing about resuming. Screen: {opened_with:?}",
+        );
+        freshly.lifecycle().expect("lifecycle").close(fresh_pane);
+
+        // ── THE CLAIM: put back, and neither walked in nor re-opening ────────────────────────
+        let (resumed_in, resumed_pane) = standin_agent(2);
+        let resuming = supervised(&resumed_in);
+        let mut resumed = AiLoop::new(engine(), resumed_pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document");
+        assert_eq!(
+            resumed.resume_at(&saved),
+            Resumption::Placed,
+            "⚠⚠ the place saved above must be one this build accepts, or the pass below is a \
+             fresh loop's and the claim is measuring the control twice",
+        );
+        assert!(
+            resumed.walked().is_empty(),
+            "⛔⛔⛔⛔ REGISTER ITEM 543: the loop arrived by WALKING. A machine driven back to a \
+             place fires every `<onentry>` on the way, which is what types a prompt — so a resume \
+             that walks is a second run wearing the first one's id however right its state name \
+             looks. Walked: {:?}",
+            resumed.walked(),
+        );
+        let spent = resumed
+            .step(&resuming, &run)
+            .expect("a live pane takes a pass")
+            .cost
+            .amount();
+        let after = screen_showing(&resuming, resumed_pane, &needle);
+        assert!(
+            !after.contains(&needle),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a RESUMED run put its OPENING words to the peer again \
+             ({spent} bytes, where a fresh pass types {typed}). The damage is not a wasted call: \
+             the answer to that question is already on the screen the run was resumed over, so it \
+             pays the peer to say what was already said and then judges the echo. Screen: {after:?}",
+        );
+        resuming.lifecycle().expect("lifecycle").close(resumed_pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE PROMPT A RESUMED LOOP DOES PUT MUST NOT BE EMPTY** — register item 543's
+    /// UNPAID half, gated red on purpose.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is committed as an ignored failure rather than left unwritten
+    ///
+    /// Item 495's rule, which this register has paid for repeatedly: a residue kept as PROSE inside
+    /// a closed entry reads as a known limit rather than as work, so nothing schedules it — and
+    /// item 543 is itself the register's own example of that, mentioned three times in a closed
+    /// entry with no number. A gate that fails is a residue nothing can mistake for done.
+    ///
+    /// **What it measures**: the gate above resumes a loop and its very first delivery is ONE BYTE,
+    /// against 259 for a fresh loop. The prompt is empty — `enter_at` does not re-run the entry
+    /// actions that assign what a prompt is composed from, and `LoopPlace` carries the active
+    /// configuration and nothing else. So a run resumed today asks its peer a blank question.
+    ///
+    /// **What makes it green**: the datamodel crossing the log beside the configuration — item
+    /// 543's own scope names both — and `resume_at` restoring it before the machine is placed.
+    ///
+    /// ⚠ `#[ignore]` and not deleted: it is run by the ignored-gate lane (`-- --ignored`), so a
+    /// build that accidentally fixes this is told, and a sweep is not held red by known work.
+    #[test]
+    #[ignore = "register item 543: the datamodel does not cross the log, so a resumed loop's first prompt is empty"]
+    fn a_resumed_loop_composes_a_real_prompt_and_not_an_empty_one() {
+        let run = RunContext::uncancellable();
+        let (worked_in, worked) = standin_agent(2);
+        let working = supervised(&worked_in);
+        let mut ran = AiLoop::new(engine(), worked, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let mut passes = 0;
+        while ran.state() != AiLoopState::Judging && passes < 40 {
+            ran.step(&working, &run).expect("a live pane takes a pass");
+            passes += 1;
+        }
+        let saved = ran.place().expect("a loop says where its machine is");
+        working.lifecycle().expect("lifecycle").close(worked);
+
+        let (resumed_in, resumed_pane) = standin_agent(2);
+        let resuming = supervised(&resumed_in);
+        let mut resumed = AiLoop::new(engine(), resumed_pane, &brief_for(40), &standin_spec())
+            .expect("a loop builds from the same document");
+        assert_eq!(resumed.resume_at(&saved), Resumption::Placed);
+        let spent = resumed
+            .step(&resuming, &run)
+            .expect("a live pane takes a pass")
+            .cost
+            .amount();
+        let made = resumed.deliveries().made;
+        resuming.lifecycle().expect("lifecycle").close(resumed_pane);
+        assert!(
+            made == 0 || spent > 1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 543, UNPAID HALF: a resumed loop delivered {made} prompt(s) \
+             worth {spent} byte(s) — an EMPTY question. `enter_at` does not re-run the entry \
+             actions that compose a prompt, and the datamodel they wrote does not cross the run \
+             log, so a machine put back has its place and none of its words. A blank prompt is \
+             worse than a re-typed one: the peer answers something, and the run judges that answer \
+             as if it were about the work.",
+        );
     }
 }

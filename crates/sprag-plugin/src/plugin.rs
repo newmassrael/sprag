@@ -624,6 +624,52 @@ pub enum Accounting {
     Cannot(String),
 }
 
+/// **WHAT BECAME OF AN ATTEMPT TO PUT A PLUGIN BACK WHERE IT WAS** — [`Plugin::resume_at`]'s
+/// answer, register item 543.
+///
+/// # ⚠⚠⚠⚠⚠ Four answers, because three of them are different problems for a different person
+///
+/// The register's rule (item 641) is that an absence written as ONE word is a trap the next round
+/// walks into, and *"the resume did not happen"* is exactly such a word. Collapsed, it hides the
+/// only three questions a daemon reading a run log actually has:
+///
+/// | answer | whose problem it is | what a boot should do |
+/// | --- | --- | --- |
+/// | [`NoMachine`](Self::NoMachine) | nobody's — a `pipe` has no place | carry on; the run was never resumable |
+/// | [`NotThisDocument`](Self::NotThisDocument) | the DOCUMENT changed under the log | leave the run interrupted, and say so |
+/// | [`Refused`](Self::Refused) | the RECORD is malformed for a document it does name | leave it interrupted, and log the sentence |
+/// | [`Placed`](Self::Placed) | — | drive on from here, entering nothing |
+///
+/// ⚠⚠ The middle two are both *"no"* and must not be one word: the first is the ordinary cost of a
+/// promotion (item 544's *a changed document is a NEW run*) and is not a defect, while the second
+/// means this build wrote a place its own engine will not accept — a bug in the writer, and the
+/// only thing that could ever report it is the reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum Resumption {
+    /// **THIS PLUGIN WALKS NO STATECHART**, so there is nothing to put back — the default, and the
+    /// answer of every plugin but the loop. ⚠ NOT a failure: a run of `pipe` was never resumable,
+    /// and a caller that read this as one would report a defect on every restart.
+    NoMachine,
+    /// **THESE WORDS ARE NOT THIS DOCUMENT'S** — refused rather than defaulted, on
+    /// `sprag_plugin::LoopPlace::from_words`'s rule: a run placed where nobody chose spends a
+    /// peer's tokens doing the wrong work, which is worse than the honest `interrupted` a person
+    /// is told today.
+    NotThisDocument,
+    /// **THE WORDS DECODED AND THE MACHINE WOULD NOT TAKE THEM**, with the engine's reason rendered
+    /// in the vocabulary the record is written in — see `sprag_plugin::refusal_in_words` for why it
+    /// is a sentence and not the rejection's `Debug`.
+    Refused(String),
+    /// **PLACED, AND NOTHING WAS ENTERED.** The next [`Plugin::step`] continues from here; no
+    /// `<onentry>` re-fired, which is the whole difference between a resume and a second run
+    /// wearing the first one's id.
+    ///
+    /// ⚠ It carries no words. Where the plugin now IS is [`Plugin::place`]'s answer and stays that
+    /// one function's — a copy here would be a second authority on one fact (item 445), agreeing
+    /// with the first until the day something placed a machine and reported a different place.
+    Placed,
+}
+
 /// A control plugin driven over the [`PaneAccess`] extension API.
 pub trait Plugin {
     /// Perceive the panes, act on them, and judge — one step.
@@ -702,6 +748,36 @@ pub trait Plugin {
     /// ⚠ The [`Driver`](crate::driver::Driver) records it and never reads it — `at`'s own rule.
     fn place(&self) -> Option<Vec<String>> {
         None
+    }
+
+    /// **PUT THIS PLUGIN'S MACHINE BACK AT `place`, ENTERING NOTHING** — [`place`](Self::place)'s
+    /// inverse, and the door a daemon reads a run log through. Register item 543.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the trait carries it, when only one plugin can answer
+    ///
+    /// The words come out of a run log as `Vec<String>` and the machine that takes them is
+    /// `sprag_plugin::OuterLoop`'s. Without this door the daemon that holds the log would have to
+    /// know WHICH plugin it is holding, decode the words into a type from this crate's insides, and
+    /// call a method the plugin vocabulary does not publish — three couplings for one call, at the
+    /// one layer whose whole design (`plugin_from_request`, `PluginKind`) is *the host names a
+    /// plugin and never holds one*. Asked here, a place is a thing you may offer to any plugin, and
+    /// the ones with no machine say so.
+    ///
+    /// ⚠⚠ **`&mut self`, which is the honest shape rather than a convenience: this MOVES the
+    /// plugin**, as [`step`](Self::step) and [`ask_for_an_account`](Self::ask_for_an_account) do.
+    /// It is called before the first step and never during a run — putting a machine somewhere
+    /// while a driver is stepping it would be two writers on one configuration.
+    ///
+    /// ⚠⚠ **A REFUSAL IS AN ANSWER, NOT AN ERROR**, so this returns [`Resumption`] rather than
+    /// `Result`: the common refusal (*the document changed*) is what item 544 says a promotion
+    /// SHOULD do, and a caller that met it as `Err` would be tempted to fail a boot over the most
+    /// ordinary thing that can happen to a saved place.
+    ///
+    /// ⚠ The default is [`NoMachine`](Resumption::NoMachine) — the answer of every plugin that
+    /// relays bytes, and a `place` handed to one is dropped rather than half-honoured.
+    fn resume_at(&mut self, place: &[String]) -> Resumption {
+        let _ = place;
+        Resumption::NoMachine
     }
 
     /// **EVERY TRANSITION THE LAST [`step`](Self::step) TOOK**, in order — see [`Edge`].

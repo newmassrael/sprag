@@ -310,6 +310,34 @@ pub const RUN_CHECKS_KEY: &str = "checks";
 /// both are a `claude` prompt. This key is what lets the PANE surface answer *is anybody driving
 /// me* — see `crate::wire`'s pane answer.
 pub const RUN_DRIVING_KEY: &str = "driving";
+/// **WHERE A RUN'S MACHINE WAS, WRITTEN INTO THE REQUEST A DAEMON HANDS A DRIVER** — register item
+/// 543's fourth brick, and the one key on that map a CLIENT may not set.
+///
+/// # ⚠⚠⚠⚠⚠ Why the daemon strips it rather than the grammar refusing it
+///
+/// This wire swallows an argument it does not publish ([`crate::wire`]'s own rule), so a key added
+/// here would be honoured off a client's `run` call with nothing to say so — *start this loop
+/// already at `judging`* as an unpublished verb. Publishing it instead would be worse: where a run
+/// resumes is not a thing a caller knows. It is a fact this daemon reads out of the run log it
+/// inherited, checked against [`sprag_plugin::STATECHARTS_FINGERPRINT`], and one authority on one
+/// fact is the property being defended.
+///
+/// So the daemon's own `spawn_driven_run` REMOVES whatever arrived under this name, which makes a
+/// client's copy inert without the grammar having to grow a word — and leaves
+/// [`sprag_rpc::WIRE_PROTOCOL`] where it is, because nothing a client can say or read changed.
+///
+/// ⚠⚠⚠ **AND NOTHING IN THIS DAEMON WRITES IT YET, which is said here rather than left to be
+/// discovered.** The only thing entitled to is a boot putting an INHERITED run back at the place
+/// its run log recorded, and that is item 543's next brick — deliberately not built, because a
+/// resume today would hand its peer an EMPTY prompt (`sprag_plugin`'s
+/// `a_resumed_loop_composes_a_real_prompt_and_not_an_empty_one`, red on purpose). Until then the
+/// reader below is reached by `sprag-term --drive` alone, which is a person handing a driver a
+/// request directly.
+///
+/// ⚠⚠ It is the DRIVER's side that reads it ([`drive_request`]), because that is where the plugin
+/// is built. An empty list is refused rather than treated as *no place*, on
+/// `crate::runs::PersistedRun::resumable_place`'s exact rule.
+pub const RUN_PLACE_KEY: &str = "place";
 /// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
 /// gave one, the rule [`RUN_CEILING_KEY`] follows.
 ///
@@ -775,6 +803,8 @@ impl PluginsExternal {
         // thing either way, and one builder is how).
         let id = match &self.spawn_driver {
             Some(spawn) => {
+                // ⚠ A RUN A CLIENT ASKS FOR STARTS AT THE TOP — where a machine resumes is a fact
+                // about a run this daemon INHERITED. See `RUN_PLACE_KEY`.
                 self.spawn_driven_run(spawn, map, label, opened_by, opened_by_session, &mut {
                     plugin
                 })?
@@ -1032,6 +1062,44 @@ pub fn drive_request(
 ) -> Result<Driven, InvokeError> {
     let (plugin, _label) = plugin_from_request(world, request)?;
     let mut plugin = plugin;
+    // ⚠⚠⚠⚠⚠ **AND HERE IS WHERE A RESTART STOPS KILLING A RUN** — register item 543's fourth
+    // brick. The words came out of a predecessor daemon's run log, were checked against THIS
+    // image's documents (`PersistedRun::resumable_place`), and were written onto this request by the
+    // daemon that started this driver. The plugin is put back at them BEFORE the first step, which
+    // is the only moment a machine may be moved by anything but its own driver.
+    //
+    // ⚠⚠ EVERY REFUSAL ENDS THE DRIVER BEFORE A BYTE IS TYPED, which is this door's stated
+    // contract and is load-bearing here rather than tidy: the alternative to refusing is *carry on
+    // from the top*, and a loop that starts from the top re-types its opening prompt into somebody's
+    // pane. A resume that silently became a restart would spend the peer's tokens saying what was
+    // already said — the exact failure item 543 exists to end — and nothing downstream could tell.
+    if let Some(place) = opt_place(request)? {
+        match plugin.as_plugin().resume_at(&place) {
+            sprag_plugin::Resumption::Placed => {}
+            // ⚠ THE DAEMON'S MISTAKE, NOT THE CALLER'S: a place is only ever offered to a run whose
+            // log carried one, and only `ai_loop` writes one. Reaching this means the request and
+            // the log disagree about what plugin this run is.
+            sprag_plugin::Resumption::NoMachine => {
+                return Err(refused(format!(
+                    "this run was to be resumed at a saved place and {} has no machine to put \
+                     back; starting it from the top would re-type its opening prompt",
+                    plugin.name().wire_str()
+                )));
+            }
+            sprag_plugin::Resumption::NotThisDocument => {
+                return Err(refused(
+                    "the saved place is not spelled in this build's statecharts, so this run \
+                     cannot be resumed into them"
+                        .to_owned(),
+                ));
+            }
+            sprag_plugin::Resumption::Refused(why) => {
+                return Err(refused(format!(
+                    "this build's own machine will not be put back at the saved place: {why}"
+                )));
+            }
+        }
+    }
     let guardrails = parse_guardrails(request, plugin.default_cost())?;
     let outcome =
         Driver::new(guardrails)
@@ -1433,10 +1501,24 @@ impl PluginsExternal {
             .collect();
         let name = plugin.name();
 
+        // ⚠⚠⚠⚠⚠ **A CALLER MAY NOT SAY WHERE A RUN STARTS** — register item 543, and see
+        // [`RUN_PLACE_KEY`] for why that is enforced here instead of in the grammar. This wire
+        // SWALLOWS an argument it does not publish, and the driver now READS this one, so without
+        // this line a client's `run` call would carry an unpublished verb: *start this loop already
+        // at `judging`*. Removed unconditionally, which is exactly today's truth — the only thing
+        // entitled to write it is a boot putting an INHERITED run back, and that does not exist
+        // yet. When it does, it writes the words it read out of the run log, checked against this
+        // build's own statechart fingerprint, and this stays the one place that decides.
+        let handed = {
+            let mut handed = request.clone();
+            handed.remove(RUN_PLACE_KEY);
+            handed
+        };
+
         // The id BEFORE the child, because the child is TOLD it (`--drive <id>`) and reports its
         // progress under it — `spawn_run`'s reason, one seam further out.
         let id = lock(&self.runs).reserve();
-        let child = spawn(id, request).map_err(|why| {
+        let child = spawn(id, &handed).map_err(|why| {
             refused(format!(
                 "this daemon could not start a driver process for the run: {why}"
             ))
@@ -2393,6 +2475,33 @@ fn opt_millis(map: &Map<String, Value>, key: &str) -> Result<Option<Duration>, I
     Ok(Some(Duration::from_millis(
         map[key].as_u64().ok_or(InvokeError::TypeMismatch)?,
     )))
+}
+
+/// **WHERE THIS REQUEST SAYS THE RUN'S MACHINE WAS**, or [`None`] for a run starting from the top —
+/// [`RUN_PLACE_KEY`]'s only reader. Register item 543.
+///
+/// # Errors
+///
+/// A value that is not a list of strings is a MALFORMED request, and so is an EMPTY list — refused
+/// here rather than passed on, because `enter_at` would take it as a configuration with no members
+/// and answer about the current state's membership: an engine's error where the RECORD was what was
+/// wrong. `crate::runs::PersistedRun::resumable_place` refuses the same shape at the other end, and
+/// the two agreeing is not duplication — one guards a log and this guards a request, and a driver
+/// can be handed one by something that never read a log.
+fn opt_place(map: &Map<String, Value>) -> Result<Option<Vec<String>>, InvokeError> {
+    let words = match map.get(RUN_PLACE_KEY) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|word| word.as_str().map(str::to_owned))
+            .collect::<Option<Vec<String>>>()
+            .ok_or(InvokeError::TypeMismatch)?,
+        Some(_) => return Err(InvokeError::TypeMismatch),
+    };
+    if words.is_empty() {
+        return Err(InvokeError::TypeMismatch);
+    }
+    Ok(Some(words))
 }
 
 fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {

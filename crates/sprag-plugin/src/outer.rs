@@ -2853,6 +2853,81 @@ impl LoopPlace {
     }
 }
 
+/// **WHY A SAVED PLACE WAS REFUSED, IN THE WORDS THE LOG ITSELF HOLDS** — register item 543.
+///
+/// # ⚠⚠⚠⚠⚠ Because the engine's own spelling names states nobody wrote down
+///
+/// [`sce_rust_runtime::ConfigurationRejection`] is a Rust value whose `Debug` prints the GENERATED
+/// enum's identifiers — `CurrentNotActive { current: Idle }` — and the words a run log holds are
+/// [`LoopPlace::in_words`]'s, which come from
+/// [`StatePolicy::get_state_name`](sce_rust_runtime::StatePolicy). Those two spellings are not the
+/// same string, so a refusal spelled the first way names a state the reader never saw and cannot
+/// look for. The operator this sentence reaches is a person holding a log file: the only vocabulary
+/// they have is the one it is written in.
+///
+/// ⚠⚠ **THE MATCH IS EXHAUSTIVE ON PURPOSE.** `ConfigurationRejection` is not `#[non_exhaustive]`,
+/// so an arm upstream adds arrives here as a BUILD ERROR — which is the moment to decide what it
+/// should say, rather than a catch-all sentence that would quietly describe a new refusal as one of
+/// the old ones. This is the same *type-is-the-gate* choice `PersistedRun::place` made.
+///
+/// ⚠ Two of these are unreachable through [`LoopPlace::from_words`], which refuses an empty list
+/// and a head outside the set before an engine ever sees them. They are rendered anyway because
+/// this reads a rejection, not a decoder — a caller building a [`LoopPlace`] another way meets the
+/// same engine.
+#[must_use]
+pub fn refusal_in_words(
+    rejection: &sce_rust_runtime::ConfigurationRejection<AiLoopState>,
+) -> String {
+    use sce_rust_runtime::ConfigurationRejection as Why;
+    use sce_rust_runtime::StatePolicy as _;
+
+    let name = |state: AiLoopState| AiLoopPolicy::get_state_name(state);
+    match *rejection {
+        Why::Empty => {
+            "that place names no states at all, and every place names at least a root".to_string()
+        }
+        Why::Duplicate { state } => format!("that place names '{}' twice", name(state)),
+        Why::AncestorMissing { state, parent } => format!(
+            "that place names '{}' without its parent '{}', so it is not a whole place",
+            name(state),
+            name(parent)
+        ),
+        Why::RootCount { found } => format!(
+            "that place closes on {found} states with no parent, and a place has exactly one"
+        ),
+        Why::CompoundChildCount { parent, found } => format!(
+            "'{}' takes exactly one active child and that place gives it {found}",
+            name(parent)
+        ),
+        Why::ParallelRegionMissing { parallel, region } => format!(
+            "'{}' runs its regions together and that place leaves out '{}'",
+            name(parallel),
+            name(region)
+        ),
+        Why::ParallelChildCount {
+            parallel,
+            found,
+            regions,
+        } => format!(
+            "'{}' has {regions} regions and that place gives it {found} children",
+            name(parallel)
+        ),
+        Why::AtomicHasChildren { state } => format!(
+            "'{}' has no children in this document and that place gives it some",
+            name(state)
+        ),
+        Why::CurrentNotActive { current } => format!(
+            "that place says the machine was at '{}', which it does not list as active",
+            name(current)
+        ),
+        Why::CurrentNotAtomic { current } => format!(
+            "that place says the machine was at '{}', which is not somewhere a settled machine \
+             stops",
+            name(current)
+        ),
+    }
+}
+
 /// A run of `ai_loop.scxml`'s machine against one pane.
 pub struct OuterLoop {
     /// The compiled document.

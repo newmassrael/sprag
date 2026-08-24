@@ -8521,6 +8521,98 @@ fn the_loops_own_plugin_is_built_from_a_request_over_a_world_that_is_a_socket() 
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A SAVED PLACE THIS BUILD CANNOT READ STOPS THE DRIVER BEFORE A BYTE IS TYPED** —
+/// register item 543's fourth brick, at the door a restarted daemon puts an inherited run through.
+///
+/// # ⚠⚠⚠⚠⚠ Why the refusal is the claim here, and the resume is claimed next door
+///
+/// Between a run log and `Plugin::resume_at` there is exactly one door — `drive_request`, in the
+/// process that will step the plugin — and until it READS the place, every word item 543 has
+/// persisted is written and never read (register item 492's shape, in the feature whose whole
+/// subject is a run surviving a restart). This gate is what says it reads it.
+///
+/// **What it does NOT say**, written down rather than implied: that a place this build CAN read
+/// puts the machine there. That needs a loop that takes real steps, which needs a peer that
+/// answers, and the pane here holds a shell — so it is measured where the stand-in agent lives:
+/// `sprag_plugin`'s `a_resumed_loop_is_placed_rather_than_walked_and_does_not_re_open_with_its_prompt`.
+/// The two together are the chain; neither alone is.
+///
+/// # ⚠⚠⚠⚠ The pair is the claim, because a refusal alone proves nothing
+///
+/// The SAME request without the key must be driven. Only then can the refusal below be about the
+/// place rather than about anything else in a loop request — which is the neighbouring gate's own
+/// rule (*one field moved*) and the reason a door that ignored the key entirely is red here: it
+/// would answer `Ok` to both.
+#[test]
+fn a_saved_place_this_build_cannot_read_stops_the_driver_before_a_byte_is_typed() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["sh"]);
+    let (remote, _setup) = remote_driver(&sock);
+    let pane = *remote
+        .pane_ids()
+        .first()
+        .expect("the daemon's boot pane is there to drive");
+    let world = RemotePluginWorld::over(&remote);
+    let context = RunContext::uncancellable();
+
+    // ⚠ The neighbouring gate's request verbatim in shape: one iteration, because what is measured
+    // here happens BEFORE the first step either way.
+    let request = json!({
+        "plugin": "ai_loop",
+        "pane": pane.0,
+        "agent": "claude",
+        "north_star": "a run outlives the daemon that started it",
+        "milestone": "be put back where the log said, without re-typing",
+        "reference": "register item 543",
+        "ready_timeout_ms": 300,
+        "guardrails": { "max_iterations": 1 },
+    })
+    .as_object()
+    .expect("a request is an object")
+    .clone();
+    let quiet: sprag_plugin::ProgressSink = std::sync::Arc::new(|_: &sprag_plugin::Progress| {});
+
+    // ── THE PREMISE: with no place on it, this request is DRIVEN ─────────────────────────────
+    assert!(
+        drive_request(
+            &world,
+            &request,
+            &remote,
+            &context,
+            std::sync::Arc::clone(&quiet)
+        )
+        .is_ok(),
+        "⚠⚠ THE PREMISE FAILED: this request is refused with no place on it at all, so the \
+         refusal below would be about anything in it EXCEPT the one key this gate is measuring.",
+    );
+
+    // ── THE CLAIM: one key added, and the door shuts ──────────────────────────────────────────
+    //
+    // ⚠⚠⚠⚠ THE FORGERY IS SHAPED LIKE A REAL RECORD — several words, the first of which no
+    // document in this build spells — for the reason item 543's own round measured twice: a single
+    // junk word is refused for the WRONG reason (a head that is not among the states it names), so
+    // it stays green against a reader that has stopped checking names at all.
+    let mut forged = request.clone();
+    forged.insert(
+        sprag_host::plugins::RUN_PLACE_KEY.to_owned(),
+        json!([
+            "a-state-no-document-in-this-build-has",
+            "nor-this-one",
+            "nor-this"
+        ]),
+    );
+    let refused = drive_request(&world, &forged, &remote, &context, quiet);
+    assert!(
+        refused.is_err(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a place this build cannot read was SWALLOWED, and the run \
+         carried on from the top. That is not a fact quietly dropped — starting at the top fires \
+         `<onentry>` all the way down, so the loop re-types its opening prompt into somebody's \
+         pane and spends the peer's tokens saying what was already said. A door that never reads \
+         the key answers `Ok` here exactly as it did above, which is what makes the pair the claim.",
+    );
+}
+
 /// ⛔⛔⛔⛔ **A REAL RUN, DRIVEN BY THE REAL `Driver` FROM ANOTHER PROCESS, AND IT OUTLIVES THE
 /// DAEMON IT DRIVES** — register item 544, stage 1's own claim.
 ///
