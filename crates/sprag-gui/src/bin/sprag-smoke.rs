@@ -1359,6 +1359,26 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
         ),
         home_again.is_ok(),
     );
+
+    // ⚠⚠⚠⚠⚠ AND THE OWNER'S SYMPTOM ITSELF, which every check above this line is blind to.
+    //
+    // The report was *the chrome says pinion and the pixels are sce*: a header naming one window
+    // while another's panes are painted. Each assertion above asks about ONE side — the window LIST
+    // moved (it always did), or the PANES moved (they do now) — and **the defect lived in the gap**.
+    // With the chrome's claim readable at last (register item 582's first half), the two can be put
+    // side by side, which is the only form this symptom has.
+    //
+    // ⚠⚠ `None` is a FAILURE and not a skip: a strip that declines to say which window is current is
+    // the state this whole comparison was impossible in, and a check that passed on silence would be
+    // green for exactly the product that produced the bug report.
+    let chrome = smoke.chrome_current_window();
+    report.check(
+        &format!(
+            "the chrome and the pixels name the SAME window (chrome says {chrome:?}, this \
+             window is {first_tab:?}, panes {painted_now:?})"
+        ),
+        chrome.as_deref() == Some(first_tab.as_str()),
+    );
 }
 
 /// **R326's windowed half: a session destroyed under this client MOVES it, and it says so.**
@@ -6405,6 +6425,27 @@ impl Smoke {
     /// Read off the tabs' own text rather than asked of the host: the claim under test is that the
     /// client's mirror reaches its pixels, and querying the host would answer with the very fact the
     /// mirror might have failed to adopt.
+    /// **WHICH WINDOW THE CHROME SAYS THIS CLIENT IS ON**, or [`None`] where the strip does not say.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this could not be written until register item 582's first half shipped
+    ///
+    /// The owner's report was *the chrome says pinion and the pixels are sce*. Comparing those needs
+    /// the chrome's claim as a VALUE — and until `wtabs::window_strip_access_nodes` existed, which
+    /// window was current lived in this client **only as two colours in a frame buffer**. Four gates
+    /// drove that gesture and none could ask the question, because there was nothing to ask.
+    ///
+    /// ⚠⚠ **AN ABSENT `selected` IS NOT `false`.** `pinion-rpc`'s access encoder omits the key for a
+    /// node that says nothing (`if let Some(selected)`), so *no tab claims to be current* and *a tab
+    /// claims not to be* arrive differently — and the first is the shape a caller must not read as
+    /// the second. [`None`] here means the strip declined to say, which is its own finding.
+    fn chrome_current_window(&mut self) -> Option<String> {
+        self.access()
+            .into_iter()
+            .filter(|(tag, _)| tag.starts_with("sprag_gui.wtab."))
+            .find(|(_, node)| node["selected"] == json!(true))
+            .and_then(|(_, node)| node["name"].as_str().map(ToOwned::to_owned))
+    }
+
     fn tabs(&mut self) -> Result<Vec<String>, String> {
         let painted = self.tags()?;
         Ok((0..)
