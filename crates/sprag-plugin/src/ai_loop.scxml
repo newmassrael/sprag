@@ -2012,7 +2012,34 @@
       -->
       <assign location="service_needle" expr="_event.data.service_needle"/>
       <assign location="service_retry_ms" expr="_event.data.service_retry_ms"/>
-      <assign location="service_retry_text" expr="_event.data.service_retry_text"/>
+      <!--
+        ⚠⚠⚠⚠⚠ THE ONE ASSIGNMENT HERE THAT IS GUARDED, AND THE GUARD IS A
+        DECISION THAT CAME IN FROM THE DRIVER — register item 470, stage 3.
+        `Owed::fallback` used to stand this file's own `continue` in when the
+        word arrived empty, and it was the LAST thing the driver's `Owed` table
+        did besides naming variables. The reason it existed has not changed:
+        `service_down`'s only way back to work is something being SAID, so an
+        empty word is a run that waits for ever, which is precisely the
+        `blocked` that state exists to prevent.
+
+        ⚠⚠ WHAT MOVED IS WHERE IT IS DECIDED. Standing a default in at DELIVERY
+        meant the driver held a second copy of this file's default; keeping the
+        authored value HERE means there is one copy, in the `<datamodel>` above,
+        and nothing downstream has to know a fallback exists at all.
+
+        ⚠⚠⚠ IT COMPARES AGAINST THE EMPTY STRING RATHER THAN TESTING TRUTH,
+        because this datamodel is evaluated by LUA and the empty string is TRUE
+        there — a bare `cond` would take this branch for exactly the value it is
+        here to refuse. `disputing` pays for the same fact and says so.
+
+        ⚠ EVERY OTHER ASSIGNMENT ABOVE IS UNCONDITIONAL and must stay so: the
+        driver always sends every key, echoing this file's own values back when
+        a caller named none, so a guard elsewhere would be answering a question
+        nobody asks.
+      -->
+      <if cond="_event.data.service_retry_text != ''">
+        <assign location="service_retry_text" expr="_event.data.service_retry_text"/>
+      </if>
       <!--
         ⚠⚠⚠ AND THE CLOSING QUESTION IS COMPOSED AGAIN, because `end_prompt` was
         composed in the `<datamodel>` — before any brief existed — so assigning
@@ -2556,6 +2583,34 @@
                 target="awaiting_human"/>
     <transition event="service.retry" target="working">
       <assign location="service_retried" expr="service_retried + 1"/>
+      <!--
+        ⚠⚠⚠⚠⚠ THE LAST THING THE DRIVER'S `Owed` TABLE ANSWERED FOR — register
+        item 470, and this send is what retires the table rather than shrinking
+        it. Every other act moved because it was a PROMPT; this one is not, and
+        the block above this state says so: what it buys is *carry on with the
+        turn you already have*, into a session nothing has re-briefed.
+
+        ⚠⚠⚠⚠ `asks='work'` IS THEREFORE ARGUED RATHER THAN COPIED FROM ITS
+        NEIGHBOURS. `asks` says what the sentence puts to the peer ASKS IT FOR,
+        not how long the sentence is: `account` would file the resumed turn as
+        this run's closing report, and `direction` would claim the loop is
+        asking where to go next when it is asking for nothing of the kind. What
+        `continue` asks for is the next piece of the job, which is `work`'s own
+        definition. ⚠ The residue, stated: `asks` does not distinguish a
+        composed question from a one-word nudge, and nothing reads it for that
+        — the only reader is the judgement that collects an account, and
+        neither of these is one.
+
+        ⚠⚠ IT IS ON THE EDGE THAT REACHES `working` AND NOT ON THE STATE,
+        because `service.retry` has TWO destinations since this file gained a
+        ceiling and only one of them is spoken to. The edge above reaches
+        `awaiting_human` and says nothing, which is this state's own rule: a
+        person finds the pane exactly as they will find it.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="service_retry_text"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>

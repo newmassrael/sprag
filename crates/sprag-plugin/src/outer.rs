@@ -1020,12 +1020,10 @@ pub enum Briefed {
 /// their variable names is the same *one list decides* discipline [`Self::variable`] documents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Owed {
-    /// Nothing to say — the peer is already working, or is not the thing being waited on.
-    Nothing,
     /// The `start_prompt`, into a session that has never been prompted.
     ///
     /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the third act to leave and the
-    /// first that was not an ending. [`Self::on`] no longer answers it: `priming` declares
+    /// first that was not an ending. `Owed::on` no longer answers it: `priming` declares
     /// `<send type="x-sprag-host" event="prompt.say">` with `<param name="asks" expr="'work'"/>`,
     /// because the first sentence of a run opens a TURN. What is left is [`Self::variable`]'s side
     /// — the door's check that the machine holds the authored strings at all.
@@ -1035,7 +1033,7 @@ pub(crate) enum Owed {
     /// The `end_prompt` — the closing report.
     ///
     /// ⚠⚠⚠ **THIS VARIANT AND [`Stop`](Self::Stop) ARE NAMES NOW, NOT DEBTS** — register item 470,
-    /// stage 2. [`Self::on`] no longer answers either: `closing` and `stopping` declare their own
+    /// stage 2. `Owed::on` no longer answers either: `closing` and `stopping` declare their own
     /// act and carry the sentence on it. What is left is [`Self::variable`]'s side, which is the
     /// door's check that the machine holds the four authored strings — see that function.
     End,
@@ -1052,7 +1050,7 @@ pub(crate) enum Owed {
     /// doing the work, and answered into the session that replaces it.
     ///
     /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the fourth act to leave.
-    /// [`Self::on`] no longer answers it: `reflecting` declares
+    /// `Owed::on` no longer answers it: `reflecting` declares
     /// `<send type="x-sprag-host" event="prompt.say">` with
     /// `<param name="asks" expr="'direction'"/>`, because what a reflection asks for is neither
     /// work nor an account — see [`crate::act::Asks::Direction`], which is the space's third word
@@ -1064,47 +1062,25 @@ pub(crate) enum Owed {
     /// machine's back, and worse, a SLOT standing in for what was actually typed. It reads
     /// [`Session::asked`] now, for the reason the account reader already gives one screen down.
     Reflect,
-    /// ⚠⚠⚠⚠ The `service_retry_text` — **the word that ends an outage**, owed by the edge out of
-    /// `service_down` that reaches `working` and by nothing else.
-    ///
-    /// # ⚠⚠⚠⚠⚠ Why this is owed here rather than typed by the state's own driver
-    ///
-    /// It used to be typed inside [`OuterLoop::wait_out_service`], BEFORE the event was raised —
-    /// and that was correct for exactly as long as `service.retry` had one destination. The moment
-    /// the document gained a ceiling (register item 447) it had two, and typing first meant a run
-    /// whose retries had run out **put a word into the composer of a service that had just refused
-    /// it, and then handed a person a pane with somebody else's text in it** — against
-    /// `awaiting_human`'s own rule that the pane stays exactly as the person will find it.
-    ///
-    /// This table already answers *what does the transition that was actually taken owe*, which is
-    /// the question, and [`OuterLoop::advance`]'s doc calls that ordering THE CONTRACT. So the fix
-    /// is not a second check in the driver; it is putting the word where the other five already
-    /// are.
-    ///
-    /// ⚠⚠ **IT IS NOT A PROMPT AND THE NAME OF THE TABLE IS STILL RIGHT.** What the five above owe
-    /// is a question; what this owes is *carry on with the one you already have* — `service_down`
-    /// deliberately re-brief nothing. `Owed` is about what the peer is told, not about what kind of
-    /// sentence it is.
-    ServiceRetry,
     /// ⚠⚠⚠⚠⚠ The `dispute_prompt` — **what the agent is told when an independent check refused its
     /// milestone**, owed by the one edge out of `judging` that means *the claim was not believed*.
     ///
     /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the fifth act to leave and the
-    /// last `<onentry>` prompt in the document. [`Self::on`] no longer answers it: `disputing`
+    /// last `<onentry>` prompt in the document. `Owed::on` no longer answers it: `disputing`
     /// declares `<send type="x-sprag-host" event="prompt.say">` with
     /// `<param name="asks" expr="'work'"/>`, which is the section below argued as an argument
     /// rather than a comment — the turn a refusal buys is a WORKING turn, and it is watched by the
     /// arm that collects an account off any turn whose question asked for one.
     ///
     /// ⚠⚠ **THIS IS THE STATE WHERE THAT WORD IS LOAD-BEARING TODAY.** Unlike `reflecting`, whose
-    /// turn [`Self::on`]'s caller watches in an arm of its own, `disputing` hands straight back to
+    /// turn `Owed::on`'s caller watches in an arm of its own, `disputing` hands straight back to
     /// `working` — so an `asks` of `account` here would publish the agent's next piece of WORK as
     /// the run's closing report, on a run that had not finished.
     ///
     /// # ⚠⚠⚠⚠⚠ Why this variant needed a STATE in the document before it could exist here
     ///
     /// The refusing edge used to be `judge` landing in `working`, carrying `<send event="prompt.turn"/>`
-    /// — and so are the two ordinary edges beside it. [`Self::on`] keys on `(event, landed)`, so all
+    /// — and so are the two ordinary edges beside it. `Owed::on` keys on `(event, landed)`, so all
     /// three were **the same key**: there was no expression over this table's inputs that could have
     /// told a refused turn from an ordinary one. The driver could have re-read the verdict it had
     /// just published and branched on it, and that would have made the DRIVER decide what a
@@ -1131,7 +1107,7 @@ impl Owed {
     /// ⚠⚠⚠ **EVERY VARIANT HERE BUT `Turn` AND `ServiceRetry` IS VALIDATED AND NO LONGER DELIVERED
     /// THROUGH IT** — register item 470, stage 2. `priming`, `closing`, `stopping`, `reflecting`
     /// and `disputing` name their own sentence on the act they declare
-    /// (`<param name="text" expr="start_prompt"/>`), so [`Self::on`] never answers any of the five
+    /// (`<param name="text" expr="start_prompt"/>`), so `Owed::on` never answers any of the five
     /// any more. They stay because [`Authored::read`] is the door's check that this machine carries
     /// the authored strings at all, and naming them here rather than retyping the variables is the
     /// *one list decides* discipline this comment is about. ⚠ A rename in the document therefore
@@ -1140,20 +1116,15 @@ impl Owed {
     ///
     /// ⚠⚠ **A ROW THAT VALIDATES IS NOT A ROW THAT DECIDES**, and the two are worth telling apart
     /// while this table is being emptied: what item 470 is about is a driver ANSWERING *what does
-    /// this state say*, which is [`Self::on`]'s job and which four states have now taken back. The
+    /// this state say*, which is `Owed::on`'s job and which four states have now taken back. The
     /// door's read asks whether the strings are there and answers nothing about what to say.
     ///
-    /// ⚠⚠ **FIVE OF THE SEVEN NOW HAVE ONE READER WHERE THEY HAD TWO**, and that is the shape to
-    /// watch rather than a tidiness note: the day `Turn` follows, every variant here but
-    /// `ServiceRetry` is read by the door alone and this enum is a *list of the strings a document
-    /// must hold* rather than a table of debts. That is when it gets renamed, not emptied. ⚠ `Turn`
-    /// is last because it is a TRANSITION send and no `<onentry>` can declare it — see [`Self::on`].
-    ///
-    /// # Panics
-    ///
-    /// Never: [`Self::Nothing`] is filtered by the caller's match before this is reached, and the
-    /// alternative — an `Option` every call site unwraps — would put the same impossibility one
-    /// layer further from where it is decided.
+    /// ⚠⚠⚠⚠⚠ **EVERY VARIANT HERE IS NOW READ BY THE DOOR ALONE, WHICH IS WHAT THIS COMMENT SAID
+    /// TO WATCH FOR** — register item 470, stage 3. `Owed::on` is deleted and so is
+    /// `ServiceRetry`, the one entry that was never a prompt; what is left is a *list of the
+    /// strings a document must hold*, and its only reader is [`Authored::read`]. ⚠ It keeps the
+    /// name `Owed` for now because renaming it is a change to a published preview's vocabulary and
+    /// belongs to whoever does that on purpose, not to the round that emptied the table.
     pub(crate) const fn variable(self) -> &'static str {
         match self {
             Self::Start => "start_prompt",
@@ -1162,269 +1133,31 @@ impl Owed {
             Self::Stop => "stop_prompt",
             Self::Reflect => "reflect_prompt",
             Self::Dispute => DISPUTE_PROMPT,
-            Self::ServiceRetry => SERVICE_RETRY_TEXT,
-            Self::Nothing => panic!("`Owed::Nothing` names no prompt; the caller matches it first"),
         }
     }
 
-    /// **THE WORD THIS DEBT STANDS IN WITH WHEN THE DOCUMENT HOLDS AN EMPTY ONE**, or [`None`] for
-    /// the five that have none.
-    ///
-    /// # ⚠⚠⚠ Why exactly one variant has a fallback, and why it is not generosity
-    ///
-    /// An empty PROMPT is a document that has been edited wrong, and the honest answer is to say so
-    /// — which the caller's `None` arm already does. An empty `service_retry_text` is different in
-    /// kind: `service_down`'s ONLY way back to work is something being said, so a blank there is a
-    /// run that waits for ever, and *waiting for ever* is precisely the `blocked` that whole state
-    /// exists to stop being. The behaviour is carried over verbatim from
-    /// [`OuterLoop::wait_out_service`], where it was written and argued when the word was typed
-    /// there.
-    ///
-    /// ⚠⚠ **A FALLBACK IS NOT A SECOND DECISION**, which is [`DEFAULT_SERVICE_RETRY_MS`]'s own
-    /// sentence: it is the template's own default, so the stand-in and the shipped answer agree.
-    pub(crate) const fn fallback(self) -> Option<&'static str> {
-        match self {
-            Self::ServiceRetry => Some(DEFAULT_SERVICE_RETRY_TEXT),
-            // ⚠⚠ A DISPUTE IS A PROMPT AND TAKES A PROMPT'S ANSWER: an empty one is a document that
-            // has been edited wrong, and standing something in would hide that. It is composed on
-            // entry out of four parts this file ships non-empty, so an empty one here is a fact
-            // worth failing over rather than papering over.
-            Self::Start
-            | Self::Turn
-            | Self::End
-            | Self::Stop
-            | Self::Reflect
-            | Self::Dispute
-            | Self::Nothing => None,
-        }
-    }
-
-    /// What the document says goes with arriving at `landed` by raising `raised`.
-    ///
-    /// # ⚠⚠⚠⚠⚠ THIS TABLE IS A RESIDUE NOW, AND IT IS SHRINKING FROM THE `closing` END
-    ///
-    /// Register item 470, stage 2. `closing`, `stopping`, `priming`, `reflecting` and `disputing`
-    /// no longer appear as prompt-owing arms here, and that is not a behaviour change: each one's
-    /// `<onentry>` declares `<send type="x-sprag-host" event="prompt.say">` and carries the sentence
-    /// as a `<param>`, so [`OuterLoop::advance`] is TOLD what to say instead of looking it up from
-    /// the state's name.
-    ///
-    /// ⚠⚠⚠⚠⚠ **WHAT IS LEFT IS ONE ARM AND IT IS THE HARD ONE.** Every `<onentry>` prompt has now
-    /// moved; `working`'s arm below survives because `prompt.turn` is a **transition** send on
-    /// three of the four edges into that state, and `service_retry_text` is not a prompt at all.
-    /// **A transition cannot declare an act to this host the way a state entry can** — the arrival
-    /// is not the condition, the EDGE is — so retiring this function is a different move from the
-    /// five that got it here, and not simply the next one in the sequence.
-    ///
-    /// ⚠⚠⚠ **`priming` IS THE ONE WHOSE DEPARTURE PROVED THE MOVE IS NOT ABOUT ENDINGS.** The first
-    /// two acts to leave were both closing sentences asking for an ACCOUNT, which is consistent
-    /// with a host that serves one kind of act at the end of a run. `priming`'s is the FIRST
-    /// sentence of a run and asks for `work` — the same act, a different argument, on a peer nobody
-    /// has spoken to yet.
-    ///
-    /// ⚠⚠⚠⚠ **AND `reflecting` IS THE ONE WHOSE DEPARTURE PROVED THE ARGUMENT IS A VOCABULARY.**
-    /// The three before it split two ways over one axis, which a boolean could have carried;
-    /// `reflecting` asks for a third thing — [`crate::act::Asks::Direction`] — and its arrival is
-    /// what makes `asks` a word this document chooses rather than a flag with two spellings.
-    ///
-    /// ⚠⚠⚠⚠⚠ **AND `disputing` IS THE ONE WHOSE DEPARTURE PROVED THE ARGUMENT DOES SOMETHING.**
-    /// Its word is `work`, the value this function's residue below hands to `advance` as a
-    /// constant — so nothing about the VALUE says the `<param>` was read, and only a mutation can.
-    /// What makes it worth reading is that this is the state where being wrong bites: the turn a
-    /// refusal buys is handed straight back to `working` and watched by the arm that collects the
-    /// run's account off any turn whose question asked for one.
-    ///
-    /// # ⚠⚠ What is left of `ai_loop.scxml`'s remaining sends, and why the event still decides
-    ///
-    /// `prompt.turn` is a **transition** send, on three of the four edges into `working`, and that
-    /// is the one place the arrival state is not enough. So the event decides there and only
-    /// there. The onentry sends this table used to key by STATE have all gone: the last of them was
-    /// `disputing`'s, and the one before it `reflecting`'s, which was reached more than one way
-    /// (from three `judge` edges) and which now says its own sentence however a run got there.
-    ///
-    /// ⚠ EXHAUSTIVE over the machine's whole event vocabulary in that arm on purpose: an edge
-    /// added into `working` lands here as a variant that no longer compiles, which is the only
-    /// mechanism that stops a driver silently not saying something the author wrote.
-    const fn on(raised: AiLoopEvent, landed: AiLoopState) -> Self {
-        match landed {
-            AiLoopState::Working => match raised {
-                // ⚠⚠⚠⚠ THE OUTAGE ENDED AND THE PEER HAS TO BE TOLD TO CARRY ON — register item
-                // 447, and this arm IS the fix. The word used to be typed inside
-                // `wait_out_service` before the event was raised, which was right while
-                // `service.retry` had one destination and wrong the moment the document gained a
-                // ceiling: it typed at a service that had just refused and then handed the pane to
-                // a person with the word still in it.
-                //
-                // ⚠⚠⚠ It is keyed on the EVENT here and not on the state, and this is the second
-                // place in this table where that matters: `working` is also reached from
-                // `service_down` by nothing else, so the event is the whole condition. The OTHER
-                // destination of the same event — `awaiting_human`, the ceiling — falls to the
-                // state arm below and owes nothing, which is the entire behaviour change.
-                AiLoopEvent::ServiceRetry => Self::ServiceRetry,
-                // ⚠⚠ `priming --prompt.sent-->` carries none because the START prompt is already
-                // in the pane, and `screening --screen.matched-->` carries none DELIBERATELY: the
-                // peer has just been handed its answer by the driver's own keystroke and is
-                // working on it. A prompt on either edge types over a peer mid-turn, which is the
-                // failure class this crate keeps paying for.
-                // ⚠⚠ `screening --screen.moot-->` carries none for a sharper version of
-                // `ScreenMatched`'s reason: NOTHING was pressed and the turn was never
-                // interrupted, so the peer is still working on the prompt it already has and this
-                // loop's `Completion` is still armed from it. A prompt here would be a second
-                // question inside one turn.
-                // ⚠⚠ `redirecting --redirect.done-->` carries none for exactly `ScreenMatched`'s
-                // reason, and it is the same act: the peer has just been refused and told what to
-                // do instead by this driver's own keystrokes, so it is working on that. A prompt
-                // here would type over a peer that has just been spoken to.
-                AiLoopEvent::RedirectDone
-                | AiLoopEvent::RedirectBegin
-                | AiLoopEvent::RedirectNone
-                | AiLoopEvent::ScreenMoot
-                | AiLoopEvent::PromptSent
-                | AiLoopEvent::ScreenMatched
-                | AiLoopEvent::Brief
-                | AiLoopEvent::Cancel
-                | AiLoopEvent::ErrorExecution
-                | AiLoopEvent::Fail
-                | AiLoopEvent::Hold
-                | AiLoopEvent::NotifyHuman
-                // ⚠⚠⚠⚠⚠ `prompt.say` REPLACED EVERY `prompt.*` NAME THIS DOCUMENT EVER ANNOUNCED,
-                // AND THE COMPILER IS WHAT SAID SO EACH TIME — register item 470, stage 2. Six
-                // names left as `closing`, `stopping`, `priming`, `reflecting`, `disputing` and
-                // finally the four EDGES into this very state began declaring their act to the HOST
-                // instead of announcing it to the machine: the generated enum stopped minting each
-                // one and this list stopped compiling, once per move. ⚠ `prompt.say` never arrives
-                // as an EVENT at all: a host-served send raises only what the handler answers with,
-                // and this host answers an act it performed with nothing. It is spelled for this
-                // arm's own rule — the list is what makes an edge added into `working` fail to
-                // compile.
-                | AiLoopEvent::PromptSay
-                // ⚠⚠⚠⚠⚠ THESE THREE USED TO BE THE ONLY PROMPT-OWING KEY LEFT IN THIS TABLE, and
-                // they are here rather than deleted because the list is exhaustive on purpose. Two
-                // of them are the SAME key for two different edges — `judging` reaches `working`
-                // twice on `judge`, once guarded on an unreadable turn — so no expression over this
-                // function's inputs could ever have told those two apart. The document now says
-                // what each edge owes, on the edge, which `probe.rs` measured an engine will carry.
-                | AiLoopEvent::Judge
-                | AiLoopEvent::Resume
-                | AiLoopEvent::ReflectNone
-                | AiLoopEvent::ReflectApplied
-                | AiLoopEvent::ReviewBegin
-                | AiLoopEvent::ReviewDone
-                | AiLoopEvent::ReviewNone
-                // ⚠ `reflecting --reflect.done-->` reaches `closing`, never here: it is the
-                // agent saying there is nothing left, and what `closing` asks its agent for is an
-                // ACCOUNT, on the act that state declares for itself.
-                | AiLoopEvent::ReflectDone
-                | AiLoopEvent::ScreenBegin
-                | AiLoopEvent::ScreenNone
-                | AiLoopEvent::SessionReady
-                | AiLoopEvent::SessionReplace
-                | AiLoopEvent::SessionReplaced
-                | AiLoopEvent::Start
-                | AiLoopEvent::TurnBlocked
-                | AiLoopEvent::TurnDone
-                | AiLoopEvent::TurnInterrupted
-                | AiLoopEvent::Unattended
-                // ⚠ `peer.gone` reaches a FINAL state and never `working`, so it cannot arrive
-                // here — but it is spelled rather than left to a catch-all, which is the arm's own
-                // rule: this list is what makes an edge added into `working` fail to compile.
-                | AiLoopEvent::PeerGone
-                // ⚠⚠⚠⚠ `peer.silent` LEAVES `working` FOR `awaiting_human` AND NEVER ARRIVES IN IT
-                // — register item 458. It owes nothing wherever it lands, and that is the point of
-                // the state it lands in: NOTHING is sent from `awaiting_human`, because the pane
-                // must stay exactly as the person will find it. A prompt owed on this edge would
-                // type at the very peer whose silence is the thing nobody can explain yet.
-                //
-                // ⚠⚠ And this arm is the mechanism working as documented: adding the edge to the
-                // document made this match stop compiling, which is how the decision came to be
-                // taken here rather than defaulted.
-                | AiLoopEvent::PeerSilent
-                // ⚠⚠⚠ `prompt.unasked` REACHES `restarting` OR `failed` AND NEVER HERE — register
-                // item 446. It is raised where a delivery ended with the question never taken, and
-                // what it buys is a fresh SESSION, so a prompt owed on arrival would be a question
-                // asked of the peer that just refused one. Spelled for this arm's own rule.
-                | AiLoopEvent::PromptUnasked
-                // ⚠⚠⚠ AN ORDER NEVER REACHES `working`, AND THAT IS ITS DEFINING PROPERTY. It moves
-                // the ORDERS region and leaves the work region exactly where it was — which is the
-                // whole difference between *stand down* and `cancel`. Spelled rather than left to a
-                // catch-all for this arm's own rule: an edge that ever did carry it into `working`
-                // would be an order interrupting a turn, and it would fail to compile here first.
-                | AiLoopEvent::StandDown
-                // ⚠⚠⚠ `abandon` IS AN ORDER'S OWN ENDING, so it reaches a FINAL and never `working`
-                // — the two reasons above at once (register item 534). Spelled rather than left to
-                // a catch-all for this arm's rule, and there is a second thing it must never do:
-                // owe a prompt. The ending exists precisely because nobody is there to read one.
-                | AiLoopEvent::Abandon
-                | AiLoopEvent::Null => Self::Nothing,
-            },
-            AiLoopState::Idle
-            | AiLoopState::Judging
-            | AiLoopState::Screening
-            // ⚠⚠⚠⚠⚠ THESE FIVE OWE THIS TABLE NOTHING BECAUSE THEY SAY IT THEMSELVES — register
-            // item 470, stage 2. All five still ask their agent a question, and it is a DIFFERENT
-            // question each (`end_prompt` for a run that converged, `stop_prompt` for one a ceiling
-            // stopped short, which is why those two were never one arm; `start_prompt` for a session
-            // nobody has spoken to; `reflect_prompt` for a run asking where to go next;
-            // `dispute_prompt` for one whose claim a check refused) — but the sentence and what it
-            // asks for now travel on the act each state's own `<onentry>` declares, so nothing out
-            // here has to know which state a question was asked in.
-            //
-            // ⚠⚠⚠⚠⚠ **THAT IS EVERY PROMPT THIS DOCUMENT PUTS TO ITS AGENT ON ENTERING A STATE.**
-            // What is left below owes nothing and always did; what is left ABOVE is `working`'s
-            // arm, and it is keyed by the EVENT rather than the state because `prompt.turn` is a
-            // TRANSITION send on three of the four edges into one state — the one place an arrival
-            // is not enough to say what is owed, and so the one act that cannot move by declaring
-            // itself on an `<onentry>`.
-            //
-            // ⚠⚠⚠⚠ AND `priming` IS WHY THIS LIST CANNOT BE THE METER FOR ITEM 470. A state whose
-            // behaviour has LEFT still has to be named here, because the list is exhaustive on
-            // purpose — that is the mechanism that makes a new state fail to compile. *Owes
-            // nothing* and *decides nothing here* read the same to anything that counts mentions.
-            // `loop_shape::served_acts` is what can see the move; this arm can only see arrivals.
-            // ⚠ `reflecting` JOINED THEM ON THE ROUND AFTER AND `disputing` ON THE ONE AFTER THAT,
-            // each trading one mention for another exactly as `priming` did — which is why those
-            // rows in that gate's `DRIVER_ARMS` are expected to hold rather than fall.
-            | AiLoopState::Priming
-            | AiLoopState::Closing
-            | AiLoopState::Stopping
-            | AiLoopState::Reflecting
-            | AiLoopState::Disputing
-            // ⚠⚠ ARRIVING AT AN OUTAGE OWES THE AGENT NOTHING, and a prompt here would be the
-            // exact mistake the state exists to prevent: the peer's service just refused a turn,
-            // so a question typed on arrival is one more request into a service saying no. What
-            // this state owes is TIME, and the driver spends it — see `wait_out_service`.
-            | AiLoopState::ServiceDown
-            | AiLoopState::Redirecting
-            | AiLoopState::AwaitingHuman
-            | AiLoopState::Reviewing
-            | AiLoopState::Restarting
-            | AiLoopState::Resuming
-            | AiLoopState::Converged
-            | AiLoopState::Exhausted
-            | AiLoopState::Failed
-            | AiLoopState::Cancelled
-            // ⚠⚠ A RUN WHOSE PEER HAS GONE OWES IT NOTHING, and this is the arm where that is
-            // enforced rather than argued: a prompt owed to a state reached BECAUSE the pane's
-            // program exited would be typed straight at the wall this whole round is about.
-            | AiLoopState::PeerGone
-            // ⚠⚠ AND NEITHER DOES A RUN NOBODY CAME BACK TO — register item 534. It is the sharpest
-            // case in this list: the state is reached because a person stopped reading, so a prompt
-            // owed here would be typed at a pane on the strength of nobody being at it.
-            | AiLoopState::Abandoned
-            // ⚠⚠⚠ THE REGIONS' OWN STATES OWE NOTHING EITHER, and they owe it for a different
-            // reason than every other arm here: they are not ARRIVALS a run passes through. The
-            // parallel root and the two region roots are structure, and the orders states are what
-            // a person said — none of them is a moment at which an agent is waiting to be asked
-            // something. A prompt owed to one of them would be a prompt sent because a person spoke.
-            | AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held
-            | AiLoopState::Blocked => Self::Nothing,
-        }
-    }
+    // ⚠⚠⚠⚠⚠ **`on(raised, landed)` USED TO BE HERE, AND ITS DELETION IS REGISTER ITEM 470's THIRD
+    // STAGE OPENING.** It answered *what does the document say goes with arriving at `landed` by
+    // raising `raised`* — a `match` over this document's states with a nested `match` over its whole
+    // event vocabulary, which is the SECOND COPY OF THE TOPOLOGY stage 3 exists to remove. It was
+    // the first of the seven exhaustive state-matches to go.
+    //
+    // Every prompt it once answered for is declared by the document itself, on the state entry or
+    // the edge that owes it. The last thing it held was `service_retry_text` — **not a prompt**: the
+    // word that ends an outage, *carry on with the turn you already have*. That is now
+    // `service_down`'s own edge to `working`, asking for `work`, which is what `continue` asks for.
+    //
+    // ⚠⚠⚠⚠ **AND `fallback` WENT WITH IT, TO THE DOCUMENT RATHER THAN NOWHERE.** This table stood
+    // the file's own `continue` in when the word arrived empty, which meant the DRIVER held a second
+    // copy of the document's default. `ai_loop.scxml`'s `brief` transition now guards that one
+    // assignment instead, so the default lives once, in the `<datamodel>` that declares it. The
+    // reason it exists has not changed and is written there.
+    //
+    // ⚠⚠ **WHAT THE DELETION COSTS, STATED RATHER THAN HIDDEN.** The nested event arm was
+    // EXHAUSTIVE on purpose: an edge added into `working` used to land here as a variant that no
+    // longer compiles. That guard is genuinely gone, and what stands in its place is the document's
+    // own — an edge that owes a sentence declares it, and one that declares an act this host does
+    // not serve is REFUSED where the machine can hear it ([`crate::act::Refused`]).
 
     // ⚠⚠⚠⚠⚠ **`asked_for_an_account(state)` USED TO BE HERE, AND ITS DELETION IS THE POINT OF
     // REGISTER ITEM 470's SECOND STAGE.**
@@ -6217,7 +5950,7 @@ impl OuterLoop {
     ///
     /// # ⚠⚠⚠ Why it takes no pane and cannot fail
     ///
-    /// Because it no longer TOUCHES one. The word that ends an outage moved to [`Owed::ServiceRetry`]
+    /// Because it no longer TOUCHES one. The word that ends an outage moved to `service_down`'s own edge
     /// when `service.retry` gained a second destination, and what is left here is a clock and two
     /// reads of the document — which is what the state's own comment always claimed it was
     /// (*"Nothing is sent on entry … the only act that helps is to let time pass"*). **The signature
@@ -6237,7 +5970,7 @@ impl OuterLoop {
             return AiLoopEvent::Null.into();
         }
         // ⚠⚠⚠⚠⚠ AND NOTHING IS TYPED HERE ANY MORE — register item 447. The word is
-        // [`Owed::ServiceRetry`]'s now, paid by `advance` AFTER the machine has moved, because
+        // `service_down`'s own edge's now, paid by `advance` AFTER the machine has moved, because
         // `service.retry` has TWO destinations since the document gained a ceiling and only one of
         // them is spoken to. Typing first meant a run out of retries put `continue` into the
         // composer of a service that had just refused it and then handed a person a pane holding a
@@ -7396,53 +7129,16 @@ impl OuterLoop {
         // ARRIVED, as `<param>`s, composed by the file itself. Nothing here looked them up, and
         // nothing here had to know which state it was.
         //
-        // ⚠⚠ `Owed` below is the RESIDUE, not a fallback: it answers for the states whose act has
-        // not moved into the document yet. The two are ordered rather than merged because the day
-        // the last one moves, the `else` goes with it.
+        // ⚠⚠⚠⚠⚠ **AND THERE IS NO LONGER ANYTHING ELSE TO ASK** — register item 470, stage 3. An
+        // `Owed::on(event, landed)` table stood here as the RESIDUE, answering for whichever states
+        // had not moved yet, and the comment above it said *the day the last one moves, the `else`
+        // goes with it*. That day came: **an act arrived or nothing is owed**, and this driver has
+        // no second opinion about which.
         //
         // ⚠⚠⚠ TAKEN RATHER THAN READ. An act is performed once; a slot left full would put the
         // same sentence to the peer again on the next pass that reaches this line.
-        let (text, asks) = match self.serving.taken() {
-            Some(asked) => (asked.text, asked.asks),
-            None => {
-                let owed = Owed::on(event, landed);
-                if owed == Owed::Nothing {
-                    return Ok((landed, 0));
-                }
-                // ⚠⚠⚠ READ AT THE MOMENT OF DELIVERY, which is the whole point of the order this
-                // function documents. `priming`'s `onentry` composes the prompts out of the parts,
-                // and it has just run — the machine moved above. A driver reading a
-                // construction-time copy would send the template's `(edit me)` however carefully
-                // the caller had briefed it.
-                // ⚠⚠⚠ AN EMPTY ANSWER STANDS IN ONLY WHERE THE DEBT SAYS ONE MAY — see
-                // [`Owed::fallback`], which is `Some` for exactly one variant and says why. An
-                // empty PROMPT is left empty and reaches the peer as nothing, which is the
-                // behaviour every prompt has always had; an empty `service_retry_text` would be a
-                // state whose only exit is never taken.
-                let Some(text) = self.text_of(owed.variable()).map(|text| {
-                    match (text.is_empty(), owed.fallback()) {
-                        (true, Some(standing_in)) => standing_in.to_owned(),
-                        _ => text,
-                    }
-                }) else {
-                    // ⚠ THE DOCUMENT'S OWN ANSWER, not one invented out here. A machine whose
-                    // datamodel has stopped holding its prompts cannot be driven, and `fail` ->
-                    // `failed` is what this document says happens to a run that cannot go on.
-                    // Inventing a `Pumped` arm for it would put a terminal decision in the driver.
-                    //
-                    // ⚠⚠ WHICH VARIABLE IS RECORDED, because the state it lands in cannot say.
-                    // `failed` is reached from six transitions and a consumer meeting one has no
-                    // way back to the cause; this is the same argument `Noticed` makes for the
-                    // other two.
-                    self.noticed = Some(Noticed::Undrivable(owed.variable()));
-                    self.machine.process_event(AiLoopEvent::Fail);
-                    return Ok((self.state(), 0));
-                };
-                // ⚠ EVERY PROMPT THIS TABLE STILL OWES ASKS FOR WORK. The two that asked for an
-                // account are the two that left it, which is why this is a constant here and an
-                // argument in the document.
-                (text, crate::act::Asks::Work)
-            }
+        let Some(crate::act::Asked { text, asks, .. }) = self.serving.taken() else {
+            return Ok((landed, 0));
         };
         // ⚠⚠⚠⚠ THE DOOR CAN REFUSE HERE, AND THE MACHINE HAS ALREADY MOVED BY THE TIME IT DOES.
         // `process_event` ran above — that is what composed the prompt this line sends — so a write
@@ -16851,11 +16547,13 @@ mod tests {
     ///
     /// Three things are done about it, and each closes what the others cannot:
     ///
-    /// * **[`Owed::on`] IS ASKED DIRECTLY**, first, before the pane exists. If it answers anything
-    ///   but [`Owed::Nothing`] for this state, the residue is live and every read below is
-    ///   consistent with the table still deciding. With `Nothing` there is no path by which the
-    ///   driver could supply either argument: `advance` returns before it looks one up.
-    /// * **THE SENTENCE IS THE OTHER HALF.** `Nothing` means nothing is typed at all unless the
+    /// * **THE DRIVER HAS NO RESIDUE LEFT TO SUPPLY ONE FROM**, and since register item 470's
+    ///   stage 3 that is a fact the COMPILER holds rather than one this gate asserts: `Owed::on` is
+    ///   deleted, and [`OuterLoop::advance`] is a single *an act arrived or nothing is owed*. This
+    ///   arm used to read `Owed::on(Judge, Disputing) == Owed::Nothing`; what replaces it is that
+    ///   the function it called does not exist, and `DRIVER_ARMS` in
+    ///   `the_loop_decides_in_its_own_document` refuses a table coming back.
+    /// * **THE SENTENCE IS THE OTHER HALF.** With no residue, nothing is typed at all unless the
     ///   act arrived, so a non-empty `dispute_prompt` at this arrival is the act being served.
     /// * ⚠⚠⚠⚠⚠ **AND THE WORD IS MEASURED BY WHAT IT DOES, WHICH IS THIS STATE'S OWN PROPERTY.**
     ///   `disputing` hands straight back to `working`, and `working`'s arm collects the run's
@@ -16880,18 +16578,10 @@ mod tests {
         /// Enough passes for three arrivals at `disputing` and two completed turns after one.
         const PASSES: usize = 10;
 
-        // ⚠⚠⚠⚠⚠ FIRST, AND WITHOUT A PANE: the driver must decide NOTHING for this state. Every
-        // read below rests on this — with the table still answering, a sentence arriving here is
-        // consistent with `advance` having looked it up, and the gate would be measuring the
-        // residue rather than the act.
-        assert_eq!(
-            Owed::on(AiLoopEvent::Judge, AiLoopState::Disputing),
-            Owed::Nothing,
-            "⚠⚠⚠⚠⚠ `Owed::on` STILL ANSWERS FOR `disputing`, so item 470's fifth act has not \
-             moved and nothing below is evidence: `advance` would look the sentence up from this \
-             state's name and hand itself `Asks::Work` as a constant, which is exactly what this \
-             gate reads.",
-        );
+        // ⚠⚠⚠⚠⚠ WHAT USED TO STAND HERE WAS `assert_eq!(Owed::on(Judge, Disputing), Nothing)`, and
+        // it is gone because the thing it interrogated is — register item 470, stage 3. The claim
+        // it made is now held by the COMPILER: there is no table for `advance` to consult, so the
+        // only way a sentence reaches this arrival is the act. See this gate's own doc.
 
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         // ⚠ ONE prompt to the marker, so the stand-in claims the milestone on every turn and the
@@ -17823,40 +17513,61 @@ mod tests {
     /// than reading the screen.
     #[test]
     fn a_retry_the_ceiling_turned_away_types_nothing_where_an_ordinary_one_speaks() {
-        // ── THE TABLE, both destinations of ONE event ──
-        assert_eq!(
-            Owed::on(AiLoopEvent::ServiceRetry, AiLoopState::Working),
-            Owed::ServiceRetry,
-            "⚠⚠⚠ the outage ended and the peer has to be told to carry on, or `service_down`'s only \
-             way back to work is never taken and the run waits for ever — which is the `blocked` \
-             that state exists to stop being",
-        );
-        assert_eq!(
-            Owed::on(AiLoopEvent::ServiceRetry, AiLoopState::AwaitingHuman),
-            Owed::Nothing,
-            "⚠⚠⚠⚠⚠ AND THE SAME EVENT OWES NOTHING WHERE THE CEILING TURNED IT AWAY. This is the \
-             whole behaviour change: one event, two landings, and only one of them is spoken to",
-        );
-        assert_eq!(
-            (
-                Owed::ServiceRetry.variable(),
-                Owed::ServiceRetry.fallback(),
-                Owed::Turn.fallback(),
-            ),
-            (SERVICE_RETRY_TEXT, Some(DEFAULT_SERVICE_RETRY_TEXT), None),
-            "⚠⚠ the word is the DOCUMENT's, and exactly one debt stands a default in — see \
-             `Owed::fallback`, which says why an empty prompt is left empty and an empty retry word \
-             is not",
-        );
+        // ⚠⚠⚠⚠⚠ THREE TABLE ASSERTIONS STOOD HERE AND THE TABLE IS GONE — register item 470, stage
+        // 3. They asked `Owed::on` what each of the event's two landings owed, and what stood in
+        // for an empty word. `service_down`'s own edges answer the first now (the one to `working`
+        // declares `<send type="x-sprag-host" event="prompt.say">`, the one the ceiling turns away
+        // declares nothing), and `ai_loop.scxml`'s `brief` transition answers the second by
+        // refusing to overwrite its own default with an empty one.
+        //
+        // ⚠⚠ **WHAT IS BELOW IS THE HALF THAT WAS ALWAYS THE PRODUCT**, and it is unchanged: two
+        // real runs into a real outage, and the BYTES each retry put into the pane. A table was
+        // never evidence that a run types anything.
 
         /// Drive a real loop into `service_down`, author the ceiling, retry — and say where it
         /// landed and **how many bytes went into the pane getting there**.
-        fn retried_with(max: i64, retried: i64) -> (AiLoopState, u64, Option<Noticed>) {
+        ///
+        /// ⚠ `briefed` is what a CALLER authored as the retry word, or [`None`] for a run that
+        /// briefed no outage at all. It exists for the arm below that authors an EMPTY one.
+        fn retried_with(
+            max: i64,
+            retried: i64,
+            briefed: Option<&str>,
+        ) -> (AiLoopState, u64, Option<Noticed>) {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
             let (workspace, pane) = quiet_pane();
             let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace));
             let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
                 .expect("the document's datamodel must carry its four authored strings");
+            if let Some(text) = briefed {
+                assert_eq!(
+                    loops.brief(&Brief {
+                        north_star: "n".to_string(),
+                        milestone: "m".to_string(),
+                        reference: "r".to_string(),
+                        closing_rules: None,
+                        context_ceiling: None,
+                        reflect_after_refusals: None,
+                        milestone_check: None,
+                        service: Some(ServiceOutage {
+                            needle: "the service is down".to_string(),
+                            every_ms: 1,
+                            text: text.to_string(),
+                        }),
+                        max_turns: Some(Counted::Of(3)),
+                        reflect_every: Some(99),
+                        screen_rules: None,
+                        may_answer: None,
+                        await_person_ms: Some(0),
+                        handback_still_ms: None,
+                        hold_within_ms: None,
+                        ready_timeout_ms: None,
+                        turn_within_ms: None,
+                    }),
+                    Briefed::Took,
+                    "the parts must be held",
+                );
+            }
             let run = RunContext::uncancellable();
 
             // Into `working` by the door a run uses, then into the outage by the document's own
@@ -17904,7 +17615,7 @@ mod tests {
         }
 
         // ── THE CONTROL: an ordinary retry speaks ──
-        let (working, said, cleared) = retried_with(6, 0);
+        let (working, said, cleared) = retried_with(6, 0, None);
         assert_eq!(
             working,
             AiLoopState::Working,
@@ -17925,7 +17636,7 @@ mod tests {
         );
 
         // ── THE HEADLINE: the ceiling turned it away, and nothing went in ──
-        let (person, typed, standing) = retried_with(6, 6);
+        let (person, typed, standing) = retried_with(6, 6, None);
         assert_eq!(
             person,
             AiLoopState::AwaitingHuman,
@@ -17947,6 +17658,54 @@ mod tests {
              was paid, so nothing cleared it, and `blocked` — the word this run is heading for — \
              cannot say whether it was reached over a question or over a server that never came \
              back",
+        );
+
+        // ── THE THIRD ARM: A CALLER WHO AUTHORED AN EMPTY WORD STILL GETS OUT OF THE OUTAGE ──
+        //
+        // ⚠⚠⚠⚠⚠ THIS IS THE HALF `Owed::fallback` USED TO HOLD, AND IT WAS UNGATED UNTIL NOW —
+        // register item 470, stage 3. `ServiceOutage::text` is a plain `String`, so a kind may
+        // author `""`; the driver used to stand this document's own `continue` in at DELIVERY,
+        // which meant the DRIVER held a second copy of the file's default. The guard moved into
+        // `ai_loop.scxml`'s `brief` transition, and this arm is what says the move kept the
+        // behaviour rather than losing it.
+        //
+        // ⚠⚠ WHAT IT COSTS IF IT IS EVER LOST, stated because the two arms above cannot see it:
+        // `service_down`'s ONLY exit to work is something being SAID. An empty word there is not a
+        // quiet degradation, it is a run that waits for ever — the `blocked` that whole state
+        // exists to prevent — and the arms above brief no outage at all, so they would stay green
+        // through it.
+        let (resumed, spoke, _) = retried_with(6, 0, Some(""));
+        assert_eq!(
+            resumed,
+            AiLoopState::Working,
+            "⚠⚠⚠ a caller's empty retry word must not change where the retry LANDS; that is the \
+             ceiling's business and this arm is about the sentence",
+        );
+        assert!(
+            spoke >= DEFAULT_SERVICE_RETRY_TEXT.len() as u64,
+            "⚠⚠⚠⚠⚠ A RUN THAT AUTHORED AN EMPTY RETRY WORD TYPED NOTHING, so `service_down`'s only \
+             exit is never taken and it waits for ever. The document is supposed to keep its own \
+             `continue` when a brief carries an empty one — see the guarded `<assign>` in \
+             `ai_loop.scxml`'s `brief` transition. Got {spoke} byte(s)",
+        );
+
+        // ⚠ AND THE CONTROL FOR THAT ARM: a caller who authored a REAL word gets THEIR word, not
+        // this file's default — otherwise the assertion above is satisfied by a document that
+        // ignores the brief entirely, which is the opposite defect and the same green.
+        const AUTHORED: &str = "resume please, the service is back";
+        let (again, authored, _) = retried_with(6, 0, Some(AUTHORED));
+        assert_eq!(
+            again,
+            AiLoopState::Working,
+            "the control lands where the arm above does",
+        );
+        assert!(
+            authored >= AUTHORED.len() as u64,
+            "⚠⚠⚠⚠ THE GUARD SWALLOWED AN AUTHORED WORD. A `<assign>` guarded the wrong way round \
+             keeps the template's `continue` for everybody and the arm above would still pass — \
+             two spellings of one bug, and only this control tells them apart. Got {authored} \
+             byte(s) for a {} byte word",
+            AUTHORED.len(),
         );
     }
 

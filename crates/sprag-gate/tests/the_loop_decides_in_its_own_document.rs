@@ -69,6 +69,13 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// remain, and each of them costs every state one arm. What retires a row completely is those
 /// matches going, one decision at a time — which is what the row's own number is here to watch.
 ///
+/// ⭐⭐⭐⭐⭐ **AND ON 2026-08-26 EVERY ROW HERE FELL BY ONE, FOR THE FIRST TIME.** Stage 3 opened by
+/// DELETING `Owed::on` — the first of the seven exhaustive state-matches — and the number that had
+/// held for three rounds moved for all twenty-eight states at once, because that is what one match
+/// costs: **one arm per state, and the same one.** ⚠ That is the shape to expect from stage 3 and
+/// the shape stage 2 could never produce: an act MOVING trades a mention for another and this list
+/// cannot see it; a match GOING takes a mention from every state and nothing else can.
+///
 /// ⚠⚠⚠⚠⚠ **AND A ROW HOLDING STILL IS NOT AN ACT STAYING PUT** — measured 2026-08-25 R75, the
 /// round after the one above. `priming`'s act moved into the document and **not one row here
 /// changed**: `Owed::on`'s `Priming => Start` arm was deleted, and `AiLoopState::Priming` had to be
@@ -93,38 +100,38 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠ It came down 8 -> 7 on 2026-08-25 with every other row, and NOT because anything about
     // being abandoned changed: one of the seven matches that cost each state an arm was deleted.
     // See this constant's own note above.
-    ("abandoned", 7),
-    ("awaiting_human", 9),
-    ("blocked", 7),
-    ("cancelled", 8),
-    ("closing", 7),
-    ("converged", 10),
-    ("disputing", 7),
-    ("exhausted", 12),
-    ("failed", 10),
-    ("held", 7),
-    ("idle", 8),
-    ("judging", 13),
-    ("orders", 7),
-    ("peer_gone", 7),
-    ("priming", 8),
-    ("redirecting", 7),
-    ("reflecting", 7),
-    ("restarting", 7),
-    ("resuming", 7),
-    ("reviewing", 7),
-    ("running", 7),
-    ("screening", 7),
-    ("service_down", 7),
-    ("standing", 7),
+    ("abandoned", 6),
+    ("awaiting_human", 8),
+    ("blocked", 6),
+    ("cancelled", 7),
+    ("closing", 6),
+    ("converged", 9),
+    ("disputing", 6),
+    ("exhausted", 11),
+    ("failed", 9),
+    ("held", 6),
+    ("idle", 7),
+    ("judging", 12),
+    ("orders", 6),
+    ("peer_gone", 6),
+    ("priming", 7),
+    ("redirecting", 6),
+    ("reflecting", 6),
+    ("restarting", 6),
+    ("resuming", 6),
+    ("reviewing", 6),
+    ("running", 6),
+    ("screening", 6),
+    ("service_down", 6),
+    ("standing", 6),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 8),
-    ("stopping", 7),
-    ("work", 8),
-    ("working", 9),
+    ("standing_down", 7),
+    ("stopping", 6),
+    ("work", 7),
+    ("working", 8),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
@@ -196,9 +203,14 @@ const DECLARED_ACTS: usize = 11;
 /// has moved; what still announces a name is five sends nothing reads, which is a different
 /// question — read the register rather than expecting this to keep climbing.
 ///
+/// ⭐⭐⭐ **AND THE TENTH IS THE ONE THAT WAS NEVER A PROMPT** — 2026-08-26, stage 3's opening.
+/// `service_down`'s edge to `working` declares `service_retry_text`, the word that ends an outage,
+/// and with it gone `Owed::on` answered for nothing and was **deleted**. That is the first of the
+/// seven exhaustive state-matches to go, and the first round in which [`DRIVER_ARMS`] rows FALL.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 9;
+const SERVED_ACTS: usize = 10;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);
