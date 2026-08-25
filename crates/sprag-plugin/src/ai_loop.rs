@@ -1936,6 +1936,203 @@ mod tests {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **A JUDGING RUN WHOSE PANE LEFT ITS POOL DIES AT THE DOOR IT TYPES THROUGH** —
+    /// register item 682, reproduced end to end at the height the live runs died at.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The three runs this is the reconstruction of
+    ///
+    /// 2026-08-25: runs `0`, `1` and `3` each ended `failed: there is no pane N`, and all three
+    /// carried `Working --TurnDone--> Judging` as their LAST walk entry with nothing after it.
+    /// Register item 680 gave that failure a line in the journal; this gate is what makes the line
+    /// say something a diagnosis can use, by producing the identical ending from a known cause.
+    ///
+    /// **The cause staged here is the one the live evidence leaves standing.** Pane `5` was still
+    /// alive in window `pinion` while the run driving it died saying `there is no pane 5`, so the
+    /// pane did not die — it is **no longer in the pool the run captured**
+    /// (`SessionScope::workspace` is a WINDOW's pane pool, and a run holds that `Arc` for its
+    /// whole life). [`Workspace::close`](sprag_terminal::Workspace::close) is how a pane leaves
+    /// one — it is what `respawn`, `break-pane`, `join-pane`, `move-pane`, `swap` and
+    /// `kill-window` each remove a pane with — and it hands the pane BACK, still running, which is
+    /// what this fixture binds.
+    ///
+    /// # ⭐⭐⭐⭐⭐ THE CALL THIS NAMES, which is what register item 682 was missing
+    ///
+    /// **`deliver` → [`PaneAccess::inject`] → `WorkspacePaneAccess::typing`** — the one door every
+    /// plugin types through, and one of only two on that surface that can raise this word (the
+    /// other is `pane_stop_job`, reached only by a cancel, and these runs were not cancelled).
+    ///
+    /// ⚠⚠⚠⚠ **AND THE PLACE THE JOURNAL REPORTS IS `working`, NOT `judging` — measured, and it
+    /// corrected this gate's first draft.** [`Plugin::at`](crate::plugin::Plugin::at) is read when
+    /// the pass RETURNS, so it names where the machine ended: the judging pass raises `judge`, the
+    /// document carries the loop into `working`, and the run dies delivering that turn's prompt.
+    /// That is also why the live runs looked as though they died *in* judging — their last
+    /// SUCCESSFUL walk entry was `Working --TurnDone--> Judging`, so the failing step is the one
+    /// that BEGAN there. The failure line's own edge (`judging --judge--> working`) is what says
+    /// so, and asserting it is what separates this pass from every ordinary working turn.
+    ///
+    /// # ⚠⚠⚠ Why the pane is taken away at `judging` and not anywhere else
+    ///
+    /// Because that is where the live runs were, and because it is the first pass after the
+    /// opening prompt that TYPES: `judging` reads the turn, finds no marker, and the document's
+    /// `judge` edge carries the loop back to `working` with the next prompt to deliver. A pane
+    /// removed before the first prompt would fail somewhere else entirely and would prove nothing
+    /// about these runs.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE SAME PASS ON A POOL THAT STILL HOLDS THE PANE**, and it runs first.
+    /// Without it a green here is satisfied by a fixture that could never take a judging pass at
+    /// all, which is this workspace's most expensive recorded way to measure nothing.
+    ///
+    /// ⚠ What this gate does NOT claim: it does not say what removed the pane in production. That
+    /// is register item 682's remaining half, and naming it here would be prose ahead of the code.
+    #[test]
+    fn a_judging_run_whose_pane_left_its_pool_dies_where_the_live_runs_died() {
+        /// Pump `loops` until the document is in `judging`, answering how many passes it took.
+        ///
+        /// ⚠ A shared bound rather than two spellings of one number: the control and the
+        /// measurement must reach the SAME place the same way, or they are not comparable.
+        fn to_judging(loops: &mut AiLoop, access: &dyn PaneAccess, run: &RunContext) -> usize {
+            let mut pumped = 0;
+            while loops.state() != AiLoopState::Judging && pumped < 40 {
+                loops.step(access, run).expect("a live pane takes a pass");
+                pumped += 1;
+            }
+            assert_eq!(
+                loops.state(),
+                AiLoopState::Judging,
+                "⚠⚠ THE FIXTURE'S PRECONDITION: this loop must bank a turn within {pumped} passes, \
+                 or the pass this gate is about never happens",
+            );
+            pumped
+        }
+
+        let run = RunContext::uncancellable();
+
+        // ── 1. THE CONTROL, AND IT COMES FIRST: the judging pass TAKES on a pool that holds it ──
+        {
+            let (workspace, pane) = standin_agent(9);
+            let access = supervised(&workspace);
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            to_judging(&mut loops, &access, &run);
+            loops.step(&access, &run).expect(
+                "⚠⚠⚠⚠ THE CONTROL FAILED: a judging pass over a pane its pool STILL HOLDS must \
+                 take. If it cannot, arm 2's failure is a fact about this fixture rather than \
+                 about the pane going missing, and this gate measures nothing",
+            );
+            assert_ne!(
+                loops.state(),
+                AiLoopState::Judging,
+                "⚠⚠⚠ and it must have MOVED — a pass that judged and stayed put would mean the \
+                 delivery arm 2 is about was never reached even in the healthy case",
+            );
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+        }
+
+        // ── 2. THE MEASUREMENT: the same pass, after the pane has LEFT the pool ──
+        let (workspace, pane) = standin_agent(9);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        to_judging(&mut loops, &access, &run);
+
+        // ⚠⚠⚠⚠ BOUND, never dropped — see the doc. A dropped pane runs the pty's blocking
+        // kill/wait, and the run would then meet `PeerGone`, which is a DIFFERENT sentence and a
+        // different defect.
+        let moved = workspace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close(pane)
+            .expect("the pool held this loop's pane a statement ago");
+        assert!(
+            !moved.pty().is_eof(),
+            "⚠⚠⚠⚠⚠ THE FIXTURE'S WHOLE PRECONDITION: the pane must still be RUNNING after it left \
+             the pool — that is the live shape, where pane 5 was alive in `pinion` while its run \
+             said `there is no pane 5`",
+        );
+
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            // ⚠ SMALL ON PURPOSE: the very first step this driver takes is the judging pass, so a
+            // run that needs more than a handful of iterations to die is not dying of this.
+            max_iterations: 4,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &run);
+        let journal = progress.lock().expect("the progress cell").journal.clone();
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "⚠⚠⚠⚠⚠ THE LIVE RUNS' ENDING. A run whose pane left its pool must FAIL — a run that \
+             converged or ran out of iterations reached some other ending and every assertion \
+             below would be about it. Journal: {journal:?}",
+        );
+
+        let last = journal.last().unwrap_or_else(|| {
+            panic!(
+                "⛔ the failed run wrote NOTHING to its journal — register item 680's line is \
+                 gone, and with it the only place this diagnosis can be read. Outcome: {outcome:?}"
+            )
+        });
+        let note = last
+            .note
+            .as_deref()
+            .expect("a failure line carries a sentence");
+        assert!(
+            note.contains(&format!("there is no pane {}", pane.0)),
+            "⚠⚠⚠⚠⚠ **AND IT IS THE LIVE RUNS' SENTENCE, BYTE FOR BYTE** — this is the whole link \
+             between this reconstruction and runs 0, 1 and 3. A different word here means the \
+             ending reproduced is not theirs: {note:?}",
+        );
+        // ⭐⭐⭐⭐⭐ **AND HERE IS THE CALL, NAMED** — the whole point of register item 682.
+        //
+        // The place is `working`, NOT `judging`, and that one word is the diagnosis. `Plugin::at`
+        // is read when the pass returns, so it names where the machine ENDED: the judging pass
+        // raised `judge`, the document carried the loop into `working`, and the run died
+        // **delivering that turn's prompt** — `deliver` → [`PaneAccess::inject`] →
+        // `WorkspacePaneAccess::typing`, the one door every plugin types through and one of only
+        // two on that surface that can say this word.
+        //
+        // ⚠⚠⚠ It is also why the live runs looked like they died "in judging": their last
+        // SUCCESSFUL walk entry was `Working --TurnDone--> Judging`, so the failing step is the one
+        // that began there — and the edge it walked before dying is asserted below, which is what
+        // separates *this* working pass from every ordinary one.
+        assert!(
+            note.contains("working"),
+            "⚠⚠⚠⚠ **AND WHERE IT WAS**, in the document's own word. This is the half register item \
+             680 built and item 682 needed: without it a reader knows a call failed and not which \
+             of twenty-eight states was taking it: {note:?}",
+        );
+        assert_eq!(
+            last.walked,
+            vec![crate::plugin::Edge {
+                from: "judging",
+                raised: "judge",
+                to: "working",
+            }],
+            "⚠⚠⚠⚠⚠ **AND THE EDGE IS WHAT TIES THE DEATH TO THE JUDGEMENT.** `working` alone would \
+             also describe an ordinary turn; this says the pass that died is the one the JUDGE sent \
+             there, which is the pass all three live runs were on. A failure line carrying no edge \
+             would put item 682 back where item 680 found it. Journal: {journal:?}",
+        );
+        assert_ne!(
+            outcome.state,
+            OutcomeState::Cancelled,
+            "⚠⚠⚠ and it was NOT cancelled, which is what rules out the OTHER door that can say \
+             this word — `pane_stop_job`, reached only by a cancel. See the two-door exhaustion in \
+             `access::tests::\
+             a_pane_that_left_its_pool_is_unknown_at_the_typing_door_and_silent_at_every_reader`",
+        );
+
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+    }
+
     /// ⛔⛔⛔⛔ **A RUN PUBLISHES WHERE IT IS AS A FIELD, IN THE DOCUMENT'S OWN WORD** — register
     /// item 543, stage 3a.
     ///

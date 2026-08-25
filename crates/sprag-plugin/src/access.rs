@@ -2501,6 +2501,162 @@ mod tests {
         assert_eq!(err, PaneError::UnknownPane(PaneId(999)));
     }
 
+    /// ⛔⛔⛔⛔⛔ **A PANE THAT LEFT THIS POOL IS `UnknownPane` AT THE TYPING DOOR AND `None` AT
+    /// EVERY READER** — register item 682, and the reading that NAMES the call three live runs
+    /// died in.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The measurement this gate exists to make, and the live evidence behind it
+    ///
+    /// 2026-08-25: runs `0`, `1` and `3` each ended `failed: there is no pane N`, all three with
+    /// `Working --TurnDone--> Judging` as their last walk entry. Register item 680 gave that
+    /// failure a place in the journal; it does not say WHICH CALL raised it, and that is this
+    /// gate's question.
+    ///
+    /// **The sentence has exactly two producers on this surface** — this door
+    /// ([`WorkspacePaneAccess::typing`], which every `inject` goes through) and
+    /// [`PaneAccess::pane_stop_job`]. Every other door a run touches returns [`Option`] and
+    /// answers `None`. So a run that was NOT cancelled and still carries this sentence took it
+    /// here, and the arms below are what make that an observation rather than an inference.
+    ///
+    /// # ⚠⚠⚠⚠ Why the pane LEAVES THE POOL rather than dying, and why that is not a detail
+    ///
+    /// The live evidence rules the other reading out: **pane `5` was still alive in window
+    /// `pinion` while the run driving it died saying `there is no pane 5`** (measured 2026-08-25 —
+    /// `pane_layout` names it). A pane whose program had exited would be
+    /// [`PaneError::PeerGone`](PaneError::PeerGone), which the door one gate down measures and
+    /// which is a DIFFERENT sentence. So what happened to it is the one thing that produces this
+    /// word about a living pane: **it is no longer in the pool this run captured.**
+    ///
+    /// ⚠⚠ Staged through the product's own primitive and no other: [`Workspace::close`] is what
+    /// `respawn`, `break-pane`, `join-pane`, `move-pane`, `swap` and `kill-window` each remove a
+    /// pane with, and it RETURNS the pane so the caller owns it. Binding that return is what makes
+    /// this fixture *the pane left* rather than *the pane died* — the pty, the child and the
+    /// scrollback are all still running, which arm 2 asserts rather than assumes.
+    ///
+    /// ⚠ It is NOT staged by making `inject` answer an error: a fixture that did that would be
+    /// asserting its own stub, which is this workspace's oldest recorded way to measure nothing.
+    #[test]
+    fn a_pane_that_left_its_pool_is_unknown_at_the_typing_door_and_silent_at_every_reader() {
+        let workspace = cat_workspace(20, 4);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let pane = access.pane_ids()[0];
+
+        // ── 1. THE CONTROL, AND IT COMES FIRST ──
+        //
+        // ⚠⚠⚠ Every door answers while the pane is IN the pool, so arm 3's refusal is a fact about
+        // membership and not about this fixture never having worked. A control taken after the
+        // defect could not tell those apart.
+        assert!(
+            access.inject(pane, &KeyStroke::text("hi")).is_ok(),
+            "⚠⚠⚠ THE CONTROL FAILED: this door must type at a pane its pool holds, or arm 3 is \
+             measuring a door that refuses everything",
+        );
+        assert!(
+            access.pane_collapsed(pane).is_some(),
+            "⚠⚠ and the readers must answer too, or their silence in arm 4 says nothing",
+        );
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(false),
+            "⚠⚠⚠ and the peer must be RUNNING, or this fixture is about a dead pane and the \
+             sentence under test would be `PeerGone` instead",
+        );
+
+        // ── 2. THE PANE LEAVES THE POOL — THROUGH THE PRODUCT'S OWN PRIMITIVE, STILL ALIVE ──
+        //
+        // ⚠⚠⚠⚠ BOUND, never dropped. `Workspace::close` hands the pane back precisely so a
+        // cross-window move can re-home it ([`Workspace::adopt`]); letting it drop here would run
+        // the pty's blocking kill/wait and turn this gate into the dead-pane one next door.
+        let moved = lock(&workspace)
+            .close(pane)
+            .expect("the pool held this pane a statement ago");
+        assert!(
+            !moved.pty().is_eof(),
+            "⚠⚠⚠⚠⚠ THE FIXTURE'S WHOLE PRECONDITION: the pane must still be RUNNING after it left \
+             the pool. This is the live shape — pane 5 was alive in another window while its run \
+             said `there is no pane 5` — and a pane that died here would make every assertion \
+             below a claim about `PeerGone`",
+        );
+
+        // ── 3. THE MEASUREMENT: THE TYPING DOOR RAISES, IN THE RUN'S OWN WORDS ──
+        let refused = access
+            .inject(pane, &KeyStroke::text("hi"))
+            .expect_err("⚠⚠⚠⚠ THE DOOR TYPED AT A PANE THIS POOL NO LONGER HOLDS");
+        assert_eq!(
+            refused,
+            PaneError::UnknownPane(pane),
+            "⚠⚠⚠ and it must name THIS pane: a refusal that does not say which one sends a reader \
+             looking at the wrong id, which is how item 682 stayed a hypothesis",
+        );
+        assert_eq!(
+            refused.to_string(),
+            format!("there is no pane {}", pane.0),
+            "⚠⚠⚠⚠⚠ **AND IT IS THE LIVE RUNS' SENTENCE, BYTE FOR BYTE.** This is the whole link \
+             between this gate and the three dead runs — a rendering that drifted from it would \
+             leave register item 682 pointing at a call nothing can be shown to have made",
+        );
+
+        // ── 4. AND EVERY READER IS SILENT, WHICH IS WHAT NAMES THE CALL ──
+        //
+        // ⚠⚠⚠⚠⚠ This arm is the discrimination and not a formality. A judging pass reads the pane
+        // many times — its screen, its rows, its eof, its input trail, its revision — and if ANY of
+        // those could raise this sentence, naming the injection would be a guess. They cannot: they
+        // return `Option` and answer `None`, quietly, exactly as they do for a pane nobody ever
+        // knew. **So a run holding this sentence was TYPING when it got it.**
+        assert_eq!(
+            access.pane_collapsed(pane),
+            None,
+            "⚠⚠ a reader that raised instead of answering `None` would be a second producer of \
+             this sentence, and the call could no longer be named",
+        );
+        assert_eq!(
+            access.pane_rows(pane),
+            None,
+            "⚠ the same, for the row reader"
+        );
+        assert_eq!(
+            access.pane_eof(pane),
+            None,
+            "⚠ the same, for the eof reader"
+        );
+        assert_eq!(
+            access.pane_full_text(pane),
+            None,
+            "⚠ the same, for the whole-text reader",
+        );
+        assert_eq!(
+            access
+                .input_trail()
+                .expect("this host records a trail")
+                .pane_recent_input(pane),
+            None,
+            "⚠ the same, for the trail `deliver` reads a submit off",
+        );
+        assert_eq!(
+            access
+                .changes()
+                .expect("every pty this pool owns counts its changes")
+                .pane_revision(pane),
+            None,
+            "⚠ the same, for the revision a turn's completion is armed against",
+        );
+
+        // ── 5. THE OTHER PRODUCER, NAMED SO IT IS NOT MISTAKEN FOR THIS ONE ──
+        //
+        // ⚠⚠⚠ `pane_stop_job` is the only door besides the one above that can say this word, and a
+        // gate that left it out would be claiming a uniqueness it had not checked. It is reached by
+        // a CANCEL — and the three live runs ended `failed`, not `cancelled`, which is what rules
+        // it out for them. Asserting it here is what makes that a two-door exhaustion.
+        assert_eq!(
+            access
+                .pane_stop_job(pane, Stop::Interrupt, Reach::UnderTheProgram)
+                .expect_err("a pane this pool does not hold has no job to stop"),
+            PaneError::UnknownPane(pane),
+            "⚠⚠ the second producer must still be the second producer — if this stopped raising, \
+             the exhaustion above would be over a surface that had changed underneath it",
+        );
+    }
+
     /// ⚠⚠⚠⚠ **THE ONE DOOR REFUSES A PANE WHOSE PROGRAM HAS EXITED — AND IT IS THE ONLY DOOR THAT
     /// DOES.**
     ///
