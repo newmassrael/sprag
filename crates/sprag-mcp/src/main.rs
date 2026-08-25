@@ -11234,4 +11234,72 @@ mod tests {
         assert!(read_proc_env(me, "PATH").is_some());
         assert_eq!(read_proc_env(me, "SPRAG_MCP_DEFINITELY_ABSENT_VAR"), None);
     }
+
+    /// ⛔⛔⛔⛔⛔ **THE LINE A DEAD RUN LEAVES REACHES THE AGENT THAT ASKED** — the hop past the
+    /// driver that composes it, and the one nothing measured.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this hop needs a gate of its own
+    ///
+    /// sprag register items 680 and 682 built a sentence a run writes when it dies — WHERE it was,
+    /// what it was doing, and (682's repair (a)) that the pane it was driving is not one this
+    /// workspace holds, so it may be alive in another window. Every gate on that sentence lives in
+    /// `sprag-plugin`, where it is COMPOSED.
+    ///
+    /// **Composed is not delivered.** This repository has paid for that distinction twice
+    /// (its register items 492 and 595: *on the wire ≠ reached a person*), and the failure step is
+    /// exactly the entry a later tidy-up would drop — it is the one whose `verdict` is not
+    /// `continue`, and "only show the steps that did something" is a reasonable-sounding change
+    /// that would silently un-fix both items.
+    ///
+    /// # ⚠⚠ What this asserts, and what it deliberately does NOT
+    ///
+    /// The PROPERTY of the mouth: it renders EVERY step it is given, a failed one included, and
+    /// passes each note through whole. It does **not** re-assert the product's wording — that is
+    /// pinned where it is written (`sprag_plugin`'s
+    /// `a_run_whose_pane_went_missing_says_it_left_rather_than_that_it_never_was`), and a second
+    /// copy of the sentence here would be a hand fixture testing a shape this crate never produces.
+    /// So the note below is an obvious stand-in, and what is measured is that it SURVIVES.
+    #[test]
+    fn the_mouth_renders_a_failed_step_and_passes_its_note_through_whole() {
+        let run = json!({
+            sprag_host::plugins::RUN_JOURNAL_KEY: [
+                {
+                    "iteration": 4,
+                    "cost": 0,
+                    "unit": "bytes",
+                    "verdict": "continue",
+                    "note": "STEP-THAT-WORKED",
+                },
+                {
+                    "iteration": 4,
+                    "cost": 0,
+                    "unit": "bytes",
+                    "verdict": "failed",
+                    "note": "STEP-THAT-DIED and everything it went on to say",
+                },
+            ]
+        });
+        let said = render_journal(&run);
+
+        // ── THE CONTROL, AND IT COMES FIRST: the ordinary step is rendered ──
+        assert!(
+            said.contains("STEP-THAT-WORKED"),
+            "⚠⚠⚠ THE CONTROL FAILED: this mouth must render an ordinary step, or the assertion \
+             below is about a renderer that prints nothing at all: {said:?}",
+        );
+
+        // ── THE MEASUREMENT: so is the one that DIED, and its whole sentence with it ──
+        assert!(
+            said.contains("STEP-THAT-DIED and everything it went on to say"),
+            "⚠⚠⚠⚠⚠ **THE FAILED STEP IS THE ONE A READER NEEDS.** A run that died leaves exactly \
+             one line saying where it was and what became of its pane, and it is the entry whose \
+             verdict is not `continue` — dropping or truncating it here un-fixes register items 680 \
+             and 682 without touching either of them: {said:?}",
+        );
+        assert!(
+            said.contains("failed"),
+            "⚠⚠ and the VERDICT travels beside the note, so a reader can see which line is the \
+             ending rather than inferring it from the wording: {said:?}",
+        );
+    }
 }
