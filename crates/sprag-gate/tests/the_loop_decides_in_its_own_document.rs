@@ -31,7 +31,8 @@
 //! is a decision somebody makes rather than a side effect of creating a file.*
 
 use sprag_gate::loop_shape::{
-    DOCUMENT, StateKeyed, declared_acts, document_states, state_keyed, tally,
+    DOCUMENT, HOST_TYPE, StateKeyed, declared_acts, document_states, served_acts, state_keyed,
+    tally,
 };
 use sprag_gate::sources::{rust_sources, workspace_root};
 
@@ -41,56 +42,92 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// ⚠ States at `0` are the goal, not filler: a state the document decides entirely by itself needs
 /// no line of Rust naming it. `converged`, `exhausted` and `failed` reaching zero would mean the
 /// loop's ENDINGS are the document's alone.
+/// ⚠⚠⚠⚠⚠ **EVERY ROW BELOW CAME DOWN BY ONE ON 2026-08-25, AND ONE DELETION DID ALL OF IT** —
+/// register item 470, stage 2, first act.
+///
+/// `Owed::asked_for_an_account(state)` answered *was this state's turn asking for an account of the
+/// run, rather than for work* with a `match` over all twenty-eight states of `ai_loop.scxml`,
+/// twenty-six of them written out to say `false`. It is deleted: `closing` and `stopping` now
+/// declare `<send type="x-sprag-host" event="prompt.say">` with `<param name="asks" expr="'account'"/>`,
+/// and the driver reads what the sentence that opened the turn was FOR.
+///
+/// **250 sites over 28 states → 222.** The register's own first measurement, for scale, was 153 in
+/// one file with its tests mixed in (2026-08-19); this walk is the whole workspace's shipping Rust.
+///
+/// ⚠⚠ **A ROW AT 7 IS NOT A ROW AT ZERO.** Seven exhaustive matches over this document's states
+/// remain, and each of them costs every state one arm. What retires a row completely is those
+/// matches going, one decision at a time — which is what the row's own number is here to watch.
 const DRIVER_ARMS: &[(&str, usize)] = &[
-    // ⚠⚠⚠⚠ ADDED 2026-08-21 BY ITEM 534, AND THE PIN IS RAISED WITH ITS OWN REASON RATHER THAN
-    // BECAUSE A GATE ASKED. All eight are EFFECT arms in exhaustive matches — is it final, which
+    // ⚠⚠⚠⚠ ADDED 2026-08-21 BY ITEM 534, AND THE PIN WAS RAISED WITH ITS OWN REASON RATHER THAN
+    // BECAUSE A GATE ASKED. Every one is an EFFECT arm in an exhaustive match — is it final, which
     // verdict does it publish, does it owe a prompt, may a ceiling account for it — and every one of
     // them exists because the match has no wildcard, which is what made this new final land as
-    // nine compile errors instead of as nine silent defaults.
+    // compile errors instead of as silent defaults.
     //
     // ⚠⚠⚠ IT IS EXACTLY `peer_gone`'s AND `held`'s NUMBER, which is the useful fact here: a seventh
-    // ending costs this workspace eight arms, the same as the sixth did, so the price of a new final
-    // is known and flat rather than growing. What would be a REGRESSION is a ninth arm appearing
-    // later — a decision about being abandoned taken in Rust — and that is what this row now catches.
-    ("abandoned", 8),
-    ("awaiting_human", 10),
-    ("blocked", 8),
-    ("cancelled", 9),
-    ("closing", 8),
-    ("converged", 11),
-    ("disputing", 8),
-    ("exhausted", 13),
-    ("failed", 11),
-    ("held", 8),
-    ("idle", 9),
-    ("judging", 14),
-    ("orders", 8),
-    ("peer_gone", 8),
-    ("priming", 9),
-    ("redirecting", 8),
-    ("reflecting", 8),
-    ("restarting", 8),
-    ("resuming", 8),
-    ("reviewing", 8),
-    ("running", 8),
-    ("screening", 8),
-    ("service_down", 8),
-    ("standing", 8),
+    // ending costs this workspace what the sixth did, so the price of a new final is known and flat
+    // rather than growing. What would be a REGRESSION is one more arm appearing later — a decision
+    // about being abandoned taken in Rust — and that is what this row catches.
+    //
+    // ⚠ It came down 8 -> 7 on 2026-08-25 with every other row, and NOT because anything about
+    // being abandoned changed: one of the seven matches that cost each state an arm was deleted.
+    // See this constant's own note above.
+    ("abandoned", 7),
+    ("awaiting_human", 9),
+    ("blocked", 7),
+    ("cancelled", 8),
+    ("closing", 7),
+    ("converged", 10),
+    ("disputing", 7),
+    ("exhausted", 12),
+    ("failed", 10),
+    ("held", 7),
+    ("idle", 8),
+    ("judging", 13),
+    ("orders", 7),
+    ("peer_gone", 7),
+    ("priming", 8),
+    ("redirecting", 7),
+    ("reflecting", 7),
+    ("restarting", 7),
+    ("resuming", 7),
+    ("reviewing", 7),
+    ("running", 7),
+    ("screening", 7),
+    ("service_down", 7),
+    ("standing", 7),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 9),
-    ("stopping", 8),
-    ("work", 9),
-    ("working", 10),
+    ("standing_down", 8),
+    ("stopping", 7),
+    ("work", 8),
+    ("working", 9),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
 ///
 /// ⚠⚠ This side must GROW. A ceiling on the Rust alone can be satisfied by DELETING behaviour
 /// instead of moving it, and a loop that decides less is not a loop that decides in its document.
+///
+/// ⚠⚠⚠⚠⚠ **IT DID NOT MOVE ON THE ROUND THAT TOOK 28 ARMS OUT OF THE DRIVER**, and that is this
+/// number's measured blindness rather than a fact about the round: `closing` and `stopping` already
+/// had an `<onentry>`. [`SERVED_ACTS`] is the number that saw it.
 const DECLARED_ACTS: usize = 11;
+
+/// How many acts `ai_loop.scxml` asks THIS HOST to perform — one per `<send type="x-sprag-host">`.
+///
+/// # ⚠⚠⚠⚠⚠ This is the number item 470's second stage is measured in
+///
+/// An act leaves the document exactly one way: the document keeps saying WHAT and WITH WHAT, and a
+/// host performs it. Every one of these is a decision that used to be derived out in Rust from the
+/// name of the state it belonged to — **two of them on 2026-08-25 cost the driver twenty-eight
+/// arms**, because what left was not a line but a whole table keyed by this document's states.
+///
+/// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
+/// out of the document, above is the debt being paid and the pin owes the same commit.
+const SERVED_ACTS: usize = 2;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);
@@ -218,5 +255,71 @@ fn the_document_keeps_every_act_it_has_taken_over() {
         acts, DECLARED_ACTS,
         "the document declares MORE acts than the pin, which is the debt being paid — raise \
          `DECLARED_ACTS` to {acts} in the same commit so the floor stays under the truth",
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND THE SIDE THAT CAN SEE AN ACT MOVE** — register item 470, stage 2.
+///
+/// The gate above counts `<onentry>` blocks, and an act moving into the document does not
+/// necessarily add one: the two that moved first were already inside blocks that existed. This
+/// counts the construct that actually carries a decision out of the file — a `<send>` addressed to
+/// this host — and it is the number that answers *how much of this loop does its own document
+/// decide*.
+#[test]
+fn the_document_asks_this_host_for_every_act_it_has_taken_over() {
+    let served = served_acts(&document());
+
+    assert!(
+        served >= SERVED_ACTS,
+        "`{DOCUMENT}` asks this host for {served} act(s) and the pin says {SERVED_ACTS}. An act \
+         that stopped being the document's went back into the driver, which is item 470 running \
+         backwards.",
+    );
+    assert_eq!(
+        served, SERVED_ACTS,
+        "the document asks for MORE acts than the pin, which is the debt being PAID — raise \
+         `SERVED_ACTS` to {served} in the same commit, and lower the `DRIVER_ARMS` rows the act \
+         took with it",
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AN ACT THE DOCUMENT ASKS FOR IS ONLY SERVED IF THE BUILD DECLARED THE TYPE** — and the
+/// two halves are in two files, which is why this reads both.
+///
+/// SCE's contract: a host declares its Event I/O Processor types at BUILD time so codegen emits a
+/// dispatch, and registers a handler at RUN time. Either half missing produces the same thing —
+/// `error.execution` at the send — so a `build.rs` that dropped the type would turn **every**
+/// act-declaring `<send>` in the document into a refusal, and the run into a `failed`.
+///
+/// ⚠⚠⚠⚠⚠ **AND THE FIRST DRAFT OF THIS COMMENT CLAIMED SOMETHING THE MUTATION REFUTED.** It said
+/// *this is the half no product test can reach, because a crate that failed to declare its type
+/// still compiles and passes every test that does not enter the state* — item 470's own "THE BUILD
+/// SAYS NOTHING". Measured 2026-08-25 by dropping the type from `HOST_TYPES`: the product gate goes
+/// red too, and loudly — `Reflecting --ReflectDone--> Failed`, because item 505 gave the document an
+/// `error.execution` edge that did not exist when 470 wrote that sentence. **The build is no longer
+/// silent; a run that meets an undeclared type ends `failed`.**
+///
+/// What this gate is worth is therefore narrower and still real: it names the CAUSE. The product's
+/// answer is a run that failed, and reading it back to *`build.rs` stopped declaring a type* is a
+/// walk and a document and two crates away. This says it in one line, at the file a person would
+/// edit — and it says it without running a pane.
+#[test]
+fn an_act_this_document_asks_for_is_declared_to_the_build() {
+    let build = workspace_root().join("crates/sprag-plugin/build.rs");
+    let source = std::fs::read_to_string(&build)
+        .unwrap_or_else(|why| panic!("{} declares this host's types: {why}", build.display()));
+
+    assert!(
+        served_acts(&document()) > 0,
+        "⚠⚠⚠ THE CONTROL: this gate is about a type the document USES, and a document that asks \
+         for no act would make it pass by being about nothing.",
+    );
+    assert!(
+        source.contains(&format!("\"{HOST_TYPE}\"")),
+        "`{DOCUMENT}` addresses {} act(s) to `{HOST_TYPE}` and {} does not declare that type. A \
+         type the build did not declare is refused at the send — the document's acts would all \
+         raise `error.execution` and every run that reached one would end `failed`.",
+        served_acts(&document()),
+        build.display(),
     );
 }

@@ -120,9 +120,14 @@ impl LoopKind {
     /// — see [`crate::document::opened`], which is the road every driven document is initialised
     /// through and the only party that can answer for this one.
     pub fn debt(script: Arc<dyn IScriptEngine>) -> Result<Self, NoKind> {
-        let machine = crate::document::opened(crate::sm::debt_loop::DebtLoopPolicy::new(
-            Arc::clone(&script),
-        ))
+        // ⚠ A KIND DECLARES NO ACT — it is a datamodel a driver reads, and its one state is final
+        // on entry — so what goes through the door is a host that is asked for nothing. It is still
+        // REGISTERED rather than skipped: a `<send type="x-sprag-host">` added to this document
+        // later must meet a host that refuses it by name, not the engine's bare `error.execution`.
+        let machine = crate::document::opened(
+            crate::sm::debt_loop::DebtLoopPolicy::new(Arc::clone(&script)),
+            &crate::act::Serving::new(),
+        )
         .map_err(NoKind::Faulted)?;
         let session = machine
             .policy()

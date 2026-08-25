@@ -421,8 +421,13 @@ impl ContextReview {
     /// is the same answer it gives for a record it cannot read.
     #[must_use]
     pub fn new(script: Arc<dyn IScriptEngine>, state: Option<std::path::PathBuf>) -> Option<Self> {
-        let machine =
-            crate::document::opened(ContextReviewPolicy::new(Arc::clone(&script))).ok()?;
+        // ⚠ THIS DOCUMENT DECLARES NO ACT, so the host that goes through the door with it is asked
+        // for nothing — registered all the same, for `crate::kind`'s reason exactly.
+        let machine = crate::document::opened(
+            ContextReviewPolicy::new(Arc::clone(&script)),
+            &crate::act::Serving::new(),
+        )
+        .ok()?;
         let session = machine.policy().session_id.clone()?;
         Some(Self {
             state,

@@ -170,6 +170,7 @@ mod probe;
 pub const STATECHARTS_FINGERPRINT: &str = env!("SPRAG_STATECHARTS_FINGERPRINT");
 
 pub mod access;
+pub mod act;
 pub mod agent;
 pub mod ai_loop;
 pub mod answer;
@@ -202,6 +203,7 @@ pub use access::{
     PaneJobControl, PaneLifecycle, PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision,
     PaneTerminalModes, RowTrail, Settling, Signalled, WorkspacePaneAccess, Written,
 };
+pub use act::{Act, Asked, Asks, Refused as ActRefused, Serving};
 pub use agent::{Agent, AgentSpec};
 pub use ai_loop::{AiLoop, NotStarted};
 pub use answer::Answer;

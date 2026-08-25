@@ -3705,7 +3705,36 @@
   <!-- The goal was met; ask for the closing report before ending. -->
   <state id="closing">
     <onentry>
-      <send event="prompt.end"/>
+      <!--
+        ⚠⚠⚠⚠⚠ THE FIRST ACT THIS DOCUMENT ASKS THE HOST TO PERFORM, rather than
+        one it merely NAMES — register item 470, stage 2.
+
+        This send used to be `event="prompt.end"` with no `type`, which meant it
+        went round the machine's own queue and nothing listened: the DRIVER
+        decided, from a Rust table keyed on this state's name, that arriving here
+        owes the agent `end_prompt` and that the answer is an ACCOUNT rather than
+        work. Two facts about this state, written in a second file, in a table
+        that had one arm per state of this one.
+
+        Now the state says both itself. `type` names the host (W3C SCXML 6.2.5
+        makes it an extensible identifier and this crate declares the one below
+        to its build); `event` names the act; the `param`s are its arguments.
+
+        ⚠⚠⚠ `asks` IS THE HALF THAT RETIRED A TWENTY-EIGHT-ARM MATCH, and it is a
+        WORD rather than a flag on purpose: what a courtesy turn asks for is a
+        property of the QUESTION, and the run reads the answer back as the
+        agent's account of itself. A run that asked for work would keep no such
+        record. A word this host does not serve is REFUSED, which is what stands
+        in for the compiler that used to keep the Rust table exhaustive.
+
+        ⚠⚠ A LITERAL IS QUOTED INSIDE `expr`, because `expr` is an EXPRESSION in
+        this document's datamodel and a bare `account` would be a variable
+        nobody declared.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="end_prompt"/>
+        <param name="asks" expr="'account'"/>
+      </send>
     </onentry>
     <transition event="turn.done" target="converged"/>
     <transition event="turn.blocked" target="screening"/>
@@ -3808,7 +3837,22 @@
       -->
       <assign location="stop_prompt"
               expr="stop_opening + ' ' + stop_said[stop_reason] + ' ' + stop_asking"/>
-      <send event="prompt.stop"/>
+      <!--
+        ⚠⚠⚠ THE SAME ACT AS `closing`'s, WITH THIS STATE'S OWN QUESTION — see
+        that state for the whole argument (register item 470, stage 2). The two
+        differ in exactly the thing they should differ in: `text`. What they ask
+        FOR is the same, and it is now said here rather than derived out in the
+        driver from which of the two states the turn was taken in.
+
+        ⚠⚠ THE ARGUMENT IS EVALUATED AFTER THE ASSIGN ABOVE, which is W3C SCXML
+        6.2.3 — a send's arguments are evaluated once, when the send executes —
+        so the sentence this carries is the one the line above just composed and
+        never the template it was composed from.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="stop_prompt"/>
+        <param name="asks" expr="'account'"/>
+      </send>
     </onentry>
     <transition event="turn.done" target="exhausted"/>
     <transition event="turn.blocked" target="exhausted"/>

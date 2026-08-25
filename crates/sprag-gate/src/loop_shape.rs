@@ -269,9 +269,46 @@ pub fn tally(sites: &[StateKeyed], document: &[String]) -> BTreeMap<String, usiz
 /// ⚠ This is the side that must GROW. Every act the document takes over is one the driver stops
 /// holding, so a ratchet with only a ceiling on the Rust could be satisfied by deleting behaviour
 /// rather than by moving it.
+///
+/// ⚠⚠⚠⚠⚠ **AND IT IS BLIND TO THE MOVE ITEM 470 STAGE 2 ACTUALLY MAKES** — measured 2026-08-25,
+/// on the first act to move. `closing` and `stopping` already HAD an `<onentry>`; what changed is
+/// that its `<send>` stopped announcing a name to the machine and started asking the HOST to
+/// perform an act, carrying what to say and what it asks for as `<param>`s. Twenty-eight driver
+/// arms went with it and **this number did not move at all**. A meter that cannot see the one move
+/// the item is about is exactly the blind ratchet this file's own header warns against, so
+/// [`served_acts`] is the other half.
 #[must_use]
 pub fn declared_acts(scxml: &str) -> usize {
     scxml.matches("<onentry>").count()
+}
+
+/// The Event I/O Processor type this crate's host serves — `crate`'s side of W3C SCXML 6.2.5.
+///
+/// ⚠ Spelled here rather than read from `sprag-plugin`, because this crate deliberately has no
+/// dependencies: a gate that stands outside the suite must not fail to compile because the product
+/// did. The two spellings are held together by `an_act_this_host_serves_is_declared_to_the_build`,
+/// which reads the product's `build.rs` and this document with the one needle.
+pub const HOST_TYPE: &str = "x-sprag-host";
+
+/// How many acts the document asks THIS HOST to perform — one per `<send type="x-sprag-host">`.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a different question from [`declared_acts`]
+///
+/// An `<onentry>` block is a place where a document does something. A host-served `<send>` is a
+/// document telling a host WHAT TO DO and WITH WHAT — the only construct in SCXML by which a
+/// decision can leave the document and still be the document's. Item 470's second stage is measured
+/// in these and in nothing else: every one of them is a fact that used to be derived in Rust from
+/// the name of the state it belonged to.
+///
+/// ⚠⚠ The needle is the OPENING TAG with its type attribute, so a `<send>` that names the type in a
+/// comment, or one addressed to some other host, is not counted. It is deliberately not a parse:
+/// this crate reads artefacts as text on purpose, and what makes the number trustworthy is the
+/// gate beside it that refuses a count of zero.
+#[must_use]
+pub fn served_acts(scxml: &str) -> usize {
+    scxml
+        .matches(&format!("<send type=\"{HOST_TYPE}\""))
+        .count()
 }
 
 #[cfg(test)]

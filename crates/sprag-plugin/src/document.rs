@@ -119,13 +119,29 @@ impl fmt::Display for Faulted {
 /// exclusion is DERIVED rather than listed — see the ratchet, which reads the generated artefact —
 /// so the day one of them grows a guard, the gate asks for this road.
 ///
+/// # ⚠⚠⚠⚠⚠ Why the door also REGISTERS what the host serves
+///
+/// Register item 470 stage 2: a document declares an act with `<send type="x-sprag-host">` and this
+/// crate performs it. SCE's contract has two halves and BOTH are required — a type declared to the
+/// build with no handler registered raises `error.execution` exactly as an undeclared one does — and
+/// the registration has to happen **before `initialize`**, because a document whose initial state
+/// declares an act would dispatch it during initialisation, to a handler that did not exist yet.
+///
+/// That ordering is a thing a caller would have to remember, which is this door's whole argument.
+/// So `serving` comes in here and is registered on the line above `initialize`, and a document that
+/// declares no host act pays one map insertion for it.
+///
 /// # Errors
 ///
 /// [`Faulted`] when initialising raised an `error.*` this document answered nowhere, or when its own
 /// error handling failed in a chain the engine had to cut. Both mean the values a caller is about to
 /// read are values nobody can vouch for.
-pub fn opened<P: StatePolicy>(policy: P) -> Result<Engine<P>, Faulted> {
+pub fn opened<P: StatePolicy>(
+    policy: P,
+    serving: &crate::act::Serving,
+) -> Result<Engine<P>, Faulted> {
     let mut machine = Engine::new(policy);
+    serving.on(&mut machine);
     machine.initialize();
     match faults(&machine) {
         Some(faulted) => Err(faulted),
@@ -495,9 +511,14 @@ mod tests {
     fn a_document_that_swallows_an_error_while_it_starts_is_refused_at_the_door() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
 
-        let refused = opened(crate::sm::probe_unanswered_sm::ProbeUnansweredPolicy::new(
-            Arc::clone(&lua),
-        ))
+        let refused = opened(
+            crate::sm::probe_unanswered_sm::ProbeUnansweredPolicy::new(Arc::clone(&lua)),
+            // ⚠ THE PRODUCT'S OWN HOST, and it changes nothing here on purpose: this document's
+            // subject is `x-nobody-serves-this`, a type the BUILD never declared, so the engine
+            // refuses it before any registry is consulted. Passing the real host keeps this gate on
+            // the road every driven document takes.
+            &crate::act::Serving::new(),
+        )
         .err()
         .expect(
             "⚠⚠⚠⚠⚠ `probe_unanswered.scxml` raises `error.execution` on its way in and answers no \
@@ -528,7 +549,16 @@ mod tests {
             refused,
         );
 
-        let admitted = opened(crate::sm::probe_send_type_sm::ProbeSendTypePolicy::new(lua)).expect(
+        let admitted = opened(
+            crate::sm::probe_send_type_sm::ProbeSendTypePolicy::new(lua),
+            // ⚠⚠ AND HERE THE HOST IS PART OF THE SUBJECT. This document's send names
+            // `x-sprag-host`, which the build DOES declare, so the refusal is now the host's own —
+            // `reached.host` is not an act [`crate::act::Act`] serves — rather than the engine's.
+            // It is still `error.execution`, which is [`crate::act`]'s claim: an act nobody
+            // performs and a type nobody supports are one fact to the document.
+            &crate::act::Serving::new(),
+        )
+        .expect(
             "⚠⚠⚠⚠⚠ THE CONTROL: `probe_send_type.scxml` raises the SAME `error.execution` from the \
              same construct and ANSWERS it, so it must come through. A refusal here would mean this \
              door turns away every document that ever raised an error, which would make the \

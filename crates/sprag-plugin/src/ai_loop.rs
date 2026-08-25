@@ -8373,10 +8373,27 @@ mod tests {
     /// ENGINE holds `<data>` a script datamodel evaluates, and the POLICY holds the
     /// data SCE was able to lower into typed Rust fields. A gate that reads only one
     /// of them cannot tell those two apart, which is the whole subject below.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THROUGH THE PRODUCT'S DOOR, AND FIVE GATES MEASURED WHY ON 2026-08-25
+    ///
+    /// This used to be `Engine::new` + `initialize` by hand, and it was invisible for as long as
+    /// the document asked nothing of its host. The moment `closing` and `stopping` declared their
+    /// first act (register item 470, stage 2), every gate here that drove a run to an ending read
+    /// `failed` — because SCE refuses a declared type with no handler registered, which is the
+    /// engine deciding correctly about an engine no product ever builds.
+    ///
+    /// ⚠⚠ **THAT IS THIS CRATE'S OWN RECORDED FAILURE SHAPE — a hand fixture measuring a shape the
+    /// product cannot produce.** [`crate::document::opened`] is the one road, and the reason it is
+    /// a road rather than a checklist is exactly this: a step a fixture has to remember is one the
+    /// next fixture will not. The neighbouring `reflected` helper already says the rule in its own
+    /// words — *a fixture must reach a state by the door the product uses*.
     fn started() -> (Engine<AiLoopPolicy>, Arc<dyn IScriptEngine>, String) {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let mut engine = Engine::new(AiLoopPolicy::new(Arc::clone(&lua)));
-        engine.initialize();
+        let engine = crate::document::opened(
+            AiLoopPolicy::new(Arc::clone(&lua)),
+            &crate::act::Serving::new(),
+        )
+        .expect("this document answers its own errors, so the door admits it");
         let session = engine
             .policy()
             .session_id

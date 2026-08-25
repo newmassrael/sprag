@@ -1020,6 +1020,11 @@ pub(crate) enum Owed {
     /// The `turn_prompt` — another turn on the same session.
     Turn,
     /// The `end_prompt` — the closing report.
+    ///
+    /// ⚠⚠⚠ **THIS VARIANT AND [`Stop`](Self::Stop) ARE NAMES NOW, NOT DEBTS** — register item 470,
+    /// stage 2. [`Self::on`] no longer answers either: `closing` and `stopping` declare their own
+    /// act and carry the sentence on it. What is left is [`Self::variable`]'s side, which is the
+    /// door's check that the machine holds the four authored strings — see that function.
     End,
     /// The `stop_prompt` — **where did you get to?**, asked of a run that is ending WITHOUT having
     /// got there. [`End`](Self::End)'s twin, and a different question: see the document, which says
@@ -1085,6 +1090,15 @@ impl Owed {
     /// and [`OuterLoop::advance`] delivers through them, so a rename in the document breaks both
     /// at once instead of leaving a driver that validates one variable and sends another.
     ///
+    /// ⚠⚠⚠ **`End` AND `Stop` ARE VALIDATED HERE AND NO LONGER DELIVERED THROUGH IT** — register
+    /// item 470, stage 2. `closing` and `stopping` name their own sentence on the act they declare
+    /// (`<param name="text" expr="end_prompt"/>`), so [`Self::on`] never answers either variant any
+    /// more. They stay because [`Authored::read`] is the door's check that this machine carries the
+    /// four authored strings at all, and naming them here rather than retyping the variables is the
+    /// *one list decides* discipline this comment is about. ⚠ A rename in the document therefore
+    /// still breaks BOTH halves at once — the door here, and the `<param>` there — which is what the
+    /// discipline was for.
+    ///
     /// # Panics
     ///
     /// Never: [`Self::Nothing`] is filtered by the caller's match before this is reached, and the
@@ -1137,13 +1151,22 @@ impl Owed {
 
     /// What the document says goes with arriving at `landed` by raising `raised`.
     ///
-    /// # ⚠⚠ The two halves of `ai_loop.scxml`'s sends, and why only one needs the event
+    /// # ⚠⚠⚠⚠⚠ THIS TABLE IS A RESIDUE NOW, AND IT IS SHRINKING FROM THE `closing` END
     ///
-    /// `prompt.start`, `prompt.end`, `prompt.stop` and `prompt.reflect` are **onentry** sends —
-    /// `priming`'s, `closing`'s, `stopping`'s and `reflecting`'s — so arriving at those states is
-    /// the whole condition, whichever transition brought you. Three of the four are reached more
-    /// than one way (`priming` from `idle` and from `restarting`; `reflecting` from three `judge`
-    /// edges), and keying them on the event would have needed that list kept in step by hand.
+    /// Register item 470, stage 2. `closing` and `stopping` no longer appear as prompt-owing arms
+    /// here, and that is not a behaviour change: their `<onentry>` declares
+    /// `<send type="x-sprag-host" event="prompt.say">` and carries the sentence as a `<param>`, so
+    /// [`OuterLoop::advance`] is TOLD what to say instead of looking it up from the state's name.
+    /// What is left below is every state whose act has not moved yet — and the day the last one
+    /// does, this function is deleted rather than emptied.
+    ///
+    /// # ⚠⚠ The two halves of `ai_loop.scxml`'s remaining sends, and why only one needs the event
+    ///
+    /// `prompt.start` and `prompt.reflect` are **onentry** sends — `priming`'s and `reflecting`'s —
+    /// so arriving at those states is the whole condition, whichever transition brought you. Both
+    /// are reached more than one way (`priming` from `idle` and from `restarting`; `reflecting`
+    /// from three `judge` edges), and keying them on the event would have needed that list kept in
+    /// step by hand.
     ///
     /// `prompt.turn` is a **transition** send, on three of the four edges into `working`, and that
     /// is the one place the arrival state is not enough. So the event decides there and only
@@ -1155,13 +1178,6 @@ impl Owed {
     const fn on(raised: AiLoopEvent, landed: AiLoopState) -> Self {
         match landed {
             AiLoopState::Priming => Self::Start,
-            AiLoopState::Closing => Self::End,
-            // ⚠⚠⚠ A RUN THAT STOPPED SHORT IS ASKED WHERE IT GOT TO — the account for the ending a
-            // person most wants one from. It owes a DIFFERENT string from `closing`'s, and that is
-            // the whole reason this arm exists rather than folding into the one above it: a driver
-            // that sent `end_prompt` here would ask an agent that ran out of turns mid-edit to
-            // summarise finished work.
-            AiLoopState::Stopping => Self::Stop,
             // ⚠⚠⚠⚠⚠ A CLAIM AN INDEPENDENT CHECK REFUSED IS ANSWERED WITH THE CHECK'S OWN WORDS —
             // register item 448, and this arm is why the state exists at all. It is keyed by the
             // STATE and not by the event, like the four above and unlike `working`'s: one edge
@@ -1214,8 +1230,15 @@ impl Owed {
                 | AiLoopEvent::Fail
                 | AiLoopEvent::Hold
                 | AiLoopEvent::NotifyHuman
-                | AiLoopEvent::PromptEnd
-                | AiLoopEvent::PromptStop
+                // ⚠⚠⚠ `prompt.say` REPLACED `prompt.end` AND `prompt.stop` HERE, AND THE COMPILER
+                // IS WHAT SAID SO — register item 470, stage 2. Those two names left the document
+                // when `closing` and `stopping` began declaring their act to the HOST instead of
+                // announcing it to the machine, so the generated enum stopped minting them and this
+                // list stopped compiling. ⚠ `prompt.say` never arrives as an EVENT at all: a
+                // host-served send raises only what the handler answers with, and this host answers
+                // an act it performed with nothing. It is spelled for this arm's own rule — the
+                // list is what makes an edge added into `working` fail to compile.
+                | AiLoopEvent::PromptSay
                 | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
                 // ⚠ `prompt.dispute` IS `disputing`'s OWN onentry SEND, so it is the state that
@@ -1275,6 +1298,14 @@ impl Owed {
             AiLoopState::Idle
             | AiLoopState::Judging
             | AiLoopState::Screening
+            // ⚠⚠⚠⚠⚠ THESE TWO OWE THIS TABLE NOTHING BECAUSE THEY SAY IT THEMSELVES — register
+            // item 470, stage 2. Both still ask their agent a question, and it is a DIFFERENT
+            // question each (`end_prompt` for a run that converged, `stop_prompt` for one a ceiling
+            // stopped short, which is why they were never one arm) — but the sentence and what it
+            // asks for now travel on the act their own `<onentry>` declares, so nothing out here
+            // has to know which state a courtesy turn was taken in.
+            | AiLoopState::Closing
+            | AiLoopState::Stopping
             // ⚠⚠ ARRIVING AT AN OUTAGE OWES THE AGENT NOTHING, and a prompt here would be the
             // exact mistake the state exists to prevent: the peer's service just refused a turn,
             // so a question typed on arrival is one more request into a service saying no. What
@@ -1312,64 +1343,27 @@ impl Owed {
         }
     }
 
-    /// **WHETHER THIS STATE'S TURN WAS ASKING FOR AN ACCOUNT OF THE RUN**, rather than for work.
-    ///
-    /// # ⚠⚠ Why a BOOLEAN, when it used to name the prompt
-    ///
-    /// It answered `Some(End)` / `Some(Stop)`, and the caller passed that on so
-    /// [`report::account`](crate::report::account) could read the right slot back and discount it.
-    /// Nothing reads the name any more: the echo taken off an account is [`Session::asked`], the
-    /// text that actually went in, which is a better answer for the same question and the only
-    /// answer for a turn a screen rule spoke into.
-    ///
-    /// ⚠⚠ **AND WHAT IS LEFT IS NOT A SMALLER VERSION OF THE OLD ANSWER — IT IS THE ONLY PART THAT
-    /// WAS EVER THIS FUNCTION'S OWN.** Which prompt `closing` and `stopping` owe is
-    /// [`Owed::on`](Self::on)'s two arms, spelled here a second time; a value nobody reads is how
-    /// two spellings of one fact come to differ (register item 49's shape).
-    ///
-    /// ⚠ EXHAUSTIVE, and deliberately not a `_ => false`. A future state that asks its agent for
-    /// something and forgets to say so here would publish NOTHING and look exactly like a state
-    /// whose turn was work; a variant that no longer compiles is the only thing that catches it.
-    const fn asked_for_an_account(state: AiLoopState) -> bool {
-        match state {
-            AiLoopState::Closing | AiLoopState::Stopping => true,
-            AiLoopState::Idle
-            | AiLoopState::Priming
-            | AiLoopState::Working
-            | AiLoopState::Judging
-            | AiLoopState::Screening
-            // ⚠ NOTHING IS ASKED ON THE WAY IN — the wait is the whole of what this state does,
-            // and the one thing it eventually types is `service_retry_text` on the way OUT.
-            | AiLoopState::ServiceDown
-            | AiLoopState::Redirecting
-            // ⚠⚠⚠ A DISPUTE ASKS FOR WORK AND NOT FOR AN ACCOUNT — register item 448, and the
-            // distinction this function exists to make. It types a prompt, like the two `true`
-            // arms above; what it asks for is the next TURN, opened by the reason the check gave.
-            // A `true` here would take the agent's next piece of work off it as a report.
-            | AiLoopState::Disputing
-            | AiLoopState::AwaitingHuman
-            | AiLoopState::Reflecting
-            | AiLoopState::Reviewing
-            | AiLoopState::Restarting
-            | AiLoopState::Resuming
-            | AiLoopState::Converged
-            | AiLoopState::Exhausted
-            | AiLoopState::Failed
-            | AiLoopState::Cancelled
-            | AiLoopState::PeerGone
-            // ⚠ Nor in an order that became an ending: a hold types nothing at the pane by
-            // contract (`HOLD_TAKES_EFFECT`), so its expiry cannot have asked for anything.
-            | AiLoopState::Abandoned
-            // ⚠ No account is asked for in a region root or in an order — nobody was spoken to.
-            | AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held
-            | AiLoopState::Blocked => false,
-        }
-    }
+    // ⚠⚠⚠⚠⚠ **`asked_for_an_account(state)` USED TO BE HERE, AND ITS DELETION IS THE POINT OF
+    // REGISTER ITEM 470's SECOND STAGE.**
+    //
+    // It answered *was this state's turn asking for an account of the run, rather than for work*,
+    // and it answered it with a `match` over all TWENTY-EIGHT states of `ai_loop.scxml` — twenty-six
+    // of them written out to say `false`. Two facts made it what item 470 is about: the question is
+    // a DECISION about a prompt, and the only way this driver could answer it was to look at the
+    // document's own topology, which is a second copy of the topology.
+    //
+    // The answer now travels ON the act: `closing` and `stopping` declare
+    // `<send type="x-sprag-host" event="prompt.say">` with `<param name="asks" expr="'account'"/>`,
+    // and [`OuterLoop::say`] records what the question in flight is asking for.
+    //
+    // ⚠⚠⚠⚠ **WHAT THE DELETION COSTS, STATED RATHER THAN HIDDEN.** That match was EXHAUSTIVE on
+    // purpose, and its own comment said why: *"a future state that asks its agent for something and
+    // forgets to say so here would publish NOTHING and look exactly like a state whose turn was
+    // work; a variant that no longer compiles is the only thing that catches it."* A document
+    // cannot be made to fail to compile, so that guard is genuinely gone. What stands in its place
+    // is [`crate::act`]'s: `asks` is REQUIRED — an act that omits it is refused, not defaulted —
+    // and its value space is CLOSED, so a word nobody serves is refused too. Both refusals end the
+    // run through the document's own `error.execution` edge rather than quietly.
 }
 
 /// **WHAT ONE PUMP DECIDED TO RAISE, AND THE DATA THE EVENT CARRIES.**
@@ -3180,6 +3174,21 @@ impl NotResumed {
 pub struct OuterLoop {
     /// The compiled document.
     machine: Engine<AiLoopPolicy>,
+    /// **THE ACTS THIS DOCUMENT DECLARES AND THIS DRIVER PERFORMS** — register item 470, stage 2.
+    ///
+    /// ⚠ Registered on [`Self::machine`] before it was initialised, which is the ordering
+    /// [`crate::document::opened`] exists to keep. A `<send type="x-sprag-host">` executed by an
+    /// `<onentry>` writes into this while the engine is mid-macrostep; [`Self::advance`] reads it
+    /// on the far side of the same `walk`, which is the first moment a pane is reachable again.
+    serving: crate::act::Serving,
+    /// **WHAT THE QUESTION NOW IN FLIGHT IS ASKING THE PEER FOR**, or [`None`] before this run has
+    /// asked anything.
+    ///
+    /// ⚠⚠⚠ It is written by [`Self::say`] and by nothing else, so *every* sentence this loop types
+    /// says what it was for — including the two that no `<onentry>` declares (a screen rule's
+    /// answer, a redirect). That is the property the deleted `Owed::asked_for_an_account` had by
+    /// being an exhaustive match, kept by making it an argument of the one function that types.
+    asks: Option<crate::act::Asks>,
     /// The engine its `<data>` lives in, and the session id it files them under.
     script: Arc<dyn IScriptEngine>,
     session: String,
@@ -3582,7 +3591,12 @@ impl OuterLoop {
         // raised where nothing could match it — and refusing to start beats starting a run whose
         // instructions did not execute. `AiLoop::new` is where the answered case becomes a refusal
         // with the error's own name in it.
-        let machine = crate::document::opened(AiLoopPolicy::new(Arc::clone(&script))).ok()?;
+        // ⚠⚠⚠ THE HOST GOES THROUGH THE DOOR WITH THE DOCUMENT — register item 470, stage 2. The
+        // acts this file declares are performed by THIS driver, and the door is where the handler
+        // is registered so it exists before `initialize` runs the first `<onentry>`.
+        let serving = crate::act::Serving::new();
+        let machine =
+            crate::document::opened(AiLoopPolicy::new(Arc::clone(&script)), &serving).ok()?;
         let session = machine.policy().session_id.clone()?;
         // ⚠ VALIDATION, NOT A SNAPSHOT — the answer is dropped. A machine that does not carry the
         // four strings is one this driver cannot drive and refusing here is what stops a run being
@@ -3637,6 +3651,9 @@ impl OuterLoop {
                 transcript: None,
             },
             machine,
+            serving,
+            // Nothing has been asked, so no question is in flight for anything to be asking for.
+            asks: None,
             script,
             session,
             // ⚠ Nothing yet: the line this is measured from is the BRIEF, which has not landed —
@@ -5252,14 +5269,26 @@ impl OuterLoop {
                         // run is over. Taken here, on the state rather than on the event, because
                         // `turn.done` is what five states raise and only these two asked for one.
                         //
-                        // ⚠⚠ WHETHER THIS ENDING HAS AN ACCOUNT TO COLLECT IS THE STATE'S ANSWER.
+                        // ⚠⚠⚠⚠⚠ **WHETHER THIS ENDING HAS AN ACCOUNT TO COLLECT IS THE QUESTION'S
+                        // ANSWER, AND IT USED TO BE THE STATE'S** — register item 470, stage 2. It
+                        // read `Owed::asked_for_an_account(from)`: a match over all twenty-eight
+                        // states of the document, in Rust, deciding a thing about a PROMPT from the
+                        // name of the state a turn was taken in. Now `closing` and `stopping` say it
+                        // on the act they declare (`<param name="asks" expr="'account'"/>`) and this
+                        // reads what the sentence that opened the turn was for.
+                        //
+                        // ⚠⚠ IT IS THE QUESTION IN FLIGHT AND NOT THE STATE, which is a NARROWER
+                        // claim and the right one: a turn is opened by a sentence, and the same
+                        // state could ask two different things of two different turns. The old
+                        // reading could not have expressed that at all.
+                        //
                         // ⚠ WHICH text is discounted is no longer decided here and must not be:
                         // `report::account` takes off this run's own echo, and the echo is whatever
                         // was actually typed — which the session recorded as it went in
                         // ([`Session::asked`]). Naming a SLOT here was right for the two endings and
                         // wrong for a turn a screen rule had spoken into, and it was a second answer
                         // to a question something else already answers.
-                        if Owed::asked_for_an_account(from) {
+                        if self.asks == Some(crate::act::Asks::Account) {
                             self.reported = self.account(panes);
                         }
                         Raise::carrying(AiLoopEvent::TurnDone, self.costs_now(panes))
@@ -6518,7 +6547,9 @@ impl OuterLoop {
                 Ok(AiLoopEvent::RedirectDone.into())
             }
             Refused::Gone { bytes } => {
-                let spent = self.say(panes, run, rule.text())?;
+                // ⚠ A REDIRECT ASKS FOR WORK. The dialog is answered and the peer is being told
+                // what to do instead — a turn, not a report — so no account is collected off it.
+                let spent = self.say(panes, run, rule.text(), crate::act::Asks::Work)?;
                 self.noticed = Some(Noticed::Redirected(crate::judge::Redirected {
                     question,
                     rule: rule.name().to_owned(),
@@ -6609,7 +6640,9 @@ impl OuterLoop {
                 Ok(AiLoopEvent::ScreenMoot.into())
             }
             Refused::Gone { bytes } => {
-                let spent = self.say(panes, run, &said)?;
+                // ⚠ A SCREEN RULE'S ANSWER ASKS FOR WORK — it is the standing instruction that got
+                // the peer past a dialog, and the turn it opens is the one the dialog interrupted.
+                let spent = self.say(panes, run, &said, crate::act::Asks::Work)?;
                 // ⚠⚠⚠ THE INSTRUCTION IS HANDED TO THE MACHINE, NOT ONLY TO THE PEER, and that is
                 // register item 148's answer. Said once, it reached the pane and nothing else; the
                 // document keeps it in `standing` so `priming` can compose it into every later
@@ -7257,36 +7290,60 @@ impl OuterLoop {
             None => self.walk(event),
         }
         let landed = self.state();
-        let owed = Owed::on(event, landed);
-        if owed == Owed::Nothing {
-            return Ok((landed, 0));
-        }
-        // ⚠⚠⚠ READ AT THE MOMENT OF DELIVERY, which is the whole point of the order this function
-        // documents. `priming`'s `onentry` composes the prompts out of the parts, and it has just
-        // run — the machine moved above. A driver reading a construction-time copy would send the
-        // template's `(edit me)` however carefully the caller had briefed it.
-        // ⚠⚠⚠ AN EMPTY ANSWER STANDS IN ONLY WHERE THE DEBT SAYS ONE MAY — see [`Owed::fallback`],
-        // which is `Some` for exactly one variant and says why. An empty PROMPT is left empty and
-        // reaches the peer as nothing, which is the behaviour every prompt has always had; an empty
-        // `service_retry_text` would be a state whose only exit is never taken.
-        let Some(text) =
-            self.text_of(owed.variable())
-                .map(|text| match (text.is_empty(), owed.fallback()) {
-                    (true, Some(standing_in)) => standing_in.to_owned(),
-                    _ => text,
-                })
-        else {
-            // ⚠ THE DOCUMENT'S OWN ANSWER, not one invented out here. A machine whose datamodel has
-            // stopped holding its prompts cannot be driven, and `fail` -> `failed` is what this
-            // document says happens to a run that cannot go on. Inventing a `Pumped` arm for it
-            // would put a terminal decision in the driver.
-            //
-            // ⚠⚠ WHICH VARIABLE IS RECORDED, because the state it lands in cannot say. `failed` is
-            // reached from six transitions and a consumer meeting one has no way back to the
-            // cause; this is the same argument `Noticed` makes for the other two.
-            self.noticed = Some(Noticed::Undrivable(owed.variable()));
-            self.machine.process_event(AiLoopEvent::Fail);
-            return Ok((self.state(), 0));
+        // ⚠⚠⚠⚠⚠ **THE DOCUMENT'S OWN ACT IS ASKED FOR FIRST** — register item 470, stage 2, and
+        // this is the whole inversion. `walk` above ran the `<onentry>` of whatever state the
+        // machine landed in, and where that state declared
+        // `<send type="x-sprag-host" event="prompt.say">` the sentence and what it asks for
+        // ARRIVED, as `<param>`s, composed by the file itself. Nothing here looked them up, and
+        // nothing here had to know which state it was.
+        //
+        // ⚠⚠ `Owed` below is the RESIDUE, not a fallback: it answers for the states whose act has
+        // not moved into the document yet. The two are ordered rather than merged because the day
+        // the last one moves, the `else` goes with it.
+        //
+        // ⚠⚠⚠ TAKEN RATHER THAN READ. An act is performed once; a slot left full would put the
+        // same sentence to the peer again on the next pass that reaches this line.
+        let (text, asks) = match self.serving.taken() {
+            Some(asked) => (asked.text, asked.asks),
+            None => {
+                let owed = Owed::on(event, landed);
+                if owed == Owed::Nothing {
+                    return Ok((landed, 0));
+                }
+                // ⚠⚠⚠ READ AT THE MOMENT OF DELIVERY, which is the whole point of the order this
+                // function documents. `priming`'s `onentry` composes the prompts out of the parts,
+                // and it has just run — the machine moved above. A driver reading a
+                // construction-time copy would send the template's `(edit me)` however carefully
+                // the caller had briefed it.
+                // ⚠⚠⚠ AN EMPTY ANSWER STANDS IN ONLY WHERE THE DEBT SAYS ONE MAY — see
+                // [`Owed::fallback`], which is `Some` for exactly one variant and says why. An
+                // empty PROMPT is left empty and reaches the peer as nothing, which is the
+                // behaviour every prompt has always had; an empty `service_retry_text` would be a
+                // state whose only exit is never taken.
+                let Some(text) = self.text_of(owed.variable()).map(|text| {
+                    match (text.is_empty(), owed.fallback()) {
+                        (true, Some(standing_in)) => standing_in.to_owned(),
+                        _ => text,
+                    }
+                }) else {
+                    // ⚠ THE DOCUMENT'S OWN ANSWER, not one invented out here. A machine whose
+                    // datamodel has stopped holding its prompts cannot be driven, and `fail` ->
+                    // `failed` is what this document says happens to a run that cannot go on.
+                    // Inventing a `Pumped` arm for it would put a terminal decision in the driver.
+                    //
+                    // ⚠⚠ WHICH VARIABLE IS RECORDED, because the state it lands in cannot say.
+                    // `failed` is reached from six transitions and a consumer meeting one has no
+                    // way back to the cause; this is the same argument `Noticed` makes for the
+                    // other two.
+                    self.noticed = Some(Noticed::Undrivable(owed.variable()));
+                    self.machine.process_event(AiLoopEvent::Fail);
+                    return Ok((self.state(), 0));
+                };
+                // ⚠ EVERY PROMPT THIS TABLE STILL OWES ASKS FOR WORK. The two that asked for an
+                // account are the two that left it, which is why this is a constant here and an
+                // argument in the document.
+                (text, crate::act::Asks::Work)
+            }
         };
         // ⚠⚠⚠⚠ THE DOOR CAN REFUSE HERE, AND THE MACHINE HAS ALREADY MOVED BY THE TIME IT DOES.
         // `process_event` ran above — that is what composed the prompt this line sends — so a write
@@ -7300,7 +7357,7 @@ impl OuterLoop {
         // above: `peer.gone` is raised at the state the transition LANDED in, so every state a
         // prompt can be owed from needs that edge, and the walk reads `Idle --PeerGone--> PeerGone`
         // — the pass's own starting state, as every other line of the journal does.
-        let spent = self.say(panes, run, &text)?;
+        let spent = self.say(panes, run, &text, asks)?;
         Ok((landed, spent))
     }
 
@@ -7310,12 +7367,30 @@ impl OuterLoop {
     /// waiting to be spoken to is AT REST, so a contract armed after the injection is satisfied by
     /// the stillness the turn was addressed TO — and the loop would judge a turn the agent had not
     /// started.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why `asks` is an ARGUMENT and not something the caller sets afterwards
+    ///
+    /// Register item 470, stage 2. It says what the sentence is FOR, and the only reader is the
+    /// judgement that decides whether to collect an account off the turn it opens. Before this it
+    /// was derived out at that reader, from the state the turn was taken in, by an exhaustive match
+    /// over all twenty-eight states of the document — the second copy of the topology item 470 is
+    /// about.
+    ///
+    /// Making it a parameter is what keeps the guard the match gave for free: there are three
+    /// places this loop types at its peer, and a fourth added later does not compile until somebody
+    /// has said what its sentence is asking for. A field assigned by the callers who remembered
+    /// would have been the same defect one layer over.
     fn say(
         &mut self,
         panes: &dyn PaneAccess,
         run: &RunContext,
         text: &str,
+        asks: crate::act::Asks,
     ) -> Result<u64, PaneError> {
+        // ⚠ Recorded here rather than at any composition site, for [`Session::asked`]'s reason one
+        // screen down: a screen rule's text is typed at the peer too and is in no prompt slot at
+        // all, so this function is the only place every question passes through.
+        self.asks = Some(asks);
         self.done = Completion::new(self.done_when);
         self.done.begin(panes, self.driving.pane);
         // ⚠ A NEW TURN IS A NEW QUESTION — see [`Noticed`]. Cleared beside the two other things
@@ -8060,8 +8135,9 @@ impl OuterLoop {
     /// would be the stale thing the old comment warned about; this one is written by the injection
     /// it describes.
     ///
-    /// ⚠ `asked` therefore says only WHETHER this ending has an account to collect — see
-    /// [`Owed::asked_for_an_account`].
+    /// ⚠ WHETHER this ending has an account to collect is a separate answer and no longer this
+    /// driver's: the sentence that opened the turn says so ([`crate::act::Asks`]), and the caller
+    /// reads it.
     fn account(&self, panes: &dyn PaneAccess) -> Option<String> {
         match self.turn_produced(panes) {
             // ⚠⚠⚠⚠⚠ THE AGENT'S OWN WORDS NEED NO DISCOUNTING, and that is the whole difference
@@ -8072,7 +8148,7 @@ impl OuterLoop {
             //
             // ⚠⚠ An empty statement is `None` on the same terms the pane road uses: *the agent
             // wrote nothing a person would read as an account* is the same answer whichever road
-            // said so, and `Owed::asked_for_an_account` routes on it.
+            // said so, and the run's report routes on it.
             Produced::Stated(said) => {
                 let said = said.trim();
                 (!said.is_empty()).then(|| said.to_owned())
@@ -12241,7 +12317,12 @@ mod tests {
         //    half `stands_alone` cannot answer: that row stands alone perfectly well, and it
         //    belongs to a turn that is over.
         loops
-            .say(&access, &run, &authored.turn.clone())
+            .say(
+                &access,
+                &run,
+                &authored.turn.clone(),
+                crate::act::Asks::Work,
+            )
             .expect("the parrot takes the next prompt");
         assert!(
             !loops.said_done(&access).said(),
@@ -16059,6 +16140,177 @@ mod tests {
             "⚠⚠⚠ this run's deliveries all have the same grounds, so its walk owes exactly one \
              line about them and wrote {evidence_lines}. Walked: {walked:?}",
         );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE DOCUMENT TELLS THIS HOST WHAT TO SAY AND WHAT THE QUESTION IS FOR** — register
+    /// item 470, stage 2, driven end to end over the real `ai_loop.scxml` and a real pane.
+    ///
+    /// # What moved, and what would look identical if it had not
+    ///
+    /// `closing` used to carry `<send event="prompt.end"/>`: a name announced to the machine that
+    /// nothing listened to. TWO facts about that state lived out here instead — *which slot holds
+    /// the sentence* (`Owed::on`'s `Closing => End` arm) and *what the sentence asks the peer for*
+    /// (`Owed::asked_for_an_account`, a `match` over all twenty-eight states of the document). Now
+    /// the state says both, as `<param>`s on an act addressed to this host.
+    ///
+    /// # ⚠⚠⚠⚠ Why the WORK turns in the same run are the control, and why they are not optional
+    ///
+    /// *An account was collected off the closing turn* is satisfied by a driver that collects one
+    /// off every turn, and *the closing prompt reached the pane* by a driver that types the same
+    /// thing whatever the document said. So the same reader is taken at every arrival in this walk:
+    /// the ordinary turns must say `Work` and carry the TURN prompt, and the closing one must say
+    /// `Account` and carry the END prompt. The two prompts are different text this document ships,
+    /// so nothing here can be satisfied by a coincidence between them.
+    ///
+    /// ⚠⚠ **AND THE ACT IS PERFORMED ONCE.** `closing` is entered once and its `<onentry>` runs
+    /// once, so a host that RECORDED the act and never took it would say the closing sentence again
+    /// on the pass after — at an agent already mid-report. The count is what holds that.
+    ///
+    /// ⚠ The reader is a private field rather than a published one on purpose: this is the driver's
+    /// own working state, and the fact a caller gets is the account itself
+    /// ([`crate::AiLoop::captured`]), which the gates in `ai_loop.rs` hold.
+    #[test]
+    fn a_closing_run_is_told_what_to_say_and_what_to_ask_for_by_its_own_document() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        // ⚠⚠⚠ THE CONTROL AT THE START: a run that has asked nothing has no question in flight, so
+        // an `Account` read later cannot be a value that was simply always there.
+        assert_eq!(
+            loops.asks, None,
+            "⚠⚠ a loop in `idle` has put no sentence to anybody",
+        );
+
+        let brief = Brief {
+            north_star: "the stand-in answers two prompts and then says the marker".to_string(),
+            milestone: "reach it".to_string(),
+            reference: "this gate".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(40)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<(AiLoopState, AiLoopEvent, AiLoopState)> = Vec::new();
+        // What was typed on arrival at each state, and what the driver says that sentence was for.
+        let mut asked: Vec<(AiLoopState, String, Option<crate::act::Asks>)> = Vec::new();
+        let ended = loop {
+            assert!(
+                walked.len() < 16,
+                "the loop must reach a final state rather than pumping forever: {walked:?}",
+            );
+            match loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            {
+                Pumped::Moved {
+                    from, raised, to, ..
+                } => {
+                    walked.push((from, raised, to));
+                    asked.push((to, loops.driving.asked.clone(), loops.asks));
+                }
+                Pumped::Unbuilt(state) => {
+                    panic!("this run reached {state:?}, which no driver serves. Walked {walked:?}")
+                }
+                Pumped::NotReady(seen) => {
+                    panic!("the stand-in agent must be ready. Got {seen:?}, walked {walked:?}")
+                }
+                Pumped::Ended(state) => break state,
+            }
+        };
+        assert_eq!(
+            ended,
+            AiLoopState::Converged,
+            "⚠ the control for the whole gate: only a run that CLOSED asks for an account. \
+             Walked: {walked:?}",
+        );
+
+        let composed = loops
+            .authored()
+            .expect("a converged machine still answers with its four strings");
+        // ⚠⚠⚠⚠ THE PREMISE THE TWO HALVES BELOW REST ON, ASSERTED RATHER THAN ASSUMED — register
+        // item 470's own rule about a fixture whose two sources agree by accident. If this
+        // document's turn prompt and closing prompt were the same text, every assertion under here
+        // would pass for a driver that typed one sentence at every state.
+        assert_ne!(
+            composed.turn, composed.end,
+            "⚠⚠⚠ this gate tells the two prompts apart BY THEIR TEXT, and this document ships them \
+             equal: {composed:?}",
+        );
+
+        // ── THE ACT: exactly one arrival at `closing`, saying the document's own END prompt, and
+        //    saying that what it asks for is an ACCOUNT ──
+        let closings: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| *state == AiLoopState::Closing)
+            .collect();
+        assert_eq!(
+            closings.len(),
+            1,
+            "⚠⚠ this run must close exactly once, or the count below is about several arrivals: \
+             {walked:?}",
+        );
+        assert_eq!(
+            (closings[0].1.as_str(), closings[0].2),
+            (composed.end.as_str(), Some(crate::act::Asks::Account)),
+            "⚠⚠⚠⚠⚠ `closing`'s `<onentry>` declares `<send type=\"x-sprag-host\" \
+             event=\"prompt.say\">` carrying `end_prompt` and `asks='account'`, and BOTH have to \
+             arrive: the sentence, because nothing out here looks up a prompt for this state any \
+             more, and the word, because it is what decides whether the turn's answer is collected \
+             as the run's account. Walked: {walked:?}",
+        );
+
+        // ── THE STAGED CONTROL: the ordinary turns of the SAME run, read by the SAME field ──
+        let turns: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| *state == AiLoopState::Working)
+            .collect();
+        assert!(
+            turns.len() > 1,
+            "⚠⚠⚠ the control needs ordinary turns to compare against and this walk has {}: a run \
+             that went straight to `closing` would make every assertion above vacuous. Walked: \
+             {walked:?}",
+            turns.len(),
+        );
+        let miscounted: Vec<&&(AiLoopState, String, Option<crate::act::Asks>)> = turns
+            .iter()
+            .filter(|(_, _, asks)| *asks != Some(crate::act::Asks::Work))
+            .collect();
+        assert!(
+            miscounted.is_empty(),
+            "⚠⚠⚠⚠ AN ORDINARY TURN ASKS FOR WORK. A driver that answered `Account` everywhere \
+             would satisfy the assertion above while collecting a report off every turn this run \
+             ever took: {miscounted:?}",
+        );
+        assert!(
+            turns
+                .iter()
+                .all(|(_, said, _)| *said == composed.turn || *said == composed.start),
+            "⚠⚠ and what an ordinary turn typed is one of the two prompts the document composed \
+             for work, never the closing one. Got {turns:?}",
+        );
+
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
