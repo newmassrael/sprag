@@ -59,6 +59,16 @@ cd "$repo_root"
 . "$repo_root/.githooks/doc-gate.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/content-gate.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/ident-gate.sh"
+
+# The identity this commit would carry, FIRST and ahead of anything that costs.
+# It is also the one refusal here a revert does not undo: the remote is public
+# and a push does not un-publish. ⚠ Sharper in THIS tree than elsewhere,
+# because two writers commit into it — the debt loop runs unattended, and an
+# identity gate is the only thing that separates its commits from a stray
+# environment's without a person reading every one. See ident-gate.sh.
+ident_gate_pending "pre-commit" || exit 1
 
 mnemosyne-cli validate-workspace
 

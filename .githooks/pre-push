@@ -42,6 +42,8 @@ cd "$repo_root"
 . "$repo_root/.githooks/doc-gate.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/content-gate.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/ident-gate.sh"
 
 # ⚠⚠⚠⚠ THE REFS ARE READ ONCE, HERE, BEFORE ANYTHING ELSE RUNS.
 #
@@ -55,6 +57,44 @@ cd "$repo_root"
 # today's `mnemosyne-cli` leaves stdin alone. That is a fact about today's tool, not a property of
 # the design — reading first makes it one.
 pushed_refs="$(cat)"
+
+# ── The identities this push would publish. FIRST among the gates, because it
+# is the only failure here that a revert does not undo: the remote is public
+# and a push does not un-publish.
+#
+# WHY THE PUSH AND NOT ONLY THE COMMIT. `pre-commit` carries the same list and
+# would not have caught the incident ident-gate.sh describes: those commits
+# were made where the hooks were not installed, so the push is the first moment
+# this repository can see them and the last before they are published. It is
+# also the argument for reading the range rather than `git var` here — what
+# matters is what the RANGE carries, not what this machine would stamp next.
+#
+# Walks `pushed_refs` like every other gate below, for the stdin reason the
+# block above states at length.
+ident_push_failed=0
+while read -r _iref ilocal _irref iremote; do
+    [ -n "${ilocal:-}" ] || continue
+    case "$ilocal" in
+        *[!0]*) ;;
+        *) continue ;;   # a deletion carries no commits to judge
+    esac
+    case "${iremote:-}" in
+        # A new ref on the remote grades the WHOLE history — deliberate, not
+        # incidental: that is exactly when a stray identity would be published
+        # wholesale.
+        ""|*[!0]*) ident_range="${iremote:-}..${ilocal}" ;;
+        *) ident_range="$ilocal" ;;
+    esac
+    [ -n "${iremote:-}" ] || ident_range="$ilocal"
+    ident_gate_range "pre-push" "$ident_range" || ident_push_failed=1
+done <<EOF
+$pushed_refs
+EOF
+if [ "$ident_push_failed" -ne 0 ]; then
+    echo "pre-push: rewrite the offending commits before pushing — the remote is public" >&2
+    echo "pre-push: and a push does not un-publish" >&2
+    exit 1
+fi
 
 # ── The pixel smoke, when this push touches what it paints.
 #
