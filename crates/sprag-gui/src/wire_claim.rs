@@ -389,7 +389,12 @@ pub(crate) mod grammar {
         // of publishing an empty one. **A window renders the grid — it is the party the source
         // bytes are needed to route AROUND** — so this pin moves for a tenth cause it takes no part
         // in. Ten for ten, and the eighth is still the only one this surface authors.
-        42,
+        // ⚠⚠⚠ THE ELEVENTH, and it is a word in a JOURNAL this window never renders: register item
+        // 680 added `Verdict::Failed` so a run that died says where it was, which a reader of a run
+        // ROW consumes. **A window has no run row** — the palette, the prompt and the hyperlink
+        // oracle are what it publishes — so this pin moves for an eleventh cause it takes no part
+        // in. Eleven for eleven, and the eighth is still the only one this surface authors.
+        43,
         &[
             (
                 "the command palette",

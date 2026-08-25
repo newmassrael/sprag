@@ -174,6 +174,34 @@ pub enum Verdict {
     /// run that has replaced its session makes a real gap — and it is a gap for every ending, not
     /// this one, so it is registered rather than half-closed here.
     Abandoned,
+    /// **THE STEP COULD NOT BE TAKEN AT ALL** — the pass returned an error instead of a verdict,
+    /// so the run ends [`OutcomeState::Failed`](crate::driver::OutcomeState::Failed).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a run needed a word for this, measured — register item 680
+    ///
+    /// Until it existed the driver's failing arm wrote NOTHING to the journal: it set
+    /// `Outcome::failure` and moved on, so a run's own walk ended at the last step that SUCCEEDED.
+    /// **2026-08-25: three live runs died `there is no pane N`, each with
+    /// `Working --TurnDone--> Judging` as its last entry and nothing after it, each naming a pane
+    /// that was alive at the time.** The defect behind them (register item 682) could be narrowed
+    /// by elimination and never confirmed, because nothing said which call raised the error.
+    ///
+    /// # ⚠⚠ Why not one of the nine words already here
+    ///
+    /// Each of them is a CONCLUSION a pass reached, and this pass reached none.
+    /// [`Abandoned`](Self::Abandoned) is the closest shape and means something specific and
+    /// different — *a person said wait and then stopped looking* — so a reader meeting it on a pane
+    /// that vanished would go looking for the person. [`Exhausted`](Self::Exhausted) names a ceiling
+    /// that did not fall. Reusing either is a sentence the product does not mean.
+    ///
+    /// # ⚠⚠ It carries NOTHING, on [`Abandoned`](Self::Abandoned)'s precedent
+    ///
+    /// The obvious payload is the [`PaneError`], and it is already in two
+    /// places a reader has: `Outcome::failure`, and the journal line's own `note` — which is where
+    /// the sentence belongs, because the note is what carries the PLACE beside it
+    /// ([`Plugin::at`], register item 543). A third spelling is how two copies of one fact come to
+    /// differ.
+    Failed,
 }
 
 impl Verdict {
@@ -197,6 +225,10 @@ impl Verdict {
             // select — is the plugin the 43 hours were actually spent inside.
             Self::PeerGone(_) => "peer_gone",
             Self::Abandoned => "abandoned",
+            // ⚠⚠⚠ A TENTH, on the eighth's terms exactly — register item 680. A journal reader
+            // decodes this set whole, and this word reaches every plugin (any step may fail), so
+            // it earns the same bump `peer_gone` did.
+            Self::Failed => "failed",
         }
     }
 
@@ -216,6 +248,7 @@ impl Verdict {
         "screened",
         "peer_gone",
         "abandoned",
+        "failed",
     ];
 }
 
@@ -1084,6 +1117,11 @@ mod tests {
             // through the closed set and survives a restart — where a `PaneId` here would have
             // been a value nobody reads.
             Verdict::Abandoned,
+            // ⚠⚠⚠ THE TENTH, and the only one on this list NO PLUGIN can produce — register item
+            // 680. The `Driver` composes it for the journal line a run leaves when a pass returned
+            // an ERROR instead of a verdict, so it reaches a reader through exactly the same closed
+            // set every other word does and has to be declared here like every other word.
+            Verdict::Failed,
         ]
         .iter()
         .map(Verdict::wire_str)

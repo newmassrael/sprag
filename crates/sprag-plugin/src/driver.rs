@@ -917,6 +917,54 @@ impl Driver {
         });
     }
 
+    /// **THE LINE A RUN LEAVES WHEN A STEP COULD NOT BE TAKEN** — register item 680, and the twin
+    /// of [`note_to_itself`](Self::note_to_itself) one failure over.
+    ///
+    /// # ⚠⚠⚠ Why the note carries the PLACE and not only the error
+    ///
+    /// The error says *what* — `there is no pane 7` — and a reader of a dead run needs *where*: a
+    /// machine has a dozen states and only one of them was taking the call. [`Plugin::at`] is that
+    /// word (register item 543 built it, in the DOCUMENT's own spelling), and this is the one place
+    /// a failure can ask for it, because the plugin is about to be dropped.
+    ///
+    /// ⚠ `at` is [`None`] for a plugin that does not publish a place — a `pipe`, an `answer` — and
+    /// the sentence then says only what happened. That is honest rather than degraded: those
+    /// plugins have no state a reader could be sent to.
+    ///
+    /// # ⚠⚠ Why the verdict is a NEW word and not one of the nine already published
+    ///
+    /// The first draft of this took [`Verdict::Abandoned`] to avoid widening a published
+    /// vocabulary, and that was the exact mistake this function's own reasoning rejects one
+    /// paragraph up: `Abandoned` means *a person said wait and then stopped looking*, so a reader
+    /// meeting it on a pane that vanished goes hunting for the person. Every one of the nine is a
+    /// CONCLUSION a pass reached, and this pass reached none —
+    /// see [`Verdict::Failed`], which states the cost it earns.
+    fn note_failure(&mut self, error: &PaneError, plugin: &dyn Plugin) {
+        let note = plugin.at().map_or_else(
+            || format!("the step could not be taken: {error}"),
+            |place| format!("the step could not be taken at `{place}`: {error}"),
+        );
+        self.remember(StepRecord {
+            iteration: self.iterations,
+            // ⚠ ZERO OF WHATEVER THIS RUN COUNTS, on [`note_to_itself`]'s precedent one function
+            // up: a step that never ran spent nothing, and a line that carried some other unit
+            // would be the only one in the journal a reader could not add up.
+            cost: self.cost.map_or(Cost::Bytes(0), Cost::none_of),
+            verdict: Verdict::Failed,
+            note: Some(note),
+            walked: plugin.walked(),
+        });
+        // ⚠⚠⚠⚠⚠ **AND PUBLISHED, WHICH IS HALF THE FIX AND WAS ALMOST MISSED.** `remember` writes
+        // into the driver's OWN journal; the run's readers hold a [`ProgressCell`]. Without this
+        // line the failure entry exists and nobody outside can read it — register item 492's shape,
+        // in the very function written to close a legibility gap. [`note_to_itself`] publishes for
+        // exactly this reason, one function up.
+        //
+        // ⚠⚠ It is the LAST line a run publishes: the loop breaks on `Fail` immediately after, so
+        // this is the state a watcher's final poll — and the daemon's stored row — will hold.
+        self.publish();
+    }
+
     /// Keep `record`, dropping the oldest once the journal is full.
     fn remember(&mut self, record: StepRecord) {
         if self.journal.len() == JOURNAL_LIMIT {
@@ -1052,6 +1100,24 @@ impl Driver {
             }
             let event = match plugin.step(panes, &run) {
                 Err(error) => {
+                    // ⛔⛔⛔⛔⛔ **THE JOURNAL GETS THE LINE TOO — register item 680.** Until this
+                    // arm wrote one, a step that failed set `failure` and NOTHING else: the walk
+                    // recorded only steps that SUCCEEDED, so a run's own record ended at the last
+                    // thing that worked and the failure was a summary sentence with no place in it.
+                    //
+                    // Measured 2026-08-25: three live runs died `there is no pane N`, all three
+                    // with `Working --TurnDone--> Judging` as their last walk entry and nothing
+                    // after it — and the pane each named was alive. **The defect could be narrowed
+                    // by elimination and never confirmed**, because nothing said which call raised
+                    // it (register item 682). Item 505 built exactly this legibility for a failure
+                    // the DOCUMENT answers; an I/O failure never reaches the document, so it never
+                    // got one.
+                    //
+                    // ⚠⚠ Written BEFORE `failure` is taken, because the sentence is composed from
+                    // the error and this is the only place that holds it, the plugin's place and
+                    // the plugin's walk at the same instant — the rule item 637 states, one axis
+                    // over: two values that are compared are read at the same moment.
+                    self.note_failure(&error, plugin);
                     self.failure = Some(error);
                     OrchestrationEvent::Fail
                 }
@@ -1188,6 +1254,26 @@ impl Driver {
                         // run whose reader is told *nobody came back* when somebody is typing in it
                         // right now is the one sentence this ending must never produce.
                         Verdict::Abandoned => self.exhaust(Ceiling::Hold),
+                        // ⚠⚠⚠ **A WORD ONLY THIS DRIVER WRITES, AND NEVER INTO A `Step`** —
+                        // register item 680. [`Verdict::Failed`] is composed by
+                        // [`note_failure`](Self::note_failure) for the journal line a run leaves
+                        // when a pass returned an ERROR instead of a verdict; a plugin has no way
+                        // to hand one back, because a plugin that failed returned `Err` and never
+                        // reached this match at all.
+                        //
+                        // ⚠⚠ It is answered rather than left to a catch-all, on `outcome()`'s rule
+                        // in this same file: a wildcard here would silently absorb the NEXT word
+                        // this vocabulary grows. `Fail` is the honest event — a step that could not
+                        // be taken has failed the run — and the `debug_assert` says loudly, in the
+                        // build that can afford to, that arriving here means a producer this
+                        // comment does not know about.
+                        Verdict::Failed => {
+                            debug_assert!(
+                                false,
+                                "a plugin handed back Verdict::Failed, which only the driver writes",
+                            );
+                            OrchestrationEvent::Fail
+                        }
                         // ⚠⚠ A SCREENED STEP TAKES THE SAME ARM AS AN ANSWERED ONE, and sharing it
                         // is the claim: a step that refused its peer's call and redirected it
                         // continues under exactly the same guardrails as any other, because a
@@ -2279,6 +2365,116 @@ mod tests {
         fn driving(&self) -> Option<PaneId> {
             None
         }
+    }
+
+    /// A plugin that fails **at a named place, after walking** — the shape a real run has when it
+    /// dies, which [`FailingPlugin`] deliberately does not.
+    ///
+    /// ⚠ `at` and `walked` are what a live `ai_loop` carries into its failure and what a reader
+    /// needs from it; a fixture with neither could not tell a journal that records the place from
+    /// one that records the word `failed` and nothing else.
+    struct FailingSomewhere;
+    impl Plugin for FailingSomewhere {
+        fn step(&mut self, _panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
+            Err(PaneError::UnknownPane(PaneId(7)))
+        }
+        fn driving(&self) -> Option<PaneId> {
+            Some(PaneId(7))
+        }
+        fn at(&self) -> Option<&'static str> {
+            Some("judging")
+        }
+        fn walked(&self) -> Vec<crate::plugin::Edge> {
+            vec![crate::plugin::Edge {
+                from: "working",
+                raised: "TurnDone",
+                to: "judging",
+            }]
+        }
+    }
+
+    /// ⛔⛔⛔⛔ **A RUN THAT DIES SAYS WHERE IT WAS AND WHAT IT WAS DOING** — register item 680.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The gap this closes, measured on three live runs in one morning
+    ///
+    /// 2026-08-25: runs `0`, `1` and `3` all ended `failed: there is no pane N`, all three with
+    /// `Working --TurnDone--> Judging` as their LAST walk entry and nothing after it. The pane each
+    /// named was alive at the time and still is. **Nothing anywhere said which call raised it**, so
+    /// a deterministic defect (register item 682) could be narrowed by elimination and never
+    /// confirmed — the daemon log was silent for the whole 42 minutes around it.
+    ///
+    /// The cause is three lines: the driver's loop calls [`Driver::record`] only on the `Ok` arm.
+    /// A step that returns `Err` sets `failure` — which becomes the run's one-line summary — and
+    /// **writes no journal entry at all**. Register item 505 built exactly this legibility for a
+    /// failure the DOCUMENT answers (*"The pass that ended the run: `<state> --<event>--> Failed`"*)
+    /// and an I/O failure never reaches the document, so it never got one.
+    ///
+    /// # ⚠⚠ What the claim is, and why the fixture carries a place and a walk
+    ///
+    /// Not *"the run failed"* — [`driver_maps_a_step_error_to_failed_with_the_cause`] already holds
+    /// that, and held it while every one of those three runs died unreadably. The claim is that the
+    /// JOURNAL — the thing a person reads — carries **where** and **what**. So the fixture fails at
+    /// a named place (`judging`) after a named edge, and the assertions are about both.
+    #[test]
+    fn a_run_that_dies_leaves_the_place_and_the_reason_in_its_own_journal() {
+        // ⚠ The journal is the RUNNING run's record ([`Progress`]), not the outcome's — which is
+        // itself part of what makes this gap easy to miss: a reader who has only the `Outcome` has
+        // only the summary line, and the place where the "where" belongs is a cell somebody else
+        // holds.
+        let cell: ProgressCell = Arc::new(Mutex::new(Progress::default()));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(
+            &mut FailingSomewhere,
+            &NoPanes,
+            &RunContext::uncancellable(),
+        );
+
+        assert_eq!(outcome.state, OutcomeState::Failed, "{outcome:?}");
+
+        let progress = cell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let last = progress.journal.last().unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔⛔ REGISTER ITEM 680: a run that died wrote NOTHING to its journal. Three \
+                 live runs ended this way on 2026-08-25 and the defect that killed them could not \
+                 be diagnosed, because the walk stops at the last step that SUCCEEDED and the \
+                 failure is a summary line with no place in it. Outcome: {outcome:?}",
+            )
+        });
+
+        assert!(
+            last.note
+                .as_deref()
+                .is_some_and(|note| note.contains("there is no pane 7")),
+            "⚠⚠⚠ the journal's last line must carry the REASON in the error's own words — a line \
+             that says only `failed` sends a reader to the daemon log, which was silent: {last:?}",
+        );
+        assert!(
+            last.note
+                .as_deref()
+                .is_some_and(|note| note.contains("judging")),
+            "⚠⚠⚠⚠ and WHERE it was, in the document's own word (`Plugin::at`, register item 543). \
+             Without it a reader knows a call failed and not which of a machine's states was \
+             taking it — which is exactly how item 682 stayed a hypothesis: {last:?}",
+        );
+        assert_eq!(
+            last.walked,
+            vec![crate::plugin::Edge {
+                from: "working",
+                raised: "TurnDone",
+                to: "judging",
+            }],
+            "⚠⚠ and the edges the plugin walked getting there, which the `Ok` arm already records \
+             — a failure that dropped them would be the only step in the journal that cannot say \
+             how it arrived: {last:?}",
+        );
     }
 
     /// An empty pane access (the failing plugin ignores it).

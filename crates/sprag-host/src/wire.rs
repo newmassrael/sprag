@@ -9220,7 +9220,14 @@ mod tests {
             // state with a wire spelling is one a reporter may name, and the request pin therefore
             // sees every word this one would. A future state that could be PUBLISHED without being
             // REPORTABLE would break that, and would owe an entry here.
-            42,
+            // ⚠⚠⚠ 43 — REGISTER ITEM 680, AND THIS PIN IS THE ONE THAT SAW IT. A tenth `Verdict`
+            // word (`verdict:failed`) is what a run's journal carries when a pass returned an ERROR
+            // instead of a verdict. A reader decodes this set WHOLE, so an added arm breaks an
+            // older reader of the ANSWER — which is this pin's own rule, and the same one
+            // `verdict:peer_gone` earned a number for.
+            // ⚠ It is the first word here NO PLUGIN can produce: the driver composes it, which is
+            // why the request-side pins above stayed green while this one went red.
+            43,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -9330,6 +9337,12 @@ mod tests {
                 // carries no tag, so the population of such clients is the daemons on this
                 // workstation, which are rebuilt from this tree.
                 "verdict:abandoned",
+                // ⚠⚠⚠ 43 (register item 680): the journal word for a pass that returned an ERROR
+                // instead of a verdict. It is the only one of the ten NO PLUGIN produces — the
+                // driver composes it — and it is here for the reason every other one is: a reader
+                // decodes this set WHOLE, so a word it has never heard of fails the document
+                // rather than the field.
+                "verdict:failed",
                 // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
                 // needle, write a consent, or fetch a person — so they are words and not prose.
                 "refusal:unreadable",
@@ -9610,7 +9623,10 @@ mod tests {
             // daemon is REFUSED by the closed set it validates against, and an older client simply
             // never says the word. That is the difference from 41, where the words arrived with a
             // new argument and the swallowing delivered a wider act than the caller asked for.
-            42,
+            // ⚠ 43: re-stamped with every published REQUEST vocabulary unchanged. Register item
+            // 680's `verdict:failed` is an ANSWER word — a journal line's, composed by the driver —
+            // and nothing a caller may SAY moved. The value-space pin is the one that saw it.
+            43,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -9932,7 +9948,10 @@ mod tests {
             // ⚠ 42: re-stamped with every published argument shape unchanged, for 39's and 40's
             // reason exactly. Register item 656's `raw_output` is a SLOT — no arguments — so no
             // form this pin walks gained, lost or re-typed one.
-            42,
+            // ⚠ 43: re-stamped with every published argument shape unchanged. Register item 680
+            // added a WORD to an answer's closed set and no form at all — there is nothing here for
+            // this pin to walk.
+            43,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -10570,7 +10589,11 @@ mod tests {
         // dialogue decoder concludes *the peer said nothing and spent nothing*, and a spend that is
         // always zero can never reach the ceiling that was supposed to bound it. See
         // `WIRE_PROTOCOL`'s entry for 42.
-        42,
+        // ⚠ 43 — REGISTER ITEM 680: re-stamped with the SURFACE unchanged. A tenth `Verdict` word
+        // (`failed`) rides the journal object this wire has served since 27, at addresses that did
+        // not move. This pin walks ADDRESSES — its named blind spot — and the value-space pin is
+        // what went red by name first.
+        43,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

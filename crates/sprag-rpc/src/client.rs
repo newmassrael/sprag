@@ -1132,8 +1132,35 @@ impl ScopeAsk {
 ///   cannot hold them, and the lossy replacement that would make it fit is the corruption this
 ///   address exists to route around.
 ///
+/// * **43 — A RUN THAT DIED SAYS WHERE IT WAS, AND THAT NEEDED A TENTH JOURNAL WORD.** Register
+///   item 680. `sprag_plugin::Verdict` gains `Failed` (wire word `failed`), which the DRIVER
+///   composes — no plugin can produce one — for the journal line a run leaves when a pass returned
+///   an error instead of a verdict.
+///
+///   ⚠⚠⚠⚠⚠ **AN ADDED ANSWER WORD IN A CLOSED SET THE READER DECODES WHOLE, WHICH IS VERSION 27's
+///   STATED RULE AND `peer_gone`'s PRECEDENT.** A journal reader does not sample this vocabulary —
+///   it maps every word — so a client that meets `failed` and has never heard of it has met a run
+///   record it cannot read. `peer_gone` earned a number for exactly this and its comment says so
+///   beside the match arm.
+///
+///   ⚠⚠⚠⚠ **WHY IT WAS WORTH A WORD, MEASURED RATHER THAN ARGUED.** The driver's failing arm wrote
+///   NOTHING to the journal: it set `Outcome::failure` — a summary sentence — and recorded no step,
+///   so a run's own walk ended at the last thing that WORKED. **2026-08-25: three live runs ended
+///   `there is no pane N`, all three with `Working --TurnDone--> Judging` as their last entry and
+///   nothing after it, each naming a pane that was alive at the time.** The defect behind them
+///   (register item 682) could be narrowed by elimination and never confirmed, because nothing said
+///   which call raised the error, and the daemon's log was silent for the 42 minutes around it.
+///   Register item 505 built this legibility for a failure the DOCUMENT answers; an I/O failure
+///   never reaches the document, so it never got one.
+///
+///   ⚠⚠ **NO ADDRESS, ARGUMENT OR FORM MOVED.** One variant, one word, one producer
+///   (`Driver::note_failure`), and the journal object it rides has carried a `verdict` since
+///   version 27. ⚠ The `Failed` word carries no payload on `abandoned`'s precedent: the error is
+///   already in `Outcome::failure` and in the line's own `note`, and a third spelling is how two
+///   copies of one fact come to differ.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 42;
+pub const WIRE_PROTOCOL: u32 = 43;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).
