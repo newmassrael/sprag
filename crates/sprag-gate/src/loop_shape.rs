@@ -21,6 +21,15 @@
 //! first act crossed, and `closing` and `stopping` stopped announcing a name to the machine and
 //! started asking this host to perform `prompt.say`. Twenty-eight driver arms went with it.
 //!
+//! ⚠ **FOUR HAVE CROSSED AS OF 2026-08-26**, and the count is stated here rather than left to the
+//! sentence above because a status is what ages fastest in the file that measures it (item 470's
+//! own R74 finding, made on this module): `closing` and `stopping` first, then `priming` — which
+//! proved the move is not about ENDINGS — then `reflecting`, which asks for a third thing and so
+//! proved `asks` is a vocabulary rather than a flag with two spellings. ⚠⚠ Only the FIRST of the
+//! four cost the driver a row here; the other three each traded one mention of their state for
+//! another, which is why [`crate::loop_shape::served_acts`] exists and why a round paying this
+//! item may see exactly one of these numbers move.
+//!
 //! The decisions still cannot all move in one round — and meanwhile the defect GREW: the register
 //! recorded 153 state-keyed sites in the driver on 2026-08-19 and this module measured 157 on
 //! 2026-08-20, four of them added by the very rounds that were paying the item down.

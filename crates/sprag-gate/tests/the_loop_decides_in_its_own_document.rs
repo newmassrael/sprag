@@ -170,9 +170,16 @@ const DECLARED_ACTS: usize = 11;
 /// paid this item and watched the other two would have watched two green gates and concluded
 /// nothing happened.
 ///
+/// ⚠⚠⚠⚠⚠ **AND THE FOURTH REPEATED IT, ON THE STATE THAT ADDED A WORD TO THE ACT'S ARGUMENT.**
+/// Measured 2026-08-26, on `reflecting`: 3 → 4 here, `DECLARED_ACTS` 11 → 11, and **every
+/// `DRIVER_ARMS` row held again** — `Owed::on`'s `Reflecting => Reflect` arm was deleted and
+/// `AiLoopState::Reflecting` joined the same exhaustive list, one mention traded for another for the
+/// second round running. So the blindness above is not `priming`'s special case; it is what this
+/// item's remaining acts will do, and this number is the only eye on any of them.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 3;
+const SERVED_ACTS: usize = 4;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

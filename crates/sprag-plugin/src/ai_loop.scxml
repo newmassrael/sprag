@@ -3223,12 +3223,54 @@
       -->
       <assign location="screened_carried" expr="screened"/>
       <!--
-        ⚠ THE SEND `Owed` READS. `priming` and `closing` announce their prompts
-        the same way, and the driver's table keys those two on the STATE rather
-        than on the transition that reached it — which is what makes this one
-        correct however a run arrives here (the correctness edge or the budget).
+        ⚠⚠⚠⚠⚠ THIS STATE ASKS THE HOST TO PUT ITS SENTENCE rather than
+        announcing a name the machine drops. Register item 470, stage 2, and the
+        fourth act to move — after `closing`, `stopping` and `priming`.
+
+        What stood here was `<send event="prompt.reflect"/>`. NOTHING in this
+        document transitions on that name, so the only thing it ever did was
+        mint an event. TWO facts about this state lived out in the driver
+        instead: WHICH SLOT holds the sentence (`Owed::on`, arm `Reflecting`),
+        and — a second read, and the one stage 2 wrote its own name against —
+        `OuterLoop::proposed` fetching `reflect_prompt` back out of this
+        datamodel to discount the loop's own echo off the pane. The state says
+        the first itself now, and what the host TYPED is what it discounts.
+
+        ⚠⚠⚠⚠⚠ `asks='direction'` IS A THIRD WORD, AND THE ARGUMENT FOR IT IS
+        THAT NEITHER OF THE OTHER TWO IS TRUE HERE.
+
+        `work` is the ordinary turn: make progress on the milestone. This turn
+        is not that, and this state's own comment above says so in this
+        document's words — it is not judged, it does not spend `max_turns`, it
+        cannot converge a run, and the sentence asks for no tool. Writing
+        `work` here would put in the one argument this act carries a claim the
+        file contradicts four lines up.
+
+        `account` is a report over a verdict already reached, and its defining
+        property is that the run PUBLISHES the answer as the agent's account of
+        itself. A reflection's answer is read back too, but by a different
+        reader, into the milestone the REPLACEMENT session is briefed with, and
+        the run carries on. Writing `account` here would mean a reflection's
+        working-out was collected as the run's closing report the day anything
+        watched this turn the way an ordinary one is watched.
+
+        So the third thing an agent can be asked for is WHERE THE WORK GOES
+        NEXT, which is this state's own sentence for itself: *where the work
+        should go next is a judgement about the work and this driver cannot
+        make one*. It is a word here rather than a state's name out there.
+
+        ⚠ THE ORDER: a send's arguments are evaluated when the send executes
+        (W3C SCXML 6.2.3), so what goes out is `reflect_prompt` as `priming`
+        composed it for this session, never the template it came from.
+
+        ⚠⚠ A LITERAL IS QUOTED INSIDE `expr`, because `expr` is an EXPRESSION
+        in this datamodel and a bare `direction` would be a variable nobody
+        declared.
       -->
-      <send event="prompt.reflect"/>
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="reflect_prompt"/>
+        <param name="asks" expr="'direction'"/>
+      </send>
     </onentry>
     <!--
       The driver rewrote the loop's parts and/or its environment; adopt them.

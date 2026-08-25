@@ -1050,6 +1050,19 @@ pub(crate) enum Owed {
     Stop,
     /// The `reflect_prompt` — **what should this run do next?**, asked of the agent that has been
     /// doing the work, and answered into the session that replaces it.
+    ///
+    /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the fourth act to leave.
+    /// [`Self::on`] no longer answers it: `reflecting` declares
+    /// `<send type="x-sprag-host" event="prompt.say">` with
+    /// `<param name="asks" expr="'direction'"/>`, because what a reflection asks for is neither
+    /// work nor an account — see [`crate::act::Asks::Direction`], which is the space's third word
+    /// and the first one that could not have been a boolean.
+    ///
+    /// ⚠⚠ **AND IT WAS THE ONLY VARIANT WITH A SECOND READER, WHICH IS THE HALF STAGE 2 NAMED
+    /// ITSELF AGAINST.** [`OuterLoop::proposed`] fetched this variable back out of the datamodel to
+    /// discount the loop's own echo off the pane — a driver reading the document behind the
+    /// machine's back, and worse, a SLOT standing in for what was actually typed. It reads
+    /// [`Session::asked`] now, for the reason the account reader already gives one screen down.
     Reflect,
     /// ⚠⚠⚠⚠ The `service_retry_text` — **the word that ends an outage**, owed by the edge out of
     /// `service_down` that reaches `working` and by nothing else.
@@ -1103,19 +1116,24 @@ impl Owed {
     /// and [`OuterLoop::advance`] delivers through them, so a rename in the document breaks both
     /// at once instead of leaving a driver that validates one variable and sends another.
     ///
-    /// ⚠⚠⚠ **`Start`, `End` AND `Stop` ARE VALIDATED HERE AND NO LONGER DELIVERED THROUGH IT** —
-    /// register item 470, stage 2. `priming`, `closing` and `stopping` name their own sentence on
-    /// the act they declare (`<param name="text" expr="start_prompt"/>`), so [`Self::on`] never
-    /// answers any of the three any more. They stay because [`Authored::read`] is the door's check
-    /// that this machine carries the four authored strings at all, and naming them here rather than
-    /// retyping the variables is the *one list decides* discipline this comment is about. ⚠ A
-    /// rename in the document therefore still breaks BOTH halves at once — the door here, and the
-    /// `<param>` there — which is what the discipline was for.
+    /// ⚠⚠⚠ **`Start`, `End`, `Stop` AND `Reflect` ARE VALIDATED HERE AND NO LONGER DELIVERED
+    /// THROUGH IT** — register item 470, stage 2. `priming`, `closing`, `stopping` and `reflecting`
+    /// name their own sentence on the act they declare (`<param name="text" expr="start_prompt"/>`),
+    /// so [`Self::on`] never answers any of the four any more. They stay because [`Authored::read`]
+    /// is the door's check that this machine carries the authored strings at all, and naming them
+    /// here rather than retyping the variables is the *one list decides* discipline this comment is
+    /// about. ⚠ A rename in the document therefore still breaks BOTH halves at once — the door
+    /// here, and the `<param>` there — which is what the discipline was for.
     ///
-    /// ⚠⚠ **THREE OF THE SEVEN NOW HAVE ONE READER WHERE THEY HAD TWO**, and that is the shape to
-    /// watch rather than a tidiness note: the day `Turn`, `Reflect` and `Dispute` follow, every
-    /// variant here is read by the door alone and this enum is a *list of the strings a document
-    /// must hold* rather than a table of debts. That is when it gets renamed, not emptied.
+    /// ⚠⚠ **A ROW THAT VALIDATES IS NOT A ROW THAT DECIDES**, and the two are worth telling apart
+    /// while this table is being emptied: what item 470 is about is a driver ANSWERING *what does
+    /// this state say*, which is [`Self::on`]'s job and which four states have now taken back. The
+    /// door's read asks whether the strings are there and answers nothing about what to say.
+    ///
+    /// ⚠⚠ **FOUR OF THE SEVEN NOW HAVE ONE READER WHERE THEY HAD TWO**, and that is the shape to
+    /// watch rather than a tidiness note: the day `Turn` and `Dispute` follow, every variant here is
+    /// read by the door alone and this enum is a *list of the strings a document must hold* rather
+    /// than a table of debts. That is when it gets renamed, not emptied.
     ///
     /// # Panics
     ///
@@ -1171,12 +1189,12 @@ impl Owed {
     ///
     /// # ⚠⚠⚠⚠⚠ THIS TABLE IS A RESIDUE NOW, AND IT IS SHRINKING FROM THE `closing` END
     ///
-    /// Register item 470, stage 2. `closing`, `stopping` and `priming` no longer appear as
-    /// prompt-owing arms here, and that is not a behaviour change: each one's `<onentry>` declares
-    /// `<send type="x-sprag-host" event="prompt.say">` and carries the sentence as a `<param>`, so
-    /// [`OuterLoop::advance`] is TOLD what to say instead of looking it up from the state's name.
-    /// What is left below is every state whose act has not moved yet — and the day the last one
-    /// does, this function is deleted rather than emptied.
+    /// Register item 470, stage 2. `closing`, `stopping`, `priming` and `reflecting` no longer
+    /// appear as prompt-owing arms here, and that is not a behaviour change: each one's `<onentry>`
+    /// declares `<send type="x-sprag-host" event="prompt.say">` and carries the sentence as a
+    /// `<param>`, so [`OuterLoop::advance`] is TOLD what to say instead of looking it up from the
+    /// state's name. What is left below is every state whose act has not moved yet — and the day
+    /// the last one does, this function is deleted rather than emptied.
     ///
     /// ⚠⚠⚠ **`priming` IS THE ONE WHOSE DEPARTURE PROVED THE MOVE IS NOT ABOUT ENDINGS.** The first
     /// two acts to leave were both closing sentences asking for an ACCOUNT, which is consistent
@@ -1184,16 +1202,18 @@ impl Owed {
     /// sentence of a run and asks for `work` — the same act, a different argument, on a peer nobody
     /// has spoken to yet.
     ///
-    /// # ⚠⚠ The two halves of `ai_loop.scxml`'s remaining sends, and why only one needs the event
+    /// ⚠⚠⚠⚠ **AND `reflecting` IS THE ONE WHOSE DEPARTURE PROVED THE ARGUMENT IS A VOCABULARY.**
+    /// The three before it split two ways over one axis, which a boolean could have carried;
+    /// `reflecting` asks for a third thing — [`crate::act::Asks::Direction`] — and its arrival is
+    /// what makes `asks` a word this document chooses rather than a flag with two spellings.
     ///
-    /// `prompt.reflect` is an **onentry** send — `reflecting`'s — so arriving at that state is the
-    /// whole condition, whichever transition brought you. It is reached more than one way (from
-    /// three `judge` edges), and keying it on the event would have needed that list kept in step by
-    /// hand.
+    /// # ⚠⚠ What is left of `ai_loop.scxml`'s remaining sends, and why the event still decides
     ///
     /// `prompt.turn` is a **transition** send, on three of the four edges into `working`, and that
     /// is the one place the arrival state is not enough. So the event decides there and only
-    /// there.
+    /// there. The onentry sends this table used to key by STATE have all gone: the last of them was
+    /// `reflecting`'s, which was reached more than one way (from three `judge` edges) and which now
+    /// says its own sentence on arrival however a run got there.
     ///
     /// ⚠ EXHAUSTIVE over the machine's whole event vocabulary in that arm on purpose: an edge
     /// added into `working` lands here as a variant that no longer compiles, which is the only
@@ -1205,10 +1225,6 @@ impl Owed {
             // STATE and not by the event, like the four above and unlike `working`'s: one edge
             // reaches `disputing`, and it reaches it for one reason.
             AiLoopState::Disputing => Self::Dispute,
-            // ⚠⚠⚠ A REFLECTION IS A TURN, so arriving here OWES the agent a question — see
-            // [`OuterLoop::reflect`]. Before it did, this state sat in the silent list below and a
-            // reflection could only ever carry what the document's author had written.
-            AiLoopState::Reflecting => Self::Reflect,
             AiLoopState::Working => match raised {
                 // `judging --judge-->`, `awaiting_human --resume-->` and
                 // `reflecting --reflect.none-->` each carry `<send event="prompt.turn"/>`.
@@ -1252,11 +1268,12 @@ impl Owed {
                 | AiLoopEvent::Fail
                 | AiLoopEvent::Hold
                 | AiLoopEvent::NotifyHuman
-                // ⚠⚠⚠ `prompt.say` REPLACED `prompt.end`, `prompt.stop` AND `prompt.start` HERE,
-                // AND THE COMPILER IS WHAT SAID SO EACH TIME — register item 470, stage 2. Those
-                // three names left the document as `closing`, `stopping` and `priming` began
-                // declaring their act to the HOST instead of announcing it to the machine: the
-                // generated enum stopped minting them and this list stopped compiling, once per
+                // ⚠⚠⚠ `prompt.say` REPLACED `prompt.end`, `prompt.stop`, `prompt.start` AND
+                // `prompt.reflect` HERE, AND THE COMPILER IS WHAT SAID SO EACH TIME — register item
+                // 470, stage 2. Those four names left the document as `closing`, `stopping`,
+                // `priming` and `reflecting` began declaring their act to the HOST instead of
+                // announcing it to the machine: the generated enum stopped minting them and this
+                // list stopped compiling, once per
                 // move. ⚠ `prompt.say` never arrives as an EVENT at all: a host-served send raises
                 // only what the handler answers with, and this host answers an act it performed
                 // with nothing. It is spelled for this arm's own rule — the list is what makes an
@@ -1271,10 +1288,9 @@ impl Owed {
                 | AiLoopEvent::ReviewDone
                 | AiLoopEvent::ReviewNone
                 // ⚠ `reflecting --reflect.done-->` reaches `closing`, never here: it is the
-                // agent saying there is nothing left, and what `closing` owes is the END prompt,
-                // which this table answers by the STATE.
+                // agent saying there is nothing left, and what `closing` asks its agent for is an
+                // ACCOUNT, on the act that state declares for itself.
                 | AiLoopEvent::ReflectDone
-                | AiLoopEvent::PromptReflect
                 | AiLoopEvent::ScreenBegin
                 | AiLoopEvent::ScreenNone
                 | AiLoopEvent::SessionReady
@@ -1320,22 +1336,26 @@ impl Owed {
             AiLoopState::Idle
             | AiLoopState::Judging
             | AiLoopState::Screening
-            // ⚠⚠⚠⚠⚠ THESE THREE OWE THIS TABLE NOTHING BECAUSE THEY SAY IT THEMSELVES — register
-            // item 470, stage 2. All three still ask their agent a question, and it is a DIFFERENT
+            // ⚠⚠⚠⚠⚠ THESE FOUR OWE THIS TABLE NOTHING BECAUSE THEY SAY IT THEMSELVES — register
+            // item 470, stage 2. All four still ask their agent a question, and it is a DIFFERENT
             // question each (`end_prompt` for a run that converged, `stop_prompt` for one a ceiling
             // stopped short, which is why those two were never one arm; `start_prompt` for a session
-            // nobody has spoken to) — but the sentence and what it asks for now travel on the act
-            // each state's own `<onentry>` declares, so nothing out here has to know which state a
-            // question was asked in.
+            // nobody has spoken to; `reflect_prompt` for a run asking where to go next) — but the
+            // sentence and what it asks for now travel on the act each state's own `<onentry>`
+            // declares, so nothing out here has to know which state a question was asked in.
             //
             // ⚠⚠⚠⚠ AND `priming` IS WHY THIS LIST CANNOT BE THE METER FOR ITEM 470. A state whose
             // behaviour has LEFT still has to be named here, because the list is exhaustive on
             // purpose — that is the mechanism that makes a new state fail to compile. *Owes
             // nothing* and *decides nothing here* read the same to anything that counts mentions.
             // `loop_shape::served_acts` is what can see the move; this arm can only see arrivals.
+            // ⚠ `reflecting` JOINED THEM ON THE ROUND AFTER, and traded one mention for another
+            // exactly as `priming` did — which is why the row for it in that gate's `DRIVER_ARMS`
+            // is expected to hold rather than fall.
             | AiLoopState::Priming
             | AiLoopState::Closing
             | AiLoopState::Stopping
+            | AiLoopState::Reflecting
             // ⚠⚠ ARRIVING AT AN OUTAGE OWES THE AGENT NOTHING, and a prompt here would be the
             // exact mistake the state exists to prevent: the peer's service just refused a turn,
             // so a question typed on arrival is one more request into a service saying no. What
@@ -6863,9 +6883,25 @@ impl OuterLoop {
     /// ⚠ **IT FAILS SAFE.** An answer this cannot read leaves the milestone as it was — one more turn
     /// toward a checkpoint somebody chose — where the direction it refuses to fail in is rewriting
     /// what a run is FOR out of text nobody meant as an answer.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What it discounts is what was TYPED, and it used to be a SLOT — register item 470
+    ///
+    /// This read `reflect_prompt` back out of the datamodel, which is stage 2's own charge against
+    /// the driver in its own words: *stop the driver reading the datamodel behind the machine's
+    /// back*. It is [`Session::asked`] now — what [`Self::say`] recorded going in — and the change
+    /// is not tidiness twice over:
+    ///
+    /// * **A SLOT AND THE SENTENCE CAN DIVERGE NOW.** The sentence arrives as
+    ///   `<param name="text" expr="reflect_prompt"/>` on the act `reflecting` declares, so what the
+    ///   document composes and what a variable holds are two facts rather than one. Discounting the
+    ///   slot would take the wrong text off the moment they differ, and the reader that WOULD be
+    ///   right is sitting one field away.
+    /// * ⚠ **IT IS THE ARGUMENT [`Self::pump`]'s ACCOUNT READER ALREADY MAKES**, and it was made
+    ///   there first: *the echo is whatever was actually typed, which the session recorded as it
+    ///   went in*. Two readers of one run's own echo, and only one of them had been fixed.
     fn proposed(&self, panes: &dyn PaneAccess, marker: &str) -> Option<String> {
         let label = self.text_of(marker)?;
-        let asked = self.text_of(Owed::Reflect.variable())?;
+        let asked = &self.driving.asked;
         if label.trim().is_empty() {
             return None;
         }
@@ -16534,6 +16570,235 @@ mod tests {
             "⚠⚠⚠⚠ AND THE SAME READER ANSWERS `Account` AT `closing`, off the same run. Two values \
              of one argument, one walk: that is what makes the `<param>` the thing being measured \
              rather than a constant in this host. Walked: {walked:?}",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A REFLECTION IS TOLD WHAT TO SAY, AND THAT WHAT IT ASKS FOR IS A DIRECTION, BY ITS
+    /// OWN DOCUMENT** — register item 470, stage 2, the FOURTH act to move, driven end to end over
+    /// the real `ai_loop.scxml` and a real pane.
+    ///
+    /// # Why `reflecting`, of the sends still announcing a name
+    ///
+    /// The three acts that moved before it split two ways over ONE axis — `work` at the start of a
+    /// run, `account` at its two endings — which a boolean could have carried and which
+    /// [`Owed::asked_for_an_account`] once did carry, as a match over twenty-eight states. A
+    /// reflection is neither: it is not judged, it does not spend `max_turns`, it cannot converge a
+    /// run, and its prompt asks the agent for an answer *from what you already have; do not use a
+    /// tool*. So it takes the argument's THIRD value — [`crate::act::Asks::Direction`] — and its
+    /// arrival is what makes `asks` a vocabulary the document chooses from rather than a flag with
+    /// two spellings.
+    ///
+    /// # ⚠⚠⚠⚠ What would look identical if the act had NOT moved, and what rules it out
+    ///
+    /// `Owed::on` answered `Reflecting => Reflect`, and `advance` looked `reflect_prompt` up from
+    /// the state's name. It now answers `Nothing` there, so a driver that stopped being TOLD types
+    /// nothing at this arrival and the run waits out a turn nobody opened. The first assertion is
+    /// therefore that a sentence ARRIVED at all, and only then that it is the right one.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND ALL THREE VALUES OF THE ARGUMENT ARE READ OFF ONE RUN, BY ONE READER.** This
+    /// walk asks for `work` (twice — the first sentence and an ordinary turn), for a `direction`
+    /// (the reflection), and for an `account` (the closing report), and the same field answers each
+    /// time. Without the other two, `Direction` here is satisfied by a host that hard-codes it and
+    /// never reads the `<param>` — item 686's rule that two scopes which can diverge cannot be
+    /// measured in one, applied to a value space that has just grown a member.
+    ///
+    /// ⚠ THE PREMISE IS ASSERTED, NOT ASSUMED — register item 684. Everything below tells the four
+    /// prompts apart BY THEIR TEXT, so a document that ever shipped the reflection prompt equal to
+    /// any of the other three would make the whole gate vacuous, and it says so loudly instead.
+    ///
+    /// ⚠⚠ The peer is [`crate::testing::standin_agent_finishing`] because it is the one that
+    /// answers a reflection with the north-star marker: that is the only ending which puts
+    /// `reflecting` and `closing` in the SAME walk, which is what the paragraph above needs. A run
+    /// that reflected and carried on would have no `account` in it to compare against.
+    ///
+    /// ⚠ Its own walk rather than a sibling's, deliberately: two `#[test]`s sharing one fixture go
+    /// red together and cannot say which of the two claims broke.
+    #[test]
+    fn a_reflection_is_told_what_to_say_and_what_it_asks_for_by_its_own_document() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ TWO WORKING PROMPTS AND THEN THE MILESTONE, so the run reaches `judging`'s reflection
+        // door on its own rather than on the turn cadence — and the reflection it is sent is
+        // answered with the marker, which is what carries this walk on to `closing`.
+        let (workspace, pane) = crate::testing::standin_agent_finishing(2);
+        let access = supervised(&workspace);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        // ⚠⚠⚠ THE CONTROL AT THE START: nothing has been asked, so a `Direction` read below cannot
+        // be a value that was simply always sitting there — which is what a hard-coded argument
+        // would look like.
+        assert_eq!(
+            loops.asks, None,
+            "⚠⚠ a loop in `idle` has put no sentence to anybody",
+        );
+
+        let brief = Brief {
+            north_star: "the stand-in works twice and then says the whole thing is done"
+                .to_string(),
+            milestone: "reach it".to_string(),
+            reference: "this gate".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(40)),
+            // ⚠ HIGH, so the reflection under test is the one the MILESTONE bought and not one the
+            // cadence would have bought anyway — the two arrive at the same state and only one of
+            // them is followed by an ending.
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<(AiLoopState, AiLoopEvent, AiLoopState)> = Vec::new();
+        // What was typed on arrival at each state, and what the driver says that sentence was for.
+        let mut asked: Vec<(AiLoopState, String, Option<crate::act::Asks>)> = Vec::new();
+        let ended = loop {
+            assert!(
+                walked.len() < 24,
+                "the loop must reach a final state rather than pumping forever: {walked:?}",
+            );
+            match loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            {
+                Pumped::Moved {
+                    from, raised, to, ..
+                } => {
+                    walked.push((from, raised, to));
+                    asked.push((to, loops.driving.asked.clone(), loops.asks));
+                }
+                Pumped::Unbuilt(state) => {
+                    panic!("this run reached {state:?}, which no driver serves. Walked {walked:?}")
+                }
+                Pumped::NotReady(seen) => {
+                    panic!("the stand-in agent must be ready. Got {seen:?}, walked {walked:?}")
+                }
+                Pumped::Ended(state) => break state,
+            }
+        };
+        assert_eq!(
+            ended,
+            AiLoopState::Converged,
+            "⚠ the control for the whole gate: this walk has to carry a reflection AND an ending, \
+             because the two together are what read both of the other values of the argument. \
+             Walked: {walked:?}",
+        );
+
+        let composed = loops
+            .authored()
+            .expect("a converged machine still answers with its four strings");
+        // ⚠⚠⚠⚠ THE PREMISE, ASSERTED — register item 684. Everything below tells the four prompts
+        // apart by their TEXT, and a document shipping any two of them equal would make it all pass
+        // for a driver that typed one sentence everywhere.
+        assert_ne!(
+            composed.reflect, composed.turn,
+            "⚠⚠⚠ this gate tells the REFLECTION prompt from an ordinary turn BY THEIR TEXT, and \
+             this document ships them equal: {composed:?}",
+        );
+        assert_ne!(
+            composed.reflect, composed.start,
+            "⚠⚠⚠ and from the run's first sentence, for the same reason: {composed:?}",
+        );
+        assert_ne!(
+            composed.reflect, composed.end,
+            "⚠⚠⚠ and from the closing one, for the same reason: {composed:?}",
+        );
+
+        // ── THE ACT: exactly one arrival at `reflecting`, saying the document's own REFLECT
+        //    prompt, and saying that what it asks for is a DIRECTION ──
+        let reflections: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| *state == AiLoopState::Reflecting)
+            .collect();
+        assert_eq!(
+            reflections.len(),
+            1,
+            "⚠⚠ this run must reflect exactly once, or the reads below are about several \
+             arrivals: {walked:?}",
+        );
+        assert!(
+            !reflections[0].1.is_empty(),
+            "⚠⚠⚠⚠⚠ NOTHING WAS TYPED ON ARRIVAL AT `reflecting`. `Owed::on` no longer answers for \
+             this state, so a driver that is not being TOLD by the document types nothing here and \
+             the run waits out a turn nobody opened. Walked: {walked:?}",
+        );
+        assert_eq!(
+            (reflections[0].1.as_str(), reflections[0].2),
+            (composed.reflect.as_str(), Some(crate::act::Asks::Direction)),
+            "⚠⚠⚠⚠⚠ `reflecting`'s `<onentry>` declares `<send type=\"x-sprag-host\" \
+             event=\"prompt.say\">` carrying `reflect_prompt` and `asks='direction'`, and BOTH have \
+             to arrive: the sentence, because nothing out here looks up a prompt for this state any \
+             more, and the word, because a reflection asked as `work` claims progress the document \
+             says four times over this turn does not make. ⚠ `account` is the value this is MOST \
+             easily mistaken for and the one that is harmless TODAY — nothing collects a \
+             reflection as a report only because `reflecting` has its own arm in `pump`, i.e. \
+             because of a decision keyed by STATE, which is the copy item 470 exists to remove. \
+             Walked: {walked:?}",
+        );
+
+        // ── THE STAGED CONTROL: the OTHER TWO values of the same argument, in the same walk, read
+        //    by the same field. A host that hard-coded `Direction` would pass everything above. ──
+        let working: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| {
+                *state == AiLoopState::Priming || *state == AiLoopState::Working
+            })
+            .collect();
+        assert!(
+            working.len() > 1,
+            "⚠⚠⚠ the control needs the run's working sentences and this walk has {}: without them \
+             `Direction` above is consistent with an argument nobody reads. Walked: {walked:?}",
+            working.len(),
+        );
+        let miscounted: Vec<&&(AiLoopState, String, Option<crate::act::Asks>)> = working
+            .iter()
+            .filter(|(_, said, asks)| {
+                *asks != Some(crate::act::Asks::Work)
+                    || (*said != composed.start && *said != composed.turn)
+            })
+            .collect();
+        assert!(
+            miscounted.is_empty(),
+            "⚠⚠⚠⚠ A SENTENCE THAT OPENS WORK ASKS FOR WORK, and carries one of the two prompts \
+             this document composes for it. A driver that answered `Direction` everywhere would \
+             satisfy the assertion above while telling every turn of the run it was a reflection: \
+             {miscounted:?}",
+        );
+        let closings: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| *state == AiLoopState::Closing)
+            .collect();
+        assert_eq!(
+            closings.len(),
+            1,
+            "⚠⚠⚠ and the control needs the closing arrival, which is the value a reflection is \
+             MOST easily mistaken for: both are read back, and only one of them is published as \
+             the run's account of itself. This walk has {}. Walked: {walked:?}",
+            closings.len(),
+        );
+        assert_eq!(
+            (closings[0].1.as_str(), closings[0].2),
+            (composed.end.as_str(), Some(crate::act::Asks::Account)),
+            "⚠⚠⚠⚠⚠ AND THE SAME READER ANSWERS `Account` AT `closing`, off the same run that just \
+             answered `Direction` and `Work`. THREE values of one argument, one walk: that is what \
+             makes the `<param>` the thing being measured rather than a constant in this host. \
+             Walked: {walked:?}",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);

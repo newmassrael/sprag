@@ -122,6 +122,12 @@ impl Act {
 /// wants to ask about a prompt would arrive as a second boolean beside it — two flags for one fact,
 /// which is the shape this register keeps paying for. A word names what the prompt IS, and a value
 /// outside this space is REFUSED rather than read as `false`.
+///
+/// ⚠⚠⚠⚠⚠ **AND THE THIRD VALUE IS THAT ARGUMENT BEING USED RATHER THAN THE SPACE GROWING** —
+/// 2026-08-26, `reflecting`'s act. While the space held two words a reader could still take it for
+/// `asked_for_an_account`'s boolean under another spelling; [`Self::Direction`] is a question that
+/// is neither of the other two and could not have been expressed as one, which is what the comment
+/// above predicted the day the space was closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Asks {
     /// `work` — the ordinary turn: do the next piece of the job.
@@ -132,11 +138,34 @@ pub enum Asks {
     /// that its answer is READ BACK: the run publishes it as the agent's account of itself. A turn
     /// asking for work produces no such record.
     Account,
+    /// `direction` — say where the work should go NEXT.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why `reflecting` is neither of the two above, argued rather than assigned
+    ///
+    /// **It is not `work`.** `ai_loop.scxml` says so about its own state, in four separate
+    /// sentences: the turn is not judged, it does not spend `max_turns`, it cannot converge a run,
+    /// and the prompt asks the agent for an answer *from what you already have; do not use a tool*.
+    /// A reflection is the loop asking about ITSELF, and the one argument the act carries would
+    /// have said the opposite of the file that carries it.
+    ///
+    /// **It is not `account` either, and this is the one that would have been harmless today and
+    /// wrong.** An account's defining property is above: the run PUBLISHES the answer as the
+    /// agent's account of itself. A reflection's answer is read back too — by
+    /// `OuterLoop::proposed`, into the milestone the REPLACEMENT session is briefed with — and the
+    /// run carries on. Nothing collects a reflection as a report today only because `reflecting`
+    /// has its own arm in the driver's `pump`, i.e. because of a decision keyed by STATE, which is
+    /// the copy register item 470 exists to remove. Encoding the wrong word and relying on that arm
+    /// to keep it harmless would leave the defect behind the very thing being taken away.
+    ///
+    /// ⚠ **WHAT IT NAMES IS THE DOCUMENT'S OWN SENTENCE FOR THE STATE**: *where the work should go
+    /// next is a judgement about the work and this driver cannot make one*. So the loop asks the
+    /// only party that can, and what comes back is a direction rather than progress or a report.
+    Direction,
 }
 
 impl Asks {
     /// Every value this argument may hold.
-    pub const ALL: [Self; 2] = [Self::Work, Self::Account];
+    pub const ALL: [Self; 3] = [Self::Work, Self::Account, Self::Direction];
 
     /// The word a document writes for it.
     #[must_use]
@@ -144,6 +173,7 @@ impl Asks {
         match self {
             Self::Work => "work",
             Self::Account => "account",
+            Self::Direction => "direction",
         }
     }
 
@@ -619,6 +649,29 @@ mod tests {
              must be READ — otherwise the refusals below are consistent with a host that refuses \
              everything",
         );
+
+        // ⚠⚠⚠⚠ AND THE CONTROL IS THE WHOLE VOCABULARY, not one word of it — 2026-08-26, the round
+        // that added a THIRD. What this holds is that `named` and `of` agree over every word the
+        // space claims: a value whose spelling nobody can read back is one a document may write and
+        // this host would refuse, and it would look complete in the file that defines it.
+        //
+        // ⚠⚠⚠⚠⚠ WHAT IT CANNOT SEE, SAID HERE RATHER THAN LEFT TO BE ASSUMED: a variant DROPPED
+        // from `ALL` while the enum keeps it. `Asks::of` walks `ALL`, so the word stops being
+        // readable and this loop stops iterating it in the same edit — the assertion is blind to
+        // exactly the mutation it reads as though it caught. **What catches that is the run**:
+        // `outer::tests::a_reflection_is_told_what_to_say_and_what_it_asks_for_by_its_own_document`
+        // drives a document that writes `direction`, and a word the space no longer holds is
+        // refused where the machine can hear it. Measured in both directions, 2026-08-26.
+        for asks in Asks::ALL {
+            assert_eq!(
+                with(&[("text", "a sentence"), ("asks", asks.named())])
+                    .expect("every word this space holds is one a document may write")
+                    .asks,
+                asks,
+                "⚠⚠⚠⚠ `{}` is in `Asks::ALL` and this door does not read it back as itself",
+                asks.named(),
+            );
+        }
 
         assert_eq!(
             with(&[("text", "carry on")]),
