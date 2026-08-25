@@ -72,9 +72,10 @@ use crate::wire::{
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
     LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
-    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_REVISION_SLOT,
-    PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD,
-    REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT,
+    PANE_REVISION_SLOT, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT,
+    RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -775,6 +776,20 @@ impl SpragPaneExternal {
             // this one is what `ai_loop.scxml`'s `peer_gone` — and the 43-hour wedge behind it —
             // stands on. See `PANE_EOF_SLOT`.
             PANE_EOF_SLOT => Some(IntrospectValue::Bool(self.pty.is_eof())),
+            // ⚠⚠⚠⚠⚠ WHETHER ANYTHING HAS BEEN PAINTED ONTO THIS PANE — register item 555, and the
+            // one slot here that exists because the rows beside it answer this WRONGLY rather than
+            // not at all. `SCREEN_ROWS_SLOT` serves text and a generation of zero on purpose (a
+            // damage number is a paint signal a resize stamps while no program writes a byte), so a
+            // driver outside this process computed *never painted* for every pane in the world.
+            //
+            // ⚠⚠⚠ It is the same predicate `PaneAccess::pane_has_painted` takes in-process —
+            // `Screen::has_painted` — for `PANE_EOF_SLOT`'s reason directly above: a second way of
+            // deciding *has this pane painted* is a second answer to drift from, and here the drift
+            // would be invisible from either side alone, because the remote half cannot recompute
+            // this one even if it wanted to.
+            PANE_PAINTED_SLOT => Some(IntrospectValue::Bool(
+                self.pty.with_screen(Screen::has_painted),
+            )),
             // ⚠⚠⚠⚠⚠ HOW MANY TIMES THIS PANE HAS MOVED — register item 631, and the cheap half of
             // `pane/waitForRevision`. Every arm above renders a screen or asks the kernel; this one
             // is a lock take and an integer read, which is the whole point: a driver outside this

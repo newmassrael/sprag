@@ -639,6 +639,38 @@ pub trait PaneAccess {
     /// signal a one-shot adapter (a tool that replies then exits) converges on.
     fn pane_eof(&self, id: PaneId) -> Option<bool>;
 
+    /// **WHETHER ANYTHING HAS BEEN PAINTED ONTO THIS PANE YET** — the readiness question, as its own
+    /// address. `None` if no pane has that id. Register item 555.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the QUESTION is published where the NUMBER deliberately is not
+    ///
+    /// [`PaneRow::generation`] is a damage generation and stays unpublished on purpose — its own
+    /// doc records the four plugins that read it as *what did the peer produce* and each reported
+    /// something false. But a surface that withholds the number and offers nothing in its place
+    /// does not leave the question unanswered: it leaves it answered WRONGLY. A host serving rows
+    /// with a generation of zero — which is what a remote one must serve — made the default below
+    /// return `false` for every pane in the world, including one whose child had printed and
+    /// exited, and nobody was told, because it is a value a caller reads rather than an error it
+    /// handles.
+    ///
+    /// # ⚠⚠⚠ The default is the DEGRADATION, named rather than hidden
+    ///
+    /// It derives the answer from the rows, which is what [`crate::deliver::has_painted`] did at
+    /// every caller before this method existed — so **a host with only rows still answers exactly
+    /// as it did**, and a host that can do better says so by overriding. That is the shape
+    /// [`pane_full_lines`](Self::pane_full_lines) and
+    /// [`inject_yielding_to_a_person`](Self::inject_yielding_to_a_person) already take here.
+    ///
+    /// ⚠⚠ **A HOST WHOSE ROWS CARRY NO GENERATIONS MUST OVERRIDE THIS OR IT IS LYING**, and that is
+    /// not a hypothetical: it is precisely the remote surface, which is why this method exists.
+    ///
+    /// ⚠ It is a sufficient and NOT a necessary condition for readiness — a pane running `cat`
+    /// paints nothing until it is written to — so a caller must not read `false` as *this peer is
+    /// dead*. See [`crate::deliver::has_painted`], which is the one consumer and says why.
+    fn pane_has_painted(&self, id: PaneId) -> Option<bool> {
+        Some(self.pane_rows(id)?.iter().any(|row| row.generation > 0))
+    }
+
     /// The pane's full output text: scrolled-off lines (scrollback) then the
     /// visible rows, trailing blank lines stripped, joined by `"\n"`. `None` if
     /// no pane has that id. Unlike `pane_rows`/`pane_collapsed` (visible screen
@@ -1707,6 +1739,16 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
         Some(self.handle(id)?.with_screen(read_rows))
+    }
+
+    /// ⚠⚠ THROUGH [`Screen::has_painted`] AND NOT THROUGH THE ROWS — register item 555. The
+    /// trait's default would give the same answer here (this host's rows carry real generations),
+    /// and that is exactly why it must not be what runs: the rule then has two spellings, and the
+    /// one a remote daemon serves would be free to drift from the one an in-process driver reads.
+    /// Asking the screen directly also skips materialising a whole `Vec<PaneRow>` to decide one
+    /// boolean.
+    fn pane_has_painted(&self, id: PaneId) -> Option<bool> {
+        Some(self.handle(id)?.with_screen(Screen::has_painted))
     }
 
     fn pane_eof(&self, id: PaneId) -> Option<bool> {

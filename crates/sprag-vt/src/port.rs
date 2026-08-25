@@ -1837,6 +1837,30 @@ impl Screen {
         self.generations.get(row as usize).copied()
     }
 
+    /// **WHETHER ANYTHING HAS EVER BEEN PAINTED ONTO THIS SCREEN** — register item 555, and the ONE
+    /// place that question is decided.
+    ///
+    /// # ⚠⚠⚠⚠ Why the rule lives here rather than at each caller
+    ///
+    /// It was `rows.iter().any(|row| row.generation > 0)`, written out at its single caller, and
+    /// that is fine exactly while there is one caller. There are now two that must not drift: a
+    /// driver in this process reads the screen, and a driver on the far side of a socket is served
+    /// a boolean by the daemon — and the wire deliberately does NOT carry the generations, so the
+    /// remote half cannot recompute this even if it wanted to. Two spellings of one predicate, one
+    /// of which is unreachable from the other, is the shape this workspace has paid for repeatedly.
+    ///
+    /// # ⚠⚠⚠ What it is worth, stated rather than implied
+    ///
+    /// A damage generation is a PAINT signal: a resize or an OSC palette change stamps every row
+    /// while no program writes a byte. So this OVER-answers — `true` can mean *the grid was
+    /// touched* rather than *the child produced output* — and it is a sufficient, not a necessary,
+    /// readiness condition. It must never be read as *what did the peer produce*, which is the
+    /// mistake four plugins in this workspace made with the number underneath it.
+    #[must_use]
+    pub fn has_painted(&self) -> bool {
+        (0..self.rows).any(|row| self.row_generation(row).is_some_and(|stamp| stamp > 0))
+    }
+
     /// Whether row `row` soft-wraps onto the next row (its logical line
     /// continues). `false` out of bounds. See `Self::reflowed`.
     ///

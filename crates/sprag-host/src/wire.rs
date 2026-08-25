@@ -375,6 +375,33 @@ pub const FULL_LINES_SLOT: &str = "full_lines";
 /// answers it has always read.
 pub const PANE_EOF_SLOT: &str = "eof";
 
+/// The pane-input external query slot: **WHETHER ANYTHING HAS BEEN PAINTED ONTO THIS PANE YET** —
+/// register item 555, and the one read on this surface that exists because withholding a number
+/// left a QUESTION answered wrongly rather than unanswered.
+///
+/// # ⚠⚠⚠⚠⚠ Why the daemon answers this and does not publish the number behind it
+///
+/// The answer is decided by row damage generations, and those stay off this wire on purpose: a
+/// damage generation is a PAINT signal that a resize or an OSC palette change stamps while no
+/// program writes a byte, and four plugins in this workspace read it as *what did the peer produce*
+/// and each reported something false. So [`SCREEN_ROWS_SLOT`] serves the TEXT and a generation of
+/// zero — which meant a driver outside this process computed *never painted* for every pane in the
+/// world, including one whose child had printed and exited.
+///
+/// **A boolean crosses; the number does not.** The daemon decides it with
+/// [`sprag_vt::Screen::has_painted`], which is the same predicate the in-process reader takes, so
+/// the two halves of one product cannot come to disagree about it.
+///
+/// ⚠⚠ It OVER-answers, and a reader must know that: `true` can mean *the grid was touched* rather
+/// than *the child produced output*. It is a sufficient and not a necessary readiness condition —
+/// a pane running `cat` paints nothing until it is written to — so `false` is never *this peer is
+/// dead*.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump — [`PANE_EOF_SLOT`]'s own rule, one
+/// entry up. Nothing that already answers is touched, and a client that never asks is unaffected;
+/// one that does ask gets a fact it previously had to compute wrongly for itself.
+pub const PANE_PAINTED_SLOT: &str = "painted";
+
 /// The pane-input external query slot: **HOW MANY TIMES THIS PANE HAS MOVED** — a monotonic count,
 /// and the cheap half of [`sprag_rpc::PANE_WAIT_REVISION_METHOD`].
 /// Register item 631.
@@ -1091,6 +1118,13 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The four above say what the pane HOLDS; this says
     // whether anything more is coming, which reading the text cannot answer.
     SchemaField::new(PANE_EOF_SLOT, "bool"),
+    // ⚠⚠⚠⚠⚠ Register item 555 — see `PANE_PAINTED_SLOT`. The slot above says whether anything MORE
+    // is coming; this says whether anything has come AT ALL, which the rows cannot answer here
+    // because the number that decides it is deliberately not on this wire. Without it a driver
+    // outside this process computed the answer from generations that are all zero and concluded
+    // *never painted* about every pane there is — a wrong answer rather than an absent one, which
+    // is the distinction this whole surface is built around.
+    SchemaField::new(PANE_PAINTED_SLOT, "bool"),
     // ⚠⚠⚠⚠⚠ Register item 631 — see `PANE_REVISION_SLOT`. Every slot above answers WHAT the pane
     // holds, and each of them costs a screen render or a kernel read. This one answers only
     // WHETHER it has moved, so a driver waiting on a pane over the wire stops paying for a screen
@@ -10708,6 +10742,17 @@ mod tests {
             "neighbors.<pane>",
             "new_session",
             "new_window",
+            // ⚠⚠⚠⚠⚠ ADDED at register item 555, and the number STANDS by this pin's own rule: a
+            // name added leaves every older client's requests working, and one that never asks is
+            // unaffected. What makes it worth a sentence is WHY it had to be added — the daemon
+            // already served the rows this answer used to be computed from, and served them with a
+            // damage generation of ZERO on purpose, so the computation produced *never painted* for
+            // every pane in the world. This is the rare addition that replaces a WRONG answer
+            // rather than an absent one, which is `hands`' case at register item 653 — except that
+            // one moved the number because a driver ACTED on the wrong answer by typing over a
+            // person, and nothing acts on this one yet (`has_painted` has had no production caller,
+            // which is the other half of item 555).
+            "painted",
             "pane_processes.",
             "pane_processes.<max_age_ms>",
             "pane_resources.",

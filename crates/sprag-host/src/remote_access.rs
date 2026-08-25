@@ -97,12 +97,20 @@
 //! surface publishing one word for both lets a supervisor conclude "no agents here" from a host that
 //! never looked.
 //!
-//! ⚠⚠ The one that is NOT merely absent is the PAINT question. [`PaneRow::generation`] is a damage
+//! ⚠⚠ The one that was NOT merely absent is the PAINT question. [`PaneRow::generation`] is a damage
 //! generation, deliberately unpublished (a resize or a palette change stamps every row while no
 //! program writes a byte, which is a mistake four plugins in this workspace have already made). So
 //! the rows this surface serves carry the TEXT — the content question, which is what
-//! [`RowTrail`](sprag_plugin::RowTrail) asks — and a `generation` of zero, which no reader here
-//! consults. See the register for the residue.
+//! [`RowTrail`](sprag_plugin::RowTrail) asks — and a `generation` of zero.
+//!
+//! ⚠⚠⚠⚠⚠ **AND WITHHOLDING THE NUMBER LEFT THE QUESTION ANSWERED WRONGLY, NOT UNANSWERED** —
+//! register item 555, paid. `PaneAccess::pane_has_painted`'s default derives the answer from those
+//! rows, so this surface inherited `false` for EVERY PANE THERE IS, including one whose child had
+//! printed and exited, with nothing to tell a caller that it had not really looked. The question
+//! now crosses as its own fact ([`PANE_PAINTED_SLOT`]), decided by
+//! the same `Screen::has_painted` an in-process driver reads, so the number stays off the wire and
+//! the two halves of one product still agree. Gate:
+//! `a_remote_driver_is_told_which_panes_have_painted`.
 
 use std::io;
 use std::sync::Mutex;
@@ -125,12 +133,13 @@ use crate::wire::{
     FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
     KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
-    PANE_RAW_OUTPUT_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION,
-    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION,
-    SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY, STOP_JOB_ACTION,
-    STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY, STOP_JOB_SIGNAL_KEY,
-    STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for, hands_of, lines_since_at, mux_action_path,
-    pane_input_path, raw_output_of, recent_input_has, refusal, unknown_action, unknown_slot,
+    PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
+    RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD,
+    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY,
+    STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY,
+    STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for, hands_of, lines_since_at,
+    mux_action_path, pane_input_path, raw_output_of, recent_input_has, refusal, unknown_action,
+    unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -791,6 +800,25 @@ impl PaneAccess for RemotePaneAccess {
 
     fn pane_eof(&self, id: PaneId) -> Option<bool> {
         self.read_pane(id, PANE_EOF_SLOT)?.as_bool()
+    }
+
+    /// Whether anything has been painted onto the pane yet — register item 555.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The one override on this surface that fixes a WRONG answer rather than an absent one
+    ///
+    /// The trait's default derives this from the rows, and [`pane_rows`](Self::pane_rows) above
+    /// serves a generation of ZERO on every row by design. So inheriting the default here does not
+    /// degrade — it answers `false` for every pane in the world, including one whose child has
+    /// printed and exited, and says so with the same confidence as a real reading. The daemon
+    /// decides it with `Screen::has_painted`, which is the predicate the in-process reader takes
+    /// too, and the boolean is what crosses.
+    ///
+    /// ⚠⚠ `None` for a pane this daemon does not serve, and — deliberately — for a daemon too old
+    /// to carry the slot. That is the honest absence the surface is built to express, and its one
+    /// consumer ([`sprag_plugin::has_painted`]) collapses it to `false`, which is this question's
+    /// safe direction: a caller waits rather than concluding a peer is up.
+    fn pane_has_painted(&self, id: PaneId) -> Option<bool> {
+        self.read_pane(id, PANE_PAINTED_SLOT)?.as_bool()
     }
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {

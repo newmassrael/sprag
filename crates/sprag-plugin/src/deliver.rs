@@ -1076,11 +1076,25 @@ fn painter(panes: &dyn PaneAccess, pane: PaneId) -> Option<PaneEcho> {
 /// its own — and the one heuristic that was tried against a rival ("is the foreground process a
 /// lone shell?") passed while the pane still refused, which is what a plausible predicate measuring
 /// an ADJACENT fact looks like from the inside.
+///
+/// # ⚠⚠⚠⚠ It asks the SURFACE, and that is register item 555's whole repayment
+///
+/// This read the rows' damage generation itself. A host whose rows carry no generations — which is
+/// what a host on the far side of a socket must serve, because a damage number is a paint signal
+/// that a resize stamps while no program writes a byte — therefore answered `false` here for every
+/// pane there is, including one whose child had printed and exited. The question now travels as its
+/// own fact ([`PaneAccess::pane_has_painted`]), whose default is still exactly this rows read, so a
+/// host with only rows answers as it always did and one that knows better can say so.
+///
+/// ⚠⚠ **`None` COLLAPSES TO `false`, which is safe in one direction only and is why the surface
+/// keeps the third answer.** *No such pane* and *this build cannot say* both arrive here as *not
+/// ready yet*, and a caller that waits is doing the harmless thing — but a caller that needs to
+/// tell *nobody has painted* from *nobody could look* must ask
+/// [`PaneAccess::pane_has_painted`] itself rather than read a `bool` that has already lost the
+/// distinction.
 #[must_use]
 pub fn has_painted(panes: &dyn PaneAccess, pane: PaneId) -> bool {
-    panes
-        .pane_rows(pane)
-        .is_some_and(|rows| rows.iter().any(|row| row.generation > 0))
+    panes.pane_has_painted(pane).unwrap_or(false)
 }
 
 /// What a bounded wait for a pane's own evidence saw — the submit's ([`Submission::await_landing`]).
@@ -1924,6 +1938,74 @@ mod tests {
 
         quiet.lifecycle().expect("lifecycle").close(quiet_pane);
         loud.lifecycle().expect("lifecycle").close(loud_pane);
+    }
+
+    /// **A HOST WITH ONLY ROWS STILL ANSWERS AS IT ALWAYS DID** — register item 555's degradation
+    /// clause, which the gate above cannot make because it drives the real
+    /// [`WorkspacePaneAccess`](crate::access::WorkspacePaneAccess) and that one OVERRIDES the
+    /// default.
+    ///
+    /// # ⚠⚠⚠⚠ Why this needs its own fixture rather than one more assertion up there
+    ///
+    /// Register item 684's rule: a fixture whose two sources agree cannot say which was consulted.
+    /// The real host answers from `Screen::has_painted` and its rows carry the same generations, so
+    /// every claim over it is true under both readings and measures neither. What is unmeasured
+    /// there is precisely the arm a remote surface and every test double in this workspace take —
+    /// **the trait's default** — and the item's own done-when names keeping it as a requirement,
+    /// not as an accident.
+    #[test]
+    fn a_host_that_serves_only_rows_answers_the_paint_question_from_them() {
+        /// Rows and nothing else: no screen, no override — the shape every double here inherits.
+        struct RowsOnly(Vec<PaneRow>);
+
+        impl PaneAccess for RowsOnly {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                None
+            }
+            fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
+                (id == PaneId(1)).then(|| self.0.clone())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                None
+            }
+            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<Written, PaneError> {
+                Ok(Written::of(0))
+            }
+        }
+
+        let row = |generation: u64| PaneRow {
+            generation,
+            text: "same text either way".to_owned(),
+        };
+
+        // ⚠ THE TEXT IS IDENTICAL IN BOTH FIXTURES AND ONLY THE GENERATION MOVES, so nothing but
+        // the number under test can decide these two apart.
+        let painted = RowsOnly(vec![row(0), row(7)]);
+        let never = RowsOnly(vec![row(0), row(0)]);
+
+        assert!(
+            has_painted(&painted, PaneId(1)),
+            "a rows-only host whose rows carry a damage generation must still answer `true` — this \
+             is the reading every caller had before the question got an address of its own, and \
+             the default exists to keep it",
+        );
+        assert!(
+            !has_painted(&never, PaneId(1)),
+            "and a host whose rows have never been stamped answers `false`, which is the half that \
+             would pass under an always-true default",
+        );
+        assert!(
+            !has_painted(&painted, PaneId(9999)),
+            "⚠⚠ and a pane this host does not serve is NOT painted rather than a panic or a `true`: \
+             `pane_has_painted` answers `None` there and `has_painted` collapses it in the safe \
+             direction, which is the one behaviour its own doc promises a caller",
+        );
     }
 
     /// A `PaneAccess` that records every injection and shows the text only after `hidden_reads`

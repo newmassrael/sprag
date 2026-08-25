@@ -6266,6 +6266,19 @@ impl PaneAccess for CountingRemote {
         self.inner.pane_eof(id)
     }
 
+    /// ⚠⚠⚠ FORWARDED, for the same reason `supervision` below is — register item 555, and this
+    /// wrapper is where that item's own defect would grow back.
+    ///
+    /// Every other method here delegates, so leaving this one out looks like nothing at all. It is
+    /// not: the trait's default recomputes the answer from `pane_rows`, this wrapper forwards
+    /// `pane_rows` faithfully, and the rows a REMOTE surface serves carry a damage generation of
+    /// ZERO by design — so the default would answer *never painted* for every pane, through an
+    /// instrument whose whole purpose is to measure what the real surface does.
+    fn pane_has_painted(&self, id: PaneId) -> Option<bool> {
+        self.looked();
+        self.inner.pane_has_painted(id)
+    }
+
     fn pane_full_text(&self, id: PaneId) -> Option<String> {
         self.looked();
         self.inner.pane_full_text(id)
@@ -10325,5 +10338,79 @@ fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it
         json!("cancelled"),
         "⚠⚠⚠ the run ended, but not as CANCELLED — so something other than the person's order \
          stopped it and this gate would be green for the wrong reason. Read {row:?}",
+    );
+}
+
+/// **A REMOTE DRIVER GETS THE SAME PAINT ANSWER AN IN-PROCESS ONE DOES** — register item 555, the
+/// last of item 544 stage 1c's residues.
+///
+/// # ⚠⚠⚠⚠⚠ Why the absence here is a FALSE ANSWER and not a degradation
+///
+/// [`sprag_plugin::has_painted`] reads a row's damage generation, and `RemotePaneAccess::pane_rows`
+/// serves a generation of ZERO on every row — a published decision, because a damage generation is
+/// a PAINT signal that a resize or an OSC palette change stamps while no program writes a byte. So
+/// the number is right to withhold and the QUESTION still has to be answerable: over this surface
+/// `has_painted` returns **false for every pane in the world**, including one whose child has
+/// printed and exited. Nobody is told — it is a value the caller reads, not an error it handles —
+/// so a driver outside this process concludes *that pane has never painted* about a peer that is
+/// plainly up.
+///
+/// # ⚠⚠⚠⚠ The fixture makes the two sources DISAGREE, which is the only way to measure which ran
+///
+/// Register item 684's rule, applied here: a fixture whose two sources happen to agree cannot say
+/// which one was consulted. A pane that has painted has rows with a real generation IN THE DAEMON
+/// and rows with a generation of zero ON THIS WIRE, so the painted arm stays red until the answer
+/// travels as its own fact instead of being recomputed from a number that did not travel.
+///
+/// ⚠⚠ **AND THE UNPAINTED ARM IS THE CONTROL**, without which *always answer true* passes: a pane
+/// running `cat` paints nothing until something is typed at it, and `has_painted`'s own doc names
+/// that as the peer a caller must not conclude is dead.
+#[test]
+fn a_remote_driver_is_told_which_panes_have_painted() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["sh"]);
+    let (remote, mut setup) = remote_driver(&sock);
+
+    // THE PAINTED ONE: a child that prints and exits, so the pane has certainly produced output and
+    // `pane_eof` gives this test a race-free moment to ask after.
+    let painted = spawn_pane(
+        &mut setup,
+        json!({ "cmd": ["sh", "-c", "printf 'up\\n'"], "cols": 40, "rows": 6 }),
+    );
+    // THE UNPAINTED ONE: `cat` opens its terminal and writes nothing until it is written to.
+    let quiet = spawn_pane(&mut setup, json!({ "cmd": ["cat"], "cols": 40, "rows": 6 }));
+
+    assert!(
+        wait_until(Duration::from_secs(20), || remote.pane_eof(painted)
+            == Some(true)),
+        "⚠⚠ the fixture child never finished, so the claim below would be about a pane that is \
+         still filling rather than one that has certainly painted. Read {:?}",
+        remote.pane_collapsed(painted),
+    );
+    // ⚠ THE PREMISE, ASSERTED RATHER THAN ASSUMED. If the daemon never put the child's bytes on
+    // that screen then the first arm below is red for a reason that has nothing to do with this
+    // item, and the gate would be pointing at the wrong defect.
+    assert!(
+        remote
+            .pane_collapsed(painted)
+            .is_some_and(|shown| shown.contains("up")),
+        "the painted pane must actually be showing its child's output before anything is claimed \
+         about whether that fact reaches a remote driver. Read {:?}",
+        remote.pane_collapsed(painted),
+    );
+
+    assert!(
+        sprag_plugin::has_painted(&remote, painted),
+        "⚠⚠⚠ REGISTER ITEM 555: a pane whose child PRINTED AND EXITED reads as never having \
+         painted over this surface. An in-process driver answers `true` for this same pane, so the \
+         two halves of one product disagree about whether a peer is up — and the remote half is \
+         the one that is wrong, silently, for every pane there is.",
+    );
+    assert!(
+        !sprag_plugin::has_painted(&remote, quiet),
+        "⚠⚠⚠ and the control: a pane running `cat` has painted NOTHING, so a surface answering \
+         `true` here is answering a constant rather than the question. `has_painted`'s own doc \
+         names this peer as the one a caller must not conclude is dead.",
     );
 }
