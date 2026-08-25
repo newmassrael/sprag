@@ -78,6 +78,11 @@ pub struct StateKeyed {
 /// driver's arms that turn an ending into a sentence are exactly the behaviour item 470 is about.
 #[must_use]
 pub fn document_states(scxml: &str) -> Vec<String> {
+    // ⚠ The same door `uncommented` closes on the other two needles, closed here for the same
+    // reason. A phantom state from a comment fails LOUDLY rather than quietly — the pin gate would
+    // demand a row for a state that does not exist — but a walk that reads commentary is wrong
+    // whichever way it fails, and this is the walk the other two are measured against.
+    let scxml = uncommented(scxml);
     let mut states = Vec::new();
     for (open, _) in scxml.match_indices('<') {
         let rest = &scxml[open + 1..];
@@ -285,7 +290,40 @@ pub fn tally(sites: &[StateKeyed], document: &[String]) -> BTreeMap<String, usiz
 /// [`served_acts`] is the other half.
 #[must_use]
 pub fn declared_acts(scxml: &str) -> usize {
-    scxml.matches("<onentry>").count()
+    uncommented(scxml).matches("<onentry>").count()
+}
+
+/// The document with its XML comments removed, so a needle cannot match what a comment QUOTES.
+///
+/// # ⚠⚠⚠⚠⚠ The two halves of this file disagreed about whether commentary counts
+///
+/// [`crate::sources::rust_sources`] has always dropped a line that starts `//` — a driver arm
+/// discussed in a comment is not a driver arm, and a test asserts it. The document walk beside it
+/// did not: every needle here was matched against the raw text, so a `<send>` or an `<onentry>`
+/// **quoted** in a comment counted as one performed.
+///
+/// ⚠⚠ Measured 2026-08-25 R76 before this existed — `served_acts` answered **2** for one real act
+/// and one quoted beside it. And [`DOCUMENT`]'s house style is to quote the send a state USED TO
+/// carry on the round its act moves, with seven acts still to move: the hazard was one comment
+/// away, on the ONE meter that can see item 470's stage 2. ⚠ Worse than a miscount, because the
+/// gate over that meter answers a count above its pin with *raise `SERVED_ACTS` … the debt is
+/// being PAID* — a quoted act would have handed the next round a ratchet onto an act nobody moved.
+///
+/// ⚠ An unterminated comment swallows the rest of the file, which is what a parser would do with
+/// it; a document that shipped one would not open at all.
+fn uncommented(scxml: &str) -> String {
+    let mut kept = String::with_capacity(scxml.len());
+    let mut rest = scxml;
+    while let Some(open) = rest.find("<!--") {
+        kept.push_str(&rest[..open]);
+        let after = &rest[open + "<!--".len()..];
+        let Some(close) = after.find("-->") else {
+            return kept;
+        };
+        rest = &after[close + "-->".len()..];
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// The Event I/O Processor type this crate's host serves — `crate`'s side of W3C SCXML 6.2.5.
@@ -306,13 +344,20 @@ pub const HOST_TYPE: &str = "x-sprag-host";
 /// in these and in nothing else: every one of them is a fact that used to be derived in Rust from
 /// the name of the state it belonged to.
 ///
-/// ⚠⚠ The needle is the OPENING TAG with its type attribute, so a `<send>` that names the type in a
-/// comment, or one addressed to some other host, is not counted. It is deliberately not a parse:
+/// ⚠⚠ The needle is the OPENING TAG with its type attribute, so a `<send>` addressed to some other
+/// host is not counted, and neither is one a comment merely QUOTES. It is deliberately not a parse:
 /// this crate reads artefacts as text on purpose, and what makes the number trustworthy is the
 /// gate beside it that refuses a count of zero.
+///
+/// ⚠⚠⚠⚠⚠ **THE COMMENT HALF OF THAT SENTENCE WAS PROSE AHEAD OF THE CODE UNTIL 2026-08-25 R76**,
+/// and it is left standing rather than softened because it is now true: this counted the raw text,
+/// so it answered **2** for one act with one quoted beside it. The private `uncommented` beside
+/// this says why that was one comment away from happening in [`DOCUMENT`] — named rather than
+/// linked, because a public doc that links a private item does not build. Register item 644:
+/// *prose that runs ahead of the code is the thing auditing the code.*
 #[must_use]
 pub fn served_acts(scxml: &str) -> usize {
-    scxml
+    uncommented(scxml)
         .matches(&format!("<send type=\"{HOST_TYPE}\""))
         .count()
 }
@@ -463,5 +508,67 @@ mod tests {
     fn the_acts_a_document_declares_are_its_onentry_blocks() {
         assert_eq!(declared_acts("<onentry><raise event=\"a\"/></onentry>"), 1);
         assert_eq!(declared_acts("<onexit/>"), 0);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A COMMENT IS NOT A DECISION, AND THIS DOCUMENT'S COMMENTS QUOTE SENDS.**
+    ///
+    /// [`DOCUMENT`]'s house style is to say what a state USED TO send on the round its act moves —
+    /// seven of its comment lines quote a `<send>` tag today, one of them a whole element with its
+    /// attributes. **Seven acts are still to move, and each one will be written that way.**
+    ///
+    /// ⚠⚠ So this is not a tidiness assertion. [`served_acts`] is the ONLY meter that can see item
+    /// 470's stage 2 — the other two are measured blind to it — and the gate over it does not just
+    /// count: on a count ABOVE its pin it INSTRUCTS the next round to *raise `SERVED_ACTS` … the
+    /// debt is being PAID*. A quoted act would therefore hand a future round a ratchet onto an act
+    /// nobody moved, in the voice of progress. Register item 453's blind ratchet, arriving by the
+    /// one door this file had left open.
+    ///
+    /// ⚠ The reading of a `<send>` addressed elsewhere is the control that this is about COMMENTS
+    /// and not about the needle being loose in general.
+    #[test]
+    fn an_act_quoted_in_a_comment_is_not_an_act_this_document_asks_for() {
+        let real = "<send type=\"x-sprag-host\" event=\"prompt.say\"/>";
+        assert_eq!(served_acts(real), 1, "the control: a real act is counted");
+
+        let quoted = format!("<!-- what stood here was {real} -->\n{real}");
+        assert_eq!(
+            served_acts(&quoted),
+            1,
+            "⚠⚠⚠⚠⚠ A `<send>` QUOTED IN A COMMENT IS NOT AN ACT. This document says what a state \
+             used to send every time one moves, so the next act to move brings this shape with it \
+             — and counting it would raise the one pin that can see item 470's stage 2 onto an act \
+             nobody performed.",
+        );
+
+        let elsewhere = "<send type=\"x-somebody-else\" event=\"prompt.say\"/>";
+        assert_eq!(
+            served_acts(elsewhere),
+            0,
+            "the control for the control: an act addressed to another host is not this host's",
+        );
+
+        assert_eq!(
+            declared_acts("<!-- <onentry> --><onentry></onentry>"),
+            1,
+            "⚠⚠ and the same door on the other meter: a quoted `<onentry>` is not a block. It has \
+             not bitten yet — no comment in the document quotes one today — which is exactly when \
+             it is cheap to close.",
+        );
+
+        assert_eq!(
+            document_states("<!-- <state id=\"phantom\"/> --><state id=\"real\"/>"),
+            ["real"],
+            "⚠⚠ and on the walk the other two are measured against. A state invented by a comment \
+             fails LOUDLY — the pin gate would demand a row for it — but a walk that reads \
+             commentary is wrong whichever way it fails.",
+        );
+
+        assert_eq!(
+            served_acts(&format!("<!-- unterminated {real}")),
+            0,
+            "⚠ an unterminated comment swallows the rest, which is what a parser would do with it: \
+             a document that shipped one would not open at all, so counting its tail as acts would \
+             be counting a file nothing can run.",
+        );
     }
 }
