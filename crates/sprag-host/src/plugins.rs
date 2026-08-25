@@ -4605,6 +4605,137 @@ mod tests {
     /// ⚠⚠ Compared against [`crate::durability::state_dir`] rather than against a literal, because
     /// a literal here would be a SECOND derivation of the path — the exact duplication that
     /// function exists to prevent — and would drift the day the state directory moves.
+    /// ⛔⛔⛔⛔⛔ **A LOOP IS REFUSED AT THE DOOR WHEN THE POOL IT WOULD DRIVE THROUGH DOES NOT HOLD
+    /// ITS PANE** — register item 682, and the half of it the product already had.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this gate exists over behaviour that was already correct
+    ///
+    /// A run captures ONE pane pool for its whole life — `SessionScope::of_session` reads it off
+    /// the session's CURRENT window, and it reaches the run through `plugin_host` and
+    /// `drive_on_a_thread` without ever being re-derived. So the pool and the PANE come from two
+    /// different places, and 2026-08-25's diagnosis of item 682 recorded that *nothing checks they
+    /// agree*. **That was wrong, and asking the product is what found it out**: this arm of
+    /// `build_plugin` has called [`require_pane_in`] all along, whose own doc calls it *"the
+    /// fail-fast that turns a mistyped id into a synchronous refusal instead of a run that dies on
+    /// its first step"*.
+    ///
+    /// What was missing was not the check but a MEASUREMENT of it: no gate anywhere named the
+    /// refusal, so a future arm added without the call — the `answer` arm beside this one needs it
+    /// for the same reason — would ship a run that dies on its first inject, which is precisely the
+    /// ending item 682 is about. **A behaviour nothing measures is a behaviour the next round can
+    /// delete without noticing.**
+    ///
+    /// # ⚠⚠⚠ The third arm is the one that is about item 682 rather than about a typo
+    ///
+    /// A pane can be perfectly ALIVE and still not be this run's to drive, because a pool is a
+    /// WINDOW's. That is the live shape exactly: pane id 5 was running in window `pinion` — its
+    /// child had been up for 2h40m — while the run that had been driving it died saying `there is
+    /// no pane 5`. Arms 1 and 2 would both pass against a check that only asked *does this id exist
+    /// anywhere*; only the third says the question is about MEMBERSHIP.
+    ///
+    /// ⚠⚠ **AND ARM 3 IS NOT INDEPENDENTLY MUTABLE, which is a fact about the boundary rather than
+    /// a gap in this gate.** Deleting the `require_pane_in` call from this arm turns it red — at
+    /// arm 2, which the mutation reaches first. The rival implementation arm 3 would catch on its
+    /// own (*does this id exist anywhere* rather than *is it mine*) **cannot be written here at
+    /// all**: [`PluginWorld`] sees one pool and has no way to ask about another. So arm 3
+    /// DOCUMENTS the shape item 682 measured rather than discriminating a competitor, and saying so
+    /// is cheaper than a reader later assuming it was measured.
+    ///
+    /// ⚠ What this does NOT close, stated so the next reader is not misled by a green: the check is
+    /// at the DOOR. A pane that leaves the pool mid-run is still unnoticed until the next
+    /// injection, which is how all three live runs died — they passed this check and were killed
+    /// later. That residue is item 682's remaining half, and
+    /// `sprag_plugin`'s `a_run_ends_the_same_way_whether_its_pane_moved_or_was_closed` is the
+    /// ratchet standing on it.
+    #[test]
+    fn a_loop_is_refused_at_the_door_when_its_pool_does_not_hold_the_pane() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // ── 1. THE CONTROL, AND IT COMES FIRST: a pane THIS pool holds builds ──
+        external
+            .build_plugin(
+                ai_loop_request(pane, json!({}))
+                    .as_object()
+                    .expect("an object"),
+            )
+            .expect(
+                "⚠⚠⚠⚠ THE CONTROL FAILED: a loop over a pane its own pool holds must build, or the \
+                 refusals below are a door that refuses everything and this gate measures nothing",
+            );
+
+        // ── 2. A PANE THIS POOL HAS NEVER HELD IS REFUSED, SYNCHRONOUSLY ──
+        //
+        // ⚠⚠ REFUSED AT `build_plugin`, before a run id is reserved or a thread is spawned. The
+        // difference is what a caller can do about it: a refusal is an answer to the request they
+        // just made, where a run that starts and dies is a row they have to go and read.
+        let stranger = PaneId(pane.0 + 4242);
+        let refused_stranger = external
+            .build_plugin(
+                ai_loop_request(stranger, json!({}))
+                    .as_object()
+                    .expect("an object"),
+            )
+            // ⚠ The built plugin is dropped rather than named: `PluginKind` is not `Debug`, and a
+            // gate about a REFUSAL has nothing to say about what a wrongly-built run would be.
+            .map(|(_built, label)| label)
+            .expect_err("⚠⚠⚠⚠ THE DOOR BUILT A LOOP OVER A PANE ITS POOL DOES NOT HOLD");
+        assert!(
+            format!("{refused_stranger:?}")
+                .contains(&format!("no pane {} in this workspace", stranger.0)),
+            "⚠⚠⚠ and it must NAME the pane and say WHICH workspace could not find it — a refusal \
+             that says neither sends a caller to re-read their own request instead of their \
+             window: {refused_stranger:?}",
+        );
+
+        // ── 3. ⭐ AND A PANE THAT IS ALIVE IN ANOTHER POOL IS REFUSED THE SAME WAY ──
+        //
+        // ⚠⚠⚠⚠⚠ **THIS IS THE ARM THAT IS ABOUT ITEM 682.** A `sibling` pool is what
+        // `Session::break_pane` mints for a window it opens, so this stages the state a
+        // cross-window move leaves: the pane is running, the SESSION has it, and the pool this run
+        // would drive through does not. A check that asked *does this id exist* rather than *is it
+        // mine* would pass arms 1 and 2 and fail here.
+        let elsewhere = Arc::new(Mutex::new(lock(&workspace).sibling()));
+        let another_window = echoing_agent_pane(&elsewhere);
+        let refused_neighbour = external
+            .build_plugin(
+                ai_loop_request(another_window, json!({}))
+                    .as_object()
+                    .expect("an object"),
+            )
+            .map(|(_built, label)| label)
+            .expect_err(
+                "⚠⚠⚠⚠⚠ THE DOOR BUILT A LOOP OVER A PANE IN SOMEBODY ELSE'S POOL. That run would \
+                 deliver nothing and die `there is no pane N` on its first injection — item 682's \
+                 ending, reached from the door instead of from a move",
+            );
+        assert!(
+            format!("{refused_neighbour:?}")
+                .contains(&format!("no pane {} in this workspace", another_window.0)),
+            "⚠⚠ and by the same sentence: *not in THIS workspace* is the true and useful thing to \
+             say about a pane that is alive in another one: {refused_neighbour:?}",
+        );
+        assert!(
+            !lock(&elsewhere)
+                .pane(another_window)
+                .expect("the sibling pool spawned it")
+                .pty()
+                .is_eof(),
+            "⚠⚠⚠⚠ THE FIXTURE'S POINT: that pane is RUNNING. If it were dead this arm would be a \
+             second copy of arm 2 rather than the live shape item 682 measured",
+        );
+    }
+
     #[test]
     fn a_loop_this_daemon_starts_keeps_its_counts_in_this_daemons_state_directory() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
