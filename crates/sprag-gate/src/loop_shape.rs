@@ -12,16 +12,22 @@
 //! and today most of them are in the driver. Item 470 measured the shape: a Rust table keyed by the
 //! document's own states is BY DEFINITION a second copy of the topology.
 //!
-//! # ⚠⚠⚠⚠⚠ Why a ratchet and not a fix
+//! # ⚠⚠⚠⚠⚠ Why a ratchet and not a fix — and why it outlived the refutation it was written under
 //!
-//! Stages 2 and 3 of item 470 are REFUTED at the pinned SCE (item 483: a host cannot register its
-//! own `<send>`/`<invoke>` type, so the act cannot leave the document). The decisions therefore
-//! cannot all move yet — and meanwhile the defect GREW: the register recorded 153 state-keyed sites
-//! in the driver on 2026-08-19 and this module measured 157 on 2026-08-20, four of them added by
-//! the very rounds that were paying the item down.
+//! ⚠ This module was written while stages 2 and 3 of item 470 were REFUTED at the pinned SCE (item
+//! 483: a host could not register its own `<send>`/`<invoke>` type, so an act could not leave the
+//! document). **That was a fact about a REV, and it did not survive one.** At `e0fdd46b` a host
+//! declares the types it serves to the build and registers a handler at run time; on 2026-08-25 the
+//! first act crossed, and `closing` and `stopping` stopped announcing a name to the machine and
+//! started asking this host to perform `prompt.say`. Twenty-eight driver arms went with it.
+//!
+//! The decisions still cannot all move in one round — and meanwhile the defect GREW: the register
+//! recorded 153 state-keyed sites in the driver on 2026-08-19 and this module measured 157 on
+//! 2026-08-20, four of them added by the very rounds that were paying the item down.
 //!
 //! A ratchet is what turns "it grew again" from something a person has to notice into something the
-//! suite says.
+//! suite says — and, because the pin is an EQUALITY, what turns "it shrank" into a number the
+//! paying round has to write down. [`crate::loop_shape::served_acts`] watches the other direction.
 //!
 //! # ⚠⚠⚠⚠⚠ The needle is derived from BOTH artefacts, which is what keeps it from going blind
 //!

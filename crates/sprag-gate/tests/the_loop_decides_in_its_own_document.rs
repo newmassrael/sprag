@@ -4,8 +4,10 @@
 //!
 //! The loop is driven by `ai_loop.scxml` and a Rust driver. Item 470 measured that the DECISIONS
 //! are in the driver: a table keyed by the document's own states, which is a second copy of the
-//! topology. Stages 2 and 3 of the repayment are refuted at the pinned SCE (item 483 — a host
-//! cannot register its own `<send>`/`<invoke>` type), so the decisions cannot all move yet.
+//! topology. ⚠ This gate was written while stages 2 and 3 of the repayment were refuted at the
+//! pinned SCE (item 483 — a host could not register its own `<send>`/`<invoke>` type); **that was a
+//! fact about a REV and it did not survive one.** The first act crossed on 2026-08-25 and
+//! `SERVED_ACTS` counts the ones that have. The decisions still cannot all move in one round.
 //!
 //! ⚠⚠⚠⚠⚠ **AND MEANWHILE IT GREW.** The register recorded 153 state-keyed sites on 2026-08-19;
 //! this gate measured more the next day, added by the very rounds that were paying the item down.
