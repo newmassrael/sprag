@@ -2133,6 +2133,173 @@ mod tests {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **A RUN ENDS THE SAME WAY WHETHER ITS PANE MOVED OR WAS CLOSED — one sentence,
+    /// two causes, and that is why register item 682 could not be closed from a run's record.**
+    ///
+    /// # ⚠⚠⚠⚠⚠ The question this settles, and the one it proves unanswerable from here
+    ///
+    /// A run holds ONE pane pool for its whole life — `SessionScope::workspace`, which is a
+    /// WINDOW's pool, chosen from the session's CURRENT window at the moment `orchestrate` was
+    /// called and never re-derived. So `there is no pane N` means exactly *that id is not in the
+    /// pool I captured*, and a pane leaves a pool through [`sprag_terminal::Workspace::close`] and
+    /// nowhere else. Production reaches it four ways, and only three can take a pane out from under
+    /// a live run: a cross-window MOVE (`break-pane` / `join-pane` / `move-pane` / `swap`), a
+    /// `respawn`, and a plain `close`.
+    ///
+    /// **This gate measures that the run cannot tell them apart.** Both arms drive the real loop to
+    /// the real judging pass and let the real driver end it; the sentences are compared BYTE FOR
+    /// BYTE, and they are equal. That is not a defect being asserted for its own sake — it is the
+    /// reason a deterministic failure stayed a hypothesis for a day, and the reason the removal was
+    /// finally named by a fact from OUTSIDE the run:
+    ///
+    /// ⭐ **the pane's child had been running for 2h40m, continuously, straight through the run's
+    /// death** (2026-08-25, pane id 5 in window `pinion`, pid 3433363, started 09:28:52). A `close`
+    /// and a `respawn` both kill it. **Only the move leaves it alone** — which is what
+    /// `sprag_terminal`'s `break_pane_moves_a_live_child_rather_than_replacing_it` holds at the
+    /// door. So the removal in that incident was a MOVE, and the two arms below are why nothing in
+    /// the run's own journal could have said so.
+    ///
+    /// # ⚠⚠⚠ Why the arms stage `close` + `adopt` rather than calling `break_pane`
+    ///
+    /// Because a run cannot see a window. What reaches it is the POOL, and `close` + `adopt` is
+    /// precisely the pair `Session::break_pane`, `join_pane_at`, `move_pane` and `swap_panes` are
+    /// each built from — the source pool loses the pane, another gains it, and nothing is
+    /// signalled. The registry-level gate named above is what holds that wiring, so the two
+    /// together cover door → pool → run without either one asserting the other's half.
+    ///
+    /// ⚠ The destination is a [`sibling`](sprag_terminal::Workspace::sibling) pool, because that is
+    /// what `break_pane` mints for the window it is opening — a fresh pool sharing the id counter.
+    #[test]
+    fn a_run_ends_the_same_way_whether_its_pane_moved_or_was_closed() {
+        /// Drive a fresh loop over a live stand-in until the document is in `judging`.
+        ///
+        /// ⚠⚠ THE CONTROL LIVES HERE: every pass up to `judging` is `expect`ed to TAKE, so a
+        /// failure in either arm below is what the removal did rather than a loop that never ran.
+        fn judging_over_a_live_pane() -> (
+            Arc<std::sync::Mutex<sprag_terminal::Workspace>>,
+            sprag_terminal::PaneId,
+            crate::access::WorkspacePaneAccess,
+            AiLoop,
+        ) {
+            let (workspace, pane) = standin_agent(9);
+            let access = supervised(&workspace);
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            let mut pumped = 0;
+            while loops.state() != AiLoopState::Judging && pumped < 40 {
+                loops.step(&access, &run).expect("a live pane takes a pass");
+                pumped += 1;
+            }
+            assert_eq!(
+                loops.state(),
+                AiLoopState::Judging,
+                "⚠⚠ THE FIXTURE'S PRECONDITION: this loop must bank a turn within {pumped} passes",
+            );
+            (workspace, pane, access, loops)
+        }
+
+        /// Let the driver take the judging pass, and answer the sentence the run died with.
+        fn dies_saying(access: &crate::access::WorkspacePaneAccess, loops: &mut AiLoop) -> String {
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                // ⚠ The very first step this driver takes is the judging pass, so a run needing
+                // more than a handful of iterations to die is not dying of the removal.
+                max_iterations: 4,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(loops, access, &RunContext::uncancellable());
+            let journal = progress.lock().expect("the progress cell").journal.clone();
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Failed,
+                "⚠⚠⚠ a run whose pane has left its pool must FAIL — a run that converged or spent \
+                 its iterations reached some other ending. Journal: {journal:?}",
+            );
+            journal
+                .last()
+                .and_then(|step| step.note.clone())
+                .expect("register item 680's failure line carries a sentence")
+        }
+
+        /// Every pane the pool still holds, closed — the fixtures' own tidying.
+        fn tidy(access: &crate::access::WorkspacePaneAccess) {
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+        }
+
+        /// Lock a pool, recovering the guard if a holder panicked.
+        fn held(
+            pool: &std::sync::Mutex<sprag_terminal::Workspace>,
+        ) -> std::sync::MutexGuard<'_, sprag_terminal::Workspace> {
+            pool.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        // ── ARM 1: THE PANE MOVED — `close` then `adopt`, and its child is never signalled ──
+        let (moved, moved_pane) = {
+            let (source, pane, access, mut loops) = judging_over_a_live_pane();
+            let destination = Arc::new(std::sync::Mutex::new(held(&source).sibling()));
+            let taken = held(&source)
+                .close(pane)
+                .expect("the run's pool held its pane a statement ago");
+            held(&destination).adopt(taken);
+            let said = dies_saying(&access, &mut loops);
+            assert!(
+                !held(&destination)
+                    .pane(pane)
+                    .expect("the destination pool adopted it")
+                    .pty()
+                    .is_eof(),
+                "⚠⚠⚠⚠⚠ THE LIVE SHAPE: a moved pane is STILL RUNNING while the run that was \
+                 driving it says there is no such pane. If this ever kills the child, the process \
+                 age that named the removal stops being evidence",
+            );
+            tidy(&access);
+            (said, pane)
+        };
+
+        // ── ARM 2: THE PANE WAS CLOSED — removed and DROPPED, which kills its child ──
+        //
+        // ⚠⚠⚠ DROPPED ON PURPOSE, and it is the whole difference between the arms: `close` hands
+        // the pane back, and it is the caller keeping it (arm 1) or letting it go (here) that
+        // decides whether a child survives. A `respawn` is this arm plus a fresh spawn.
+        let (closed, closed_pane) = {
+            let (source, pane, access, mut loops) = judging_over_a_live_pane();
+            drop(
+                held(&source)
+                    .close(pane)
+                    .expect("the run's pool held its pane a statement ago"),
+            );
+            let said = dies_saying(&access, &mut loops);
+            tidy(&access);
+            (said, pane)
+        };
+
+        // ── THE MEASUREMENT: TWO CAUSES, ONE SENTENCE ──
+        assert_eq!(
+            moved_pane, closed_pane,
+            "⚠⚠ THE FIXTURES MUST NAME THE SAME PANE, or the comparison below is about two ids \
+             rather than about two causes",
+        );
+        assert!(
+            moved.contains(&format!("there is no pane {}", moved_pane.0)),
+            "⚠⚠⚠⚠ and it must be the LIVE RUNS' sentence, or neither arm is about them: {moved:?}",
+        );
+        assert_eq!(
+            moved, closed,
+            "⭐⭐⭐⭐⭐ **THE FINDING.** A pane that was MOVED and a pane that was CLOSED end a run \
+             with the identical line — same word, same place, same walk. Nothing a run records \
+             separates them, which is exactly why register item 682 needed a pane's PROCESS AGE, \
+             measured hours later from outside the run, to name which removal it had been. If this \
+             ever stops being equal, the run has learned to say what became of its pane and the \
+             diagnosis above can be made from the record instead",
+        );
+    }
+
     /// ⛔⛔⛔⛔ **A RUN PUBLISHES WHERE IT IS AS A FIELD, IN THE DOCUMENT'S OWN WORD** — register
     /// item 543, stage 3a.
     ///

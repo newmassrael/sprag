@@ -6463,6 +6463,98 @@ mod tests {
         assert_eq!(next.0, 2, "shared, monotonic id counter across the move");
     }
 
+    /// ⛔⛔⛔⛔⛔ **A MOVED PANE'S CHILD IS NEVER SIGNALLED — the move is a PURE RELOCATION, and
+    /// that is the fact a dead run's `there is no pane N` rests on** — sprag register item 682.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is worth a gate when the move already has three
+    ///
+    /// [`break_pane_moves_a_pane_whole_into_a_new_selected_window`] asserts the pane keeps its ID
+    /// and changes POOLS. Neither of those says the pane is still RUNNING afterwards, and the
+    /// difference is what a whole diagnosis turned on.
+    ///
+    /// 2026-08-25, sprag: three `ai_loop` runs died `failed: there is no pane N`. A run holds ONE
+    /// pane pool for its whole life (`SessionScope::workspace`, which is a WINDOW's pool), so the
+    /// sentence means *that id is not in the pool I captured* — and THREE different removals
+    /// produce it: this move, a `respawn`, and a `close`. They were told apart by a fact that lives
+    /// outside the registry entirely: **the pane's child had been running continuously for 2h40m,
+    /// straight through the run's death.** A `close` and a `respawn` both kill it; only this door
+    /// leaves it alone. Without that, the removal could not be named.
+    ///
+    /// So the property this asserts is the one that made the elimination valid, and it is asserted
+    /// as the PROCESS rather than as the pane object: `Drop` on a [`Pane`] is what kills a child,
+    /// and a move that dropped one on the way through would satisfy every existing assertion here
+    /// while quietly ending somebody's agent.
+    ///
+    /// ⚠ The pid is the CONTROL and the SUBJECT in one: read before the move and compared after,
+    /// so *the child is alive* cannot be satisfied by a DIFFERENT child that replaced it.
+    #[test]
+    fn break_pane_moves_a_live_child_rather_than_replacing_it() {
+        /// The pid of `pane` as the window named `w` pools it — [`None`] if that pool does not hold
+        /// it, or its child has gone.
+        fn pid_of(reg: &SessionRegistry, w: &str, pane: PaneId) -> Option<u32> {
+            let ws = reg
+                .window_workspace(&default_name(reg), w)
+                .expect("the window exists");
+            let pool = lock(&ws);
+            pool.pane(pane).and_then(|held| held.pty().pid())
+        }
+
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 2);
+        let (stays, moves) = (ids[0], ids[1]);
+
+        // ── THE CONTROL, AND IT COMES FIRST: the child is running BEFORE the move ──
+        let before = pid_of(&reg, "0", moves).expect(
+            "⚠⚠⚠ THE FIXTURE: the pane must have a live child before the move, or *still alive \
+             afterwards* is a claim about nothing",
+        );
+
+        assert_eq!(
+            reg.break_pane(&default, moves, Some("moved"), WindowBirth::default())
+                .expect("a two-pane window may break one out"),
+            "moved",
+        );
+
+        // ── 1. THE SOURCE POOL NO LONGER HOLDS IT — which is the whole of what a dead run saw ──
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            vec![stays],
+            "⚠⚠⚠ a run holding THIS pool now has an id it cannot resolve, and that is the \
+             `there is no pane N` three live runs ended on",
+        );
+
+        // ── 2. THE DESTINATION DOES, UNDER THE SAME ID ──
+        assert_eq!(
+            pool_ids(&reg, "moved"),
+            vec![moves],
+            "⚠⚠ and the pane is not gone from the SESSION — it is somewhere else, which is why \
+             looking for it afterwards finds it and makes the run's sentence read like a lie",
+        );
+
+        // ── 3. AND IT IS THE SAME CHILD, STILL RUNNING ──
+        assert_eq!(
+            pid_of(&reg, "moved", moves),
+            Some(before),
+            "⚠⚠⚠⚠⚠ **THE PROPERTY THE DIAGNOSIS RESTS ON.** A move that re-spawned, or that let a \
+             `Pane` drop on the way through, would kill this child — and then a pane's process age \
+             could no longer tell a move from a `respawn` or a `close`, which is the only evidence \
+             that named the removal at all",
+        );
+        let ws = reg
+            .window_workspace(&default, "moved")
+            .expect("the window exists");
+        assert!(
+            !lock(&ws)
+                .pane(moves)
+                .expect("the destination pooled it")
+                .pty()
+                .is_eof(),
+            "⚠⚠ and its pseudoterminal is still open, which is the other half of *nothing was \
+             signalled* — a pid outlives a hangup that has already been sent",
+        );
+    }
+
     /// **A BREAK IS A WINDOW BEING BORN, so it takes [`WindowBirth`]** — R335.
     ///
     /// The two facts are asserted TOGETHER against the same break, because they fail differently
