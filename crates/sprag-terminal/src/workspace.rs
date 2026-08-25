@@ -96,6 +96,35 @@ pub struct Pane {
     /// snapshot records argv and cwd, so a restored pane's replacement is the program without its
     /// launcher's variables. Its own limitation, said out loud.
     env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// **WHERE THIS PANE'S CHILD WAS POINTED**, captured from the [`CommandBuilder`] at the same
+    /// moment as [`argv`](Self::argv) and [`env`](Self::env), and for the third half of the same
+    /// reason: so a REPLACEMENT can be the same command, with the same variables, **in the same
+    /// place**.
+    ///
+    /// It is `CommandBuilder::start_dir`'s answer — a `pub(crate)` function, so this is a name and
+    /// not a link, exactly as `pty.rs` and `access.rs` spell it — the directory the child got, after
+    /// that function has applied its `$HOME` default and its does-it-still-exist check — so it is
+    /// what the caller ASKED FOR, resolved, and never a guess about it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a field and not a live read (register item 684)
+    ///
+    /// `respawn` used to take this from [`PanePty::cwd`](crate::PanePty::cwd), which reads
+    /// `/proc/<pid>/cwd` LIVE — and that reader says of itself that it answers `None` *"when the
+    /// child has exited (no pid)"*. **A replacement is asked for at exactly the moment the previous
+    /// child is gone**, so the read that was supposed to carry the pane's place answered nothing and
+    /// the replacement fell through to `start_dir`'s default: `$HOME`.
+    ///
+    /// Measured 2026-08-25, in the owner's own daemon: every restarted `claude` pane sitting in
+    /// `/home/coin` was `blocked  rule=dialog-choice-list` on *"Accessing workspace: /home/coin —
+    /// Quick safety check"*, with `Resume this session with: claude --resume …` printed above it —
+    /// the previous child's dying words, which is what made the live read `None` in the first place.
+    /// A loop that replaces its inner session on purpose walks into this EVERY time.
+    ///
+    /// ⚠⚠ **The live read is not wrong, it is a different question.** *Where is that child now* is
+    /// what a durability snapshot wants (a person's shell rewrites it on every `cd`, and putting them
+    /// back where they were working is the point). *Where was this pane pointed* is what a
+    /// replacement wants, and only one of the two survives the child it describes.
+    start_dir: std::path::PathBuf,
     /// **THE NAME OF THE CONVERSATION THIS PANE'S LAUNCH JOINED**, read out of the argv it actually
     /// exec'd by the pool's [`PaneIdentitySource`] — `None` for every pane that is not a named agent,
     /// which is nearly all of them.
@@ -266,6 +295,13 @@ impl Pane {
     #[must_use]
     pub fn env(&self) -> &[(std::ffi::OsString, std::ffi::OsString)] {
         &self.env
+    }
+
+    /// The directory this pane's child was pointed at, captured at spawn — what a REPLACEMENT has to
+    /// start in. See the [field](Self::start_dir) for why a replacement must not ask the OS instead.
+    #[must_use]
+    pub fn start_dir(&self) -> &std::path::Path {
+        &self.start_dir
     }
 
     /// The pane's structured remote endpoint, `Some` only for a `sprag ssh` workspace pane — the
@@ -448,6 +484,11 @@ impl Seat {
             command_label: _,
             argv: _,
             env: _,
+            // ⚠ Carried by the LAUNCH, not by the seat: `respawn` reads it off the old pane and
+            // passes it to the spawn, so the replacement captures its own from its own builder —
+            // exactly as it does for `argv` and `env`. Copying it here would be a second writer of
+            // one fact.
+            start_dir: _,
             agent_session: _,
             // ⚠ On `agent_session`'s terms exactly, stated above: the seat may have come back from a
             // snapshot, but the REPLACEMENT was asked for by whatever called `respawn`, so carrying
@@ -1174,6 +1215,11 @@ impl Workspace {
         // where the pane and its id are together, and the pool has held the other two ids since its
         // window was made. No caller passes it, which is precisely why no caller can omit it.
         self.offer_home(id, &mut bound);
+        // ⚠⚠ AND WHERE IT WAS POINTED, read off the builder on the line before it is moved into the
+        // spawn — so this is the directory the child actually got, not a claim about it. Taken here
+        // rather than beside `argv` because `start_dir` resolves a default and checks the directory
+        // still exists, and the answer wanted is the resolved one. See [`Pane::start_dir`].
+        let start_dir = std::path::PathBuf::from(command.start_dir());
         let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &[], history_limit)?;
         // AFTER the spawn, because the birth is what answers it — see `landed_home`.
         let home = self.landed_home(id, &pty);
@@ -1183,6 +1229,7 @@ impl Workspace {
             command_label: label,
             argv,
             env,
+            start_dir,
             agent_session,
             remote: None,
             opened_by: None,
@@ -1318,6 +1365,13 @@ impl Workspace {
         // only the same one binding site.
         let mut bound = hooks.bind(id);
         self.offer_home(id, &mut bound);
+        // ⚠ The RESTORE door records it too, and here it is the SNAPSHOT's directory resolved:
+        // `restore_command` set the cwd from what the snapshot stored, and `start_dir` has just
+        // applied its own *a directory that is no longer there also means `$HOME`* rule. So a pane
+        // whose recorded directory was deleted between the snapshot and this boot comes back saying
+        // where it ACTUALLY is, and its replacement inherits that rather than a path nothing can
+        // spawn in. See [`Pane::start_dir`].
+        let start_dir = std::path::PathBuf::from(command.start_dir());
         let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &history, history_limit)?;
         // The RESTORE door, and it takes the answer from the birth for the same reason the spawn
         // door does: a pane coming back from a snapshot joins its new cgroup exactly as a fresh one
@@ -1338,6 +1392,9 @@ impl Workspace {
             // stated on [`Pane::env`] — a restored pane's REPLACEMENT is the program without its
             // original launcher's variables.
             env: Vec::new(),
+            // ⚠ NOT empty here, unlike `env`: the snapshot DOES store a directory, so a restored
+            // pane knows where it is meant to be and its replacement can be put there.
+            start_dir,
             agent_session,
             remote: None,
             opened_by: None,

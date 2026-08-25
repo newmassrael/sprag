@@ -2059,7 +2059,15 @@ impl PaneLifecycle for WorkspacePaneAccess {
             (
                 pane.argv().to_vec(),
                 pane.env().to_vec(),
-                pane.pty().cwd(),
+                // ⚠⚠⚠⚠⚠ THE PANE'S RECORDED PLACE, NOT THE OS'S ANSWER ABOUT ITS CHILD — register
+                // item 684. This read `pane.pty().cwd()`, which is `/proc/<pid>/cwd` and answers
+                // `None` once the child has exited. A replacement is asked for at exactly that
+                // moment, so the directory arrived as `None` and the fresh pane fell through to
+                // `CommandBuilder::start_dir`'s default — `$HOME`. Measured 2026-08-25: restarted
+                // `claude` panes standing in `/home/coin` on *"Quick safety check: is this a project
+                // you trust?"*, a dialog no consent in `debt_loop.scxml` answers, for ever.
+                // All three of these are now the same KIND of fact: what the launch asked for.
+                pane.start_dir().to_path_buf(),
                 pane.pty().dimensions(),
             )
         };
@@ -2073,7 +2081,7 @@ impl PaneLifecycle for WorkspacePaneAccess {
                 id.0
             )));
         }
-        let fresh = self.spawn_in(&argv, cwd.as_deref(), &env, cols, rows)?;
+        let fresh = self.spawn_in(&argv, Some(cwd.as_path()), &env, cols, rows)?;
         // ⚠⚠⚠ THE SEAT'S OWN DECLARATIONS FOLLOW IT, under ONE lock and BEFORE the close: what the
         // caller called this pane, who asked for it, what it may spend and whether it is a remote
         // workspace. `hand_seat_over` is one operation rather than four calls here for the reason it
@@ -2984,6 +2992,110 @@ mod tests {
             "and the same argv, which is the only one of the four the pane can be asked for directly",
         );
         assert_eq!(size, (37, 9), "and the same size");
+        assert!(
+            life.close(fresh),
+            "the pane this gate opened was there to close"
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND IT IS THE SAME WORLD WHEN THE CHILD IS ALREADY GONE** — register item 684, and
+    /// the arm the sibling gate above could not reach.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the sibling was green while this was broken
+    ///
+    /// `a_respawned_pane_is_the_same_command_in_the_same_world` asserts the directory is carried and
+    /// has done so correctly since it was written — its child ends in `exec cat`, so it is ALIVE when
+    /// `respawn` reads the pane. The old read was `PanePty::cwd`, which is `/proc/<pid>/cwd` and
+    /// whose own doc says it answers `None` *"when the child has exited (no pid)"*. **A live child is
+    /// the one case where the two sources agree**, and it was the only case measured.
+    ///
+    /// A replacement is asked for at exactly the moment the previous child is gone — a loop replaces
+    /// its inner session because that session ENDED. So the production path took the arm no gate
+    /// walked, got `None`, and the fresh pane fell through to `CommandBuilder::start_dir`'s default:
+    /// `$HOME`. Measured 2026-08-25 in the owner's daemon as restarted `claude` panes standing in
+    /// `/home/coin` on *"Quick safety check: is this a project you trust?"* — a dialog no consent in
+    /// `debt_loop.scxml` answers, so the pane stood there for ever.
+    ///
+    /// ⚠⚠ **THE PREMISE IS ASSERTED INSIDE THE GATE**, because without it this is the sibling with
+    /// extra steps: if the child were still readable the old code would pass here too, and a green
+    /// would mean nothing. The gate waits for `PanePty::cwd` to go `None` and says so.
+    ///
+    /// ⚠ `/` is chosen for the same reason the sibling chooses it: a test runner never stands there,
+    /// so *carried* and *defaulted* are different answers. A fixture whose expectation equals the
+    /// product's fallback cannot fail.
+    #[test]
+    fn a_replacement_starts_where_the_pane_was_pointed_even_though_its_child_is_gone() {
+        const PRINT_AND_EXIT: &str = "printf 'MARK %s\\n' \"$(pwd)\"";
+        let workspace = Arc::new(Mutex::new(Workspace::new((37, 9))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // ⚠ No `exec cat`: this child PRINTS AND DIES, which is the whole point of this arm.
+            command.arg(PRINT_AND_EXIT);
+            command.env("TERM", "dumb");
+            command.cwd("/");
+            lock(&workspace)
+                .spawn(command, "sh".to_string(), 37, 9)
+                .expect("spawn the pane whose child will be gone")
+        };
+        let shown = |id: PaneId| {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(5)
+                && !WorkspacePaneAccess::new(Arc::clone(&workspace))
+                    .pane_collapsed(id)
+                    .is_some_and(|text| text.contains("MARK "))
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .pane_collapsed(id)
+                .unwrap_or_default()
+        };
+        assert!(
+            shown(pane).contains("MARK /"),
+            "⚠ the control: the ORIGINAL pane must show the directory it was launched in, or the \
+             comparison below is against a fixture that never worked: {:?}",
+            shown(pane),
+        );
+
+        // ⚠⚠⚠ THE PREMISE, MADE AND THEN ASSERTED: wait until the OS can no longer answer where that
+        // child is. This is the state the production caller meets and the sibling gate never does.
+        let gone = {
+            let start = std::time::Instant::now();
+            loop {
+                let answer = lock(&workspace)
+                    .pane(pane)
+                    .expect("the pane outlives its child")
+                    .pty()
+                    .cwd();
+                if answer.is_none() || start.elapsed() > std::time::Duration::from_secs(5) {
+                    break answer;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        assert_eq!(
+            gone, None,
+            "⚠⚠⚠ THIS GATE IS VACUOUS UNLESS THE LIVE READ HAS GONE BLIND. `PanePty::cwd` still \
+             answers, so the old `pane.pty().cwd()` would have carried the directory here too and a \
+             green below would measure nothing",
+        );
+
+        let life = access
+            .lifecycle()
+            .expect("workspace access exposes lifecycle");
+        let fresh = life
+            .respawn(pane)
+            .expect("a pane whose child has exited can still be replaced");
+        let after = shown(fresh);
+        assert!(
+            after.contains("MARK /") && !after.contains("MARK /home"),
+            "⚠⚠⚠⚠⚠ THE REPLACEMENT MUST START WHERE THE PANE WAS POINTED. `MARK /home/…` is the \
+             defect this gate exists for: the directory came from the OS's answer about a child that \
+             no longer exists, so it arrived absent and the spawn fell back to $HOME. Shown: \
+             {after:?}",
+        );
         assert!(
             life.close(fresh),
             "the pane this gate opened was there to close"
