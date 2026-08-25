@@ -2577,6 +2577,25 @@ impl Session {
     }
 }
 
+/// **WHERE A PANE LIVES, AS ONE ANSWER** — what [`SessionRegistry::pool_holding`] found, read off
+/// the one window its walk stopped on.
+///
+/// # ⚠⚠ A named value rather than a tuple, and the reason is the two [`String`]s
+///
+/// The session and the window are both names, so a tuple lets a caller transpose them and compile.
+/// They are not interchangeable: a driver told the window name in the session slot would scope
+/// itself to a session that does not exist, and one told them the other way round would drive the
+/// wrong window of the right session — which is exactly the class of defect this value was widened
+/// (`sprag_host`'s register item 690) to remove.
+pub struct PaneHome {
+    /// The session holding it — what a run's announcements are published on.
+    pub session: String,
+    /// The window holding it — what a run's DRIVER must address, since register item 690.
+    pub window: String,
+    /// That window's pane pool — what a pane access speaks.
+    pub pool: Arc<Mutex<Workspace>>,
+}
+
 /// The durable server's whole state: every [`Session`].
 ///
 /// The default pane size is NOT held here — each window's [`Workspace`] owns it, and that
@@ -4005,7 +4024,9 @@ impl SessionRegistry {
             .map(|w| Arc::clone(w.workspace()))
     }
 
-    /// **WHICH SESSION HOLDS `pane`, AND THE POOL IT IS SITTING IN** — cloned, for
+    /// [`PaneHome`] for `pane` — where it is and what speaks to it.
+    ///
+    /// **WHERE `pane` IS — SESSION, WINDOW AND THE POOL IT IS SITTING IN** — cloned, for
     /// [`window_workspace`](Self::window_workspace)'s reason.
     ///
     /// # ⚠⚠⚠ Why neither of the two above can answer this
@@ -4021,18 +4042,20 @@ impl SessionRegistry {
     /// no window of any session holds that pane — which after a restore means the pane did not come
     /// back, and is the honest reason not to resume a run that would have driven it.
     ///
-    /// # ⚠⚠ Two facts as one value, because a caller that asked twice could be told two things
+    /// # ⚠⚠ THREE facts as one value, because a caller that asked twice could be told two things
     ///
-    /// The pool is what a pane ACCESS speaks and the session name is what a run's announcements are
-    /// published on, and a boot needs both about the same pane. Two walks a moment apart could
-    /// answer about two different windows if anything moved the pane between them — so the walk
-    /// that finds it says everything it found.
+    /// The pool is what a pane ACCESS speaks, the session name is what a run's announcements are
+    /// published on, and the WINDOW name is what a run's driver must address (`sprag_host`'s
+    /// register item 690) — a boot needs all three about the same pane. Two walks a moment apart
+    /// could answer about two different windows if anything moved the pane between them, so the
+    /// walk that finds it says everything it found. The window was the fact this returned last
+    /// and had all along: it is the very window the `find` above stopped on.
     ///
     /// ⚠ FIRST match and no check for a second: a pane belongs to exactly one window by
     /// construction (`join_pane` moves it rather than sharing it), so a scan that kept looking
     /// would be guarding against a registry that is already broken.
     #[must_use]
-    pub fn pool_holding(&self, pane: PaneId) -> Option<(String, Arc<Mutex<Workspace>>)> {
+    pub fn pool_holding(&self, pane: PaneId) -> Option<PaneHome> {
         self.sessions.iter().find_map(|session| {
             session
                 .windows
@@ -4046,7 +4069,11 @@ impl SessionRegistry {
                         .iter()
                         .any(|held| held.id() == pane)
                 })
-                .map(|window| (session.name.clone(), Arc::clone(window.workspace())))
+                .map(|window| PaneHome {
+                    session: session.name.clone(),
+                    window: window.name.clone(),
+                    pool: Arc::clone(window.workspace()),
+                })
         })
     }
 

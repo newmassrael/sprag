@@ -257,8 +257,9 @@ pub struct DaemonShared {
     /// decides whether to use the ability — a daemon told `off` provides none — but an image that
     /// cannot drive can no longer be asked to, whatever any config file says.
     ///
-    /// ⚠ A FACTORY over the session rather than a spawner, because a driver is told which session
-    /// to scope its waits to (`-t`) and the scope is per request, while this is built once at boot.
+    /// ⚠ A FACTORY over the session AND THE WINDOW rather than a spawner, because a driver is told
+    /// which session to scope its waits to (`-t`) and which window its pane is in (`-w`, register
+    /// item 690) — and both of those are per request, while this is built once at boot.
     pub spawn_driver: Option<DriverSpawns>,
     /// ⚠⚠⚠⚠⚠ **WHERE A RUN'S ASKER IS SITTING, WHEN IT IS NOT IN THE POOL THE RUN DRIVES** —
     /// register item 689. See [`plugins::SeatElsewhere`] for what it answers and why a run has to
@@ -619,7 +620,7 @@ pub type RunAnnounce = Arc<dyn Fn(crate::runs::RunId) + Send + Sync>;
 
 /// **HOW AN IMAGE THAT CAN BE A DRIVER STARTS ONE, FOR A SESSION** — see
 /// [`DaemonShared::spawn_driver`], which holds the whole argument for why this is injected.
-pub type DriverSpawns = Arc<dyn Fn(&str) -> plugins::DriverSpawn + Send + Sync>;
+pub type DriverSpawns = Arc<dyn Fn(&str, &str) -> plugins::DriverSpawn + Send + Sync>;
 
 /// **WHERE A RUN'S END AND A PERSON'S ORDER TO IT ARE ANNOUNCED**, for watchers of `session` —
 /// `(on_end, on_ordered)`.
@@ -718,6 +719,10 @@ pub fn workspace_scene(
             Arc::clone(workspace),
             runs,
             scope.session(),
+            // ⚠⚠ THE SCOPE'S OWN WINDOW — register item 690, and it is the same window `workspace`
+            // above was resolved out of. A run started through this surface drives a pane of THIS
+            // pool, so this is the window its driver must address.
+            scope.window(),
             channels,
             &plugin_side,
         )))
@@ -752,6 +757,7 @@ pub fn plugin_host(
     workspace: Arc<Mutex<sprag_terminal::Workspace>>,
     runs: &Arc<Mutex<RunRegistry>>,
     session: &str,
+    window: &str,
     channels: &Arc<ChannelRegistry>,
     daemon: &DaemonShared,
 ) -> plugins::PluginsExternal {
@@ -793,7 +799,11 @@ pub fn plugin_host(
     // image can BE one is a fact only the image knows, and a host that hands none drives on a
     // thread whatever any config file says.
     match &daemon.spawn_driver {
-        Some(spawn) => host.driving_out_of_process(spawn(session)),
+        // ⚠⚠ AND THE WINDOW GOES WITH THE SESSION — register item 690. `workspace` above IS this
+        // window's pane pool, so naming a different window here would spawn a driver addressing a
+        // pool this surface is not built over. One argument pair, resolved once, by the caller that
+        // resolved the pool.
+        Some(spawn) => host.driving_out_of_process(spawn(session, window)),
         None => host,
     }
 }
@@ -819,8 +829,9 @@ pub fn plugin_host(
 /// refused before reading is one whose exit status is the answer, and treating the pipe as fatal
 /// would report `Broken pipe` instead — register item 471, which `sprag-gate`'s own ratchet holds
 /// every test in this tree to.
-pub fn driver_spawn(session: &str) -> plugins::DriverSpawn {
+pub fn driver_spawn(session: &str, window: &str) -> plugins::DriverSpawn {
     let session = session.to_owned();
+    let window = window.to_owned();
     Arc::new(
         move |id: crate::runs::RunId, request: &serde_json::Map<String, serde_json::Value>| {
             let mut child = std::process::Command::new(std::env::current_exe()?)
@@ -828,6 +839,13 @@ pub fn driver_spawn(session: &str) -> plugins::DriverSpawn {
                 .arg(id.0.to_string())
                 .arg("-t")
                 .arg(&session)
+                // ⚠⚠⚠⚠⚠ AND WHICH WINDOW — register item 690. A run's pane is in ONE window and the
+                // daemon knows which at the moment it spawns this child, because the surface that
+                // started the run was built over that window's pane pool. Without it the child
+                // resolves every pane against whatever window the session is showing, and run 23
+                // died `there is no pane 23` about a pane that was idle and alive.
+                .arg(drive::DRIVE_WINDOW_FLAG)
+                .arg(&window)
                 // ⚠ THE ENDPOINT'S OWN ENV NAME, taken from the endpoint rather than spelled here:
                 // `HOST_SOCKET` carries both the path policy and the variable that overrides it, so a
                 // driver reads the socket through the same door every other client of this daemon does.

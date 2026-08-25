@@ -104,6 +104,12 @@ struct DriveOrder {
     /// default. It must be the scope the run's panes live in: a park scoped elsewhere is refused
     /// at the door (`RemotePaneAccess::parking_on`).
     session: Option<String>,
+    /// ⚠⚠⚠⚠⚠ WHICH WINDOW of that session the run's pane is in — register item 690, and the other
+    /// half of the address. Without it every request this driver makes is read against whatever
+    /// window the session is CURRENTLY showing, so anybody selecting another window kills a run
+    /// that is working. `None` for a daemon too old to name one, which keeps that daemon's
+    /// behaviour exactly as it was.
+    window: Option<String>,
 }
 
 /// **WHICH PROGRAM THIS IMAGE IS** — a driver order, or `None` for the terminal.
@@ -122,6 +128,7 @@ struct DriveOrder {
 fn drive_order<I: Iterator<Item = String>>(mut args: I) -> io::Result<Option<DriveOrder>> {
     let mut run: Option<u64> = None;
     let mut session: Option<String> = None;
+    let mut window: Option<String> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -150,13 +157,29 @@ fn drive_order<I: Iterator<Item = String>>(mut args: I) -> io::Result<Option<Dri
                     )
                 })?);
             }
+            // ⚠ Register item 690 — see `DriveOrder::window`. Refused with a sentence rather than
+            // ignored, on `-t`'s rule beside it: a daemon that meant to name a window and named
+            // nothing would otherwise spawn a driver that silently follows the current window,
+            // which is exactly the defect this flag exists to remove.
+            sprag_host::drive::DRIVE_WINDOW_FLAG | "--window" => {
+                window = Some(args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} takes the window name the run's pane is in"),
+                    )
+                })?);
+            }
             // Anything else belongs to the terminal's own parser. A driver argv is written by the
             // daemon, not by hand, so there is nothing else here to understand.
             _ => {}
         }
     }
 
-    Ok(run.map(|run| DriveOrder { run, session }))
+    Ok(run.map(|run| DriveOrder {
+        run,
+        session,
+        window,
+    }))
 }
 
 fn main() -> io::Result<()> {
@@ -167,7 +190,12 @@ fn main() -> io::Result<()> {
     // disagree about which host they mean.
     if let Some(order) = drive_order(std::env::args().skip(1))? {
         let sock = sprag_rpc::socket_path(HOST_SOCKET);
-        return sprag_host::drive::drive(&sock, order.session.as_deref(), order.run);
+        return sprag_host::drive::drive(
+            &sock,
+            order.session.as_deref(),
+            order.window.as_deref(),
+            order.run,
+        );
     }
 
     let args = parse_args();
@@ -654,7 +682,7 @@ fn put_back_inherited_runs(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pool_holding(pane);
-        let Some((session, pool)) = held else {
+        let Some(home) = held else {
             tracing::info!(
                 target: "sprag_host::runs",
                 run = run.id.0,
@@ -667,9 +695,14 @@ fn put_back_inherited_runs(
         // `sprag_host::plugin_host`. A second assembly here could resume a run on a thread inside
         // a daemon configured to drive runs in processes of their own.
         let plugins = sprag_host::plugin_host(
-            pool,
+            home.pool,
             runs,
-            &session,
+            &home.session,
+            // ⚠⚠ THE WINDOW THE SAME WALK FOUND — register item 690. A run put back on a driver
+            // needs the address a fresh one gets, and the pane's window is exactly as much a part
+            // of that address as its session: a resumed driver told no window would follow the
+            // session's current one and die the moment somebody looked elsewhere.
+            &home.window,
             channels,
             &sprag_host::DaemonShared {
                 on_pane_exit: Some(Arc::clone(on_pane_exit)),

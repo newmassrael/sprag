@@ -75,6 +75,15 @@ use crate::remote_access::{RemotePaneAccess, RemotePluginWorld};
 /// (`--daemon`, `--size`) and a driver is the same kind of choice: which program this image is.
 pub const DRIVE_FLAG: &str = "--drive";
 
+/// The argv word that tells a driver WHICH WINDOW of its scoped session it is driving in —
+/// register item 690.
+///
+/// ⚠ Spelled here beside [`DRIVE_FLAG`] rather than at the two ends that use it, because the
+/// daemon writes this argv and this binary reads it: a flag spelled twice is a flag one side can
+/// rename. `-w` follows the session flag's `-t` shape, which is the vocabulary a person already
+/// reads in `sprag -t SESSION`.
+pub const DRIVE_WINDOW_FLAG: &str = "-w";
+
 /// How long a driver waits for its socket to accept before giving up.
 ///
 /// ⚠ Short: the parent spawned this process and the daemon it names is the one that spawned it, so
@@ -84,28 +93,47 @@ const CONNECT_WITHIN: Duration = Duration::from_secs(5);
 /// **RUN THE DRIVER** — read the request from `stdin`, drive it, write the outcome to `stdout`.
 ///
 /// `run` is the id the daemon registered this run under, which is what lets the orders below name a
-/// row. `session` is the scope both connections take.
+/// row. `session` is the scope every connection takes.
+///
+/// # ⚠⚠⚠⚠⚠ `window` is the OTHER half of the address, and it was missing — register item 690
+///
+/// A driver reads one pane and types at one pane for its whole life, and until this argument
+/// existed it never said WHICH WINDOW that pane is in. The daemon answers a pane id against ONE
+/// window's pane pool (`plugins::require_pane_in`), so a request naming no window is read against
+/// whatever window the session is CURRENTLY showing — and a person or another agent selecting a
+/// different window moved that under a running driver's feet.
+///
+/// Measured, not reasoned: run 23 died `failed at reflecting: there is no pane 23` while pane 23
+/// was `idle seq=12` and the session's current window was `pinion`.
+///
+/// [`None`] keeps the old shape exactly — a driver spawned by a daemon that does not name a window
+/// is one whose requests follow the session, which is what every driver did before this.
 ///
 /// # Errors
 ///
 /// A socket that will not accept, a request that is not a JSON object, or a request the builder
 /// refuses (a word no plugin spells, a malformed argument, a pane this daemon does not hold).
 /// **All of those happen before a byte is typed at anybody.**
-pub fn drive(socket: &std::path::Path, session: Option<&str>, run: u64) -> std::io::Result<()> {
+pub fn drive(
+    socket: &std::path::Path,
+    session: Option<&str>,
+    window: Option<&str>,
+    run: u64,
+) -> std::io::Result<()> {
     let request = read_request()?;
 
     // ⚠⚠⚠ FOUR CONNECTIONS, AND EACH IS A DIFFERENT OUTSTANDING QUESTION. A `HostConn` matches
     // replies by id and carries ONE request at a time, so a park that is deliberately unanswered
     // would eat an ordinary read's reply (register item 631 measured that), and a subscription that
     // pushes unprompted must not land in the middle of somebody's call.
-    let reading = connect(socket, session)?;
-    let parking = connect(socket, session)?;
-    let watching = connect(socket, session)?;
+    let reading = connect(socket, session, window)?;
+    let parking = connect(socket, session, window)?;
+    let watching = connect(socket, session, window)?;
     // ⚠⚠⚠ A FOURTH, for the reason the three above are three: a `HostConn` carries ONE outstanding
     // request. Progress is pushed from the driving thread at every step, and the read connection is
     // BUSY at exactly those moments — it is what the step is reading the pane through. Sharing one
     // would make a report wait on a read (or worse, collect its reply).
-    let reporting_on = Arc::new(Mutex::new(connect(socket, session)?));
+    let reporting_on = Arc::new(Mutex::new(connect(socket, session, window)?));
 
     let access = RemotePaneAccess::over(reading)
         .parking_on(parking)
@@ -224,10 +252,21 @@ fn reporting(conn: Arc<Mutex<HostConn>>, run: u64) -> sprag_plugin::ProgressSink
 ///
 /// ⚠ The id names this process, not this run: a run's four connections are one logical client, and
 /// [`sprag_rpc::CLIENT_HELLO_METHOD`] groups them by exactly that.
-fn connect(socket: &std::path::Path, session: Option<&str>) -> std::io::Result<HostConn> {
+fn connect(
+    socket: &std::path::Path,
+    session: Option<&str>,
+    window: Option<&str>,
+) -> std::io::Result<HostConn> {
     let mut conn = HostConn::connect(socket, CONNECT_WITHIN)?;
     if let Some(session) = session {
         conn.scope_to(session);
+    }
+    // ⚠⚠⚠⚠⚠ AND THE WINDOW, on the CONNECTION rather than at each of the fifteen places that build
+    // params — register item 690, and [`sprag_rpc::HostConn::view_window`] carries the argument.
+    // Every request this driver will ever make is about one pane in one window, so the narrowing
+    // belongs to the connection and cannot be forgotten by a call that does not exist yet.
+    if let Some(window) = window {
+        conn.view_window(window);
     }
     conn.handshake(&format!("drive-{}", std::process::id()))?;
     Ok(conn)

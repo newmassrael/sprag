@@ -330,7 +330,7 @@ impl HostState {
 #[must_use]
 pub fn seats_of(registry: Arc<Mutex<SessionRegistry>>) -> crate::plugins::SeatElsewhere {
     Arc::new(move |pane| {
-        let pool = crate::lock(&registry).pool_holding(pane)?.1;
+        let pool = crate::lock(&registry).pool_holding(pane)?.pool;
         let session = crate::lock(&pool)
             .pane(pane)
             .and_then(sprag_terminal::Pane::agent_session)

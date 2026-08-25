@@ -12932,3 +12932,183 @@ fn answer_pane_reaches_a_pane_of_a_window_that_is_not_the_current_one() {
         nowhere.stdout, nowhere.stderr,
     );
 }
+
+/// The name of the window `session` is CURRENTLY showing — the fact this gate pins and then keeps
+/// asserting, read from the daemon rather than assumed from the call that was supposed to set it.
+fn current_window(sock: &Path, session: &str) -> String {
+    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
+    )
+    .expect("the window list")
+    .as_array()
+    .into_iter()
+    .flatten()
+    .find(|window| window["current"].as_bool().unwrap_or(false))
+    .and_then(|window| window["name"].as_str())
+    .expect("a session always has a current window")
+    .to_owned()
+}
+
+/// ⚠⚠⚠⚠⚠ **A RUN DRIVES ITS OWN PANE WHILE THE SESSION IS LOOKING SOMEWHERE ELSE** — register
+/// item 690, the third and deepest layer of the family items 686 and 687 paid off at the mouths.
+///
+/// # What was wrong: the mouth learned the window and the HAND never did
+///
+/// Item 686 gave `orchestrate` the window, item 687 gave it to the MCP tools and to `answer-pane`,
+/// and a run then STARTED correctly on a pane one window over. It still could not be DRIVEN there.
+/// A run's driver is a process of its own (`run-driver-process` defaults to `on`); it was handed
+/// `--drive <id>`, `-t <session>` and the request map, and **`drive.rs` contained no window at
+/// all** — so every pane read, every keystroke and every progress report it made resolved against
+/// whichever window the session happened to be showing.
+///
+/// Measured on a live loop, 2026-08-25: run 23 died `failed at reflecting: there is no pane 23`
+/// while pane 23 was `idle seq=12` and the session's current window was `pinion`. Nothing was
+/// wrong with the pane, the run, or the request that started it.
+///
+/// # ⚠⚠⚠⚠ Why TWO WINDOWS is not enough, and what this fixture pins
+///
+/// Which window is CURRENT is what decides the answer, so a fixture that does not fix it lets the
+/// RUNNER fix it — and a gate whose premise is set by whatever ran last is measuring the runner
+/// (the rule item 666 wrote down). So the current window is pinned to `spare`, which is NOT the
+/// run's window, and the pin is asserted **twice**: before the run is submitted, and again after
+/// the driver has demonstrably typed into the pane. The second assertion is the one that matters —
+/// it says the pin was still holding at the moment the driving happened.
+#[test]
+fn a_run_drives_its_pane_while_the_session_is_looking_at_another_window() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-drive-elsewhere-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let _guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+
+    // The loop's peer: a stand-in agent that announces itself and echoes, so the run gets PAST its
+    // readiness barrier and injects — which is the first thing a driver does that touches the pane.
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "work",
+                "cmd": ["sh", "-c",
+                        "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+            },
+        }),
+    )
+    .expect("new_session answers");
+    let listed = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the session's panes");
+    let pane = listed
+        .as_array()
+        .and_then(|panes| panes.first())
+        .and_then(|pane| pane["id"].as_u64())
+        .unwrap_or_else(|| panic!("the session's first pane id: {listed}"));
+    let home = current_window(&sock, "work");
+
+    // ── THE PIN, MADE AND THEN ASSERTED ─────────────────────────────────────────────────────────
+    // `new-window` selects what it makes, so after this the session is showing `spare` and the
+    // run's pane is one window over. Both halves are measured, because a fixture that only ARRANGED
+    // this would be trusting the very call whose effect is the premise.
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    assert_eq!(
+        current_window(&sock, "work"),
+        "spare",
+        "⛔ THE PIN: the session must be looking at `spare`, which is NOT the run's window — \
+         everything below passes trivially if the session is still on {home}",
+    );
+    let here = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(here.ok, "panes -t work: {}", here.stderr);
+    assert!(
+        !pane_ids_in(&here.stdout).contains(&pane),
+        "⛔ THE PIN, the other way round: `panes` lists the CURRENT window, and pane {pane} being \
+         in it would mean the run and the person are looking at the same place: {}",
+        here.stdout,
+    );
+
+    // ── THE RUN, submitted against the window that HOLDS the pane ───────────────────────────────
+    // Over the wire rather than through `sprag orchestrate`, deliberately: the mouths already have
+    // gates of their own (items 686 and 687), and what is under test here is what happens AFTER a
+    // correctly addressed request is accepted — the driver process the daemon then spawns.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            sprag_rpc::WINDOW_PARAM: home,
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "ai_loop",
+                "pane": pane,
+                "agent": "claude",
+                "north_star": "a run drives the pane it was given, wherever the person is looking",
+                "milestone": "get past readiness and inject while the session is elsewhere",
+                "reference": "register item 690",
+                "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                // ⚠ The stand-in paints only whole lines, so a delivery cannot be confirmed on
+                // screen before the newline that submits it.
+                "shows_prompt": false,
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the loop is submitted");
+    drop(conn);
+
+    // ── THE CLAIM: the driver READ the pane and TYPED into it, one window over ───────────────────
+    // A delivery is the product's own proof that the whole chain worked: the driver resolved the
+    // pane, read its screen until the readiness marker was there, and wrote a prompt into it. Under
+    // the defect none of that is reachable — the first read answers `there is no pane N`.
+    let mut last = String::new();
+    let delivered = wait_for(Duration::from_secs(60), || {
+        last = sprag(&sock, &["runs", "-t", "work"]).stdout;
+        last.contains("prompt(s) delivered")
+    });
+    assert!(
+        delivered,
+        "⛔⛔⛔⛔ REGISTER ITEM 690: the run's driver never typed into pane {pane}. It is a process \
+         of its own and was told the session but not the WINDOW, so every pane request it made was \
+         read against `spare` — which does not hold this pane. The row: {last}",
+    );
+    assert!(
+        !last.contains("there is no pane"),
+        "⛔⛔⛔⛔ REGISTER ITEM 690, in the words the live failure used: a run must not be told its \
+         own pane does not exist while it is alive one window over: {last}",
+    );
+
+    // ── AND THE PIN WAS STILL HOLDING WHILE THAT HAPPENED ───────────────────────────────────────
+    // ⚠ This is the assertion the fixture exists for. Read AFTER the driving rather than before it:
+    // a pin asserted only at the start would pass on a run that succeeded because something moved
+    // the session back onto the run's window in between, which is the coincidence item 684 warned
+    // about — two sources that happen to agree cannot say which one was used.
+    assert_eq!(
+        current_window(&sock, "work"),
+        "spare",
+        "⛔ THE PIN MUST HAVE HELD THROUGHOUT: if the session moved onto the run's window while the \
+         driver was working, the claim above is about a one-window world after all",
+    );
+    let still = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        !pane_ids_in(&still.stdout).contains(&pane),
+        "⛔ AND THE PANE WAS NEVER IN THE CURRENT WINDOW: {}",
+        still.stdout,
+    );
+}

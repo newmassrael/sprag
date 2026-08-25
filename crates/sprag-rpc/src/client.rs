@@ -1637,6 +1637,25 @@ pub struct HostConn {
     /// client's several connections (its request stream and its long-poll) cannot address
     /// different sessions.
     scope: ScopeAsk,
+    /// ⚠⚠⚠⚠⚠ **WHICH WINDOW of that session every request on this connection is about** — `None`
+    /// for "whichever window the session is showing", which is what every client meant before this
+    /// existed. Set by [`view_window`](Self::view_window) and merged in by
+    /// [`scoped`](Self::scoped), the same one seam [`scope`](Self::scope) goes through.
+    ///
+    /// # Why a CONNECTION can hold this, when a window narrowing is per-request everywhere else
+    ///
+    /// Register item 690. A RUN's driver is a client whose every request — each pane read, each
+    /// keystroke, each progress report — is about ONE pane in ONE window, for the whole life of the
+    /// process. Spelled per call it was spelled nowhere: `sprag-host`'s `drive.rs` carried no
+    /// window at all, so a run driving a pane one window over resolved against whatever window the
+    /// session happened to be showing and died `there is no pane N` about a pane that was alive.
+    /// Measured on run 23, 2026-08-25: the pane was `idle seq=12` and the current window was
+    /// `pinion`.
+    ///
+    /// A per-call spelling would have had to be added at each of the fifteen places that build
+    /// params, which is the shape register item 687 had just paid off one surface up. On the
+    /// connection it cannot be forgotten by a call that does not exist yet.
+    window: Option<String>,
     /// Set once a read deadline expired mid-reply. See [`set_read_deadline`](Self::set_read_deadline)
     /// for why a timed-out connection can never be used again.
     timed_out: bool,
@@ -1744,6 +1763,9 @@ impl HostConn {
             reader,
             next_id: 1,
             scope: ScopeAsk::Default,
+            // ⚠ NOT NARROWED is what a connection nobody narrowed is — the session's current
+            // window, which is what every client meant before `view_window` existed.
+            window: None,
             timed_out: false,
             read_deadline: None,
             pending: VecDeque::new(),
@@ -1818,6 +1840,26 @@ impl HostConn {
         self.scope = ScopeAsk::Attached;
     }
 
+    /// ⚠⚠⚠⚠⚠ Narrow every subsequent request on this connection to ONE WINDOW of its scoped
+    /// session — register item 690.
+    ///
+    /// The run that died without it: run 23, 2026-08-25, `failed at reflecting: there is no pane
+    /// 23` while pane 23 was `idle seq=12` and the session's current window was `pinion`. Its
+    /// driver had been told the session and never the window, so every pane request it made was
+    /// read against whichever window the session happened to be showing.
+    ///
+    /// Orthogonal to the session scope and composes with all three of its arms, exactly as
+    /// [`ScopeAsk::write_window_into`] is orthogonal to [`ScopeAsk::write_into`]: this says WHICH
+    /// WINDOW, never which session.
+    ///
+    /// ⚠ A caller that narrows is asserting that every request it will make is about that window.
+    /// That is true of a run's driver and false of a display client, which follows the session's
+    /// current window on purpose — so this is opt-in and a connection nobody narrowed is unchanged
+    /// byte for byte.
+    pub fn view_window(&mut self, window: impl Into<String>) {
+        self.window = Some(window.into());
+    }
+
     /// Merge this connection's scope ([`ScopeAsk`]) into a request's params. Only an object
     /// `params` can carry the key; every scoped request the wire client issues is object-shaped
     /// (`{"path": ..}`), so a non-object is passed through untouched rather than reshaped —
@@ -1840,6 +1882,10 @@ impl HostConn {
         // ones that do not exist yet.
         map.insert(PROTOCOL_PARAM.to_owned(), Value::from(WIRE_PROTOCOL));
         self.scope.write_into(&mut map);
+        // ⚠⚠⚠⚠⚠ AND WHICH WINDOW, at the SAME seam — register item 690. Through the scope
+        // grammar's own writer rather than a key spelled here, so the client and the daemon cannot
+        // come to disagree about how a narrowing is spelled; `None` writes nothing.
+        ScopeAsk::write_window_into(self.window.as_deref(), &mut map);
         Value::Object(map)
     }
 
