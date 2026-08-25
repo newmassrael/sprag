@@ -3044,6 +3044,7 @@ mod tests {
             rule_ids(claude),
             [
                 "dialog-choice-list",
+                "composer-holds-paste",
                 "working-footer",
                 "spinner-glyph",
                 "idle-glyph",
@@ -3196,7 +3197,12 @@ mod tests {
         let claude = named(&manifests, "claude");
         assert_eq!(
             rule_ids(claude),
-            ["dialog-choice-list", "working-footer", "spinner-glyph"],
+            [
+                "dialog-choice-list",
+                "composer-holds-paste",
+                "working-footer",
+                "spinner-glyph",
+            ],
         );
 
         let em = painted(&["❯", "  ⏸ manual mode on · ? for shortcuts"]);
@@ -3482,7 +3488,7 @@ mod tests {
 
         let mut held = AgentManifests::at(Some(&path));
         let first = held.rules().revision();
-        assert_eq!(rule_ids(named(held.rules().manifests(), "claude")).len(), 3);
+        assert_eq!(rule_ids(named(held.rules().manifests(), "claude")).len(), 4);
 
         assert!(!held.refresh(), "an unchanged file is not an edit");
         assert_eq!(held.rules().revision(), first, "and nothing is replaced");
@@ -3500,7 +3506,12 @@ mod tests {
         );
         assert_eq!(
             rule_ids(named(held.rules().manifests(), "claude")),
-            ["dialog-choice-list", "working-footer", "idle-glyph"],
+            [
+                "dialog-choice-list",
+                "composer-holds-paste",
+                "working-footer",
+                "idle-glyph",
+            ],
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -3531,7 +3542,12 @@ mod tests {
         assert_eq!(held.rules().revision(), working, "the working list is kept");
         assert_eq!(
             rule_ids(named(held.rules().manifests(), "claude")),
-            ["dialog-choice-list", "working-footer", "spinner-glyph"],
+            [
+                "dialog-choice-list",
+                "composer-holds-paste",
+                "working-footer",
+                "spinner-glyph",
+            ],
         );
         let reported = held.unusable().expect("the reason is kept for a surface");
         assert!(reported.to_string().contains("nope"), "{reported}");
@@ -3558,13 +3574,13 @@ mod tests {
         )
         .expect("write");
         let mut held = AgentManifests::at(Some(&path));
-        assert_eq!(rule_ids(named(held.rules().manifests(), "claude")).len(), 3);
+        assert_eq!(rule_ids(named(held.rules().manifests(), "claude")).len(), 4);
 
         std::fs::remove_file(&path).expect("delete");
         assert!(held.refresh(), "the deletion is an edit");
         assert_eq!(
             rule_ids(named(held.rules().manifests(), "claude")).len(),
-            4,
+            5,
             "the built-ins are back",
         );
     }

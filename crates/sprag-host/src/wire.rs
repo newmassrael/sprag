@@ -9206,6 +9206,20 @@ mod tests {
             // `raw_output` answers an object of two keys, and neither is a word from a set — one
             // is BASE64 (an encoding, not a vocabulary: every byte string has a spelling) and the
             // other is a bool. A caller decoding it whole cannot meet an arm it does not know.
+            // ⚠⚠ 42 AGAIN — and this note is here because the vocabulary that moved LOOKS like one
+            // of these and is not. Register item 669 gave `AgentState` a fourth word (`holding`),
+            // which a pane's `agent.state` carries OUTWARD, so a reader would expect this pin. It
+            // is deliberately absent: this pin holds the sets a peer decodes WHOLE, where an
+            // unknown arm fails the whole document, and `agent.state` is read as a STRING —
+            // `sprag_client::agent_phrase` passes a token it does not know through verbatim, on
+            // the stated grounds that the daemon may be newer than the client reading it. So a
+            // widening here costs an older reader a slightly odd phrase and nothing else.
+            // ⚠ The word is still pinned, on the OTHER side: a reporter SAYS it at `report_agent`,
+            // and `a_published_value_space_cannot_widen_under_the_protocol_number` went red for it.
+            // That is not luck — `AgentState::is_reported` is derived from `wire_str`, so every
+            // state with a wire spelling is one a reporter may name, and the request pin therefore
+            // sees every word this one would. A future state that could be PUBLISHED without being
+            // REPORTABLE would break that, and would owe an entry here.
             42,
             &[
                 "check:pane-isolation",
@@ -9588,6 +9602,14 @@ mod tests {
             // exactly. Register item 656 added a READ address; a read takes no arguments, so there
             // is no request word for this pin to see, and its answer is keyed by two literals of
             // its own rather than by any vocabulary a caller may say.
+            // ⚠⚠ 42 AGAIN, AND THIS PIN IS THE SUBJECT — a PUBLISHED VALUE SPACE WIDENED
+            // (`report_agent` gains `state=…,holding`, register item 669's fourth agent state) with
+            // the NUMBER DELIBERATELY STANDING. R342's rule, applied rather than quoted: a bump is
+            // owed when an older daemon would SWALLOW what a newer client says, and nothing is
+            // swallowed here — no argument is new, so a newer client naming `holding` at an older
+            // daemon is REFUSED by the closed set it validates against, and an older client simply
+            // never says the word. That is the difference from 41, where the words arrived with a
+            // new argument and the swallowing delivered a wider act than the caller asked for.
             42,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
@@ -9615,7 +9637,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_pane:",
                 "sprag_workspace/sprag_mux/rename_session:",
                 "sprag_workspace/sprag_mux/rename_window:",
-                "sprag_workspace/sprag_mux/report_agent:state=working,blocked,idle",
+                "sprag_workspace/sprag_mux/report_agent:state=working,blocked,idle,holding",
                 "sprag_workspace/sprag_mux/resize:",
                 "sprag_workspace/sprag_mux/resize_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/resize_window:from=largest,smallest,latest",

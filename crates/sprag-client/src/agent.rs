@@ -61,6 +61,12 @@ pub fn agent_phrase(agent: &PaneAgent) -> String {
 /// `idle` outranks `working` for the same reason one place further on: an agent at rest is waiting for
 /// somebody, and one that is working is not.
 ///
+/// `holding` outranks `idle` by that same reasoning taken one step further, and it is a RANK RATHER
+/// THAN A GUESS: an idle pane is waiting for somebody to think of something, and a holding one has
+/// the thing already typed into its composer and needs a keypress. Register item 669 — the state
+/// exists because a supervisor's Enter can fail to land, and a pane in exactly that condition must
+/// not sort behind two working ones.
+///
 /// An unknown token sorts LAST rather than first. It is the honest place for it — this build cannot
 /// know what a future state means, and guessing that it is urgent would let a newer daemon's routine
 /// state displace a blocked pane.
@@ -68,9 +74,10 @@ pub fn agent_phrase(agent: &PaneAgent) -> String {
 pub fn agent_urgency(state: &str) -> u8 {
     match state {
         "blocked" => 0,
-        "idle" => 1,
-        "working" => 2,
-        _ => 3,
+        "holding" => 1,
+        "idle" => 2,
+        "working" => 3,
+        _ => 4,
     }
 }
 
@@ -125,16 +132,25 @@ mod tests {
         );
     }
 
-    /// The ordering a truncated line depends on: blocked first, then idle, then working, with an
-    /// unknown state last.
+    /// The ordering a truncated line depends on: blocked first, then holding, then idle, then
+    /// working, with an unknown state last.
     ///
     /// REVERT-PROOF: give every state the same rank and the sort becomes input order, so a blocked
     /// pane sits wherever the pane list happened to put it — behind the working panes, in the half of
     /// a terminal title that gets cut off.
+    ///
+    /// ⚠ `holding` is in the fixture as a KNOWN word rather than as the unknown one. Register item
+    /// 669 added it to the daemon's vocabulary, so leaving it to fall through to the `_` arm would
+    /// have sorted a pane whose prompt never went in behind every pane that is merely busy — and
+    /// would have done it while this function's own doc said the last rank is for states this build
+    /// *cannot know*, which would no longer have been true of it.
     #[test]
     fn urgency_puts_the_state_that_needs_a_person_first() {
-        let mut states = ["working", "later-thing", "idle", "blocked"];
+        let mut states = ["working", "later-thing", "idle", "blocked", "holding"];
         states.sort_by_key(|state| agent_urgency(state));
-        assert_eq!(states, ["blocked", "idle", "working", "later-thing"]);
+        assert_eq!(
+            states,
+            ["blocked", "holding", "idle", "working", "later-thing"],
+        );
     }
 }

@@ -9860,12 +9860,13 @@ mod tests {
         // would pass every assertion inside the gate by running none of them.
         assert_eq!(
             mux_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            36,
+            37,
             "one call per published word: four directions on each of three pane verbs (12), two \
              steps of the window ring, four places to move a window to, the three window-size \
              policies that fold clients (`manual` being the fourth and not one of them), the two \
-             axes on EACH of the two verbs that place a pane, three severities, the three states a \
-             reporter may name, and — register item 654 — the two REACHES a stop may ask for",
+             axes on EACH of the two verbs that place a pane, three severities, the FOUR states a \
+             reporter may name (register item 669 added `holding`), and — register item 654 — the \
+             two REACHES a stop may ask for",
         );
     }
 

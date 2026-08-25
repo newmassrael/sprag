@@ -188,6 +188,22 @@ sprag_vt::closed_set! {
         Blocked,
         /// The agent is at rest, waiting for input it has not asked for.
         Idle,
+        /// The agent's COMPOSER is holding text nobody has submitted.
+        ///
+        /// Not a fifth flavour of busy — it is a fact about the INPUT LINE rather than about the
+        /// turn, and it is here because its ABSENCE is a judgement somebody needs. A supervisor
+        /// that types a prompt into a pane and presses Enter has, today, no way to learn whether
+        /// the press landed: the agent's submit hook reports the submits it saw and is silent about
+        /// the ones it did not, so "not submitted" arrives as *nothing at all* and no amount of
+        /// waiting turns it into an answer. The composer, on the other hand, is a PROPERTY of the
+        /// screen and is stable in both directions — it is holding, or it is not.
+        ///
+        /// ⚠ The evidence is the agent's, not the terminal's: an empty composer is `claude`'s
+        /// convention for "nothing pending" and not a fact a pty could state, which is why this is
+        /// read by a MANIFEST rule and not by a constant somewhere in this crate. Another agent
+        /// spells its composer differently, and a manifest is the thing that gets edited when one
+        /// of them changes its mind.
+        Holding,
     }
 }
 
@@ -203,10 +219,11 @@ impl AgentState {
             Self::Working => Some("working"),
             Self::Blocked => Some("blocked"),
             Self::Idle => Some("idle"),
+            Self::Holding => Some("holding"),
         }
     }
 
-    /// The state a REPORTER named, or `None` for a token that is not one of the three.
+    /// The state a REPORTER named, or `None` for a token that is not one of the reported ones.
     ///
     /// [`wire_str`](Self::wire_str)'s inverse, written here so the vocabulary has ONE definition: a
     /// process reporting its own state uses the spelling a client already reads, and a spelling
@@ -244,7 +261,7 @@ impl AgentState {
 
     /// Whether a REPORTER may name this state — every one that has a wire token.
     ///
-    /// Derived from [`wire_str`](Self::wire_str) rather than listing the three, so the predicate
+    /// Derived from [`wire_str`](Self::wire_str) rather than listing them, so the predicate
     /// the wire publishes through and the spelling a reporter is parsed by cannot disagree. See
     /// `from_wire` for why `unknown` is deliberately not among them.
     #[must_use]
@@ -255,11 +272,18 @@ impl AgentState {
     /// Whether this state is asserted by evidence PRESENT on the screen, rather than by the absence
     /// of it.
     ///
-    /// [`Working`](Self::Working) is a spinner frame in the title and [`Blocked`](Self::Blocked) is
-    /// a choice list on the screen: both are things a rule SAW. The other two are what a pane reads
-    /// as when the working signal or the fingerprint is not there — and an absence can be an
+    /// [`Working`](Self::Working) is a spinner frame in the title, [`Blocked`](Self::Blocked) is
+    /// a choice list on the screen, and [`Holding`](Self::Holding) is the composer's own placeholder
+    /// for a paste it has not sent: all three are things a rule SAW. The other two are what a pane
+    /// reads as when the working signal or the fingerprint is not there — and an absence can be an
     /// artifact of the instant the sample was taken, because the working signal is an ANIMATION
     /// (R249's M2, a title alternating at about 1 Hz).
+    ///
+    /// ⚠ [`Holding`](Self::Holding) is present evidence but it is NOT motion: the placeholder does
+    /// not blink, so unlike the other two an absence of it is not a sampling artifact either. It is
+    /// on this side of the line because of what the side MEANS here — publish on sight, and keep an
+    /// identity a modal has covered — and both are right for a pane whose composer a rule can read.
+    /// Nothing may read this as "busy": a pane holding an unsubmitted paste is not taking a turn.
     ///
     /// [`Tracker`] rests two decisions on that asymmetry and no third thing should read it as
     /// "busy": an active verdict is published on sight while a resting one has to hold
@@ -267,11 +291,11 @@ impl AgentState {
     /// already had only while it is showing something active.
     #[must_use]
     pub const fn is_active(self) -> bool {
-        matches!(self, Self::Working | Self::Blocked)
+        matches!(self, Self::Working | Self::Blocked | Self::Holding)
     }
 }
 
-// The three words a REPORTER may name, as data the wire can publish — see `sprag_vt::wire_words`.
+// The words a REPORTER may name, as data the wire can publish — see `sprag_vt::wire_words`.
 // `Unknown` is excluded by the predicate, not by a list: it is a conclusion about the RULES rather
 // than a state a reporter is in, which is the asymmetry `from_wire` documents.
 sprag_vt::wire_words!(AgentState: wire_word, REPORTED_WORDS where is_reported);
@@ -644,6 +668,65 @@ const FOOTER_WINDOW: u16 = 4;
 /// which is why `question` takes the window as a parameter rather than assuming this one.
 pub const DIALOG_WINDOW: u16 = 12;
 
+/// How many non-empty rows up from the bottom the COMPOSER's own rows may sit.
+///
+/// Twelve, and for [`DIALOG_WINDOW`]'s reason rather than by copying its number: the composer is
+/// bottom-anchored and VARIES in height with what is in it. Measured live on `claude` 2.1.243
+/// (2026-08-25, a 54-column pane): a composer holding nothing but a folded paste puts its
+/// placeholder **3** non-empty rows from the bottom, and the same paste with three lines typed
+/// after it puts it at **6** — the marker moves up one row per row typed below it. A window sized
+/// to the first would stop reading the composer the moment somebody added a line to it.
+///
+/// ⚠ Its own constant rather than [`DIALOG_WINDOW`] although the two numbers agree today. That one
+/// is shared BECAUSE its readers must agree — a dialog rule and the fingerprint conjunction beside
+/// it have to be looking at the same screen. This one has a single reader and a different
+/// measurement behind it, so widening one must not silently widen the other.
+const COMPOSER_WINDOW: u16 = 12;
+
+/// The placeholder an agent's composer paints in place of a paste too long to show inline.
+///
+/// # What it is evidence OF, which is the whole point
+///
+/// A composer holding this has text in it that **nobody has submitted**. That is the one fact a
+/// supervisor pressing Enter at a pane cannot otherwise learn: a submit HOOK reports the presses it
+/// saw and says nothing about the ones it did not, so a press that never landed arrives as silence,
+/// and silence is also what a slow hook looks like. The placeholder is a PROPERTY of the screen and
+/// answers in both directions — [`AgentState::Holding`].
+///
+/// # Measured, twice, at two versions
+///
+/// `claude` 2.1.233 was measured folding 1,238 bytes into `[Pasted text #2 +5 lines]`, and 2.1.243
+/// was driven live on 2026-08-25 into all three of the states this rule has to tell apart:
+///
+/// | what was done to the composer | what the composer showed |
+/// |---|---|
+/// | 1,337 bytes written at once | `❯ [Pasted text #1 +13 lines]`, and the footer replaced by *"paste again to expand"* |
+/// | the same, then three lines typed after it | the placeholder, the three lines, and the ordinary footer back |
+/// | Enter | `❯` **empty**, and the paste **EXPANDED** into the transcript above |
+///
+/// ⚠⚠⚠ **The third row is why this can be read at all.** A submitted message is still on the
+/// screen — R249's front once asked *"is my text on the screen"* and that question has the same
+/// answer in both states. This one does not: the placeholder is the composer's, the transcript
+/// spells the message out in full, and so the marker is absent exactly when the text is gone from
+/// the composer.
+///
+/// # What it does NOT see, stated because the absence is silent
+///
+/// A composer holding a SHORT prompt shows the text inline with no placeholder at all (measured the
+/// same day: 260 bytes over 12 lines, no fold), and such a pane still reads [`AgentState::Idle`].
+/// So `Holding` is a LOWER BOUND on "the composer is holding something", not a decision procedure
+/// for it. That is the right bound for the population it was built for — a supervisor's prompts are
+/// long enough to fold, which is why the fold was discovered by one failing on it — and it is the
+/// wrong one for a person typing a word by hand.
+///
+/// Anchored to the composer's own prompt marker (`❯`, and `›`/`>` for the agents and versions that
+/// spell it that way) rather than matched anywhere in the window, because THIS repository's agents
+/// discuss this placeholder in prose: an unanchored needle would fire on a pane whose agent was
+/// merely talking about one.
+fn held_paste_pattern() -> Regex {
+    Regex::new(r"(?m)^\s*[❯›>]\s*\[Pasted text[^\]]*\]").expect("a literal pattern compiles")
+}
+
 /// The built-in manifest for Anthropic's `claude` CLI, derived from R249's measurements.
 ///
 /// # Panics
@@ -709,6 +792,25 @@ pub fn claude() -> Manifest {
                 // Above `idle-glyph` because BOTH match on a blocked pane -- the measured fact
                 // this whole ordering exists for.
                 priority: 30,
+            },
+            // ⚠⚠⚠ ABOVE `working-footer`, AND THE REASON IS THE JUDGEMENT THIS STATE EXISTS FOR.
+            // The marker says text is sitting in the composer that nobody submitted, and the whole
+            // value of reading it is that its ABSENCE is how a supervisor learns its press landed.
+            // Let `working` outrank it and that reading would go blind exactly when the agent
+            // happened to be mid-turn -- which is one of the standing suspects for why a press does
+            // not land. ⚠ The overlap itself is UNMEASURED: in the one live screen where the
+            // composer held nothing but a folded paste, `claude` 2.1.243 replaced the footer with
+            // "paste again to expand", so neither footer affordance was on the screen to compete.
+            // BELOW `dialog-choice-list`, because an agent that has stopped to ask is a stronger
+            // instruction to whoever reads the pane than a composer with something in it.
+            Rule {
+                id: "composer-holds-paste".to_owned(),
+                state: AgentState::Holding,
+                all: vec![Match::new(
+                    Region::BottomLines(COMPOSER_WINDOW),
+                    Test::Regex(held_paste_pattern()),
+                )],
+                priority: 28,
             },
             // ⚠⚠⚠ ABOVE `idle-glyph` AND THAT IS THE WHOLE POINT. The resting glyph is one frame
             // of the working animation (see `RESTING_GLYPH`), so on a working pane BOTH of these
@@ -1154,6 +1256,206 @@ mod tests {
             resting.state,
             AgentState::Idle,
             "a pane whose footer offers `? for shortcuts` has nothing to interrupt: {resting:?}",
+        );
+    }
+
+    // ── The four screens below were CAPTURED on 2026-08-25 from a live `claude` 2.1.243 in a
+    //    54-column sprag pane, driven through the states in the order they appear: a long write
+    //    held, the same held with more typed after it, the same submitted, and a SHORT write held.
+    //    They are the population the composer rule was written from — see `held_paste_pattern`.
+
+    /// **HELD**: 1,337 bytes written into the composer in one go and NOT submitted.
+    ///
+    /// The paste is folded to a placeholder and the ordinary footer is gone — `claude` puts *"paste
+    /// again to expand"* there instead while the composer holds nothing but the paste. The rows
+    /// above are the tail of the previous turn's answer.
+    const HELD_FOLDED_PASTE: &[&str] = &[
+        "  58",
+        "  59",
+        "  60",
+        "✻ Churned for 2s",
+        "──────────────────────────────────────────────────────",
+        "❯ [Pasted text #3 +13 lines]",
+        "──────────────────────────────────────────────────────",
+        "  paste again to expand",
+    ];
+
+    /// **HELD, AND ADDED TO**: the same folded paste with three lines typed after it.
+    ///
+    /// This is what sized [`COMPOSER_WINDOW`]: the placeholder is now **6** non-empty rows from the
+    /// bottom instead of 3, because every row typed below it pushes it up one. The footer is back,
+    /// so *"paste again to expand"* is not a second name for this state.
+    const HELD_PASTE_WITH_TYPING: &[&str] = &[
+        "● OK",
+        "✻ Brewed for 1s",
+        "                           ctrl+g to edit in VS Code",
+        "──────────────────────────────────────────────────────",
+        "❯ [Pasted text #2 +13 lines]",
+        "  tail one",
+        "  tail two",
+        "  tail three",
+        "──────────────────────────────────────────────────────",
+        "  ⏵⏵ auto mode on (shift+tab to cycle)",
+    ];
+
+    /// **SUBMITTED**: the same paste, one Enter later.
+    ///
+    /// ⚠⚠⚠ **THE ROW THAT MAKES THIS READABLE AT ALL**: the composer is empty and the paste has
+    /// been **EXPANDED** into the transcript — the placeholder is nowhere on the screen. So the
+    /// marker is absent exactly when the text has left the composer, which is the asymmetry
+    /// *"is my text on the screen"* does not have: the text is on this screen too.
+    const SUBMITTED_PASTE: &[&str] = &[
+        "  HOLDPROBE BIG 14 reply with the single word OK and",
+        "  nothing else",
+        "● OK",
+        "✻ Brewed for 1s",
+        "──────────────────────────────────────────────────────",
+        "❯",
+        "──────────────────────────────────────────────────────",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 9 agents",
+    ];
+
+    /// **HELD, AND NOT FOLDED**: 260 bytes over 12 lines, written at once and not submitted.
+    ///
+    /// The composer shows the text inline and paints no placeholder, so this pane is holding an
+    /// unsubmitted prompt and the rule cannot see it. Kept as a fixture because the limit is
+    /// otherwise invisible — see `a_composer_holding_a_prompt_too_short_to_fold_is_not_seen`.
+    const HELD_INLINE_PROMPT: &[&str] = &[
+        "──────────────────────────────────────────────────────",
+        "❯ HOLDPROBE line one",
+        "  HOLDPROBE line two",
+        "  HOLDPROBE line three",
+        "  HOLDPROBE line four",
+        "  HOLDPROBE line five",
+        "  HOLDPROBE line six",
+        "  HOLDPROBE line seven",
+        "  HOLDPROBE line eight",
+        "  HOLDPROBE line nine",
+        "  HOLDPROBE line ten",
+        "  HOLDPROBE line eleven",
+        "  HOLDPROBE reply with the single word OK",
+        "──────────────────────────────────────────────────────",
+        "  ⏵⏵ auto mode on (shift+tab to cycle)",
+    ];
+
+    /// ⚠⚠⚠⚠⚠ **A COMPOSER HOLDING AN UNSUBMITTED PROMPT IS NOT A PANE AT REST**, and before this
+    /// rule the two were the same answer.
+    ///
+    /// # The defect, in one pair of screens
+    ///
+    /// [`HELD_FOLDED_PASTE`] and [`SUBMITTED_PASTE`] are the SAME pane one Enter apart, and the
+    /// title is the same resting glyph in both. Read by the manifest as it was, both said `Idle` —
+    /// so *"the prompt went in"* and *"the prompt is still sitting there"* were indistinguishable,
+    /// which is why a supervisor whose press did not land has, today, nothing to wait for: the
+    /// agent's submit hook reports presses it SAW and is silent about the rest.
+    ///
+    /// # The control is the second half of the same pair, and it is not optional
+    ///
+    /// A rule that answered `Holding` for every `claude` pane would pass the first assertion. The
+    /// submitted screen still carries the prompt's own text, one row per line, and must read `Idle`
+    /// anyway — the marker is a fact about the COMPOSER, not about whether the text is visible.
+    #[test]
+    fn a_composer_holding_a_folded_paste_reads_holding() {
+        let held = verdict(HELD_FOLDED_PASTE, Some("✳ Claude Code"));
+        assert_eq!(
+            held.agent.as_deref(),
+            Some("claude"),
+            "the pane is still this agent's while its composer holds a paste: {held:?}",
+        );
+        assert_eq!(
+            held.state,
+            AgentState::Holding,
+            "⚠⚠⚠⚠⚠ the composer is showing a placeholder for text NOBODY SUBMITTED. Read as \
+             `Idle` this pane is indistinguishable from one whose prompt went in, which is the \
+             judgement a supervisor cannot make today: {held:?}",
+        );
+        assert_eq!(
+            held.rule.as_deref(),
+            Some("composer-holds-paste"),
+            "and the manifest must say WHICH rule saw it, or a manifest author debugging a \
+             composer that changed spelling has nothing to go on: {held:?}",
+        );
+
+        // ⚠ THE CONTROL: one Enter later, same pane, same title. The prompt's own text is STILL on
+        // this screen -- the transcript expanded the paste -- so a rule that had keyed on the text
+        // rather than on the composer would answer `Holding` here too.
+        let submitted = verdict(SUBMITTED_PASTE, Some("✳ Claude Code"));
+        assert_eq!(
+            submitted.state,
+            AgentState::Idle,
+            "⚠⚠⚠ the composer is EMPTY and the paste is expanded above it: this pane submitted. \
+             Answering `Holding` here would make the state useless, because the whole point is \
+             that its absence is the release: {submitted:?}",
+        );
+        assert_eq!(
+            submitted.rule.as_deref(),
+            Some("idle-glyph"),
+            "and it is the resting title that says so, with no composer rule firing: {submitted:?}",
+        );
+    }
+
+    /// ⚠⚠ **AND THE MARKER MOVES UP THE SCREEN WHEN SOMEBODY TYPES UNDER IT** — which is what
+    /// [`COMPOSER_WINDOW`] is sized for, asserted here rather than left to the constant's prose.
+    ///
+    /// The fixture ESTABLISHES the premise (the placeholder sits 6 non-empty rows up, not 3) and
+    /// the gate asserts that premise before resting on it: the narrower [`FOOTER_WINDOW`] the
+    /// footer rules use cannot see this screen at all, so a composer window copied from that one
+    /// would read a pane holding a paste plus one typed line as `Idle`.
+    #[test]
+    fn a_paste_is_still_read_when_lines_are_typed_under_it() {
+        let em = painted(HELD_PASTE_WITH_TYPING);
+        let narrow = Match::new(
+            Region::BottomLines(FOOTER_WINDOW),
+            Test::Regex(held_paste_pattern()),
+        );
+        assert!(
+            !narrow.holds_for_test(em.screen(), "✳ Claude Code"),
+            "⚠ THE PREMISE: the three typed rows push the placeholder out of a {FOOTER_WINDOW}-row \
+             window. If this ever holds, the test below has stopped measuring the window at all",
+        );
+
+        let v = verdict(HELD_PASTE_WITH_TYPING, Some("✳ Claude Code"));
+        assert_eq!(
+            v.state,
+            AgentState::Holding,
+            "the composer is holding a paste AND three typed lines, {COMPOSER_WINDOW} rows being \
+             what it takes to still see it: {v:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE LIMIT, NAMED SO IT IS NOT DISCOVERED AS A SURPRISE**: a prompt short enough to
+    /// show inline is held with no placeholder, and this rule does not see it.
+    ///
+    /// Measured the same day as the rest: 260 bytes over 12 lines went into the composer whole. So
+    /// [`AgentState::Holding`] is a LOWER BOUND on "the composer is holding something" — right for
+    /// the population it was built for, where prompts are long enough to fold, and wrong for a
+    /// person typing a word by hand. A round that widens it should fail this test, not delete it.
+    #[test]
+    fn a_composer_holding_a_prompt_too_short_to_fold_is_not_seen() {
+        let v = verdict(HELD_INLINE_PROMPT, Some("✳ Claude Code"));
+        assert_eq!(
+            v.state,
+            AgentState::Idle,
+            "⚠ an UNSUBMITTED prompt reads as rest when the composer did not fold it. That is a \
+             known bound and not a passing grade — the twelve rows are right there on the \
+             screen: {v:?}",
+        );
+    }
+
+    /// The fourth word travels — a reporter may name it and a client reads it back.
+    #[test]
+    fn holding_is_a_word_a_reporter_may_name() {
+        assert_eq!(AgentState::Holding.wire_str(), Some("holding"));
+        assert_eq!(AgentState::from_wire("holding"), Some(AgentState::Holding));
+        assert!(
+            AgentState::REPORTED_WORDS.contains(&"holding"),
+            "the published vocabulary is what a wire boundary validates against: {:?}",
+            AgentState::REPORTED_WORDS,
+        );
+        assert!(
+            AgentState::Holding.is_active(),
+            "the placeholder is evidence PRESENT on the screen, so this verdict is published on \
+             sight rather than made to settle first",
         );
     }
 
