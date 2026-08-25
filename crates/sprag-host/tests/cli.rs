@@ -12836,3 +12836,99 @@ fn orchestrate_starts_a_run_on_a_pane_of_a_window_that_is_not_the_current_one() 
         nowhere.stdout, nowhere.stderr,
     );
 }
+
+/// ⚠⚠⚠⚠⚠ **AND SO DOES AN ANSWER** — register item 687's CLI half, the verb next door to the one
+/// above.
+///
+/// # ⚠⚠ There IS a ratchet over this verb already, and it could not see this
+///
+/// `every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over` drives `answer-pane` against
+/// a live pane one window over and has since R369. It asserts that the refusal is not one of FOUR
+/// named spelling sentences — which is the right assertion for the defect R312 paid off, and blind
+/// to a verb that never called the resolver at all: `answer-pane` handed what was typed straight to
+/// `build_call`, whose grammar declares this argument an `int`, and the sentence that came back was
+/// none of those four. **Measured, not reasoned — see the mutation record in register item 687:
+/// reverting this fix leaves that ratchet GREEN and turns this gate red.**
+///
+/// ⇒ the rule item 682 wrote down, arriving from the other side: a gate that names the sentences it
+/// knows about cannot see a failure that speaks a new one. This one reads the OUTCOME instead.
+#[test]
+fn answer_pane_reaches_a_pane_of_a_window_that_is_not_the_current_one() {
+    let (_guard, sock, pane) = daemon_with_one_pane("answer-elsewhere");
+    let numbered = pane.to_string();
+    assert!(
+        sprag(&sock, &["rename-pane", &numbered, "asked", "-t", "work"]).ok,
+        "naming the pane is what makes the first spelling below a NAME",
+    );
+
+    // ── THE FIXTURE'S PREMISE, MADE AND THEN ASSERTED ───────────────────────────────────────────
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    let here = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(here.ok, "panes -t work: {}", here.stderr);
+    assert!(
+        !pane_ids_in(&here.stdout).contains(&pane),
+        "⛔ THE PREMISE: `panes` lists the CURRENT window, and pane {pane} still being in it would \
+         make every claim below pass in a one-window world: {}",
+        here.stdout,
+    );
+
+    // ── THE CLAIM, IN BOTH SPELLINGS ────────────────────────────────────────────────────────────
+    // The pane is a shell and is not asking anything, deliberately: no agent manifest claims it, so
+    // the run types NOTHING and the pane is left as it was. What is under test is the ADDRESSING,
+    // and an answer that had to find a dialog first would be measuring the detector.
+    let answered = |spelling: &str| {
+        sprag(
+            &sock,
+            &[
+                "answer-pane",
+                spelling,
+                "--asked",
+                "marker",
+                "--answer",
+                "marker",
+                "-t",
+                "work",
+            ],
+        )
+    };
+    let by_name = answered("asked");
+    assert!(
+        by_name.ok,
+        "⛔⛔⛔⛔ REGISTER ITEM 687: `answer-pane` must resolve a pane by NAME and say which window \
+         it was found in — the surface that SHOWS a person the dialog reaches every window of the \
+         session, so the verb that acts on what they read cannot be the one that does not: {} / {}",
+        by_name.stdout, by_name.stderr,
+    );
+    let by_number = answered(&numbered);
+    assert!(
+        by_number.ok,
+        "⛔⛔⛔⛔ REGISTER ITEM 687: and a NUMBER must reach the daemon by the same road its NAME \
+         does, rather than being passed through as typed and read against the current window: \
+         {} / {}",
+        by_number.stdout, by_number.stderr,
+    );
+
+    // ── AND BOTH RUNS LANDED ON THAT PANE, rather than merely being accepted ─────────────────────
+    // The daemon labels an answer `answer pane=<id>`, so this reads the pane the DAEMON acted on.
+    let runs = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(runs.ok, "runs -t work: {}", runs.stderr);
+    assert_eq!(
+        runs.stdout.matches(&format!("answer pane={pane}")).count(),
+        2,
+        "⚠⚠⚠ AN ACCEPTED REQUEST IS NOT A STARTED RUN. Both spellings must have put an answer run \
+         on pane {pane} ITSELF: {}",
+        runs.stdout,
+    );
+
+    // ── THE CONTROL: a pane no window holds is still refused ────────────────────────────────────
+    let nowhere = answered("9999");
+    assert!(
+        !nowhere.ok,
+        "⚠⚠⚠ THE CONTROL: reaching past the current WINDOW must not become reaching past the \
+         SESSION: {} / {}",
+        nowhere.stdout, nowhere.stderr,
+    );
+}

@@ -5198,6 +5198,16 @@ fn answer_pane(args: Vec<String>) -> io::Result<()> {
     })?;
 
     let mut conn = connect()?;
+    // ⚠⚠⚠⚠⚠ AND THE PANE IS RESOLVED THROUGH THE DOOR EVERY OTHER PANE VERB USES — register item
+    // 687, which is item 542's claim arriving at the verb next door. Until here this verb handed
+    // what was typed straight to `build_call`, and the published grammar declares this argument an
+    // `int`: a NAME was refused as a TYPE ERROR before the daemon was ever asked, and a NUMBER went
+    // out unresolved to be read against whatever window the caller happened to be standing in.
+    //
+    // ⚠⚠ The asymmetry is what made it worth fixing here rather than leaving to the register: the
+    // surface that SHOWS a person the dialog (`sprag panes`, `sprag agent`) reaches every window of
+    // the session, so the only verb that could not reach was the one that acts on what they read.
+    let site = resolve_pane(&mut conn, session.as_deref(), &pane, "answer-pane")?;
     // ⚠ THE CALL IS BUILT FROM THE DAEMON'S OWN PUBLICATION, `orchestrate`'s discipline: this
     // binary holds no second list of the `answer` form's argument names.
     //
@@ -5225,15 +5235,19 @@ fn answer_pane(args: Vec<String>) -> io::Result<()> {
         &forms,
         &[
             Flag::new("plugin", sprag_host::plugins::PluginName::Answer.wire_str()),
-            Flag::new("pane", pane),
+            Flag::new("pane", site.id.to_string()),
             Flag::new(sprag_host::plugins::CONSENT_KEY, clause),
         ],
     )
     .map_err(|error| bad_input(&format!("answer-pane: {error}\n{USAGE}")))?;
+    // ⚠⚠ AND THE REQUEST SAYS WHICH WINDOW THE PANE WAS FOUND IN — [`site_invoke`], `orchestrate`'s
+    // door and for its reason: resolving session-wide answers WHICH pane and does not carry that
+    // answer to a daemon whose `require_pane_in` reads ONE window's pane pool.
     let started = invoke_action(
         &mut conn,
-        scoped_call(
+        site_invoke(
             session.as_deref(),
+            &site,
             sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
             call,
         ),
