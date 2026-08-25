@@ -143,7 +143,7 @@ pub use project::{PROJECT_FILE, Project, ProjectAction, ProjectError};
 pub use rpc::{
     BirthPin, FrameIngress, HostState, IngressEvent, SUPPORTED_METHODS, bump_on_dirty,
     dispatch_channel, dispatch_frames, handle_parsed, handle_request, pane_attention_hook,
-    pane_exit_hook, spawn_reaper, stdin_frames,
+    pane_exit_hook, seats_of, spawn_reaper, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
@@ -260,6 +260,13 @@ pub struct DaemonShared {
     /// ⚠ A FACTORY over the session rather than a spawner, because a driver is told which session
     /// to scope its waits to (`-t`) and the scope is per request, while this is built once at boot.
     pub spawn_driver: Option<DriverSpawns>,
+    /// ⚠⚠⚠⚠⚠ **WHERE A RUN'S ASKER IS SITTING, WHEN IT IS NOT IN THE POOL THE RUN DRIVES** —
+    /// register item 689. See [`plugins::SeatElsewhere`] for what it answers and why a run has to
+    /// be able to ask it.
+    ///
+    /// [`None`] off a daemon, like its optional neighbours: a host whose pool is the whole world
+    /// needs no second place to look, and looking would find the same panes.
+    pub seats_elsewhere: Option<plugins::SeatElsewhere>,
 }
 
 /// The host's SAMPLED facts, one sampler each, shared by every arm that serves them.
@@ -758,6 +765,14 @@ pub fn plugin_host(
         Some(on_end),
         Some(on_ordered),
     );
+    // ⚠⚠⚠⚠⚠ AND HOW IT ASKS ABOUT A SEAT THIS POOL DOES NOT HOLD — register item 689, carried on
+    // the announcements' exact terms: a run's ASKER is not obliged to sit in the window the run
+    // drives, and checking it against this pool made it obliged. The hook arrives already made,
+    // so this surface never learns what answers it.
+    let host = match daemon.seats_elsewhere.clone() {
+        Some(seats) => host.reading_seats_elsewhere(seats),
+        None => host,
+    };
     // ⚠⚠⚠⚠⚠ AND WHERE A RUN'S DRIVER IS PUT IN A PROCESS OF ITS OWN — register items 544 / 643 /
     // 650, minted here on the announcements' exact terms and for their reason: starting a driver
     // needs to know WHICH BINARY THIS IS, WHICH ENDPOINT it serves and WHICH SESSION a client of it

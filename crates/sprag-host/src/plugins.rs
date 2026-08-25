@@ -661,6 +661,43 @@ pub trait PluginWorld {
     fn default_size(&self) -> (u16, u16);
 }
 
+/// **WHERE A RUN'S ASKER IS WHEN IT IS NOT IN THIS POOL** — register item 689.
+///
+/// # ⚠⚠⚠⚠⚠ Why a run needs to ask about a pane it will never drive
+///
+/// A run has TWO panes in it and only one of them is a target. The target is what it drives, and
+/// it must be in this pool — that is [`PluginWorld::has_pane`], and it is right. The other is
+/// the request's `opened_by`, the SEAT THE ASKER IS SITTING IN, and there is no reason on earth for
+/// that one to be in the same window: an agent works in a window of its own and drives a pane in
+/// another one, which is the whole shape `open_window` and `break_pane` exist to make.
+///
+/// Both were checked against the one pool, and nothing noticed while the only mouth that sends a
+/// provenance also always drove its own window. The moment that mouth carried the target's window
+/// (register item 687), a request naming a real pane and a real asker came back
+/// *"no pane 0 in this workspace, so nothing can be opened by it"* — a refusal about the CALLER,
+/// on a call the caller made correctly.
+///
+/// ⚠⚠ **AN OPAQUE `Fn`, on the exact terms of this surface's four other hooks.** Answering it means
+/// walking the session tree, and the session tree is what this layer is deliberately free of
+/// (Interface Segregation — see [`crate::workspace_scene`]). What crosses the boundary is a pane id
+/// and an answer about it; what never crosses is a registry.
+///
+/// `None` off a daemon, where this pool is the only world there is and the pool's own answer is the
+/// whole truth.
+pub type SeatElsewhere = Arc<dyn Fn(PaneId) -> Option<PaneSeat> + Send + Sync>;
+
+/// What a [`SeatElsewhere`] found — the pane EXISTS somewhere this daemon holds, and this is who is
+/// sitting in it.
+///
+/// ⚠ The existence is carried by the [`Option`] around this value and not by a field, because the
+/// two questions a provenance asks are *is this a real seat* and *whose conversation is in it*, and
+/// a struct with an `exists: bool` would let a caller read the second while the first said no.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaneSeat {
+    /// The agent conversation the pane is holding, or [`None`] when nothing agent-shaped is in it.
+    pub session: Option<String>,
+}
+
 /// [`PluginWorld::has_pane`] as the REFUSAL a request gets — the sentence, spelled once.
 ///
 /// ⚠ A free function rather than a default method, because the wording is what a person reads when
@@ -772,6 +809,9 @@ pub struct PluginsExternal {
     /// disagree with the row a person is looking at. It crosses into the plugin layer as an opaque
     /// `Fn` ([`agent_state_source`]), so that layer stays registry-free.
     agents: Option<Arc<crate::AgentClock>>,
+    /// **WHERE THE ASKER IS SITTING, WHEN IT IS NOT IN THIS POOL** — see [`SeatElsewhere`] for what
+    /// this answers and why a run has to be able to ask it. `None` off a daemon.
+    seats: Option<SeatElsewhere>,
     /// **HOW TO START A RUN IN A PROCESS OF ITS OWN**, or `None` where this host drives runs on
     /// threads of its own — register items 544 and 643.
     ///
@@ -810,6 +850,21 @@ impl PluginsExternal {
         self
     }
 
+    /// **ASK `seats` WHERE A RUN'S ASKER IS WHEN THIS POOL DOES NOT HOLD IT** — register item 689.
+    ///
+    /// A setter on [`driving_out_of_process`](Self::driving_out_of_process)'s argument: seven
+    /// positional arguments is already a shape where a caller can transpose two `Option`s of the
+    /// same type and compile.
+    ///
+    /// ⚠ Whoever installs this is saying *this pool is one window of a daemon that has others*. A
+    /// host with no such hook is one whose pool is the whole world, and the pool's own answer is
+    /// then the whole truth — which is what an in-process host is.
+    #[must_use]
+    pub fn reading_seats_elsewhere(mut self, seats: SeatElsewhere) -> Self {
+        self.seats = Some(seats);
+        self
+    }
+
     /// Build the host over the shared workspace + run registry, plus the daemon's
     /// `on_pane_exit` death-signal (`None` off a daemon).
     #[must_use]
@@ -830,6 +885,9 @@ impl PluginsExternal {
             on_run_end,
             on_run_ordered,
             agents,
+            // ⚠ A POOL THAT IS THE WHOLE WORLD is what a host built without saying otherwise has —
+            // see `reading_seats_elsewhere`, and `SeatElsewhere` for what a daemon installs there.
+            seats: None,
             // ⚠ IN-PROCESS is what a host built without saying otherwise does — see
             // `driving_out_of_process`, and `crate::options::RUN_DRIVER_PROCESS` for why that is
             // the default rather than the destination.
@@ -884,17 +942,40 @@ impl PluginsExternal {
     /// would otherwise stamp a provenance naming a pane that does not exist, and nothing would ever
     /// prune it. A non-integer is a MALFORMED request; a pane this daemon does not hold is a
     /// well-formed one it will not honour.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THIS DAEMON, NOT THIS POOL** — register item 689. The check read one window's pane
+    /// list, which made *the asker* and *the pane being driven* obliged to sit in the same window
+    /// for no reason either of them has: a provenance is a SEAT, and the whole point of an agent
+    /// opening a window of its own is that it is not sitting in the one it works in. The scope that
+    /// matches the doc above is *a pane this daemon does not hold*, and [`SeatElsewhere`] is how
+    /// this layer asks that without learning what a session tree is.
     fn parse_opener(&self, map: &Map<String, Value>) -> Result<Option<u64>, InvokeError> {
         let opener = match map.get(RUN_OPENED_BY_KEY) {
             None | Some(Value::Null) => return Ok(None),
             Some(value) => value.as_u64().ok_or(InvokeError::TypeMismatch)?,
         };
-        self.require_pane(PaneId(opener)).map_err(|_| {
-            refused(format!(
-                "no pane {opener} in this workspace, so nothing can be opened by it"
-            ))
-        })?;
+        if self.require_pane(PaneId(opener)).is_err() && self.seat_of_pane(PaneId(opener)).is_none()
+        {
+            return Err(refused(format!(
+                "no pane {opener} on this daemon, so nothing can be opened by it"
+            )));
+        }
         Ok(Some(opener))
+    }
+
+    /// **THE SEAT `pane` IS**, wherever this daemon is holding it — this pool first, then
+    /// [`SeatElsewhere`].
+    ///
+    /// ⚠ The pool is asked FIRST and not merely as a fallback, so a host with no hook and a host
+    /// with one answer identically about every pane the pool holds. What the hook adds is reach,
+    /// never a second answer about the same pane.
+    fn seat_of_pane(&self, pane: PaneId) -> Option<PaneSeat> {
+        if let Some(held) = lock(&self.workspace).pane(pane) {
+            return Some(PaneSeat {
+                session: held.agent_session().map(str::to_owned),
+            });
+        }
+        self.seats.as_ref().and_then(|look| look(pane))
     }
 
     /// **WHICH CONVERSATION IS SITTING IN `pane`**, or [`None`] when nothing agent-shaped is.
@@ -904,12 +985,14 @@ impl PluginsExternal {
     /// name a conversation it is not in and be answered that conversation's runs. The asker names
     /// its SEAT (`opened_by`, which this daemon then validates); who is in that seat is the
     /// daemon's to say.
+    ///
+    /// ⚠⚠ **AND IT REACHES AS FAR AS THE CHECK ABOVE IT** — register item 689. Read against this
+    /// pool alone, a seat one window over answered [`None`] and the run was recorded as belonging
+    /// to no conversation at all: the asker would then not find its OWN run in `list_runs`, which
+    /// is the one thing a provenance is for. `parse_opener` accepts a seat this daemon holds
+    /// anywhere, so this must read the same seat or the two would disagree about one pane.
     fn session_in(&self, pane: Option<u64>) -> Option<String> {
-        let pane = pane?;
-        lock(&self.workspace)
-            .pane(PaneId(pane))
-            .and_then(sprag_terminal::Pane::agent_session)
-            .map(str::to_owned)
+        self.seat_of_pane(PaneId(pane?))?.session
     }
 
     /// **WHICH SEAT IS CURRENTLY HOLDING `session`**, or [`None`] when nobody in this workspace is.
@@ -4343,6 +4426,119 @@ mod tests {
              conversation, so the successor can say which seat that conversation is in — which is \
              the whole of `RunRegistry::restore`'s rule 1. Entry: {:?}",
             listed[0],
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN'S ASKER MAY BE SITTING IN A WINDOW THIS POOL IS NOT** — register item 689.
+    ///
+    /// # What was wrong, and why four hundred gates were blind to it
+    ///
+    /// A run carries two panes and only one of them is a target. `pane` is driven and must be in
+    /// this pool. `opened_by` is the SEAT THE ASKER IS IN, and nothing obliges that to be the same
+    /// window — an agent opening a workbench of its own is the ordinary case, not the exotic one.
+    /// Both were checked against the one pool, and nothing noticed because the only mouth that
+    /// sends a provenance also only ever drove its own window. Item 687 gave that mouth the window,
+    /// and the very next request came back **`no pane 0 in this workspace, so nothing can be opened
+    /// by it`** — a refusal about the CALLER, on a call the caller made correctly.
+    ///
+    /// # ⚠⚠ The fixture's two pools are SIBLINGS, and that is load-bearing
+    ///
+    /// Two `Workspace::new`s mint from two counters starting at the same number, so the asker could
+    /// be handed an id the target's pool ALSO holds — and then "the pool did not have it" would be
+    /// false and every claim here would be about nothing. `sibling()` is how the product makes a
+    /// second window and shares the one counter, so the ids cannot collide. The premise is asserted
+    /// below as well as arranged, because arranging it is not measuring it.
+    #[test]
+    fn a_runs_asker_is_accepted_from_a_seat_this_pool_does_not_hold() {
+        const ELSEWHERE: &str = "a-conversation-in-another-window";
+        let here = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let elsewhere = Arc::new(Mutex::new(lock(&here).sibling()));
+        let target = echoing_agent_pane(&here);
+        let asker = resumed_pane(&elsewhere, ELSEWHERE);
+
+        // ── THE PREMISE, ARRANGED AND THEN ASSERTED ─────────────────────────────────────────────
+        assert!(
+            lock(&here).pane(asker).is_none(),
+            "⛔ THE PREMISE: the asker's seat must be one this pool does NOT hold, or the claim \
+             below passes on a build that never looks further than the pool",
+        );
+
+        let pool = Arc::clone(&elsewhere);
+        let seats: SeatElsewhere = Arc::new(move |pane| {
+            let guard = lock(&pool);
+            let held = guard.pane(pane)?;
+            Some(PaneSeat {
+                session: held.agent_session().map(str::to_owned),
+            })
+        });
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&here),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .reading_seats_elsewhere(seats);
+
+        let asked = |opener: u64| -> Value {
+            json!({
+                "plugin": "orchestrator",
+                "pane": target.0,
+                "stimulus": "ping",
+                "sentinel": "ping",
+                "guardrails": { "max_iterations": 1, "max_seconds": 5 },
+                RUN_OPENED_BY_KEY: opener,
+            })
+        };
+
+        // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────
+        let started = external
+            .invoke(RUN_ACTION, IntrospectValue::Json(asked(asker.0)))
+            .unwrap_or_else(|why| {
+                panic!(
+                    "⛔⛔⛔⛔ REGISTER ITEM 689: a run whose ASKER sits one window over must be \
+                     accepted — the seat is a provenance, not a pane this run will drive. \
+                     Refused: {why:?}"
+                );
+            });
+        let IntrospectValue::Int(_) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+
+        // ── AND THE PROVENANCE IS RECORDED, rather than accepted and dropped ─────────────────────
+        let listed = read_runs(&external);
+        assert_eq!(
+            listed[0].get(RUN_OPENED_BY_KEY).and_then(Value::as_u64),
+            Some(asker.0),
+            "⚠⚠⚠ AN ACCEPTED PROVENANCE IS NOT A RECORDED ONE. Dropping it would pass the claim \
+             above and still leave the asker unable to find its own run: {:?}",
+            listed[0],
+        );
+        // ⚠ READ OFF THE REGISTRY'S OWN RECORD and not off the slot above, because the slot does
+        // not publish it: the conversation is what a SUCCESSOR daemon re-derives the seat from
+        // (`RunRegistry::restore`'s rule 1), so the record is where it lives and where a reader
+        // that matters — a boot — will look for it.
+        let recorded = lock(&registry).snapshot();
+        assert_eq!(
+            recorded[0].opened_by_session.as_deref(),
+            Some(ELSEWHERE),
+            "⚠⚠⚠⚠ AND WHO IS IN THAT SEAT, read as far as the check that accepted it. `session_in` \
+             read this pool alone, so a seat one window over was recorded as belonging to NO \
+             conversation — and a successor daemon re-derives the seat from the conversation, so \
+             this run would come back belonging to nobody: {recorded:?}",
+        );
+
+        // ── THE CONTROL: a seat NOTHING holds is still refused ───────────────────────────────────
+        // Reaching further must not become reaching for anything. Without this, both claims above
+        // would pass just as well for a build that had simply stopped checking the provenance.
+        let stale = external.invoke(RUN_ACTION, IntrospectValue::Json(asked(9999)));
+        assert!(
+            stale.is_err(),
+            "⚠⚠ THE CONTROL: a stale `SPRAG_PANE` naming a pane no window of this daemon holds is \
+             what the check exists for, and it must still refuse: {stale:?}",
         );
     }
 

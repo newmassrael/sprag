@@ -257,12 +257,19 @@ impl HostState {
             // ⚠⚠⚠ AND WHETHER THIS IMAGE CAN BE A DRIVER — register item 544. Absent on every host
             // that did not say so, which is every host but the daemon: see the field.
             spawn_driver: self.spawn_driver.clone(),
+            // ⚠⚠⚠ AND WHERE A RUN'S ASKER IS SITTING WHEN IT IS NOT IN THE POOL THE RUN DRIVES —
+            // register item 689. The HOST's own registry, for `runs`' reason: a copy would hold no
+            // windows and would answer *there is no such seat* about every pane on a working
+            // daemon, which is the reassuring wrong answer that made this defect invisible.
+            seats_elsewhere: Some(seats_of(Arc::clone(self.registry()))),
         }
     }
 
     /// The daemon's pane-`on_exit` death-signal hook, cloned for a scene assembly
     /// ([`workspace_scene`](crate::workspace_scene)) — `None` off a daemon, so a non-daemon
     /// caller wires no pane to the reaper.
+    ///
+    /// (See [`seats_of`] for the seat lookup [`shared`](Self::shared) mints beside it.)
     #[must_use]
     pub fn on_pane_exit(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         self.on_pane_exit.clone()
@@ -311,6 +318,25 @@ impl HostState {
     pub fn attachments(&self) -> &Arc<Mutex<AttachmentRegistry>> {
         &self.attachments
     }
+}
+
+/// **WHERE A PANE IS SITTING, ANYWHERE ON THIS DAEMON** — the [`crate::plugins::SeatElsewhere`] a
+/// daemon installs, minted here because this is the layer that holds a registry and the plugin
+/// layer is deliberately free of one (register item 689).
+///
+/// ⚠ The two locks are taken ONE AT A TIME and never nested: `pool_holding` hands back the pool by
+/// handle, and the registry guard is dropped at the end of that statement before the pool's is
+/// taken. Nesting them here would be a lock order this daemon takes the other way round elsewhere.
+#[must_use]
+pub fn seats_of(registry: Arc<Mutex<SessionRegistry>>) -> crate::plugins::SeatElsewhere {
+    Arc::new(move |pane| {
+        let pool = crate::lock(&registry).pool_holding(pane)?.1;
+        let session = crate::lock(&pool)
+            .pane(pane)
+            .and_then(sprag_terminal::Pane::agent_session)
+            .map(str::to_owned);
+        Some(crate::plugins::PaneSeat { session })
+    })
 }
 
 /// The pane `on_dirty` hook that bumps `revision` on every batch of PTY output —

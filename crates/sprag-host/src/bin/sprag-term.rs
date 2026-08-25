@@ -676,6 +676,11 @@ fn put_back_inherited_runs(
                 attention: Some(Arc::clone(attention)),
                 agents: Some(Arc::clone(agents)),
                 spawn_driver: spawn_driver.clone(),
+                // ⚠ AND WHERE A RESUMED RUN'S ASKER SITS — register item 689. A run this daemon
+                // inherited is put back through the SAME surface a request gets, so it must be
+                // given the same reach: an inherited run whose asker came back in another window
+                // would otherwise be put back as belonging to no conversation.
+                seats_elsewhere: Some(sprag_host::seats_of(Arc::clone(host.registry()))),
                 ..sprag_host::DaemonShared::none()
             },
         );
