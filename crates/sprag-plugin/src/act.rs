@@ -193,6 +193,32 @@ pub enum Refused {
         /// What the document said, so a reader repairs the file rather than guessing.
         said: String,
     },
+    /// The act's argument arrived EMPTY, which is a value its space does not hold.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Separate from [`Self::Missing`] because the REPAIR is separate
+    ///
+    /// A missing `<param>` is a document that never wrote one. An empty `<param>` is a document
+    /// that wrote an expression which EVALUATED to nothing — so the two send a reader to different
+    /// files, and folding them would name the wrong one.
+    ///
+    /// # ⚠⚠⚠⚠ And it is not a nicety — measured 2026-08-25, register item 470, stage 2
+    ///
+    /// `say` with an empty `text` types a BARE SUBMIT at the peer: a turn nobody was asked to take,
+    /// which is the exact fault item 446 spent four rounds on. Nothing produced one while the
+    /// driver looked the sentence up itself — the driver's own `Authored::read` refuses a machine
+    /// that cannot answer, at construction. ⚠ Named rather than linked: it is crate-private, and a
+    /// public doc that links a private item does not build. **The moment the sentence travelled as
+    /// `<param expr="start_prompt"/>` instead, a datamodel that had stopped answering produced it
+    /// on the spot**, and this host performed it: one byte delivered, reported as a turn.
+    ///
+    /// ⚠ Found by `outer::tests::a_datamodel_that_stops_answering_refuses_the_loop_or_fails_the_run`
+    /// going red, which is the gate doing the job it was written for one architecture earlier.
+    Empty {
+        /// The act.
+        act: Act,
+        /// The `<param name="…">` that carried nothing.
+        argument: &'static str,
+    },
     /// A second act arrived while one nobody had carried out was still waiting.
     ///
     /// ⚠⚠⚠ **REFUSED RATHER THAN QUEUED, AND REFUSED RATHER THAN OVERWRITTEN.** This host performs
@@ -231,6 +257,12 @@ impl std::fmt::Display for Refused {
                 "`{}`'s `<param name=\"{argument}\">` said {said:?}, which is not one of {:?}",
                 act.named(),
                 Asks::ALL.map(Asks::named),
+            ),
+            Self::Empty { act, argument } => write!(
+                f,
+                "`{}`'s `<param name=\"{argument}\">` evaluated to nothing, and an act with no \
+                 {argument} is one this host would perform as silence",
+                act.named(),
             ),
             Self::Overrun { held, arriving } => write!(
                 f,
@@ -371,6 +403,15 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
     match act {
         Act::Say => {
             let text = argument(params, act, "text")?;
+            // ⚠⚠⚠⚠⚠ AN EMPTY SENTENCE IS NOT A SHORT ONE — see [`Refused::Empty`]. `asks` needs no
+            // such line: its space is closed, so `Asks::of("")` already answers [`None`] below and
+            // the refusal a reader gets there names the space it missed.
+            if text.is_empty() {
+                return Err(Refused::Empty {
+                    act,
+                    argument: "text",
+                });
+            }
             let said = argument(params, act, "asks")?;
             let Some(asks) = Asks::of(&said) else {
                 return Err(Refused::Unreadable {
@@ -597,6 +638,19 @@ mod tests {
             }),
             "⚠⚠ and a sentence with no words is not a prompt — it would open a turn by pressing \
              Enter at a peer",
+        );
+        assert_eq!(
+            with(&[("text", ""), ("asks", "account")]),
+            Err(Refused::Empty {
+                act: Act::Say,
+                argument: "text",
+            }),
+            "⚠⚠⚠⚠⚠ AND THE `<param>` THAT IS PRESENT AND EMPTY IS THE ONE A DOCUMENT ACTUALLY \
+             PRODUCES, which the assertion above cannot reach: no document omits `text`, but every \
+             `<param expr=\"…\">` over a datamodel that has stopped answering evaluates to \
+             nothing. Measured 2026-08-25 — this host performed one, typed a bare submit, and \
+             reported ONE BYTE as a turn. ⚠ `Missing` is the wrong answer here even though it \
+             refuses: it would send a reader looking for a `<param>` that is right there.",
         );
         assert_eq!(
             with(&[("text", "carry on"), ("asks", "Account")]),

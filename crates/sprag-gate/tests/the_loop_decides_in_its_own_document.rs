@@ -6,8 +6,17 @@
 //! are in the driver: a table keyed by the document's own states, which is a second copy of the
 //! topology. ⚠ This gate was written while stages 2 and 3 of the repayment were refuted at the
 //! pinned SCE (item 483 — a host could not register its own `<send>`/`<invoke>` type); **that was a
-//! fact about a REV and it did not survive one.** The first act crossed on 2026-08-25 and
-//! `SERVED_ACTS` counts the ones that have. The decisions still cannot all move in one round.
+//! fact about a REV and it did not survive one.** The first act crossed on 2026-08-25, the third
+//! the same day, and `SERVED_ACTS` counts the ones that have. The decisions still cannot all move
+//! in one round.
+//!
+//! ⚠⚠⚠⚠⚠ **THREE NUMBERS ARE PINNED HERE AND THEY WATCH THREE DIFFERENT THINGS.** It reads like
+//! redundancy and it is a division of labour, each half of it paid for: [`DECLARED_ACTS`] catches
+//! an act being DELETED and is blind to one moving (measured twice); [`DRIVER_ARMS`] catches a
+//! decision moving back INTO Rust and is blind to one moving out whenever the arm left behind is a
+//! naming rather than a deletion (measured on `priming`); [`SERVED_ACTS`] is the only one that sees
+//! the move item 470's stage 2 IS. ⚠ So a round paying this item may see exactly one of these six
+//! tests go red, and that red is the whole record.
 //!
 //! ⚠⚠⚠⚠⚠ **AND MEANWHILE IT GREW.** The register recorded 153 state-keyed sites on 2026-08-19;
 //! this gate measured more the next day, added by the very rounds that were paying the item down.
@@ -59,6 +68,16 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// ⚠⚠ **A ROW AT 7 IS NOT A ROW AT ZERO.** Seven exhaustive matches over this document's states
 /// remain, and each of them costs every state one arm. What retires a row completely is those
 /// matches going, one decision at a time — which is what the row's own number is here to watch.
+///
+/// ⚠⚠⚠⚠⚠ **AND A ROW HOLDING STILL IS NOT AN ACT STAYING PUT** — measured 2026-08-25 R75, the
+/// round after the one above. `priming`'s act moved into the document and **not one row here
+/// changed**: `Owed::on`'s `Priming => Start` arm was deleted, and `AiLoopState::Priming` had to be
+/// added to the exhaustive arm that says *this state owes no prompt* in the same edit, because the
+/// match has no wildcard. One mention for another. *Decides a prompt* and *owes nothing* look the
+/// same to anything that counts mentions of a state, so this ratchet is blind to an act moving out
+/// whenever the arm it leaves behind is a naming rather than a deletion — which is the ordinary
+/// case, not the exception. [`SERVED_ACTS`] is what saw that move, and this list's job is the other
+/// direction: a decision coming BACK.
 const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠⚠⚠⚠ ADDED 2026-08-21 BY ITEM 534, AND THE PIN WAS RAISED WITH ITS OWN REASON RATHER THAN
     // BECAUSE A GATE ASKED. Every one is an EFFECT arm in an exhaustive match — is it final, which
@@ -116,6 +135,14 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
 /// ⚠⚠⚠⚠⚠ **IT DID NOT MOVE ON THE ROUND THAT TOOK 28 ARMS OUT OF THE DRIVER**, and that is this
 /// number's measured blindness rather than a fact about the round: `closing` and `stopping` already
 /// had an `<onentry>`. [`SERVED_ACTS`] is the number that saw it.
+///
+/// ⚠⚠⚠ **AND IT DID NOT MOVE ON THE THIRD ACT EITHER, WHICH IS WHAT MAKES THAT A PROPERTY AND NOT
+/// AN ACCIDENT** — measured 2026-08-25 R75, when `priming` handed its first sentence to the host.
+/// `priming` already had an `<onentry>` too, and it always will have: an act moves by changing what
+/// a block CONTAINS, so a counter of blocks is blind to item 470's stage 2 by construction. Two
+/// separate rounds have now confirmed that from the other side, which is worth more than the
+/// reasoning — this number stays because it is the side that catches an act being DELETED, and it
+/// will keep reading 11 through every act that moves.
 const DECLARED_ACTS: usize = 11;
 
 /// How many acts `ai_loop.scxml` asks THIS HOST to perform — one per `<send type="x-sprag-host">`.
@@ -127,9 +154,25 @@ const DECLARED_ACTS: usize = 11;
 /// name of the state it belonged to — **two of them on 2026-08-25 cost the driver twenty-eight
 /// arms**, because what left was not a line but a whole table keyed by this document's states.
 ///
+/// ⚠⚠⚠⚠⚠ **AND THE THIRD ONE COST IT NONE, WHICH IS WHY THIS COUNTER HAS TO EXIST.** Measured
+/// 2026-08-25 R75, on `priming`'s first sentence: of the three numbers this file pins, this is the
+/// **only** one that moved. [`DECLARED_ACTS`] stayed at 11 because `priming` already had its
+/// `<onentry>`, and **every `DRIVER_ARMS` row stayed put as well** — `Owed::on`'s `Priming =>
+/// Start` arm was deleted and `AiLoopState::Priming` joined the exhaustive list that says *this
+/// state owes nothing*, so a decision left the driver at the cost of one mention traded for
+/// another. *Owes nothing* and *decides nothing here* are indistinguishable to anything that counts
+/// mentions of a state, and the exhaustive list cannot be dropped — it is what makes a new state
+/// fail to compile.
+///
+/// ⚠⚠⚠ So the division of labour is now MEASURED rather than argued, and it is the whole of item
+/// 470's stage 2: [`DECLARED_ACTS`] catches an act being deleted, [`DRIVER_ARMS`] catches a
+/// decision moving back INTO Rust, and **only this number can see one move OUT.** A round that
+/// paid this item and watched the other two would have watched two green gates and concluded
+/// nothing happened.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 2;
+const SERVED_ACTS: usize = 3;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);
@@ -280,8 +323,11 @@ fn the_document_asks_this_host_for_every_act_it_has_taken_over() {
     assert_eq!(
         served, SERVED_ACTS,
         "the document asks for MORE acts than the pin, which is the debt being PAID — raise \
-         `SERVED_ACTS` to {served} in the same commit, and lower the `DRIVER_ARMS` rows the act \
-         took with it",
+         `SERVED_ACTS` to {served} in the same commit, and lower whatever `DRIVER_ARMS` rows the \
+         act took with it. ⚠ THAT MAY BE NONE, and this gate going red alone is then the only \
+         record that anything moved: measured on `priming` (2026-08-25), where an arm that decided \
+         a prompt was traded for a mention in the exhaustive list that says the state owes nothing, \
+         and every row held. Do not read the other two gates' green as this one being wrong.",
     );
 }
 

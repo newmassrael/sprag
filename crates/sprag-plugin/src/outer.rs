@@ -8,9 +8,10 @@
 //!
 //! # ⚠⚠⚠ Why the driver is STATE-DRIVEN and not event-driven
 //!
-//! The document reads like a list of instructions — `priming` does `<send event="prompt.start"/>`,
-//! `restarting` does `<send event="session.replace"/>`, and seven such sends name every effect a
-//! driver has to perform. Subscribing to them is the obvious design **and it cannot be built**:
+//! The document reads like a list of instructions — `restarting` does
+//! `<send event="session.replace"/>`, `screening` does `<send event="screen.begin"/>`, and such
+//! sends name effects a driver has to perform. Subscribing to them is the obvious design **and it
+//! cannot be built**:
 //!
 //! * a targetless `<send>` is W3C SCXML 6.2's *external event to SELF*, so the generated code
 //!   raises it onto the machine's OWN queue, where no transition in this document listens and it
@@ -22,8 +23,14 @@
 //! established by running it rather than by reading the codegen — R376's lesson, one round old.
 //!
 //! The machine's own published ingress partition says the same thing from the other side:
-//! `prompt.sent` (the driver's ANSWER) is externally drivable and `prompt.start` (the supposed
+//! `prompt.sent` (the driver's ANSWER) is externally drivable and `session.replace` (a supposed
 //! instruction) is not. **Nobody outside sends it, so nobody outside is meant to receive it.**
+//!
+//! ⚠⚠⚠ **AND THERE IS NOW A THIRD KIND OF SEND, WHICH IS THE ONE THAT WORKS** — register item 470,
+//! stage 2. `<send type="x-sprag-host">` is not addressed to the machine at all: it reaches THIS
+//! host through the type it registered, carrying `<param>`s. `priming`, `closing` and `stopping`
+//! use it, and for those three the document really is the instruction — the driver is TOLD rather
+//! than reading the state's name. The announced sends above are what is left over.
 //!
 //! # ⚠⚠ Which leaves ONE thing the state cannot say, and it is why `Owed` exists
 //!
@@ -1016,6 +1023,12 @@ pub(crate) enum Owed {
     /// Nothing to say — the peer is already working, or is not the thing being waited on.
     Nothing,
     /// The `start_prompt`, into a session that has never been prompted.
+    ///
+    /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the third act to leave and the
+    /// first that was not an ending. [`Self::on`] no longer answers it: `priming` declares
+    /// `<send type="x-sprag-host" event="prompt.say">` with `<param name="asks" expr="'work'"/>`,
+    /// because the first sentence of a run opens a TURN. What is left is [`Self::variable`]'s side
+    /// — the door's check that the machine holds the authored strings at all.
     Start,
     /// The `turn_prompt` — another turn on the same session.
     Turn,
@@ -1090,14 +1103,19 @@ impl Owed {
     /// and [`OuterLoop::advance`] delivers through them, so a rename in the document breaks both
     /// at once instead of leaving a driver that validates one variable and sends another.
     ///
-    /// ⚠⚠⚠ **`End` AND `Stop` ARE VALIDATED HERE AND NO LONGER DELIVERED THROUGH IT** — register
-    /// item 470, stage 2. `closing` and `stopping` name their own sentence on the act they declare
-    /// (`<param name="text" expr="end_prompt"/>`), so [`Self::on`] never answers either variant any
-    /// more. They stay because [`Authored::read`] is the door's check that this machine carries the
-    /// four authored strings at all, and naming them here rather than retyping the variables is the
-    /// *one list decides* discipline this comment is about. ⚠ A rename in the document therefore
-    /// still breaks BOTH halves at once — the door here, and the `<param>` there — which is what the
-    /// discipline was for.
+    /// ⚠⚠⚠ **`Start`, `End` AND `Stop` ARE VALIDATED HERE AND NO LONGER DELIVERED THROUGH IT** —
+    /// register item 470, stage 2. `priming`, `closing` and `stopping` name their own sentence on
+    /// the act they declare (`<param name="text" expr="start_prompt"/>`), so [`Self::on`] never
+    /// answers any of the three any more. They stay because [`Authored::read`] is the door's check
+    /// that this machine carries the four authored strings at all, and naming them here rather than
+    /// retyping the variables is the *one list decides* discipline this comment is about. ⚠ A
+    /// rename in the document therefore still breaks BOTH halves at once — the door here, and the
+    /// `<param>` there — which is what the discipline was for.
+    ///
+    /// ⚠⚠ **THREE OF THE SEVEN NOW HAVE ONE READER WHERE THEY HAD TWO**, and that is the shape to
+    /// watch rather than a tidiness note: the day `Turn`, `Reflect` and `Dispute` follow, every
+    /// variant here is read by the door alone and this enum is a *list of the strings a document
+    /// must hold* rather than a table of debts. That is when it gets renamed, not emptied.
     ///
     /// # Panics
     ///
@@ -1153,20 +1171,25 @@ impl Owed {
     ///
     /// # ⚠⚠⚠⚠⚠ THIS TABLE IS A RESIDUE NOW, AND IT IS SHRINKING FROM THE `closing` END
     ///
-    /// Register item 470, stage 2. `closing` and `stopping` no longer appear as prompt-owing arms
-    /// here, and that is not a behaviour change: their `<onentry>` declares
+    /// Register item 470, stage 2. `closing`, `stopping` and `priming` no longer appear as
+    /// prompt-owing arms here, and that is not a behaviour change: each one's `<onentry>` declares
     /// `<send type="x-sprag-host" event="prompt.say">` and carries the sentence as a `<param>`, so
     /// [`OuterLoop::advance`] is TOLD what to say instead of looking it up from the state's name.
     /// What is left below is every state whose act has not moved yet — and the day the last one
     /// does, this function is deleted rather than emptied.
     ///
+    /// ⚠⚠⚠ **`priming` IS THE ONE WHOSE DEPARTURE PROVED THE MOVE IS NOT ABOUT ENDINGS.** The first
+    /// two acts to leave were both closing sentences asking for an ACCOUNT, which is consistent
+    /// with a host that serves one kind of act at the end of a run. `priming`'s is the FIRST
+    /// sentence of a run and asks for `work` — the same act, a different argument, on a peer nobody
+    /// has spoken to yet.
+    ///
     /// # ⚠⚠ The two halves of `ai_loop.scxml`'s remaining sends, and why only one needs the event
     ///
-    /// `prompt.start` and `prompt.reflect` are **onentry** sends — `priming`'s and `reflecting`'s —
-    /// so arriving at those states is the whole condition, whichever transition brought you. Both
-    /// are reached more than one way (`priming` from `idle` and from `restarting`; `reflecting`
-    /// from three `judge` edges), and keying them on the event would have needed that list kept in
-    /// step by hand.
+    /// `prompt.reflect` is an **onentry** send — `reflecting`'s — so arriving at that state is the
+    /// whole condition, whichever transition brought you. It is reached more than one way (from
+    /// three `judge` edges), and keying it on the event would have needed that list kept in step by
+    /// hand.
     ///
     /// `prompt.turn` is a **transition** send, on three of the four edges into `working`, and that
     /// is the one place the arrival state is not enough. So the event decides there and only
@@ -1177,7 +1200,6 @@ impl Owed {
     /// mechanism that stops a driver silently not saying something the author wrote.
     const fn on(raised: AiLoopEvent, landed: AiLoopState) -> Self {
         match landed {
-            AiLoopState::Priming => Self::Start,
             // ⚠⚠⚠⚠⚠ A CLAIM AN INDEPENDENT CHECK REFUSED IS ANSWERED WITH THE CHECK'S OWN WORDS —
             // register item 448, and this arm is why the state exists at all. It is keyed by the
             // STATE and not by the event, like the four above and unlike `working`'s: one edge
@@ -1230,16 +1252,16 @@ impl Owed {
                 | AiLoopEvent::Fail
                 | AiLoopEvent::Hold
                 | AiLoopEvent::NotifyHuman
-                // ⚠⚠⚠ `prompt.say` REPLACED `prompt.end` AND `prompt.stop` HERE, AND THE COMPILER
-                // IS WHAT SAID SO — register item 470, stage 2. Those two names left the document
-                // when `closing` and `stopping` began declaring their act to the HOST instead of
-                // announcing it to the machine, so the generated enum stopped minting them and this
-                // list stopped compiling. ⚠ `prompt.say` never arrives as an EVENT at all: a
-                // host-served send raises only what the handler answers with, and this host answers
-                // an act it performed with nothing. It is spelled for this arm's own rule — the
-                // list is what makes an edge added into `working` fail to compile.
+                // ⚠⚠⚠ `prompt.say` REPLACED `prompt.end`, `prompt.stop` AND `prompt.start` HERE,
+                // AND THE COMPILER IS WHAT SAID SO EACH TIME — register item 470, stage 2. Those
+                // three names left the document as `closing`, `stopping` and `priming` began
+                // declaring their act to the HOST instead of announcing it to the machine: the
+                // generated enum stopped minting them and this list stopped compiling, once per
+                // move. ⚠ `prompt.say` never arrives as an EVENT at all: a host-served send raises
+                // only what the handler answers with, and this host answers an act it performed
+                // with nothing. It is spelled for this arm's own rule — the list is what makes an
+                // edge added into `working` fail to compile.
                 | AiLoopEvent::PromptSay
-                | AiLoopEvent::PromptStart
                 | AiLoopEvent::PromptTurn
                 // ⚠ `prompt.dispute` IS `disputing`'s OWN onentry SEND, so it is the state that
                 // answers for it above — this arm is the event arriving somewhere it never lands.
@@ -1298,12 +1320,20 @@ impl Owed {
             AiLoopState::Idle
             | AiLoopState::Judging
             | AiLoopState::Screening
-            // ⚠⚠⚠⚠⚠ THESE TWO OWE THIS TABLE NOTHING BECAUSE THEY SAY IT THEMSELVES — register
-            // item 470, stage 2. Both still ask their agent a question, and it is a DIFFERENT
+            // ⚠⚠⚠⚠⚠ THESE THREE OWE THIS TABLE NOTHING BECAUSE THEY SAY IT THEMSELVES — register
+            // item 470, stage 2. All three still ask their agent a question, and it is a DIFFERENT
             // question each (`end_prompt` for a run that converged, `stop_prompt` for one a ceiling
-            // stopped short, which is why they were never one arm) — but the sentence and what it
-            // asks for now travel on the act their own `<onentry>` declares, so nothing out here
-            // has to know which state a courtesy turn was taken in.
+            // stopped short, which is why those two were never one arm; `start_prompt` for a session
+            // nobody has spoken to) — but the sentence and what it asks for now travel on the act
+            // each state's own `<onentry>` declares, so nothing out here has to know which state a
+            // question was asked in.
+            //
+            // ⚠⚠⚠⚠ AND `priming` IS WHY THIS LIST CANNOT BE THE METER FOR ITEM 470. A state whose
+            // behaviour has LEFT still has to be named here, because the list is exhaustive on
+            // purpose — that is the mechanism that makes a new state fail to compile. *Owes
+            // nothing* and *decides nothing here* read the same to anything that counts mentions.
+            // `loop_shape::served_acts` is what can see the move; this arm can only see arrivals.
+            | AiLoopState::Priming
             | AiLoopState::Closing
             | AiLoopState::Stopping
             // ⚠⚠ ARRIVING AT AN OUTAGE OWES THE AGENT NOTHING, and a prompt here would be the
@@ -8868,12 +8898,30 @@ mod tests {
             self.inner.get_variable(session_id, name)
         }
 
+        /// ⚠⚠⚠⚠⚠ **THE SAME LIE, TOLD AT THE OTHER DOOR — register item 470, stage 2.**
+        ///
+        /// A datamodel that has stopped answering has stopped answering EVERYBODY, and until this
+        /// arm existed this stand-in lied only to `get_variable` — the driver's door. That was
+        /// enough for exactly as long as the driver was the one who read a prompt. `priming` now
+        /// declares `<send type="x-sprag-host"><param expr="start_prompt"/></send>`, and a
+        /// `<param>` is evaluated as an EXPRESSION by the engine, so the old lie went round the
+        /// outside of the thing it was aimed at and the run typed a healthy 323-byte prompt.
+        ///
+        /// ⚠⚠ **Only the BARE NAME, and that is the point rather than caution.** `priming`'s
+        /// `<onentry>` composes `start_prompt` out of a dozen concatenations before the send reads
+        /// it back; a stand-in that failed every expression MENTIONING the variable would break the
+        /// composition instead of the read, and the run would fail for a reason this gate is not
+        /// about.
+        fn evaluate_expression(&self, session_id: &str, expr: &str) -> ScriptResult<ScriptValue> {
+            if expr.trim() == self.about && self.lying.load(Ordering::SeqCst) {
+                return Ok(self.instead.clone());
+            }
+            self.inner.evaluate_expression(session_id, expr)
+        }
+
         // ── everything else is the real engine, verbatim ──
         fn execute_script(&self, session_id: &str, script: &str) -> ScriptResult<ScriptValue> {
             self.inner.execute_script(session_id, script)
-        }
-        fn evaluate_expression(&self, session_id: &str, expr: &str) -> ScriptResult<ScriptValue> {
-            self.inner.evaluate_expression(session_id, expr)
         }
         fn validate_expression(&self, session_id: &str, expr: &str) -> ScriptResult<bool> {
             self.inner.validate_expression(session_id, expr)
@@ -16309,6 +16357,183 @@ mod tests {
                 .all(|(_, said, _)| *said == composed.turn || *said == composed.start),
             "⚠⚠ and what an ordinary turn typed is one of the two prompts the document composed \
              for work, never the closing one. Got {turns:?}",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN'S FIRST SENTENCE, AND WHAT IT ASKS FOR, ARE ITS DOCUMENT'S TO SAY** — register
+    /// item 470, stage 2, the third act to move, driven end to end over the real `ai_loop.scxml`
+    /// and a real pane.
+    ///
+    /// # Why `priming`, of the sends still announcing a name
+    ///
+    /// The two acts that moved before it were both CLOSING sentences asking for an `account` — a
+    /// set of facts consistent with a host that serves one kind of act, at the end of a run.
+    /// `priming`'s is the FIRST sentence of a run and asks for `work`: the same act, the other
+    /// argument, put to a peer nobody has spoken to yet. It is the arrival that makes the
+    /// vocabulary a vocabulary rather than a special case.
+    ///
+    /// # ⚠⚠⚠⚠ What would look identical if the act had NOT moved, and what rules it out
+    ///
+    /// `Owed::on` answered `Priming => Start`, and `advance` looked the sentence up from the state's
+    /// name. It now answers `Nothing` there, so a driver that stopped being TOLD would type nothing
+    /// at all — and this run would sit in `priming` waiting for an answer to a question nobody was
+    /// asked. So the first assertion is that the sentence ARRIVED, and only then that it is the
+    /// right one.
+    ///
+    /// ⚠⚠ **AND BOTH VALUES OF THE ARGUMENT ARE READ IN ONE WALK, BY ONE READER.** `priming` must
+    /// say `Work` and `closing` must say `Account`. Without the second half, `Work` here is
+    /// satisfied by a host that hard-codes it and never reads the `<param>` at all; with it, the
+    /// document's own argument is the only thing that can produce both answers.
+    ///
+    /// ⚠ THE PREMISE IS ASSERTED, NOT ASSUMED — register item 684, whose rule is that a fixture
+    /// whose two sources agree by accident cannot say which one was used. This gate tells the
+    /// prompts apart BY THEIR TEXT, so a document shipping the start prompt equal to either of the
+    /// others would make everything under it vacuous.
+    ///
+    /// ⚠ Its own walk rather than the closing gate's, deliberately: two `#[test]`s sharing one
+    /// fixture go red together and cannot say which of the two claims broke.
+    #[test]
+    fn a_run_is_told_its_first_sentence_and_what_it_asks_for_by_its_own_document() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = standin_agent(2);
+        let access = supervised(&workspace);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        // ⚠⚠⚠ THE CONTROL AT THE START: nothing has been asked, so a `Work` read below cannot be a
+        // value that was simply always sitting there — which is exactly what a hard-coded argument
+        // would look like.
+        assert_eq!(
+            loops.asks, None,
+            "⚠⚠ a loop in `idle` has put no sentence to anybody",
+        );
+
+        let brief = Brief {
+            north_star: "the stand-in answers two prompts and then says the marker".to_string(),
+            milestone: "reach it".to_string(),
+            reference: "this gate".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(40)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        assert_eq!(loops.brief(&brief), Briefed::Took, "the parts must be held");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<(AiLoopState, AiLoopEvent, AiLoopState)> = Vec::new();
+        // What was typed on arrival at each state, and what the driver says that sentence was for.
+        let mut asked: Vec<(AiLoopState, String, Option<crate::act::Asks>)> = Vec::new();
+        let ended = loop {
+            assert!(
+                walked.len() < 16,
+                "the loop must reach a final state rather than pumping forever: {walked:?}",
+            );
+            match loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            {
+                Pumped::Moved {
+                    from, raised, to, ..
+                } => {
+                    walked.push((from, raised, to));
+                    asked.push((to, loops.driving.asked.clone(), loops.asks));
+                }
+                Pumped::Unbuilt(state) => {
+                    panic!("this run reached {state:?}, which no driver serves. Walked {walked:?}")
+                }
+                Pumped::NotReady(seen) => {
+                    panic!("the stand-in agent must be ready. Got {seen:?}, walked {walked:?}")
+                }
+                Pumped::Ended(state) => break state,
+            }
+        };
+        assert_eq!(
+            ended,
+            AiLoopState::Converged,
+            "⚠ the control for the whole gate: a run that never got going says nothing about how \
+             it was got going. Walked: {walked:?}",
+        );
+
+        let composed = loops
+            .authored()
+            .expect("a converged machine still answers with its four strings");
+        // ⚠⚠⚠⚠ THE PREMISE, ASSERTED — register item 684. Everything below tells the three prompts
+        // apart by their TEXT, and a document that shipped any two of them equal would make it all
+        // pass for a driver that typed one sentence everywhere.
+        assert_ne!(
+            composed.start, composed.turn,
+            "⚠⚠⚠ this gate tells the FIRST prompt from an ordinary turn BY THEIR TEXT, and this \
+             document ships them equal: {composed:?}",
+        );
+        assert_ne!(
+            composed.start, composed.end,
+            "⚠⚠⚠ and from the closing one, for the same reason: {composed:?}",
+        );
+
+        // ── THE ACT: exactly one arrival at `priming`, saying the document's own START prompt, and
+        //    saying that what it asks for is WORK ──
+        let primings: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| *state == AiLoopState::Priming)
+            .collect();
+        assert_eq!(
+            primings.len(),
+            1,
+            "⚠⚠ this run must prime exactly once, or the reads below are about several arrivals: \
+             {walked:?}",
+        );
+        assert!(
+            !primings[0].1.is_empty(),
+            "⚠⚠⚠⚠⚠ NOTHING WAS TYPED ON ARRIVAL AT `priming`. `Owed::on` no longer answers for \
+             this state, so a driver that is not being TOLD by the document types nothing here and \
+             the run waits for an answer to a question nobody asked. Walked: {walked:?}",
+        );
+        assert_eq!(
+            (primings[0].1.as_str(), primings[0].2),
+            (composed.start.as_str(), Some(crate::act::Asks::Work)),
+            "⚠⚠⚠⚠⚠ `priming`'s `<onentry>` declares `<send type=\"x-sprag-host\" \
+             event=\"prompt.say\">` carrying `start_prompt` and `asks='work'`, and BOTH have to \
+             arrive: the sentence, because nothing out here looks up a prompt for this state any \
+             more, and the word, because it is what keeps a first turn from being collected as the \
+             run's account. Walked: {walked:?}",
+        );
+
+        // ── THE STAGED CONTROL: the OTHER value of the same argument, in the same walk, read by
+        //    the same field. A host that hard-coded `Work` would pass everything above.
+        let closings: Vec<&(AiLoopState, String, Option<crate::act::Asks>)> = asked
+            .iter()
+            .filter(|(state, _, _)| *state == AiLoopState::Closing)
+            .collect();
+        assert_eq!(
+            closings.len(),
+            1,
+            "⚠⚠⚠ the control needs the closing arrival and this walk has {}: without it `Work` \
+             above is consistent with an argument nobody reads. Walked: {walked:?}",
+            closings.len(),
+        );
+        assert_eq!(
+            (closings[0].1.as_str(), closings[0].2),
+            (composed.end.as_str(), Some(crate::act::Asks::Account)),
+            "⚠⚠⚠⚠ AND THE SAME READER ANSWERS `Account` AT `closing`, off the same run. Two values \
+             of one argument, one walk: that is what makes the `<param>` the thing being measured \
+             rather than a constant in this host. Walked: {walked:?}",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);

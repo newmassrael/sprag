@@ -2207,7 +2207,31 @@
                     ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
                     ' and then, in one line, what the next session must KNOW that you had to work out — not what it should read.' + '\n' +
                     'If the north star itself is fully reached and nothing is left to do, ignore both labels and make the last line of your reply exactly: ' + north_star_marker"/>
-      <send event="prompt.start"/>
+      <!--
+        ⚠⚠⚠⚠⚠ THIS STATE ASKS THE HOST TO PUT ITS SENTENCE rather than
+        announcing a name the machine drops. Register item 470, stage 2, and
+        the same move `closing` and `stopping` made before it.
+
+        What stood here was `<send event="prompt.start"/>`. NOTHING in this
+        document transitions on that name, so the only thing it ever did was
+        mint an event; what actually decided the sentence was a Rust table
+        keyed by this state (`Owed::on`, arm `Priming`). The state now says
+        both facts itself, and the driver reads them off the act.
+
+        ⚠⚠ `asks='work'` AND NOT `'account'`, which is the whole reason the
+        argument exists: this sentence opens the run's FIRST turn. One that
+        asked for an account would take a report off a session that has not
+        been given anything to do yet.
+
+        ⚠ THE ORDER IS THIS BLOCK'S OWN RULE, stated at its top: a send's
+        arguments are evaluated when the send executes (W3C SCXML 6.2.3), so
+        what goes out is the `start_prompt` the assigns above just composed and
+        never the template it was composed from.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="start_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </onentry>
     <!--
       ⚠⚠ A QUESTION THAT WAS TAKEN CLEARS THE ONE FREE REPLACEMENT BELOW. See

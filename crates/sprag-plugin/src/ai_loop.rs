@@ -1765,11 +1765,11 @@ mod tests {
         // table syntax is the shape chosen on purpose: it opens with `{`, so the ladder ATTEMPTS a
         // structured read, and only an attempt that failed is the reading a driver may act on —
         // prose arrives as text quietly and must not count (W3C test 562).
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
-        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-        carried(&mut engine, AiLoopEvent::Judge, "{done=true}");
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, &host, AiLoopEvent::Judge, "{done=true}");
         assert_eq!(
             engine.last_undecodable_payload(),
             Some(AiLoopEvent::Judge),
@@ -8387,19 +8387,38 @@ mod tests {
     /// a road rather than a checklist is exactly this: a step a fixture has to remember is one the
     /// next fixture will not. The neighbouring `reflected` helper already says the rule in its own
     /// words — *a fixture must reach a state by the door the product uses*.
-    fn started() -> (Engine<AiLoopPolicy>, Arc<dyn IScriptEngine>, String) {
+    ///
+    /// # ⚠⚠⚠⚠⚠ AND THE SAME SHAPE CAME BACK ONE ACT LATER, WHICH IS WHY THE HOST IS HANDED BACK
+    ///
+    /// Registering a handler was only half of being a host. When `priming` declared its act too
+    /// (register item 470, stage 2, 2026-08-25), **seven gates here went red at once for the second
+    /// time** — every walk that reached a run's ending. The handler RECORDS an act and
+    /// [`crate::act::Serving::taken`] is what carries it out, so a walk that only stepped left the
+    /// first act sitting in the slot for the whole run, and the run's SECOND act was refused for
+    /// overrunning it (`Refused::Overrun`) — correctly, and into the document's own `fail`.
+    ///
+    /// ⚠⚠⚠ **A HOST THAT NEVER PERFORMS IS NOT A HOST, and the remedy is the same one as last
+    /// time: not a rule, a door.** [`carried`] is now the only way anything here advances this
+    /// machine, and it performs the act on the far side of the step exactly as
+    /// [`crate::outer::OuterLoop::advance`] does on the far side of a pass. That is why this
+    /// returns the handle: the walk IS the driver's other half, and it cannot be that with no way
+    /// to reach the slot.
+    fn started() -> (
+        Engine<AiLoopPolicy>,
+        crate::act::Serving,
+        Arc<dyn IScriptEngine>,
+        String,
+    ) {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let engine = crate::document::opened(
-            AiLoopPolicy::new(Arc::clone(&lua)),
-            &crate::act::Serving::new(),
-        )
-        .expect("this document answers its own errors, so the door admits it");
+        let host = crate::act::Serving::new();
+        let engine = crate::document::opened(AiLoopPolicy::new(Arc::clone(&lua)), &host)
+            .expect("this document answers its own errors, so the door admits it");
         let session = engine
             .policy()
             .session_id
             .clone()
             .expect("a script datamodel must have opened a script session");
-        (engine, lua, session)
+        (engine, host, lua, session)
     }
 
     /// Raise `event` at `engine` carrying `standing` as `_event.data.standing`, then step.
@@ -8409,13 +8428,18 @@ mod tests {
     /// assign nil over the variable `priming` composes and then assert about the states anyway. **A
     /// fixture must reach a state by the door the product uses** — the driver's `Raise::carrying` is
     /// this, one layer up.
-    fn reflected(engine: &mut Engine<AiLoopPolicy>, event: AiLoopEvent, standing: &str) {
-        engine.raise_external(
+    fn reflected(
+        engine: &mut Engine<AiLoopPolicy>,
+        host: &crate::act::Serving,
+        event: AiLoopEvent,
+        standing: &str,
+    ) {
+        carried(
+            engine,
+            host,
             event,
             &serde_json::json!({"standing": standing}).to_string(),
-            "",
         );
-        engine.step();
     }
 
     /// **WHAT THE DRIVER PUTS ON `turn.done`** — three numbers, and a zero is a record that could
@@ -8444,30 +8468,63 @@ mod tests {
     /// its own errors and seven of them went red at once. ⚠ There is no separate ratchet for this
     /// class and none is needed: the edge IS the detector, and the next fixture written this way
     /// fails on the state it lands in.
-    fn carried(engine: &mut Engine<AiLoopPolicy>, event: AiLoopEvent, data: &str) {
+    ///
+    /// # ⚠⚠⚠⚠⚠ AND WHY EVERY OTHER DOOR CLOSED IN ITEM 470's ROUND
+    ///
+    /// This is now the ONLY thing in this module that advances the machine — `engine.step()` and
+    /// `engine.process_event()` are gone from every walk, and `process_event` was exactly
+    /// `raise_external(e, "", "") + step()` so nothing about those walks changed but the door.
+    ///
+    /// The reason is [`started`]'s: a document that asks its host for an act needs the act
+    /// PERFORMED, not merely recorded, and the third line below is where a document-level walk
+    /// performs it. Leaving that to each fixture is how the same class of defect arrived twice —
+    /// so the third line lives with the step, and a fixture cannot have one without the other.
+    ///
+    /// ⚠⚠ **THE ACT IS DROPPED ON PURPOSE AND THAT IS WHAT PERFORMING IT MEANS HERE.** These are
+    /// ROUTING gates: there is no pane, so the sentence has nowhere to go, and the whole of the
+    /// host's obligation is to empty the slot before the next one arrives — which is precisely
+    /// what [`crate::outer::OuterLoop::advance`] does per pass. A gate that cares WHAT was asked
+    /// for reads it off a real driver instead, over in `outer` — that gate is the one named
+    /// *a run is told its first sentence and what it asks for by its own document*.
+    fn carried(
+        engine: &mut Engine<AiLoopPolicy>,
+        host: &crate::act::Serving,
+        event: AiLoopEvent,
+        data: &str,
+    ) {
         engine.raise_external(event, data, "");
         engine.step();
+        let _performed = host.taken();
     }
 
     /// ⚠⚠⚠ **HOW THE MACHINE TELLS ITS DRIVER WHAT TO DO — asked of the ENGINE, because the
     /// answer decides the driver's whole shape and the document cannot settle it.**
     ///
-    /// `ai_loop.scxml` reads as though it were giving instructions: `priming` does
-    /// `<send event="prompt.start"/>`, `restarting` does `<send event="session.replace"/>`, and
-    /// seven such sends between them name every effect an outer driver has to perform. So the
-    /// obvious driver is EVENT-DRIVEN: subscribe to the machine's sends, do what each one says.
+    /// `ai_loop.scxml` reads as though it were giving instructions: `restarting` does
+    /// `<send event="session.replace"/>`, `screening` does `<send event="screen.begin"/>`, and such
+    /// sends between them name effects an outer driver has to perform. So the obvious driver is
+    /// EVENT-DRIVEN: subscribe to the machine's sends, do what each one says.
+    ///
+    /// ⚠⚠⚠⚠ **THE STATE THIS GATE WAS WRITTEN ABOUT NO LONGER HAS ONE OF THOSE SENDS, AND THE
+    /// COMPILER IS WHAT SAID SO** — register item 470, stage 2. It read `priming` does
+    /// `<send event="prompt.start"/>` until `priming` began declaring
+    /// `<send type="x-sprag-host" event="prompt.say">` instead; the generated enum stopped minting
+    /// `PromptStart` and the assertion below stopped compiling. A HOST-served send is the third
+    /// kind and is not what this gate is about: it is not addressed to the machine at all, so it is
+    /// not raised onto a queue nobody reads, and for the states that use it the document really is
+    /// the instruction. What this gate still measures is the ANNOUNCED sends that remain.
     ///
     /// **That driver cannot be written, and this gate is where that was established rather than
     /// assumed.** A targetless `<send>` is W3C SCXML 6.2's *external event to SELF*: the generated
     /// code calls `raise_external_with_meta` on the machine's OWN queue, and no transition in this
-    /// document listens for any of the seven — so they are raised and dropped. The one handle that
+    /// document listens for any of them — so they are raised and dropped. The one handle that
     /// looks like a subscription, `Engine::get_external_queue_handle`, is for `#_parent` sends out
     /// of `<invoke>`d CHILD machines and **mints a fresh empty queue on every call**.
     ///
     /// So the driver is **STATE-DRIVEN**: it reads `get_current_state()` and acts on where the
     /// machine IS, and the machine's own published ingress partition is what says this is the
     /// intended shape — `prompt.sent` (the driver's ANSWER) is externally drivable, while
-    /// `prompt.start` (the supposed instruction) is not. The sends are documentation of intent
+    /// `session.replace` (a supposed instruction) is not. The sends are documentation of intent
     /// that the compiler carries; the STATE is the contract.
     ///
     /// ⚠ Written as an assertion rather than as a comment because R376 paid for exactly this
@@ -8475,12 +8532,12 @@ mod tests {
     /// it says. Whatever this gate reports is the thing to build against.
     #[test]
     fn the_machine_instructs_its_driver_through_its_state_not_through_its_sends() {
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Priming,
-            "the control: `start` must land in the state whose onentry sends `prompt.start`",
+            "the control: `start` must land in the state that asks this host for its first prompt",
         );
 
         // ── the door that looks like a subscription ──
@@ -8488,7 +8545,8 @@ mod tests {
         let seen = drained.lock().expect("the queue mutex").len();
         assert_eq!(
             seen, 0,
-            "⚠⚠⚠ `prompt.start` WAS just sent, and this handle shows {seen} events. If it ever \
+            "⚠⚠⚠ `priming`'s `<onentry>` WAS just run, and this handle shows {seen} events. If it \
+             ever \
              shows one, the driver below is the wrong shape — it should subscribe rather than \
              read state, and every effect it performs should be keyed on a send",
         );
@@ -8507,11 +8565,20 @@ mod tests {
              machine that does not accept it from outside is one whose template nothing can fill \
              in, which is exactly the state this round found it in: {ingress:?}",
         );
+        // ⚠⚠⚠⚠ THE NEEDLE MOVED BECAUSE THE NAME LEFT THE DOCUMENT — register item 470, stage 2.
+        // This read `PromptStart` until `priming` stopped announcing a name and began declaring
+        // `<send type="x-sprag-host" event="prompt.say">`; the generated enum stopped minting the
+        // variant and this line stopped compiling. `session.replace` is `restarting`'s announced
+        // send and is the same KIND of thing this assertion is about, which is why it is the
+        // replacement rather than a weaker claim.
+        // ⚠ It is spelled as a variant and not as a string on purpose: the day `restarting`'s act
+        // moves too, this stops compiling instead of going quietly green on a name nothing mints.
         assert!(
-            !ingress.contains(&AiLoopEvent::PromptStart),
+            !ingress.contains(&AiLoopEvent::SessionReplace),
             "⚠⚠ and the supposed INSTRUCTION is not an ingress event, which is the machine saying \
-             the same thing from the other side: nobody outside sends `prompt.start`, so nothing \
-             outside is meant to receive it either. It is the STATE that instructs: {ingress:?}",
+             the same thing from the other side: nobody outside sends `session.replace`, so \
+             nothing outside is meant to receive it either. It is the STATE that instructs: \
+             {ingress:?}",
         );
 
         // ── and the state is a complete instruction on its own ──
@@ -8559,15 +8626,15 @@ mod tests {
     fn a_peer_that_went_silent_is_recoverable_where_a_peer_that_is_gone_is_not() {
         /// Reach `working` the way a run does, then raise `left` and say where it went.
         fn from_working(left: AiLoopEvent) -> AiLoopState {
-            let (mut engine, _lua, _session) = started();
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
+            let (mut engine, host, _lua, _session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Working,
                 "the fixture: both events below are raised from `working` and nowhere else",
             );
-            engine.process_event(left);
+            carried(&mut engine, &host, left, "");
             engine.get_current_state()
         }
 
@@ -8598,11 +8665,11 @@ mod tests {
         );
 
         // ── THE RECOVERY: the peer speaks again, and the run has lost nothing ──
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
-        engine.process_event(AiLoopEvent::PeerSilent);
-        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        carried(&mut engine, &host, AiLoopEvent::PeerSilent, "");
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Judging,
@@ -8639,17 +8706,16 @@ mod tests {
     fn the_goal_met_guard_separates_a_finished_agent_from_an_unfinished_one() {
         /// Walk a fresh machine to `judging` and raise `judge` carrying `data`.
         fn judged(data: &str) -> AiLoopState {
-            let (mut engine, _lua, _session) = started();
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
-            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+            let (mut engine, host, _lua, _session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Judging,
                 "the control: one completed turn is judged",
             );
-            engine.raise_external(AiLoopEvent::Judge, data, "");
-            engine.step();
+            carried(&mut engine, &host, AiLoopEvent::Judge, data);
             engine.get_current_state()
         }
 
@@ -8689,12 +8755,12 @@ mod tests {
     #[test]
     fn a_stood_down_run_whose_peer_leaves_after_a_banked_turn_converges_rather_than_fails() {
         /// A fresh machine in `judging` — a turn banked — with a stand-down order standing.
-        fn banked_and_stood_down() -> Engine<AiLoopPolicy> {
-            let (mut engine, _lua, _session) = started();
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
-            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-            engine.process_event(AiLoopEvent::StandDown);
+        fn banked_and_stood_down() -> (Engine<AiLoopPolicy>, crate::act::Serving) {
+            let (mut engine, host, _lua, _session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, &host, AiLoopEvent::StandDown, "");
             let active = engine.get_active_states();
             assert!(
                 active.contains(&AiLoopState::Judging)
@@ -8703,13 +8769,14 @@ mod tests {
                  reachable by a completed turn) with the order STANDING, or nothing below is item \
                  604's situation at all. active = {active:?}",
             );
-            engine
+            (engine, host)
         }
 
         // ── THE CONTROL FIRST: same state, same order, the guard that is known to work ──
-        let mut control = banked_and_stood_down();
+        let (mut control, control_host) = banked_and_stood_down();
         carried(
             &mut control,
+            &control_host,
             AiLoopEvent::Judge,
             r#"{"done": true, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#,
         );
@@ -8731,8 +8798,8 @@ mod tests {
         // `prompt.unasked --> converged` edge inside `closing` is already there to repair, one
         // pass later and at the cost of typing at a dead pane. ⚠ The peer leaving DURING the
         // closing question is a different moment and still ends `peer_gone`; that is its own item.
-        let mut subject = banked_and_stood_down();
-        subject.process_event(AiLoopEvent::PeerGone);
+        let (mut subject, subject_host) = banked_and_stood_down();
+        carried(&mut subject, &subject_host, AiLoopEvent::PeerGone, "");
         let active = subject.get_active_states();
         assert!(
             active.contains(&AiLoopState::Converged),
@@ -8765,12 +8832,12 @@ mod tests {
         /// Drive a fresh machine to `judging` with a stand-down order standing, then judge the
         /// turn with `data`, and say where the work region ended up.
         fn judged_under_orders(data: &str) -> Vec<AiLoopState> {
-            let (mut engine, _lua, _session) = started();
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
-            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-            engine.process_event(AiLoopEvent::StandDown);
-            carried(&mut engine, AiLoopEvent::Judge, data);
+            let (mut engine, host, _lua, _session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, &host, AiLoopEvent::StandDown, "");
+            carried(&mut engine, &host, AiLoopEvent::Judge, data);
             engine.get_active_states()
         }
 
@@ -8830,10 +8897,9 @@ mod tests {
     fn every_state_that_owes_a_prompt_answers_a_question_that_was_never_taken() {
         /// Walk a fresh machine through `events`, each carrying `data`, and say where it landed.
         fn walked(events: &[(AiLoopEvent, &str)]) -> AiLoopState {
-            let (mut engine, _lua, _session) = started();
+            let (mut engine, host, _lua, _session) = started();
             for (event, data) in events {
-                engine.raise_external(*event, data, "");
-                engine.step();
+                carried(&mut engine, &host, *event, data);
             }
             engine.get_current_state()
         }
@@ -9035,18 +9101,17 @@ mod tests {
         /// reflection — rather than by dropping the machine into the state, because a fixture that
         /// bypasses the way in keeps passing after the way in is nailed shut (item 428's lesson).
         fn reviewed(read: &Read, event: AiLoopEvent) -> AiLoopState {
-            let (mut engine, lua, session) = started();
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
-            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-            engine.raise_external(AiLoopEvent::Judge, "{\"done\": true}", "");
-            engine.step();
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, &host, AiLoopEvent::Judge, "{\"done\": true}");
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Reflecting,
                 "the control: a claimed milestone asks what the next one is",
             );
-            reflected(&mut engine, AiLoopEvent::ReflectApplied, "");
+            reflected(&mut engine, &host, AiLoopEvent::ReflectApplied, "");
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Reviewing,
@@ -9069,8 +9134,7 @@ mod tests {
                     .expect("the document's own numbers are writable");
             }
 
-            engine.raise_external(event, "{\"carried\": \"\"}", "");
-            engine.step();
+            carried(&mut engine, &host, event, "{\"carried\": \"\"}");
             engine.get_current_state()
         }
 
@@ -9229,14 +9293,14 @@ mod tests {
     /// arrived, or it arrived and `In()` could not see it. Those have opposite fixes.
     #[test]
     fn an_order_moves_the_orders_region_and_nothing_else() {
-        let (mut engine, _lua, _session) = started();
+        let (mut engine, host, _lua, _session) = started();
         let before = engine.get_active_states();
         assert!(
             before.contains(&AiLoopState::Standing),
             "the control: a fresh run is resting under no orders. active = {before:?}",
         );
 
-        engine.process_event(AiLoopEvent::StandDown);
+        carried(&mut engine, &host, AiLoopEvent::StandDown, "");
 
         let after = engine.get_active_states();
         assert!(
@@ -9279,9 +9343,9 @@ mod tests {
     /// defect than the one being fixed, and it is silent, so the lift is driven here too.
     #[test]
     fn a_held_run_refuses_the_unattended_ending_and_takes_it_once_the_hold_is_lifted() {
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
 
         let working = engine.get_active_states();
         assert!(
@@ -9291,7 +9355,7 @@ mod tests {
         );
 
         // ── THE PERSON HOLDS IT: the work parks AND the order is recorded beside it ──
-        engine.process_event(AiLoopEvent::Hold);
+        carried(&mut engine, &host, AiLoopEvent::Hold, "");
         let held = engine.get_active_states();
         assert!(
             held.contains(&AiLoopState::AwaitingHuman),
@@ -9307,7 +9371,7 @@ mod tests {
         );
 
         // ── THE ENDING ARRIVES ANYWAY, AND MUST BE REFUSED ──
-        engine.process_event(AiLoopEvent::Unattended);
+        carried(&mut engine, &host, AiLoopEvent::Unattended, "");
         let after = engine.get_active_states();
         assert!(
             !after.contains(&AiLoopState::Blocked),
@@ -9323,7 +9387,7 @@ mod tests {
         );
 
         // ── THE HOLD IS LIFTED, AND THE SAME EVENT MUST NOW END THE RUN ──
-        engine.process_event(AiLoopEvent::Resume);
+        carried(&mut engine, &host, AiLoopEvent::Resume, "");
         let resumed = engine.get_active_states();
         assert!(
             resumed.contains(&AiLoopState::Standing),
@@ -9332,8 +9396,8 @@ mod tests {
              active = {resumed:?}",
         );
 
-        engine.process_event(AiLoopEvent::TurnInterrupted);
-        engine.process_event(AiLoopEvent::Unattended);
+        carried(&mut engine, &host, AiLoopEvent::TurnInterrupted, "");
+        carried(&mut engine, &host, AiLoopEvent::Unattended, "");
         let ended = engine.get_active_states();
         assert!(
             ended.contains(&AiLoopState::Blocked),
@@ -9347,7 +9411,7 @@ mod tests {
 
     #[test]
     fn the_outer_loop_runs_the_edges_the_last_two_rounds_built() {
-        let (mut engine, _lua, _session) = started();
+        let (mut engine, host, _lua, _session) = started();
         // ⚠⚠⚠ THE ACTIVE SET, NOT `get_current_state()` — and this line is the probe's warning
         // arriving on the loop's own document. The flattening call answered `Idle` while the machine
         // was flat and answers `Running`, the parallel root, now that it has regions. Nothing about
@@ -9361,18 +9425,18 @@ mod tests {
             engine.get_active_states(),
         );
 
-        engine.process_event(AiLoopEvent::Start);
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Priming,
             "a started loop primes a session before it prompts it",
         );
 
-        engine.process_event(AiLoopEvent::PromptSent);
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
 
         // R372: a person reached into the pane. The loop stops driving.
-        engine.process_event(AiLoopEvent::TurnInterrupted);
+        carried(&mut engine, &host, AiLoopEvent::TurnInterrupted, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::AwaitingHuman,
@@ -9380,7 +9444,7 @@ mod tests {
         );
 
         // R373: they let go. The loop takes the pane back and prompts again.
-        engine.process_event(AiLoopEvent::Resume);
+        carried(&mut engine, &host, AiLoopEvent::Resume, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,
@@ -9416,9 +9480,9 @@ mod tests {
     /// only a reflect point would pass for one that never stopped.
     #[test]
     fn the_outer_budget_the_document_authors_is_the_one_the_machine_enforces() {
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
 
         // Where the loop went after each completed turn, in order.
@@ -9426,7 +9490,7 @@ mod tests {
         let mut turn = 0_u32;
         while engine.get_current_state() == AiLoopState::Working {
             turn += 1;
-            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Judging,
@@ -9435,7 +9499,7 @@ mod tests {
             // No `_event.data.done`, so the goal-met guard is falsy and the budget
             // guards are what decide. The peer saying the done marker is a
             // different gate; this one is about the two NUMBERS.
-            carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+            carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
             decisions.push((turn, engine.get_current_state()));
 
             // A reflection that finds nothing to change returns to `working`
@@ -9448,7 +9512,7 @@ mod tests {
             // the very variable `priming` composes — a fixture reaching the state
             // by a door production does not use.
             if engine.get_current_state() == AiLoopState::Reflecting {
-                reflected(&mut engine, AiLoopEvent::ReflectNone, "");
+                reflected(&mut engine, &host, AiLoopEvent::ReflectNone, "");
             }
             assert!(turn <= 100, "the ceiling must be reachable: {decisions:?}");
         }
@@ -9481,7 +9545,7 @@ mod tests {
             !engine.is_in_final_state(),
             "a run out of turns is asked for its account before it ends: {decisions:?}",
         );
-        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Exhausted,
@@ -9518,25 +9582,25 @@ mod tests {
     fn an_account_that_cannot_be_had_does_not_change_the_ending() {
         /// A fresh machine sitting in `stopping`, reached the way a run reaches it: one turn
         /// judged, with the budget spent.
-        fn out_of_turns() -> Engine<AiLoopPolicy> {
-            let (mut engine, _lua, _session) = started();
+        fn out_of_turns() -> (Engine<AiLoopPolicy>, crate::act::Serving) {
+            let (mut engine, host, _lua, _session) = started();
             // ⚠ `max_turns` is the document's default here; one turn is enough only because the
             // gate below asserts the state it landed in rather than assuming it.
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
             while engine.get_current_state() != AiLoopState::Stopping {
                 assert_eq!(
                     engine.get_current_state(),
                     AiLoopState::Working,
                     "the walk to a spent budget goes through `working`",
                 );
-                carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-                carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+                carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+                carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
                 if engine.get_current_state() == AiLoopState::Reflecting {
-                    reflected(&mut engine, AiLoopEvent::ReflectNone, "");
+                    reflected(&mut engine, &host, AiLoopEvent::ReflectNone, "");
                 }
             }
-            engine
+            (engine, host)
         }
 
         for ending in [
@@ -9544,8 +9608,8 @@ mod tests {
             AiLoopEvent::TurnBlocked,
             AiLoopEvent::TurnInterrupted,
         ] {
-            let mut engine = out_of_turns();
-            engine.process_event(ending);
+            let (mut engine, host) = out_of_turns();
+            carried(&mut engine, &host, ending, "");
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::Exhausted,
@@ -9562,8 +9626,8 @@ mod tests {
             (AiLoopEvent::Cancel, AiLoopState::Cancelled),
             (AiLoopEvent::Fail, AiLoopState::Failed),
         ] {
-            let mut engine = out_of_turns();
-            engine.process_event(ending);
+            let (mut engine, host) = out_of_turns();
+            carried(&mut engine, &host, ending, "");
             assert_eq!(
                 engine.get_current_state(),
                 landing,
@@ -9605,16 +9669,16 @@ mod tests {
     fn a_turn_blocked_by_the_peers_service_waits_instead_of_asking_for_a_person() {
         // ⚠ THE CONTROL, and it is first on purpose: an ordinary blocked turn must be untouched by
         // everything this round added.
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
-        engine.raise_external(
+        carried(
+            &mut engine,
+            &host,
             AiLoopEvent::TurnBlocked,
             &serde_json::json!({"service": false, "judged": false, "rule": ""}).to_string(),
-            "",
         );
-        engine.step();
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Screening,
@@ -9625,16 +9689,16 @@ mod tests {
 
         // ⚠⚠⚠⚠ AND NOW THE OUTAGE — with `judged` ALSO true, so this asserts the ORDER and not
         // merely that a branch exists.
-        let (mut engine, lua, session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
+        let (mut engine, host, lua, session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
-        engine.raise_external(
+        carried(
+            &mut engine,
+            &host,
             AiLoopEvent::TurnBlocked,
             &serde_json::json!({"service": true, "judged": true, "rule": "security"}).to_string(),
-            "",
         );
-        engine.step();
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::ServiceDown,
@@ -9643,7 +9707,7 @@ mod tests {
              reconsider-this at a service that is not answering",
         );
 
-        engine.process_event(AiLoopEvent::ServiceRetry);
+        carried(&mut engine, &host, AiLoopEvent::ServiceRetry, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,
@@ -9707,15 +9771,15 @@ mod tests {
             retried: i64,
             max: ScriptValue,
         ) -> (AiLoopState, Result<ScriptValue, String>) {
-            let (mut engine, lua, session) = started();
-            engine.process_event(AiLoopEvent::Start);
-            engine.process_event(AiLoopEvent::PromptSent);
-            engine.raise_external(
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(
+                &mut engine,
+                &host,
                 AiLoopEvent::TurnBlocked,
                 &serde_json::json!({"service": true, "judged": false, "rule": ""}).to_string(),
-                "",
             );
-            engine.step();
             assert_eq!(
                 engine.get_current_state(),
                 AiLoopState::ServiceDown,
@@ -9725,7 +9789,7 @@ mod tests {
                 .expect("the document's own counter is writable");
             lua.set_variable(&session, "service_retry_max", max)
                 .expect("the document's own ceiling is writable");
-            engine.process_event(AiLoopEvent::ServiceRetry);
+            carried(&mut engine, &host, AiLoopEvent::ServiceRetry, "");
             let counter = lua
                 .get_variable(&session, "service_retried")
                 .map_err(|error| format!("{error:?}"));
@@ -9795,15 +9859,15 @@ mod tests {
     /// ⚠ Driven with `raise_external`, because both edges carry data — see [`reflected`].
     #[test]
     fn a_standing_instruction_is_reflected_on_at_the_next_judgement_and_once() {
-        let (mut engine, _lua, _session) = started();
-        engine.process_event(AiLoopEvent::Start);
-        engine.process_event(AiLoopEvent::PromptSent);
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
 
         // ⚠ THE CONTROL: with nothing screened, a judged turn goes straight back to work. The
         // document ships `reflect_every: 8`, so nothing else can send this turn to `reflecting`.
-        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-        carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,
@@ -9814,24 +9878,25 @@ mod tests {
         // The peer asks, a rule claims it, and the driver reports what it said.
         carried(
             &mut engine,
+            &host,
             AiLoopEvent::TurnBlocked,
             r#"{"service": false, "judged": false, "rule": ""}"#,
         );
         assert_eq!(engine.get_current_state(), AiLoopState::Screening);
-        engine.raise_external(
+        carried(
+            &mut engine,
+            &host,
             AiLoopEvent::ScreenMatched,
             &serde_json::json!({"text": "do it another way"}).to_string(),
-            "",
         );
-        engine.step();
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,
             "a claimed dialog returns to work — the peer has just been handed its answer",
         );
 
-        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-        carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Reflecting,
@@ -9840,10 +9905,10 @@ mod tests {
         );
 
         // Nothing worth changing — back to work without a restart.
-        reflected(&mut engine, AiLoopEvent::ReflectNone, "");
+        reflected(&mut engine, &host, AiLoopEvent::ReflectNone, "");
         assert_eq!(engine.get_current_state(), AiLoopState::Working);
-        carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-        carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+        carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Working,
@@ -9889,7 +9954,7 @@ mod tests {
         /// acts on, and the reason it is not merely a number.
         const AGED: &str = "turns ago; check it still describes live facts";
 
-        let (mut engine, lua, session) = started();
+        let (mut engine, host, lua, session) = started();
         let composed =
             |lua: &Arc<dyn IScriptEngine>| match lua.get_variable(&session, "start_prompt") {
                 Ok(ScriptValue::String(text)) => text,
@@ -9897,7 +9962,7 @@ mod tests {
             };
 
         // ── THE CONTROL: THE FIRST BRIEFING, WHERE THE MILESTONE IS BRAND NEW ──
-        engine.process_event(AiLoopEvent::Start);
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Priming,
@@ -9917,13 +9982,13 @@ mod tests {
         // reads: an empty raise makes that block index nil and the walk ends `failed` on an error
         // nobody meant — the trap `carried`'s own doc records.
         for _ in 0..3 {
-            carried(&mut engine, AiLoopEvent::PromptSent, "");
-            carried(&mut engine, AiLoopEvent::TurnDone, TURN);
-            carried(&mut engine, AiLoopEvent::Judge, ORDINARY);
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
         }
-        carried(&mut engine, AiLoopEvent::PromptUnasked, "");
-        carried(&mut engine, AiLoopEvent::SessionReplaced, "");
-        carried(&mut engine, AiLoopEvent::SessionReady, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptUnasked, "");
+        carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
+        carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Priming,
@@ -9982,7 +10047,7 @@ mod tests {
     /// * `max_turns` — a scalar, which the outer `judging` budget compares against.
     #[test]
     fn the_whole_authored_surface_crosses_into_the_datamodel() {
-        let (mut engine, lua, session) = started();
+        let (mut engine, host, lua, session) = started();
 
         // ── the control: a bare literal crosses unharmed ──
         let north_star = lua.get_variable(&session, "north_star");
@@ -10002,7 +10067,7 @@ mod tests {
         );
 
         // ── a COMPOSED string, built by an `<assign expr>` on the way into `priming` ──
-        engine.process_event(AiLoopEvent::Start);
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
         assert_eq!(
             engine.get_current_state(),
             AiLoopState::Priming,
@@ -10150,7 +10215,7 @@ mod tests {
     /// two is about every brief a caller will ever supply.
     #[test]
     fn a_non_ascii_string_reaches_the_datamodel_by_either_route() {
-        let (_engine, lua, session) = started();
+        let (_engine, host, lua, session) = started();
 
         // ── seam one: a literal in a DOCUMENT, initialised by `<data expr>` ──
         //
@@ -10189,7 +10254,9 @@ mod tests {
         // kind — the ONLY difference from seam one is how the value got there.
         let mut engine = _engine;
         let sent = "북극성 — ship it";
-        engine.raise_external(
+        carried(
+            &mut engine,
+            &host,
             AiLoopEvent::Brief,
             &serde_json::json!({
                 "north_star": sent,
@@ -10199,9 +10266,7 @@ mod tests {
                 "reflect_every": 9,
             })
             .to_string(),
-            "",
         );
-        engine.step();
         let held = lua.get_variable(&session, "north_star");
         let Ok(ScriptValue::String(held)) = &held else {
             panic!("the control: the brief must have assigned something at all: {held:?}");
@@ -10235,7 +10300,9 @@ mod tests {
         // so valid JSON carrying either had been demoting `_event.data` to a STRING — the field
         // read back nil and no error was raised anywhere. Neither shape is used by this document
         // today, which is exactly why they get a gate: nothing else here would notice them break.
-        engine.raise_external(
+        carried(
+            &mut engine,
+            &host,
             AiLoopEvent::Brief,
             &serde_json::json!({
                 "north_star": "a \"quoted\" line\nand a second one",
@@ -10245,9 +10312,7 @@ mod tests {
                 "reflect_every": 9,
             })
             .to_string(),
-            "",
         );
-        engine.step();
         assert!(
             matches!(
                 lua.get_variable(&session, "north_star"),
