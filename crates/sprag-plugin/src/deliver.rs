@@ -158,6 +158,7 @@
 
 use std::time::Duration;
 
+use sprag_detect::AgentState;
 use sprag_terminal::{PaneEcho, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, Written};
@@ -312,6 +313,59 @@ pub enum SubmittedWhen {
         /// [`Delivered::Unsubmitted`].
         within: Duration,
     },
+    /// **THE COMPOSER HAS LET GO OF IT** — the pane was holding an unsubmitted prompt when the
+    /// submit went in ([`AgentState::Holding`]) and is not
+    /// holding one now, within `within`.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The evidence is a PROPERTY, and every other kind here is an EVENT
+    ///
+    /// The three above wait for something to HAPPEN — a repaint, a published change, a report. That
+    /// shape has a failure mode none of them can escape: when the thing does not happen, there is
+    /// nothing to distinguish *it has not happened yet* from *it is never going to*, so the wait
+    /// runs out and the answer is a guess dressed as a timeout. Register item 669 measured what
+    /// that costs — of five live runs, four had prompts that were never asked, and the run could
+    /// not tell, because the ONLY channel for *not submitted* is silence on the channels for
+    /// *submitted*.
+    ///
+    /// A composer is not an event. It is holding, or it is not, and both readings are STABLE — so
+    /// this contract converges where the others merely expire. The bound moves off *how long a
+    /// third party takes to speak* (hundreds of milliseconds, with an unbounded tail) and onto *how
+    /// long this pane takes to repaint*, which this module's own measurement puts at **2.10 ms**.
+    ///
+    /// # ⚠⚠ Both ends are required, and the baseline is what makes it evidence
+    ///
+    /// * **It must have been holding when the submit went in.** *A condition already true when you
+    ///   started is not evidence* is the rule the text's own read-back and
+    ///   [`Repaints`](Self::Repaints) are both held to; here it is sharper, because *not holding*
+    ///   is the SATISFIED reading. Armed against a pane that was not holding, this would answer yes
+    ///   to a submit that was never pressed. So a pane not holding at arming can never satisfy it,
+    ///   and says so at once rather than spending the window — [`Stirs`](Self::Stirs)' rule for a
+    ///   host with no supervisor, for the same reason.
+    /// * **The pane must still be the same agent's**, which is what makes this a claim about the
+    ///   peer the submit went to rather than about whatever is in the pane now.
+    ///
+    /// ⚠ Deliberately NOT part of it: that the observation's
+    /// [`seq`](crate::access::AgentObservation::seq) moved. That is the EVENT discipline
+    /// [`Stirs`](Self::Stirs) and [`Took`](Self::Took) need, and requiring it here would put back
+    /// exactly the dependency this kind exists to drop.
+    ///
+    /// # ⚠⚠⚠ WHAT IT CANNOT SEE TODAY, measured rather than supposed
+    ///
+    /// * **A composer holding a prompt too short to FOLD.** The state is read off the placeholder
+    ///   an agent paints for a long paste; a short prompt sits in the composer as itself and the
+    ///   pane reads `Idle`. Right for a supervisor, whose prompts are long enough to fold — which
+    ///   is how the fold was found — and wrong for a person typing a word.
+    /// * ⛔ **A pane whose agent REPORTS.** `sprag_detect`'s tracker does not run the manifest's
+    ///   rules on a pane a hook is reporting, so `Holding` is never published for one — pinned by
+    ///   `a_reported_pane_holding_a_paste_is_not_read_as_holding` in that crate. That is the
+    ///   population a supervisor drives, so this contract REFUSES there rather than passing: the
+    ///   baseline cannot be armed, and an unanswerable contract says so. Lifting it is the same
+    ///   change register item 524 already made for one other screen fact, and it is not made here.
+    Released {
+        /// How long to wait for that, after which the delivery answers
+        /// [`Delivered::Unsubmitted`].
+        within: Duration,
+    },
     /// **THE AGENT HAS NAMED THE QUESTION IT RECEIVED, AND IT IS THIS ONE** — its own submit hook
     /// reported the prompt, within `within`.
     ///
@@ -361,9 +415,10 @@ impl SubmittedWhen {
     pub const fn within(self) -> Option<Duration> {
         match self {
             Self::Unchecked => None,
-            Self::Repaints { within } | Self::Stirs { within } | Self::Took { within } => {
-                Some(within)
-            }
+            Self::Repaints { within }
+            | Self::Stirs { within }
+            | Self::Released { within }
+            | Self::Took { within } => Some(within),
         }
     }
 
@@ -383,6 +438,10 @@ impl SubmittedWhen {
             Self::Unchecked => "was not asked to show anything",
             Self::Repaints { .. } => "did not repaint",
             Self::Stirs { .. } => "did not stir",
+            // ⚠ It names the COMPOSER, because that is the thing that did not move — and a pane
+            // that could not be armed reaches this sentence too, which is why it says what is still
+            // true of the pane rather than claiming the wait was spent.
+            Self::Released { .. } => "is still holding the prompt in its composer",
             // ⚠ It names the QUESTION rather than the pane, because that is what went unanswered:
             // the peer may well have stirred, and what did not arrive is any account of having been
             // asked THIS. A caller reading *"did not stir"* here would go looking at the wrong end.
@@ -1192,28 +1251,54 @@ struct Submission {
     /// a peer that was asked something this text is only part of, which is the dirty-composer case
     /// this contract exists to catch.
     asked: Option<String>,
+    /// WHOSE composer was holding an unsubmitted prompt as the submit went in —
+    /// [`SubmittedWhen::Released`]'s baseline.
+    ///
+    /// `None` where the pane was NOT holding, as well as where nothing could be read at all, and
+    /// the two are deliberately the same answer: neither can produce evidence that this keystroke
+    /// released anything. ⚠ This is the one baseline whose absence matters most, because the
+    /// contract is satisfied by an ABSENCE — armed on a pane that was not holding, *it is not
+    /// holding now* would be true before the submit was ever pressed.
+    holding: Option<String>,
 }
 
 impl Submission {
     /// Read what this contract will be compared against — **called before the submit is injected**.
     fn arm(panes: &dyn PaneAccess, pane: PaneId, wanted: SubmittedWhen, text: &str) -> Self {
-        let (screen, agent) = match wanted {
-            // Nothing is asked, so nothing is read. A baseline taken for an unchecked submit would
-            // be a pane read every delivery pays for and nothing consults.
-            SubmittedWhen::Unchecked => (None, None),
-            SubmittedWhen::Repaints { .. } => (panes.pane_collapsed(pane), None),
-            SubmittedWhen::Stirs { .. } | SubmittedWhen::Took { .. } => (
-                None,
-                panes
-                    .supervision()
-                    .and_then(|supervisor| supervisor.pane_agent_state(pane))
-                    .and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
-            ),
+        // Nothing is asked, so nothing is read. A baseline taken for an unchecked submit would be
+        // a pane read every delivery pays for and nothing consults.
+        let screen = match wanted {
+            SubmittedWhen::Repaints { .. } => panes.pane_collapsed(pane),
+            SubmittedWhen::Unchecked
+            | SubmittedWhen::Stirs { .. }
+            | SubmittedWhen::Released { .. }
+            | SubmittedWhen::Took { .. } => None,
+        };
+        // ⚠⚠ ONE READING for every kind that asks about the agent, because `Released` draws TWO
+        // baselines out of it — who the peer is, and whether its composer was holding. Two reads
+        // could straddle a change and arm the pair against different moments, which is the drift
+        // this whole type exists to prevent.
+        let seen = match wanted {
+            SubmittedWhen::Stirs { .. }
+            | SubmittedWhen::Released { .. }
+            | SubmittedWhen::Took { .. } => panes
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(pane)),
+            SubmittedWhen::Unchecked | SubmittedWhen::Repaints { .. } => None,
         };
         Self {
             wanted,
             screen,
-            agent,
+            // Only the contract that compares it keeps it, for `asked`'s reason below: a pane that
+            // was NOT holding arms nothing, so the contract can never be satisfied and says so.
+            holding: matches!(wanted, SubmittedWhen::Released { .. })
+                .then(|| {
+                    seen.as_ref()
+                        .filter(|seen| seen.state == AgentState::Holding)
+                        .and_then(|seen| seen.agent.clone())
+                })
+                .flatten(),
+            agent: seen.and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
             // Only the contract that compares it keeps it: a delivery that asks nothing of the
             // agent's account has no business holding a copy of its own prompt.
             asked: matches!(wanted, SubmittedWhen::Took { .. }).then(|| text.to_owned()),
@@ -1248,6 +1333,25 @@ impl Submission {
                             // submit went to rather than about whatever is in the pane now.
                             seen.seq > *pressed_at
                                 && seen.agent.as_deref() == Some(addressed.as_str())
+                        }),
+                )
+            }
+            // ⚠⚠⚠ THE ABSENCE IS THE ANSWER, which is why the baseline is not optional here in the
+            // way the others' are: `None` means the pane was not holding when the submit went in,
+            // and then *it is not holding now* is a sentence that was already true. Refusing at
+            // once is both the honest answer and the cheap one.
+            SubmittedWhen::Released { .. } => {
+                let addressed = self.holding.as_deref()?;
+                Some(
+                    panes
+                        .supervision()
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                        .is_some_and(|seen| {
+                            // ⚠ NO `seq` COMPARISON, deliberately — see the kind's own doc. What is
+                            // asked is a PROPERTY of the pane now, and requiring a published change
+                            // as well would reinstate the event dependency this contract drops.
+                            seen.agent.as_deref() == Some(addressed)
+                                && seen.state != AgentState::Holding
                         }),
                 )
             }
@@ -2100,6 +2204,270 @@ mod tests {
             },
             ..Delivery::new()
         }
+    }
+
+    /// **A PANE WHOSE COMPOSER IS THE THING BEING WATCHED** — the double
+    /// [`SubmittedWhen::Released`] is measured over.
+    ///
+    /// # ⚠⚠⚠ Its `seq` NEVER MOVES, and that is the fixture's whole point
+    ///
+    /// A double whose published sequence advanced with the submit would satisfy
+    /// [`SubmittedWhen::Stirs`] as well, and then a green `Released` gate would prove nothing about
+    /// `Released` — the neighbouring contract would have carried it. Freezing `seq` at zero makes
+    /// the two contracts give OPPOSITE answers over one fixture, which is the only way to show that
+    /// this one rests on a property rather than on an event.
+    ///
+    /// # ⚠⚠ It is SCRAPED, because a report could not say this
+    ///
+    /// [`AgentState::Holding`] is a conclusion a manifest rule reaches by reading the composer.
+    /// `sprag_detect`'s tracker does not run those rules on a pane a hook is reporting, so a
+    /// fixture that published `Holding` under [`Authority::Reported`](crate::access::Authority) —
+    /// which is what the neighbouring `Reporting` double does for the states it models — would be
+    /// staging a shape the product cannot produce.
+    struct Composing {
+        inner: Recorder,
+        /// Whether the composer is holding an unsubmitted prompt BEFORE the submit goes in — the
+        /// baseline this contract arms against.
+        holding_before: bool,
+        /// Whether it is STILL holding once the submit has been injected. `true` is THE JAM: the
+        /// keystroke went out and the prompt is sitting there.
+        holding_after: bool,
+        /// How many times the supervisor has been asked, so a gate can assert that a contract
+        /// nothing could answer was refused AT ONCE rather than after its window.
+        looks: Mutex<u32>,
+    }
+
+    impl Composing {
+        /// A pane showing `text`, holding it before the submit and letting go after — the ordinary
+        /// success.
+        fn releasing(text: &str) -> Self {
+            Self {
+                inner: Recorder::showing(text),
+                holding_before: true,
+                holding_after: false,
+                looks: Mutex::new(0),
+            }
+        }
+
+        /// How many times the supervisor was asked.
+        fn looks(&self) -> u32 {
+            *self.looks.lock().expect("the counter")
+        }
+
+        /// One delivery against this double under `spec`.
+        fn deliver_under(&self, text: &str, spec: &Delivery) -> Delivered {
+            deliver(self, &RunContext::uncancellable(), PaneId(1), text, spec).expect("no error")
+        }
+
+        /// How many submits went out — the count and not a `bool`, for `Reporting::submits`' reason.
+        fn submits(&self) -> usize {
+            self.inner
+                .injected
+                .lock()
+                .expect("the log")
+                .iter()
+                .filter(|keys| keys == &&vec!["Enter".to_owned()])
+                .count()
+        }
+    }
+
+    impl PaneAccess for Composing {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            self.inner.pane_ids()
+        }
+        fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_collapsed(id)
+        }
+        fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+            self.inner.pane_rows(id)
+        }
+        fn pane_eof(&self, id: PaneId) -> Option<bool> {
+            self.inner.pane_eof(id)
+        }
+        fn pane_full_text(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_full_text(id)
+        }
+        fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+            self.inner.inject(id, keys)
+        }
+        fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+            Some(self)
+        }
+        fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+            Some(&self.inner)
+        }
+    }
+
+    impl crate::access::PaneSupervision for Composing {
+        fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+            *self.looks.lock().expect("the counter") += 1;
+            let holding = if self.inner.submitted() {
+                self.holding_after
+            } else {
+                self.holding_before
+            };
+            Some(crate::access::AgentObservation {
+                state: if holding {
+                    AgentState::Holding
+                } else {
+                    AgentState::Idle
+                },
+                agent: Some("claude".to_owned()),
+                authority: crate::access::Authority::Scraped {
+                    rule: Some(
+                        if holding {
+                            "composer-holds-paste"
+                        } else {
+                            "idle-glyph"
+                        }
+                        .to_owned(),
+                    ),
+                },
+                // ⚠ FROZEN — see the type's doc. Nothing here is an event.
+                seq: 0,
+                asked_seq: 0,
+                reports: 0,
+                asking: None,
+                asked: None,
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                transcript: None,
+                settling: crate::access::Settling::Nothing,
+            })
+        }
+    }
+
+    /// One text injection, a grace too short to wait out, and the submit held to the COMPOSER —
+    /// the spec every [`SubmittedWhen::Released`] gate here delivers under.
+    fn releasing_once() -> Delivery {
+        Delivery {
+            echo_timeout: Duration::from_millis(1),
+            attempts: 1,
+            submitted_when: SubmittedWhen::Released {
+                within: Duration::from_millis(50),
+            },
+            ..Delivery::new()
+        }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A COMPOSER THAT LET GO IS A SUBMIT, AND ONE STILL HOLDING IS NOT** — register item
+    /// 669's second stage, and the pair of screens that are one Enter apart.
+    ///
+    /// # The defect this answers, measured on five live runs
+    ///
+    /// Every other submit contract waits for something to HAPPEN. When it does not, *not yet* and
+    /// *never* are the same silence, so the wait expires and the answer is a guess. Item 669
+    /// measured the cost: four of five running loops had prompts that were never asked, and no run
+    /// could tell — because the only channel for *not submitted* is the absence of the channels for
+    /// *submitted*.
+    ///
+    /// # ⚠⚠⚠ THE CONTROL IS THE SAME FIXTURE UNDER THE NEIGHBOURING CONTRACT
+    ///
+    /// [`Composing`]'s `seq` is frozen, so [`SubmittedWhen::Stirs`] can never be satisfied over it.
+    /// The two contracts therefore answer OPPOSITELY on one pane, and that difference is the claim:
+    /// this contract reads a PROPERTY, and an event-shaped one has nothing to read.
+    #[test]
+    fn a_composer_that_let_go_of_the_prompt_is_a_submit_and_one_still_holding_is_not() {
+        let released = Composing::releasing("ORTHOGONAL-669");
+        let landed = released.deliver_under("ORTHOGONAL-669", &releasing_once());
+        assert!(
+            landed.is_confirmed(),
+            "⚠⚠⚠ the composer was holding this prompt when the Enter went in and is not holding \
+             one now: nothing else on this pane moved, and that absence IS the evidence. \
+             Got {landed:?}",
+        );
+        assert_eq!(
+            released.submits(),
+            1,
+            "and exactly one Enter — a second would land on whatever the composer holds next",
+        );
+
+        // ⚠⚠⚠ THE CONTROL, one bit different: the same delivery over a composer that never let go.
+        // This is the JAM item 669 exists for — the keystroke is out and the prompt is still
+        // sitting in the box — and it must be a refusal rather than a slower success.
+        let jammed = Composing {
+            holding_after: true,
+            ..Composing::releasing("ORTHOGONAL-669")
+        };
+        let stuck = jammed.deliver_under("ORTHOGONAL-669", &releasing_once());
+        assert!(
+            matches!(
+                stuck,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Released { .. },
+                    ..
+                },
+            ),
+            "⚠⚠⚠⚠ the prompt is STILL IN THE COMPOSER after the press. Answering anything else \
+             here is the sixty seconds a live `claude` sat in with a prompt nobody had asked. \
+             Got {stuck:?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE EVENT-SHAPED CONTRACT CANNOT SEE THE SUCCESS AT ALL. Same double, same
+        // Enter, same release — `Stirs` waits for a published change and this pane publishes none,
+        // so it refuses the very delivery `Released` confirmed. Without this the gate above could
+        // be passing on evidence `Released` never used.
+        let stirring = Composing::releasing("ORTHOGONAL-669");
+        let unseen = stirring.deliver_under(
+            "ORTHOGONAL-669",
+            &Delivery {
+                submitted_when: SubmittedWhen::Stirs {
+                    within: Duration::from_millis(50),
+                },
+                ..releasing_once()
+            },
+        );
+        assert!(
+            matches!(
+                unseen,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Stirs { .. },
+                    ..
+                },
+            ),
+            "⚠ the property is there to be read and the EVENT is not, which is the whole \
+             difference between the two contracts: {unseen:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **A PANE THAT WAS NOT HOLDING ANYTHING CANNOT SATISFY THIS, AND SAYS SO AT ONCE.**
+    ///
+    /// The baseline is what makes an ABSENCE into evidence. Without it, *the composer is not
+    /// holding* is a sentence that was already true before the Enter went in — so the contract
+    /// would confirm a submit that was never pressed, over any pane at all. It is the same *a
+    /// condition already true when you started is not evidence* rule the text's own read-back and
+    /// [`SubmittedWhen::Repaints`] are held to, and it is sharper here because the satisfied
+    /// reading is the negative one.
+    ///
+    /// ⚠⚠ **AND THE REFUSAL MUST BE IMMEDIATE**, which is asserted rather than assumed: a contract
+    /// nothing can answer spends its whole window discovering that, and the run pays the window for
+    /// no information. `looks` is the instrument — one reading, at arming, and none afterwards.
+    #[test]
+    fn a_pane_that_was_holding_nothing_can_never_satisfy_the_composer_contract() {
+        let clean = Composing {
+            holding_before: false,
+            ..Composing::releasing("ORTHOGONAL-669")
+        };
+        let refused = clean.deliver_under("ORTHOGONAL-669", &releasing_once());
+        assert!(
+            matches!(
+                refused,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Released { .. },
+                    ..
+                },
+            ),
+            "⚠⚠⚠⚠ this pane's composer was empty BEFORE the Enter, so *it is empty now* says \
+             nothing about the keystroke. A yes here would be a yes for every pane ever \
+             delivered to. Got {refused:?}",
+        );
+        assert_eq!(
+            clean.looks(),
+            1,
+            "and it was refused on the ARMING read alone — a contract that cannot be answered must \
+             not spend its window finding that out",
+        );
     }
 
     /// ⚠⚠⚠⚠ **A COMPOSER THAT WAS ALREADY DIRTY IS CONFIRMED AS IF IT WERE CLEAN** — register item

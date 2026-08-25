@@ -1018,6 +1018,17 @@ mod tests {
     /// Enough of a `claude` pane to be claimed by its footer fingerprint with no title at all.
     const CLAUDE_FOOTER: &[&str] = &["❯", "  ⏸ manual mode on · ? for shortcuts"];
 
+    /// A `claude` composer HOLDING an unsubmitted paste — the placeholder, the box, and the hint
+    /// that replaces the footer while it holds. Captured from a live 2.1.243 (register item 669);
+    /// the rule's fidelity is that crate's own business, and this is the smallest screen it fires
+    /// on.
+    const HELD_COMPOSER: &[&str] = &[
+        "──────────────────────────────",
+        "❯ [Pasted text #3 +13 lines]",
+        "──────────────────────────────",
+        "  paste again to expand",
+    ];
+
     /// The smallest screen that is a choice list. The dialog RULE's fidelity to a real agent is
     /// slice 1's business, proven there against three captured `claude` dialogs and three `codex`
     /// ones; these tests are about time, and need only a screen the rule fires on.
@@ -1959,6 +1970,80 @@ mod tests {
             tracker.verdict().state,
             AgentState::Blocked,
             "released, the pane is the screen's again",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND A COMPOSER HOLDING AN UNSUBMITTED PROMPT DOES NOT** — the exact opposite of
+    /// [`a_dialog_outranks_a_report_older_than_it`] below, pinned because a caller is now resting a
+    /// contract on it.
+    ///
+    /// # What this measures, and why it is a gate rather than a comment
+    ///
+    /// [`Tracker::observe`] does not run the manifest's rules on a pane a hook is reporting: one
+    /// screen fact is carved out (register item 524's dialog) and everything else the rules could
+    /// see is not consulted. So [`AgentState::Holding`] — register item 669's fourth state, which
+    /// is a rule reading the composer — **can never be published for a reported pane**, and
+    /// `sprag_plugin`'s [`SubmittedWhen::Released`] therefore refuses on exactly the population a
+    /// supervisor drives.
+    ///
+    /// ⚠⚠ **That is a LIMIT, not a defect, and the difference is that somebody chose it.** Lifting
+    /// it means letting a second screen fact overrule a report, which is the change 524 already
+    /// made once — and it would decide, unmeasured, what a pane says when its agent is genuinely
+    /// working AND its composer holds a queued paste. The staging below asserts the same screen IS
+    /// read as `Holding` with no report in force, so what this pins is the ARBITRATION and not a
+    /// manifest that failed to match.
+    #[test]
+    fn a_reported_pane_holding_a_paste_is_not_read_as_holding() {
+        let rules = Ruleset::new(vec![claude()]);
+        let base = Instant::now();
+
+        // ⚠ THE PREMISE, ASSERTED: with nobody reporting, this very screen reads `Holding`. Without
+        // it a green gate below could mean the manifest simply does not match this fixture, which
+        // is a different fact and would make the arbitration claim vacuous.
+        let mut scraped = Tracker::default();
+        let mut em = painted(HELD_COMPOSER);
+        scraped.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
+        assert_eq!(
+            scraped.verdict().state,
+            AgentState::Holding,
+            "the staging: unreported, this screen's composer is read for what it is holding",
+        );
+
+        // ── THE SAME SCREEN, UNDER A REPORT ──
+        let mut reported = Tracker::default();
+        reported.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
+        reported.report(Report {
+            state: AgentState::Idle,
+            agent: Some("claude".to_owned()),
+            source: "hook:claude".to_owned(),
+            seq: Some(4),
+            owner: None,
+            asked: None,
+            said: None,
+            noticed: None,
+            transcript: None,
+            build: None,
+        });
+        repaint(&mut em, HELD_COMPOSER);
+        reported.observe(
+            em.screen(),
+            Some("✳ Claude Code"),
+            &rules,
+            base + Duration::from_millis(100),
+        );
+        assert_eq!(
+            reported.verdict().state,
+            AgentState::Idle,
+            "⚠⚠⚠⚠ THE REPORT STANDS AND THE COMPOSER IS NOT LOOKED AT. This is the bound on \
+             register item 669's second stage: a supervisor's own agents all report, so the \
+             contract that reads this state refuses there rather than answering. Change this \
+             deliberately or not at all",
+        );
+        assert_eq!(
+            reported.verdict().rule,
+            None,
+            "⚠ and NO rule is named, because none ran — unlike the dialog case one door down, \
+             which names what overruled the reporter",
         );
     }
 
