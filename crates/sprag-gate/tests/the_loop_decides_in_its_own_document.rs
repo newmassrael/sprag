@@ -177,9 +177,16 @@ const DECLARED_ACTS: usize = 11;
 /// second round running. So the blindness above is not `priming`'s special case; it is what this
 /// item's remaining acts will do, and this number is the only eye on any of them.
 ///
+/// ⚠⚠⚠⚠⚠ **AND THE FIFTH IS EVERY `<onentry>` PROMPT THE DOCUMENT HAS.** Measured 2026-08-26, on
+/// `disputing`: 4 → 5 here, `DECLARED_ACTS` 11 → 11, and **every `DRIVER_ARMS` row held for the
+/// third round running**. What is left in `Owed::on` is `working`'s arm, and it is NOT the next one
+/// in this sequence: `prompt.turn` is a **transition** send, so no state entry can declare it and
+/// moving it is a different move. ⚠ So a run of this number from 5 to 6 is not what finishes stage
+/// 2 — read the register.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 4;
+const SERVED_ACTS: usize = 5;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

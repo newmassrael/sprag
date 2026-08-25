@@ -3158,7 +3158,41 @@
       -->
       <assign location="dispute_prompt"
               expr="dispute_opening + ' ' + dispute_said + ' ' + dispute_asking + '\n' + turn_prompt"/>
-      <send event="prompt.dispute"/>
+      <!--
+        ⚠⚠⚠⚠⚠ THIS STATE ASKS THE HOST TO PUT ITS SENTENCE rather than
+        announcing a name the machine drops. Register item 470, stage 2, and the
+        FIFTH act to move — after `closing`, `stopping`, `priming` and
+        `reflecting`.
+
+        What stood here was `<send event="prompt.dispute"/>`. NOTHING in this
+        document transitions on that name, so the only thing it ever did was
+        mint an event; what decided the sentence was a Rust table keyed by this
+        state (`Owed::on`, arm `Disputing`). The state says it itself now.
+
+        ⚠⚠⚠⚠⚠ `asks='work'`, AND THIS STATE IS THE ONE WHERE THAT WORD DOES
+        SOMETHING RATHER THAN MERELY BEING TRUE. The block above already argues
+        it in the other direction: `turn_prompt` is composed IN rather than
+        replaced, so what goes to the peer is the ordinary turn the refusal
+        bought, opened by the reason it was bought. The turn is then watched in
+        `working`, by the same arm that watches every working turn — and that
+        arm collects the run's ACCOUNT off any turn whose question asked for
+        one. So a refusal that said `account` here would take the agent's next
+        piece of WORK and publish it as the run's closing report, on a run that
+        had not finished. ⚠ Unlike `reflecting`, whose turn the driver watches
+        in an arm of its own, this word is load-bearing the moment it is wrong.
+
+        ⚠ THE ORDER: a send's arguments are evaluated when the send executes
+        (W3C SCXML 6.2.3), so what goes out is the `dispute_prompt` the assign
+        above just composed — with THIS refusal's words in it — and never the
+        one a previous refusal left behind.
+
+        ⚠⚠ A LITERAL IS QUOTED INSIDE `expr`, because `expr` is an EXPRESSION
+        in this datamodel and a bare `work` would be a variable nobody declared.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="dispute_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </onentry>
     <transition event="prompt.sent" target="working"/>
     <transition event="fail" target="failed"/>
