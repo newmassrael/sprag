@@ -1248,9 +1248,6 @@ impl Owed {
     const fn on(raised: AiLoopEvent, landed: AiLoopState) -> Self {
         match landed {
             AiLoopState::Working => match raised {
-                // `judging --judge-->`, `awaiting_human --resume-->` and
-                // `reflecting --reflect.none-->` each carry `<send event="prompt.turn"/>`.
-                AiLoopEvent::Judge | AiLoopEvent::Resume | AiLoopEvent::ReflectNone => Self::Turn,
                 // ⚠⚠⚠⚠ THE OUTAGE ENDED AND THE PEER HAS TO BE TOLD TO CARRY ON — register item
                 // 447, and this arm IS the fix. The word used to be typed inside
                 // `wait_out_service` before the event was raised, which was right while
@@ -1290,20 +1287,26 @@ impl Owed {
                 | AiLoopEvent::Fail
                 | AiLoopEvent::Hold
                 | AiLoopEvent::NotifyHuman
-                // ⚠⚠⚠ `prompt.say` REPLACED `prompt.end`, `prompt.stop`, `prompt.start`,
-                // `prompt.reflect` AND `prompt.dispute` HERE, AND THE COMPILER IS WHAT SAID SO EACH
-                // TIME — register item 470, stage 2. Those five names left the document as
-                // `closing`, `stopping`, `priming`, `reflecting` and `disputing` began declaring
-                // their act to the HOST instead of announcing it to the machine: the generated enum
-                // stopped minting them and this list stopped compiling, once per move. ⚠⚠ **THE
-                // ONE STILL SPELLED BELOW IS `prompt.turn`, AND IT IS THE LAST**: it is a
-                // TRANSITION send, so no `<onentry>` can declare it and moving it is a different
-                // move from these five. ⚠ `prompt.say` never arrives as an EVENT at all: a
-                // host-served send raises only what the handler answers with, and this host answers
-                // an act it performed with nothing. It is spelled for this arm's own rule — the
-                // list is what makes an edge added into `working` fail to compile.
+                // ⚠⚠⚠⚠⚠ `prompt.say` REPLACED EVERY `prompt.*` NAME THIS DOCUMENT EVER ANNOUNCED,
+                // AND THE COMPILER IS WHAT SAID SO EACH TIME — register item 470, stage 2. Six
+                // names left as `closing`, `stopping`, `priming`, `reflecting`, `disputing` and
+                // finally the four EDGES into this very state began declaring their act to the HOST
+                // instead of announcing it to the machine: the generated enum stopped minting each
+                // one and this list stopped compiling, once per move. ⚠ `prompt.say` never arrives
+                // as an EVENT at all: a host-served send raises only what the handler answers with,
+                // and this host answers an act it performed with nothing. It is spelled for this
+                // arm's own rule — the list is what makes an edge added into `working` fail to
+                // compile.
                 | AiLoopEvent::PromptSay
-                | AiLoopEvent::PromptTurn
+                // ⚠⚠⚠⚠⚠ THESE THREE USED TO BE THE ONLY PROMPT-OWING KEY LEFT IN THIS TABLE, and
+                // they are here rather than deleted because the list is exhaustive on purpose. Two
+                // of them are the SAME key for two different edges — `judging` reaches `working`
+                // twice on `judge`, once guarded on an unreadable turn — so no expression over this
+                // function's inputs could ever have told those two apart. The document now says
+                // what each edge owes, on the edge, which `probe.rs` measured an engine will carry.
+                | AiLoopEvent::Judge
+                | AiLoopEvent::Resume
+                | AiLoopEvent::ReflectNone
                 | AiLoopEvent::ReflectApplied
                 | AiLoopEvent::ReviewBegin
                 | AiLoopEvent::ReviewDone

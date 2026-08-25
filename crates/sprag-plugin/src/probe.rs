@@ -354,6 +354,176 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **CAN A TRANSITION ASK THIS HOST FOR AN ACT, WITH ITS ARGUMENTS, THE WAY A STATE
+    /// ENTRY CAN?** — the question register item 470's stage 2 stopped at, asked of the engine
+    /// rather than reasoned about.
+    ///
+    /// # What is being decided
+    ///
+    /// Stage 2 moved five acts out of the driver, one per `<onentry>` prompt the loop has, and
+    /// `Owed::on` now answers for exactly one thing: `working`'s arm. That arm survives because
+    /// `prompt.turn` is a **transition** send on three of the four edges into one state — the
+    /// arrival cannot say what is owed, so no state entry can declare it. Either a transition can
+    /// declare an act to this host, and the last arm follows the other five; or it cannot, and
+    /// what is left of stage 2 is a different design (or a request filed upstream).
+    ///
+    /// ⚠⚠⚠ **THE PRECEDENT FOR ASKING RATHER THAN REASONING IS THIS FILE'S OWN.** The case at the
+    /// top of this module recorded stage 2 as REFUTED on 2026-08-20, correctly, about the rev
+    /// pinned that day — and a pin bump overturned it hours later. *A NO is as useful as a YES* is
+    /// this module's rule precisely because both age.
+    ///
+    /// # ⚠⚠⚠⚠ The control, and why a bare green would prove nothing without it
+    ///
+    /// `edging`'s ENTRY declares the same act with the same argument, one step before the edge
+    /// does. One handler, one run, that order. Without it a zero on the edge reads equally as *a
+    /// transition cannot* and as *arguments do not cross into this document at all*, and those are
+    /// different findings with different consequences.
+    ///
+    /// ⚠⚠ **AND THE ARGUMENT'S VALUE IS THE DOCUMENT'S, NOT THIS TEST'S.** `word` carries a
+    /// `<data>` the document composes, so a handler reading it back has read an EXPRESSION
+    /// evaluated at send time. A literal in the `<param>` would have been satisfied by an engine
+    /// that copied the attribute through without evaluating anything, which is precisely the
+    /// half `<param name="text" expr="…"/>` depends on everywhere stage 2 already shipped.
+    ///
+    /// ⚠ **A NO HAS THREE SHAPES AND THEY ARE TOLD APART**: refused (`errors` rises), reached with
+    /// an EMPTY argument bag (the handler was called and `word` was not there), or delivered
+    /// internally with the type ignored (the reply arrives and the handler was never called) —
+    /// the last being the dangerous one the module's first case exists to name.
+    #[test]
+    fn a_transition_can_ask_this_host_for_an_act_and_its_arguments_reach_it() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        /// What the handler saw, in the order the engine called it.
+        type Seen = Vec<(String, HashMap<String, Vec<String>>)>;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+
+        let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Vec::new()));
+        // ⚠⚠ REGISTERED BEFORE `initialize`, for the reason the case above states: the initial
+        // state's own entry already declares an act, and a handler registered after it is a
+        // handler registered after the act it was for.
+        engine.register_event_processor("x-sprag-host", {
+            let seen = Arc::clone(&seen);
+            move |request| {
+                seen.lock()
+                    .expect("the record")
+                    .push((request.event_name.clone(), request.params.clone()));
+                // ⚠ The document's own event name handed back — the request/reply shape. A handler
+                // naming an event of its own would be inventing the document's vocabulary.
+                vec![sce_rust_runtime::host_processor::HostSendResponse {
+                    event_name: request.event_name,
+                    event_data: String::new(),
+                }]
+            }
+        });
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let count = |engine: &Engine<ProbeSendTypePolicy>, name: &str| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, name)
+        {
+            Ok(ScriptValue::Int(held)) => held,
+            other => panic!("`{name}` must be a number this document keeps: {other:?}"),
+        };
+        let word = |engine: &Engine<ProbeSendTypePolicy>| match engine
+            .policy()
+            .script_engine
+            .get_variable(&session, "carried")
+        {
+            Ok(ScriptValue::String(held)) => held,
+            other => panic!("`carried` must be the sentence this document composes: {other:?}"),
+        };
+        let composed = word(&engine);
+        assert!(
+            !composed.is_empty(),
+            "⚠⚠ the document must compose an argument for either measurement to mean anything",
+        );
+
+        // ── THE CONTROL: the same act, the same argument, declared on a state ENTRY ──
+        engine.process_event(ProbeSendTypeEvent::ProbeEnter);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        let after_entry: Seen = seen.lock().expect("the record").clone();
+        let entry: Vec<&(String, HashMap<String, Vec<String>>)> = after_entry
+            .iter()
+            .filter(|(named, _)| named == "carried.entry")
+            .collect();
+        assert_eq!(
+            entry.len(),
+            1,
+            "⚠⚠⚠ THE CONTROL DID NOT REACH THIS HOST, so nothing below is about transitions: an \
+             `<onentry>` act with a `<param>` is the shape five shipped acts already use. Saw \
+             {after_entry:?}",
+        );
+        assert_eq!(
+            entry[0].1.get("word").map(Vec::as_slice),
+            Some([composed.clone()].as_slice()),
+            "⚠⚠⚠ and the control's ARGUMENT must arrive, evaluated: {:?}",
+            entry[0].1,
+        );
+        assert_eq!(
+            count(&engine, "entry_landed"),
+            1,
+            "⚠⚠ and the document must hear the reply, or the act went somewhere this run cannot see",
+        );
+
+        // ── THE QUESTION: the same act, the same argument, declared on a TARGETED transition ──
+        engine.process_event(ProbeSendTypeEvent::ProbeTake);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        let after_edge: Seen = seen.lock().expect("the record").clone();
+        let edge: Vec<&(String, HashMap<String, Vec<String>>)> = after_edge
+            .iter()
+            .filter(|(named, _)| named == "carried.edge")
+            .collect();
+        assert_eq!(
+            count(&engine, "errors"),
+            0,
+            "⚠⚠⚠⚠⚠ A TRANSITION'S HOST SEND WAS REFUSED. That is one of the three shapes of NO, \
+             and it is the one that closes the road: `prompt.turn` cannot leave the driver by this \
+             route, and what is left of item 470's stage 2 needs a different design. Saw \
+             {after_edge:?}",
+        );
+        assert_eq!(
+            edge.len(),
+            1,
+            "⚠⚠⚠⚠⚠ A TRANSITION'S HOST SEND DID NOT REACH THIS HOST. With the control above green, \
+             this is a fact about TRANSITIONS rather than about this document — the second shape \
+             of NO. ⚠ If `edge_landed` is nonetheless 1, the type was IGNORED and the event was \
+             delivered internally, which is the dangerous answer this module's first case names: \
+             a document could declare an act nobody carries out and look served. Saw \
+             {after_edge:?}, `edge_landed` = {}",
+            count(&engine, "edge_landed"),
+        );
+        assert_eq!(
+            edge[0].1.get("word").map(Vec::as_slice),
+            Some([composed.as_str().to_owned()].as_slice()),
+            "⚠⚠⚠⚠⚠ THE ACT REACHED THIS HOST WITH NO ARGUMENTS, which is the third shape of NO and \
+             the narrowest: a transition may declare an act but cannot carry one. `prompt.turn` \
+             is a SENTENCE, so an act without arguments would move the act's NAME into the \
+             document and leave the driver deciding what it says — half the move, and the half \
+             item 470 is not about. Got {:?}",
+            edge[0].1,
+        );
+        assert_eq!(
+            count(&engine, "edge_landed"),
+            1,
+            "⚠⚠⚠⚠ and the document must hear the reply from a transition's act as it hears the \
+             entry's, or a run could not route on what the act answered — which is what \
+             `prompt.sent` does for every prompt this loop delivers",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **ONE HOST ACT PRODUCES TWO EVENTS, IN THE ORDER IT NAMED THEM** — consuming SCE
     /// `084dfdbf`, taken from `pinion@38c908b2` as the shared-instance rule requires.
     ///

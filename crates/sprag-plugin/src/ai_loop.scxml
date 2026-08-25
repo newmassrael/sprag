@@ -2591,9 +2591,22 @@
       somebody who is typing.
     -->
     <transition event="turn.interrupted" target="awaiting_human"/>
-    <!-- The person looked and waved it on without touching anything. -->
+    <!--
+      The person looked and waved it on without touching anything.
+
+      ⚠⚠⚠⚠⚠ THE ACT IS DECLARED ON THE EDGE, which is register item 470 stage
+      2's LAST prompt and the one no state entry could have carried. What is
+      owed here is a property of the TRANSITION and not of where it lands: four
+      edges reach `working` carrying this sentence and three others reach it
+      carrying nothing, so `working` itself cannot say what a run arriving there
+      is owed. `probe.rs` asked the engine whether an edge may declare an act at
+      all before any of this was written; see that gate.
+    -->
     <transition event="resume" target="working">
-      <send event="prompt.turn"/>
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="turn_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </transition>
     <!--
       Nobody came within the driver's patience. This is the run-ending one.
@@ -3042,12 +3055,27 @@
       this document refuses everywhere else. The remedy is the scrollback, and
       the walk is where somebody learns to change it.
     -->
+    <!--
+      ⚠⚠⚠⚠⚠ THESE TWO EDGES ASK FOR THE SAME ACT, AND THAT THEY CAN SAY SO
+      SEPARATELY IS THE POINT — register item 470, stage 2, the last prompt to
+      move. `Owed::on` keyed on `(event, landed state)`, and BOTH of these are
+      `judge` into `working`: one key, and no expression over the driver's
+      inputs could ever have told them apart. They happen to owe the same
+      sentence today; the day one of them owes a different one, the document
+      says so and nothing out there has to be taught the difference.
+    -->
     <transition event="judge" cond="_event.data.unheard" target="working">
       <assign location="reflect_reason" expr="'unreadable'"/>
-      <send event="prompt.turn"/>
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="turn_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </transition>
     <transition event="judge" target="working">
-      <send event="prompt.turn"/>
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="turn_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
@@ -3348,7 +3376,17 @@
     -->
     <transition event="reflect.none" target="working">
       <assign location="standing" expr="_event.data.standing"/>
-      <send event="prompt.turn"/>
+      <!--
+        ⚠⚠ THE ARGUMENT IS EVALUATED AFTER THE ASSIGN ABOVE, which is W3C SCXML
+        6.2.3 and matters here as much as at any state entry: `turn_prompt` was
+        composed by `priming` out of parts this edge has just tidied, and a
+        send evaluated first would carry the list before the duplicates came
+        out of it.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="turn_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
     </transition>
     <!--
       ⚠⚠⚠ THE REFLECTION TURN'S OTHER TWO ENDINGS, and they go where a turn that

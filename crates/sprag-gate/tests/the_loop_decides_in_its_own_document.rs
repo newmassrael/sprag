@@ -184,9 +184,21 @@ const DECLARED_ACTS: usize = 11;
 /// moving it is a different move. ⚠ So a run of this number from 5 to 6 is not what finishes stage
 /// 2 — read the register.
 ///
+/// ⚠⚠⚠⚠⚠ **AND THE SIXTH MOVE WAS THE EDGES, WHICH IS WHY THIS JUMPED FOUR.** Measured 2026-08-26:
+/// 5 → **9**. `prompt.turn` sat on FOUR transitions into `working` — not the three the driver's
+/// table appeared to hold, because `judging` reaches `working` twice on `judge` (one guarded on an
+/// unreadable turn) and `Owed::on` keyed on `(event, landed)` saw those two as ONE key. **A
+/// document can say what an edge owes; a table keyed by arrivals could not tell those two edges
+/// apart at all.** `probe.rs`'s `a_transition_can_ask_this_host_for_an_act_and_its_arguments_reach_it`
+/// is what said the road existed before any of this was written.
+///
+/// ⚠ **THIS IS THE NUMBER'S LAST BIG JUMP FROM PROMPTS.** Every `prompt.*` the document announced
+/// has moved; what still announces a name is five sends nothing reads, which is a different
+/// question — read the register rather than expecting this to keep climbing.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 5;
+const SERVED_ACTS: usize = 9;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

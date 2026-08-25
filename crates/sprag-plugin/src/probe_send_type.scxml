@@ -57,6 +57,28 @@
     <data id="ticks" expr="0"/>
     <data id="rank1" expr="0"/>
     <data id="rank2" expr="0"/>
+    <!--
+      ⚠⚠⚠⚠⚠ CAN A **TRANSITION** ASK A HOST FOR AN ACT, THE WAY A STATE ENTRY
+      CAN? Register item 470's stage 2 finished every `<onentry>` prompt this
+      loop has and stopped at exactly one arm: `prompt.turn` sits on three of
+      the four EDGES into `working`, so the arrival state cannot say what is
+      owed and no state entry can declare it. Whether the same act can be
+      declared where the act actually belongs is UNMEASURED, and everything
+      after stage 2 turns on it.
+
+      ⚠⚠ THE VALUE IS COMPOSED BY THE DOCUMENT so that a handler reading it
+      back has read an EXPRESSION evaluated at send time, not a literal the
+      test could have written itself. It is deliberately a sentence no Rust in
+      this crate spells.
+    -->
+    <data id="carried" expr="'only this document could have composed this'"/>
+    <!-- The CONTROL's arrival: the same act, the same argument, declared on a
+         state ENTRY. Without it, a zero below reads both as *a transition
+         cannot* and as *this document cannot*, which are different answers. -->
+    <data id="entry_landed" expr="0"/>
+    <!-- The QUESTION's arrival: the same act declared on a TARGETED transition,
+         which is the shape `prompt.turn` would have to take. -->
+    <data id="edge_landed" expr="0"/>
   </datamodel>
 
   <!--
@@ -115,6 +137,71 @@
       <assign location="rank2" expr="ticks"/>
     </transition>
     <transition event="go" target="invoking"/>
+    <!-- ⚠ CARRIES NOTHING, deliberately: this edge only puts the machine where
+         the two measurements below are made, so nothing it does can be mistaken
+         for what they measure. -->
+    <transition event="probe.enter" target="edging"/>
+  </state>
+
+  <!--
+    ⚠⚠⚠⚠⚠ THE CONTROL AND THE QUESTION, ONE ACT APART.
+
+    `edging`'s ENTRY declares a host act with an argument; its EDGE out declares
+    the same act with the same argument. One handler sees both, in one run, in
+    that order. So a `edge_landed` of zero cannot be read as *arguments do not
+    cross this boundary at all* while `entry_landed` is one, and a pair of zeros
+    says the handler was never reached rather than that a transition is special.
+
+    ⚠⚠ THE EDGE HAS A TARGET, which is the shape being asked about rather than
+    a convenience. `prompt.turn` sits on `judging -> working`, and W3C SCXML
+    3.13 runs a transition's executable content BETWEEN exiting the source and
+    entering the target — a moment no state's entry can stand in for. A
+    targetless transition would have measured an easier question.
+
+    ⚠⚠⚠ A NO IS THE USEFUL ANSWER TOO, and it has three shapes this document
+    keeps apart: the send is REFUSED (`errors` rises), the send reaches the host
+    with NO arguments (`edge_landed` rises and the handler saw an empty bag),
+    or the event is delivered internally and the type meant nothing (the reply
+    arrives without the handler having been called). The gate reading this
+    document is what tells the last one from the first.
+  -->
+  <state id="edging">
+    <onentry>
+      <send type="x-sprag-host" event="carried.entry">
+        <param name="word" expr="carried"/>
+      </send>
+    </onentry>
+    <transition event="carried.entry">
+      <assign location="entry_landed" expr="entry_landed + 1"/>
+    </transition>
+    <transition event="error.execution">
+      <assign location="errors" expr="errors + 1"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE QUESTION ITSELF. If this reaches the host carrying `word`, then
+      `prompt.turn` can leave the driver by the same road the five acts before
+      it took, and `Owed::on` can be deleted rather than emptied.
+    -->
+    <transition event="probe.take" target="edged">
+      <send type="x-sprag-host" event="carried.edge">
+        <param name="word" expr="carried"/>
+      </send>
+    </transition>
+  </state>
+
+  <!--
+    ⚠ WHERE THE REPLY IS HEARD. The handler's answer is queued and delivered
+    after the transition completes, so the machine is already here by the time
+    it arrives; a document that listened for it back in `edging` would read a
+    zero and call the road shut.
+  -->
+  <state id="edged">
+    <transition event="carried.edge">
+      <assign location="edge_landed" expr="edge_landed + 1"/>
+    </transition>
+    <transition event="error.execution">
+      <assign location="errors" expr="errors + 1"/>
+    </transition>
   </state>
 
   <!--
