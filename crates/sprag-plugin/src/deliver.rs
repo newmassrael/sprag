@@ -182,20 +182,44 @@ pub const DEFAULT_ATTEMPTS: u32 = 3;
 
 /// How long a caller who asks a [`SubmittedWhen`] should give it, unless they know better.
 ///
-/// Two seconds, sized above what has been MEASURED of the evidence it waits for. A peer that paints
-/// what it took does so in **2.10 ms** over a local pty; a live `claude` 2.1.233, asked the
-/// strongest question there is ([`SubmittedWhen::Stirs`] — its supervisor publishing a change),
-/// answered in **100.51 ms** of the Enter going in, and its composer repainted for a key it merely
-/// absorbed in **32.18 ms**.
-///
 /// What the number BUYS is the difference between a slow peer and a deaf one, and the cost of being
-/// generous is paid only where the submit really did not land — so it sits an order above the
-/// slowest observation rather than tight to it.
+/// generous is paid only where the submit really did not land — so it sits above the slowest
+/// observation rather than tight to it.
+///
+/// # ⚠⚠⚠⚠⚠ Six seconds, and the number is READ OFF THE HOOK rather than chosen — item 669
+///
+/// This was **two seconds**, sized on readings taken against `claude` **2.1.233**: a peer that
+/// paints what it took does so in **2.10 ms** over a local pty, and that build answered
+/// [`SubmittedWhen::Stirs`] in **100.51 ms** of the Enter going in.
+///
+/// Those readings are about a PAINT. The contract the loop actually runs is
+/// [`SubmittedWhen::Took`], whose evidence is the agent's own account — and that account travels a
+/// different path: `claude` fires `UserPromptSubmit`, which SPAWNS `sprag hook claude`, which opens
+/// a socket, handshakes, and reports. **Measured 2026-08-25 on an idle host: the spawn alone is
+/// 2-3 ms, and spawn + socket + handshake is 514-541 ms.** A hundred milliseconds was never the
+/// figure this contract had to clear.
+///
+/// ⛔⛔ **AND TWO NUMBERS INSIDE ONE PRODUCT DISAGREED.** The hook `sprag` writes into every agent's
+/// `--settings` document declares `"timeout": 5` — **five seconds** — so this waited less than a
+/// third of the time it permits its own evidence channel to take. Six seconds is that threshold and
+/// not a guess: past it, *no report* is a fact ABOUT THE HOOK (which has been killed) rather than a
+/// guess about timing.
+///
+/// ⚠⚠ **WHAT A SHORT GRACE COSTS IS PERMANENT, WHICH IS WHY IT MATTERED.**
+/// [`Delivered::Unsubmitted`] is refused and never retried — correctly, since the composer is
+/// holding the prompt and a second delivery would concatenate onto it. So a submit that LANDED and
+/// reported late is written off for good: the run counts it as never asked and cannot learn
+/// otherwise. Live runs were reporting up to 13 such prompts each.
+///
+/// ⚠ **The residue, stated**: five seconds bounds the hook PROCESS. When `claude` fires it after an
+/// Enter is not bounded from here at all, so this closes the leg sprag can see and no more. The
+/// design that removes the race rather than widening it — asking what the composer HOLDS, which is
+/// a property rather than an event — is register item 669's, and it is not this constant.
 ///
 /// ⚠ It is deliberately NOT the number a caller must use. [`Turn`](crate::completion::Turn)'s rule:
 /// how long a peer may take is the caller's to say, and a delivery into a box on the far side of an
 /// ssh hop is a different peer from this one.
-pub const DEFAULT_SUBMIT_GRACE: Duration = Duration::from_secs(2);
+pub const DEFAULT_SUBMIT_GRACE: Duration = Duration::from_secs(6);
 
 /// **WHAT WOULD SHOW A CALLER THAT THEIR SUBMIT LANDED** — the contract [`deliver`] holds
 /// [`Delivery::then_press`] to, and the twin of [`ReadyWhen`](crate::readiness::ReadyWhen) and

@@ -421,15 +421,38 @@ pub(crate) const DEFAULT_SERVICE_RETRY_TEXT: &str = "continue";
 
 /// How long a milestone check may take before it is abandoned as [`Checked::Silent`].
 ///
-/// ⚠⚠ Sized like [`JudgeSpec`](crate::judge::JudgeSpec)'s and then some: a judged dialog asks about
-/// four lines of menu and was measured at 4-6 s against a cheap model, and this one is shown a whole
-/// turn's output. It is not in the critical path of a BLOCKED agent — the peer has finished its turn
-/// and said so — so patience here costs a slower judgement rather than a stalled one.
+/// It is not in the critical path of a BLOCKED agent — the peer has finished its turn and said so —
+/// so patience here costs a slower judgement rather than a stalled one. That is what licenses a
+/// number this large, and it is the argument the measurement below rests on.
+///
+/// # ⚠⚠⚠⚠⚠ Why 120 s was not generous, measured rather than reasoned — register item 674
+///
+/// This number was sized *"like [`JudgeSpec`](crate::judge::JudgeSpec)'s and then some"*, on a
+/// dialog judge measured at **4-6 s against a cheap model**. The shape of that reasoning was right
+/// and **the base does not transfer**: a dialog judge is shown four lines of menu, and this one is
+/// shown A WHOLE TURN'S OUTPUT.
+///
+/// **Measured 2026-08-25** — a real `claude -p`, shown a real turn's account, five runs on an IDLE
+/// host (load average 0.84 across 32 cores): **48.5 s, 65.3 s, 67.7 s, 100.2 s, 118.2 s.** The
+/// worst sample sits **1.8 seconds inside the old bound**, with no contention at all. Live runs on
+/// the same machine were reporting **42-47% of milestone claims unverified**, every one of them
+/// `Unheard::Unfinished` — *the checker was started and never answered* — which is what that
+/// distribution looks like once four loops and their checkers share the box.
+///
+/// ⚠⚠ **THE COST OF A SILENT CHECK IS NOT A SLOW ROUND, IT IS AN UNCLOSED MILESTONE.** Register
+/// item 428's rule is that an agent may not certify its own work, so a checker that says nothing
+/// leaves the claim STANDING — a run measured over 280 iterations with no milestone declared spent
+/// half of that here.
+///
+/// ⚠ **The residue, stated**: the five readings are from an idle host. What the distribution does
+/// under real contention is NOT measured, so this number is headroom rather than a bound read off
+/// the load it must survive. What bounds the cost of being generous is
+/// `reflect_after_refusals` — two checks per milestone at most.
 ///
 /// ⚠ It is a constant and not a `<data>`, on register item 314's correction: the rule that a
 /// duration belongs to the document bites on durations a CALLER can pass, and no caller can pass
 /// this. The day a check becomes a wire argument, its bound goes beside it.
-const CHECK_WITHIN: Duration = Duration::from_secs(120);
+const CHECK_WITHIN: Duration = Duration::from_secs(600);
 
 /// The datamodel variable holding the word the agent says when there is **nothing left at all** —
 /// asked for by the reflection, and the only thing that reaches `closing`.
