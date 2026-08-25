@@ -5042,22 +5042,27 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
     // ⚠⚠⚠⚠⚠ A PANE IS RESOLVED HERE, THROUGH THE DOOR EVERY OTHER PANE VERB USES — register item
     // 542. The published grammar declares this argument an `int`, so a NAME reached `build_call` as
     // a type error and was refused before the daemon was ever asked — on the ONE verb whose target
-    // a person types least often and remembers least well. ⚠ And a number was not merely the
-    // inconvenient spelling: `resolve_pane` looks across the scoped SESSION, where a bare number
-    // used to be read against the current window, so an operator standing elsewhere was told there
-    // was no such pane about a number that was correct one window over.
+    // a person types least often and remembers least well.
+    //
+    // ⚠⚠⚠⚠⚠ AND BOTH SPELLINGS GO THE SAME WAY — register item 686, which is item 542's NEXT
+    // LINE and was measured on the sentence this comment used to carry. It said a bare number
+    // "used to be" read against the current window, and that was false the day it was written: the
+    // guard here was `raw.parse::<u64>().is_err()`, so a NUMBER never reached the resolver at all
+    // and went out exactly as typed. What is answered per-window is not this resolution but the
+    // DAEMON's `require_pane_in`, which reads one window's pane pool — see below.
     //
     // ⚠⚠ MATCHED BY NAME, and the residue is stated rather than hidden: `pipe`'s `src`/`dst` are
     // panes too and are NOT resolved here. The grammar gives nothing to detect pane-ness with —
     // every one of them is published as `int` — so widening this would be a second hardcoded list
     // rather than a rule, and item 542 asks for `--pane`.
+    let mut site = None;
     for flag in &mut flags {
         if sprag_rpc::call::same_name(&flag.name, sprag_rpc::PANE_PARAM)
             && let Some(raw) = flag.value.as_deref()
-            && raw.parse::<u64>().is_err()
         {
-            let site = resolve_pane(&mut conn, session.as_deref(), raw, "orchestrate")?;
-            flag.value = Some(site.id.to_string());
+            let resolved = resolve_pane(&mut conn, session.as_deref(), raw, "orchestrate")?;
+            flag.value = Some(resolved.id.to_string());
+            site = Some(resolved);
         }
     }
 
@@ -5067,14 +5072,27 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             usage_for(&forms, &flags, &selector, &words),
         ))
     })?;
-    let answer = invoke_action(
-        &mut conn,
-        scoped_call(
-            session.as_deref(),
-            sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
-            call,
-        ),
-    )?;
+    // ⚠⚠⚠⚠⚠ AND THE REQUEST SAYS WHICH WINDOW THE PANE WAS FOUND IN — register item 686, the
+    // half item 542 left standing. Resolving session-wide answers WHICH pane; it does not carry
+    // the answer to the daemon. `require_pane_in` is `PluginWorld::has_pane` — ONE window's pane
+    // pool — so a request that names no window is read against the CURRENT one, and a pane
+    // resolved correctly one window over came back `no pane N in this workspace`. Called by NAME,
+    // it refused by NUMBER: that mismatch is the whole diagnosis, because it says the resolver had
+    // already done its job and the sentence came from a mouth one layer in.
+    //
+    // ⚠⚠ [`site_invoke`] rather than a window flag spelled here, because that is the door every
+    // other pane-addressed invoke on this binary goes through, and its doc carries the reason
+    // sending the window ALWAYS is right: which actions consult it is the daemon's rule, and a
+    // client that remembered which is which would be keeping a second copy of it.
+    //
+    // ⚠ A run with no `--pane` at all (a plugin form that takes none) has no site and keeps the
+    // scope-only shape — `None` is "not narrowed" here exactly as it is on `PaneSite::window`.
+    let path = sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION);
+    let request = match &site {
+        Some(site) => site_invoke(session.as_deref(), site, path, call),
+        None => scoped_call(session.as_deref(), path, call),
+    };
+    let answer = invoke_action(&mut conn, request)?;
     let id = answer
         .as_u64()
         .ok_or_else(|| bad_input("orchestrate: the daemon's answer was not a run id"))?;

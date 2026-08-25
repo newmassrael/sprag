@@ -12689,3 +12689,150 @@ fn orchestrate_starts_a_run_on_a_pane_named_rather_than_numbered() {
         nobody.stdout, nobody.stderr,
     );
 }
+
+/// ⛔⛔⛔⛔ **`orchestrate` STARTS A RUN ON A PANE OF A WINDOW THAT IS NOT THE CURRENT ONE** —
+/// register item 686, and the line AFTER item 542's.
+///
+/// # ⚠⚠⚠⚠⚠ What 542 paid for, and what it left standing
+///
+/// Item 542 made this verb take a pane NAME, and that done-when is true: `resolve_pane` answers a
+/// name from anywhere in the scoped SESSION. What it left standing is the step AFTER the answer —
+/// `orchestrate` kept `site.id` and threw `site.window` away, then sent the request with the SCOPE
+/// alone. The daemon's `require_pane_in` reads `PluginWorld::has_pane`, which is ONE WINDOW's pane
+/// pool, so a request that does not say which window is answered against the CURRENT one, and a
+/// correctly-resolved pane came back `no pane 13 in this workspace`.
+///
+/// That is why the refusal was diagnostic rather than merely wrong: called BY NAME, it named a
+/// NUMBER. The resolver had done its job; the sentence came from a mouth one layer further in.
+///
+/// # ⚠⚠⚠⚠ Why four hundred gates did not see it, and what this fixture does differently
+///
+/// Every fixture that had ever driven this verb held ONE window, and an operator standing in the
+/// only window there is is always standing in the current one. `plugins.rs` asserts this refusal
+/// twice, and both times about a case where refusing is RIGHT (a pane that does not exist; a pane
+/// of somebody else's workspace) — nobody drove the other side.
+///
+/// ⇒ the sister of what item 684 taught: **two scopes that can diverge cannot be told apart from
+/// inside one of them.** So this fixture stands up TWO windows, leaves the target in the one that
+/// is not current, and asserts that premise before making any claim that rests on it.
+///
+/// # ⚠⚠⚠ Both spellings, because they died here for two different reasons
+///
+/// A NAME reached `resolve_pane`, resolved, and died at the window that was dropped. A NUMBER never
+/// reached the resolver at all — the loop guarded on `raw.parse::<u64>().is_err()` — so it went out
+/// as typed and was read against the current window. Two spellings, one place, two causes; a gate
+/// that drove only the name would leave the number free to regrow.
+#[test]
+fn orchestrate_starts_a_run_on_a_pane_of_a_window_that_is_not_the_current_one() {
+    let (_guard, sock, pane) = daemon_with_one_pane("orchestrate-elsewhere");
+    let numbered = pane.to_string();
+    let named = sprag(&sock, &["rename-pane", &numbered, "driven", "-t", "work"]);
+    assert!(named.ok, "naming the pane failed: {}", named.stderr);
+
+    // ── THE FIXTURE'S PREMISE, MADE AND THEN ASSERTED ───────────────────────────────────────
+    // `new-window` selects what it makes, so after this the session's current window is `spare`
+    // and `driven` is one window over. Every claim below is vacuous without that, which is why it
+    // is measured here rather than assumed from the call that was supposed to cause it.
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    let here = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(here.ok, "panes -t work: {}", here.stderr);
+    assert!(
+        !pane_ids_in(&here.stdout).contains(&pane),
+        "⛔ THE PREMISE: `panes` lists the CURRENT window, and this gate is only about a pane that \
+         is NOT in it. Pane {pane} still listed here means the current window never moved, and \
+         every claim below would then be passing in a one-window world: {}",
+        here.stdout,
+    );
+
+    // ── THE CLAIM, SPELLED BY NAME ──────────────────────────────────────────────────────────
+    let by_name = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            "driven",
+            "--stimulus",
+            "echo elsewhere",
+            "--max-iterations",
+            "1",
+        ],
+    );
+    assert!(
+        by_name.ok,
+        "⛔⛔⛔⛔ REGISTER ITEM 686: `orchestrate` resolved this pane by NAME and then threw away \
+         WHICH WINDOW it had been found in, so the daemon read the id against the current window \
+         and refused a pane that exists. A refusal naming a NUMBER when the request named a NAME \
+         is the signature. Answered: {} / {}",
+        by_name.stdout, by_name.stderr,
+    );
+
+    // ── THE SAME CLAIM, SPELLED AS A NUMBER ─────────────────────────────────────────────────
+    // A number never reached the resolver at all, so it failed for a DIFFERENT reason than the
+    // name did. One fix, two spellings, and neither is evidence for the other.
+    let by_number = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &numbered,
+            "--stimulus",
+            "echo elsewhere",
+            "--max-iterations",
+            "1",
+        ],
+    );
+    assert!(
+        by_number.ok,
+        "⛔⛔⛔⛔ REGISTER ITEM 686: a pane's NUMBER must reach the daemon by the same road its \
+         NAME does. This one was passed through as typed and read against the current window. \
+         Answered: {} / {}",
+        by_number.stdout, by_number.stderr,
+    );
+
+    // ── AND THE RUNS LANDED ON THAT PANE, RATHER THAN MERELY BEING ACCEPTED ─────────────────
+    let runs = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(runs.ok, "runs -t work: {}", runs.stderr);
+    assert_eq!(
+        runs.stdout.matches(&format!("pane={pane}")).count(),
+        2,
+        "⚠⚠⚠ AN ACCEPTED REQUEST IS NOT A STARTED RUN. Both spellings must have put a run on pane \
+         {pane} ITSELF — an exit code says the shell was happy, and this says the daemon acted on \
+         the pane the operator named: {}",
+        runs.stdout,
+    );
+
+    // ── THE CONTROL: a pane no window holds is still refused ────────────────────────────────
+    // Carrying the window must WIDEN what resolves, not stop the verb checking. Without this the
+    // two claims above would pass just as well for a CLI that had simply stopped looking.
+    let nowhere = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            "9999",
+            "--stimulus",
+            "echo elsewhere",
+            "--max-iterations",
+            "1",
+        ],
+    );
+    assert!(
+        !nowhere.ok,
+        "⚠⚠⚠ THE CONTROL: reaching past the current WINDOW must not become reaching past the \
+         SESSION. A pane nothing holds is still a refusal, or the claims above are about a verb \
+         that stopped looking: {} / {}",
+        nowhere.stdout, nowhere.stderr,
+    );
+}
