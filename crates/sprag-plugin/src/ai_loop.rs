@@ -2119,6 +2119,20 @@ mod tests {
              there, which is the pass all three live runs were on. A failure line carrying no edge \
              would put item 682 back where item 680 found it. Journal: {journal:?}",
         );
+        // ⭐⭐⭐⭐⭐ **AND THE READING REGISTER ITEM 682's REPAIR (a) ADDED — ON A REAL RUN.**
+        //
+        // `driver::tests::a_run_whose_pane_went_missing_says_it_left_rather_than_that_it_never_was`
+        // holds the clause against stand-in plugins, which pins the RULE and says nothing about
+        // whether a live `ai_loop` reaches it: the guard is `Driver::driving`, refreshed only after
+        // a step COMPLETES, so it depends on this document actually banking a pass before it dies.
+        // **This is the wiring**, and it is asserted here rather than there because this is the
+        // gate that reconstructs the incident.
+        assert!(
+            note.contains("one window's pool") && note.contains("another window"),
+            "⚠⚠⚠⚠⚠ A REAL RUN MUST CARRY THE READING, not just a stand-in. Without it a person who \
+             goes and finds the pane alive — as they did, in window `pinion`, with its child up \
+             for 2h40m — concludes the run is lying about its own death: {note:?}",
+        );
         assert_ne!(
             outcome.state,
             OutcomeState::Cancelled,
@@ -2294,9 +2308,28 @@ mod tests {
             "⭐⭐⭐⭐⭐ **THE FINDING.** A pane that was MOVED and a pane that was CLOSED end a run \
              with the identical line — same word, same place, same walk. Nothing a run records \
              separates them, which is exactly why register item 682 needed a pane's PROCESS AGE, \
-             measured hours later from outside the run, to name which removal it had been. If this \
-             ever stops being equal, the run has learned to say what became of its pane and the \
-             diagnosis above can be made from the record instead",
+             measured hours later from outside the run, to name which removal it had been",
+        );
+
+        // ⚠⚠⚠⚠⚠ **AND WHAT REPAIR (a) DID AND DID NOT CHANGE, said here so the equality above is
+        // not read as *nothing was learned*.**
+        //
+        // Both lines now carry the run's own reading — *a workspace is one window's pool; it may
+        // still be open in another window* — which is what stops a reader who finds the pane alive
+        // concluding the run lied. That is a real gain and it is asserted, not assumed.
+        //
+        // **It does not break the equality, and could not.** *Moved* and *closed* differ in what
+        // became of the pane's CHILD, and a pool cannot see a pane it no longer holds — the ISP
+        // boundary `sprag_host::plugin_host` keeps means this layer has one window's pool and no
+        // way to ask about another. So the discriminator is genuinely outside: it took an
+        // operating-system fact (a pid's age) to settle it. **A future repair that wanted this
+        // equality to break would have to give the run a reader it does not have today**, which is
+        // a decision about that boundary rather than a sentence somebody forgot to write.
+        assert!(
+            moved.contains("one window's pool") && closed.contains("one window's pool"),
+            "⚠⚠⚠⚠ BOTH endings must carry the reading register item 682's repair (a) added — the \
+             equality above is *the two causes are indistinguishable*, NOT *the run says nothing*. \
+             Moved: {moved:?}; closed: {closed:?}",
         );
     }
 

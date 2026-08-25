@@ -944,6 +944,60 @@ impl Driver {
             || format!("the step could not be taken: {error}"),
             |place| format!("the step could not be taken at `{place}`: {error}"),
         );
+        // ⛔⛔⛔⛔⛔ **AND WHAT THAT MEANS FOR THE PANE THIS RUN WAS DRIVING** — register item 682,
+        // and the sentence that would have saved a day.
+        //
+        // # ⚠⚠⚠⚠⚠ Why the error's own words are not enough HERE, when they are everywhere else
+        //
+        // `there is no pane 5` is [`PaneError::UnknownPane`]'s rendering, and for the caller it was
+        // written for — somebody who mistyped an id — it is exactly right. **For a RUN it reads as
+        // a lie.** A run's pane is checked into its pool before the run starts
+        // (`sprag_host`'s `require_pane_in`), so the id was real; and a pool is ONE WINDOW's, so
+        // the pane can be alive in the next window along while this sentence is true.
+        //
+        // Measured 2026-08-25: pane `5` was running in window `pinion` — its child had been up for
+        // 2h40m — while the run that had been driving it ended `failed: there is no pane 5`. The
+        // reader went looking, found the pane, and concluded the run was wrong about its own death.
+        // **It was not.** The pane had left the pool the run holds, which is a different fact from
+        // the pane not existing, and nothing said so.
+        //
+        // # ⚠⚠ What it does NOT claim, and why the hedge is the honest part
+        //
+        // *Where* the pane went is a SESSION fact, and this layer sees one pool by design (the ISP
+        // boundary `sprag_host::plugin_host` keeps: a plugin has no business knowing about the
+        // window tree). A move and a close are indistinguishable from here — `sprag_plugin`'s
+        // `a_run_ends_the_same_way_whether_its_pane_moved_or_was_closed` is the gate that measures
+        // it. So the clause says *may still be open*, which is the true shape of what is known:
+        // it names the DIRECTION to look rather than pretending to a fact this side cannot have.
+        //
+        // ⚠⚠⚠ ADDED TO the error's sentence rather than replacing it. The error's own words are
+        // what tie a dead run to the incident that produced it, and this crate's standing rule is
+        // that a failure travels in the vocabulary the layer that raised it used — a second
+        // spelling would be a second authority on one fact.
+        //
+        // ⚠⚠⚠ Guarded on the pane being the one the plugin is DRIVING, and that guard is what makes
+        // the clause mean anything: a run dying while reaching for a pane of its own making — a
+        // milestone checker's, say — has not lost ITS pane, and a clause there would send a reader
+        // to the wrong window. A plugin driving nothing at all gets none either.
+        //
+        // ⚠⚠⚠⚠⚠ **ASKED OF THE PLUGIN HERE RATHER THAN READ OFF [`driving`](Self::driving), AND A
+        // GATE MEASURED WHY.** That field is refreshed only after a step COMPLETES, so a driver
+        // handed a plugin already mid-flight — which is what
+        // `ai_loop::tests::a_judging_run_whose_pane_left_its_pool_dies_where_the_live_runs_died`
+        // hands it — has never set it, and the clause silently did not appear on the one gate that
+        // reconstructs the live incident. The plugin can still answer at the moment it fails, and
+        // that answer is about NOW rather than about the last step that worked.
+        //
+        // ⚠⚠ It therefore claims nothing about HISTORY. *This is the pane the run is driving and
+        // this workspace has not got it* is true whether the pane left or was never here, and both
+        // send a reader the same useful way — which is the honest scope of what one pool can know.
+        let note = match error {
+            PaneError::UnknownPane(gone) if plugin.driving() == Some(*gone) => format!(
+                "{note} — that is the pane this run is driving, and a workspace is one window's \
+                 pool: it may still be open in another window of this session",
+            ),
+            _ => note,
+        };
         self.remember(StepRecord {
             iteration: self.iterations,
             // ⚠ ZERO OF WHATEVER THIS RUN COUNTS, on [`note_to_itself`]'s precedent one function
@@ -2391,6 +2445,161 @@ mod tests {
                 to: "judging",
             }]
         }
+    }
+
+    /// A plugin that takes ONE step driving `pane`, then cannot take another because `raises` is
+    /// not a pane its workspace holds — **the shape a live run has when its pane goes missing
+    /// mid-flight**, which [`FailingSomewhere`] deliberately is not (that one dies on its first
+    /// step, so nothing was ever being driven).
+    struct DrivesThenLosesIt {
+        pane: PaneId,
+        raises: PaneId,
+        stepped: bool,
+    }
+    impl Plugin for DrivesThenLosesIt {
+        fn step(&mut self, _panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
+            if self.stepped {
+                return Err(PaneError::UnknownPane(self.raises));
+            }
+            self.stepped = true;
+            Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+        }
+        fn driving(&self) -> Option<PaneId> {
+            Some(self.pane)
+        }
+        fn at(&self) -> Option<&'static str> {
+            Some("working")
+        }
+    }
+
+    /// Run `plugin` to its ending and answer the last line it wrote in its own journal.
+    fn last_line(plugin: &mut dyn Plugin) -> String {
+        let cell: ProgressCell = Arc::new(Mutex::new(Progress::default()));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(plugin, &NoPanes, &RunContext::uncancellable());
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "these fixtures all end in a failed step: {outcome:?}",
+        );
+        cell.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .journal
+            .last()
+            .and_then(|step| step.note.clone())
+            .expect("register item 680's failure line carries a sentence")
+    }
+
+    /// The clause register item 682 added — quoted once, so the gate below and the product cannot
+    /// drift about what is being asserted.
+    const ONE_WINDOWS_POOL: &str = "one window's pool";
+
+    /// ⛔⛔⛔⛔⛔ **A RUN WHOSE PANE WENT MISSING SAYS THE PANE LEFT, NOT THAT IT NEVER EXISTED** —
+    /// register item 682's repair (a).
+    ///
+    /// # ⚠⚠⚠⚠⚠ The day this sentence would have saved
+    ///
+    /// 2026-08-25: three runs ended `failed: there is no pane N`. Somebody went and looked, and
+    /// **pane `5` was right there in window `pinion`, its child up for 2h40m.** The obvious reading
+    /// — *the run is wrong about its own death* — is the wrong one, and it cost a day: a run's pool
+    /// is ONE WINDOW's, so *this workspace has no such pane* and *the session has no such pane* are
+    /// different sentences, and only the first was ever true.
+    ///
+    /// [`PaneError::UnknownPane`]'s own words are right for the caller it was written for, who
+    /// mistyped an id. This is the reading a RUN has to add, because a run's pane was checked into
+    /// its pool before it started (`sprag_host`'s `require_pane_in`, gated there) — so for a run
+    /// the id was never in doubt and the only thing that can have happened is that it LEFT.
+    ///
+    /// # ⚠⚠⚠ The two controls, and neither is decoration
+    ///
+    /// * **A run driving NO pane says nothing extra.** There is no pane to point a reader at, and
+    ///   this is the arm that stops the clause becoming a suffix every `UnknownPane` carries.
+    /// * **A run that dies reaching for a DIFFERENT pane says nothing extra.** A judging pass opens
+    ///   a checker's pane of its own; a failure naming THAT is not the run's pane going missing,
+    ///   and a clause that could not tell them apart would send a reader to the wrong window.
+    ///
+    /// ⚠ The clause is ADDED to the error's own sentence, never instead of it — asserted here, so
+    /// the tie between a dead run and the incident that produced it survives this repair.
+    #[test]
+    fn a_run_whose_pane_went_missing_says_it_left_rather_than_that_it_never_was() {
+        // ── 1. THE CONTROLS, AND THEY COME FIRST ──
+        //
+        // ⚠⚠ `FailingPlugin` drives NOTHING, so there is no pane a reader could be sent to look for.
+        let drives_nothing = last_line(&mut FailingPlugin);
+        assert!(
+            drives_nothing.contains("there is no pane 0"),
+            "⚠⚠ THE CONTROL'S OWN PRECONDITION: this fixture must still reach item 680's line, or \
+             the absence below is about a journal that says nothing at all: {drives_nothing:?}",
+        );
+        assert!(
+            !drives_nothing.contains(ONE_WINDOWS_POOL),
+            "⚠⚠⚠⚠ A RUN DRIVING NO PANE HAS NOWHERE TO SEND ANYBODY. Saying it anyway would make \
+             the clause a suffix every unknown-pane failure carries, which is a sentence that has \
+             stopped distinguishing anything: {drives_nothing:?}",
+        );
+
+        // ⚠⚠⚠ AND A RUN THAT DIES REACHING FOR SOMEBODY ELSE'S PANE — the milestone checker opens
+        // one of its own inside the judging pass, and a failure naming that is not this.
+        let another_pane = last_line(&mut DrivesThenLosesIt {
+            pane: PaneId(7),
+            raises: PaneId(9),
+            stepped: false,
+        });
+        assert!(
+            another_pane.contains("there is no pane 9"),
+            "⚠⚠ the control's precondition again: {another_pane:?}",
+        );
+        assert!(
+            !another_pane.contains(ONE_WINDOWS_POOL),
+            "⚠⚠⚠⚠⚠ **THE DISCRIMINATION.** This run drives pane 7 and the failure names 9, so \
+             nothing of THIS RUN'S is missing — a clause here would send a person looking for a \
+             pane 7 that never moved: {another_pane:?}",
+        );
+
+        // ── 2. THE MEASUREMENT: the pane it IS driving, gone from under it ──
+        let lost = last_line(&mut DrivesThenLosesIt {
+            pane: PaneId(7),
+            raises: PaneId(7),
+            stepped: false,
+        });
+        assert!(
+            lost.contains("there is no pane 7"),
+            "⚠⚠⚠⚠⚠ **THE ERROR'S OWN WORDS MUST SURVIVE THE REPAIR.** They are what ties a dead \
+             run to the incident that produced it; a clause that REPLACED them would make every \
+             record written before today unmatchable: {lost:?}",
+        );
+        assert!(
+            lost.contains(ONE_WINDOWS_POOL),
+            "⚠⚠⚠⚠⚠ **AND THE READING A RUN OWES ITS READER.** Without it a person who goes and \
+             finds the pane alive concludes the run is lying about its own death — measured, and \
+             it cost a day: {lost:?}",
+        );
+        assert!(
+            lost.contains("another window"),
+            "⚠⚠⚠ **AND THE DIRECTION TO LOOK, which is the whole value.** A pool is one WINDOW's, \
+             so a pane this one has not got may be alive in the next — that is the fact a reader \
+             needs and the one this layer can honestly hedge at: {lost:?}",
+        );
+
+        // ── 3. AND A RUN THAT NEVER COMPLETED A STEP STILL SAYS IT ──
+        //
+        // ⚠⚠⚠⚠⚠ **THIS ARM IS THE ONE THAT WAS MEASURED INTO EXISTENCE.** The first draft guarded
+        // on `Driver::driving`, which is refreshed only after a step COMPLETES — so a driver handed
+        // a plugin already mid-flight never set it and the clause vanished on the one gate that
+        // reconstructs the live incident. The rule is about the pane the run IS DRIVING, not about
+        // whether this driver has banked a pass, and `FailingSomewhere` fails on its very first
+        // step while driving pane 7.
+        let first_step = last_line(&mut FailingSomewhere);
+        assert!(
+            first_step.contains(ONE_WINDOWS_POOL),
+            "⚠⚠⚠⚠ a run that dies on its FIRST step is still driving a pane, and its reader still \
+             needs telling which window to look in: {first_step:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔ **A RUN THAT DIES SAYS WHERE IT WAS AND WHAT IT WAS DOING** — register item 680.
