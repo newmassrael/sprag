@@ -3110,6 +3110,173 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
     );
 }
 
+/// ⚠⚠⚠⚠⚠ **A RUN STARTS ON THE AGENT'S OWN PANE ONE WINDOW OVER** — register item 687, which is
+/// item 686's defect standing at this surface's mouth.
+///
+/// # ⚠⚠ Why the ratchet above walks `orchestrate` and still could not see this
+///
+/// `the_whole_roster_reaches_a_pane_one_window_over` DOES cover `orchestrate`, and it passed on a
+/// build that sent no window at all. Its far pane belongs to a PERSON, so `require_own_pane`
+/// refuses one layer ABOVE the request — and that ratchet's contract counts an authorship refusal
+/// as having reached, correctly, for the eleven reading verbs it was written for. For the two
+/// tools that must actually SEND something the refusal arrives first and the send is never made,
+/// so the ratchet measures a door it never opens.
+///
+/// ⇒ the rule item 686 paid for, one surface over: **a fixture whose two scopes cannot come apart
+/// cannot see them come apart.** Here the pane is the AGENT'S OWN and it is one window over, which
+/// is the one combination neither existing gate builds — and it is exactly the shape a loop is in
+/// the moment it opens a workbench of its own with `break_pane` or `open_window`.
+#[test]
+fn a_run_starts_on_the_agents_own_pane_one_window_over() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let here = mux_current_window(&sock);
+    server.call_tool("open_pane", json!({ "name": "driven" }));
+    let broken = server.call_tool(
+        "break_pane",
+        json!({ "pane": "driven", "name": "elsewhere" }),
+    );
+
+    // ── THE FIXTURE'S PREMISE, MADE AND THEN ASSERTED ───────────────────────────────────────────
+    // Every claim below is vacuous in a one-window world, so the premise is MEASURED rather than
+    // assumed from the call that was supposed to cause it.
+    assert_eq!(
+        mux_current_window(&sock),
+        here,
+        "⛔ THE PREMISE: `break_pane` is born detached, so the caller must still be standing in \
+         the window it started in. If the session followed the pane, everything below would be \
+         passing about a pane in the CURRENT window: {broken}",
+    );
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        !listed.contains("driven"),
+        "⛔ THE PREMISE: `list_panes` answers about the CALLER's window, and this gate is only \
+         about a pane that is not in it: {listed}",
+    );
+    let far = *mux_query_panes_in(&sock, "elsewhere")
+        .first()
+        .expect("the broken-out window holds the pane");
+
+    // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────────
+    let started = server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "driven",
+            "stimulus": "echo elsewhere",
+            "max_iterations": 1,
+        }),
+    );
+    assert!(
+        started.contains("started"),
+        "⛔⛔⛔⛔ REGISTER ITEM 687: `orchestrate` resolved this pane and then threw away WHICH \
+         WINDOW it was found in, so the daemon read the id against the current window and refused \
+         a pane this agent owns. It is the agent's OWN pane, so an authorship sentence here would \
+         mean `break_pane` lost the provenance and this gate is measuring the wrong thing: \
+         {started}",
+    );
+
+    // ── AND THE RUN LANDED ON THAT PANE, rather than merely being accepted ───────────────────────
+    // The daemon labels an orchestration `orchestrator pane=<id>`, so this reads the pane the
+    // DAEMON acted on and not the name this test typed.
+    //
+    // ⛔⛔ AND NOT THAT IT CONVERGED — register item 690, measured this round on the sibling gate
+    // below: a run's driver is a process of its own that is handed `-t <session>` and nothing about
+    // a window, so what it can START one window over and what it can DRIVE there are two facts.
+    // This one is item 687's.
+    let runs = server.call_tool("list_runs", json!({}));
+    assert!(
+        runs.contains(&format!("pane={far}")),
+        "⚠⚠⚠ AN ACCEPTED REQUEST IS NOT A STARTED RUN — the run must be on pane {far} itself: \
+         {runs}",
+    );
+
+    // ── THE CONTROL: a pane no window holds is still refused ────────────────────────────────────
+    // Carrying the window must WIDEN what resolves, not stop the verb checking. Without this the
+    // claim above would pass just as well for a mouth that had simply stopped looking.
+    let nowhere = server.call_tool_error(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "nosuchpane",
+            "stimulus": "echo nowhere",
+            "max_iterations": 1,
+        }),
+    );
+    assert!(
+        nowhere.contains("nosuchpane"),
+        "⚠⚠ THE CONTROL: reaching further must not become reaching for anything — a name no \
+         window of this session holds is still refused, in a sentence that names it: {nowhere}",
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND SO DOES AN ANSWER** — register item 687's second mouth, and the one that matters
+/// most to a loop.
+///
+/// `answer_pane` built its `params` by hand exactly as `orchestrate` did, so it too was
+/// window-local while every read of the same pane reached. The asymmetry is the hazard: an agent
+/// could SEE its peer's dialog one window over — `list_panes` says what it is asking and names
+/// this very tool as the remedy — and then be told the pane does not exist when it tried to
+/// answer. A supervising loop meets that combination every time it works in a window of its own.
+#[test]
+fn an_answer_reaches_the_agents_own_pane_one_window_over() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let here = mux_current_window(&sock);
+    open_asking_pane(&mut server, "asker");
+    server.call_tool("break_pane", json!({ "pane": "asker", "name": "asking" }));
+
+    // THE PREMISE, measured: the caller did not follow the pane, and its own window no longer
+    // holds it.
+    assert_eq!(
+        mux_current_window(&sock),
+        here,
+        "⛔ THE PREMISE: the caller must still be standing where it was",
+    );
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        !listed.contains("asker"),
+        "⛔ THE PREMISE: the pane must be OUT of the caller's own window: {listed}",
+    );
+    // ⚠ AND IT IS STILL ASKING over there — read after the move, because a dialog this gate
+    // assumed rather than measured would make a green below mean nothing was answered.
+    server.wait_for_tool("agent_state", json!({ "pane": "asker" }), "state=blocked");
+
+    let far = *mux_query_panes_in(&sock, "asking")
+        .first()
+        .expect("the broken-out window holds the pane");
+    let answered = server.call_tool(
+        "answer_pane",
+        json!({
+            "pane": "asker",
+            "asked": "Do you want to proceed?",
+            "answer": "No, and tell me why",
+        }),
+    );
+
+    // ⚠⚠⚠⚠⚠ WHAT THIS ASSERTS AND WHAT IT DELIBERATELY DOES NOT, because the difference is a
+    // register item and not a shrug.
+    //
+    // ASSERTED: the request REACHED the pane. A refusal here is not a rendered run — it is a tool
+    // ERROR, which `call_tool` above has already failed on — so a run row naming this pane is the
+    // daemon saying it accepted the target (`require_pane_in`) and the asker's seat one window over
+    // (item 689) and built the plugin. Before this round both of those refused, the second of them
+    // about the CALLER: `no pane 0 in this workspace, so nothing can be opened by it`.
+    //
+    // ⛔⛔ NOT ASSERTED: that the answer CONVERGED — measured this round and registered as item 690.
+    // A run's driver is a process of its own (`run-driver-process` defaults to `on`), it is handed
+    // `-t <session>` and the request map and NOTHING ELSE, and `drive.rs` contains no window at
+    // all — so every pane read and every keystroke it makes resolves against whatever window the
+    // session is CURRENTLY on. Driving a pane one window over therefore still dies, and it dies
+    // where this gate can see it: `Run 0 (answer pane=1): panicked`. Asserting convergence here
+    // would make this gate about item 690 and leave item 687 with no gate of its own.
+    assert!(
+        answered.contains(&format!("answer pane={far}")),
+        "⛔⛔⛔⛔ REGISTER ITEM 687: the answer must reach the pane it named, one window over — \
+         a run on pane {far} itself, rather than a refusal about a pane that exists: {answered}",
+    );
+}
+
 /// An agent NAMES its work pane and then addresses it by that name while its NUMBER moves under it.
 ///
 /// This is the round's claim end to end, and the middle step is the whole of it: a pane is opened,

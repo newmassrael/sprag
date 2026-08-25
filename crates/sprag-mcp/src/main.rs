@@ -2288,6 +2288,12 @@ fn orchestrate_description() -> String {
 ///    caller's own work.
 fn tool_orchestrate(args: &Value) -> Result<String, String> {
     let mut action_args = serde_json::Map::new();
+    // ⚠⚠⚠⚠⚠ WHERE THE PANE WAS FOUND, KEPT — register item 687, which is item 686's defect at this
+    // surface's mouth. Resolving answers WHICH pane; it does not carry the answer to the daemon,
+    // whose `require_pane_in` reads ONE window's pane pool. A request that names no window is read
+    // against the CURRENT one, so a pane this agent opened in a window of its own — which is
+    // exactly what `open_window` makes — came back as a pane that does not exist.
+    let mut site: Option<PaneRef> = None;
     let known = orchestrate_arguments();
     let object = args.as_object().cloned().unwrap_or_default();
 
@@ -2405,6 +2411,23 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
                  work has to happen in the person's pane, tell them what you would run.",
             )?;
             action_args.insert(arg.name.to_owned(), json!(pane.id()));
+            // ⚠⚠ TWO PANES CAN BE NAMED HERE — `pipe` takes a `src` and a `dst` — and a request
+            // carries ONE window, so two panes in different windows is a thing this shape cannot
+            // say. It is REFUSED rather than resolved by keeping one of them, because keeping one
+            // sends the other's id to a window that does not hold it, and the daemon's answer is
+            // then "no pane N": a true sentence about the wrong subject, which is the whole shape
+            // of the defect this carrying fixes.
+            match &site {
+                Some(first) if first.window != pane.window => {
+                    return Err(format!(
+                        "{} and {} are in different windows, and one run is asked of one window. \
+                         Move them together with move_pane first, or drive each in its own run.",
+                        first.subject(),
+                        pane.subject(),
+                    ));
+                }
+                _ => site = Some(pane),
+            }
             continue;
         }
         // A GUARDRAIL field is checked against this daemon's own published default and then moves
@@ -2476,12 +2499,23 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
     })?;
     action_args.insert(OPENED_BY.to_owned(), json!(mine));
 
+    // ⚠⚠⚠⚠⚠ AND THE REQUEST SAYS WHICH WINDOW THE PANE WAS FOUND IN — register item 687. Through
+    // [`pane_params`] rather than a `window` key spelled here, because that is the ONE door every
+    // other pane-addressed request on this surface goes through, and its doc says why it exists:
+    // so a tool added later cannot forget the window and quietly become window-local again. This
+    // tool was that tool — it built its `params` by hand and never went through the door, so the
+    // promise was already false when item 686 fixed the same defect on the CLI.
+    //
+    // ⚠ A run with no pane argument at all keeps the scope-only shape: `None` here is "not
+    // narrowed", exactly as it is on [`PaneRef::window`].
+    let path = sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION);
+    let params = match &site {
+        Some(pane) => pane_params(pane, path),
+        None => windowed_params(path, None),
+    };
     let answer = host_call(
         "scene/invoke",
-        json!({
-            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
-            "args": Value::Object(action_args),
-        }),
+        with_args(params, Value::Object(action_args)),
     )?;
     let id = answer
         .as_u64()
@@ -2870,11 +2904,18 @@ fn tool_answer_pane(args: &Value) -> Result<String, String> {
     // ⚠ BEFORE the invoke, `tool_orchestrate`'s rule: a run submitted first can finish first, and
     // an anchor taken afterwards would sit past its own `run_finished` record.
     anchor_change_cursor();
+    // ⚠⚠⚠⚠⚠ THROUGH [`pane_params`] — register item 687, the second of the two tools on this
+    // surface that built their `params` by hand and so never carried the window. A dialog is
+    // answered where the pane IS, and a loop's agent raises its questions in the window the loop
+    // opened for it, which is precisely a window the caller is not standing in.
     let started = host_call(
         "scene/invoke",
-        json!({
-            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
-            "args": {
+        with_args(
+            pane_params(
+                &pane,
+                sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            ),
+            json!({
                 "plugin": sprag_host::plugins::PluginName::Answer.wire_str(),
                 "pane": pane.id(),
                 sprag_host::plugins::CONSENT_KEY: [{
@@ -2882,8 +2923,8 @@ fn tool_answer_pane(args: &Value) -> Result<String, String> {
                     sprag_host::plugins::CONSENT_ANSWER_KEY: answer,
                 }],
                 OPENED_BY: mine,
-            },
-        }),
+            }),
+        ),
     )?;
     let id = started
         .as_u64()
@@ -7862,6 +7903,15 @@ fn with_args(params: Value, args: Value) -> Value {
 ///
 /// The ONE place a request learns which window to look in, so a tool added later cannot forget it
 /// and quietly become window-local again.
+///
+/// ⚠⚠⚠⚠⚠ THAT SENTENCE WAS FALSE FOR TWO TOOLS — register item 687, and it is recorded here rather
+/// than only in the register because this doc is what a reader trusts instead of checking.
+/// `orchestrate` and `answer_pane` did not COME through this door: each built its `params` with a
+/// `json!` of its own, so neither forgot the window — it was never offered one. What a door
+/// guarantees is what goes through it, and the only thing that measures which tools do is a gate,
+/// not this paragraph. The two that measure it are `a_run_starts_on_the_agents_own_pane_one_window_over`
+/// and `an_answer_reaches_the_agents_own_pane_one_window_over`, and they need the agent's OWN pane
+/// one window over because the roster ratchet's far pane is a person's and is refused a layer above.
 ///
 /// # Every pane-addressed request, not only the reads
 ///
