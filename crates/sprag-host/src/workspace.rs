@@ -4391,6 +4391,7 @@ mod tests {
                     panes: vec![sprag_terminal::PaneSnapshot {
                         id: sprag_terminal::PaneId(0),
                         cwd: None,
+                        start_dir: None,
                         command_label: "cat".to_owned(),
                         argv: vec!["cat".to_owned()],
                         agent_session: None,

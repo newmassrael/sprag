@@ -2174,6 +2174,17 @@ impl Host {
                 id: pane.id,
                 command,
                 label,
+                // ⚠⚠⚠ AND WHERE THE PANE WAS POINTED, which is NOT where the command above spawns —
+                // register item 684. That one is the snapshot's `/proc` reading, so a person's shell
+                // comes back in the directory they were working in (item 417). This is the intent the
+                // reborn pane remembers, so the first REPLACEMENT after a reboot starts in the
+                // project rather than wherever the pane's last child had wandered — or, when that
+                // child had already exited, in `$HOME`.
+                //
+                // ⚠ A remote reconnect carries one too: its `start_dir` is a local directory an `ssh`
+                // login has no use for, but the pane it re-stamps is the same pane, and a replacement
+                // asked for locally would otherwise be the one that fell back.
+                start_dir: pane.start_dir,
                 size: (pane.cols, pane.rows),
                 // The attention hook is keyed by NOTHING, unlike the wake beside it: the router
                 // asks the registry which session holds the pane. They arrive UNBOUND even though a
@@ -4190,6 +4201,7 @@ mod tests {
                     panes: vec![PaneSnapshot {
                         id: PaneId(0),
                         cwd: None,
+                        start_dir: None,
                         command_label: "echo".to_owned(),
                         argv: vec!["echo".to_owned(), "recorded".to_owned()],
                         agent_session: None,
@@ -4238,6 +4250,316 @@ mod tests {
             // started leaves no exit status and a pane that is not at EOF, while a child that ran
             // and was reaped leaves code 0 with an empty capture.
             pane_liveness(&host, PaneId(0)),
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RESTORED PANE COMES BACK POINTED WHERE IT WAS OPENED, THOUGH ITS CHILD HAD
+    /// WANDERED SOMEWHERE ELSE** — register item 684 clause (2), and the door clause (1) left
+    /// ungated.
+    ///
+    /// # ⚠⚠⚠ The two directories, and why a fixture that lets one answer both measures nothing
+    ///
+    /// A pane holds both: *where its child is* (`PanePty::cwd`, a `/proc/<pid>/cwd` READING, which a
+    /// `cd` rewrites and which goes `None` when the child exits) and *where the pane was pointed*
+    /// (`Pane::start_dir`, taken off the builder at the spawn). Clause (1) taught `respawn` to use
+    /// the second — but a RESTORED pane's second was itself re-derived from the first, so a reboot
+    /// laundered the intent back into the reading, and every replacement after it inherited the
+    /// laundered answer: `CommandBuilder::start_dir`'s default, `$HOME`.
+    ///
+    /// So this gate makes the two DISAGREE and asserts that inside itself — the pane is opened in
+    /// `POINTED`, its child prints where it landed, `cd`s to `WANDERED` and stays alive there, and
+    /// the snapshot is asserted to carry BOTH answers before anything is restored. Without that
+    /// premise one directory would do for both and a green would say nothing, which is exactly how
+    /// the clause-(1) sibling stayed green over a broken product (its child was alive, the one case
+    /// where the two sources agree).
+    ///
+    /// # ⚠⚠ It asserts the OTHER half too, because the repair must not buy it (item 417)
+    ///
+    /// The restored CHILD still comes back in `WANDERED`: a person's shell returns to the directory
+    /// they were working in, which is item 417's deliberate decision and a regression if this trades
+    /// it away. The two answers travel in separate fields precisely so a reborn pane can spawn in one
+    /// and remember the other, and the pane's own screen is what says where it actually spawned.
+    ///
+    /// ⚠ `/usr` and `/tmp` are chosen the way the clause-(1) gate chooses `/`: a test runner stands
+    /// in neither and `$HOME` is neither, so *carried* and *fallen back to* are different answers. A
+    /// fixture whose expectation equals the product's fallback cannot fail — asserted, not assumed.
+    ///
+    /// REVERT-PROOF: derive the restored pane's place from the command again
+    /// (`PathBuf::from(command.start_dir())` in `Workspace::spawn_restored`) and this reddens with
+    /// `/tmp` where `/usr` belongs, while every other restore test here stays green.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_restored_pane_is_pointed_where_it_was_opened_though_its_child_wandered_off() {
+        const POINTED: &str = "/usr";
+        const WANDERED: &str = "/tmp";
+        let pointed = std::path::Path::new(POINTED);
+        let wandered = std::path::Path::new(WANDERED);
+
+        // ⚠⚠⚠ THE PREMISES OF THE FIXTURE ITSELF: two real directories that differ, neither of them
+        // an answer the product could arrive at by falling back.
+        assert!(
+            pointed.is_dir() && wandered.is_dir() && pointed != wandered,
+            "this gate needs two DIFFERENT real directories, or its two answers are one answer",
+        );
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let here = std::env::current_dir().ok();
+        for dir in [pointed, wandered] {
+            assert_ne!(
+                Some(dir.to_path_buf()),
+                home,
+                "⚠ {dir:?} is $HOME, which is the product's FALLBACK — an expectation equal to the \
+                 fallback cannot fail",
+            );
+            assert_ne!(
+                Some(dir.to_path_buf()),
+                here,
+                "⚠ {dir:?} is the runner's own directory, so a spawn that inherited it would pass",
+            );
+        }
+
+        // The child PRINTS where it was put, then WANDERS and stays alive — so both sources answer,
+        // and differently. `env` rather than a shell because a shell's `-c` is deliberately never
+        // re-run by a restore (`durability::SHELLS`): allowlisting `env` here is what makes the
+        // restored pane run this exact argv, so no rc file can move it and its screen is readable.
+        let script = format!("printf 'MARK %s\\n' \"$(pwd)\"; cd {WANDERED}; exec cat");
+        let mut command = CommandBuilder::new("/usr/bin/env");
+        command.args(["sh", "-c", script.as_str()]);
+        command.env("TERM", "dumb");
+        command.cwd(POINTED);
+        let host = Host::new((80, 24));
+        let id = lock(&host.workspace())
+            .spawn(command, "env".to_owned(), 80, 24)
+            .expect("the pane whose child is going to wander off");
+
+        let marked = |host: &Host, id: PaneId| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline && !host.pane_full_text(id).contains("MARK ")
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            host.pane_full_text(id)
+        };
+        assert!(
+            marked(&host, id).contains(&format!("MARK {POINTED}")),
+            "⚠ THE CONTROL: the pane must have started where it was pointed, or everything below is \
+             a comparison against a fixture that never worked: {:?}",
+            marked(&host, id),
+        );
+
+        // ⚠⚠⚠ THE PREMISE, MADE AND THEN ASSERTED: the OS's answer about this child has MOVED AWAY
+        // from where the pane was pointed. This is the state a snapshot of a working pane is taken
+        // in, and the state in which one directory cannot stand in for the other.
+        let moved = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let seen = lock(&host.workspace())
+                    .pane(id)
+                    .expect("the pane outlives this read")
+                    .pty()
+                    .cwd();
+                if seen.as_deref() == Some(wandered) || std::time::Instant::now() > deadline {
+                    break seen;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        assert_eq!(
+            moved.as_deref(),
+            Some(wandered),
+            "⚠⚠⚠ THIS GATE IS VACUOUS UNTIL THE LIVE READING AND THE INTENT DISAGREE. The child is \
+             still where it was pointed, so a restore that read either field would land in the same \
+             place and a green below would measure nothing",
+        );
+
+        // Reconcile as the live path does, then take the snapshot through the PRODUCT's own door —
+        // the same projection the daemon's save loop writes (`durability::save_if_changed`).
+        lock(host.registry())
+            .window_mut("0", "0")
+            .expect("the default window")
+            .reconcile_layout(&[id]);
+        let snap = sprag_terminal::snapshot(host.registry());
+        let recorded = &snap.sessions[0].windows[0].panes[0];
+        assert_eq!(
+            recorded.cwd.as_deref(),
+            Some(wandered),
+            "the snapshot's `cwd` is the LIVE READING, and a restore spawns the child there",
+        );
+        assert_eq!(
+            recorded.start_dir.as_deref(),
+            Some(pointed),
+            "⚠⚠⚠⚠⚠ AND THE SNAPSHOT CARRIES THE PANE'S INTENT AS ITS OWN FIELD — item 684 (2). \
+             Without this the file holds one directory and a restore has nothing to be faithful to",
+        );
+
+        // Through JSON, because the file on disk is what a reboot actually reads back.
+        let json = serde_json::to_string(&snap).expect("a snapshot serializes");
+        let back: Snapshot = serde_json::from_str(&json).expect("and round-trips");
+
+        let allow: std::collections::HashSet<String> = ["env".to_owned()].into_iter().collect();
+        let rebooted = Host::new((80, 24));
+        assert_eq!(
+            rebooted
+                .restore(back, &allow, |_| None, || None, || None, |_| Vec::new())
+                .expect("the snapshot restores"),
+            1,
+            "the one recorded pane came back",
+        );
+
+        let remembered = lock(&rebooted.workspace())
+            .pane(id)
+            .expect("the pane came back under its old id")
+            .start_dir()
+            .to_path_buf();
+        assert_eq!(
+            remembered.as_path(),
+            pointed,
+            "⚠⚠⚠⚠⚠ THE CLAIM: a pane that came back through a reboot is still POINTED where it was \
+             opened, so the first replacement after that reboot starts in the project. Re-derived \
+             from the command it would say {WANDERED} — or, for a pane whose child had already \
+             exited, $HOME, which is what stood the owner's `claude` panes on a trust dialog",
+        );
+        let restored_screen = marked(&rebooted, id);
+        assert!(
+            restored_screen.contains(&format!("MARK {WANDERED}"))
+                && !restored_screen.contains(&format!("MARK {POINTED}")),
+            "⚠⚠ AND THE OTHER HALF IS UNTRADED (item 417): the restored CHILD still comes back where \
+             it was WORKING, not where the pane was pointed — a person's shell returns to their \
+             directory. Its screen: {restored_screen:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND WHEN THE CHILD WAS ALREADY GONE AT THE SNAPSHOT** — register item 684 (2), the
+    /// arm the owner actually met, kept a separate test from the one above rather than a second pane
+    /// inside it.
+    ///
+    /// Separate because the two arms fail DIFFERENTLY and a fixture that folded them would report one
+    /// verdict for two readings. A child that wandered leaves `cwd: Some(elsewhere)`, so a restore
+    /// deriving the pane's place lands in *elsewhere*; a child that has EXITED leaves `cwd: None` —
+    /// `PanePty::cwd` says so of itself — so the derivation falls through `CommandBuilder::start_dir`
+    /// to **`$HOME`**, and that is the shape measured in the owner's own daemon on 2026-08-25:
+    /// restarted `claude` panes standing in `/home/coin` on *"Quick safety check: is this a project
+    /// you trust?"*, a dialog no consent in `debt_loop.scxml` answers, for ever.
+    ///
+    /// ⚠⚠ **And a reboot is exactly when the child is gone**: a snapshot is saved on a timer and read
+    /// back after a crash or a restart, so the panes most likely to be recorded child-less are the
+    /// ones whose agent had just ended — which is the population a loop that replaces its inner
+    /// session lives in.
+    ///
+    /// ⚠ THE RESIDUE, ASSERTED RATHER THAN HIDDEN: the restored CHILD here comes back in `$HOME`,
+    /// because a pane whose child had exited has no working directory to return anyone to and item
+    /// 417's default is deliberately unchanged. What this claims is only that the PANE still knows
+    /// where it was pointed, so its first replacement goes to the project — which is what the
+    /// screen below is read to prove, since it shows a directory that is NOT the remembered one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_restored_pane_is_pointed_where_it_was_opened_even_though_its_child_had_exited() {
+        const POINTED: &str = "/usr";
+        let pointed = std::path::Path::new(POINTED);
+        assert!(pointed.is_dir(), "the fixture needs a real directory");
+        assert_ne!(
+            Some(pointed.to_path_buf()),
+            std::env::var_os("HOME").map(std::path::PathBuf::from),
+            "⚠ $HOME is the product's FALLBACK, so an expectation equal to it cannot fail",
+        );
+        assert_ne!(
+            Some(pointed.to_path_buf()),
+            std::env::current_dir().ok(),
+            "⚠ and the runner's own directory would be inherited rather than carried",
+        );
+
+        // ⚠ No `exec cat`: this child PRINTS AND DIES, which is the whole point of this arm.
+        let mut command = CommandBuilder::new("/usr/bin/env");
+        command.args(["sh", "-c", "printf 'MARK %s\\n' \"$(pwd)\""]);
+        command.env("TERM", "dumb");
+        command.cwd(POINTED);
+        let host = Host::new((80, 24));
+        let id = lock(&host.workspace())
+            .spawn(command, "env".to_owned(), 80, 24)
+            .expect("the pane whose child is going to die");
+
+        let marked = |host: &Host, id: PaneId| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline && !host.pane_full_text(id).contains("MARK ")
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            host.pane_full_text(id)
+        };
+        assert!(
+            marked(&host, id).contains(&format!("MARK {POINTED}")),
+            "⚠ THE CONTROL: the pane must have started where it was pointed: {:?}",
+            marked(&host, id),
+        );
+
+        // ⚠⚠⚠ THE PREMISE, MADE AND THEN ASSERTED: wait until the OS can no longer answer where that
+        // child is. This is the state the production restore meets and the wandering arm never does.
+        let gone = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let seen = lock(&host.workspace())
+                    .pane(id)
+                    .expect("the pane outlives its child")
+                    .pty()
+                    .cwd();
+                if seen.is_none() || std::time::Instant::now() > deadline {
+                    break seen;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        assert_eq!(
+            gone, None,
+            "⚠⚠⚠ THIS GATE IS VACUOUS UNTIL THE LIVE READING HAS GONE BLIND. `PanePty::cwd` still \
+             answers, so a snapshot recording it would carry the directory anyway",
+        );
+
+        lock(host.registry())
+            .window_mut("0", "0")
+            .expect("the default window")
+            .reconcile_layout(&[id]);
+        let snap = sprag_terminal::snapshot(host.registry());
+        let recorded = &snap.sessions[0].windows[0].panes[0];
+        assert_eq!(
+            recorded.cwd, None,
+            "the reading is what a dead child leaves: nothing at all",
+        );
+        assert_eq!(
+            recorded.start_dir.as_deref(),
+            Some(pointed),
+            "⚠⚠⚠⚠⚠ AND THE INTENT SURVIVES THE CHILD THAT DESCRIBED IT — item 684 (2). This is the \
+             one field in the file that can still say where the pane belongs",
+        );
+
+        let json = serde_json::to_string(&snap).expect("a snapshot serializes");
+        let back: Snapshot = serde_json::from_str(&json).expect("and round-trips");
+        let allow: std::collections::HashSet<String> = ["env".to_owned()].into_iter().collect();
+        let rebooted = Host::new((80, 24));
+        assert_eq!(
+            rebooted
+                .restore(back, &allow, |_| None, || None, || None, |_| Vec::new())
+                .expect("the snapshot restores"),
+            1,
+        );
+
+        let remembered = lock(&rebooted.workspace())
+            .pane(id)
+            .expect("the pane came back under its old id")
+            .start_dir()
+            .to_path_buf();
+        assert_eq!(
+            remembered.as_path(),
+            pointed,
+            "⚠⚠⚠⚠⚠ THE CLAIM: the pane is still pointed at the project it was opened in, though \
+             nothing about its child survived. Re-derived from the command it says $HOME — and the \
+             replacement the loop asks for next lands there, on a trust dialog nobody answers",
+        );
+        let restored_screen = marked(&rebooted, id);
+        assert!(
+            restored_screen.contains("MARK ")
+                && !restored_screen.contains(&format!("MARK {POINTED}")),
+            "⚠⚠ THE RESIDUE, ASSERTED: the restored CHILD comes back in $HOME, because a pane whose \
+             child had exited has no working directory to return to (item 417's default, unchanged). \
+             The two are DIFFERENT FIELDS and this is what makes that visible: {restored_screen:?}",
         );
     }
 
@@ -5057,6 +5379,7 @@ mod tests {
                         PaneSnapshot {
                             id: PaneId(0),
                             cwd: Some("/tmp".into()),
+                            start_dir: None,
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
                             agent_session: None,
@@ -5069,6 +5392,7 @@ mod tests {
                         PaneSnapshot {
                             id: PaneId(1),
                             cwd: None, // no recorded cwd -> falls back to the daemon's
+                            start_dir: None,
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
                             agent_session: None,
@@ -5136,6 +5460,7 @@ mod tests {
                     panes: vec![PaneSnapshot {
                         id: PaneId(0),
                         cwd: None,
+                        start_dir: None,
                         command_label: "cat".to_owned(),
                         argv: vec!["cat".to_owned()], // allowlisted -> re-run exactly
                         agent_session: None,
@@ -5229,6 +5554,7 @@ mod tests {
         let pane = |id: u64, argv: Vec<String>| PaneSnapshot {
             id: PaneId(id),
             cwd: None,
+            start_dir: None,
             command_label: "claude".to_owned(),
             argv,
             // BOTH panes carry the name. The difference the gate is about is what re-ran, not what
@@ -5344,6 +5670,7 @@ mod tests {
                         PaneSnapshot {
                             id: PaneId(0),
                             cwd: None,
+                            start_dir: None,
                             command_label: "ssh".to_owned(),
                             argv: vec!["ssh".to_owned(), "-t".to_owned(), "srv".to_owned()],
                             agent_session: None,
@@ -5360,6 +5687,7 @@ mod tests {
                         PaneSnapshot {
                             id: PaneId(1),
                             cwd: None,
+                            start_dir: None,
                             command_label: "ssh".to_owned(),
                             // A shell that merely had `ssh` in its argv — NOT a sanctioned workspace.
                             argv: vec!["ssh".to_owned(), "host".to_owned(), "danger".to_owned()],

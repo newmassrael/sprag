@@ -201,6 +201,35 @@ pub struct PaneSnapshot {
     /// `None` when it could not be read (the child had exited, or a non-Linux host) — the
     /// restored shell then falls back to the daemon's own cwd.
     pub cwd: Option<PathBuf>,
+    /// **WHERE THE PANE WAS POINTED** — [`Pane::start_dir`](crate::Pane::start_dir), the directory
+    /// the launch ASKED for, resolved. `None` only in a snapshot written before this field existed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is beside [`cwd`](Self::cwd) and not folded into it (register item 684)
+    ///
+    /// **The two answer different questions, and only one of them survives the child it describes.**
+    /// `cwd` is a `/proc/<pid>/cwd` READING — *where is that child now* — which a person's shell
+    /// rewrites on every `cd` and which goes `None` the moment the child exits. This field is the
+    /// INTENT — *where was this pane pointed* — captured off the [`CommandBuilder`](crate::CommandBuilder)
+    /// at the spawn, and it is what a REPLACEMENT needs.
+    ///
+    /// A restore reads BOTH, for opposite purposes: it spawns in `cwd`, because putting a person
+    /// back where they were working is the point (item 417's decision, deliberately kept), and it
+    /// re-stamps THIS on the reborn pane, so the first replacement after a reboot goes where the
+    /// pane was pointed rather than wherever its last child had wandered.
+    ///
+    /// ⚠⚠ **Without it a reboot laundered the intent into a reading.** Item 684 taught `respawn` to
+    /// read the pane's recorded place instead of the OS's answer about its child — but a RESTORED
+    /// pane's recorded place was itself re-derived from `cwd`, so a snapshot taken after the child
+    /// had exited (`cwd: None`) came back pointed at `CommandBuilder::start_dir`'s default, `$HOME`,
+    /// and **every replacement after that inherited it**. That is the shape the owner saw: restarted
+    /// `claude` panes standing in `/home/coin` on *"Quick safety check: is this a project you
+    /// trust?"*, a dialog no consent in `debt_loop.scxml` answers.
+    ///
+    /// `#[serde(default)]` on [`argv`](Self::argv)'s additive terms: an older snapshot loads as
+    /// `None`, and a restore then falls back to deriving the place from `cwd` — which is exactly what
+    /// the daemon that wrote that file did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_dir: Option<PathBuf>,
     /// What was LAUNCHED in the pane (its introspection label / program name) — a display name.
     pub command_label: String,
     /// The full argv the pane was launched with (`[program, args…]`) — what an EXACT-COMMAND
@@ -537,6 +566,14 @@ pub struct PaneRestore {
     pub id: PaneId,
     /// Where to spawn; `None` falls back to the daemon's cwd.
     pub cwd: Option<PathBuf>,
+    /// Where the pane was POINTED, to re-stamp on the reborn pane so its first replacement starts
+    /// there — [`PaneSnapshot::start_dir`], carried through the plan verbatim. `None` in a plan built
+    /// from a snapshot older than that field, which is the one case a restore still has to derive the
+    /// place from [`cwd`](Self::cwd).
+    ///
+    /// ⚠ It is NOT where to spawn: this pane's child comes back in `cwd`, and the two are different
+    /// questions — see [`PaneSnapshot::start_dir`] for why the snapshot records both.
+    pub start_dir: Option<PathBuf>,
     /// The full argv (`[program, args…]`) — re-run exactly for an allowlisted program, else a
     /// shell in the cwd. Empty (a pre-argv snapshot) restores a shell. The restored pane's display
     /// label is DERIVED from what actually re-ran (`restore_command`), so the recorded
@@ -571,6 +608,11 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
     PaneSnapshot {
         id: pane.id(),
         cwd: pane.pty().cwd(),
+        // ⚠⚠ THE PANE'S OWN FIELD, NOT A SECOND READING OF THE LINE ABOVE — register item 684. The
+        // reading answers *where is that child now* and answers `None` once it has exited; this
+        // answers *where was this pane pointed*, which is what a replacement needs and what a
+        // restored pane had been re-deriving from the reading.
+        start_dir: Some(pane.start_dir().to_path_buf()),
         command_label: pane.command_label().to_owned(),
         argv: pane.argv().to_vec(),
         agent_session: pane.agent_session().map(str::to_owned),
@@ -1035,6 +1077,8 @@ mod tests {
         PaneSnapshot {
             id: PaneId(id),
             cwd: None,
+            // A pre-684 snapshot: no recorded intent, which is the arm a restore still derives.
+            start_dir: None,
             command_label: "sh".to_owned(),
             argv: vec!["sh".to_owned()],
             // A shell is not a named agent, which is the case nearly every pane is in.

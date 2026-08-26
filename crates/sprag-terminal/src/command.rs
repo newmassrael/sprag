@@ -159,10 +159,29 @@ impl CommandBuilder {
     /// above still holds for every pane a person opens. What was missing was never a better default
     /// — it was the ability to state the other one.
     pub(crate) fn start_dir(&self) -> OsString {
-        if let Some(dir) = self.cwd.as_ref()
+        self.dir_or_home(self.cwd.as_deref())
+    }
+
+    /// The same two rules, applied to a directory this builder was NOT told about.
+    ///
+    /// # ⚠⚠⚠⚠ Why a restore has a second directory to resolve (register item 684)
+    ///
+    /// A pane carries two directories that answer different questions — *where its child was* and
+    /// *where the pane was pointed* — and a snapshot records both, because only one of them survives
+    /// the child it describes. A restore spawns in the first (a person's shell comes back where they
+    /// were working, item 417's decision) and RECORDS the second (a replacement must be the same
+    /// command in the same place, item 684).
+    ///
+    /// So the restore door has to resolve a directory that is not the one it is spawning in, and the
+    /// rules above have to be the SAME rules — a recorded intent whose directory was deleted between
+    /// the snapshot and this boot means `$HOME` here exactly as it would at the spawn. Splitting them
+    /// would be two answers to *where does this go when the directory is gone*, which is precisely
+    /// the pair of contradicting sentences item 417 paid to remove.
+    pub(crate) fn dir_or_home(&self, candidate: Option<&OsStr>) -> OsString {
+        if let Some(dir) = candidate
             && std::path::Path::new(dir).is_dir()
         {
-            return dir.clone();
+            return dir.to_os_string();
         }
         self.home_dir()
     }

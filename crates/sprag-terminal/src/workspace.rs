@@ -124,6 +124,13 @@ pub struct Pane {
     /// what a durability snapshot wants (a person's shell rewrites it on every `cd`, and putting them
     /// back where they were working is the point). *Where was this pane pointed* is what a
     /// replacement wants, and only one of the two survives the child it describes.
+    ///
+    /// ⚠⚠⚠ **So a SNAPSHOT records both, and the restore door reads them for opposite purposes** —
+    /// [`PaneSnapshot::start_dir`](crate::PaneSnapshot::start_dir), item 684's second clause. It
+    /// spawns the child in the reading and re-stamps THIS from the recorded intent, resolved by the
+    /// same `dir_or_home` rule the fresh-spawn door uses. Deriving it from the restored command
+    /// instead — which this door did until then — laundered the intent back into the reading, and a
+    /// snapshot taken after the child had exited carries no reading at all.
     start_dir: std::path::PathBuf,
     /// **THE NAME OF THE CONVERSATION THIS PANE'S LAUNCH JOINED**, read out of the argv it actually
     /// exec'd by the pool's [`PaneIdentitySource`] — `None` for every pane that is not a named agent,
@@ -661,6 +668,18 @@ pub struct PaneRebirth {
     /// The pane's display label — DERIVED from what actually re-ran, so a pane that fell back to a
     /// shell is labelled a shell.
     pub label: String,
+    /// **WHERE THE PANE WAS POINTED**, out of the snapshot
+    /// ([`PaneRestore::start_dir`](crate::PaneRestore::start_dir)) — what the reborn pane REMEMBERS,
+    /// and therefore where its first replacement starts.
+    ///
+    /// It is a separate argument from [`command`](Self::command)'s own directory because a restore
+    /// resolves TWO: the command spawns where the pane's CHILD was (item 417 — a person comes back
+    /// where they were working), and this is where the pane was ASKED to be. Only the second one
+    /// survives the child that described it, which is register item 684's whole subject.
+    ///
+    /// `None` — a snapshot older than that field — falls back to deriving the place from the command,
+    /// which is what the daemon that wrote such a file did.
+    pub start_dir: Option<std::path::PathBuf>,
     /// The `(cols, rows)` to open at, so the restored pane is the size it was.
     pub size: (u16, u16),
     /// The pane's reader-thread callbacks, UNBOUND — the same [`PaneBirthHooks`] a fresh spawn
@@ -1330,6 +1349,7 @@ impl Workspace {
             id,
             mut command,
             label,
+            start_dir: pointed_at,
             size: (cols, rows),
             hooks,
             history,
@@ -1365,13 +1385,25 @@ impl Workspace {
         // only the same one binding site.
         let mut bound = hooks.bind(id);
         self.offer_home(id, &mut bound);
-        // ⚠ The RESTORE door records it too, and here it is the SNAPSHOT's directory resolved:
-        // `restore_command` set the cwd from what the snapshot stored, and `start_dir` has just
-        // applied its own *a directory that is no longer there also means `$HOME`* rule. So a pane
-        // whose recorded directory was deleted between the snapshot and this boot comes back saying
-        // where it ACTUALLY is, and its replacement inherits that rather than a path nothing can
-        // spawn in. See [`Pane::start_dir`].
-        let start_dir = std::path::PathBuf::from(command.start_dir());
+        // ⚠⚠⚠⚠⚠ THE RESTORE DOOR RESOLVES **TWO** DIRECTORIES, AND THIS IS THE SECOND — register
+        // item 684. The command's own is where the CHILD comes back (`restore_command` set it from
+        // the snapshot's `/proc` reading, so a person returns to the directory they were working in —
+        // item 417's decision, deliberately kept). This is where the pane was POINTED, and it is what
+        // the reborn pane REMEMBERS, so the first replacement after a reboot goes there.
+        //
+        // ⚠ Deriving it from the command — which is what this line used to do — laundered the intent
+        // back into the reading item 684 had just removed from `respawn`: a snapshot taken after the
+        // child exited carries `cwd: None`, so the restored pane came back pointed at `$HOME` and
+        // every replacement after it inherited that.
+        //
+        // Both go through the SAME rule (`dir_or_home`), so a recorded intent whose directory was
+        // deleted between the snapshot and this boot means `$HOME` here exactly as the command's does
+        // — the pane comes back saying somewhere it can actually spawn, never a path nothing can.
+        // ⚠ `None` is a snapshot written before the field existed: derive it, as its daemon did.
+        let start_dir = std::path::PathBuf::from(match &pointed_at {
+            Some(pointed_at) => command.dir_or_home(Some(pointed_at.as_os_str())),
+            None => command.start_dir(),
+        });
         let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &history, history_limit)?;
         // The RESTORE door, and it takes the answer from the birth for the same reason the spawn
         // door does: a pane coming back from a snapshot joins its new cgroup exactly as a fresh one
@@ -1392,8 +1424,9 @@ impl Workspace {
             // stated on [`Pane::env`] — a restored pane's REPLACEMENT is the program without its
             // original launcher's variables.
             env: Vec::new(),
-            // ⚠ NOT empty here, unlike `env`: the snapshot DOES store a directory, so a restored
-            // pane knows where it is meant to be and its replacement can be put there.
+            // ⚠ NOT empty here, unlike `env`: the snapshot stores where the pane was POINTED as its
+            // own field, so a restored pane knows where it is MEANT to be — not merely where its
+            // last child had got to — and its replacement can be put there.
             start_dir,
             agent_session,
             remote: None,
@@ -1814,6 +1847,7 @@ mod tests {
             id: PaneId(7),
             command: cmd(),
             label: "sh".to_string(),
+            start_dir: None,
             size: (80, 24),
             hooks: PaneBirthHooks::default(),
             history: Vec::new(),
@@ -2233,6 +2267,7 @@ mod tests {
             id: PaneId(41),
             command: echoes("WS_TEST_PANE"),
             label: "sh".to_owned(),
+            start_dir: None,
             size: (20, 4),
             hooks: PaneBirthHooks::default(),
             history: Vec::new(),
@@ -2327,6 +2362,7 @@ mod tests {
             id: PaneId(41),
             command: echoes_extra_args(),
             label: "sh".to_owned(),
+            start_dir: None,
             size: (40, 4),
             hooks: PaneBirthHooks::default(),
             history: Vec::new(),
@@ -2631,6 +2667,7 @@ mod tests {
             id: PaneId(5),
             command: cmd(),
             label: "sh".into(),
+            start_dir: None,
             size: (80, 24),
             hooks: PaneBirthHooks::default(),
             history: Vec::new(),
@@ -2640,6 +2677,7 @@ mod tests {
             id: PaneId(1),
             command: cmd(),
             label: "sh".into(),
+            start_dir: None,
             size: (80, 24),
             hooks: PaneBirthHooks::default(),
             history: Vec::new(),

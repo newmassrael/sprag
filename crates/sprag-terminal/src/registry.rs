@@ -2840,6 +2840,7 @@ impl SessionRegistry {
                         window: w.name.clone(),
                         id: p.id,
                         cwd: p.cwd.clone(),
+                        start_dir: p.start_dir.clone(),
                         argv: p.argv.clone(),
                         agent_session: p.agent_session.clone(),
                         remote: p.remote.clone(),
