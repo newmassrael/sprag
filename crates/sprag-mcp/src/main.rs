@@ -3397,7 +3397,13 @@ fn asking_block(agent: &AgentInfo, indent: &str) -> String {
 /// ⚠ `daemon` MUST be the build read off the call that produced this row ([`query_panes_and_daemon`]).
 /// A build fetched separately could belong to a different process at the same path, and a
 /// comparison against a daemon that never held this verdict is worse than no sentence at all.
-fn reporter_caveats(agent: &AgentInfo, pane: u64, daemon: Option<&str>, indent: &str) -> String {
+fn reporter_caveats(
+    agent: &AgentInfo,
+    pane: u64,
+    daemon: Option<&str>,
+    indent: &str,
+    trouble: &std::path::Path,
+) -> String {
     // ADDITIVE, and the condition is the AUTHORITY rather than the state: a scraped verdict has no
     // reporter to be mute or foreign, so a pane whose state was read off its screen reads exactly
     // as it did before this existed.
@@ -3408,7 +3414,7 @@ fn reporter_caveats(agent: &AgentInfo, pane: u64, daemon: Option<&str>, indent: 
         "{indent}`{source}` REPORTED this state; it was not read off the screen, and a report \
          outranks the screen.\n"
     );
-    if let Some(said) = reporter_mute(pane) {
+    if let Some(said) = reporter_mute(pane, trouble) {
         out.push_str(&format!(
             "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. The state above is \
              the last thing it MANAGED to say rather than what is true now, so read_pane is the \
@@ -3468,8 +3474,34 @@ fn reporter_caveats(agent: &AgentInfo, pane: u64, daemon: Option<&str>, indent: 
 /// ⚠ Read off the FILESYSTEM rather than asked of the daemon, exactly as the CLI reads it and for
 /// the same reason: the condition being reported is that the hook could not reach the daemon, so
 /// the daemon is the one party that cannot know.
-fn reporter_mute(pane: u64) -> Option<String> {
-    let said = std::fs::read_to_string(sprag_host::hooks::hook_trouble_path(pane)).ok()?;
+/// **WHERE A HOOK LEAVES WORD THAT IT COULD NOT DELIVER** — named by the caller, never inherited.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a parameter, and it cost two gates to learn
+///
+/// [`reporter_mute`] reads a REAL FILE keyed on a pane id, and two gates built a `PaneInfo` with
+/// `id: 3` and asked `reporter_flags(.., 7, ..)`. On a clean runner nothing answers and both were
+/// green for as long as they had existed; on the machine this loop runs on,
+/// `~/.local/state/sprag/hook-mute.3` and `hook-mute.7` exist — real breadcrumbs from real panes
+/// that lost a hook — so the product truthfully added `mute` and both gates went red. **107 such
+/// files were on this host**, so which fixture ids collide is a fact about the day's history.
+///
+/// ⚠⚠ **IT LOOKED LIKE A FLAKE AND WAS NOT ONE.** It is perfectly deterministic given the machine:
+/// same commit, `ok` on CI and `FAILED` here, in isolation, with fresh bins. What varied was never
+/// the run — it was which host was asked. A gate that reads an ambient directory is asserting that
+/// host's history, which is register item R382's rule arriving a second time: **name the
+/// environment the measurement means, do not inherit it.**
+///
+/// ⚠ Choosing fixture ids nobody has used was weighed and REFUSED: every id becomes a real pane
+/// eventually, so it lowers the probability without touching the mechanism — and a gate that is
+/// usually right is the thing this repository keeps paying for.
+///
+/// ⚠⚠⚠ **AND IT IS REQUIRED RATHER THAN AN `Option` THAT FALLS BACK.** A default spelled *the real
+/// one* is inherited by every caller that forgets, which is the arrangement being repaired — so the
+/// one production caller says [`sprag_host::durability::state_dir`] out loud and a fixture that says
+/// nothing does not compile.
+/// Whether a hook left word that it could not deliver, looked for under `at`.
+fn reporter_mute(pane: u64, at: &std::path::Path) -> Option<String> {
+    let said = std::fs::read_to_string(at.join(format!("hook-mute.{pane}"))).ok()?;
     // An empty breadcrumb is still a failed delivery — the file's EXISTENCE is the message, and its
     // text is only the hook's account of the failure. Kept as `Some("")` rather than filtered out,
     // so a hook that manages to write nothing does not read as a hook that succeeded.
@@ -3511,14 +3543,20 @@ fn reporter_mute(pane: u64) -> Option<String> {
 /// interchangeable: the breadcrumb is filed under the pane's HOST ID, and `agent_state` is called
 /// with the pane's position in THIS listing. Deriving either from the other is the class of bug a
 /// number that moves was named for.
-fn reporter_flags(agent: &AgentInfo, id: u64, number: usize, daemon: Option<&str>) -> String {
+fn reporter_flags(
+    agent: &AgentInfo,
+    id: u64,
+    number: usize,
+    daemon: Option<&str>,
+    trouble: &std::path::Path,
+) -> String {
     // The AUTHORITY is the condition, not the state: a scraped verdict has no reporter to be mute
     // or foreign, so a row read off a screen looks exactly as it did before this existed.
     if agent.source.is_none() {
         return String::new();
     }
     let mut flags = Vec::new();
-    if reporter_mute(id).is_some() {
+    if reporter_mute(id, trouble).is_some() {
         flags.push("mute");
     }
     match sprag_host::wire::reporter_image(agent.build.as_deref(), daemon) {
@@ -4264,8 +4302,18 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>, daemon: Option<&str>)
         "{} pane(s) in this window (list_windows for the session's others):\n",
         panes.len()
     );
+    // ⚠ THE ONE PLACE A LISTING NAMES THE REAL DIRECTORY — see `reporter_mute`. Derived once for
+    // the whole listing rather than per row: every row asks about the same host.
+    let trouble = sprag_host::durability::state_dir();
     for (index, pane) in panes.iter().enumerate() {
-        out.push_str(&pane_summary(numbered(index), pane, panes, here, daemon));
+        out.push_str(&pane_summary(
+            numbered(index),
+            pane,
+            panes,
+            here,
+            daemon,
+            &trouble,
+        ));
     }
     out
 }
@@ -4283,6 +4331,7 @@ fn pane_summary(
     panes: &[PaneInfo],
     here: Option<u64>,
     daemon: Option<&str>,
+    trouble: &std::path::Path,
 ) -> String {
     let title = if pane.title.is_empty() {
         "(none)".to_owned()
@@ -4369,7 +4418,11 @@ fn pane_summary(
         out.push_str(&format!(
             "      agent: {}{}\n",
             agent_line(agent),
-            reporter_flags(agent, pane.id, number, daemon)
+            // ⚠⚠ PASSED THROUGH, NOT RE-DERIVED HERE — see `reporter_mute`. Naming the real
+            // directory inside this function was the first draft and it defeated the repair: the
+            // two gates that read this surface call `pane_summary`, so they would have gone on
+            // asserting whichever panes this host happened to lose a hook for.
+            reporter_flags(agent, pane.id, number, daemon, trouble)
         ));
         // ...and WHAT it is asking, when it is blocked. Beside the verdict rather than folded into
         // it because the verdict is one line a scanner reads and this is a block a decider reads.
@@ -7255,6 +7308,7 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
                     pane.id(),
                     daemon.as_deref(),
                     "    ",
+                    &sprag_host::durability::state_dir(),
                 ));
             }
             None => out.push_str(&format!(
@@ -7649,7 +7703,13 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
     // ⚠⚠⚠⚠⚠ AND WHETHER THE REPORTER THAT PRODUCED IT CAN STILL SPEAK, AND IS THIS DAEMON'S CODE.
     // A caller reaches for `explain` when a verdict looks wrong, and for a REPORTED verdict those
     // two are the whole of the explanation — the rule branch above has nothing to offer it.
-    out.push_str(&reporter_caveats(agent, pane.id(), daemon.as_deref(), ""));
+    out.push_str(&reporter_caveats(
+        agent,
+        pane.id(),
+        daemon.as_deref(),
+        "",
+        &sprag_host::durability::state_dir(),
+    ));
     out.push_str(&format!(
         "The state has changed {} time(s) since this pane was first seen (seq={}), so a repeat read \
          showing the same seq is the same verdict rather than a new one.\n",
@@ -8455,6 +8515,33 @@ fn last_n_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A DIRECTORY THIS GATE OWNS**, standing where the host's state directory would be.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two gates asserted this machine's history and nobody could see it
+    ///
+    /// [`reporter_mute`] reads a real file keyed on a pane id. Every fixture below used to inherit
+    /// `sprag_host::durability::state_dir()`, so what they measured was **whether this host had
+    /// ever lost a hook for the pane id they happened to invent**. `pane_summary_…_for_a_shell`
+    /// builds `id: 3` and `the_listing_marker_…` asks about `7`; on the machine this loop runs on,
+    /// `hook-mute.3` (2026-08-25) and `hook-mute.7` (2026-08-24) both exist among **107** such
+    /// breadcrumbs, so both gates were red HERE and green on CI — at the same commit, in isolation,
+    /// with fresh binaries. It read as a flake and was perfectly deterministic: what varied was
+    /// which host was asked.
+    ///
+    /// ⚠⚠ **AND THE `mute` FLAG HAD NO GATE AT ALL.** The only thing that ever produced one in a
+    /// test was that accident, which is why the arrangement survived — a surface nobody can set up
+    /// is a surface nobody can measure. [`a_reporter_that_left_word_is_flagged_mute`] is the arm
+    /// that could not be written before this parameter existed.
+    ///
+    /// ⚠ Named per gate so two running at once cannot see each other's breadcrumbs.
+    fn nobody_left_word(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("sprag-mcp-mute-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory this gate owns");
+        dir
+    }
 
     /// The measured permission dialog, as a blocked run carries it.
     fn asked_dialog() -> sprag_detect::Question {
@@ -10787,18 +10874,20 @@ mod tests {
             name: None,
             ..opened(0)
         }];
+        let quiet = nobody_left_word("opened-by");
         assert!(
-            pane_summary(1, &opened(3), &listing, None, None).contains("      opened by: pane 1\n"),
+            pane_summary(1, &opened(3), &listing, None, None, &quiet)
+                .contains("      opened by: pane 1\n"),
             "an opener this window holds is named by its NUMBER",
         );
         assert!(
-            pane_summary(1, &opened(99), &listing, None, None)
+            pane_summary(1, &opened(99), &listing, None, None, &quiet)
                 .contains("      opened by: pane id 99, not in this window\n"),
             "and one it does not hold is named by the id that still addresses it, with the reason \
              it has no number here — never by a number this listing would make up",
         );
         assert!(
-            pane_summary(1, &opened(3), &listing, Some(3), None).contains(
+            pane_summary(1, &opened(3), &listing, Some(3), None, &quiet).contains(
                 "      opened by: you (yours to \
              close)\n"
             ),
@@ -10826,7 +10915,8 @@ mod tests {
             images: vec![],
             agent: None,
         };
-        let summary = pane_summary(1, &tracking, &[], None, None);
+        let quiet = nobody_left_word("mouse-focus");
+        let summary = pane_summary(1, &tracking, &[], None, None, &quiet);
         assert!(
             summary.contains("mouse: tracking clicks + drag + motion"),
             "the mouse-tracking level must surface: {summary}"
@@ -10842,7 +10932,7 @@ mod tests {
             focus_tracking: false,
             ..tracking
         };
-        let resting = pane_summary(1, &resting, &[], None, None);
+        let resting = pane_summary(1, &resting, &[], None, None, &quiet);
         assert!(
             !resting.contains("mouse:"),
             "no mouse line when off: {resting}"
@@ -10935,10 +11025,15 @@ mod tests {
             seq: 1,
             asking: None,
         };
-        // ⚠ Pane 0 and a state home this process does not have: the mute half reads a FILE, and
-        // this test is about the build half alone.
-        let said =
-            |agent: &AgentInfo, daemon: Option<&str>| reporter_caveats(agent, 0, daemon, "  ");
+        // ⛔⛔⛔⛔⛔ **THIS COMMENT USED TO READ *"Pane 0 and a state home this process does not
+        // have"*, AND THAT WAS A WORKAROUND RECORDED AS A FIX.** The round that wrote it knew the
+        // mute half reads a FILE and dodged by picking an id it hoped nobody owned — which is why
+        // the two gates below, built on `3` and `7`, lost instead. A directory this gate OWNS says
+        // *the build half alone* truthfully, for every id, on every host.
+        let no_word = nobody_left_word("build-caveats");
+        let said = |agent: &AgentInfo, daemon: Option<&str>| {
+            reporter_caveats(agent, 0, daemon, "  ", &no_word)
+        };
 
         let same = said(&reported(Some(mine)), Some(mine));
         assert!(
@@ -11031,7 +11126,11 @@ mod tests {
             }),
             ..shell
         };
-        let summary = pane_summary(1, &claimed, &[], None, None);
+        // ⚠⚠⚠⚠⚠ THE ENVIRONMENT THIS GATE MEANS, NAMED — see `nobody_left_word`. This fixture's
+        // `id: 3` collides with a real `hook-mute.3` on the machine this loop runs on, and while
+        // that directory was inherited the gate was asserting that host's history.
+        let no_word = nobody_left_word("sibling-agent");
+        let summary = pane_summary(1, &claimed, &[], None, None, &no_word);
         assert!(
             summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
             "the verdict surfaces field for field: {summary}",
@@ -11059,7 +11158,7 @@ mod tests {
             }),
             ..claimed
         };
-        let summary = pane_summary(1, &reported, &[], None, None);
+        let summary = pane_summary(1, &reported, &[], None, None, &no_word);
         assert!(
             summary.contains("agent: state=working name=claude source=hook:claude seq=5"),
             "an authority is told from an inference: {summary}",
@@ -11080,6 +11179,7 @@ mod tests {
             &[],
             None,
             None,
+            &no_word,
         );
         assert!(
             !quiet.contains("agent:"),
@@ -11111,7 +11211,12 @@ mod tests {
             seq: 1,
             asking: None,
         };
-        let flags = |agent: &AgentInfo, daemon: Option<&str>| reporter_flags(agent, 7, 2, daemon);
+        // ⚠⚠ `7` IS A REAL PANE ID SOMEWHERE, and while this directory was inherited that is what
+        // this gate measured — `hook-mute.7` exists on the machine this loop runs on. See
+        // `nobody_left_word`.
+        let no_word = nobody_left_word("four-build-answers");
+        let flags =
+            |agent: &AgentInfo, daemon: Option<&str>| reporter_flags(agent, 7, 2, daemon, &no_word);
 
         // The one arm that earns silence about the build: both halves read, and they agree.
         let same = flags(&reporting(Some(OTHER)), Some(OTHER));
@@ -11154,6 +11259,55 @@ mod tests {
         assert!(
             flags(&scraped, Some(sprag_host::wire::BUILD)).is_empty(),
             "an inference is not a report and carries no reporter caveat",
+        );
+    }
+
+    /// **A REPORTER THAT LEFT WORD IS FLAGGED `mute`** — and this arm could not be written before.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The flag had no gate, because the only thing that ever set one was an accident
+    ///
+    /// [`reporter_mute`] reads a real file, so until the directory became a parameter the ONLY way
+    /// a test could see `mute` was for the developer's own machine to hold a breadcrumb for the id
+    /// the fixture invented. That is exactly what happened — `hook-mute.3` and `hook-mute.7` turned
+    /// two neighbouring gates red on this host and green on CI — and the arrangement survived
+    /// because **a surface nobody can set up is a surface nobody can measure**. The absence was
+    /// asserted all over this module; the presence was asserted nowhere.
+    ///
+    /// ⚠⚠ THE CONTROL IS ITS OWN DIRECTORY, not a different id. An arm that proved `mute` by
+    /// picking an id this host happens to own would be the defect under repair, inverted.
+    #[test]
+    fn a_reporter_that_left_word_is_flagged_mute() {
+        let left_word = nobody_left_word("left-word");
+        let agent = AgentInfo {
+            state: "working".to_owned(),
+            name: Some("claude".to_owned()),
+            rule: None,
+            source: Some("hook:claude".to_owned()),
+            build: Some(sprag_host::wire::BUILD.to_owned()),
+            seq: 9,
+            asking: None,
+        };
+
+        // ── THE CONTROL: the same id, the same everything, and nobody left word ──
+        assert!(
+            !reporter_flags(&agent, 42, 1, Some(sprag_host::wire::BUILD), &left_word)
+                .contains("mute"),
+            "⚠⚠⚠ THE CONTROL: with no breadcrumb under the directory this gate named, a reporter is \
+             not mute — without this the arm below would pass against a flag that is always on",
+        );
+
+        // ── THE ARM: the hook could not deliver, and said so where the product looks ──
+        std::fs::write(
+            left_word.join("hook-mute.42"),
+            "the daemon refused the report: no pane 42 on this host",
+        )
+        .expect("a breadcrumb this gate owns");
+        let flagged = reporter_flags(&agent, 42, 1, Some(sprag_host::wire::BUILD), &left_word);
+        assert!(
+            flagged.contains("mute"),
+            "⛔⛔ A REPORT OUTRANKS THE SCREEN AND NEVER EXPIRES, so a row whose reporter has stopped \
+             being able to deliver is the one row a reader must not trust — item 344. The listing \
+             has to say so: {flagged:?}",
         );
     }
 
