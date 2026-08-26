@@ -1914,6 +1914,30 @@
     ⚠ THE SEVEN FINALS ANSWER NOTHING AND ARE RIGHT TO: a finished machine is
     reported, not driven, and it is told apart by BEING final rather than by
     being named in a list out in Rust.
+
+    ⚠⚠⚠⚠⚠ AND EVERY ONE OF THE TWELVE CARRIES THE SAME THREE NUMBERS. `within`,
+    `awaits` and `stills` are `ready_timeout_ms`, `await_person_ms` and
+    `handback_still_ms`: the readiness barrier's own bound, how long a person is
+    waited for at this pane, and how long their hand must be still before the
+    pane is this run's again. The driver used to fetch all three out of the
+    script session with private typed readers, which register item 470 named as
+    going BEHIND THE MACHINE'S BACK: nothing in this file said the values were
+    consulted at all, so no reading of the document could reveal that a wait
+    this file authors is a wait this file's driver honours.
+
+    ⚠⚠ AN ACT OF THEIR OWN WAS BUILT, MEASURED AND REJECTED. A `ready.set` on
+    its own unguarded transition read beautifully and cost a SECOND MACROSTEP ON
+    EVERY PASS, which put a stand-in timing gate red across two whole sweeps
+    while the same sweep on the unchanged tree was clean three times running.
+    This act is already raised once per pass, so the numbers ride it for
+    nothing. Repetitive in the document, free at run time, which is the right
+    way round.
+
+    ⚠ ZERO IS A REAL ANSWER IN BOTH OF THE NEW ONES AND NOT AN ABSENCE:
+    `await_person_ms` of zero says NOBODY IS WATCHING, and `handback_still_ms`
+    of zero says a person who takes this pane KEEPS it. `probe_send_type.scxml`
+    measured that a number crosses as a `<param>` with zero, nil and a negative
+    all still tellable apart, which is what made this move sayable at all.
   -->
   <transition event="pass" cond="In('idle')">
     <!-- Nothing has happened yet. Starting is the caller's act, but the
@@ -1921,6 +1945,8 @@
          ready before that sentence can mean anything. -->
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'ready'"/>
     </send>
   </transition>
@@ -1931,6 +1957,8 @@
   <transition event="pass" cond="In('priming') || In('disputing')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'sent'"/>
     </send>
   </transition>
@@ -1941,6 +1969,8 @@
               cond="In('working') || In('closing') || In('stopping')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'watch'"/>
       <!--
         ⚠⚠⚠⚠⚠ WHAT AN OUTAGE LOOKS LIKE, DECLARED WHERE IT WOULD BE MET.
@@ -1964,18 +1994,24 @@
   <transition event="pass" cond="In('judging')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'judge'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('screening')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'screen'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('service_down')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'wait'"/>
     </send>
   </transition>
@@ -1986,36 +2022,48 @@
   <transition event="pass" cond="In('reflecting')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'reflect'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('reviewing')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'review'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('restarting')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'replace'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('resuming')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'resume'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('awaiting_human')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'attend'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('redirecting')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
       <param name="does" expr="'redirect'"/>
     </send>
   </transition>
@@ -2213,11 +2261,12 @@
         echoing this document's own numbers back when the caller named none, so
         omitting one cannot assign nil and delete an author's patience.
 
-        ⚠⚠ AND THE BARRIER RE-READS THEM WHEN IT ACTS rather than holding what it
-        was built with — see `OuterLoop::expecting`. A brief is applied while the
-        machine is still `idle`, so a value written here is in place before any
-        wait; a barrier that kept its construction copy would wait out the
-        AUTHOR's hour for a caller who asked for a minute.
+        ⚠⚠ AND THE BARRIER IS HANDED THEM ON EVERY PASS rather than holding what
+        it was built with: the `pass.do` act above carries both as `awaits` and
+        `stills`, so a value written here is in force before the next wait. A
+        barrier that kept its construction copy would wait out the AUTHOR's hour
+        for a caller who asked for a minute, which is how this crate's own suite
+        hung 59 tests in before the numbers reached the barrier at act time.
       -->
       <assign location="await_person_ms" expr="_event.data.await_person_ms"/>
       <assign location="handback_still_ms" expr="_event.data.handback_still_ms"/>

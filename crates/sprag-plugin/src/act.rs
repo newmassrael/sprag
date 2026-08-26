@@ -736,6 +736,39 @@ pub enum Asked {
         /// double is accepted, a negative refused, nil means *no bound of its own*), and folding it
         /// in here would move a DECISION rather than an argument.
         within: Option<String>,
+        /// **HOW LONG A PERSON IS WAITED FOR AT THIS PANE**, in milliseconds, exactly as the
+        /// document wrote it — `await_person_ms`.
+        ///
+        /// # ⚠⚠⚠⚠⚠ Why it rides this act, and why it is HALF an argument
+        ///
+        /// Register item 470, stage 2's last back door but one. The driver read `await_person_ms`
+        /// and `handback_still_ms` out of the script session at the top of every pass — *behind the
+        /// machine's back* — so nothing in `ai_loop.scxml` said that the patience the file authors
+        /// is the patience its driver waits out. It rides `within`'s act for `within`'s measured
+        /// reason: an act of its own costs a second macrostep on every pass, and this one is
+        /// already raised.
+        ///
+        /// ⚠⚠ **IT IS MEANINGLESS WITHOUT `stills` BESIDE IT**, and the
+        /// driver refuses the pair rather than either half: `Handback` lives INSIDE
+        /// `Attended::APerson`, so *somebody is expected* cannot be decided without deciding what
+        /// becomes of a pane they take. Two `<param>`s carry it because a `<param>` carries one
+        /// value; one decision reads them.
+        ///
+        /// ⚠ **ZERO IS A REAL ANSWER AND NOT AN ABSENCE** — it says NOBODY IS WATCHING, which is
+        /// what every run did before the contract existed. `probe_send_type.scxml` measured that
+        /// zero, nil and a negative all stay tellable apart across a `<param>`, which is what made
+        /// this move sayable; RAW here for `needle`'s reason, so the driver keeps the reading.
+        awaits: Option<String>,
+        /// **HOW LONG A PERSON'S HAND MUST BE STILL BEFORE THE PANE IS THIS RUN'S AGAIN**, in
+        /// milliseconds, exactly as the document wrote it — `handback_still_ms`.
+        ///
+        /// ⚠⚠ The other half of `awaits`, carried beside it and read with it — see that argument
+        /// for why the pair cannot be split.
+        ///
+        /// ⚠ **ZERO IS A REAL ANSWER HERE TOO, AND A DIFFERENT ONE**: it says a person who takes
+        /// this pane KEEPS it (`Handback::Never`), which is a variant of the contract that would be
+        /// unsayable from the file that owns the decision if zero were refused.
+        stills: Option<String>,
     },
     /// [`Act::End`] — publish this ending.
     End {
@@ -1157,10 +1190,16 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             // on `judge` or `attend` would be saying something nothing reads. What must never be
             // optional is the word that says WHAT the pass is; this qualifies one of its answers.
             let optional = |name: &str| params.get(name).and_then(|values| values.first()).cloned();
+            // ⚠⚠ AND THE PERSON'S TWO NUMBERS ARE OPTIONAL SEPARATELY BUT MEANINGLESS APART, which
+            // is a distinction this reader deliberately does not make: it carries what the document
+            // said and the driver decides. Refusing one half here would refuse it with a vocabulary
+            // that cannot say *and its other half* — see `awaits`.
             Ok(Asked::Pass {
                 does,
                 needle: optional("needle"),
                 within: optional("within"),
+                awaits: optional("awaits"),
+                stills: optional("stills"),
             })
         }
         // ⚠ NO EMPTY CHECK OF ITS OWN, for `pass.do`'s reason: `Publishes::of("")` answers [`None`]

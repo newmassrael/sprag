@@ -1860,6 +1860,27 @@ impl Because {
     }
 }
 
+/// **WHAT THE DOCUMENT ASKED OF ONE PASS** — the `pass.do` act's arguments, read.
+///
+/// # ⚠⚠ Why a struct rather than the tuple this grew out of
+///
+/// It was `(Does, Option<String>, Option<Duration>)` while the act carried two arguments, and the
+/// third pushed it past what a reader can hold: three of the four are optional and two of those are
+/// now durations, so position is no longer a name. A field is.
+///
+/// ⚠ Every argument but [`does`](Self::does) is optional and each `None` is a REAL answer rather
+/// than a missing one — see [`crate::act::Asked`]'s `Pass`, which holds what each absence means.
+struct Asking {
+    /// Which effect this pass is for.
+    does: crate::act::Does,
+    /// What an outage looks like, where this is a pass that could meet one.
+    needle: Option<String>,
+    /// How long the readiness barrier may wait, as this document declares it.
+    within: Option<Duration>,
+    /// Who this document expects at its pane, from the pass's two halves read as one decision.
+    expected: Option<crate::readiness::Attended>,
+}
+
 /// **WHAT ONE PASS OF THE DRIVER DID** — and, when it could not, exactly what it was asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pumped {
@@ -3458,9 +3479,10 @@ impl OuterLoop {
                     Self::ready_within_at(&script, &session),
                     // ⚠ THE DOCUMENT'S, and only as a SEED — `pump` re-reads before every pass.
                     Self::consenting_at(&script, &session),
-                    // ⚠⚠⚠ THE DOCUMENT'S, and only as a SEED: `pump` re-reads it at the top of every
-                    // pass (see [`Self::expecting`]), so what acts is always what the machine holds
-                    // now — a brief lands while it is still `idle`, which is after this line.
+                    // ⚠⚠⚠ THE DOCUMENT'S, and only as a SEED: every `pass.do` HANDS this over
+                    // before its act runs (see `Self::expected_of`), so what acts is always what
+                    // the machine holds now — a brief lands while it is still `idle`, which is
+                    // after this line.
                     Self::seed_expecting(&script, &session),
                 ),
                 judged: crate::access::RowTrail::default(),
@@ -4421,11 +4443,21 @@ impl OuterLoop {
     /// the same sweep on the unchanged tree was clean three times running. This act is already
     /// raised once per pass, so the bound travels free here.
     ///
-    /// ⚠ Parsed here rather than handed back raw, so the two optional answers this returns cannot
-    /// be swapped by a caller: one is a sentence and the other is a duration.
-    fn asked_of_this_pass(
-        &mut self,
-    ) -> Option<(crate::act::Does, Option<String>, Option<Duration>)> {
+    /// ⚠⚠⚠⚠⚠ **AND SO DOES WHO IS EXPECTED AT THE PANE** — register item 470, stage 2's third and
+    /// last carried number, or rather PAIR of them. `await_person_ms` and `handback_still_ms` were
+    /// read out of the script session at the top of every pass by a private typed reader, which is
+    /// the register's *behind the machine's back* in its sharpest form: the document authors a
+    /// person's patience, spends a whole state (`awaiting_human`) on what that patience buys, and
+    /// said nowhere that the driver honours the number rather than one of its own.
+    ///
+    /// ⚠⚠ **THE TWO HALVES ARE READ AS ONE DECISION HERE**, because that is what they are:
+    /// `Handback` lives inside `Attended::APerson`, so a driver that took the patience and left the
+    /// handback for later would be deciding half a contract. [`Self::expected_of`] is the one
+    /// reading, and [`Self::seed_expecting`]'s construction copy goes through the same decision.
+    ///
+    /// ⚠ Parsed here rather than handed back raw, so the answers cannot be swapped by a caller:
+    /// one is a sentence, one is a duration, and one is a contract about a person.
+    fn asked_of_this_pass(&mut self) -> Option<Asking> {
         let from = self.state();
         self.machine.process_event(AiLoopEvent::Pass);
         if self.state() != from {
@@ -4436,7 +4468,14 @@ impl OuterLoop {
                 does,
                 needle,
                 within,
-            }) => Some((does, needle, Self::bound_of(within.as_deref()))),
+                awaits,
+                stills,
+            }) => Some(Asking {
+                does,
+                needle,
+                within: Self::bound_of(within.as_deref()),
+                expected: Self::expected_of(awaits.as_deref(), stills.as_deref()),
+            }),
             _ => None,
         }
     }
@@ -5212,27 +5251,25 @@ impl OuterLoop {
         if self.machine.is_in_final_state() {
             return Ok(Pumped::Ended(from));
         }
-        // ⚠⚠⚠ WHO IS EXPECTED IS RE-READ AT THE TOP OF EVERY PASS, from the document that owns it —
-        // see [`Self::expecting`]. It is at the funnel rather than in `attend` because THREE acts
-        // consult it (the person's wait, the handback, and `awaiting_human`'s own arm) and a value
-        // refreshed in one of them would leave the other two reading a copy taken earlier, which is
-        // the drift this whole move exists to end. ⚠ A document this cannot read leaves the barrier
-        // with what it had: `brief` already refused that case, loudly.
-        if let Some(expected) = self.expecting() {
-            self.driving.ready.expecting(expected);
-        }
-        // ⚠ AND WHAT IT MAY ANSWER, for the same reason and from the same file. An unreadable list
-        // leaves the barrier with what it had: `brief` already refused that document, loudly, and a
-        // pump is not the place to discover it.
+        // ⚠ WHAT THE BARRIER MAY ANSWER, re-read at the top of every pass from the document that
+        // owns it. An unreadable list leaves the barrier with what it had: `brief` already refused
+        // that document, loudly, and a pump is not the place to discover it.
         if let Ok(clauses) = self.consenting() {
             self.driving.ready.answering(clauses);
         }
-        // ⚠⚠ THE THIRD CONTRACT — HOW LONG IT MAY WAIT — IS SEEDED BELOW RATHER THAN HERE, because
-        // it no longer comes from a read at all: the document HANDS it over on the `pass.do` act,
-        // so it cannot be known until that act has been asked for. See `Self::asked_of_this_pass`.
+        // ⚠⚠⚠⚠⚠ THE OTHER TWO CONTRACTS — HOW LONG IT MAY WAIT, AND WHO IS EXPECTED AT THE PANE —
+        // ARE SEEDED BELOW RATHER THAN HERE, because neither comes from a read any more: the
+        // document HANDS both over on the `pass.do` act, so neither can be known until that act has
+        // been asked for. See `Self::asked_of_this_pass`.
+        //
+        // ⚠⚠ WHO IS EXPECTED WAS THE LAST ONE STANDING HERE, and it stood at the funnel rather than
+        // in `attend` because THREE acts consult it (the person's wait, the handback, and
+        // `awaiting_human`'s own arm). That reason survives the move intact: seeded once per pass
+        // before any act runs, all three still read one value, and now it is one the DOCUMENT said
+        // rather than one this driver went and fetched.
         //
         // ⚠ Nothing between here and there touches the barrier, so the move changes only where the
-        // value comes from. A pass that gets no act at all returns without seeding, which is right:
+        // values come from. A pass that gets no act at all returns without seeding, which is right:
         // that pass is reporting a run that is stopping.
         //
         // ⚠⚠⚠ TAKEN BEFORE THE ACT, so what this pass reports is what it ARRIVED AT rather than
@@ -5260,7 +5297,7 @@ impl OuterLoop {
         // `pass.do` this host will not perform is refused on `error.execution`, and this document
         // answers that by ending the run `failed` — inside the very raise that asked for it. A
         // reader of the reading taken at the top of the pass would call that ending `Unbuilt`.
-        let Some((does, needle, within)) = self.asked_of_this_pass() else {
+        let Some(asking) = self.asked_of_this_pass() else {
             let landed = self.state();
             return Ok(if self.machine.is_in_final_state() {
                 Pumped::Ended(landed)
@@ -5268,13 +5305,26 @@ impl OuterLoop {
                 Pumped::Unbuilt(landed)
             });
         };
+        let Asking {
+            does,
+            needle,
+            within,
+            expected,
+        } = asking;
         // ⚠⚠ THE BARRIER'S BOUND, SEEDED THE MOMENT THE DOCUMENT HAS SAID IT AND BEFORE ANY ACT IS
-        // PERFORMED — the other two contracts are seeded at the funnel above, and this one waits
-        // only because it arrives with the act rather than out of the datamodel. It is re-seeded on
-        // EVERY pass for their reason and one of its own: `restarting` builds a fresh barrier from
-        // this one, so a bound taken at construction would outlive every session the run replaces.
+        // PERFORMED — it waits until here only because it arrives with the act rather than out of
+        // the datamodel. It is re-seeded on EVERY pass for the funnel's reason and one of its own:
+        // `restarting` builds a fresh barrier from this one, so a bound taken at construction would
+        // outlive every session the run replaces.
         if let Some(within) = within {
             self.driving.ready.waiting(within);
+        }
+        // ⚠⚠⚠ AND WHO IS EXPECTED, ON THE SAME TERMS AND FROM THE SAME ACT. A document whose two
+        // halves this driver cannot read leaves the barrier with what it had — `brief` already
+        // refused that case, loudly, and a pump is not the place to discover it. ⚠ Seeded before
+        // the act below runs, which is what lets `attend` and the handback read one value.
+        if let Some(expected) = expected {
+            self.driving.ready.expecting(expected);
         }
         let raised: Raise = match does {
             // Nothing has happened yet. Starting the loop is the caller's act — but the transition
@@ -7140,17 +7190,27 @@ impl OuterLoop {
     /// would silently change what that request does — a value's meaning changing under a caller,
     /// which is the direction R370 registered as earning a wire bump.
     fn bound_of(said: Option<&str>) -> Option<Duration> {
-        let said = said?;
-        // ⚠ THE INTEGER PATH FIRST so a whole number keeps its exact value, then the double path
-        // the typed reader had. Both refuse a negative, which is behaviour a caller may rely on.
-        let ms = said.parse::<i64>().map_or_else(
+        Some(Duration::from_millis(Self::millis_of(said?)?))
+    }
+
+    /// **A NUMBER OF MILLISECONDS AS A `<param>` SPELLS IT**, or [`None`] for a spelling this
+    /// cannot read as a duration — the crossing every carried number goes through.
+    ///
+    /// ⚠⚠ ONE READING FOR ALL THREE CARRIED NUMBERS, because a second copy of it is a second place
+    /// the answer to *is `4321.0` four seconds?* lives. `bound_of` and [`Self::expected_of`] differ
+    /// in what they DO with the number and not in how they read it.
+    ///
+    /// ⚠ THE INTEGER PATH FIRST so a whole number keeps its exact value, then the double path the
+    /// typed readers had. Both refuse a negative, which is behaviour a caller may rely on; the
+    /// document's own nil crosses as an empty string and is refused by both.
+    fn millis_of(said: &str) -> Option<u64> {
+        said.parse::<i64>().map_or_else(
             |_| match said.parse::<f64>() {
                 Ok(held) if held >= 0.0 => Some(held as u64),
                 _ => None,
             },
             |held| (held >= 0).then(|| held.unsigned_abs()),
-        )?;
-        Some(Duration::from_millis(ms))
+        )
     }
 
     /// The SEED of the barrier's bound, separated from the loop that holds the
@@ -7236,49 +7296,53 @@ impl OuterLoop {
         }
     }
 
-    /// **WHO THIS DOCUMENT EXPECTS AT ITS PANE RIGHT NOW**, handed to the barrier before it can act
-    /// on it — `await_person_ms` and `handback_still_ms`, read at the moment of use.
+    // ⚠⚠⚠⚠⚠ **`expecting` STOOD HERE AND IT IS GONE** — register item 470, stage 2's third and
+    // last carried number. It read `await_person_ms` and `handback_still_ms` out of the script
+    // session at the top of every pass, which is the register's *behind the machine's back* in its
+    // sharpest form: this document spends a whole state on what a person's patience buys, and said
+    // nowhere that the number waited out is the one it authors. Every `pass.do` now carries both,
+    // and [`Self::expected_of`] is the one reader.
+    //
+    // ⚠⚠ `expected_by` BELOW SURVIVES AND IS NOT THE SAME DOOR — `ready_within_at`'s distinction
+    // exactly: it seeds the barrier at CONSTRUCTION, before any pass has run and so before any act
+    // could have arrived. That seed is a placeholder the first pump replaces.
+
+    /// **WHO THE DOCUMENT SAYS IS AT THIS PANE**, from the two numbers a `pass.do` carried —
+    /// [`None`] where either was missing or spelled in a way [`Self::millis_of`] cannot read,
+    /// which leaves the barrier holding what it had.
     ///
-    /// # ⚠⚠⚠ Why it is re-read rather than held from construction
-    ///
-    /// A brief is applied while the machine is still `idle`, and construction happens before that.
-    /// A barrier built with the AUTHOR's hour would wait out that hour for a caller who asked for a
-    /// minute — measured the hard way: reading these at construction hung this crate's own suite,
-    /// 59 tests in, because every gate's short patience had been replaced by the document's default.
-    ///
-    /// ⚠⚠ It is also what makes a reflection able to change them one day. `screening` reads its
-    /// rules out of the datamodel at the moment it acts, and the reason given there is this one:
-    /// **a copy taken earlier is a second place the decision lives.**
-    ///
-    /// ⚠ A document that names a patience with no stillness answers [`None`] and the barrier keeps
-    /// what it had. The refusal that matters is `brief`'s — this is the last line of defence, not
-    /// the one a caller should ever meet.
-    fn expecting(&self) -> Option<crate::readiness::Attended> {
-        Self::expected_by(&self.script, &self.session)
+    /// ⚠⚠ THE PAIR IS ALL-OR-NOTHING, and that is the contract's shape rather than caution:
+    /// `Handback` lives INSIDE `Attended::APerson`, so half of this pair decides nothing. A
+    /// document that names a patience with no stillness answers [`None`] here and the refusal that
+    /// matters is [`brief`](Self::brief)'s — this is the last line of defence, not the one a caller
+    /// should ever meet.
+    fn expected_of(
+        awaits: Option<&str>,
+        stills: Option<&str>,
+    ) -> Option<crate::readiness::Attended> {
+        Self::attended_of(
+            Duration::from_millis(Self::millis_of(awaits?)?),
+            Duration::from_millis(Self::millis_of(stills?)?),
+        )
     }
 
-    /// [`expecting`](Self::expecting)'s reading, separated from the loop that holds the engine so
-    /// construction can use it before there is a `self` — see [`Self::seed_expecting`].
-    fn expected_by(
-        script: &Arc<dyn IScriptEngine>,
-        session: &str,
-    ) -> Option<crate::readiness::Attended> {
-        let ms = |name: &str| match script.get_variable(session, name) {
-            Ok(ScriptValue::Int(held)) if held >= 0 => Some(held.unsigned_abs()),
-            Ok(ScriptValue::Double(held)) if held >= 0.0 => Some(held as u64),
-            _ => None,
-        };
-        let patience = Duration::from_millis(ms("await_person_ms")?);
-        let still = Duration::from_millis(ms("handback_still_ms")?);
+    /// **THE TWO NUMBERS TURNED INTO THE CONTRACT THEY SPELL** — the ONE place that decision lives,
+    /// so the pass that carries them and the construction seed that reads them cannot disagree
+    /// about what a zero means.
+    ///
+    /// ⚠⚠⚠ ZERO PATIENCE IS `NoOne`, NOT A REFUSAL: *nobody is watching* is the behaviour every run
+    /// had before this contract existed, and a document is entitled to state it.
+    ///
+    /// ⚠⚠⚠ ZERO STILLNESS IS `Never`, NOT A REFUSAL EITHER, and the first draft of this had it
+    /// wrong. `Handback::Never` is a real variant — *a person who takes this pane keeps it, and the
+    /// run ends* — and it is what every run did before the key existed. The wire says the same of
+    /// the key's ABSENCE, so a document that spells absence as zero means the same thing. Refusing
+    /// it would make one of the two answers `Attended` can hold unsayable from the file that owns
+    /// the decision.
+    fn attended_of(patience: Duration, still: Duration) -> Option<crate::readiness::Attended> {
         if patience.is_zero() {
             return Some(crate::readiness::Attended::NoOne);
         }
-        // ⚠⚠⚠ ZERO STILLNESS IS `Never`, NOT A REFUSAL, and the first draft of this had it wrong.
-        // `Handback::Never` is a real variant — *a person who takes this pane keeps it, and the run
-        // ends* — and it is what every run did before the key existed. The wire says the same of the
-        // key's ABSENCE, so a document that spells absence as zero means the same thing. Refusing it
-        // would make one of the two answers `Attended` can hold unsayable from the file that owns
-        // the decision.
         let handback = if still.is_zero() {
             crate::readiness::Handback::Never
         } else {
@@ -7287,12 +7351,35 @@ impl OuterLoop {
         crate::readiness::Attended::of(patience, handback)
     }
 
+    /// The SEED of who is expected, separated from the loop that holds the engine so construction
+    /// can seed the barrier before there is a `self` — [`Self::ready_within_at`]'s shape, and it
+    /// goes through [`attended_of`](Self::attended_of) so the seed and the carried value are read
+    /// by one decision.
+    fn expected_by(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Option<crate::readiness::Attended> {
+        Self::attended_of(
+            Duration::from_millis(Self::ms_at(
+                script,
+                session,
+                crate::readiness::Attended::WIRE_KEY,
+            )?),
+            Duration::from_millis(Self::ms_at(
+                script,
+                session,
+                crate::readiness::Handback::WIRE_KEY,
+            )?),
+        )
+    }
+
     /// What the barrier is BUILT with, before a brief has been able to say otherwise.
     ///
     /// ⚠⚠ A document this cannot read seeds `NoOne` rather than refusing here, and the refusal that
     /// matters is [`brief`](Self::brief)'s: construction happens before anybody has had a chance to
     /// supply the numbers, so failing here would refuse a caller for a document they were about to
-    /// correct. Nothing acts on this value — `pump` re-reads before every pass.
+    /// correct. Nothing acts on this value — the first `pass.do` hands the barrier the document's
+    /// own answer before any act of that pass runs.
     fn seed_expecting(
         script: &Arc<dyn IScriptEngine>,
         session: &str,
@@ -7303,10 +7390,10 @@ impl OuterLoop {
     /// How long one of the inner agent's turns may take — the DOCUMENT's `turn_within_ms`, read
     /// here rather than kept, or the run's own clock where it declares no bound.
     ///
-    /// ⚠⚠⚠ READ AT THE MOMENT OF THE WAIT, which is [`expecting`](Self::expecting)'s discipline and
-    /// was learned the hard way one field over: a copy taken at construction is taken BEFORE the
-    /// brief that may replace it, and reading the document at construction hung this crate's suite
-    /// 59 tests in.
+    /// ⚠⚠⚠ READ AT THE MOMENT OF THE WAIT, which is the discipline the three CARRIED numbers now
+    /// keep by riding the act, and it was learned the hard way one field over: a copy taken at
+    /// construction is taken BEFORE the brief that may replace it, and reading the document at
+    /// construction hung this crate's suite 59 tests in.
     fn patience(&self) -> Duration {
         self.turn_within().unwrap_or(Duration::MAX)
     }
@@ -11143,6 +11230,99 @@ mod tests {
              live agent is asked where it got to WITHOUT being told which budget ended its run — \
              silently, because the ceiling-free question is still true. A key with no ceiling is \
              the mirror: prose nothing can select"
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE PASS HANDS THE BARRIER WHO THIS DOCUMENT EXPECTS, AND THE DRIVER NO LONGER
+    /// GOES AND FETCHES IT** — register item 470, stage 2's third and last carried number.
+    ///
+    /// # ⚠⚠⚠⚠ What this replaced, and why a gate had to be written for it
+    ///
+    /// `OuterLoop::expecting` read `await_person_ms` and `handback_still_ms` out of the script
+    /// session at the top of every pass. Nothing in `ai_loop.scxml` said that the patience the file
+    /// authors is the patience its driver waits out — the register's *behind the machine's back*,
+    /// and sharper here than for the other two numbers because this document spends a whole state
+    /// (`awaiting_human`) on what that patience buys.
+    ///
+    /// ⚠⚠ **AND NOTHING IN THIS CRATE LOOKED AT THE BARRIER.** The live gates that brief a short
+    /// patience would not have gone red if the per-pass reading were removed; they would have
+    /// waited out the AUTHOR's hour instead — a defect that arrives as wall-clock rather than as a
+    /// failure, which is the shape that hung this suite 59 tests in once already.
+    ///
+    /// # ⚠⚠⚠ Why the reading BEFORE the pump is the whole gate
+    ///
+    /// The barrier is SEEDED at construction from the document's own shipped pair, and these
+    /// numbers are authored into the datamodel AFTERWARDS. A gate that only asserted the pair after
+    /// the pump would be satisfied by a seed that had never been replaced — so the control asserts
+    /// the seed is still standing first, which is what makes the second assertion about the PASS.
+    ///
+    /// ⚠ Authoring the `<data>` is what a person editing that file does — [`bounded_at`]'s own
+    /// argument, one field over — so this is not a back door of its own: the decision still lives
+    /// in one place and this gate writes it there.
+    #[test]
+    fn the_pass_hands_the_barrier_who_this_document_expects_at_its_pane() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        // ⚠ NEITHER NUMBER IS THE SHIPPED ONE (an hour, and fifteen seconds), and they are unequal
+        // to each other so a `<param>` whose `expr` pointed at its neighbour's key cannot satisfy
+        // both halves of the claim with one value.
+        let patience = Duration::from_millis(7_654);
+        let stillness = Duration::from_millis(321);
+        for (key, said) in [
+            (crate::readiness::Attended::WIRE_KEY, patience),
+            (crate::readiness::Handback::WIRE_KEY, stillness),
+        ] {
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    key,
+                    ScriptValue::Int(said.as_millis() as i64),
+                )
+                .expect("the document's own numbers are writable");
+        }
+
+        assert_eq!(
+            loops.driving.ready.attended(),
+            crate::readiness::Attended::APerson {
+                patience: Duration::from_millis(3_600_000),
+                handback: crate::readiness::Handback::WhenStill(Duration::from_millis(15_000)),
+            },
+            "⚠⚠⚠ THE CONTROL: the barrier must still be holding the pair it was SEEDED with at \
+             construction. If it already held the numbers written above, the claim below would be \
+             satisfied by a value that never crossed an act at all",
+        );
+
+        let run = RunContext::uncancellable();
+        let primed = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert!(
+            matches!(
+                primed,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                }
+            ),
+            "the fixture: one pass out of `idle` is what asks the document for an act, and an act \
+             is what carries the pair. Got {primed:?}",
+        );
+
+        assert_eq!(
+            loops.driving.ready.attended(),
+            crate::readiness::Attended::APerson {
+                patience,
+                handback: crate::readiness::Handback::WhenStill(stillness),
+            },
+            "⚠⚠⚠⚠⚠ THE PASS MUST HAND THE BARRIER THIS DOCUMENT'S OWN ANSWER. The seed standing \
+             here is the `<param>` gone from the twelve `pass.do` sends, or the driver having \
+             stopped applying what they carry — and the run would then wait out the AUTHOR's hour \
+             for a caller who asked for seven seconds, without a word anywhere saying so",
         );
     }
 

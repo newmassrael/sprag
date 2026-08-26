@@ -681,10 +681,16 @@ mod tests {
     ///
     /// # What is being decided
     ///
-    /// `expecting()`, `consenting()` and `ready_within()` still read `<data>` straight out of the
-    /// script session with TYPED getters. Shutting those doors the way `service_needle`'s was shut
-    /// means the values arrive as a host act's arguments instead — and a host act's arguments are
+    /// `expecting()`, `consenting()` and `ready_within()` read `<data>` straight out of the script
+    /// session with TYPED getters. Shutting those doors the way `service_needle`'s was shut means
+    /// the values arrive as a host act's arguments instead — and a host act's arguments are
     /// STRINGS. Three distinctions have to survive that crossing or the move destroys meaning:
+    ///
+    /// ⚠⚠ **TWO OF THE THREE ARE NOW SHUT ON THIS ANSWER** (2026-08-26): `ready_within()` went
+    /// first as `within`, and `expecting()` followed as the `awaits`/`stills` pair — both riding
+    /// the `pass.do` act that is already raised once per pass. `consenting()` is the one left, and
+    /// it is the one this measurement does NOT cover: its value is a LIST OF OBJECTS, which a
+    /// `<param>` cannot carry, so it needs an answer of its own rather than this one repeated.
     ///
     /// * **zero is a real answer, not an absence.** `await_person_ms = 0` means NOBODY IS
     ///   EXPECTED; `handback_still_ms = 0` means a person who takes the pane KEEPS it. Both are

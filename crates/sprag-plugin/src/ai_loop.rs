@@ -8709,6 +8709,18 @@ mod tests {
     /// the document declared no `<param>` at all, which is the move being undone. **Measured
     /// 2026-08-26: deleting that `<param>` left the entire `sprag-plugin` suite GREEN**, which is
     /// why this test exists rather than being assumed covered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ AND IT NOW HOLDS ALL THREE OF THE CARRIED NUMBERS
+    ///
+    /// `within`, `awaits` and `stills` — `ready_timeout_ms`, `await_person_ms` and
+    /// `handback_still_ms` — ride every one of the twelve `pass.do` sends, and this reads them off
+    /// the same host record. The struct literal is EXHAUSTIVE, which is what makes that cheap: an
+    /// argument added to the act without an assertion here does not compile.
+    ///
+    /// ⚠⚠ **THE UNBRIEFED HALF PINS THE TEMPLATE'S OWN NUMBERS AND THE BRIEFED HALF PINS A
+    /// CALLER'S**, and both are needed: the first catches a `<param>` deleted, the second catches
+    /// one that stopped being an `expr` — a literal in the document would satisfy the first for
+    /// every run and drop every adopting repository's own numbers on the floor.
     #[test]
     fn the_pass_that_watches_a_turn_is_told_what_an_outage_looks_like() {
         let (mut engine, host, _lua, _session) = started();
@@ -8731,6 +8743,14 @@ mod tests {
                 // other half. This is `ready_timeout_ms`'s shipped value, carried rather than
                 // fetched. `None` would be the `<param>` gone from all twelve `pass.do` sends.
                 within: Some("180000".to_owned()),
+                // ⚠⚠⚠ AND SO DOES WHO IS EXPECTED AT THE PANE — the third and last of item 470's
+                // datamodel back doors. These are `await_person_ms` and `handback_still_ms` as the
+                // template ships them: an hour of patience and fifteen seconds of stillness. Either
+                // reading `None` is that `<param>` gone from all twelve sends, and the driver back
+                // to fetching a person's patience out of the datamodel with nothing in the
+                // document to say the number it authors is the number it waits.
+                awaits: Some("3600000".to_owned()),
+                stills: Some("15000".to_owned()),
             }),
             "⚠⚠⚠⚠⚠ THE `watch` PASS MUST CARRY A NEEDLE, and an unbriefed document's is the EMPTY \
              one it ships. `None` here is the `<param>` being gone — the driver would then be back \
@@ -8749,6 +8769,12 @@ mod tests {
         // ⚠ DELIBERATELY NOT THE SHIPPED 180000, so the assertion below cannot be satisfied by the
         // document's own default standing in for a value the brief was supposed to replace.
         let bound = 4321;
+        // ⚠ AND NEITHER OF THESE IS THE SHIPPED PAIR, for `bound`'s reason exactly. They are also
+        // deliberately UNEQUAL TO EACH OTHER, so a reader that carried one number twice — one
+        // `<param>` copied and its `expr` left pointing at its neighbour's key — cannot satisfy
+        // both assertions with one value.
+        let patience = 7654;
+        let stillness = 321;
         let (mut engine, host, _lua, _session) = started();
         carried(
             &mut engine,
@@ -8762,6 +8788,8 @@ mod tests {
                 "reflect_every": 9,
                 "service_needle": outage,
                 "ready_timeout_ms": bound,
+                "await_person_ms": patience,
+                "handback_still_ms": stillness,
             })
             .to_string(),
         );
@@ -8776,6 +8804,12 @@ mod tests {
                 // ⚠ A BRIEFED BOUND REACHES THE SAME ACT, and this brief sets one: the two
                 // arguments are carried together and a reader of either must see the other move.
                 within: Some(bound.to_string()),
+                // ⚠⚠ AND A BRIEFED PERSON REACHES IT TOO, WHICH IS THE HALF THAT MATTERS MOST HERE:
+                // a caller's patience is the number `awaiting_human` waits out, and until this act
+                // carried it the only way it reached the barrier was a read no reader of
+                // `ai_loop.scxml` could have found.
+                awaits: Some(patience.to_string()),
+                stills: Some(stillness.to_string()),
             }),
             "⚠⚠⚠⚠ A BRIEFED NEEDLE MUST REACH THE PASS THAT WOULD MEET IT. If this reads the empty \
              string, the `<param>` is a literal rather than the datamodel's value and every \
