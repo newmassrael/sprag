@@ -4563,6 +4563,112 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **AND A FILE WRITTEN BEFORE THE FIELD EXISTED STILL SAYS WHERE ITS PANES BELONG** —
+    /// register item 684 (2), the compatibility arm.
+    ///
+    /// Every other test in this file passes `start_dir: None`, so that arm is EXERCISED constantly
+    /// and was ASSERTED nowhere: what a pre-684 snapshot derives could be changed to anything —
+    /// `$HOME` for every pane, say — and not one gate would redden. A user's saved sessions are
+    /// exactly what that would move.
+    ///
+    /// ⚠ **A HAND-BUILT SNAPSHOT IS THE RIGHT FIXTURE HERE, and only here**: a file with no
+    /// `start_dir` is a shape THIS build cannot produce (`pane_snapshot` always records one), and a
+    /// shape the product cannot make is the one case a hand fixture is not a fixture of nothing.
+    ///
+    /// ⚠⚠ **It is a PAIR, because one pane could not tell a derivation from a constant.** Pane 0
+    /// carries a recorded `cwd` and must come back pointed there; pane 1 carries none and must fall
+    /// through to `$HOME`. A `None` arm rewritten to *always* `$HOME` satisfies the second alone.
+    ///
+    /// REVERT-PROOF: make the `None` arm of `Workspace::spawn_restored` ignore the command
+    /// (`command.dir_or_home(None)`) and pane 0 reddens with `$HOME` where its recorded directory
+    /// belongs, while pane 1 stays green.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_snapshot_from_before_the_field_still_says_where_its_panes_belong() {
+        use sprag_terminal::{PaneSnapshot, SessionSnapshot, WindowSnapshot};
+
+        const RECORDED: &str = "/usr";
+        let recorded = std::path::Path::new(RECORDED);
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        assert!(recorded.is_dir(), "the fixture needs a real directory");
+        assert_ne!(
+            Some(recorded.to_path_buf()),
+            home,
+            "⚠ the recorded directory must not BE the fallback, or the pair below is one arm twice",
+        );
+
+        // ⚠ `cat` rather than a shell so the restore re-runs an exact argv, and because a child that
+        // stays alive keeps the pane readable. Its cwd is the SNAPSHOT's, as a pre-684 file records.
+        let pane = |id: u64, cwd: Option<&str>| PaneSnapshot {
+            id: PaneId(id),
+            cwd: cwd.map(std::path::PathBuf::from),
+            // ⚠⚠⚠ THE PREMISE OF THIS GATE, and the whole point of the fixture: a file from before
+            // the field carries NO intent, so the restore has to derive one.
+            start_dir: None,
+            command_label: "cat".to_owned(),
+            argv: vec!["cat".to_owned()],
+            agent_session: None,
+            remote: None,
+            opened_by: None,
+            name: None,
+            cols: 80,
+            rows: 24,
+        };
+        let snap = Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 2,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![pane(0, Some(RECORDED)), pane(1, None)],
+                    manual_size: None,
+                    active: None,
+                    zoomed: None,
+                    opened_by: None,
+                }],
+            }],
+        };
+
+        let allow: std::collections::HashSet<String> = ["cat".to_owned()].into_iter().collect();
+        let host = Host::new((80, 24));
+        assert_eq!(
+            host.restore(snap, &allow, |_| None, || None, || None, |_| Vec::new())
+                .expect("a pre-684 snapshot still restores"),
+            2,
+        );
+
+        let pointed = |id: PaneId| {
+            lock(&host.workspace())
+                .pane(id)
+                .expect("the pane came back")
+                .start_dir()
+                .to_path_buf()
+        };
+        assert_eq!(
+            pointed(PaneId(0)).as_path(),
+            recorded,
+            "⚠⚠ a pre-684 pane is pointed where its RECORDED directory says — which is what the \
+             daemon that wrote the file did, and what a user's saved session expects",
+        );
+        assert_ne!(
+            pointed(PaneId(1)),
+            pointed(PaneId(0)),
+            "⚠⚠⚠ AND THE TWO ARMS DIFFER, or this gate cannot tell a derivation from a constant",
+        );
+        if let Some(home) = home {
+            assert_eq!(
+                pointed(PaneId(1)),
+                home,
+                "a pre-684 pane with no recorded directory falls through to $HOME, unchanged",
+            );
+        }
+    }
+
     /// What a pane can say about its own child when its screen says nothing — see the one caller.
     fn pane_liveness(host: &Host, id: PaneId) -> String {
         let workspace = host.workspace();
