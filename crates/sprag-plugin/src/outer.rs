@@ -5650,6 +5650,9 @@ impl OuterLoop {
         // Kept before `advance` takes the payload: what a consumer reports is the EVENT, and the
         // data is the driver's way of telling the machine a fact it could not read for itself.
         let event = raised.event;
+        // ⚠⚠ **DID THIS PASS JUDGE** — the DOCUMENT's answer, taken from the act it asked for, and
+        // the three fields at the bottom of this block read it. See `checked` for what it replaced.
+        let judged = does == Does::Judge;
         let (to, spent) = self.advance(panes, run, raised)?;
         // ⚠ AFTER `advance` AND NOT BEFORE IT: a transition that delivers a prompt CLEARS the
         // notice, and a pass that ends holding nothing arrived at nothing.
@@ -5712,24 +5715,29 @@ impl OuterLoop {
             found,
             because,
             unreadable,
-            // ⚠ ON THE EDGES OUT OF A JUDGEMENT AND NO OTHER PASS. The verdict belongs to the claim
-            // this judgement made, and `verdict` is written fresh by every judgement — so a later
-            // pass reading it would put a check's answer on a milestone it never saw.
-            checked: (from == AiLoopState::Judging)
-                .then_some(self.verdict)
-                .flatten(),
-            // ⚠ ON THE SAME EDGES AND THE SAME CONDITION as the verdict it explains — a reason
+            // ⚠ ON THE PASSES THAT JUDGED AND NO OTHER. The verdict belongs to the claim this
+            // judgement made, and `verdict` is written fresh by every judgement — so a later pass
+            // reading it would put a check's answer on a milestone it never saw.
+            //
+            // ⚠⚠⚠⚠⚠ **THIS ASKED `from == AiLoopState::Judging` AND NOW ASKS WHAT THE PASS WAS
+            // FOR** — register item 470, stage 3. Three lines, one question, keyed on the NAME OF A
+            // STATE written in a file this driver does not parse: the last copy of the topology in
+            // `pumping`. The document already says which passes judge (`In('judging')` sends
+            // `does='judge'`), and `judged` is that answer rather than a second one.
+            //
+            // ⚠⚠ IT IS NOT THE SAME CONDITION RESPELLED, AND THE DIFFERENCE IS THE POINT: a
+            // document that ever gives `judge` to a second state gets its verdict reported, where
+            // the state test would have silently dropped it. What the driver knows is what it was
+            // ASKED to do; where the machine happened to be is the document's business.
+            checked: judged.then_some(self.verdict).flatten(),
+            // ⚠ ON THE SAME PASSES AND THE SAME CONDITION as the verdict it explains — a reason
             // published where the verdict is not would be a sentence about a judgement this pass
             // never made.
-            explained: (from == AiLoopState::Judging)
-                .then(|| self.explained.clone())
-                .flatten(),
-            // ⚠ THE THIRD FACT OF ONE JUDGEMENT, on the same edges and the same condition as the
+            explained: judged.then(|| self.explained.clone()).flatten(),
+            // ⚠ THE THIRD FACT OF ONE JUDGEMENT, on the same passes and the same condition as the
             // two above — see the field. A reader that had the verdict and the reason but not the
             // instrument still cannot tell a refusal from a refusal about nothing.
-            shown: (from == AiLoopState::Judging)
-                .then_some(self.shown)
-                .flatten(),
+            shown: judged.then_some(self.shown).flatten(),
         })
     }
 

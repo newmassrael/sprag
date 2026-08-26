@@ -86,7 +86,7 @@ pub fn rust_sources() -> Vec<Source> {
         paths.len(),
     );
 
-    paths
+    let (mut sources, declared): (Vec<Source>, Vec<Vec<String>>) = paths
         .into_iter()
         .map(|path| {
             let file = path
@@ -109,13 +109,83 @@ pub fn rust_sources() -> Vec<Source> {
                 .filter(|(line, _)| !proving.contains(line))
                 .cloned()
                 .collect();
-            Source {
-                file,
-                code,
-                product,
-            }
+            // ⚠⚠⚠ READ OFF THE RAW TEXT AND NOT OFF `code`, AND THE FIRST DRAFT GOT THIS WRONG:
+            // `code` drops every line starting with `#`, so the attribute this looks for is exactly
+            // what it had already thrown away. The gate went green measuring nothing.
+            let modules = test_only_modules(&file, &text);
+            (
+                Source {
+                    file,
+                    code,
+                    product,
+                },
+                modules,
+            )
         })
-        .collect()
+        .unzip();
+
+    // ⚠⚠⚠⚠⚠ **AND A WHOLE FILE CAN BE TEST-ONLY, WHICH THE PER-FILE SPLIT ABOVE CANNOT SEE.**
+    // `proving_lines` reads one file at a time, so a `#[cfg(test)]` that governs a module lives in
+    // a DIFFERENT file from the code it excludes — and every line of that module then counts as
+    // shipping. Measured 2026-08-26: `sprag-host/src/live_agent.rs` is declared
+    // `#[cfg(test)] mod live_agent;` in `lib.rs`, and **fourteen of the twenty-four sites item
+    // 470's driver ratchet was pinning were assertions inside it**. The ratchet was counting its
+    // own gates.
+    //
+    // ⚠⚠ THE FAILURE MODE THAT MAKES THIS WORTH FIXING RATHER THAN NOTING is not the overcount. It
+    // is that a per-state pin satisfied by a mixture of driver arms and test assertions can be held
+    // FLAT while a real arm appears, because a gate deleted in the same commit pays for it. An
+    // overstated ratchet is not a strict one.
+    let proving: std::collections::BTreeSet<String> = declared.into_iter().flatten().collect();
+    for source in &mut sources {
+        if proving.contains(&source.file) {
+            source.product.clear();
+        }
+    }
+    sources
+}
+
+/// Every file the source at `file` declares as a module that exists ONLY under `#[cfg(test)]`,
+/// workspace-relative, in both spellings Rust allows (`name.rs` and `name/mod.rs`).
+///
+/// ⚠ Both are answered without asking the filesystem, because a name that resolves to neither is
+/// simply in nobody's set: the caller matches against the files the walk actually found.
+///
+/// ⚠⚠ `text` is the RAW file. It cannot be [`Source::code`]: that drops every line starting with
+/// `#`, which is the attribute this is looking for.
+fn test_only_modules(file: &str, text: &str) -> Vec<String> {
+    let Some(dir) = file.rsplit_once('/').map(|(head, _)| head) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut governed = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if attribute_is_cfg_test(line).is_some_and(str::is_empty) {
+            governed = true;
+            continue;
+        }
+        if !governed {
+            continue;
+        }
+        // Between the attribute and its item there may be more attributes, doc comments or nothing
+        // at all — none of those is the item, so none of them ends the wait.
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+        governed = false;
+        let named = line
+            .strip_prefix("pub ")
+            .unwrap_or(line)
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.strip_suffix(';'))
+            .map(str::trim);
+        if let Some(named) = named.filter(|it| !it.is_empty()) {
+            found.push(format!("{dir}/{named}.rs"));
+            found.push(format!("{dir}/{named}/mod.rs"));
+        }
+    }
+    found
 }
 
 /// Every one-indexed line of `text` that belongs to a `#[cfg(test)]` item, the attribute included.

@@ -139,29 +139,44 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠⚠ THE FOURTH WAS `is_final` ITSELF — *is it final* is the first question this comment lists,
     // and it is no longer asked here at all: `OuterLoop::finished` asks the engine. What remains in
     // this row is the other three.
+    // ⚠⚠⚠⚠⚠ **SEVEN ROWS FELL TO ZERO ON 2026-08-26 R98 AND NOT ONE DRIVER LINE WAS DELETED FOR
+    // THEM** — `cancelled`, `converged`, `failed`, `priming`, `working` outright, and `exhausted`
+    // and `judging` in part. **The INSTRUMENT was wrong.** `sprag-host/src/live_agent.rs` is
+    // declared `#[cfg(test)] mod live_agent;` in `lib.rs`, and `Source::product` splits test from
+    // shipping ONE FILE AT A TIME — so it could not see an attribute that governs a module from
+    // another file, and **fourteen of the twenty-four sites this list pinned were assertions inside
+    // that measurement**. This ratchet was counting its own gates.
+    //
+    // ⚠⚠ **AND THE HARM WAS NOT THE OVERCOUNT.** A per-state pin satisfied by a MIXTURE of driver
+    // arms and test assertions can be held flat while a real arm appears, because a gate deleted in
+    // the same commit pays for it. An overstated ratchet is not a stricter one; it is one with a
+    // second, invisible way to stay green. `rust_sources` now blanks the product of a file its
+    // crate declares test-only.
     ("abandoned", 0),
     ("awaiting_human", 2),
     ("blocked", 0),
-    ("cancelled", 1),
+    ("cancelled", 0),
     ("closing", 0),
-    ("converged", 3),
+    ("converged", 0),
     ("disputing", 0),
-    ("exhausted", 5),
-    ("failed", 3),
+    // ⚠ BOTH ARE SENTINELS RATHER THAN DECISIONS, which is why this row does not go to zero with
+    // the rest: `NotStarted::Unbuilt(AiLoopState::Exhausted)` is a caller's error VALUE, and
+    // `plugins.rs` renders its sentence. Neither is a per-state choice about how to drive a run.
+    ("exhausted", 2),
+    ("failed", 0),
     ("held", 0),
     ("idle", 1),
-    // ⚠⚠⚠⚠⚠ **THESE TWO FELL BY TWO WHILE EVERY OTHER ROW FELL BY ONE** — 2026-08-26, the seventh
-    // and last match. The uniform fall is the signature of a match GOING, and this one had an arm
-    // the other six did not: `Working if from == AiLoopState::Judging`, keyed on where the pass
-    // came FROM. That `if` named `judging` a second time and `working` a second time, so retiring
-    // the match took two mentions from each of them and one from everybody else.
-    // ⚠ Recorded because the round that wrote these pins PREDICTED a flat one and the gate said
-    // otherwise: *"28/28 delta = 1"* is a signature, not a law, and the exception is a `match` arm
-    // carrying a guard.
-    ("judging", 5),
+    // ⚠⚠⚠⚠⚠ **AND THE LAST TOPOLOGY COPY IN `pumping` WENT WITH THEM** — 2026-08-26 R98. Three
+    // lines asked `from == AiLoopState::Judging` to decide whether a pass reports its verdict, its
+    // reason and its instrument: one question, asked three times, keyed on the name of a state
+    // written in a file this driver does not parse. It now asks what the pass was FOR
+    // (`does == Does::Judge`), which the document already says — and which is not the same
+    // condition respelled: a document that ever gives `judge` to a second state gets its verdict
+    // reported, where the state test would have dropped it silently.
+    ("judging", 0),
     ("orders", 0),
     ("peer_gone", 0),
-    ("priming", 1),
+    ("priming", 0),
     ("redirecting", 0),
     ("reflecting", 0),
     ("restarting", 0),
@@ -178,8 +193,7 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     ("standing_down", 1),
     ("stopping", 0),
     ("work", 1),
-    // ⚠ The other row that fell by TWO — see `judging` above.
-    ("working", 1),
+    ("working", 0),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
