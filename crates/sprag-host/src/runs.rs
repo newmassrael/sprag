@@ -360,6 +360,21 @@ pub trait RunHandle: Send + Sync {
     /// reader allowed to weigh the two together.
     fn cancelled_by(&self) -> Option<Canceller>;
 
+    /// **WHETHER A PERSON IS HOLDING THIS RUN RIGHT NOW** — register item 699.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE ORDER BESIDE IT HAD A READER WITH THE WRONG TYPE; THIS ONE HAD NO READER AT
+    /// ALL.** `deliver` stored `RunOrder::Hold` and nothing ever loaded it, so `hold-run` said
+    /// *"it parks at its next pass"* and parked nothing. Measured 2026-08-26 across four
+    /// repositories: neither of the two orders a person can give a WORKING run had ever landed.
+    ///
+    /// ⚠⚠ [`stood_down`](Self::stood_down)'s two warnings hold here word for word — it is a fact
+    /// about the ORDER and never about the ending, and an [`EndedRun`] answers `false` because
+    /// nothing can be holding a run that is over.
+    ///
+    /// ⚠ Unlike its neighbours it is a LEVEL: `resume-run` delivers `Hold(false)`, so a reader
+    /// wants the current value rather than *did this ever happen*.
+    fn held(&self) -> bool;
+
     /// **DOES THIS RUN'S PLUGIN READ `order`?** — register items 539 and 597.
     ///
     /// ⚠⚠⚠ Forwarded from the plugin's own [`sprag_plugin::Plugin::honours`] rather than decided
@@ -557,6 +572,22 @@ impl Orders {
         // `store` above could disagree with what the driver is reading.
         self.stand_down.load(Ordering::Acquire)
     }
+
+    /// **WHETHER A PERSON IS HOLDING THIS RUN RIGHT NOW** — register item 699.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THIS READER DID NOT EXIST, AND THE FLAG BESIDE IT HAD NO OTHER.** `deliver` has
+    /// stored `RunOrder::Hold` into `self.hold` since the order was built, and NOTHING in this
+    /// process or any other ever loaded it: no method here, none on [`RunHandle`], no field on
+    /// [`RunSummary`], nothing in the row. `hold-run` was write-only from end to end — it answered
+    /// *"it parks at its next pass"* and parked nothing.
+    ///
+    /// ⚠⚠ **A LEVEL, NOT A LATCH**, which is what makes it different from its two neighbours and
+    /// is why it is read rather than remembered: `hold` is the one order a person can take back
+    /// (`resume-run` delivers `Hold(false)`), so what a reader wants is the CURRENT value and never
+    /// *did this ever happen*.
+    fn held(&self) -> bool {
+        self.hold.load(Ordering::Acquire)
+    }
 }
 
 /// A run driven by **A THREAD IN THIS PROCESS** — the kind that was the only one, and the one
@@ -600,6 +631,10 @@ impl RunHandle for ThreadRun {
 
     fn stood_down(&self) -> bool {
         self.orders.stood_down()
+    }
+
+    fn held(&self) -> bool {
+        self.orders.held()
     }
 
     fn reapable(&self) -> bool {
@@ -696,6 +731,10 @@ impl RunHandle for ProcessRun {
 
     fn stood_down(&self) -> bool {
         self.orders.stood_down()
+    }
+
+    fn held(&self) -> bool {
+        self.orders.held()
     }
 
     fn reapable(&self) -> bool {
@@ -812,6 +851,14 @@ impl RunHandle for EndedRun {
 
     fn stood_down(&self) -> bool {
         self.stood_down
+    }
+
+    /// ⚠ ALWAYS `false`, and it is not the same shape as the order above it. A stand-down is
+    /// remembered here because a run that ENDED can still have been asked to finish up, and a
+    /// reader wants to weigh the two. A hold is a LEVEL on a run somebody might still let go, so
+    /// there is nothing to remember about one that is over: nobody is holding this.
+    fn held(&self) -> bool {
+        false
     }
 
     fn reapable(&self) -> bool {
@@ -1058,6 +1105,15 @@ pub struct RunSummary {
     /// the order was given and NOT honoured, which is register item 594's whole finding.
     /// [`crate::plugins::stand_down_sentence`] is the one reader allowed to weigh the two together.
     pub stood_down: bool,
+    /// **WHETHER A PERSON IS HOLDING THIS RUN RIGHT NOW** — [`RunHandle::held`], register item 699.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE ROW COULD NOT CARRY THIS BECAUSE NOTHING HERE HELD IT**, and the driver that
+    /// needs it was reading `row["held"]` — a key no projection ever wrote. That is the whole of
+    /// why `hold-run` never parked anything.
+    ///
+    /// ⚠⚠ A LEVEL, not a latch, which is what separates it from the order above: `false` here means
+    /// *nobody is holding it now*, never *nobody ever did*. `resume-run` really does take it back.
+    pub held: bool,
     /// **WHO RAISED THE CANCEL** — [`RunHandle::cancelled_by`], or [`None`] when none was raised
     /// (and also when the run was restored from disk, where nobody in this process knows).
     ///
@@ -2454,6 +2510,10 @@ impl RunRegistry {
                 // sentence weighs the two against each other, and reading them a moment apart is
                 // this repository's *비교하는 두 값은 같은 순간에* rule at its cheapest.
                 stood_down: record.run.stood_down(),
+                // ⚠ SAME PASS AGAIN — item 699. A hold read a moment later than the state would let
+                // a row say *running, and nobody is holding it* about a run that was held between
+                // the two reads, which is the one moment a person is watching for.
+                held: record.run.held(),
                 // ⚠ SAME PASS, SAME REASON — item 596. The sentence a mouth prints weighs this
                 // against `state`, so the two must not be read a moment apart either.
                 cancelled_by: record.run.cancelled_by(),
@@ -3837,6 +3897,19 @@ mod tests {
             lock(&self.0)
                 .iter()
                 .any(|order| matches!(order, RunOrder::StandDown))
+        }
+        // ⚠ THE LAST ONE IT WAS TOLD, where the stand-down above takes ANY — the difference is the
+        // difference between the two orders. A hold can be taken back, so a recorder that answered
+        // *a `Hold` arrived once* would report a released run as still held.
+        fn held(&self) -> bool {
+            lock(&self.0)
+                .iter()
+                .rev()
+                .find_map(|order| match order {
+                    RunOrder::Hold(held) => Some(*held),
+                    _ => None,
+                })
+                .unwrap_or(false)
         }
         // ⚠ THE FIRST ONE IT WAS TOLD — item 596's rule, answered the way an out-of-process driver
         // would have to: from its own record of what arrived, and taking the earliest because a

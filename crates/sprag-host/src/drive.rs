@@ -336,25 +336,52 @@ fn watch_orders(
         let Some(row) = read_row(&mut conn, run) else {
             continue;
         };
-        if row
-            .get(crate::plugins::RUN_CANCELLED_BY_KEY)
-            .is_some_and(|who| !who.is_null())
-        {
-            cancel.store(true, Ordering::Release);
-        }
-        if row
-            .get(crate::plugins::RUN_STOOD_DOWN_KEY)
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            stand_down.store(true, Ordering::Release);
-        }
-        // ⚠ A LEVEL, NOT A LATCH — its two neighbours above are latches by design and this one is
-        // the order a person can take back, so it is stored as read rather than only ever raised.
-        if let Some(held) = row.get("held").and_then(Value::as_bool) {
-            hold.store(held, Ordering::Release);
-        }
+        carry_orders_in(&row, cancel, stand_down, hold);
     }
+}
+
+/// **TURN ONE ROW INTO THE THREE FLAGS THIS DRIVER STEERS BY** — register item 699.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function and not four lines inside the loop above
+///
+/// It was four lines inside the loop, and **two of the three had never once been true**:
+/// `stand_down` was read as `row[RUN_STOOD_DOWN_KEY].as_bool()` off a key the daemon fills with a
+/// SENTENCE (`None == Some(true)`, false for ever), and `held` was read off `row["held"]`, a key no
+/// projection has ever written. Nine stand-downs across four repositories, zero convergences.
+///
+/// The repair put a shared type on the wire ([`crate::plugins::StandingOrders`]), and **a first
+/// gate on that type came back GREEN when this reader was mutated back to the shipped defect** —
+/// because the gate called the type and the loop above called the socket, so nothing measured the
+/// step between. A green mutation is the name of the gate you owe: the step is named here, so a
+/// gate can drive the row the daemon really produced through the reader this driver really uses,
+/// without a subscription in the way.
+///
+/// ⚠⚠ THE CANCEL ARM TRAVELS WITH THEM ON PURPOSE. It is the one order that always worked — it
+/// asks *is this non-null*, never `as_bool`, and the projection really does write its key — so it
+/// is this function's own control: a change that breaks the two below while leaving it alone is a
+/// change this file's gate can still tell apart.
+pub(crate) fn carry_orders_in(
+    row: &serde_json::Map<String, Value>,
+    cancel: &AtomicBool,
+    stand_down: &AtomicBool,
+    hold: &AtomicBool,
+) {
+    if row
+        .get(crate::plugins::RUN_CANCELLED_BY_KEY)
+        .is_some_and(|who| !who.is_null())
+    {
+        cancel.store(true, Ordering::Release);
+    }
+    // ⚠⚠ `reporting` below states the rule this follows, for the other direction: the shape belongs
+    // to the party that OWNS it and the other end must not respell it. Both ends are in this crate,
+    // so the type puts a compiler between them.
+    let ordered = crate::plugins::StandingOrders::in_row(row);
+    // ⚠ A LATCH — `stand_down` has no way back, so it is only ever raised.
+    if ordered.stand_down {
+        stand_down.store(true, Ordering::Release);
+    }
+    // ⚠ A LEVEL, NOT A LATCH — the order a person can take back, so it is stored as read.
+    hold.store(ordered.held, Ordering::Release);
 }
 
 /// This run's row from the daemon's `runs` listing, or [`None`] where it is not there to read.

@@ -430,6 +430,88 @@ pub const RUN_PANE_KEY: &str = "pane";
 /// reason and does not move `crate::runs::RUN_LOG_VERSION` either.
 pub const RUN_STOOD_DOWN_KEY: &str = "stood_down";
 
+/// **WHAT A PERSON HAS ORDERED, AS DATA A MACHINE READS** — register item 699, and the key
+/// [`StandingOrders`] travels under.
+///
+/// ⚠⚠⚠ It sits BESIDE [`RUN_STOOD_DOWN_KEY`] rather than replacing it, and the split is the whole
+/// repair: that key carries a SENTENCE for a person, this one carries the ORDER for the driver.
+/// One key cannot be both, which is exactly what was measured — see [`StandingOrders`].
+pub const RUN_ORDERS_KEY: &str = "orders";
+
+/// **THE ORDERS A PERSON HAS GIVEN A RUNNING RUN**, in one type both processes use — register
+/// item 699.
+///
+/// # ⚠⚠⚠⚠⚠ Neither order had ever landed, and the two failed differently
+///
+/// Measured 2026-08-26 across four repositories: `stand-down` was given nine times and converged a
+/// run zero times, and `hold-run` had never parked anything. A run is driven by
+/// `sprag-term --drive` — ANOTHER PROCESS — which learns a person's order by re-reading this row,
+/// and both readings were wrong in ways nothing could see:
+///
+/// * **`stand_down` — a type mismatch.** The daemon published
+///   `json!(stand_down_sentence(&run.state))`, a STRING for a person to read, and the driver asked
+///   `row[RUN_STOOD_DOWN_KEY].as_bool()`. `as_bool` on a string is `None`, so the comparison was
+///   `None == Some(true)` — **false on every pass, for every run, for ever.** The document's
+///   `judging` edge to `closing` is guarded on `In('standing_down')`, and the event that would put
+///   it there was never raised.
+/// * **`held` — no writer at all.** The driver read `row["held"]`; no projection ever wrote that
+///   key, `RunSummary` had no field for it, and `RunHandle` had no reader. `RunOrder::Hold` was
+///   stored into an `AtomicBool` that nothing in any process ever loaded.
+///
+/// ⚠⚠ **AND `cancel` WORKING IS WHAT PROVES THE DIAGNOSIS RATHER THAN CONTRADICTING IT**:
+/// [`RUN_CANCELLED_BY_KEY`] is read as *is it non-null*, never as a bool, and the projection really
+/// does write it. The one order spelled compatibly by accident is the one order that reached a run.
+///
+/// # ⚠⚠⚠ Why a TYPE and not two more hand-spelled keys
+///
+/// `crate::drive::reporting`'s own doc already states this rule for the other direction —
+/// *"`progress_to_json` is called here, not a shape spelled over here … the daemon stores the
+/// object without reading it apart, and a key that renderer grows reaches the row with nothing in
+/// either process to update"*. The orders path did the opposite: the driver spelled the daemon's
+/// shape by hand, in another file, with no compiler between them. **A RECORDED LESSON IS NOT AN
+/// APPLIED ONE** — item 618's sentence, and this is the file it was written beside.
+///
+/// Both ends of this hop live in THIS crate, so a type is free: rename a field and the build stops.
+/// That is the ratchet the two hand-spelled keys did not have and could not have grown.
+///
+/// ⚠ It carries only the orders a person gives a run that is STILL GOING. `cancelled_by` keeps its
+/// own key: it names WHO rather than whether, its reader is correct, and folding a working thing
+/// into this repair would put a second change on one commit. Residue stated rather than hidden —
+/// there are now two places to look for *what was ordered*, and this doc is the pointer between
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StandingOrders {
+    /// A person asked this run to finish its milestone and stand down. A LATCH: there is no way
+    /// back, because the orders region of `ai_loop.scxml` has no edge home.
+    pub stand_down: bool,
+    /// A person is holding this run right now. A LEVEL: `resume-run` sets it back to `false`.
+    pub held: bool,
+}
+
+impl StandingOrders {
+    /// The orders in `row`, or *nothing has been ordered* where the key is absent or unreadable.
+    ///
+    /// ⚠⚠⚠ **ABSENT MEANS NOBODY ORDERED ANYTHING, AND THAT IS SAFE IN ONE DIRECTION ONLY.** A
+    /// driver that guessed *held* from a row it could not parse would park a run nobody asked to
+    /// park; one that guesses *not held* keeps working, which is what it was already doing. The
+    /// opposite default would let a malformed row stop somebody's loop.
+    ///
+    /// ⚠ Unreadable is not the same as absent and both answer the same here on purpose: the
+    /// alternative is a driver that refuses to drive because a key it does not need is malformed.
+    /// ⚠ IT TAKES THE ROW'S OWN MAP and not a [`serde_json::Value`], because that is what
+    /// `crate::drive::read_row` — the only caller that matters — actually holds. A signature the
+    /// caller has to convert into is a signature that invites the conversion to be spelled twice.
+    #[must_use]
+    pub fn in_row(row: &serde_json::Map<String, serde_json::Value>) -> Self {
+        row.get(RUN_ORDERS_KEY)
+            .and_then(|orders| serde_json::from_value(orders.clone()).ok())
+            .unwrap_or(Self {
+                stand_down: false,
+                held: false,
+            })
+    }
+}
+
 /// **WHO RAISED THE CANCEL THAT ENDED THIS RUN, AND WHAT TO DO ABOUT IT** — register item 596.
 /// Absent unless a cancel was raised, which is [`RUN_CEILING_KEY`]'s presence-is-the-claim rule.
 ///
@@ -3524,6 +3606,19 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     if run.stood_down {
         entry[RUN_STOOD_DOWN_KEY] = json!(stand_down_sentence(&run.state));
     }
+    // ⚠⚠⚠⚠⚠ AND THE SAME ORDERS AS DATA, FOR THE DRIVER — register item 699. The sentence above is
+    // for a person and cannot be read by a machine; this is the machine's copy and cannot be read
+    // by a person. They are written together, from one `RunSummary` read on one pass, so the two
+    // cannot disagree about what was ordered.
+    //
+    // ⚠⚠ UNCONDITIONAL, where the sentence above is present-is-the-claim. The driver asks on every
+    // batch and `held` is a LEVEL a person takes back, so *the key is gone* would have to mean
+    // *released* — and absence already means *never ordered*. One key cannot carry both, and a
+    // release that arrived as an absence is the shape `resume-run` needs most.
+    entry[RUN_ORDERS_KEY] = json!(StandingOrders {
+        stand_down: run.stood_down,
+        held: run.held,
+    });
     // ⚠⚠⚠⚠ AND WHO RAISED THE CANCEL — register item 596, the other half of 594's unanswered
     // *why*. Beside the state and not inside it for the same reason as the order above: a run
     // stopped by a shutdown is exactly the run a person still wants to do something about, and the
@@ -5314,6 +5409,181 @@ mod tests {
              answer; the remedy differs by what happened instead, and the word is already in this \
              very entry — a reader should not have to pair two lines by eye. Got {said:?} beside \
              {ordered:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN ORDER A PERSON GIVES MUST REACH THE READER THE DRIVER ACTUALLY USES** —
+    /// register item 699, and NEITHER OF THEM DID.
+    ///
+    /// # What was measured, and it was not a probability
+    ///
+    /// A run is driven by `sprag-term --drive` — another process — which learns a person's order by
+    /// re-reading this row. Both readings were wrong, and both had been wrong since they were
+    /// written:
+    ///
+    /// * `stand_down` was read as `row[RUN_STOOD_DOWN_KEY].as_bool()` off the key the daemon fills
+    ///   with `stand_down_sentence`, a STRING. `as_bool` on a string is `None`, so the driver's
+    ///   comparison was `None == Some(true)` — **false on every pass of every run, for ever.**
+    ///   Nine stand-downs across four repositories, zero convergences.
+    /// * `held` was read off `row["held"]`, **a key no projection has ever written**, from a flag
+    ///   `RunHandle` had no reader for and `RunSummary` had no field for. `hold-run` was write-only
+    ///   end to end.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND THE GATES BESIDE THIS ONE WERE ALL GREEN THROUGHOUT.** The gate directly above
+    /// proves the daemon publishes the right SENTENCE, and it is right; `sprag-plugin`'s gates prove
+    /// the document converges when its orders region is in `standing_down`, and they are right. What
+    /// nobody measured is the HOP BETWEEN THEM, so each half went on being correct about itself
+    /// while the pair did nothing. That is why this gate reads the row through the daemon's own
+    /// projection and then through [`StandingOrders::in_row`] — **the two doors the product uses**,
+    /// never a row spelled here.
+    ///
+    /// ⚠⚠ THE HOLD ARM RELEASES AS WELL AS TAKES. `held` is the one order a person can take back, so
+    /// *it turned on* is half a gate: a latch bolted in where a level belongs would pass the first
+    /// assertion and strand every held run for ever.
+    #[test]
+    fn an_order_a_person_gives_reaches_the_reader_the_driver_uses() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+
+        // The row exactly as a driver's `read_row` would receive it, built by the daemon's own
+        // projection — never a literal written here, which would test this test.
+        let row_now = || {
+            lock(&registry)
+                .snapshot()
+                .iter()
+                .find(|run| run.id.0 == id)
+                .map(|run| run_to_json(run, run.opened_by))
+                .expect("the run this call started is in the registry's snapshot")
+        };
+        // ⚠⚠⚠ THE STAGING CONTROL, asked before every reading below. An `EndedRun` answers `false`
+        // to both orders BY DESIGN, so a run that died early would make every assertion here pass
+        // or fail for a reason that has nothing to do with the subject. This turns that into a
+        // named failure instead of a silent one.
+        let ordered_now = |what: &str| {
+            let row = row_now();
+            assert_eq!(
+                row["state"]["status"],
+                json!("running"),
+                "⚠⚠⚠⚠ THE FIXTURE, NOT THE SUBJECT: this run had already ended before {what} could \
+                 be read, and an ended run answers `false` to every order by design. Nothing below \
+                 is about the wiring this gate is for. Row: {row:?}",
+            );
+            // ⚠⚠⚠⚠⚠ **THROUGH THE DRIVER'S OWN READER, NEVER `StandingOrders::in_row` DIRECTLY.**
+            // The first draft of this gate called the type, and mutating `crate::drive`'s reader
+            // back to the shipped defect left it **GREEN** — measured, not feared: the gate called
+            // one door and the driver called another, so the step between them had no eye on it.
+            // `carry_orders_in` is that step, and driving it here is what makes the mutation red.
+            let (cancel, stand_down, hold) = (
+                AtomicBool::new(false),
+                AtomicBool::new(false),
+                AtomicBool::new(false),
+            );
+            crate::drive::carry_orders_in(
+                row.as_object().expect("a run row is a JSON object"),
+                &cancel,
+                &stand_down,
+                &hold,
+            );
+            StandingOrders {
+                stand_down: stand_down.load(std::sync::atomic::Ordering::Acquire),
+                held: hold.load(std::sync::atomic::Ordering::Acquire),
+            }
+        };
+
+        // ── THE CONTROL: NOBODY HAS SAID ANYTHING ──
+        assert_eq!(
+            ordered_now("the control"),
+            StandingOrders {
+                stand_down: false,
+                held: false,
+            },
+            "⚠⚠⚠ THE CONTROL: a run nobody has spoken to must read as no orders. Without this the \
+             arms below would pass against a reader that answered `true` to everything",
+        );
+
+        // ── ARM ONE: A HOLD, AND THEN TAKING IT BACK ──
+        external
+            .invoke(
+                HOLD_RUN_ACTION,
+                IntrospectValue::Json(json!({ "id": id, "held": true })),
+            )
+            .expect("a run in the directory takes a hold");
+        assert!(
+            ordered_now("the hold").held,
+            "⛔⛔⛔ ITEM 699's SECOND HALF: `hold-run` answered a person *it parks at its next pass* \
+             and the driver could not learn it had been ordered — the flag was stored in this \
+             process and read by nobody, in any process, ever. Row: {:?}",
+            row_now(),
+        );
+        external
+            .invoke(
+                HOLD_RUN_ACTION,
+                IntrospectValue::Json(json!({ "id": id, "held": false })),
+            )
+            .expect("a held run takes a release");
+        assert!(
+            !ordered_now("the release").held,
+            "⚠⚠⚠⚠ A LEVEL, NOT A LATCH. `resume-run` delivers `Hold(false)`, and a reader that only \
+             ever raised would leave every released run held for ever — the failure that verb's own \
+             promise is made of. Row: {:?}",
+            row_now(),
+        );
+
+        // ── ARM TWO: THE STAND-DOWN ──
+        // ⚠ THROUGH THE WIRE VERB, the gate above's rule: this is the door `sprag stand-down`
+        // reaches, and a call to `RunRegistry::stand_down` would leave it untested.
+        external
+            .invoke(
+                STAND_DOWN_ACTION,
+                IntrospectValue::Json(json!({ "id": id })),
+            )
+            .expect("a run in the directory takes a stand-down");
+        assert!(
+            ordered_now("the stand-down").stand_down,
+            "⛔⛔⛔⛔⛔ ITEM 699's FIRST HALF, AND THE ONE THAT COST NINE RUNS: the daemon published \
+             the order as a SENTENCE and the driver read it as a bool, so `In('standing_down')` was \
+             never reachable and `judging`'s door to `closing` could not open. Row: {:?}",
+            row_now(),
+        );
+
+        // ── AND THE PERSON'S SENTENCE IS STILL THE PERSON'S ──
+        let row = row_now();
+        assert!(
+            row[RUN_STOOD_DOWN_KEY].is_string(),
+            "⚠⚠⚠ THE REPAIR MUST NOT TAKE THE HUMAN READING WITH IT. `stand_down_sentence` has four \
+             readers that call `as_str` on this key, and turning it into a bool to satisfy the \
+             driver would have moved the defect rather than closed it. The two readings travel side \
+             by side, which is why {RUN_ORDERS_KEY:?} exists. Row: {row:?}",
+        );
+
+        assert!(
+            lock(&registry).cancel(RunId(id)),
+            "the run this gate started is one the registry can stop",
+        );
+        let _ = ended(&registry, id, Duration::from_secs(30));
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
         );
     }
 
