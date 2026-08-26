@@ -15374,6 +15374,167 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE LINE A REVIEW CARRIED IS WHAT GREETS THE SESSION THAT REPLACES IT** — the
+    /// last link of register item 502, and the north star's item A on the channel that item built.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the mechanism was not finished without this
+    ///
+    /// Item 502 built a review that can ASK a second agent and carry back a line, and its economic
+    /// door is now priced by a run. **Every one of those stops at `restarting`.** The whole POINT
+    /// of carrying a line is that the next session is told it — a replacement is a fresh agent that
+    /// remembers nothing, and `start_prompt` is the only channel there is. A `carried` composed into
+    /// a datamodel and never typed at anybody is register item 492's shape exactly (*authored and
+    /// never read*), and it would have looked green in every gate 502 left behind.
+    ///
+    /// ⚠⚠ Its neighbour `a_standing_instruction_reaches_every_prompt_once_it_has_been_adopted`
+    /// holds the same claim for `standing` and is the model for this one. `carried` had nothing.
+    ///
+    /// # ⚠⚠⚠⚠ Two restarts, and only the second one is the subject
+    ///
+    /// A review counts CLOSED sessions, so a run must restart ONCE before its review can find
+    /// anything — and that first restart is staged by `unread` (no record on disk, `context` reads
+    /// 0) so that nothing under test can break the staging. The record is filed the moment that
+    /// session is let go, holding this repository's own billed trio **at its break-even** so the
+    /// SECOND exit takes `review.done`'s economic door and replaces the session again. That second
+    /// replacement is the one whose pane is read.
+    ///
+    /// ⚠ The pane is a THIRD pane, freshly respawned, so the line being on it cannot be the
+    /// predecessor's screen surviving — which is what makes this a delivery claim rather than a
+    /// composition one.
+    #[test]
+    fn the_line_a_review_carried_greets_the_session_that_replaces_it() {
+        /// Above the reading, so `capacity` never outranks the door under test.
+        const ROOMY: i64 = 800_000;
+
+        let here = crate::testing::MEASURED_HERE;
+        // ⚠ EXACTLY at break-even: the first reading that pays, so the carried ending takes the
+        // economic door rather than keeping the session — asserted below rather than described.
+        let pays = here.reading(here.break_even());
+        assert!(
+            pays.pays(),
+            "⚠⚠⚠ THE PREMISE: this reading must take `review.done`'s economic door, or the run \
+             below keeps its session and there is no replacement to greet. {} discardable against \
+             a toll of {}",
+            pays.discardable(),
+            pays.toll(),
+        );
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        let home = std::env::temp_dir().join(format!("sprag-greets-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let record = home.join("what-the-closed-session-said.jsonl");
+        // ⚠ NOTHING FILED YET — the `unread` staging. See `left_reviewing_carrying`, which holds
+        // the argument for why the first restart must not depend on the economics.
+        let _ = std::fs::remove_file(&record);
+        let access = crate::testing::supervised_writing(&workspace, &record);
+        let mut loops = with_bound(
+            OuterLoop::new(
+                Arc::clone(&lua),
+                pane,
+                &AiLoopSpec {
+                    review_asks: Some(answers_with_the_marker()),
+                    ..spec(Some(ReadyWhen::Settles("claude".to_string())))
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings"),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the stand-in keeps answering".to_string(),
+                milestone: "reach the first checkpoint".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut replacements = 0_usize;
+        let mut greeted: Option<String> = None;
+        while walked.len() < 80 {
+            let moved = loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable");
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = moved
+            else {
+                panic!("this run must keep moving: {moved:?}, walked {walked:?}");
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            if from == AiLoopState::Restarting && raised == AiLoopEvent::SessionReplaced {
+                replacements += 1;
+                // ⚠ THE RECORD APPEARS WHEN THE SESSION THAT WROTE IT IS LET GO — the only moment
+                // a real agent's record stops being appended to, and the moment its path lands on
+                // this run's `ended` list.
+                if replacements == 1 {
+                    std::fs::write(&record, billed_with_a_habit(pays))
+                        .expect("the record the closed session left behind");
+                }
+            }
+            // ⚠ Read at `turn.done`: the peer echoes what is typed and only then replies, so a turn
+            // it has COMPLETED is a turn whose greeting is unarguably painted.
+            if replacements == 2 && from == AiLoopState::Working && raised == AiLoopEvent::TurnDone
+            {
+                greeted = Some(
+                    access
+                        .pane_collapsed(loops.driving.pane)
+                        .unwrap_or_default(),
+                );
+                break;
+            }
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        // ── THE PREMISE: the run really did leave `reviewing` CARRYING something ──
+        assert!(
+            walked
+                .iter()
+                .any(|edge| edge.contains("Reviewing --ReviewDone--> Restarting")),
+            "⚠⚠⚠⚠⚠ THE CONTROL: this run must have taken `review.done`'s door to `restarting`, or \
+             what is read below is a session replaced for some other reason and the claim is about \
+             nothing. Walked {walked:?}",
+        );
+        let Some(greeted) = greeted else {
+            panic!(
+                "no second replacement was greeted in 80 passes: the run must restart once on \
+                 `unread` to stage a closed session, then again on the line its review carried. \
+                 Walked {walked:?}"
+            );
+        };
+
+        // ── ⭐ AND THE FRESH AGENT IS TOLD WHAT THE REVIEW FOUND ──
+        assert!(
+            greeted.contains(CARRIED),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 502's LAST LINK: this run's review asked a second agent, got a \
+             line back, and replaced its session on the strength of it — and the fresh agent was \
+             not told. A `carried` that reaches a datamodel and no pane is the whole mechanism \
+             doing nothing: the next session repeats exactly the habit the review was built to \
+             name. Screen: {greeted:?}",
+        );
+    }
+
     /// ⛔⛔⛔ **THE SENTENCE A PERSON IS TOLD ABOUT A HOLD IS WHAT THE DOCUMENT DOES** — register
     /// item 522's other half, and a ratchet that reads BOTH artefacts.
     ///
