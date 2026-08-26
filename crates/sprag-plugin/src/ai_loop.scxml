@@ -1991,6 +1991,70 @@
     </send>
   </transition>
 
+  <!--
+    ⚠⚠⚠⚠⚠ CAN THIS STATE'S AGENT BE ASKED WHERE THE RUN GOT TO?
+
+    `AiLoop::ask_for_an_account` answered that with a `match` over all twenty
+    eight states of this file: eight granting a window and twenty naming a
+    reason not to. It was the last of the driver's copies of this topology.
+
+    ⚠⚠ A TARGETLESS TRANSITION FOR `pass`'s REASON, not for tidiness. One of the
+    RUN's ceilings falls due at a moment nobody can predict, and the state it
+    finds may have been entered long before — so a state ENTRY could only answer
+    once, at a time that has nothing to do with the asking.
+
+    ⚠⚠⚠ EACH WORD IS A FACT ABOUT THE PANE and not a ranking. Nobody was ever
+    asked anything; somebody else's hand is in it; the agent that did the work is
+    being replaced; the service is not answering. A reader of the run's journal
+    gets the reason, and `no account` alone would send them to the wrong thing.
+
+    ⚠ THE WINDOW IS NOT DECLARED HERE. `within` says the agent CAN be asked; how
+    long it gets is two of the CALLER's own turns, a number this document neither
+    holds nor should. The word is the document's, the quantity is the driver's.
+
+    ⚠ AND THE SEVEN FINALS ANSWER NOTHING, as they answer no `pass`: a finished
+    machine is told apart by having PUBLISHED an ending, not by being named here.
+  -->
+  <transition event="account"
+              cond="In('priming') || In('working') || In('judging')
+                    || In('screening') || In('redirecting') || In('disputing')
+                    || In('closing') || In('stopping')">
+    <!-- A turn is in flight or one has just landed, so the latch reaches
+         `judging` on the very next judgement. `closing` and `stopping` are in
+         this list and are already asking their own question; the flag changes
+         nothing for them, and leaving them out would be an exception nobody
+         could state a reason for. -->
+    <send type="x-sprag-host" event="account.ask">
+      <param name="can" expr="'within'"/>
+    </send>
+  </transition>
+  <transition event="account" cond="In('idle')">
+    <send type="x-sprag-host" event="account.ask">
+      <param name="can" expr="'never_asked'"/>
+    </send>
+  </transition>
+  <transition event="account" cond="In('awaiting_human')">
+    <send type="x-sprag-host" event="account.ask">
+      <param name="can" expr="'not_ours'"/>
+    </send>
+  </transition>
+  <transition event="account"
+              cond="In('reflecting') || In('reviewing')
+                    || In('restarting') || In('resuming')">
+    <send type="x-sprag-host" event="account.ask">
+      <param name="can" expr="'between_sessions'"/>
+    </send>
+  </transition>
+  <transition event="account" cond="In('service_down')">
+    <!-- ⚠ Its own word rather than folded in with `not_ours`: typing here is
+         ALLOWED, nobody's hand is in the pane, and it would still buy nothing
+         because the answer has to come back from the same service that just
+         refused a turn. What a reader needs is the outage. -->
+    <send type="x-sprag-host" event="account.ask">
+      <param name="can" expr="'service_down'"/>
+    </send>
+  </transition>
+
   <state id="idle">
     <!--
       ⚠⚠⚠ THE TEMPLATE, FILLED IN BY SOMEBODY WHO DID NOT EDIT THIS FILE.

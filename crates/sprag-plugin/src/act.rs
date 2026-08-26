@@ -135,6 +135,28 @@ pub enum Act {
     /// the slot is written once. A document declaring a second would be refused exactly as the
     /// other acts are, which is the arrangement rather than an exception to it.
     End,
+    /// `account.ask` — whether this state's agent can be asked where the run got to.
+    ///
+    /// Argument: `can` — which answer, from the closed space [`Accounts`] names.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Declared on a TARGETLESS transition, and never on a state entry
+    ///
+    /// Register item 470, stage 3. This is [`Act::Pass`]'s shape for [`Act::Pass`]'s reason: the
+    /// question is asked at a moment nobody can predict — when one of the RUN's ceilings falls due
+    /// — and the state it is asked about may have been entered long before. A state entry could
+    /// only answer it once, at a time that has nothing to do with the asking.
+    ///
+    /// # ⚠⚠ What it does NOT carry, and why that is the line item 470 draws
+    ///
+    /// Not the window. A run that CAN be asked gets two of its caller's own turns, and that number
+    /// is the caller's (`turn_within_ms`, or the substrate's published default) — a quantity this
+    /// document neither knows nor should. The document says *whether, and if not why not*; the
+    /// driver prices it.
+    ///
+    /// ⚠ Nor the ENDINGS: a finished machine is told apart by having published one
+    /// ([`Serving::published`]), not by naming seven states here. Only the fifteen states a driver
+    /// actually drives declare this.
+    Account,
 }
 
 impl Act {
@@ -142,7 +164,7 @@ impl Act {
     ///
     /// ⚠ The one list. [`Act::of`] reads it rather than spelling a second `match`, so an act added
     /// to the enum is served the moment it names itself.
-    pub const ALL: [Self; 3] = [Self::Say, Self::Pass, Self::End];
+    pub const ALL: [Self; 4] = [Self::Say, Self::Pass, Self::End, Self::Account];
 
     /// The name a document calls this act by — its own `<send event="…">`.
     #[must_use]
@@ -151,6 +173,7 @@ impl Act {
             Self::Say => "prompt.say",
             Self::Pass => "pass.do",
             Self::End => "end.publish",
+            Self::Account => "account.ask",
         }
     }
 
@@ -486,6 +509,81 @@ impl Signals {
     }
 }
 
+/// **WHETHER THIS STATE'S AGENT CAN BE ASKED WHERE THE RUN GOT TO** — [`Act::Account`]'s `can`
+/// argument.
+///
+/// # ⚠⚠⚠⚠⚠ What this space replaced
+///
+/// Register item 470, stage 3. `AiLoop::ask_for_an_account` answered it with a `match` over all
+/// twenty-eight states of `ai_loop.scxml`: eight granting a window and twenty naming a reason not
+/// to.
+///
+/// # ⚠⚠⚠⚠ Each word is a fact about the PANE, not a policy
+///
+/// The refusals are not a ranking of how important the states are. Each names something true about
+/// the pane that makes the question unaskable — nobody was ever asked anything, somebody else's
+/// hand is in it, the agent that did the work is being replaced, the service is not answering. A
+/// caller reading a run's journal gets the reason, and *"no account"* alone would have sent them to
+/// look at the wrong thing.
+///
+/// ⚠⚠ **THE WINDOW IS NOT IN THIS SPACE.** [`Self::Within`] says the agent CAN be asked; how long
+/// it gets is two of the caller's own turns, a number this document neither holds nor should. The
+/// word moves, the quantity stays with the driver — the same line every act in this module draws.
+///
+/// ⚠ **AND NEITHER ARE THE ENDINGS.** A finished machine is told apart by having published one
+/// ([`Serving::published`]) rather than by seven more words here, so this space covers only the
+/// states a driver actually drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accounts {
+    /// `within` — a turn is in flight or one has just landed, so the agent can be asked.
+    Within,
+    /// `never_asked` — the loop never got its pane, so its agent was asked nothing to account for.
+    NeverAsked,
+    /// `not_ours` — the pane is showing somebody else's question, or somebody is typing in it.
+    ///
+    /// ⚠⚠ Asking here would ANSWER that dialog or type under a hand, which is the one thing this
+    /// driver must never do — the same refusal `screen.none` and `turn.interrupted` already make.
+    NotOurs,
+    /// `between_sessions` — the agent that did the work is being replaced and its successor has
+    /// done none of it.
+    BetweenSessions,
+    /// `service_down` — the agent's service was not answering, so the run was waiting an outage out.
+    ///
+    /// ⚠ Its own word rather than folded into [`Self::NotOurs`]: typing here is ALLOWED — nobody's
+    /// hand is in the pane — and it would still buy nothing, because the answer would have to come
+    /// back from the same service that just refused a turn. What a reader needs is the outage.
+    ServiceDown,
+}
+
+impl Accounts {
+    /// Every answer a driven state may give about being asked for an account.
+    pub const ALL: [Self; 5] = [
+        Self::Within,
+        Self::NeverAsked,
+        Self::NotOurs,
+        Self::BetweenSessions,
+        Self::ServiceDown,
+    ];
+
+    /// The word a document says this answer with.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
+        match self {
+            Self::Within => "within",
+            Self::NeverAsked => "never_asked",
+            Self::NotOurs => "not_ours",
+            Self::BetweenSessions => "between_sessions",
+            Self::ServiceDown => "service_down",
+        }
+    }
+
+    /// What `word` answers, or [`None`] for a word this space does not hold.
+    #[must_use]
+    pub fn of(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|can| can.named() == word)
+    }
+}
+
 /// **ONE ACT THE DOCUMENT ASKED FOR, WITH THE ARGUMENTS IT SENT.**
 ///
 /// ⚠ A variant per act rather than one struct with every act's arguments on it: the two acts share
@@ -512,6 +610,11 @@ pub enum Asked {
         /// What a stop would still have to reach at this ending.
         signals: Signals,
     },
+    /// [`Act::Account`] — whether this state's agent can be asked for an account.
+    Account {
+        /// Which answer, and where it is a refusal, which one.
+        can: Accounts,
+    },
 }
 
 impl Asked {
@@ -525,6 +628,7 @@ impl Asked {
             Self::Say { .. } => Act::Say,
             Self::Pass { .. } => Act::Pass,
             Self::End { .. } => Act::End,
+            Self::Account { .. } => Act::Account,
         }
     }
 }
@@ -703,6 +807,12 @@ struct Book {
     /// answers `Pumped::Ended` at the top of each one. A reader that took this would leave every
     /// later pass with nothing on a run whose ending had not changed. See `Serving::published`.
     ending: Option<Asked>,
+    /// The account act ([`Act::Account`]) nothing has read yet.
+    ///
+    /// ⚠ TAKEN like the two above and unlike `ending`, because the driver raises `account`
+    /// immediately before reading this: the answer is about the state the machine is in AT THE
+    /// MOMENT OF ASKING, and a slot left full would answer a later ask with an earlier state's word.
+    accounting: Option<Asked>,
     /// Every act this host would not perform, in the order they were asked for.
     refused: Vec<Refused>,
 }
@@ -717,6 +827,7 @@ impl Book {
             Act::Say => &mut self.saying,
             Act::Pass => &mut self.passing,
             Act::End => &mut self.ending,
+            Act::Account => &mut self.accounting,
         }
     }
 }
@@ -922,6 +1033,20 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             };
             Ok(Asked::End { publishes, signals })
         }
+        // ⚠ NO EMPTY CHECK OF ITS OWN, for `does`'s reason: `Accounts::of("")` answers [`None`],
+        // so an argument that evaluated to nothing is refused below with the space it missed.
+        Act::Account => {
+            let said = argument(params, act, "can")?;
+            let Some(can) = Accounts::of(&said) else {
+                return Err(Refused::Unreadable {
+                    act,
+                    argument: "can",
+                    said,
+                    holds: Accounts::ALL.map(Accounts::named).to_vec(),
+                });
+            };
+            Ok(Asked::Account { can })
+        }
     }
 }
 
@@ -945,7 +1070,7 @@ mod tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{Act, Asked, Asks, Does, Publishes, Refused, Serving, Signals, read};
+    use super::{Accounts, Act, Asked, Asks, Does, Publishes, Refused, Serving, Signals, read};
     use crate::sm::probe_send_type_sm::ProbeSendTypePolicy;
 
     /// The act `probe_send_type.scxml` addresses to this host — a name [`Act`] does not serve.
@@ -1228,6 +1353,41 @@ mod tests {
                 signals.named(),
             );
         }
+        // ⚠⚠⚠⚠⚠ AND THE FOURTH ACT'S SPACE — register item 470, stage 3, the last match. `can` is
+        // what replaced `ask_for_an_account`'s twenty-eight-arm state match, and a word this door
+        // cannot read back is a ceiling falling due on a run that can say nothing about why.
+        assert_eq!(
+            Accounts::ALL.len(),
+            5,
+            "⚠⚠⚠ the space this walk asserts over decides how many times it asserts, so its size \
+             is pinned beside it: a variant dropped from `ALL` would shrink the control with it",
+        );
+        for can in Accounts::ALL {
+            assert_eq!(
+                match asking(Act::Account, &[("can", can.named())])
+                    .expect("every word this space holds is one a state may declare")
+                {
+                    Asked::Account { can } => can,
+                    other => panic!("`account.ask` is what was asked for: {other:?}"),
+                },
+                can,
+                "⚠⚠⚠⚠ `{}` is in `Accounts::ALL` and this door does not read it back as itself",
+                can.named(),
+            );
+        }
+        assert_eq!(
+            asking(Act::Account, &[("can", "")]),
+            Err(Refused::Unreadable {
+                act: Act::Account,
+                argument: "can",
+                said: String::new(),
+                holds: Accounts::ALL.map(Accounts::named).to_vec(),
+            }),
+            "⚠⚠⚠⚠ AN ACCOUNT ANSWER THAT EVALUATED TO NOTHING IS REFUSED BY THE SPACE ITSELF, on \
+             `does`'s terms: the empty string is not one of the five, and a default here would \
+             grant or refuse a window on a state nobody decided about",
+        );
+
         assert_eq!(
             asking(Act::End, &[("publishes", "converged")]),
             Err(Refused::Missing {

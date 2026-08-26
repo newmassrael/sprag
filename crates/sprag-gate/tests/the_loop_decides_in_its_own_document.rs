@@ -139,38 +139,38 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠⚠ THE FOURTH WAS `is_final` ITSELF — *is it final* is the first question this comment lists,
     // and it is no longer asked here at all: `OuterLoop::finished` asks the engine. What remains in
     // this row is the other three.
-    ("abandoned", 2),
-    ("awaiting_human", 4),
-    ("blocked", 2),
-    ("cancelled", 3),
-    ("closing", 2),
-    ("converged", 5),
-    ("disputing", 2),
-    ("exhausted", 7),
-    ("failed", 5),
-    ("held", 2),
-    ("idle", 3),
-    ("judging", 8),
-    ("orders", 2),
-    ("peer_gone", 2),
-    ("priming", 3),
-    ("redirecting", 2),
-    ("reflecting", 2),
-    ("restarting", 2),
-    ("resuming", 2),
-    ("reviewing", 2),
-    ("running", 2),
-    ("screening", 2),
-    ("service_down", 2),
-    ("standing", 2),
+    ("abandoned", 1),
+    ("awaiting_human", 3),
+    ("blocked", 1),
+    ("cancelled", 2),
+    ("closing", 1),
+    ("converged", 4),
+    ("disputing", 1),
+    ("exhausted", 6),
+    ("failed", 4),
+    ("held", 1),
+    ("idle", 2),
+    ("judging", 7),
+    ("orders", 1),
+    ("peer_gone", 1),
+    ("priming", 2),
+    ("redirecting", 1),
+    ("reflecting", 1),
+    ("restarting", 1),
+    ("resuming", 1),
+    ("reviewing", 1),
+    ("running", 1),
+    ("screening", 1),
+    ("service_down", 1),
+    ("standing", 1),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 3),
-    ("stopping", 2),
-    ("work", 3),
-    ("working", 4),
+    ("standing_down", 2),
+    ("stopping", 1),
+    ("work", 2),
+    ("working", 3),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
@@ -294,9 +294,23 @@ const DECLARED_ACTS: usize = 18;
 /// with its `<param>`, with the control on the edge INTO the ending so a dead handler could not
 /// read as a NO.
 ///
+/// ⭐⭐⭐⭐⭐ **AND THE THIRTIETH THROUGH THIRTY-FOURTH ARE THE ACCOUNT QUESTION** — 2026-08-26, the
+/// last of stage 3's seven matches. 29 → **34**. `ask_for_an_account` chose between granting a
+/// window and twenty ways of refusing one with a `match` over all twenty-eight states; the fifteen
+/// states a driver actually drives now answer it on five guarded targetless
+/// `<transition event="account">`s, `pass.do`'s shape exactly.
+///
+/// ⚠⚠ **FIVE SENDS FOR FIFTEEN STATES, AND THE DIFFERENCE IS THE FINDING AGAIN** — the same shape
+/// `pass.do` produced when twelve acts covered fifteen states. Eight states share one answer
+/// (`within`) and four share another (`between_sessions`), so what looked like twenty-eight
+/// decisions was five.
+///
+/// ⚠ [`DECLARED_ACTS`] does NOT move for this one: a `<transition>` is not an `<onentry>`, so the
+/// block count is blind to it exactly as it was blind to every act that moved in stage 2.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 29;
+const SERVED_ACTS: usize = 34;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

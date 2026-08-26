@@ -1303,77 +1303,70 @@ impl Plugin for AiLoop {
             // ⚠ `closing` and `stopping` are in this list and are already asking their own
             // question. The flag changes nothing for them, and leaving them out would have been an
             // exception nobody could state a reason for.
-            AiLoopState::Priming
-            | AiLoopState::Working
-            | AiLoopState::Judging
-            | AiLoopState::Screening
-            | AiLoopState::Redirecting
-            // ⚠⚠ A REFUSAL IS ON ITS WAY BACK INTO A TURN — item 448 — so the latch reaches
-            // `judging` by the same route `working`'s does, one state later. `redirecting` is
-            // beside it for the same reason and neither is a session boundary.
-            | AiLoopState::Disputing
-            | AiLoopState::Closing
-            | AiLoopState::Stopping => {
-                self.inner.stop_short(ceiling);
-                // ⚠⚠⚠ TWO TURNS, AND A LIVE RUN IS WHAT PRICED THE SECOND ONE — see the doc above.
-                Accounting::Within(
-                    self.inner
-                        .turn_within()
-                        .unwrap_or(DEFAULT_REPLY_TIMEOUT)
-                        .saturating_mul(2),
-                )
-            }
-            AiLoopState::Idle => Accounting::Cannot(
-                "the loop never got its pane, so its agent was never asked anything and has \
-                 nothing to account for"
-                    .to_owned(),
-            ),
-            AiLoopState::AwaitingHuman => Accounting::Cannot(
-                "the pane is not this run's to type in: it is showing a question nothing here \
-                 could answer, or somebody is typing in it — asking where the run got to would \
-                 answer that dialog or type under their hand"
-                    .to_owned(),
-            ),
-            AiLoopState::Reflecting
-            | AiLoopState::Reviewing
-            | AiLoopState::Restarting
-            | AiLoopState::Resuming => Accounting::Cannot(format!(
-                "the run is between sessions ({state:?}): the agent that did the work is being \
-                 replaced, and its successor has done none of it"
-            )),
-            // ⚠⚠⚠ THE PANE IS THIS RUN'S AND THE AGENT IS STILL UNREACHABLE, which is why this is
-            // its own arm rather than folded into either list around it. Typing here is allowed —
-            // unlike `awaiting_human`, nobody's hand is in the pane and no dialog would read the
-            // Enter — and it would still buy nothing: the account has to come back from the
-            // SERVICE that just refused a turn, so asking spends the ceiling's last seconds
-            // waiting for the same outage to answer. **What a reader needs is the outage, and
-            // saying so is more use than a blank report.**
-            AiLoopState::ServiceDown => Accounting::Cannot(format!(
-                "its agent's service was not answering when the {} ceiling fell due, so the run \
-                 was waiting the outage out rather than working; asking where it got to would \
-                 have to reach the same service",
-                ceiling.wire_str(),
-            )),
-            AiLoopState::Converged
-            | AiLoopState::Exhausted
-            | AiLoopState::Failed
-            | AiLoopState::Cancelled
-            | AiLoopState::PeerGone
-            // ⚠⚠ AN ORDER THAT BECAME AN ENDING IS STILL AN ENDING — register item 534. The run is
-            // over, so there is nothing left to ask where it got to; the account a person wants
-            // after a hold expires is the one the last judged turn already wrote.
-            | AiLoopState::Abandoned
-            // ⚠ Structure and orders, which a ceiling can no more account for than an ending can.
-            | AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held
-            | AiLoopState::Blocked => Accounting::Cannot(format!(
+            _ if self.inner.published().is_some() => Accounting::Cannot(format!(
                 "the loop had already ended in {state:?} when its {} ceiling fell due",
                 ceiling.wire_str(),
             )),
+            // ⚠⚠⚠⚠⚠ **AND EVERYTHING BELOW IS THE DOCUMENT'S** — register item 470, stage 3, the
+            // last of the driver's copies of the topology. Twenty-eight arms stood here: eight
+            // granting a window and twenty naming a reason not to. Each state now answers for
+            // itself on a targetless `<transition event="account">`, and what is left is a match
+            // over `crate::act::Accounts` — a vocabulary of five answers, not a topology.
+            _ => match self.inner.asked_of_this_account() {
+                // ⚠⚠⚠ THE WINDOW IS PRICED HERE AND NOWHERE ELSE. The document says the agent CAN
+                // be asked; how long it gets is two of the CALLER's own turns, which is a quantity
+                // no document holds — see the doc above for why a live run had to price it.
+                Some(crate::act::Accounts::Within) => {
+                    self.inner.stop_short(ceiling);
+                    // ⚠⚠⚠ TWO TURNS, AND A LIVE RUN IS WHAT PRICED THE SECOND ONE — the doc above.
+                    Accounting::Within(
+                        self.inner
+                            .turn_within()
+                            .unwrap_or(DEFAULT_REPLY_TIMEOUT)
+                            .saturating_mul(2),
+                    )
+                }
+                Some(crate::act::Accounts::NeverAsked) => Accounting::Cannot(
+                    "the loop never got its pane, so its agent was never asked anything and has \
+                     nothing to account for"
+                        .to_owned(),
+                ),
+                Some(crate::act::Accounts::NotOurs) => Accounting::Cannot(
+                    "the pane is not this run's to type in: it is showing a question nothing here \
+                     could answer, or somebody is typing in it — asking where the run got to would \
+                     answer that dialog or type under their hand"
+                        .to_owned(),
+                ),
+                Some(crate::act::Accounts::BetweenSessions) => Accounting::Cannot(format!(
+                    "the run is between sessions ({state:?}): the agent that did the work is \
+                     being replaced, and its successor has done none of it"
+                )),
+                // ⚠⚠⚠ THE PANE IS THIS RUN'S AND THE AGENT IS STILL UNREACHABLE, which is why the
+                // document gives this its own word rather than folding it into either neighbour.
+                // Typing here is allowed — unlike `not_ours`, nobody's hand is in the pane and no
+                // dialog would read the Enter — and it would still buy nothing: the account has to
+                // come back from the SERVICE that just refused a turn, so asking spends the
+                // ceiling's last seconds waiting for the same outage to answer. **What a reader
+                // needs is the outage, and saying so is more use than a blank report.**
+                Some(crate::act::Accounts::ServiceDown) => Accounting::Cannot(format!(
+                    "its agent's service was not answering when the {} ceiling fell due, so the \
+                     run was waiting the outage out rather than working; asking where it got to \
+                     would have to reach the same service",
+                    ceiling.wire_str(),
+                )),
+                // ⚠⚠⚠⚠ **A STATE THAT DECLARED NOTHING, AND IT IS REPORTED RATHER THAN GUESSED.**
+                // The arm this replaced named the parallel root, the two region roots and the
+                // orders — states `Self::state` reads the WORK region precisely so as never to
+                // return — and called them all *already ended*, which was never true of any of
+                // them. `Unbuilt`'s sentence is the honest one: this driver has no answer for what
+                // it is looking at, and a ceiling that fell due on a reader bug should say so.
+                None => Accounting::Cannot(format!(
+                    "its document declares no `account.ask` for {state:?}, so nothing can say \
+                     whether its agent could be asked where the run got to when the {} ceiling \
+                     fell due",
+                    ceiling.wire_str(),
+                )),
+            },
         }
     }
 }

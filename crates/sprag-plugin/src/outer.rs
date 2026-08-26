@@ -4417,6 +4417,37 @@ impl OuterLoop {
         }
     }
 
+    /// **ASK THE DOCUMENT WHETHER THIS STATE'S AGENT CAN BE ASKED WHERE THE RUN GOT TO**, and take
+    /// the answer — register item 470, stage 3.
+    ///
+    /// [`None`] where the state the machine is in declared nothing: a finished machine, which the
+    /// caller tells apart by [`published`](Self::published), or a state no `account` transition
+    /// covers. Nothing here knows a state's name.
+    ///
+    /// ⚠⚠ TARGETLESS, on `asked_of_this_pass`'s terms (named rather than linked, because it is
+    /// private and a public doc that links a private item does not build here) and for a sharper
+    /// version of its reason: one of the RUN's own ceilings falls due at a moment nobody can
+    /// predict, so the question has to be answerable about whatever state it finds — and answering
+    /// it must never move a run that is only being looked at.
+    ///
+    /// ⚠ The edge is recorded only where the machine MOVED, exactly as the pass question's is: a
+    /// targetless answer is not a step of a path, and a transition that ever grew a `target` would
+    /// otherwise relocate a run with nothing in the walk to say so.
+    ///
+    /// ⚠⚠ It says WHETHER and not FOR HOW LONG. A window is two of the caller's own turns, a
+    /// quantity this document neither holds nor should — see [`crate::act::Accounts`].
+    pub fn asked_of_this_account(&mut self) -> Option<crate::act::Accounts> {
+        let from = self.state();
+        self.machine.process_event(AiLoopEvent::Account);
+        if self.state() != from {
+            self.note_edge(from, AiLoopEvent::Account);
+        }
+        match self.serving.taken(crate::act::Act::Account) {
+            Some(crate::act::Asked::Account { can }) => Some(can),
+            _ => None,
+        }
+    }
+
     /// [`walk`](Self::walk) for an event that carries `_event.data`.
     ///
     /// ⚠⚠ Separate because `process_event` carries NO data at all — it is `raise_external(event,
