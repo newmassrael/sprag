@@ -725,6 +725,105 @@ mod ledger_tests {
         let _ = std::fs::remove_file(&into);
     }
 
+    /// ⚠⚠⚠⚠⚠ **A REVIEW THAT FINDS A HABIT STILL CARRIES NOTHING, BECAUSE NOBODY IS ASKED** —
+    /// register item 502, and this gate is the measurement that CORRECTS that item's done-when.
+    ///
+    /// # ⚠⚠⚠⚠ What 502 says it needs, and why that is not what is missing
+    ///
+    /// The item reads: *"one run reaches `restarting` through `review.done` — which needs a reviewer
+    /// that finds a habit, i.e. a record carrying a repeated act."* **A habit is necessary and
+    /// nowhere near sufficient.** This gate builds exactly that record — one act over the document's
+    /// own `repeat_limit` — and the review still ends `Nothing`.
+    ///
+    /// ⚠⚠ **THE UNBUILT THING IS `ask.done`.** `context_review.scxml` reaches `carried` only by
+    /// `asking --ask.done--> writing --write.*--> carried`, and [`ContextReview::run`]'s `Asking`
+    /// arm raises `AskNone` **unconditionally** — no second agent is wired. Measured 2026-08-26:
+    /// `ContextReviewEvent::AskDone` is constructed **once in this whole workspace**, in
+    /// `ai_loop.rs`'s document-walk gate, which drives the machine directly rather than through this
+    /// driver. ⇒ [`Ending::Carried`] is unreachable from the product, `AiLoopEvent::ReviewDone` with
+    /// it, and `restarting` cannot be entered through `review.done` **by any fixture** — the shape
+    /// 502 asked for cannot be built until the asking is.
+    ///
+    /// # ⚠⚠⚠ Why this is a gate and not a note in the ledger
+    ///
+    /// It REDDENS the day the mechanism arrives. A review that starts carrying something makes the
+    /// third assertion below false, and whoever wires the second agent is then told, in the file, to
+    /// go and pay 502 — rather than discovering later that its economic door is still guarded by a
+    /// reader of the document's TEXT. ⚠ Without it, the item's own done-when keeps pointing at a
+    /// fixture somebody could write, find green, and mistake for the payment.
+    #[test]
+    fn a_review_that_finds_a_habit_still_carries_nothing_because_nobody_is_asked() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut review =
+            ContextReview::new(Arc::clone(&lua), None).expect("the document opens a session");
+
+        // ⚠ ONE ACT, OVER THE DOCUMENT'S OWN LIMIT. `repeat_limit` ships at 8 and `habits_in` keeps
+        // an act whose count is `>= limit`, so ten of one `Bash` command is a habit by the
+        // document's own arithmetic rather than by a number this gate invented.
+        //
+        // ⚠⚠ EACH IN ITS OWN MESSAGE WITH ITS OWN ID, which is the shape a real record has and the
+        // shape `habits_in` counts: a streamed reply repeats its content array, so ids are what
+        // stop one answer being counted as many.
+        let record = std::env::temp_dir()
+            .join("sprag-review-gate")
+            .join("a_review_that_finds_a_habit_still_carries_nothing.jsonl");
+        std::fs::create_dir_all(record.parent().expect("a parent")).expect("the gate's own dir");
+        let rows: String = (0..10)
+            .map(|turn| {
+                serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "id": format!("msg_{turn}"),
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": { "command": "cargo test --workspace" },
+                        }],
+                    },
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&record, rows).expect("the gate writes its own record");
+
+        let answered = review.run(std::slice::from_ref(&record));
+
+        // ── THE CONTROL: THE HABIT WAS ACTUALLY FOUND ──
+        //
+        // Without it the claim below is satisfied by a record the review could not read at all,
+        // which is a different exit entirely (`gave_up_at == "reading"`).
+        assert_eq!(
+            answered.habits(),
+            1,
+            "⚠⚠⚠⚠⚠ THE FIXTURE FOUND NO HABIT, so nothing below is about the asking. Ten of one \
+             command over a `repeat_limit` of 8 is a habit by the document's own arithmetic — if \
+             this reads 0 the record's shape has drifted from `habits_in`. Got {answered:?}",
+        );
+
+        // ── AND THE REVIEW STILL CARRIES NOTHING, GIVING UP AT `asking` ──
+        assert_eq!(
+            (answered.ending.clone(), answered.gave_up_at),
+            (Ending::Nothing, Some("asking")),
+            "⚠⚠⚠⚠⚠ **THIS IS REGISTER ITEM 502's REAL SHAPE.** The review found a habit and still \
+             ended carrying nothing, because `ContextReview::run` answers `ask.none` \
+             unconditionally — no second agent is wired. ⇒ `Ending::Carried` is unreachable from \
+             the product, `AiLoopEvent::ReviewDone` with it, and NO fixture can take a run to \
+             `restarting` through `review.done` until the asking is built. Got {answered:?}",
+        );
+
+        // ── ⚠⚠ AND THE DAY THAT CHANGES, THIS IS WHERE IT IS SAID ──
+        assert!(
+            !matches!(answered.ending, Ending::Carried(_)),
+            "⭐ THE ASKING HAS BEEN BUILT — which is good news and a DEBT FALLING DUE. Register \
+             item 502 is now payable: take a run to `restarting` through `review.done`, and mutate \
+             the guard's `20` multiplier to prove a RUN reddens where only the guard's text does \
+             today. Then delete this assertion and say so in the ledger",
+        );
+
+        let _ = std::fs::remove_file(&record);
+    }
+
     /// ⚠⚠⚠⚠⚠ **A REVIEW THAT WAS HANDED NO STATE DIRECTORY WRITES NOTHING ANYWHERE** — the
     /// property that keeps this whole suite out of the home of whoever ran it.
     ///
