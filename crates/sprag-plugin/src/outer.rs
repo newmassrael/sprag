@@ -92,6 +92,10 @@ use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
 use sprag_terminal::PaneId;
 
 use crate::access::{PaneAccess, PaneError};
+// ⚠ The pass vocabulary is named unqualified because it is what `pumping`'s dispatch is written
+// over — see `OuterLoop::asked_of_this_pass`. The rest of `crate::act` stays qualified: `Asked`
+// and `Act` are words this file already uses for other things a reader would confuse them with.
+use crate::act::Does;
 use crate::completion::{Completion, DoneWhen, Over, Quiet, Turn};
 use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
@@ -2026,6 +2030,15 @@ pub enum Pumped {
     /// `OuterLoop::state` does not, because it reads the work region by name. They
     /// are answered rather than ignored for the reason above: a misreading that reported a run as
     /// spinning is worth telling apart from one that never arrived.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND SINCE REGISTER ITEM 470's STAGE 3 THIS DRIVER HAS NO LIST OF EITHER SET** —
+    /// which is why it can still answer for both. It asks its document what a pass is for; a state
+    /// that answers nothing and is not final arrives here, and structural states and orders answer
+    /// nothing because `ai_loop.scxml`'s `pass` arms name only the states a run is DRIVEN in. So
+    /// the word now covers one more case than it used to and names none of them: a state somebody
+    /// adds to the document and forgets to give an act. **That is the guard that replaced the
+    /// deleted match's exhaustiveness**, and it is behavioural rather than a compile error —
+    /// measured 2026-08-26 by removing one arm, which took 51 gates red at `Judging`.
     ///
     /// ⚠ **Nothing goes red when a sentence like the one this replaced ages.** It was found by
     /// reading the code beside it while moving a decision out of this file, not by a gate.
@@ -4289,6 +4302,54 @@ impl OuterLoop {
         self.note_edge(from, event);
     }
 
+    /// **ASK THE DOCUMENT WHAT THIS PASS IS FOR**, and take the answer — register item 470,
+    /// stage 3.
+    ///
+    /// [`None`] where the state the machine is in declared no act: a finished machine (which is
+    /// reported) or a state this driver has no effect for (which stops the run). The caller tells
+    /// those two apart; nothing here knows a state's name.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a raise and not a reading of the state
+    ///
+    /// Because reading the state is the defect. `pump` chose its act from a `match` over all
+    /// twenty-eight states of `ai_loop.scxml` — the second copy of the topology item 470 was filed
+    /// about — and the only way to unlearn a topology is to ask the file that holds it. Every
+    /// driven state answers on a `<transition event="pass">`.
+    ///
+    /// ⚠⚠ **AND THE ANSWERING TRANSITIONS ARE TARGETLESS** (W3C SCXML 3.13), which is what makes a
+    /// question askable on EVERY pass rather than once. A state entry could not carry it —
+    /// `working` is looked at for as long as its peer keeps working — and a self transition would
+    /// re-run every `<onentry>`, re-typing at the peer the sentence the state was entered with,
+    /// once per look. `probe.rs` measured that shape with a re-entry counter before this was
+    /// written.
+    ///
+    /// # ⚠⚠⚠⚠ Why this raise does NOT go through [`walk`](Self::walk), except when it moves
+    ///
+    /// `walk` exists so [`walked`](Self::walked) is the machine's PATH by construction (register
+    /// item 614), and a targetless answer is not a step of a path: it would put an `X --Pass--> X`
+    /// line on every pass of every run, on a journal whose readers use it to see where a run went.
+    ///
+    /// ⚠⚠ So the edge is recorded exactly when the machine MOVED on it, which is not a softer rule
+    /// but a stricter one: *targetless* is the document's promise rather than this driver's, and a
+    /// `pass` transition that ever grew a `target` would otherwise relocate a run with nothing in
+    /// the walk to say so. The test is on the machine, not on the file.
+    ///
+    /// ⚠ A [`crate::act::Asked::Say`] arriving here is a document that declared a SENTENCE on a
+    /// `pass` transition. It is answered [`None`] — i.e. `Unbuilt`, which stops the run — rather
+    /// than performed: a pass is not a moment to speak at the peer, and every road that is one
+    /// takes the sentence in [`advance`](Self::advance) instead.
+    fn asked_of_this_pass(&mut self) -> Option<crate::act::Does> {
+        let from = self.state();
+        self.machine.process_event(AiLoopEvent::Pass);
+        if self.state() != from {
+            self.note_edge(from, AiLoopEvent::Pass);
+        }
+        match self.serving.taken(crate::act::Act::Pass) {
+            Some(crate::act::Asked::Pass { does }) => Some(does),
+            _ => None,
+        }
+    }
+
     /// [`walk`](Self::walk) for an event that carries `_event.data`.
     ///
     /// ⚠⚠ Separate because `process_event` carries NO data at all — it is `raise_external(event,
@@ -5031,7 +5092,32 @@ impl OuterLoop {
         // reason — see [`Pumped::Moved`]'s `unreadable`. A record that cannot be read is re-read
         // every judged turn, so what a journal wants is the moment it BECAME unreadable.
         let unread = self.unaccountable.clone();
-        let raised: Raise = match from {
+        // ⚠⚠⚠⚠⚠ **WHAT THIS PASS IS FOR IS THE DOCUMENT'S TO SAY** — register item 470, stage 3,
+        // and this line is where that item's largest match used to stand. `match from { … }` chose
+        // an act from the NAME OF THE STATE, over all twenty-eight of them: a second copy of the
+        // topology, in Rust, keyed by ids written in a file this driver does not parse. Now the
+        // driver ASKS — every driven state carries a `<transition event="pass">` — and performs
+        // whatever the answer names.
+        //
+        // ⚠⚠⚠ **NOTHING ASKED FOR IS NOT NOTHING TO DO**, and the two cases that arrive with an
+        // empty slot are opposite facts. They are told apart by the MACHINE rather than by a list
+        // of state names out here: a finished machine is REPORTED (`Ended`), and anything else is
+        // a state this driver has no act for (`Unbuilt`), which stops the run and says so —
+        // because a pass that silently did nothing is the silence [`crate::act`] exists to end.
+        //
+        // ⚠⚠ **THE FINAL CHECK IS RE-ASKED AFTER THE RAISE RATHER THAN REUSED FROM ABOVE.** A
+        // `pass.do` this host will not perform is refused on `error.execution`, and this document
+        // answers that by ending the run `failed` — inside the very raise that asked for it. A
+        // reader of the reading taken at the top of the pass would call that ending `Unbuilt`.
+        let Some(does) = self.asked_of_this_pass() else {
+            let landed = self.state();
+            return Ok(if self.machine.is_in_final_state() {
+                Pumped::Ended(landed)
+            } else {
+                Pumped::Unbuilt(landed)
+            });
+        };
+        let raised: Raise = match does {
             // Nothing has happened yet. Starting the loop is the caller's act — but the transition
             // it causes DELIVERS THE START PROMPT, so the pane has to be ready first.
             //
@@ -5051,39 +5137,40 @@ impl OuterLoop {
             // was not.
             //
             // ⚠ `Readiness` LATCHES, so this costs one look per pump after the first.
-            AiLoopState::Idle => match self.start_ready(panes, run)? {
+            Does::Ready => match self.start_ready(panes, run)? {
                 None => AiLoopEvent::Start.into(),
                 Some(seen) => return Ok(Pumped::NotReady(seen)),
             },
 
-            // A session exists and has not been prompted. The prompt itself was already delivered
-            // by whichever transition brought us here — see `advance`.
-            AiLoopState::Priming => AiLoopEvent::PromptSent.into(),
-
-            // ⚠⚠⚠⚠⚠ THE CHECK REFUSED THE CLAIM AND THE AGENT HAS JUST BEEN TOLD SO — register item
-            // 448. Like `priming` above, the prompt was already delivered by the transition that
-            // landed here (`Owed::Dispute`), so what is left is to say it went and hand the turn
-            // back to `working`, which watches it exactly as it watches every other turn.
+            // The sentence was already delivered by the entry that declared it — see `advance` —
+            // so all a pass has left is to tell the machine it went.
             //
-            // ⚠⚠ IT IS THE SAME EVENT `priming` RAISES, and that is the document's arrangement
-            // rather than a shortcut: both states deliver a prompt and neither waits for anything
-            // else, so *the prompt was sent* is the whole of what either has to report.
-            AiLoopState::Disputing => AiLoopEvent::PromptSent.into(),
+            // ⚠⚠⚠⚠⚠ **TWO STATES ASK FOR THIS AND THEY USED TO BE TWO ARMS.** `priming` greets a
+            // fresh session; `disputing` tells an agent its claim was refused (register item 448).
+            // Both deliver a prompt on the way in and neither waits for anything else, so *the
+            // prompt was sent* is the whole of what either has to report — and once the answer
+            // comes from the DOCUMENT rather than from the state's name, saying it twice stops
+            // being possible. That collapse is not a tidy-up: it is the two decisions that were
+            // being made separately turning out to be one.
+            Does::Sent => AiLoopEvent::PromptSent.into(),
 
-            // ⚠⚠⚠ THE STATE THE WHOLE ROUND WAS ABOUT. The inner agent is working and the driver
-            // watches its pane; what the turn ENDS ON is what the machine is told.
+            // ⚠⚠⚠ THE PEER IS WORKING AND THE DRIVER WATCHES ITS PANE; what the turn ENDS ON is
+            // what the machine is told. THREE states ask for this — `working`, `closing` and
+            // `stopping` — and the difference between an ordinary turn and a closing one is
+            // carried by the SENTENCE that opened it rather than by which of them is asking.
             // ⚠⚠ A TURN THAT ENDED CARRIES WHAT THE SESSION HAS BEEN CHARGED TO READ, and only that
             // one ending does: `turn.blocked` and `turn.interrupted` are answers about a peer that
             // is still mid-turn, so a number attached to them would be a level nobody had reached.
             // The other endings keep going through `into()`, which sends no data at all.
-            AiLoopState::Working | AiLoopState::Closing | AiLoopState::Stopping => {
+            Does::Watch => {
                 match self.watch(panes, run)? {
                     AiLoopEvent::TurnDone => {
-                        // ⚠⚠⚠ THE ONLY MOMENT AN ACCOUNT EXISTS TO BE TAKEN. The next event lands
-                        // in a FINAL state — `converged` for one of these, `exhausted` for the
-                        // other — the Driver stops stepping, and by the time anybody could ask, the
-                        // run is over. Taken here, on the state rather than on the event, because
-                        // `turn.done` is what five states raise and only these two asked for one.
+                        // ⚠⚠⚠ THE ONLY MOMENT AN ACCOUNT EXISTS TO BE TAKEN. Where this turn was a
+                        // closing one the next event lands in a FINAL state — `converged` or
+                        // `exhausted` — the Driver stops stepping, and by the time anybody could
+                        // ask, the run is over. It is taken on the ENDING rather than on the event
+                        // because `turn.done` is what five states raise, and asked of the QUESTION
+                        // rather than of the state for the reason directly below.
                         //
                         // ⚠⚠⚠⚠⚠ **WHETHER THIS ENDING HAS AN ACCOUNT TO COLLECT IS THE QUESTION'S
                         // ANSWER, AND IT USED TO BE THE STATE'S** — register item 470, stage 2. It
@@ -5156,7 +5243,7 @@ impl OuterLoop {
             // EVERY run to `stopping`. Nothing can publish one — every `Ceiling::wire_str` is a
             // non-empty literal, and a gate holds that rather than this comment. `judged`'s
             // measured reason for a boolean beside a name, one key over, is the same fact.
-            AiLoopState::Judging => {
+            Does::Judge => {
                 // ⚠⚠⚠⚠ **THE PANE IS READ ONCE AND THE READING IS KEPT** — and both halves of that
                 // are fixes rather than tidying.
                 //
@@ -5253,25 +5340,27 @@ impl OuterLoop {
             // ⚠⚠⚠ THE AUTHOR'S STANDING INSTRUCTIONS, CARRIED OUT. A dialog no consent covered is
             // here; whether one of the document's own rules claims it — and what happens if one
             // does — is [`screen`](Self::screen).
-            AiLoopState::Screening => self.screen(panes, run)?,
+            Does::Screen => self.screen(panes, run)?,
 
             // ⚠⚠⚠ THE PEER'S SERVICE FAILED AND THE ONLY TREATMENT IS TIME — see
             // [`wait_out_service`](Self::wait_out_service).
-            AiLoopState::ServiceDown => self.wait_out_service(),
+            Does::Wait => self.wait_out_service(),
 
             // ⚠⚠⚠ THE LOOP IMPROVES ITS OWN SETUP AND THEN REPLACES THE SESSION THAT READS IT —
-            // three states, because the three things that happen are genuinely different acts and
-            // the document says which by where it is.
+            // three acts, because the three things that happen are genuinely different, and the
+            // document says which by asking for one of them.
             // ⚠⚠⚠ A REFLECTION IS A TURN AND THIS WATCHES IT, which is why this arm takes the pane:
-            // the question was delivered by the transition that landed here (`Owed::Reflect`), and
-            // what the agent answers is what the replacement session is briefed with.
-            AiLoopState::Reflecting => self.reflect(panes, run)?,
+            // the question was delivered by the entry that declared it, and what the agent answers
+            // is what the replacement session is briefed with. ⚠ It is NOT `watch`: a reflection is
+            // not judged, does not spend `max_turns`, and its answer is read back rather than
+            // reported — which is [`crate::act::Asks::Direction`]'s argument, one layer over.
+            Does::Reflect => self.reflect(panes, run)?,
             // ⚠⚠⚠ AND BEFORE THE REPLACEMENT, WHAT THE CLOSED SESSIONS DID — see `reviewing`, and
             // [`crate::review::ContextReview`] for why this is a machine driven here rather than an
             // `<invoke>` of the document's.
-            AiLoopState::Reviewing => self.review(),
-            AiLoopState::Restarting => self.replace(panes)?,
-            AiLoopState::Resuming => self.resume(panes, run)?,
+            Does::Review => self.review(),
+            Does::Replace => self.replace(panes)?,
+            Does::Resume => self.resume(panes, run)?,
 
             // ⚠⚠⚠ THE RUN IS PAUSED AND A PERSON IS EXPECTED. It WAITS — see [`attend`](Self::attend).
             //
@@ -5281,7 +5370,7 @@ impl OuterLoop {
             // whose agent asked one question no rule claimed was over — *"a rule that claims nothing
             // ends the run exactly as an unanswered dialog always has"* was written as a scope note
             // and read as a design, and the machine plainly said otherwise the whole time.
-            AiLoopState::AwaitingHuman => self.attend(panes, run)?,
+            Does::Attend => self.attend(panes, run)?,
 
             // ⚠⚠⚠ THE DOCUMENT HAS THE ROUTE AND THIS DRIVER HAS NOT BUILT THE ACT YET, reported
             // as such rather than skipped. `working`'s `cond="_event.data.design"` is what reaches
@@ -5291,40 +5380,22 @@ impl OuterLoop {
             // ⚠ `Unbuilt` and not a no-op, for `awaiting_human`'s reason: a driver that treated an
             // undriven state as *carry on* would take the loop somewhere the author did not write,
             // and a route that silently does nothing is worse than one that is missing.
-            AiLoopState::Redirecting => self.redirect(panes, run)?,
-
-            // `is_in_final_state` answered above; these are the same seven, and naming them keeps
-            // the match exhaustive without a wildcard that would swallow an eighth. ⚠ The last two
-            // arrived exactly that way: `peer_gone` broke this match on the compile that added it,
-            // and `abandoned` did the same (register item 534).
-            state @ (AiLoopState::Converged
-            | AiLoopState::Exhausted
-            | AiLoopState::Failed
-            | AiLoopState::Cancelled
-            | AiLoopState::PeerGone
-            // ⚠⚠ THE ONE ENDING THAT IS NOT THE WORK REGION'S, and it belongs in this list all the
-            // same. [`Self::state`] falls back to the flattened configuration once the parallel has
-            // been exited, so what arrives here is `Abandoned` — and what it needs is what every
-            // other ending needs, to be REPORTED rather than driven. Pumping from here would spin a
-            // finished machine.
-            | AiLoopState::Abandoned
-            | AiLoopState::Blocked) => return Ok(Pumped::Ended(state)),
-            // ⚠⚠⚠ THE REGIONS' OWN STATES, AND REACHING ONE HERE IS A READER BUG RATHER THAN A RUN
-            // THAT NEEDS DRIVING. [`Self::state`] reads the WORK region by name, so what it hands
-            // this match is always one of the arms above; a parallel root, a region root or an ORDER
-            // arriving means the reader started flattening again.
+            Does::Redirect => self.redirect(panes, run)?,
+            // ⚠⚠⚠⚠⚠ **THIRTEEN ARMS USED TO STAND BELOW THIS ONE AND ALL THIRTEEN ARE GONE** —
+            // register item 470, stage 3. Seven named the document's FINALS and six named its
+            // regions and orders, written out so the match stayed exhaustive without a wildcard;
+            // between them they cost every one of the twenty-eight states a mention. Neither list
+            // was ever a decision:
             //
-            // ⚠⚠ `Unbuilt` AND NOT `Ended`, which is the whole point of having the word: ending the
-            // run would turn a driver bug into somebody's lost work, and pumping again would spin
-            // forever on a state nothing acts on. `Unbuilt` says *this driver has no act for what it
-            // is looking at* and lets the layer above decide — register item 260's lesson, arriving
-            // through the door it was written for.
-            state @ (AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held) => return Ok(Pumped::Unbuilt(state)),
+            // * the finals were `is_in_final_state` said a second time, in Rust, and a run that
+            //   reaches one is REPORTED rather than driven. The check at the top of this function
+            //   answers them, correctly, because this document keeps its finals OUTSIDE the
+            //   parallel — a fact stated where the arrangement is, not copied here as a list;
+            // * the regions were a READER BUG rather than a run that needs driving.
+            //   [`Self::state`] reads the work region by name, so a parallel root, a region root
+            //   or an order arriving means the reader started flattening again — and *this driver
+            //   has no act for what it is looking at* is exactly what a state declaring no
+            //   `pass.do` says. `Unbuilt` answers both, above, without either list.
         };
         // Kept before `advance` takes the payload: what a consumer reports is the EVENT, and the
         // data is the driver's way of telling the machine a fact it could not read for itself.
@@ -7137,7 +7208,11 @@ impl OuterLoop {
         //
         // ⚠⚠⚠ TAKEN RATHER THAN READ. An act is performed once; a slot left full would put the
         // same sentence to the peer again on the next pass that reaches this line.
-        let Some(crate::act::Asked { text, asks, .. }) = self.serving.taken() else {
+        // ⚠ THE SENTENCE SLOT AND ONLY IT: a pass act waiting in the other one belongs to the
+        // question this driver asks at the START of a pass, and taking it here would carry out
+        // somebody else's work. See `crate::act::Book`.
+        let Some(crate::act::Asked::Say { text, asks }) = self.serving.taken(crate::act::Act::Say)
+        else {
             return Ok((landed, 0));
         };
         // ⚠⚠⚠⚠ THE DOOR CAN REFUSE HERE, AND THE MACHINE HAS ALREADY MOVED BY THE TIME IT DOES.

@@ -1847,9 +1847,14 @@
     orders are over too, and a transition targeting a state outside the parallel
     exits every region — so reaching `converged` takes the orders region with it,
     which is exactly right. Putting the finals inside would ask a different
-    question (does the PARALLEL complete) that nothing here needs to answer:
-    the driver learns a run ended from the state it is in, by an exhaustive
-    match, not from `is_in_final_state`.
+    question (does the PARALLEL complete) that nothing here needs to answer.
+
+    ⚠ THAT LAST SENTENCE USED TO END *"the driver learns a run ended from the
+    state it is in, by an exhaustive match, not from `is_in_final_state`"*, and
+    since register item 470's stage 3 the opposite is true: the exhaustive match
+    is gone and `is_in_final_state` is what answers. It answers CORRECTLY only
+    because of the arrangement this comment is about — a final outside the
+    parallel exits every region — so the two facts belong together.
 
     ⚠⚠⚠ AND THE DRIVER MUST STOP FLATTENING. With two regions there are two
     active leaves, and `get_current_state` — and any reader that just takes the
@@ -1861,6 +1866,130 @@
   <parallel id="running">
 
   <state id="work" initial="idle">
+
+  <!--
+    ⚠⚠⚠⚠⚠ WHAT A PASS OF THE DRIVER DOES, ANSWERED BY THIS REGION FOR WHEREVER
+    IT IS — register item 470, stage 3, and the largest thing that item was
+    filed about.
+
+    The driver raises `pass` at the top of every pass and carries out the act
+    this table answers with. Before it, `OuterLoop::pump` chose from a `match`
+    over all TWENTY-EIGHT states of this document — *this one watches a turn,
+    that one waits an outage out, that one asks a person* — which is a SECOND
+    COPY OF THE TOPOLOGY, in Rust, keyed by the ids written here. There is now
+    one copy, and it is this one, in the file the ids belong to.
+
+    ⚠⚠⚠ TARGETLESS, AND THAT IS THE WHOLE REASON THIS SHAPE WORKS. W3C SCXML
+    3.13: a transition with no `target` runs its content and changes no state.
+    A state ENTRY could not carry it — `working` is looked at many times over
+    one entry, for as long as its peer keeps working — and a SELF transition
+    would re-run every `<onentry>`, which here means re-typing at the peer the
+    sentence the state was entered with, once per look.
+    `probe_send_type.scxml`'s `edged` measures exactly this shape, re-entry
+    counter and all, and its three shapes of NO were all made to fire.
+
+    ⚠⚠⚠⚠⚠ AND IT IS ON THE REGION RATHER THAN ON EACH STATE, WHICH WAS THE
+    ENGINE'S ANSWER RATHER THAN A PREFERENCE. Written one per child first, and
+    `sce-build` refused the document: putting an event on EVERY child of `work`
+    satisfies the "common ground" precondition of its handler-consistency
+    check, and this compound then reports the twenty-seven event gaps it has
+    always had — `brief` in `idle` alone, `judge` in `judging` alone, and so on
+    — every one of them the deliberate protocol-stage shape that precondition
+    exists to excuse. The note above `orders` predicted this exactly, for the
+    other region, in 2026-08-21. `sce:unhandled` cannot pay it (some three
+    hundred declarations), and a parent-level fallthrough per event would
+    swallow events `OuterLoop::unseen` is a reader of. What the validator's own
+    documentation names as the repair is a PARENT-LEVEL handler, and that is
+    what this is.
+
+    ⚠⚠ SO THE GUARD IS `In(...)` — the document asking where the document is,
+    which is the one reader that cannot drift from the topology. First match in
+    document order wins, and a state missing from this table is answered by
+    nobody: the driver reports `Pumped::Unbuilt` and the run stops, which is
+    what the deleted match's exhaustiveness used to buy.
+
+    ⚠ THE WORDS ARE A CLOSED SPACE (`crate::act::Does`) and one outside it is
+    REFUSED where this machine can hear it, on the `error.execution` edge below.
+
+    ⚠ THE SEVEN FINALS ANSWER NOTHING AND ARE RIGHT TO: a finished machine is
+    reported, not driven, and it is told apart by BEING final rather than by
+    being named in a list out in Rust.
+  -->
+  <transition event="pass" cond="In('idle')">
+    <!-- Nothing has happened yet. Starting is the caller's act, but the
+         transition it causes DELIVERS the start prompt — so the peer has to be
+         ready before that sentence can mean anything. -->
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'ready'"/>
+    </send>
+  </transition>
+  <!-- ⚠ TWO STATES, ONE WORD. Both were entered by a transition that delivered
+       a sentence and neither waits for anything else, so *the prompt was sent*
+       is the whole of what either has to report. In the driver these were two
+       arms of the match; saying it once is what the move found. -->
+  <transition event="pass" cond="In('priming') || In('disputing')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'sent'"/>
+    </send>
+  </transition>
+  <!-- ⚠ THREE STATES, ONE WORD, for a reason worth stating: what makes a
+       closing turn a REPORT is the `asks` on the sentence that opened it, not
+       which state is watching. -->
+  <transition event="pass"
+              cond="In('working') || In('closing') || In('stopping')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'watch'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('judging')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'judge'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('screening')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'screen'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('service_down')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'wait'"/>
+    </send>
+  </transition>
+  <!-- ⚠ NOT `watch`: a reflection is not judged, does not spend `max_turns`,
+       cannot converge a run, and its answer is read back into the brief of the
+       session that replaces this one. `reflecting`'s own `asks='direction'`
+       makes the same distinction one layer over. -->
+  <transition event="pass" cond="In('reflecting')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'reflect'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('reviewing')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'review'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('restarting')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'replace'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('resuming')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'resume'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('awaiting_human')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'attend'"/>
+    </send>
+  </transition>
+  <transition event="pass" cond="In('redirecting')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="does" expr="'redirect'"/>
+    </send>
+  </transition>
 
   <state id="idle">
     <!--
@@ -2453,8 +2582,10 @@
     <!--
       A rule claimed it. The driver refused the call and told the agent what to
       do instead, and the agent is working on that — which is why this edge
-      sends NO prompt (see `Owed::on`): a prompt here would type over a peer
-      that has just been spoken to.
+      declares NO `prompt.say`: a prompt here would type over a peer that has
+      just been spoken to. ⚠ It used to say *see `Owed::on`*, the driver table
+      that answered what an edge owed; that table is deleted, and an edge owes
+      what it declares here and nothing else.
     -->
     <transition event="screen.matched" target="working">
       <assign location="screened" expr="screened + 1"/>

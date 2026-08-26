@@ -79,6 +79,30 @@
     <!-- The QUESTION's arrival: the same act declared on a TARGETED transition,
          which is the shape `prompt.turn` would have to take. -->
     <data id="edge_landed" expr="0"/>
+    <!--
+      ⚠⚠⚠⚠⚠ AND THE THIRD SHAPE, WHICH IS WHAT REGISTER ITEM 470's STAGE 3
+      RESTS ON: the same act declared on a TARGETLESS transition — W3C SCXML
+      3.13's transition that runs its content and changes no state.
+
+      Stage 3 has to move `pump`'s twenty-eight-arm state match into the
+      document, and a state ENTRY cannot carry it: `working` is pumped many
+      times over one entry, so what a pass does has to be answerable on every
+      pass rather than once. A targetless transition is the only shape that
+      answers a driver's question without moving the machine and without
+      re-running an `<onentry>` that would re-type a prompt.
+
+      ⚠ It is measured AFTER the targeted edge above and in the same run, so
+      the harder shape is this one's control rather than the other way round.
+    -->
+    <data id="standing_landed" expr="0"/>
+    <!--
+      ⚠⚠⚠⚠⚠ HOW MANY TIMES `edged` HAS BEEN ENTERED, and it is the control the
+      question above cannot do without. *The machine did not move* is not the
+      claim — a SELF transition also leaves it where it was, and would re-run
+      every `<onentry>` on the way. Comparing the current state before and
+      after is blind to exactly that, so what is counted is the ENTRY.
+    -->
+    <data id="entered" expr="0"/>
   </datamodel>
 
   <!--
@@ -196,11 +220,35 @@
     zero and call the road shut.
   -->
   <state id="edged">
+    <!-- ⚠ See `entered`: this is what tells a targetless transition from a
+         self transition, which the machine's current state cannot. -->
+    <onentry>
+      <assign location="entered" expr="entered + 1"/>
+    </onentry>
     <transition event="carried.edge">
       <assign location="edge_landed" expr="edge_landed + 1"/>
     </transition>
     <transition event="error.execution">
       <assign location="errors" expr="errors + 1"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE THIRD QUESTION: a TARGETLESS transition declaring the same act
+      with the same argument. If this reaches the host carrying `word`, then a
+      driver can ASK its document what a pass is for and be answered without
+      the machine moving — which is the road register item 470's stage 3 needs
+      and the one neither shape above stands in for.
+
+      ⚠⚠ THE NAMES SHARE NO SECOND TOKEN with `carried.entry` or `carried.edge`.
+      An SCXML event descriptor matches by prefix, and a sibling swallowing a
+      whole compound is a defect this repository has already paid for.
+    -->
+    <transition event="probe.stand">
+      <send type="x-sprag-host" event="carried.standing">
+        <param name="word" expr="carried"/>
+      </send>
+    </transition>
+    <transition event="carried.standing">
+      <assign location="standing_landed" expr="standing_landed + 1"/>
     </transition>
   </state>
 

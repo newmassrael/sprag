@@ -522,6 +522,86 @@ mod tests {
              entry's, or a run could not route on what the act answered — which is what \
              `prompt.sent` does for every prompt this loop delivers",
         );
+
+        // ── THE THIRD SHAPE: the same act on a TARGETLESS transition, which is what stage 3 needs ──
+        //
+        // ⚠⚠⚠⚠⚠ It is a DIFFERENT question from the one above, not an easier retelling of it.
+        // Stage 3's subject is `pump`'s state match, and a state ENTRY cannot answer it: `working`
+        // is pumped many times over one entry, so *what does this pass do* has to be askable on
+        // every pass. W3C SCXML 3.13's targetless transition is the only shape that answers a
+        // driver's question without moving the machine and without re-running an `<onentry>` that
+        // would re-type the prompt the state was entered with.
+        //
+        // ⚠⚠ The state must not have been RE-ENTERED afterwards, and that is counted rather than
+        // inferred from where the machine is. An engine that treated a missing `target` as a self
+        // transition would leave `get_current_state` reading exactly what it read before — so the
+        // obvious comparison is blind to the one failure this shape is chosen to avoid, and the
+        // document counts its own `<onentry>` instead.
+        let standing_from = engine.get_current_state();
+        let entered_before = count(&engine, "entered");
+        assert_eq!(
+            entered_before, 1,
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: the targeted edge above entered `edged` exactly once, \
+             and a counter that is not already moving cannot show a re-entry below",
+        );
+        engine.process_event(ProbeSendTypeEvent::ProbeStand);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        let after_standing: Seen = seen.lock().expect("the record").clone();
+        let standing: Vec<&(String, HashMap<String, Vec<String>>)> = after_standing
+            .iter()
+            .filter(|(named, _)| named == "carried.standing")
+            .collect();
+        assert_eq!(
+            count(&engine, "errors"),
+            0,
+            "⚠⚠⚠⚠⚠ A TARGETLESS TRANSITION'S HOST SEND WAS REFUSED. With the two shapes above \
+             green this is a fact about targetless transitions alone, and it closes the road \
+             register item 470's stage 3 was going to take: `pump`'s state match cannot become a \
+             question the document answers per pass. Saw {after_standing:?}",
+        );
+        assert_eq!(
+            standing.len(),
+            1,
+            "⚠⚠⚠⚠⚠ A TARGETLESS TRANSITION'S HOST SEND DID NOT REACH THIS HOST. ⚠ If \
+             `standing_landed` is nonetheless 1 the type was IGNORED and the event was delivered \
+             internally — the dangerous answer this module's first case names, because a document \
+             could then declare an act nobody carries out and look served. Saw {after_standing:?}, \
+             `standing_landed` = {}",
+            count(&engine, "standing_landed"),
+        );
+        assert_eq!(
+            standing[0].1.get("word").map(Vec::as_slice),
+            Some([composed.as_str().to_owned()].as_slice()),
+            "⚠⚠⚠⚠⚠ THE ACT REACHED THIS HOST WITH NO ARGUMENTS. That is the narrowest NO and it \
+             still closes the road: stage 3's act carries WHICH effect the pass is for, so an act \
+             that cannot carry an argument would move the question's NAME into the document and \
+             leave the driver's state match deciding the answer. Got {:?}",
+            standing[0].1,
+        );
+        assert_eq!(
+            engine.get_current_state(),
+            standing_from,
+            "⚠⚠⚠⚠ THE MACHINE MOVED ON A TRANSITION WITH NO `target`, so this shape cannot be what \
+             a driver asks a question with: a pass would relocate the run it was only looking at",
+        );
+        assert_eq!(
+            count(&engine, "entered"),
+            entered_before,
+            "⚠⚠⚠⚠⚠ THE STATE WAS RE-ENTERED. Then a missing `target` is a SELF transition here, \
+             the assertion above is worthless — a self transition leaves the current state \
+             unchanged too — and the road closes for the reason stage 3 picked this shape to \
+             avoid: `<onentry>` would run once per pass, so every state that greets its peer with \
+             a sentence would re-type it on every look the driver takes",
+        );
+        assert_eq!(
+            count(&engine, "standing_landed"),
+            1,
+            "⚠⚠⚠ and the document must hear the reply here too: a driver that asks its document \
+             what a pass is for is asking a question, and a question whose answer the machine \
+             cannot route on is half a question",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **ONE HOST ACT PRODUCES TWO EVENTS, IN THE ORDER IT NAMED THEM** — consuming SCE

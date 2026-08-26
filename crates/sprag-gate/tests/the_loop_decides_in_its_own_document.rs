@@ -76,6 +76,25 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// the shape stage 2 could never produce: an act MOVING trades a mention for another and this list
 /// cannot see it; a match GOING takes a mention from every state and nothing else can.
 ///
+/// ⭐⭐⭐⭐⭐ **AND EVERY ROW FELL BY ONE AGAIN, THE SAME DAY, FOR THE SECOND MATCH** — `pumping`'s,
+/// which is the one item 470 was largest about. `OuterLoop::pump` chose WHAT TO DO from the name
+/// of the state it was in, over all twenty-eight of them: thirteen arms that named an effect and
+/// thirteen more that named the document's finals and regions so the match stayed exhaustive
+/// without a wildcard. It is gone. The driver raises `pass`, `ai_loop.scxml`'s `work` region
+/// answers with `<send type="x-sprag-host" event="pass.do">`, and the driver's remaining `match` is
+/// over `sprag_plugin::Does` — a vocabulary of TWELVE effects, not a copy of a topology. ⚠ Named
+/// rather than linked: this crate takes no dependencies by charter, so the type is not one it can
+/// reach.
+///
+/// ⚠⚠ **THE UNIFORM FALL IS WHAT SAYS A MATCH WENT, AND IT SAID IT TWICE IN ONE DAY.** Read the two
+/// entries together before concluding anything from a third: a round that moves every row by a
+/// flat one has retired a match, and a round that moves none may still have moved an act.
+///
+/// ⚠ **FIVE MATCHES LEFT**, and four of them are in `ai_loop.rs` rather than here: is this state
+/// final, which verdict does an ending publish, which pane would a ceiling signal, may a ceiling
+/// account for it. The fifth is `pumping`'s neighbour — the `because` match, which is keyed on
+/// where a pass ARRIVED rather than on what it does.
+///
 /// ⚠⚠⚠⚠⚠ **AND A ROW HOLDING STILL IS NOT AN ACT STAYING PUT** — measured 2026-08-25 R75, the
 /// round after the one above. `priming`'s act moved into the document and **not one row here
 /// changed**: `Owed::on`'s `Priming => Start` arm was deleted, and `AiLoopState::Priming` had to be
@@ -97,41 +116,41 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // rather than growing. What would be a REGRESSION is one more arm appearing later — a decision
     // about being abandoned taken in Rust — and that is what this row catches.
     //
-    // ⚠ It came down 8 -> 7 on 2026-08-25 with every other row, and NOT because anything about
-    // being abandoned changed: one of the seven matches that cost each state an arm was deleted.
-    // See this constant's own note above.
-    ("abandoned", 6),
-    ("awaiting_human", 8),
-    ("blocked", 6),
-    ("cancelled", 7),
-    ("closing", 6),
-    ("converged", 9),
-    ("disputing", 6),
-    ("exhausted", 11),
-    ("failed", 9),
-    ("held", 6),
-    ("idle", 7),
-    ("judging", 12),
-    ("orders", 6),
-    ("peer_gone", 6),
-    ("priming", 7),
-    ("redirecting", 6),
-    ("reflecting", 6),
-    ("restarting", 6),
-    ("resuming", 6),
-    ("reviewing", 6),
-    ("running", 6),
-    ("screening", 6),
-    ("service_down", 6),
-    ("standing", 6),
+    // ⚠ It came down 8 -> 7 on 2026-08-25 and 7 -> 6 -> 5 on 2026-08-26, and NOT because anything
+    // about being abandoned changed any of the three times: each was one of the seven matches that
+    // cost every state an arm being deleted. See this constant's own note above.
+    ("abandoned", 5),
+    ("awaiting_human", 7),
+    ("blocked", 5),
+    ("cancelled", 6),
+    ("closing", 5),
+    ("converged", 8),
+    ("disputing", 5),
+    ("exhausted", 10),
+    ("failed", 8),
+    ("held", 5),
+    ("idle", 6),
+    ("judging", 11),
+    ("orders", 5),
+    ("peer_gone", 5),
+    ("priming", 6),
+    ("redirecting", 5),
+    ("reflecting", 5),
+    ("restarting", 5),
+    ("resuming", 5),
+    ("reviewing", 5),
+    ("running", 5),
+    ("screening", 5),
+    ("service_down", 5),
+    ("standing", 5),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 7),
-    ("stopping", 6),
-    ("work", 7),
-    ("working", 8),
+    ("standing_down", 6),
+    ("stopping", 5),
+    ("work", 6),
+    ("working", 7),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
@@ -208,9 +227,26 @@ const DECLARED_ACTS: usize = 11;
 /// and with it gone `Owed::on` answered for nothing and was **deleted**. That is the first of the
 /// seven exhaustive state-matches to go, and the first round in which [`DRIVER_ARMS`] rows FALL.
 ///
+/// ⭐⭐⭐⭐⭐ **AND THE ELEVENTH THROUGH TWENTY-SECOND ARE NOT PROMPTS AT ALL** — 2026-08-26, the
+/// second match of stage 3. 10 → **22**, the largest jump this number has ever taken, and every one
+/// of the twelve is a `pass.do`: *what the driver DOES while the machine is here*. They live on the
+/// `work` region rather than on its states, which was `sce-build`'s answer rather than a taste —
+/// an event on every child of a compound satisfies its handler-consistency precondition, and that
+/// compound then reports twenty-seven deliberate protocol-stage gaps it has always had. The
+/// validator's own documentation names a parent-level handler as the repair.
+///
+/// ⚠⚠ **TWELVE ACTS FOR FIFTEEN DRIVEN STATES, AND THE DIFFERENCE IS THE FINDING.** `priming` and
+/// `disputing` both answer `sent`; `working`, `closing` and `stopping` all answer `watch`. In the
+/// driver those were five arms. A decision that was being made five times turns out to be two, and
+/// nothing could see that while the answer came from the state's own name.
+///
+/// ⚠ **SO THIS NUMBER IS NO LONGER ONLY ABOUT SENTENCES.** A reader expecting it to count prompts
+/// is reading an older comment: it counts what the document asks this host to DO, and since stage 3
+/// most of that is passes.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 10;
+const SERVED_ACTS: usize = 22;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

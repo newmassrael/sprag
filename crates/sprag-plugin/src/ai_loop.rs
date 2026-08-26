@@ -903,10 +903,18 @@ impl AiLoop {
             // the one every unattended run gives: stop, and publish what is being asked, with the
             // driver's own refusal saying which of the two it was.
             (AiLoopState::AwaitingHuman, _) => Verdict::Blocked(self.asking()),
+            // ⚠⚠⚠⚠⚠ THE SENTENCE CHANGED WITH REGISTER ITEM 470's STAGE 3, because what makes a
+            // state undrivable did. It used to be a state the DRIVER had no arm for, and the
+            // repair it named was this build's own gap. Now the driver has no list of states at
+            // all: it asks `ai_loop.scxml` what a pass is for, and the states it cannot drive are
+            // the ones that answer nothing. So the file to open is the DOCUMENT, and the line to
+            // look for is the one that is missing.
             (state, _) => {
                 return Err(PaneError::Undrivable(format!(
-                    "it reached {state:?}, which this build has no effect for — and the brief that \
-                     could reach it is refused at the door, so this run took a path nobody wrote"
+                    "it reached {state:?}, and this run's document asked for no act on the pass \
+                     that looked at it — `ai_loop.scxml`'s `work` region answers `pass` with a \
+                     `<send type=\"x-sprag-host\" event=\"pass.do\">` for every state a run can be \
+                     driven in, and there is no `In('…')` arm for this one"
                 )));
             }
         };
@@ -8494,7 +8502,7 @@ mod tests {
     ) {
         engine.raise_external(event, data, "");
         engine.step();
-        let _performed = host.taken();
+        let _performed = host.taken(crate::act::Act::Say);
     }
 
     /// ⚠⚠⚠ **HOW THE MACHINE TELLS ITS DRIVER WHAT TO DO — asked of the ENGINE, because the

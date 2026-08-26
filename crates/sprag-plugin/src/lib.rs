@@ -203,7 +203,7 @@ pub use access::{
     PaneJobControl, PaneLifecycle, PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision,
     PaneTerminalModes, RowTrail, Settling, Signalled, WorkspacePaneAccess, Written,
 };
-pub use act::{Act, Asked, Asks, Refused as ActRefused, Serving};
+pub use act::{Act, Asked, Asks, Does, Refused as ActRefused, Serving};
 pub use agent::{Agent, AgentSpec};
 pub use ai_loop::{AiLoop, NotStarted};
 pub use answer::Answer;

@@ -90,6 +90,27 @@ pub enum Act {
     /// Arguments: `text` (what to say) and `asks` (what the sentence is asking the peer for — see
     /// [`Asks`]). Both are required, because a prompt with neither is not a prompt.
     Say,
+    /// `pass.do` — carry out what this pass of the driver is for.
+    ///
+    /// Argument: `does` — which effect, from the closed space [`Does`] names. Required: an act that
+    /// does not say what it is is one this host would perform as a shrug.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this act is declared on a TRANSITION and never on a state entry
+    ///
+    /// Register item 470, stage 3. The other act moves a SENTENCE, which a state says once on the
+    /// way in; this one moves *what the driver does while it is here*, and a state is looked at
+    /// many times over one entry — `working` is pumped for as long as its peer keeps working. So
+    /// the document answers it on `<transition event="pass">`, W3C SCXML 3.13's transition with no
+    /// `target`: the driver asks on every pass, the machine does not move, and no `<onentry>`
+    /// re-runs. `probe.rs`'s
+    /// `a_transition_can_ask_this_host_for_an_act_and_its_arguments_reach_it` is what measured that
+    /// road, re-entry counter and all, before any of this was written.
+    ///
+    /// ⚠⚠ **AND A STATE THAT ANSWERS NOTHING IS NOT A STATE THAT DOES NOTHING.** The driver reports
+    /// `Pumped::Unbuilt` — *this driver has no act for what it is looking at* — rather than
+    /// carrying on, because a pass that silently did nothing is the silence this whole module
+    /// exists to end.
+    Pass,
 }
 
 impl Act {
@@ -97,13 +118,14 @@ impl Act {
     ///
     /// ⚠ The one list. [`Act::of`] reads it rather than spelling a second `match`, so an act added
     /// to the enum is served the moment it names itself.
-    pub const ALL: [Self; 1] = [Self::Say];
+    pub const ALL: [Self; 2] = [Self::Say, Self::Pass];
 
     /// The name a document calls this act by — its own `<send event="…">`.
     #[must_use]
     pub const fn named(self) -> &'static str {
         match self {
             Self::Say => "prompt.say",
+            Self::Pass => "pass.do",
         }
     }
 
@@ -184,15 +206,146 @@ impl Asks {
     }
 }
 
+/// **WHAT ONE PASS OF THE DRIVER IS FOR** — [`Act::Pass`]'s `does` argument.
+///
+/// # ⚠⚠⚠⚠⚠ What this space replaced, and why it is a space rather than a table
+///
+/// Register item 470, stage 3. `OuterLoop::pump` chose what to do from a `match` over all
+/// twenty-eight states of `ai_loop.scxml` — *this state watches a turn, that one waits an outage
+/// out, that one asks a person* — which is a SECOND COPY OF THE TOPOLOGY, decided in Rust, keyed by
+/// the document's own state names. It is the largest thing item 470 was filed about.
+///
+/// Every word here names an EFFECT, and effects are the host's half of item 470's line: writing
+/// bytes at a pty, parsing a screen, spawning a process. What moved is the DECISION — *which of
+/// them does this state want* — which each state now says for itself. A state added to the document
+/// costs this crate no Rust at all: it declares one of these words, and one that declares none is
+/// refused where the machine can hear it.
+///
+/// ⚠⚠ **THE SPACE IS CLOSED AND A WORD OUTSIDE IT IS REFUSED**, for [`Asks`]'s reason exactly: the
+/// match this replaced was exhaustive on purpose, a document cannot be made to fail to compile, and
+/// a refusal is what stands in the compiler's place.
+///
+/// ⚠ **IT IS NOT ONE WORD PER STATE, AND THAT IS THE POINT.** Three states watch a turn
+/// (`working`, `closing`, `stopping`) and two report a sentence already delivered (`priming`,
+/// `disputing`) — so this space is smaller than the match it replaced, and the difference is
+/// exactly the decisions that were being made twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Does {
+    /// `ready` — look at the peer and say whether it can be spoken to yet.
+    ///
+    /// ⚠ The one word whose effect can decline to produce an event at all: a peer that is not ready
+    /// leaves the machine where it is, because a prompt typed at a program that is still booting is
+    /// read back off the pseudoterminal's own echo and called delivered (measured, R379).
+    Ready,
+    /// `sent` — the sentence this state was entered with has gone in; say so.
+    ///
+    /// ⚠⚠ It performs NOTHING, and that is the honest reading rather than a gap: the prompt was
+    /// delivered by the act the entry declared, so what is left of the pass is to tell the machine.
+    /// Two states use it and they are the two whose whole job is to have spoken.
+    Sent,
+    /// `watch` — watch the turn the peer is taking and say how it ended.
+    Watch,
+    /// `judge` — read the finished turn off the pane, have the claim checked, and report what was
+    /// found.
+    Judge,
+    /// `screen` — match the dialog the peer has raised against the author's standing instructions.
+    Screen,
+    /// `wait` — the peer's service failed and the only treatment is time.
+    Wait,
+    /// `reflect` — watch the reflection turn and read the direction out of what it answered.
+    ///
+    /// ⚠ Distinct from [`Self::Watch`] because a reflection is not judged, does not spend the
+    /// document's `max_turns`, and its answer is read back into the brief of the session that
+    /// replaces this one — see [`Asks::Direction`], which is the sentence half of the same fact.
+    Reflect,
+    /// `review` — ask what the sessions this run has already closed did.
+    Review,
+    /// `replace` — put a fresh session in the seat.
+    Replace,
+    /// `resume` — set the replacement session going.
+    Resume,
+    /// `attend` — a person is expected; wait for one.
+    Attend,
+    /// `redirect` — the work needs pointing somewhere else.
+    Redirect,
+}
+
+impl Does {
+    /// Every effect a pass may be for.
+    pub const ALL: [Self; 12] = [
+        Self::Ready,
+        Self::Sent,
+        Self::Watch,
+        Self::Judge,
+        Self::Screen,
+        Self::Wait,
+        Self::Reflect,
+        Self::Review,
+        Self::Replace,
+        Self::Resume,
+        Self::Attend,
+        Self::Redirect,
+    ];
+
+    /// The word a document writes for it.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Sent => "sent",
+            Self::Watch => "watch",
+            Self::Judge => "judge",
+            Self::Screen => "screen",
+            Self::Wait => "wait",
+            Self::Reflect => "reflect",
+            Self::Review => "review",
+            Self::Replace => "replace",
+            Self::Resume => "resume",
+            Self::Attend => "attend",
+            Self::Redirect => "redirect",
+        }
+    }
+
+    /// What `word` asks a pass to do, or [`None`] for a word this space does not hold.
+    #[must_use]
+    pub fn of(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|does| does.named() == word)
+    }
+}
+
 /// **ONE ACT THE DOCUMENT ASKED FOR, WITH THE ARGUMENTS IT SENT.**
+///
+/// ⚠ A variant per act rather than one struct with every act's arguments on it: the two acts share
+/// no argument, and a struct would have to hold each of them as *present for one act and meaningless
+/// for the other* — a shape where the wrong reader gets an answer instead of a refusal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Asked {
-    /// The act.
-    pub act: Act,
-    /// [`Act::Say`]'s `text` — the sentence to put to the peer, as the document composed it.
-    pub text: String,
-    /// [`Act::Say`]'s `asks` — what that sentence is asking for.
-    pub asks: Asks,
+pub enum Asked {
+    /// [`Act::Say`] — put this sentence to the peer.
+    Say {
+        /// The sentence to put to the peer, as the document composed it.
+        text: String,
+        /// What that sentence is asking for.
+        asks: Asks,
+    },
+    /// [`Act::Pass`] — carry this pass out.
+    Pass {
+        /// Which effect the pass is for.
+        does: Does,
+    },
+}
+
+impl Asked {
+    /// Which act this is.
+    ///
+    /// ⚠ Derived rather than carried beside the arguments: an act and its arguments that could
+    /// disagree are two authorities on one fact, which is the shape this register keeps paying for.
+    #[must_use]
+    pub const fn act(&self) -> Act {
+        match self {
+            Self::Say { .. } => Act::Say,
+            Self::Pass { .. } => Act::Pass,
+        }
+    }
 }
 
 /// **WHY THIS HOST WOULD NOT PERFORM AN ACT.**
@@ -222,6 +375,14 @@ pub enum Refused {
         argument: &'static str,
         /// What the document said, so a reader repairs the file rather than guessing.
         said: String,
+        /// Every word the space DOES hold, carried from the site that knows which space it was.
+        ///
+        /// ⚠⚠ Carried rather than looked up where the sentence is written, and the reason is that
+        /// two acts now have closed-space arguments: a formatter deciding which vocabulary to
+        /// print from the act and the argument name would need a fallback for the pairing nobody
+        /// builds, and a fallback that prints an EMPTY space is a refusal that tells a reader
+        /// their word was outside a space with nothing in it.
+        holds: Vec<&'static str>,
     },
     /// The act's argument arrived EMPTY, which is a value its space does not hold.
     ///
@@ -282,11 +443,11 @@ impl std::fmt::Display for Refused {
                 act,
                 argument,
                 said,
+                holds,
             } => write!(
                 f,
-                "`{}`'s `<param name=\"{argument}\">` said {said:?}, which is not one of {:?}",
+                "`{}`'s `<param name=\"{argument}\">` said {said:?}, which is not one of {holds:?}",
                 act.named(),
-                Asks::ALL.map(Asks::named),
             ),
             Self::Empty { act, argument } => write!(
                 f,
@@ -330,17 +491,45 @@ impl std::fmt::Debug for Serving {
 }
 
 /// [`Serving`]'s record.
+///
+/// # ⚠⚠⚠⚠⚠ One slot PER ACT, and the second one was a run's answer rather than a design
+///
+/// It was a single slot while this host served a single act, on the rule *the driver carries out
+/// one act per pass*. [`Act::Pass`] broke that rule truthfully: the two acts answer two different
+/// questions asked at two different moments of one pass — *what is this pass for* before the work,
+/// *what does the edge you just took owe the peer* after it — so a pass legitimately carries out
+/// one of each.
+///
+/// ⚠⚠ **AND THE RUN THAT SAID SO IS `resume`.** A person letting go of a held loop raises `resume`
+/// OUTSIDE the pass's own machinery, and that edge declares a sentence; the sentence therefore
+/// waits in the slot while the pass that follows asks what it is for. With one slot the pass act
+/// arrived on top of it and was refused as an overrun — three gates went red at once, all of them
+/// holds, and every one of them ended `failed` on `error.execution`.
+///
+/// ⚠ **WHAT DID NOT CHANGE IS THE REFUSAL.** A second act of the SAME kind over one nobody carried
+/// out is still refused rather than queued or overwritten, which is the whole of what `Overrun`
+/// was for: an overwrite is a sentence nobody said in a run that reads like one with less to say.
 #[derive(Default)]
 struct Book {
-    /// The act the document has asked for and nothing has carried out yet.
-    ///
-    /// ⚠ ONE, not a queue, and that is a claim about this host rather than a simplification: the
-    /// driver carries out one act per pass, so a second one arriving before the first is taken is
-    /// an act nobody could perform. It is REFUSED (`Refused::Overrun`) instead of overwriting the
-    /// slot, because an overwrite is precisely the silence this module exists to end.
-    asked: Option<Asked>,
+    /// The sentence act ([`Act::Say`]) nothing has carried out yet.
+    saying: Option<Asked>,
+    /// The pass act ([`Act::Pass`]) nothing has carried out yet.
+    passing: Option<Asked>,
     /// Every act this host would not perform, in the order they were asked for.
     refused: Vec<Refused>,
+}
+
+impl Book {
+    /// The slot `act`'s requests wait in.
+    ///
+    /// ⚠ A `match` rather than a map, so an act added to [`Act`] does not compile until somebody
+    /// has said where its requests wait — the one place this module still gets a compiler.
+    const fn slot(&mut self, act: Act) -> &mut Option<Asked> {
+        match act {
+            Act::Say => &mut self.saying,
+            Act::Pass => &mut self.passing,
+        }
+    }
 }
 
 impl Serving {
@@ -361,22 +550,26 @@ impl Serving {
         let book = Arc::clone(&self.0);
         machine.register_event_processor(HOST, move |request| {
             let mut book = book.lock().unwrap_or_else(PoisonError::into_inner);
-            // ⚠⚠ THE SLOT IS CONSULTED BEFORE THE ARGUMENTS ARE, so a second act is refused for
-            // BEING second rather than for whatever else might also be wrong with it. Two reasons
+            // ⚠⚠ THE SLOT IS CONSULTED BEFORE THE ARGUMENTS ARE — for the act that ARRIVED, which
+            // is what tells its slot from the other one — so a second act is refused for BEING
+            // second rather than for whatever else might also be wrong with it. Two reasons
             // reported as one is the fold this register keeps paying for.
-            let answer = match (&book.asked, read(&request.event_name, &request.params)) {
-                (Some(waiting), Ok(arriving)) => Err(Refused::Overrun {
-                    held: waiting.act,
-                    arriving: arriving.act,
-                }),
-                (_, answered) => answered,
+            let answer = match read(&request.event_name, &request.params) {
+                Ok(arriving) => match book.slot(arriving.act()) {
+                    Some(waiting) => Err(Refused::Overrun {
+                        held: waiting.act(),
+                        arriving: arriving.act(),
+                    }),
+                    empty => {
+                        *empty = Some(arriving);
+                        Ok(())
+                    }
+                },
+                Err(why) => Err(why),
             };
             let held = &mut *book;
             match answer {
-                Ok(asked) => {
-                    held.asked = Some(asked);
-                    Vec::new()
-                }
+                Ok(()) => Vec::new(),
                 Err(why) => {
                     let said = why.to_string();
                     held.refused.push(why);
@@ -392,15 +585,22 @@ impl Serving {
         });
     }
 
-    /// **THE ACT THE DOCUMENT ASKED FOR AND NOTHING HAS CARRIED OUT**, taken.
+    /// **THE `act` THE DOCUMENT ASKED FOR AND NOTHING HAS CARRIED OUT**, taken.
     ///
     /// Taking rather than reading: an act is performed once. A second pass over the same slot would
     /// put the same sentence to the peer twice.
-    pub fn taken(&self) -> Option<Asked> {
+    ///
+    /// ⚠⚠ THE CALLER NAMES WHICH ACT IT IS ANSWERING, and that is not a convenience: the two acts
+    /// are asked for at two different moments of one pass, so a taker that returned *whatever is
+    /// waiting* would hand one caller the other's work — see this host's own `Book`, which is
+    /// named rather than linked because it is crate-private and a public doc that links a private
+    /// item does not build here. A caller that has no act for what it finds is one that took the
+    /// wrong thing, and it cannot get here.
+    pub fn taken(&self, act: Act) -> Option<Asked> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .asked
+            .slot(act)
             .take()
     }
 
@@ -448,9 +648,25 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
                     act,
                     argument: "asks",
                     said,
+                    holds: Asks::ALL.map(Asks::named).to_vec(),
                 });
             };
-            Ok(Asked { act, text, asks })
+            Ok(Asked::Say { text, asks })
+        }
+        // ⚠⚠⚠ NO EMPTY CHECK OF ITS OWN, and that is the closed space doing the work `text`'s
+        // needs a line for: `Does::of("")` already answers [`None`], so an argument that evaluated
+        // to nothing is refused below with the space it missed printed beside it.
+        Act::Pass => {
+            let said = argument(params, act, "does")?;
+            let Some(does) = Does::of(&said) else {
+                return Err(Refused::Unreadable {
+                    act,
+                    argument: "does",
+                    said,
+                    holds: Does::ALL.map(Does::named).to_vec(),
+                });
+            };
+            Ok(Asked::Pass { does })
         }
     }
 }
@@ -475,7 +691,7 @@ mod tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{Act, Asks, Refused, Serving, read};
+    use super::{Act, Asked, Asks, Does, Refused, Serving, read};
     use crate::sm::probe_send_type_sm::ProbeSendTypePolicy;
 
     /// The act `probe_send_type.scxml` addresses to this host — a name [`Act`] does not serve.
@@ -604,8 +820,10 @@ mod tests {
             "⚠⚠ and the sentence a person reads must NAME it: {}",
             refused[0],
         );
+        // ⚠ BOTH SLOTS, because a refusal recorded in the OTHER one is exactly as silent as a
+        // refusal recorded in the one this gate happens to name — see [`Book`].
         assert!(
-            serving.taken().is_none(),
+            Act::ALL.iter().all(|act| serving.taken(*act).is_none()),
             "⚠⚠⚠⚠ AND A REFUSED ACT MUST NOT BE RECORDED AS ONE TO CARRY OUT. A host that refused \
              the machine and queued the work anyway would do it on the next pass, to a run the \
              document had already failed.",
@@ -628,7 +846,7 @@ mod tests {
     /// that a refusal reaches the machine at all — is the gate above's, driven end to end.
     #[test]
     fn an_act_whose_arguments_this_host_cannot_perform_is_refused_and_never_defaulted() {
-        let with = |pairs: &[(&str, &str)]| {
+        let asking = |act: Act, pairs: &[(&str, &str)]| {
             let mut params: HashMap<String, Vec<String>> = HashMap::new();
             for (name, value) in pairs {
                 params
@@ -636,14 +854,20 @@ mod tests {
                     .or_default()
                     .push((*value).to_owned());
             }
-            read(Act::Say.named(), &params)
+            read(act.named(), &params)
+        };
+        let with = |pairs: &[(&str, &str)]| asking(Act::Say, pairs);
+        let asks_of = |read: Result<Asked, Refused>| match read.expect("a well-formed act") {
+            Asked::Say { asks, .. } => asks,
+            other => panic!("`prompt.say` is what was asked for: {other:?}"),
         };
 
         // ── THE STAGED CONTROL: the well-formed act, so every refusal below is about the breach ──
         assert_eq!(
-            with(&[("text", "where did you get to?"), ("asks", "account")])
-                .expect("a well-formed act is performed")
-                .asks,
+            asks_of(with(&[
+                ("text", "where did you get to?"),
+                ("asks", "account")
+            ])),
             Asks::Account,
             "⚠⚠⚠ THE CONTROL: the act this host serves, with the arguments the document writes, \
              must be READ — otherwise the refusals below are consistent with a host that refuses \
@@ -664,14 +888,72 @@ mod tests {
         // refused where the machine can hear it. Measured in both directions, 2026-08-26.
         for asks in Asks::ALL {
             assert_eq!(
-                with(&[("text", "a sentence"), ("asks", asks.named())])
-                    .expect("every word this space holds is one a document may write")
-                    .asks,
+                asks_of(with(&[("text", "a sentence"), ("asks", asks.named())])),
                 asks,
                 "⚠⚠⚠⚠ `{}` is in `Asks::ALL` and this door does not read it back as itself",
                 asks.named(),
             );
         }
+
+        // ⚠⚠⚠⚠⚠ AND THE SAME OF THE SECOND ACT'S SPACE — register item 470, stage 3. `does` is
+        // what replaced `pump`'s twenty-eight-arm state match, so the argument that carries it is
+        // load-bearing in exactly the way `asks` is: a word this door cannot read back is one a
+        // state may declare and this host would refuse, leaving the run `failed` at a state whose
+        // effect the driver still has.
+        for does in Does::ALL {
+            assert_eq!(
+                match asking(Act::Pass, &[("does", does.named())])
+                    .expect("every word this space holds is one a state may declare")
+                {
+                    Asked::Pass { does } => does,
+                    other => panic!("`pass.do` is what was asked for: {other:?}"),
+                },
+                does,
+                "⚠⚠⚠⚠ `{}` is in `Does::ALL` and this door does not read it back as itself",
+                does.named(),
+            );
+        }
+        assert_eq!(
+            asking(Act::Pass, &[]),
+            Err(Refused::Missing {
+                act: Act::Pass,
+                argument: "does",
+            }),
+            "⚠⚠⚠⚠⚠ AN OMITTED `does` MUST NOT DEFAULT, and this is the guard that replaced the \
+             compiler: the match this act took over was EXHAUSTIVE, so a state the driver had no \
+             act for could not be added. A default here would give every such state some other \
+             state's effect, quietly.",
+        );
+        assert_eq!(
+            asking(Act::Pass, &[("does", "")]),
+            Err(Refused::Unreadable {
+                act: Act::Pass,
+                argument: "does",
+                said: String::new(),
+                holds: Does::ALL.map(Does::named).to_vec(),
+            }),
+            "⚠⚠⚠⚠ AND A `<param expr=\"…\">` THAT EVALUATED TO NOTHING IS REFUSED BY THE SPACE \
+             ITSELF, which is why this act needs no `Empty` arm of its own: the empty string is \
+             not one of the twelve words, and the refusal a reader gets names them.",
+        );
+        assert_eq!(
+            asking(Act::Pass, &[("does", "Watch")]),
+            Err(Refused::Unreadable {
+                act: Act::Pass,
+                argument: "does",
+                said: "Watch".to_owned(),
+                holds: Does::ALL.map(Does::named).to_vec(),
+            }),
+            "⚠⚠⚠ and a word outside the space is refused rather than read as the nearest one",
+        );
+        assert_eq!(
+            asking(Act::Pass, &[("does", "watch")])
+                .expect("the well-formed act")
+                .act(),
+            Act::Pass,
+            "⚠⚠ THE STAGED CONTROL FOR THE THREE ABOVE: this act reads at all, so the refusals are \
+             about the arguments rather than about `pass.do` being unserved",
+        );
 
         assert_eq!(
             with(&[("text", "carry on")]),
@@ -711,6 +993,7 @@ mod tests {
                 act: Act::Say,
                 argument: "asks",
                 said: "Account".to_owned(),
+                holds: Asks::ALL.map(Asks::named).to_vec(),
             }),
             "⚠⚠⚠ AND A WORD OUTSIDE THE SPACE IS REFUSED RATHER THAN READ AS THE OTHER ONE. A \
              capital is what a person writes; reading it as `work` would silently drop an account \
@@ -787,14 +1070,20 @@ mod tests {
         );
 
         // ── AND THE FIRST IS THE ONE THAT SURVIVED ──
-        let carried = serving.taken().expect("the first act is still to be done");
+        let carried = serving
+            .taken(Act::Say)
+            .expect("the first act is still to be done");
         assert_eq!(
-            carried.text, "the first question",
+            carried,
+            Asked::Say {
+                text: "the first question".to_owned(),
+                asks: Asks::Work,
+            },
             "⚠⚠⚠⚠ THE SECOND MUST NOT HAVE OVERWRITTEN THE FIRST. An overwrite refuses the machine \
              and then performs the act it refused, which is worse than either answer alone.",
         );
         assert!(
-            serving.taken().is_none(),
+            serving.taken(Act::Say).is_none(),
             "⚠⚠ and an act is carried out ONCE — a slot that answered twice would put the same \
              sentence to the peer again on the next pass",
         );
