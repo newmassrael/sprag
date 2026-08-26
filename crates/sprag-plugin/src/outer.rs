@@ -14918,6 +14918,303 @@ mod tests {
         );
     }
 
+    /// The line the stand-in asker answers with, and — the marker stripped — what the review has to
+    /// carry into `review.done` for either run below to exist at all.
+    const CARRIED: &str = "read the record once instead of polling it";
+
+    /// **AN ARGV THAT ANSWERS A CONTEXT REVIEW THE WAY `context_review.scxml` ASKS A MODEL TO** —
+    /// one line, opened with that document's own `carry_marker`.
+    ///
+    /// ⚠ `/bin/sh -c` rather than an `echo`, and the reason is `judge::said_by_another`: it APPENDS
+    /// the rendered question to the argv, so an `echo` would print the whole question back on the
+    /// marker's own row — and `review::line_after` takes what follows the marker ON THAT ROW. Here
+    /// the question lands in `$0`, which a shell running `-c` ignores.
+    ///
+    /// ⚠⚠ The marker is spelled rather than read, for the reason `review.rs`'s own asker gate
+    /// spells it: a fixture cannot open a datamodel it has not initialised. `context_review.scxml`
+    /// authors `INSTEAD:`, and this is the second thing in the workspace ever to read that `<data>`.
+    fn answers_with_the_marker() -> crate::judge::JudgeSpec {
+        crate::judge::JudgeSpec {
+            argv: vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                format!("printf 'INSTEAD: {CARRIED}\\n'"),
+            ],
+            within: Duration::from_secs(20),
+        }
+    }
+
+    /// **WHAT A CLOSED SESSION LEFT BEHIND** — what it was BILLED, and the habit a review has to
+    /// find before it can ask anybody anything.
+    ///
+    /// ⚠ Ten of ONE command, over `context_review.scxml`'s authored `repeat_limit` of eight. The
+    /// act rows carry no `usage`, so `spend::spend_in` never counts them as billed requests and the
+    /// three numbers stay the trio's; the billed rows carry no `content`, so `review::habits_in`
+    /// finds no act in them. **One file, two readers, neither disturbing the other** — which is
+    /// what a real record is, and the reason this gate does not need two.
+    fn billed_with_a_habit(sample: crate::testing::Billed) -> String {
+        let acts = (0..10)
+            .map(|turn| {
+                serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "id": format!("act_{turn}"),
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": { "command": "cargo test --workspace" },
+                        }],
+                    },
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let billed = sample.transcript();
+        format!("{billed}\n{acts}")
+    }
+
+    /// Drive a run until it leaves `reviewing` **CARRYING A LINE**, and hand back where that took
+    /// it, what the pass said, and the whole walk — because *which door* is the first question of
+    /// any red here.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the record is written MID-RUN, and why that is the honest shape
+    ///
+    /// A review counts the run's CLOSED sessions, and the only thing that closes one is
+    /// `replacing`. So the premise this gate needs — a finished session with a habit in it — cannot
+    /// exist until the run has restarted once, and **that first restart must not depend on the
+    /// number under test**, or a mutation would break the STAGING and the red would be about
+    /// something else entirely.
+    ///
+    /// So the record does not exist while the first review runs. `context` reads 0, every guard
+    /// that mentions `cold` declines on the READING rather than on the price, and the run leaves by
+    /// `unread` whatever the multiplier happens to be. The file is written the moment the session it
+    /// belongs to is let go — which is exactly when a real agent's record stops being appended to,
+    /// so what is staged here is the product's shape and not this gate's convenience.
+    ///
+    /// ⚠ It is `left_reviewing`'s peer and brief, unchanged, plus the one field that makes
+    /// `review.done` reachable at all: `AiLoopSpec::review_asks`.
+    fn left_reviewing_carrying(
+        record: &std::path::Path,
+        reading: crate::testing::Billed,
+        ceiling: i64,
+    ) -> (AiLoopState, Option<Because>, Vec<String>) {
+        // ⚠ NOTHING HAS BEEN FILED YET, which is the whole of the staging above. A leftover from an
+        // earlier run of this suite would give the first review a habit to find and the run would
+        // restart on the door under test.
+        let _ = std::fs::remove_file(record);
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        let access = crate::testing::supervised_writing(&workspace, record);
+        let mut loops = with_bound(
+            OuterLoop::new(
+                Arc::clone(&lua),
+                pane,
+                &AiLoopSpec {
+                    // ⚠⚠⚠ THE ONE FIELD THAT MOVES from every other driver gate in this file, and
+                    // the reason this one can exist — register item 502. Without an asker the
+                    // review answers `ask.none`, ends `Nothing`, and the run leaves on
+                    // `review.none`: the guard below would never be evaluated.
+                    review_asks: Some(answers_with_the_marker()),
+                    ..spec(Some(ReadyWhen::Settles("claude".to_string())))
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings"),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the stand-in keeps answering".to_string(),
+                milestone: "reach the first checkpoint".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                context_ceiling: Some(ceiling),
+                reflect_after_refusals: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠ ON, and it is what brings this run to `reviewing` TWICE: once with nothing
+                // closed behind it, and once with the record this driver filed in between.
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut filed = false;
+        let mut landed = None;
+        while walked.len() < 80 {
+            match loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            {
+                Pumped::Moved {
+                    from,
+                    raised,
+                    to,
+                    because,
+                    ..
+                } => {
+                    walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                    if from == AiLoopState::Reviewing && raised == AiLoopEvent::ReviewDone {
+                        landed = Some((to, because));
+                        break;
+                    }
+                    // ⚠⚠ THE SESSION HAS JUST BEEN LET GO, so its record is on the run's `ended`
+                    // list and nothing will append to it again. That is the moment a real agent's
+                    // record becomes a finished one, and the only moment this file may appear.
+                    if from == AiLoopState::Restarting && !filed {
+                        filed = true;
+                        std::fs::write(record, billed_with_a_habit(reading))
+                            .expect("the record the closed session left behind");
+                    }
+                }
+                other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+            }
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        let _ = std::fs::remove_file(record);
+        let Some((to, because)) = landed else {
+            panic!(
+                "⚠⚠⚠⚠⚠ NO RUN LEFT `reviewing` ON `review.done` IN 80 PASSES, so nothing below is \
+                 about the guard this gate exists for. Read the walk for WHICH half is missing: no \
+                 `Restarting` at all means the `unread` staging stopped working, and a \
+                 `Reviewing --ReviewNone-->` after the record was filed means the review found no \
+                 habit or its asker said nothing. Filed: {filed}. Walked {walked:?}"
+            );
+        };
+        (to, because, walked)
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE SAME ECONOMIC DOOR, ON THE ENDING A REVIEW HAS TO EARN — WALKED BY A RUN AT
+    /// LAST** — register item 502, whose whole complaint was that `review.done`'s guard had never
+    /// been evaluated by anything but a reader of its own text.
+    ///
+    /// # ⚠⚠⚠⚠ What the gate above cannot say, and it is not a small half
+    ///
+    /// Both of its runs leave `reviewing` on `review.none` — a review that carried nothing — and
+    /// `reviewing` authors the same five doors TWICE, once per ending. So the `20` in the
+    /// `review.done` copy could be changed to anything at all and every run in this workspace
+    /// stayed green: its only reader was
+    /// `reviewing_decides_where_the_next_milestone_is_taken_on_the_reading_and_not_on_a_count`,
+    /// which compares the two guards' TEXT. Item 477's line is that a gate over the words cannot see
+    /// what a run would, and item 502 is the bill for it.
+    ///
+    /// ⚠⚠ **AND UNTIL THE ASKING WAS WIRED NO RUN COULD.** `Ending::Carried` is reached only
+    /// through `asking --ask.done--> writing`, and `ContextReview::run`'s `Asking` arm raised
+    /// `AskNone` unconditionally because no second agent existed to answer. What makes this gate
+    /// possible is `AiLoopSpec::review_asks` — an argv that replies with the document's own
+    /// `carry_marker`.
+    ///
+    /// # ⚠⚠⚠ Two readings ONE TOKEN APART, which is what pins the multiplier from BOTH sides
+    ///
+    /// `Billed::break_even` is `floor + 20 * cold` — the guard rearranged — so a session reading
+    /// exactly that is the FIRST that pays and one token under it is the LAST that does not:
+    ///
+    /// | reading | as authored | `20` → `1` | `20` → `21` |
+    /// |---|---|---|---|
+    /// | `break_even()` | `restarting`, `economics` | unchanged | **`priming`** |
+    /// | `break_even() - 1` | `priming` | **`restarting`** | unchanged |
+    ///
+    /// **Neither run alone is a ratchet.** The paying one still fires at every SMALLER multiplier
+    /// and the sparing one still declines at every LARGER, so either on its own leaves the number a
+    /// direction to move in — which is exactly how a multiplier nobody ran could sit there. The
+    /// pair leaves it nowhere, and that is item 502's ③.
+    #[test]
+    fn the_economic_door_a_carried_line_takes_is_priced_by_a_run() {
+        /// Above both readings, so `capacity` can never be what moves either run — the same ceiling
+        /// both sibling gates call ROOMY.
+        const ROOMY: i64 = 800_000;
+
+        let here = crate::testing::MEASURED_HERE;
+        let pays = here.reading(here.break_even());
+        let spare = here.reading(here.break_even() - 1);
+
+        // ⚠⚠⚠⚠ THE PREMISES, BEFORE ANY PANE EXISTS — arithmetic the DOCUMENT is about to redo.
+        // They are what make a red below *the guard changed its mind* rather than *the fixture
+        // drifted out from under it*.
+        assert!(
+            pays.pays() && pays.discardable() == pays.toll(),
+            "⚠⚠⚠ the paying run must sit EXACTLY on the threshold, or it stops pinning the \
+             multiplier from above: {} discardable against a toll of {}",
+            pays.discardable(),
+            pays.toll(),
+        );
+        assert!(
+            !spare.pays() && spare.discardable() + 1 == spare.toll(),
+            "⚠⚠⚠ and the sparing run exactly one token under it, or it stops pinning from below: \
+             {} discardable against a toll of {}",
+            spare.discardable(),
+            spare.toll(),
+        );
+        assert!(
+            spare.discardable() >= spare.cold,
+            "⚠⚠⚠⚠⚠ AND THE MUTATION ITEM 502 NAMES MUST BE ABLE TO MOVE IT: at a multiplier of ONE \
+             the sparing run's trade pays, so a `20` that became a `1` sends it to `restarting`. A \
+             sample failing this would leave the gate green under the very change it exists to \
+             catch, which is the shape a green mutation always has",
+        );
+        assert!(
+            i64::try_from(pays.context).is_ok_and(|reading| reading < ROOMY),
+            "⚠⚠ and the ceiling must stay above the larger reading, or `capacity` outranks and \
+             neither run below is about this door",
+        );
+
+        let home = std::env::temp_dir().join(format!("sprag-carried-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the records in");
+        let paid = home.join("read-onto-the-break-even.jsonl");
+        let kept = home.join("read-one-token-short-of-it.jsonl");
+
+        let (paid_to, paid_why, paid_walk) = left_reviewing_carrying(&paid, pays, ROOMY);
+        let (kept_to, kept_why, kept_walk) = left_reviewing_carrying(&kept, spare, ROOMY);
+        let _ = std::fs::remove_dir_all(&home);
+
+        // ── ⭐ ITEM 502's ②: A RUN, AND NOT A READER OF THE GUARD, HAS TAKEN THIS DOOR ──
+        let carried = |walk: &[String]| {
+            walk.iter()
+                .any(|edge| edge.contains("Reviewing --ReviewDone-->"))
+        };
+        assert!(
+            carried(&paid_walk) && carried(&kept_walk),
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS ITEM 502 ITSELF: both runs must leave `reviewing` ON \
+             `review.done`. A walk without that edge is a review that carried nothing, and then the \
+             two assertions below are about the `review.none` guard the gate above already holds — \
+             they would pass, and this gate would be measuring its neighbour. Walked {paid_walk:?} \
+             / {kept_walk:?}",
+        );
+        assert_eq!(
+            (paid_to, paid_why),
+            (
+                AiLoopState::Restarting,
+                Some(Because::Restarted(RestartReason::Economics))
+            ),
+            "⚠⚠⚠ a review that CARRIED a line, out of a session sitting exactly on this \
+             population's break-even, must take the economic door. This is the run item 502 says \
+             the arm has never had. Walked {paid_walk:?}",
+        );
+        assert_eq!(
+            (kept_to, kept_why),
+            (AiLoopState::Priming, None),
+            "⚠⚠⚠⚠⚠ ITEM 502's ③: the SAME session ONE TOKEN short of paying must keep it, and go \
+             to `priming` so the line it just carried is composed into the prompt. A `Restarting` \
+             here is the `review.done` guard's multiplier having come down — which until this gate \
+             existed nothing but a comparison of two guards' TEXT could see. Walked {kept_walk:?}",
+        );
+    }
+
     /// ⛔⛔⛔ **THE SENTENCE A PERSON IS TOLD ABOUT A HOLD IS WHAT THE DOCUMENT DOES** — register
     /// item 522's other half, and a ratchet that reads BOTH artefacts.
     ///
