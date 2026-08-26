@@ -848,9 +848,10 @@ impl AiLoop {
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
     }
 
-    /// The verdict for a machine sitting in a state this driver has no effect for.
+    /// **A MACHINE SITTING IN A STATE ITS OWN DOCUMENT ASKED NOTHING FOR** — one answer, and it
+    /// ends the run.
     ///
-    /// # ⚠⚠⚠ Why each of these ENDS the run instead of pumping again
+    /// # ⚠⚠⚠ Why it ENDS the run instead of pumping again
     ///
     /// [`Pumped::Unbuilt`] is advisory — *"a caller that ignores it pumps again"* — and a caller
     /// that does is a loop watching a state nothing will ever move it out of, until a guardrail
@@ -858,53 +859,39 @@ impl AiLoop {
     /// registered cost of an advisory answer, and this is where it is paid: the run stops, and the
     /// word it stops on is the one whose remedy is real.
     ///
-    /// ⚠ AND IT IS NOT *"unimplemented"* to whoever reads the run. `awaiting_human` is the only state
-    /// left here, and a peer that stopped to ask wants an ANSWER while a person at the pane is
-    /// already acting — the same two facts every other plugin reports, given the same two words.
-    /// `reflecting` and `restarting` used to be here as this build's own gap; they are built, so the
-    /// one thing this function is about is a run waiting for somebody who is not coming.
+    /// # ⚠⚠⚠⚠⚠ TWO ARMS STOOD HERE AND BOTH ARE GONE — register item 470, stage 3's last
     ///
-    /// ⚠⚠⚠ **AND IT CHARGES WHAT THE REFUSAL SPENT**, which is a hole this round opened and closed
-    /// in the same breath. `Orchestrator`, `Agent` and `Answer` all report `Cost::Bytes(asking
-    /// .bytes())` on a `Blocked`, and a loop reported zero — true for as long as a loop could not
-    /// type at a dialog, and false the moment `screening` could press a key and give up
-    /// ([`Refusal::NotDismissed`](crate::consent::Refusal::NotDismissed)). **A cost ceiling that
-    /// cannot see what a run typed into somebody's dialog is a ceiling with a hole in it.**
-    fn unbuilt(&self, state: AiLoopState) -> Result<Step, PaneError> {
-        let spent = match self.inner.noticed() {
-            Some(Noticed::Asking(unanswered)) => unanswered.bytes(),
-            _ => 0,
-        };
-        let verdict = match (state, self.inner.noticed()) {
-            // A PERSON TOOK THE PANE. `awaiting_human` is where the document waits for them, and
-            // `taken_over` is this substrate's word for the same fact.
-            (AiLoopState::AwaitingHuman, Some(Noticed::Interrupted(who))) => {
-                Verdict::TakenOver(*who)
-            }
-            // THE PEER STOPPED TO ASK AND NOTHING GOT THE RUN PAST IT. `screening` is built now, so
-            // reaching `awaiting_human` means it ran and answered `screen.none` — no rule claimed
-            // the dialog, or one did and the refusing key did not take it. Either way the answer is
-            // the one every unattended run gives: stop, and publish what is being asked, with the
-            // driver's own refusal saying which of the two it was.
-            (AiLoopState::AwaitingHuman, _) => Verdict::Blocked(self.asking()),
-            // ⚠⚠⚠⚠⚠ THE SENTENCE CHANGED WITH REGISTER ITEM 470's STAGE 3, because what makes a
-            // state undrivable did. It used to be a state the DRIVER had no arm for, and the
-            // repair it named was this build's own gap. Now the driver has no list of states at
-            // all: it asks `ai_loop.scxml` what a pass is for, and the states it cannot drive are
-            // the ones that answer nothing. So the file to open is the DOCUMENT, and the line to
-            // look for is the one that is missing.
-            (state, _) => {
-                return Err(PaneError::Undrivable(format!(
-                    "it reached {state:?}, and this run's document asked for no act on the pass \
-                     that looked at it — `ai_loop.scxml`'s `work` region answers `pass` with a \
-                     `<send type=\"x-sprag-host\" event=\"pass.do\">` for every state a run can be \
-                     driven in, and there is no `In('…')` arm for this one"
-                )));
-            }
-        };
-        Ok(Step::new(Cost::Bytes(spent), verdict).noting(format!(
-            "the loop is in {state:?}, which no driver serves yet"
-        )))
+    /// They were keyed on `AiLoopState::AwaitingHuman` and decided a verdict for it: *a person took
+    /// the pane* and *the peer is asking and nothing got the run past it*. Both were written when
+    /// this driver had no act for that state. `attend` was then built, so the document answers its
+    /// `pass` — and the arms could not fire.
+    ///
+    /// ⚠⚠ **THAT WAS AN ARGUMENT UNTIL THIS ROUND, AND THIS REGISTER HAS BEEN BITTEN BY AN
+    /// UNREACHABILITY ARGUMENT THAT AGED.** So it is measured instead:
+    /// `every_driven_state_says_what_a_pass_of_it_is_for` drives the document to each state, raises
+    /// `pass`, and reads what this host was handed — `awaiting_human` among them.
+    ///
+    /// ⚠⚠⚠ **AND WHAT THEY WERE IS WORSE THAN DEAD CODE.** If a document ever DID drop that state's
+    /// `pass` arm, those arms would have substituted a DRIVER decision for the line an author
+    /// forgot — silently, with a run that looked driven. The sentence below names the missing line
+    /// instead, which is the one repair a person can act on.
+    ///
+    /// ⚠ The COST those arms charged (`Cost::Bytes` of what a refusal typed) is not lost with them:
+    /// the roads that really report `Blocked` and `TakenOver` are [`Pumped::NotReady`]'s own arms,
+    /// which is where a dialog this run met is charged.
+    fn unbuilt(&self, state: AiLoopState) -> PaneError {
+        // ⚠⚠⚠⚠⚠ THE SENTENCE CHANGED WITH REGISTER ITEM 470's STAGE 3, because what makes a state
+        // undrivable did. It used to be a state the DRIVER had no arm for, and the repair it named
+        // was this build's own gap. Now the driver has no list of states at all: it asks
+        // `ai_loop.scxml` what a pass is for, and the states it cannot drive are the ones that
+        // answer nothing. So the file to open is the DOCUMENT, and the line to look for is the one
+        // that is missing.
+        PaneError::Undrivable(format!(
+            "it reached {state:?}, and this run's document asked for no act on the pass that \
+             looked at it — `ai_loop.scxml`'s `work` region answers `pass` with a `<send \
+             type=\"x-sprag-host\" event=\"pass.do\">` for every state a run can be driven in, and \
+             there is no `In('…')` arm for this one"
+        ))
     }
 }
 
@@ -1117,7 +1104,7 @@ impl Plugin for AiLoop {
             Pumped::Ended(state) => {
                 self.ending(state, 0, format!("the loop is already in {state:?}"))
             }
-            Pumped::Unbuilt(state) => self.unbuilt(state),
+            Pumped::Unbuilt(state) => Err(self.unbuilt(state)),
             // ⚠⚠⚠ THE PANE IS NOT THIS LOOP'S TO TYPE INTO, before a byte has been sent. Three of
             // the five answers are facts about somebody else and END the run, for
             // [`Self::unbuilt`]'s reason: a pane showing a question the loop did not provoke — a
@@ -9003,6 +8990,126 @@ mod tests {
                  nobody was ever asked anything, somebody else's hand is in it, the agent is being \
                  replaced, the service is not answering — and a caller reading the run's journal \
                  gets that reason instead of a blank report",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **EVERY DRIVEN STATE SAYS WHAT A PASS OF IT IS FOR** — the twin of the gate above,
+    /// and the fact register item 470's last driver arms were standing on.
+    ///
+    /// # ⚠⚠⚠⚠ What this measures that nothing measured before
+    ///
+    /// `AiLoop::unbuilt` carried two arms keyed on `AiLoopState::AwaitingHuman`, deciding a verdict
+    /// for a run sitting in it. They were written when this driver had no act for that state — and
+    /// `attend` was built, so the document answers its `pass` now and those arms could not fire.
+    /// **That was an ARGUMENT, not a measurement, and this register has already been bitten by an
+    /// unreachability argument that aged.** So the fact is asserted instead of reasoned: the
+    /// document is driven to each state and asked, and what is read is the HOST's record.
+    ///
+    /// ⚠⚠ **A STATE THAT STOPPED ANSWERING WOULD REACH `unbuilt`**, and with the arms gone the run
+    /// stops with the document's own missing line named. That is the right answer and the arms were
+    /// the wrong one: they substituted a driver decision for a line an author forgot, which is the
+    /// one thing this whole arrangement exists to prevent.
+    ///
+    /// ⚠ `..` IN THE PATTERN IS DELIBERATE HERE. What this gate is about is the WORD, and the
+    /// arguments riding beside it have their own exhaustive gate
+    /// (`the_pass_that_watches_a_turn_is_told_what_an_outage_looks_like`) — two gates pinning the
+    /// same five fields would make every new argument cost two edits and buy one.
+    #[test]
+    fn every_driven_state_says_what_a_pass_of_it_is_for() {
+        /// A turn that ended because the peer's SERVICE was not answering — `working`'s own first
+        /// `turn.blocked` guard, and the only road to `service_down`.
+        const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false}"#;
+
+        for (route, state, does) in [
+            (vec![], AiLoopState::Idle, crate::act::Does::Ready),
+            (
+                vec![(AiLoopEvent::Start, "")],
+                AiLoopState::Priming,
+                crate::act::Does::Sent,
+            ),
+            (
+                vec![(AiLoopEvent::Start, ""), (AiLoopEvent::PromptSent, "")],
+                AiLoopState::Working,
+                crate::act::Does::Watch,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                ],
+                AiLoopState::Judging,
+                crate::act::Does::Judge,
+            ),
+            // ⭐⭐⭐ **THE ONE THIS GATE WAS WRITTEN FOR.** Two arms of `AiLoop::unbuilt` decided a
+            // verdict for this state on the grounds that no act existed for it. One does.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnInterrupted, ""),
+                ],
+                AiLoopState::AwaitingHuman,
+                crate::act::Does::Attend,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, DONE),
+                ],
+                AiLoopState::Reflecting,
+                crate::act::Does::Reflect,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnBlocked, BLOCKED_BY_SERVICE),
+                ],
+                AiLoopState::ServiceDown,
+                crate::act::Does::Wait,
+            ),
+        ] {
+            let (mut engine, host, _lua, _session) = started();
+            for (event, data) in &route {
+                carried(&mut engine, &host, *event, data);
+            }
+            // ⚠⚠⚠ THE ACTIVE SET AND NOT `get_current_state`, for the account gate's measured
+            // reason: this document has REGIONS, and the flattening call answers the parallel ROOT
+            // for a machine that has not left `idle`.
+            let active = engine.get_active_states();
+            assert!(
+                active.contains(&state),
+                "⚠⚠⚠ THE FIXTURE: this route is written to reach {state:?} and the word below is \
+                 that state's. active = {active:?}, refused acts: {:?}",
+                host.refused(),
+            );
+            assert_eq!(
+                host.taken(crate::act::Act::Pass),
+                None,
+                "⚠⚠⚠⚠ THE CONTROL: nothing has asked for a pass before this one is raised. An act \
+                 already waiting would mean the reading below belongs to some earlier step",
+            );
+
+            carried(&mut engine, &host, AiLoopEvent::Pass, "");
+            let taken = host.taken(crate::act::Act::Pass);
+            let Some(crate::act::Asked::Pass { does: said, .. }) = taken else {
+                panic!(
+                    "⚠⚠⚠⚠⚠ {state:?} ASKED FOR NOTHING ON ITS PASS, so a run that reached it would \
+                     be reported `Unbuilt` and STOPPED — and until this gate existed, two arms of \
+                     `AiLoop::unbuilt` quietly answered for it instead of the document. Got \
+                     {taken:?}, refused acts: {:?}",
+                    host.refused(),
+                )
+            };
+            assert_eq!(
+                said, does,
+                "⚠⚠⚠⚠ {state:?} SAYS ITS PASS IS FOR THE WRONG THING. The word chooses the effect \
+                 this driver performs, so a state answering its neighbour's is a run doing \
+                 something nobody asked for — silently, because both words are served",
             );
         }
     }

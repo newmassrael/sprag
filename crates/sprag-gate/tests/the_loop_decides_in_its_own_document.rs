@@ -153,7 +153,23 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // second, invisible way to stay green. `rust_sources` now blanks the product of a file its
     // crate declares test-only.
     ("abandoned", 0),
-    ("awaiting_human", 2),
+    // ⚠⚠⚠⚠⚠ **THE LAST PER-STATE DECISION IN THIS LIST, AND IT WENT ON 2026-08-26 R99.**
+    // `AiLoop::unbuilt` carried two arms keyed on this state — *a person took the pane* and *the
+    // peer is asking and nothing got the run past it* — written when the driver had no act for it.
+    // `attend` was built, so the document answers its `pass` and the arms could not fire.
+    //
+    // ⚠⚠ THE UNREACHABILITY WAS AN ARGUMENT UNTIL THAT ROUND, and this register has been bitten by
+    // one that aged. It is now MEASURED: `sprag-plugin`'s
+    // `every_driven_state_says_what_a_pass_of_it_is_for` drives the document to each state, raises
+    // `pass`, and reads what the host was handed — so a document that ever dropped an arm is red
+    // there rather than quietly answered out here.
+    //
+    // ⚠ **WHAT IS LEFT IN THIS LIST IS NO LONGER A DECISION.** Five sites: two SENTINELS
+    // (`NotStarted::Unbuilt(Exhausted)` as an error value, and the sentence `plugins.rs` renders
+    // for it), two GUARDS (`brief` refusing outside `idle`, and the work region's own membership
+    // test), and one READER (`standing_down`, item 605). A round that wants this at zero has to
+    // decide what those become, not merely move them.
+    ("awaiting_human", 0),
     ("blocked", 0),
     ("cancelled", 0),
     ("closing", 0),
