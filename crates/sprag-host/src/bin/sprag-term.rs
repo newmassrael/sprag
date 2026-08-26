@@ -927,7 +927,15 @@ fn spawn_agent_waker(
             // so what is left here is the scheduling and nothing else. It also has to be callable:
             // R261 measured what its locks cost by running it against a live registry while another
             // thread served requests, which is not a thing a closure in this file can be asked to do.
-            sweep_once(&registry, &agents, &jobs, &channels, now, sweep);
+            // ⚠⚠ WHERE A MUTE BREADCRUMB IS LOOKED FOR AND WHOSE IT WOULD HAVE TO BE, said out loud
+            // here because a pass that derived it would be asserting whatever host and whichever
+            // daemon generation it ran under (register items 700 and 711). The generation is THIS
+            // process's — the daemon is the party that minted the pane numbers these files are keyed
+            // on, so it needs no wire hop to know which generation they mean.
+            let state_dir = sprag_host::durability::state_dir();
+            let mute =
+                sprag_host::MuteReader::new(&state_dir, Some(sprag_host::wire::generation()));
+            sweep_once(&registry, &agents, &jobs, &channels, &mute, now, sweep);
         }
     });
 }

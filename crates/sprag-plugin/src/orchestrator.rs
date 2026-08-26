@@ -953,6 +953,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                     asking: (state == sprag_detect::AgentState::Blocked).then(|| {
                         sprag_detect::Question {
                             asked: vec!["Do you want to edit lib.rs?".to_string()],
@@ -1151,6 +1152,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             })
         };
@@ -2680,6 +2682,7 @@ mod tests {
                 transcript: None,
                 // ⚠ THE ONE FIELD THIS ARM IS ABOUT.
                 settling: crate::access::Settling::At(publishes_at),
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         })));
         let step = Orchestrator::new(

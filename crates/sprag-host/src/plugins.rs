@@ -2257,6 +2257,16 @@ pub(crate) fn agent_state_source(
                 // it, and neither invents a sentence the peer did not say.
                 noticed: facts.noticed,
                 transcript: facts.transcript,
+                // ⚠⚠⚠⚠ AND WHETHER THE REPORTER CAN STILL DELIVER — register item 709. The
+                // IN-PROCESS driver reads this observation and the remote one reads
+                // `agent::verdict_of`'s, so both mouths carry the fact or the asymmetry the item is
+                // made of just moves in one step. `Unsaid` is unreachable here and must not be
+                // spelled: this side HOLDS the tracker, so it always knows.
+                reporter: if facts.reporter_mute {
+                    sprag_plugin::ReporterVoice::Mute
+                } else {
+                    sprag_plugin::ReporterVoice::Speaking
+                },
                 state,
                 agent: facts.agent,
                 authority,

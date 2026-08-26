@@ -2667,6 +2667,51 @@ pub const AGENT_SAID_SEQ_KEY: &str = "said_seq";
 /// ALWAYS PRESENT, for [`AGENT_ASKED_SEQ_KEY`]'s reason.
 pub const AGENT_REPORTS_KEY: &str = "reports";
 
+/// The published verdict's key saying **WHETHER THIS PANE'S REPORTER HAS LEFT WORD IT CANNOT
+/// DELIVER** — register item 709, and the one hop that fact was missing.
+///
+/// # ⛔⛔⛔⛔⛔ The asymmetry this closes, and why it was the item's whole body
+///
+/// A hook that cannot deliver leaves a breadcrumb on the FILESYSTEM
+/// (`crate::hooks::MuteReader`), because the condition it records is that the daemon could not be
+/// reached — so the daemon is the one party that cannot learn it from the report path. `sprag agent
+/// <pane>` and the MCP mouth read that file directly and have said so since item 344. **A DRIVER
+/// never could.** It reads a verdict, and the verdict carried `source`, `rule` and four counters and
+/// nothing about the reporter's health — so the fact a person could see with one command was
+/// invisible to the process whose entire job is running the loop when no person is there.
+///
+/// Measured 2026-08-16: a pane's screen held `MILESTONE REACHED` for over an hour while every
+/// surface answered `working source=hook:claude`, and the journal repeated *looked, nothing had
+/// happened*. The report outranked the screen and never expired.
+///
+/// ⚠⚠ **THE DAEMON ALSO ACTS ON IT, and that is not a duplicate of this key.** A reporter that
+/// cannot deliver no longer outranks the screen (`sprag_detect::Tracker::set_reporter_mute`), so the
+/// STATE on this wire is already re-derived from the pane rather than stale. This key is the REASON:
+/// without it the authority changes from reported to scraped and nothing anywhere says what changed
+/// it, which is the same *the product's best sentence is written where nobody can read it* shape
+/// item 281 named. A walk that can name it is a run a person can diagnose.
+///
+/// ⚠ A BOOL, unlike [`AGENT_SETTLING_KEY`]'s word, because the fact has two states and not three:
+/// the daemon reads the evidence and knows. The THIRD state — *this daemon cannot say* — is carried
+/// by the key's ABSENCE, and `crate::agent::verdict_of` spells it
+/// `sprag_plugin::ReporterVoice::Unsaid`.
+///
+/// ⚠ ALWAYS PRESENT, on [`AGENT_ASKED_SEQ_KEY`]'s rule and for its reason: an absent key has to mean
+/// an older daemon, so a daemon that CAN say says even when the answer is *no*.
+///
+/// # ⚠⚠⚠⚠ Why this earned NO [`WIRE_PROTOCOL`] bump, on [`AGENT_SETTLING_KEY`]'s standard
+///
+/// * **NEW daemon → OLD client.** An added answer key is absent-not-wrong to a reader that takes
+///   the keys it knows by name; an older driver reads the verdict it read before.
+/// * **OLD daemon → NEW client.** The key is absent, which is `Unsaid` — *this connection cannot
+///   say* — and a driver acts on it exactly as it did before the key existed, because the daemon
+///   that cannot say is also the daemon that does not demote.
+///
+/// ⚠⚠ THE EXEMPTION IS CONDITIONAL, on its neighbours' terms: the moment a reader takes an absent
+/// key as evidence ABOUT the reporter — *it is speaking* rather than *nobody said* — an older daemon
+/// starts meaning something it never meant and the number is owed.
+pub const AGENT_MUTE_KEY: &str = "mute";
+
 /// The published verdict's key saying **WHETHER THIS VERDICT IS STILL WAITING TO CHANGE** — one of
 /// [`AGENT_SETTLING_NOTHING`] and [`AGENT_SETTLING_PENDING`], and register item 640's carriage.
 ///

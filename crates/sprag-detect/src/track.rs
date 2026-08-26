@@ -265,12 +265,39 @@ pub struct Tracker {
     /// every pane whose reporter has been [`released`](Tracker::release_report).
     reported: Option<Reported>,
     /// Set when the pane's published answer has to be RE-DERIVED from the screen and nothing on the
-    /// screen will say so — today, exactly a release.
+    /// screen will say so — today, a release or a reporter that has gone mute.
     ///
     /// It is a flag rather than a recomputation because the recomputation needs a screen, which this
     /// type is never handed except by [`observe`](Self::observe). See
     /// [`owes_look`](Self::owes_look).
     owes_look: bool,
+    /// **WHETHER THIS PANE'S REPORTER HAS LEFT WORD THAT IT CANNOT DELIVER** — the caller's reading,
+    /// stored here so [`observe`](Self::observe) can weigh it, and register item 709's whole subject.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a report needed a third way to end, measured
+    ///
+    /// A report outranks the screen and does not expire, so the last thing a reporter MANAGED to say
+    /// stands for ever once its channel breaks. Measured 2026-08-16 on a live run: a pane's screen
+    /// held `MILESTONE REACHED` for over an hour while every surface answered `working source=
+    /// hook:claude`, because a `cargo build` had replaced the hook binary under a daemon that stayed
+    /// at the older wire protocol and every report was refused at `client/hello`. The run could not
+    /// end its turn. Register item 344 named the real defect in one line: **silence is not *unknown*,
+    /// it is the last thing heard.**
+    ///
+    /// Two ways to end a report already existed and neither reaches this: the pane's CHILD exiting,
+    /// and the report's [`Reported::owner`] process group going away. A reporter whose process is
+    /// alive and whose delivery is refused is neither.
+    ///
+    /// ⚠⚠ **IT IS THE CALLER'S VOCABULARY, exactly as [`Reported::owner`] is.** What "mute" is
+    /// evidenced BY is not this crate's business — in `sprag-host` it is a breadcrumb the hook writes
+    /// on a failed delivery and removes on a successful one, keyed on the pane and stamped with the
+    /// daemon generation that issued that number (register item 711). This type is handed the
+    /// conclusion and weighs it; it reads no files and knows no directories.
+    ///
+    /// ⚠⚠⚠ **NO CLOCK AND NO CONSTANT.** The expiry is not a duration this crate could pick: the
+    /// evidence is written when delivery fails and taken back when it succeeds, so the fact already
+    /// expires on its own. What was missing was somebody weighing it.
+    reporter_mute: bool,
 }
 
 /// A report in force: who said it, the sequence number they said it with, and how long it lasts.
@@ -460,6 +487,10 @@ impl Tracker {
             identity: None,
             reported: None,
             owes_look: false,
+            // A pane nobody has reported for has no reporter to be mute, and this is the reading a
+            // caller that never takes one leaves standing — so a host with no breadcrumbs anywhere
+            // behaves exactly as it did before this input existed.
+            reporter_mute: false,
         }
     }
 
@@ -599,7 +630,24 @@ impl Tracker {
         // ⚠ It goes through [`consider`] like any other screen candidate rather than publishing on
         // the spot, so the settle window still guards it: a dialog glimpsed in one sample between
         // repaints is not yet an answer a person is owed.
-        if let Some(held) = &self.reported {
+        // ⚠⚠⚠⚠⚠ AND A REPORTER THAT HAS LEFT WORD IT CANNOT DELIVER DOES NOT OUTRANK THE SCREEN AT
+        // ALL — register item 709, and the second fact ever to overrule a standing report.
+        //
+        // The block below weighs a report against ONE screen fact (an unanswered dialog). This
+        // guard is different in kind: it is not the screen disagreeing with the report, it is the
+        // REPORTER saying it can no longer speak — so there is nothing left to weigh and the whole
+        // short-circuit is skipped. The rules run, and the pane is answered by the evidence that is
+        // still arriving. Item 344's sentence, applied: *a hook that cannot speak should degrade to
+        // the SCREEN, which is right there and correct.*
+        //
+        // ⚠⚠ **THE REPORT IS NOT DROPPED, and that is the difference between this and
+        // [`release_report`].** A release is a one-shot: it takes the report away, so the pane can
+        // only get an authority back when a NEW report arrives. Measured on a live loop, that is not
+        // enough — a hook is intermittent (`23:24` mute, `23:25` released, `23:35` reporting and
+        // mute again), so a one-shot demotion is a state that gets reverted rather than an expiry.
+        // Held here, the report comes back the instant `reporter_mute` goes false, with nothing
+        // destroyed and no new report needed.
+        if let Some(held) = self.reported.as_ref().filter(|_| !self.reporter_mute) {
             let asking = crate::question(screen, crate::DIALOG_WINDOW).is_some();
             let candidate = Verdict {
                 state: if asking {
@@ -763,6 +811,22 @@ impl Tracker {
             build,
         });
         self.owes_look = false;
+        // ⚠⚠⚠⚠⚠ **A REPORT ARRIVING IS ITSELF PROOF THE REPORTER CAN DELIVER** — register item 709,
+        // and the reason this line is not redundant with whatever the caller last read off disk.
+        //
+        // The evidence behind `reporter_mute` is written when a delivery FAILS and taken back when
+        // one succeeds — and the success that takes it back happens in the reporter's process, AFTER
+        // the report has already landed here. So between the two there is a window in which this
+        // tracker holds *mute* while a healthy report is being accepted, and a caller that only
+        // re-reads on its own cadence would go on answering from the screen for that whole window.
+        // Here the recovery is immediate and needs no clock: something inside the pane reached this
+        // process, which is the exact negation of the fact `reporter_mute` records.
+        //
+        // ⚠ The residue, stated rather than hidden: a PERSON's `report-agent` also clears it, and it
+        // is not their hook that recovered. That is self-correcting — the caller re-reads the
+        // evidence on its own pass and re-mutes a hook that is still broken — and it is the right way
+        // round anyway, because a report a person makes by hand is a deliberate override.
+        self.reporter_mute = false;
         let changed = verdict != self.published;
         if changed {
             self.publish(verdict);
@@ -797,6 +861,63 @@ impl Tracker {
         held
     }
 
+    /// **TELL THIS TRACKER WHETHER ITS PANE'S REPORTER CAN STILL DELIVER** — see
+    /// [`reporter_mute`](Self::reporter_mute) for what the fact is and why a report needed a third
+    /// way to end. Answers whether the reading CHANGED.
+    ///
+    /// # ⚠⚠⚠⚠ Why a CHANGE has to clear the quiescence memory
+    ///
+    /// [`observe`](Self::observe) skips the rules entirely when the screen, the title and the ruleset
+    /// are all unchanged, and that skip is exact: it claims a re-evaluation would reach the same
+    /// answer. This reading is a FOURTH input to that answer, so a re-evaluation after it moves would
+    /// NOT reach the same one — which is the argument `Seen`'s `rules` field already carries for
+    /// the ruleset, and the argument [`release_report`](Self::release_report) makes when it clears
+    /// the same memory.
+    ///
+    /// ⚠⚠⚠ **AND IT IS LOAD-BEARING RATHER THAN TIDY.** The case this exists for is a pane whose
+    /// screen has stopped moving — measured, an hour of `MILESTONE REACHED` under a stale `working`
+    /// — so *nothing on the screen will ever ask for the re-evaluation*. Without clearing the
+    /// memory the guard in `observe` would be unreachable in exactly the situation it was written
+    /// for. `owes_look` is the other half: it is how a caller learns a look is owed when no screen
+    /// event will say so.
+    ///
+    /// ⚠ Answering *changed* rather than nothing is what lets a caller wake the pane's watchers
+    /// once, on the transition, instead of on every reading — the treatment
+    /// `JobWatch::observe` already gives an identity it re-samples.
+    pub fn set_reporter_mute(&mut self, mute: bool) -> bool {
+        if self.reporter_mute == mute {
+            return false;
+        }
+        self.reporter_mute = mute;
+        self.seen = None;
+        self.owes_look = true;
+        true
+    }
+
+    /// Whether this pane's reporter has left word it cannot deliver — the reading
+    /// [`set_reporter_mute`](Self::set_reporter_mute) last took.
+    ///
+    /// Published beside the verdict so a reader learns WHY a pane with a reporter is being answered
+    /// by its screen. Without it the authority simply changes and nothing says what changed it, which
+    /// is the asymmetry register item 709 is made of: a person could see the fact with one CLI call
+    /// and a driver could not see it at all.
+    #[must_use]
+    pub const fn reporter_mute(&self) -> bool {
+        self.reporter_mute
+    }
+
+    /// Whether a report is HELD here at all, whatever it currently outranks.
+    ///
+    /// ⚠ Distinct from [`reported_source`](Self::reported_source), which answers about the report in
+    /// FORCE: a mute reporter's report is held and does not outrank the screen, so the two disagree
+    /// exactly while [`reporter_mute`](Self::reporter_mute) is set. A caller asking *is there an
+    /// authority here to drop* wants this one; a caller asking *who is answering for this pane* wants
+    /// the other.
+    #[must_use]
+    pub const fn holds_report(&self) -> bool {
+        self.reported.is_some()
+    }
+
     /// Who is reporting this pane, or `None` when its state is inferred from the screen.
     ///
     /// Published beside the verdict so a reader can tell an authority from an inference — D7's rule
@@ -804,7 +925,33 @@ impl Tracker {
     /// evidence.
     #[must_use]
     pub fn reported_source(&self) -> Option<&str> {
-        self.reported.as_ref().map(|held| held.source.as_str())
+        self.in_force().map(|held| held.source.as_str())
+    }
+
+    /// The report that is currently ANSWERING for this pane — held, and not set aside by a reporter
+    /// that cannot deliver.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the authority getters go through this and the STATEMENT getters do not
+    ///
+    /// The wire's own invariant is that *a reported verdict carries no rule and a scraped one carries
+    /// no source, so which authority answered is never a guess*. While
+    /// [`reporter_mute`](Self::reporter_mute) is set the rules answer, so a `source` published beside
+    /// that rule would break the invariant in the one direction that matters: every reader derives
+    /// *this was reported* from the presence of `source`, and a driver reading both would go on
+    /// treating a screen-derived verdict as exact.
+    ///
+    /// ⚠ [`reported_asked`](Self::reported_asked), [`reported_said`](Self::reported_said),
+    /// [`reported_noticed`](Self::reported_noticed) and
+    /// [`reported_transcript`](Self::reported_transcript) deliberately do NOT go through this. They
+    /// are the AGENT's own account of its turn, not an authority over the pane's state — a
+    /// supervisor dates a turn by them, and erasing them because the reporter's channel broke would
+    /// throw away facts nothing else can supply while answering a question nobody asked.
+    ///
+    /// ⚠ Nor does [`reported_owner`](Self::reported_owner): its one caller asks whether the report's
+    /// owner still exists so that a truly dead reporter can be RELEASED, and a mute reporter must
+    /// stay releasable on those grounds.
+    fn in_force(&self) -> Option<&Reported> {
+        self.reported.as_ref().filter(|_| !self.reporter_mute)
     }
 
     /// **WHICH BUILD THE REPORTER IN FORCE SAID IT IS**, or `None` when there is no report or the
@@ -817,9 +964,7 @@ impl Tracker {
     /// *"the reporter matches"* — see [`Report::build`].
     #[must_use]
     pub fn reported_build(&self) -> Option<&str> {
-        self.reported
-            .as_ref()
-            .and_then(|held| held.build.as_deref())
+        self.in_force().and_then(|held| held.build.as_deref())
     }
 
     /// The token whose continued existence keeps the report in force, when there is a report and it

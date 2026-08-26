@@ -1637,6 +1637,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         });
 
@@ -2271,6 +2272,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         }
     }
@@ -2416,6 +2418,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         }
     }

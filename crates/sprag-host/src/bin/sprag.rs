@@ -6202,6 +6202,68 @@ fn agent(args: Vec<String>) -> io::Result<()> {
         let said_seq = agent["said_seq"].as_u64().unwrap_or(0);
         println!("{id}: {state}  {name}  {origin}  seq={seq}  asked={asked_seq}  said={said_seq}");
         if wanted.is_some() {
+            // ⚠⚠⚠⚠⚠ **THE REPORTER'S HEALTH IS PRINTED BEFORE THE AUTHORITY BRANCH, AND THAT MOVE
+            // IS REGISTER ITEM 709's** — it used to sit INSIDE the `Some(source)` arm, which was
+            // right for as long as a mute reporter went on answering for its pane.
+            //
+            // It does not any more: a reporter that has left word it cannot deliver no longer
+            // outranks the screen (`sprag_detect::Tracker::set_reporter_mute`), so the row above
+            // carries a `rule` and no `source` — and the sentence explaining WHY would have
+            // disappeared at exactly the moment it became the whole answer. A person would then read
+            // *`working-footer` is the rule that fired* about a pane whose hook is broken, with
+            // nothing anywhere saying so.
+            //
+            // ⚠ Read off the filesystem rather than asked of the daemon ON PURPOSE: the condition
+            // being reported is precisely that the hook could not reach the daemon, so the daemon is
+            // the one party that cannot learn it from a report.
+            //
+            // ⚠⚠⚠⚠ AND ATTRIBUTED BEFORE IT IS ACTED ON — register item 711. This used to print on
+            // the file's mere existence, and the file is keyed on a pane NUMBER that the next
+            // daemon's counter reissues: on 2026-08-26 a breadcrumb from 14:02 was printed against a
+            // live pane 4 whose child had started at 22:57, and a watcher believing it called
+            // `release-agent` on a healthy reporter.
+            let word = mute.word_from(id);
+            match &word {
+                sprag_host::MuteWord::Speaking => {}
+                sprag_host::MuteWord::Mute { said } => println!(
+                    // ⚠⚠ IT STATES THE RULE, NOT THE OUTCOME. A daemon predating register item 709
+                    // does not set a mute reporter aside, and one that does has a sweep-interval of
+                    // lag before it has; in either window a sentence claiming *this pane is answered
+                    // by its screen* would contradict the `source=` on the line ABOVE it, on one
+                    // screen. Which of the two is answering is already printed there — what this
+                    // sentence owes is the fact and the rule.
+                    "    ⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. A report does \
+                     not outrank the screen while that stands, and it clears itself the moment a \
+                     delivery succeeds — the line above says which of the two is answering now.",
+                ),
+                // ⚠⚠ SAID, NOT SWALLOWED. Nothing prunes these (item 700's stated residue), so the
+                // file will be met again — and a reader told only *no mute* would go on to find it
+                // by hand and read it exactly as the watcher did.
+                sprag_host::MuteWord::Inherited {
+                    said,
+                    left_in,
+                    asking,
+                } => println!(
+                    "    A mute breadcrumb sits under this pane's NUMBER and is not this \
+                     reporter's: it was left in generation {left_in} and this daemon is {asking}, \
+                     so its subject is a pane that no longer exists. It said {said:?}. The state \
+                     above stands.",
+                ),
+                sprag_host::MuteWord::Unattributed { said, silent } => println!(
+                    "    A mute breadcrumb sits under this pane's NUMBER and cannot be attributed \
+                     — {} — so it is not acted on. It said {said:?}. A pane number is reissued by \
+                     the next daemon's counter, and a breadcrumb with no generation beside it could \
+                     belong to any earlier holder of this number.",
+                    match silent {
+                        sprag_host::MuteSilence::Breadcrumb =>
+                            "it names no generation, so it predates this check or was written by a \
+                             reporter whose environment had lost it",
+                        sprag_host::MuteSilence::Reader =>
+                            "this daemon does not say which generation it is, so there is nothing \
+                             to compare it against",
+                    },
+                ),
+            }
             // The advice has to follow the evidence. Telling somebody to redefine a manifest rule
             // for a verdict a HOOK reported names a rule that never fired, and the edit would do
             // nothing at all.
@@ -6217,53 +6279,9 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                     // end its turn. Measured 2026-08-16: an hour of `working` against a pane whose
                     // screen had said `MILESTONE REACHED` the whole time, and the only sentence
                     // that explained it was written where nothing reads. See
-                    // `sprag_host::hooks::note_mute`.
+                    // `sprag_host::hooks::note_mute`. That sentence is printed ABOVE this branch
+                    // now, for register item 709's reason.
                     //
-                    // ⚠ Read off the filesystem rather than asked of the daemon ON PURPOSE: the
-                    // condition being reported is precisely that the hook could not reach the
-                    // daemon, so the daemon is the one party that cannot know.
-                    //
-                    // ⚠⚠⚠⚠ AND ATTRIBUTED BEFORE IT IS ACTED ON — register item 711. This used to
-                    // print on the file's mere existence, and the file is keyed on a pane NUMBER
-                    // that the next daemon's counter reissues: on 2026-08-26 a breadcrumb from 14:02
-                    // was printed against a live pane 4 whose child had started at 22:57, and a
-                    // watcher believing it called `release-agent` on a healthy reporter.
-                    match mute.word_from(id) {
-                        sprag_host::MuteWord::Speaking => {}
-                        sprag_host::MuteWord::Mute { said } => println!(
-                            "    ⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. So the \
-                             state above is the last thing it MANAGED to say, not what is true \
-                             now; the screen is the better witness until this clears.",
-                        ),
-                        // ⚠⚠ SAID, NOT SWALLOWED. Nothing prunes these (item 700's stated residue),
-                        // so the file will be met again — and a reader told only *no mute* would go
-                        // on to find it by hand and read it exactly as the watcher did.
-                        sprag_host::MuteWord::Inherited {
-                            said,
-                            left_in,
-                            asking,
-                        } => println!(
-                            "    A mute breadcrumb sits under this pane's NUMBER and is not this \
-                             reporter's: it was left in generation {left_in} and this daemon is \
-                             {asking}, so its subject is a pane that no longer exists. It said \
-                             {said:?}. The state above stands.",
-                        ),
-                        sprag_host::MuteWord::Unattributed { said, silent } => println!(
-                            "    A mute breadcrumb sits under this pane's NUMBER and cannot be \
-                             attributed — {} — so it is not acted on. It said {said:?}. A pane \
-                             number is reissued by the next daemon's counter, and a breadcrumb with \
-                             no generation beside it could belong to any earlier holder of this \
-                             number.",
-                            match silent {
-                                sprag_host::MuteSilence::Breadcrumb =>
-                                    "it names no generation, so it predates this check or was \
-                                     written by a reporter whose environment had lost it",
-                                sprag_host::MuteSilence::Reader =>
-                                    "this daemon does not say which generation it is, so there is \
-                                     nothing to compare it against",
-                            },
-                        ),
-                    }
                     // ⚠⚠⚠⚠⚠ AND WHETHER THAT REPORTER IS THIS DAEMON'S IMAGE — register item 473,
                     // the QUIET half of the same hazard the sentence above covers loudly. A hook
                     // that can still speak perfectly may be speaking for code the daemon has never
@@ -6281,6 +6299,17 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                         ),
                     );
                 }
+                // ⚠⚠⚠⚠ AND THE ADVICE FOLLOWS THE EVIDENCE ONE STEP FURTHER — register item 709. A
+                // scrape has TWO causes now: nothing ever reported for this pane, or something did
+                // and its reporter cannot deliver. Sending the second case to edit a manifest would
+                // point a person at a rule that is working perfectly, and away from the hook that is
+                // not.
+                None if matches!(word, sprag_host::MuteWord::Mute { .. }) => println!(
+                    "    `{}` is the rule that fired, and it is answering because the reporter \
+                     above cannot deliver — not because nothing reports for this pane. Fix the \
+                     hook, not the manifest; the report takes the pane back on its own.",
+                    rule.unwrap_or("(none)"),
+                ),
                 None => println!(
                     "    `{}` is the rule that fired. If this verdict is wrong, redefine or \
                      disable that id in an [[agent]] block in config.toml — the daemon picks the \

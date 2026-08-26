@@ -1967,6 +1967,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             })
         };
@@ -2918,6 +2919,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             }
         }
@@ -3994,6 +3996,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         }) as crate::access::AgentStateSource;
         let access =
@@ -4070,6 +4073,7 @@ mod tests {
                 noticed: Some("Claude needs your permission to use Bash".to_string()),
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         }) as crate::access::AgentStateSource;
         let access =

@@ -5086,6 +5086,12 @@ mod tests {
                 // the answer is *nothing pending*. A REPORT publishes on sight, which is why this
                 // reads `nothing` and carries no duration beside it.
                 "settling": "nothing",
+                // ⚠⚠⚠⚠⚠ AND WHETHER THIS PANE'S REPORTER CAN STILL DELIVER — register item 709, and
+                // ALWAYS PRESENT on the same rule as the two keys above: an absent key has to mean
+                // *a daemon that cannot say*, so one that CAN says even when the answer is `false`.
+                // `false` here because nothing has left word: a report has just landed, which is the
+                // exact negation of the condition this key carries.
+                "mute": false,
                 "source": "herdr:claude",
             }),
             "a pane no rule claims is published because a process inside it said so, and the answer \
@@ -5495,6 +5501,13 @@ mod tests {
                 // A verdict resting on an ABSENCE — the dialog GOING — would read `pending` with a
                 // duration beside it, which is the case the whole item exists for.
                 "settling": "nothing",
+                // ⚠⚠⚠⚠⚠ AND WHETHER THIS PANE'S REPORTER CAN STILL DELIVER — register item 709,
+                // always present on the counters above's terms. `false` here, and it is the fact
+                // rather than a placeholder: nothing has reported for this pane at all, so there is
+                // no reporter to have left word. ⚠ It is written even so, because the alternative —
+                // absent when there is no reporter — would make *nobody reports here* and *this
+                // daemon cannot say* the same wire, which is the collapse the key's own doc refuses.
+                "mute": false,
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.

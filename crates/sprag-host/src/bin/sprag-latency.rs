@@ -877,12 +877,33 @@ fn read_every_foreground_pgid(host: &HostState) -> usize {
 /// `jobs` is the host's OWN foreground-job watch and must be the same one across calls: a watch
 /// handed a fresh map each pass would re-establish every pane every time and so would never report
 /// a change, which is the condition this instrument would then be measuring instead of the daemon's.
+/// Where this instrument looks for mute breadcrumbs — a directory IT owns, never the ambient state
+/// home (register item 700's ruling, which is why [`sweep_once`] takes the reader).
+///
+/// An instrument pointed at a developer's real state directory would be timing that machine's
+/// history, and the numbers this file is pinned against would move with whatever hooks had failed
+/// there. Empty and never written to, so what it costs is the honest floor: one `openat` per REPORTED
+/// pane per pass, taken after the workspace lock drops.
+fn mute_reader() -> sprag_host::MuteReader<'static> {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    sprag_host::MuteReader::new(
+        DIR.get_or_init(|| {
+            let dir =
+                std::env::temp_dir().join(format!("sprag-latency-mute-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            dir
+        }),
+        Some(sprag_host::wire::generation()),
+    )
+}
+
 fn pass(host: &HostState, clock: &Arc<AgentClock>, jobs: &JobWatch) {
     let report = sweep_once(
         host.registry(),
         clock,
         jobs,
         host.channels(),
+        &mute_reader(),
         Instant::now(),
         true,
     );
@@ -2114,6 +2135,7 @@ fn main() -> ExitCode {
             &clock,
             &jobs,
             state.channels(),
+            &mute_reader(),
             Instant::now(),
             true,
         );
@@ -2128,6 +2150,7 @@ fn main() -> ExitCode {
             &clock,
             &jobs,
             state.channels(),
+            &mute_reader(),
             Instant::now(),
             true,
         );

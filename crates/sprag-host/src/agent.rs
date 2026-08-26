@@ -254,6 +254,22 @@ pub struct AgentFacts {
     /// used to poll the whole settle window at ~200 screen reads a change, and now takes one look
     /// at the instant named here.
     pub settles_at: Option<Instant>,
+    /// **WHETHER THIS PANE'S REPORTER HAS LEFT WORD IT CANNOT DELIVER** — register item 709, and the
+    /// reason the pane below it may be answered by its SCREEN even though something reported for it.
+    ///
+    /// # ⚠⚠⚠ It is a REASON, not a second authority
+    ///
+    /// A mute reporter no longer outranks the screen
+    /// ([`sprag_detect::Tracker::set_reporter_mute`]), so [`source`](Self::source) is already absent
+    /// and [`rule`](Self::rule) already names what read the screen. Without this fact beside them the
+    /// authority simply changes and nothing anywhere says what changed it — and a person could see
+    /// the cause with one CLI call while the DRIVER, whose whole job is running when no person is
+    /// there, could not see it at all. That asymmetry is item 709's body.
+    ///
+    /// ⚠ Taken from the TRACKER, which was told by whoever last read the evidence — this type never
+    /// reads a file. See [`crate::hooks::MuteReader`] for what the evidence is and
+    /// [`crate::sweep_once`] for who reads it.
+    pub reporter_mute: bool,
 }
 
 /// A [`Question`] in the shape BOTH surfaces put it on the wire — the ONE renderer, so a pane's
@@ -350,6 +366,16 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
         // `AgentFacts` when 458 was paid and reached no wire until 557, so every out-of-process
         // supervisor was telling a slow peer from a dead one without it.
         crate::wire::AGENT_REPORTS_KEY: facts.reports,
+        // ⚠⚠⚠⚠⚠ AND WHETHER THIS PANE'S REPORTER CAN STILL DELIVER — register item 709. The three
+        // keys above and the state say WHAT the pane is doing; this says whether the thing that said
+        // so can still speak, and it is the only key here a DRIVER could not previously learn at any
+        // price. `sprag agent <pane>` has read the evidence off the filesystem since item 344 and a
+        // driver reads verdicts, so the fact a person saw with one command was invisible to the
+        // process that runs the loop when no person is there.
+        //
+        // ALWAYS WRITTEN, on `AGENT_SETTLING_KEY`'s rule: an absent key has to mean *a daemon that
+        // cannot say*, so a daemon that can say says even when the answer is `false`.
+        crate::wire::AGENT_MUTE_KEY: facts.reporter_mute,
     });
     if let Some(name) = &facts.agent {
         value[crate::wire::AGENT_NAME_KEY] = serde_json::json!(name);
@@ -526,6 +552,20 @@ pub fn verdict_of(value: &serde_json::Value, sent: Sent) -> Verdict {
             None => sprag_plugin::Authority::Scraped {
                 rule: text(crate::wire::AGENT_RULE_KEY),
             },
+        },
+        // ⚠⚠⚠⚠⚠ AND WHETHER THE REPORTER CAN STILL DELIVER — register item 709, the hop that fact
+        // was missing and the reason a stuck run could not say why it was stuck.
+        //
+        // ⚠⚠ THE ABSENCE IS ITS OWN ANSWER and must not fold into `Speaking`. A daemon predating
+        // `AGENT_MUTE_KEY` writes nothing here, and it is also a daemon that does not set a mute
+        // reporter aside — so *nobody said* is the honest reading and the one that leaves an older
+        // pair behaving exactly as it did. Reading it as *speaking* would make the commonest case
+        // look like the safe one, which is the inversion `AGENT_BUILD_KEY` and its neighbours exist
+        // to end.
+        reporter: match value[crate::wire::AGENT_MUTE_KEY].as_bool() {
+            Some(true) => sprag_plugin::ReporterVoice::Mute,
+            Some(false) => sprag_plugin::ReporterVoice::Speaking,
+            None => sprag_plugin::ReporterVoice::Unsaid,
         },
         // ⚠ A MISSING counter reads as zero, which is this wire's own rule for it: the four are
         // always written, so an absent one is an older daemon — and *nothing has happened yet* is
@@ -798,6 +838,10 @@ impl AgentRegistry {
             // before it would be the default's deadline, and every waiter parked on it would sleep
             // past the instant the user asked for. Register item 630.
             settles_at: tracker.pending_deadline(),
+            // ⚠ THE READING SOMEBODY ELSE TOOK, published so a reader learns why a pane with a
+            // reporter is being answered by its screen — register item 709. Nothing is read here:
+            // the evidence is a file, and the pass that walks the panes is what looks at it.
+            reporter_mute: tracker.reporter_mute(),
         })
     }
 
@@ -841,13 +885,36 @@ impl AgentRegistry {
             .is_some_and(Tracker::release_report)
     }
 
-    /// Whether this pane's published verdict is a report — the test the daemon uses to decide whether
-    /// a pane whose child has EXITED still has an authority to drop.
+    /// Whether this pane HOLDS a report — the test the daemon uses to decide whether a pane whose
+    /// child has EXITED still has an authority to drop.
+    ///
+    /// ⚠ Asked of the report's EXISTENCE and not of what it currently outranks: a reporter that has
+    /// left word it cannot deliver stops answering for the pane
+    /// ([`sprag_detect::Tracker::set_reporter_mute`]) while its report is still held, and a caller
+    /// meaning *is there anything here to drop* must still be told yes. Register item 709 is where
+    /// those two questions came apart.
     #[must_use]
     pub fn reported(&self, id: PaneId) -> bool {
         self.trackers
             .get(&id)
-            .is_some_and(|tracker| tracker.reported_source().is_some())
+            .is_some_and(sprag_detect::Tracker::holds_report)
+    }
+
+    /// **TELL THE PANE NAMED BY `id` WHETHER ITS REPORTER CAN STILL DELIVER**, answering whether the
+    /// reading CHANGED — register item 709, and the wire hop that fact was missing.
+    ///
+    /// ⚠ It creates NOTHING. A pane with no tracker has no report to set aside, and minting one to
+    /// record *its reporter is fine* would give the pane a memory its first look has not earned —
+    /// [`release`](Self::release)'s rule, for its reason.
+    ///
+    /// ⚠⚠ A `true` answer means somebody should LOOK at this pane: the tracker has thrown away the
+    /// quiescence memory that would otherwise skip the re-evaluation, and on a pane whose screen has
+    /// stopped moving nothing else will ever ask for one. See
+    /// [`owes_look`](Self::owes_look), which is what the caller then serves.
+    pub fn set_reporter_mute(&mut self, id: PaneId, mute: bool) -> bool {
+        self.trackers
+            .get_mut(&id)
+            .is_some_and(|tracker| tracker.set_reporter_mute(mute))
     }
 
     /// Whether this pane holds a report whose OWNER is gone — an authority with nobody behind it.
@@ -1134,6 +1201,23 @@ impl AgentClock {
         released
     }
 
+    /// [`AgentRegistry::set_reporter_mute`] under the lock, SIGNALLING the waker when the reading
+    /// MOVED — [`release`](Self::release)'s arrival, for the same reason and one cause over.
+    ///
+    /// A reporter going mute makes the pane owe a look, and the look needs a screen, which only a
+    /// pass reads. ⚠⚠ Here the signal is not a convenience but the whole mechanism: the case this
+    /// exists for is a pane whose SCREEN HAS STOPPED MOVING — measured, an hour of a frozen
+    /// `MILESTONE REACHED` under a stale `working` — so no output event will ever ask for the
+    /// re-evaluation and the correction would wait for whatever woke the thread next. Register item
+    /// 709.
+    pub fn set_reporter_mute(&self, id: PaneId, mute: bool) -> bool {
+        let moved = lock(&self.state).set_reporter_mute(id, mute);
+        if moved {
+            self.appeared.notify_all();
+        }
+        moved
+    }
+
     /// Read the memory under its lock — the waker's walk, and nothing else.
     pub fn with<R>(&self, f: impl FnOnce(&mut AgentRegistry) -> R) -> R {
         f(&mut lock(&self.state))
@@ -1215,6 +1299,164 @@ mod tests {
     fn repaint(em: &mut Emulator, lines: &[&str]) {
         em.advance(b"\x1b[2J\x1b[H");
         em.advance(lines.join("\r\n").as_bytes());
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE REPORTER'S HEALTH CROSSES THE WIRE, AND AN ABSENT KEY IS NOT AGREEMENT** —
+    /// register item 709's *one wire hop*, from the tracker to what a DRIVER builds.
+    ///
+    /// # The asymmetry this closes
+    ///
+    /// A hook that cannot deliver leaves word on the filesystem, because the condition it records is
+    /// that the daemon could not be reached. `sprag agent <pane>` has printed it since item 344; a
+    /// driver reads VERDICTS, and the verdict carried `source`, `rule` and four counters and nothing
+    /// about the reporter's health. So the one fact that explains a stuck run — *the state you are
+    /// reading is the last thing its reporter MANAGED to say* — was legible only to whoever typed a
+    /// command, and running when nobody is there to type one is this loop's whole purpose.
+    ///
+    /// # ⚠⚠⚠ Staged through the product, because a hand-spelled object would gate nothing
+    ///
+    /// The `mute` key is asserted on a verdict [`verdict_json`] BUILT from facts
+    /// [`AgentRegistry::observe`] produced, after the registry was told the reporter had left word
+    /// through its own door. A fixture that wrote `{"mute": true}` and read it back would pass
+    /// against a daemon that never publishes the key at all.
+    ///
+    /// ⚠ A ZERO settle window, so each arm's verdict publishes on sight: the substance of the
+    /// demotion — which STATE wins — is measured against a real breadcrumb and a real pass in
+    /// `sweep::tests::a_mute_reporter_does_not_outrank_the_screen_and_comes_back_when_it_can_deliver`.
+    /// What this gate owns is the HOP, and a settle window would only add a clock to it.
+    #[test]
+    fn the_reporters_health_crosses_the_wire_and_an_absent_key_is_not_agreement() {
+        /// Publishes on sight, so every arm below is one act rather than one act and a wait.
+        fn at_once() -> Hysteresis {
+            Hysteresis {
+                settle: Duration::ZERO,
+            }
+        }
+
+        let mut reg = AgentRegistry::new(Ruleset::new(vec![sprag_detect::claude()]));
+        let em = painted(CLAUDE_FOOTER);
+        // The RESTING glyph, so `idle-glyph` fires and the SCREEN has an answer of its own — one the
+        // report below deliberately disagrees with.
+        let title = Some("✳ Claude Code");
+        let id = PaneId(9);
+        let facts = |reg: &mut AgentRegistry| {
+            reg.observe(id, em.screen(), title, Instant::now(), at_once)
+                .expect("the footer and the glyph claim this pane")
+        };
+        let voice = |value: &serde_json::Value| {
+            let Verdict::Seen(seen) = verdict_of(value, Sent::now()) else {
+                panic!("a rendered verdict must read back as one: {value}");
+            };
+            seen.reporter
+        };
+
+        // ── 1. A REPORT IN FORCE, and nothing has left word ────────────────────────────────────
+        let (outcome, _) = reg.report(
+            id,
+            Report {
+                state: sprag_detect::AgentState::Blocked,
+                agent: Some("claude".to_owned()),
+                source: "hook:claude".to_owned(),
+                seq: Some(1),
+                owner: None,
+                asked: None,
+                said: None,
+                noticed: None,
+                transcript: None,
+                build: None,
+            },
+            at_once,
+        );
+        assert!(outcome.accepted, "the hook's report must be taken");
+        let believed = facts(&mut reg);
+        assert_eq!(
+            believed.source.as_deref(),
+            Some("hook:claude"),
+            "⚠ THE STAGING: a report outranks the screen, which is the behaviour being qualified \
+             rather than removed: {believed:?}",
+        );
+        assert!(!believed.reporter_mute);
+        let rendered = verdict_json(&believed);
+        assert_eq!(
+            rendered[crate::wire::AGENT_MUTE_KEY],
+            serde_json::json!(false),
+            "⚠⚠ ALWAYS WRITTEN, on `AGENT_ASKED_SEQ_KEY`'s rule: an absent key has to mean *a daemon \
+             that cannot say*, so one that CAN says even when the answer is no. Rendered {rendered}",
+        );
+        assert_eq!(voice(&rendered), sprag_plugin::ReporterVoice::Speaking);
+
+        // ── 2. THE REPORTER LEAVES WORD, through the registry's own door ───────────────────────
+        assert!(
+            reg.set_reporter_mute(id, true),
+            "the reading MOVED, and a caller learns so — that answer is what makes the pane owe a \
+             look when no screen event will ask for one",
+        );
+        let demoted = facts(&mut reg);
+        assert!(
+            demoted.source.is_none() && demoted.rule.is_some(),
+            "⛔⛔⛔⛔ THE PREDICATE, at the smallest scale it can be asked: a reporter that cannot \
+             deliver does not outrank the screen, so the authority is the RULE that read it. \
+             Publishing a `source` beside that rule would break this wire's own invariant and every \
+             reader would go on treating a screen reading as exact: {demoted:?}",
+        );
+        let rendered = verdict_json(&demoted);
+        assert_eq!(
+            rendered[crate::wire::AGENT_MUTE_KEY],
+            serde_json::json!(true),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 709: without this key the authority changes and NOTHING says \
+             what changed it. A person could see the cause with one CLI call and a driver could not \
+             see it at all. Rendered {rendered}",
+        );
+        assert_eq!(voice(&rendered), sprag_plugin::ReporterVoice::Mute);
+
+        // ── 3. THE TWO WAYS IT CAN BE MISSING BOTH DEGRADE, AND NEITHER CLAIMS ────────────────
+        let read_edited = |edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
+            let mut value = rendered.clone();
+            edit(value.as_object_mut().expect("the verdict is an object"));
+            voice(&value)
+        };
+        assert_eq!(
+            read_edited(&|object| {
+                object.remove(crate::wire::AGENT_MUTE_KEY);
+            }),
+            sprag_plugin::ReporterVoice::Unsaid,
+            "⛔⛔⛔⛔ AN OLDER DAEMON SAYS NOTHING HERE, and reading its silence as *speaking* would \
+             make the commonest case look like the safe one — the inversion `AGENT_BUILD_KEY` and \
+             its neighbours exist to end. It is also honest: a daemon that cannot say is a daemon \
+             that does not set a mute reporter aside either",
+        );
+        assert_eq!(
+            read_edited(&|object| {
+                object.insert(
+                    crate::wire::AGENT_MUTE_KEY.to_owned(),
+                    serde_json::json!("mute"),
+                );
+            }),
+            sprag_plugin::ReporterVoice::Unsaid,
+            "⚠⚠ and a value this build cannot read is the same answer rather than a guess — a NEWER \
+             daemon spelling it some other way must not be read as either state",
+        );
+
+        // ── 4. THE WORD IS TAKEN BACK, and the SAME report answers again ──────────────────────
+        assert!(reg.set_reporter_mute(id, false), "the reading moved back");
+        let believed_again = facts(&mut reg);
+        assert_eq!(
+            believed_again.source.as_deref(),
+            Some("hook:claude"),
+            "⛔⛔ A DEMOTION THAT CANNOT BE UNDONE IS A ONE-SHOT, NOT AN EXPIRY. Nothing new has \
+             reported — a `release` would have had nothing to give the pane back, and a hook is \
+             intermittent (measured: mute, released, reporting and mute again inside eleven \
+             minutes): {believed_again:?}",
+        );
+        assert_eq!(
+            verdict_json(&believed_again)[crate::wire::AGENT_MUTE_KEY],
+            serde_json::json!(false),
+            "and the published reason clears with it",
+        );
+        assert!(
+            !reg.set_reporter_mute(id, false),
+            "an unchanged reading moves nothing, so nothing is woken and no look is owed for it",
+        );
     }
 
     /// A reported verdict reaches the pane list naming its SOURCE and no rule; a scraped one is the

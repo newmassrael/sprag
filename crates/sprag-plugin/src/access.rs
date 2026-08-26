@@ -1222,6 +1222,39 @@ pub enum Authority {
     Scraped { rule: Option<String> },
 }
 
+/// **WHETHER A PANE'S REPORTER CAN STILL DELIVER** — carried on
+/// [`AgentObservation::reporter`], and the fact register item 709 was filed for.
+///
+/// # ⛔⛔⛔⛔⛔ Why a driver needed to be told, when a person could always ask
+///
+/// A hook that cannot deliver leaves word on the FILESYSTEM, because the condition it records is
+/// that the daemon could not be reached. `sprag agent <pane>` has printed it since item 344; a
+/// DRIVER never saw it. So the one fact that explains a stuck run — *the state you are reading is
+/// the last thing its reporter MANAGED to say* — was available only to whoever typed a command, and
+/// running when nobody is there to type one is this loop's entire purpose.
+///
+/// ⚠⚠ **A DRIVER DOES NOT HAVE TO ACT ON THIS TO BE CORRECT, and that is deliberate.** The daemon
+/// no longer lets a mute reporter outrank the screen, so the STATE beside this is already re-derived
+/// and [`Authority`] already reads [`Scraped`](Authority::Scraped) — the degradation
+/// `completion.rs`'s `satisfied_of` documents. What this adds is the REASON, so a walk can say why
+/// the authority changed instead of leaving a reader to guess.
+///
+/// ⚠ [`Unsaid`](Self::Unsaid) is a daemon that predates the key, and it is NOT *speaking*: a reader
+/// that collapsed the two would make the commonest case (an older daemon) look like the safe one,
+/// which is the inversion `sprag_host::wire::AGENT_BUILD_KEY` and its neighbours all exist to end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReporterVoice {
+    /// No word left: whatever reports this pane, its last delivery succeeded.
+    Speaking,
+    /// **THE REPORTER LEFT WORD IT COULD NOT DELIVER.** A state reported before that is the last
+    /// thing it managed to say rather than what is true now, and the pane's screen is the better
+    /// witness until this clears — which it does on its own, the moment a delivery succeeds.
+    Mute,
+    /// **THIS ANSWER DID NOT SAY** — a daemon older than
+    /// `sprag_host::wire::AGENT_MUTE_KEY`, or a value this build cannot read. Never *speaking*.
+    Unsaid,
+}
+
 impl Authority {
     /// Whether this answer came from the pane itself, and so has no sampling gap in it.
     ///
@@ -1492,6 +1525,14 @@ pub struct AgentObservation {
     /// ⚠⚠ **A SURFACE THAT CANNOT SEE CANDIDATES SAYS [`Settling::Unknown`], NEVER
     /// [`Settling::Nothing`]** — see the type, which is where the whole argument lives.
     pub settling: Settling,
+    /// **WHETHER THIS PANE'S REPORTER CAN STILL DELIVER** — see [`ReporterVoice`], and register item
+    /// 709 for the hour of `working` this fact's absence cost.
+    ///
+    /// ⚠ It qualifies [`authority`](Self::authority) rather than duplicating it. A mute reporter no
+    /// longer outranks the screen, so `authority` already reads `Scraped` — this says WHY, which is
+    /// the difference between a walk a person can diagnose and one that shows an authority changing
+    /// for no stated reason.
+    pub reporter: ReporterVoice,
 }
 
 /// Pane *supervision*: what the AGENT in a pane is doing. Reached via

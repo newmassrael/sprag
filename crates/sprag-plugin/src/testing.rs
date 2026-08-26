@@ -531,6 +531,7 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
                     // would make every gate built on these doubles measure the POLLING
                     // degradation instead of the product — see `Counted::changes`.
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             })
         }) as AgentStateSource
@@ -648,6 +649,9 @@ fn settling_peer(settle: Duration, publishes: bool) -> (WorkspacePaneAccess, Pan
                 authority: Authority::Scraped {
                     rule: Some("dialog-choice-list".to_string()),
                 },
+                // This stand-in reads a SCREEN, so there is no reporter here to be mute — and
+                // `Unsaid` would be a claim about an older daemon, which this is not.
+                reporter: crate::access::ReporterVoice::Speaking,
                 seq: 1,
                 asked_seq: 1,
                 reports: 0,
@@ -2241,6 +2245,7 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     // would make every gate built on these doubles measure the POLLING
                     // degradation instead of the product — see `Counted::changes`.
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             })
         }) as AgentStateSource
@@ -2319,6 +2324,7 @@ impl DialogBetweenTheReads {
                     // would make every gate built on these doubles measure the POLLING
                     // degradation instead of the product — see `Counted::changes`.
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                     // ⚠ `None` even while blocked: what this fixture stages is the ARM, and the
                     // arm's own doc says the question it carries is DROPPED — the barrier reads the
                     // pane again and its reading is the one an answer is decided from. A question
@@ -2391,6 +2397,7 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         })
     };
@@ -2435,6 +2442,7 @@ pub(crate) fn supervised_writing(
                 noticed: None,
                 transcript: Some(said.clone()),
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         })
     };

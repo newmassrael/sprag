@@ -9509,6 +9509,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             });
             let access = WorkspacePaneAccess::new(Arc::clone(&workspace))
@@ -9843,6 +9844,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             });
             let access =
@@ -10034,6 +10036,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             });
             let access =
@@ -10204,6 +10207,7 @@ mod tests {
                     noticed: None,
                     transcript: said.clone(),
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             });
             let access =
@@ -10310,6 +10314,7 @@ mod tests {
                     noticed: None,
                     transcript: said.clone(),
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             });
             let access =
@@ -10400,6 +10405,7 @@ mod tests {
                 noticed: None,
                 transcript: Some(said.clone()),
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         });
         let access =
@@ -10476,6 +10482,7 @@ mod tests {
                 noticed: None,
                 transcript: stated.lock().expect("what the agent says").clone(),
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         });
         let access =
@@ -13275,6 +13282,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })
         }
     }
@@ -14772,6 +14780,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             });
             let access =
@@ -18334,6 +18343,7 @@ mod tests {
                     noticed: stated.lock().expect("the statement").clone(),
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 })
             })
         };
@@ -19124,6 +19134,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 }));
             let source = {
                 let seen = Arc::clone(&seen);
@@ -19299,6 +19310,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             }));
         let source = {
             let seen = Arc::clone(&seen);
@@ -19465,6 +19477,7 @@ mod tests {
                     noticed: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
                 }));
             let source = {
                 let seen = Arc::clone(&seen);

@@ -3404,27 +3404,49 @@ fn reporter_caveats(
     indent: &str,
     trouble: &MuteWitness<'_>,
 ) -> String {
-    // ADDITIVE, and the condition is the AUTHORITY rather than the state: a scraped verdict has no
-    // reporter to be mute or foreign, so a pane whose state was read off its screen reads exactly
-    // as it did before this existed.
-    let Some(source) = &agent.source else {
+    // ⚠⚠⚠⚠⚠ **A SCRAPED ROW CAN STILL OWE THIS BLOCK, AND THAT IS REGISTER ITEM 709.** The early
+    // return used to be unconditional on an absent `source`, and its reason — *a scraped verdict has
+    // no reporter to be mute or foreign* — stopped being true the day a mute reporter was set aside
+    // rather than believed: such a pane carries a `rule` and no `source`, and it is precisely the
+    // pane an agent most needs the caveat about.
+    //
+    // ⚠ So the AUTHORITY decides the first sentence and the REPORTER's health decides whether there
+    // is a block at all. A pane with neither reads exactly as it did before any of this existed.
+    let word = trouble.word_from(pane);
+    let mute_now = matches!(word, sprag_host::MuteWord::Mute { .. });
+    if agent.source.is_none() && !mute_now {
         return String::new();
+    }
+    let mut out = match &agent.source {
+        Some(source) => format!(
+            "{indent}`{source}` REPORTED this state; it was not read off the screen, and a report \
+             outranks the screen.\n"
+        ),
+        // ⚠ The honest first sentence for the other case: a rule read the screen, and the reason a
+        // rule is reading it at all is the reporter below. Saying *nothing reports for this pane*
+        // here would be false and would send a caller to edit a manifest.
+        None => format!(
+            "{indent}A rule read this state off the screen — and it is doing so because this pane's \
+             reporter cannot deliver, not because nothing reports for this pane.\n"
+        ),
     };
-    let mut out = format!(
-        "{indent}`{source}` REPORTED this state; it was not read off the screen, and a report \
-         outranks the screen.\n"
-    );
     // ⚠⚠⚠⚠ ATTRIBUTED BEFORE IT IS ACTED ON — register item 711, and the four answers are
     // `sprag_host::MuteWord`'s so this mouth and the CLI cannot come to disagree about WHEN a
     // reporter is mute. A breadcrumb is filed under a pane NUMBER and the next daemon's counter
     // reissues that number; on 2026-08-26 one from 14:02 was read against a live pane 4 born at
     // 22:57 and a healthy reporter was taken off its hook.
-    match trouble.word_from(pane) {
+    match word {
         sprag_host::MuteWord::Speaking => {}
+        // ⚠⚠ IT STATES THE RULE, NOT THE OUTCOME — and that is deliberate. A daemon predating
+        // register item 709 does not set a mute reporter aside, and a daemon that does has a
+        // sweep-interval of lag before it has; in either window a sentence claiming *this pane is
+        // answered by its screen* would contradict the `source=` on the line above it, on one
+        // screen. Which of the two is answering is already published there; what this owes is the
+        // fact and the rule.
         sprag_host::MuteWord::Mute { said } => out.push_str(&format!(
-            "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. The state above is \
-             the last thing it MANAGED to say rather than what is true now, so read_pane is the \
-             better witness until this clears.\n",
+            "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. A report does not \
+             outrank the screen while that stands, so read_pane is the better witness — and it \
+             clears itself the moment a delivery succeeds.\n",
         )),
         // ⚠⚠ STATED, NOT SWALLOWED: nothing prunes these (item 700's stated residue), so a caller
         // told only *not mute* would meet the file itself later and read it the way the watcher did.
@@ -3577,26 +3599,35 @@ fn reporter_flags(
     daemon: Option<&str>,
     trouble: &MuteWitness<'_>,
 ) -> String {
-    // The AUTHORITY is the condition, not the state: a scraped verdict has no reporter to be mute
-    // or foreign, so a row read off a screen looks exactly as it did before this existed.
-    if agent.source.is_none() {
-        return String::new();
-    }
     let mut flags = Vec::new();
     // ⚠⚠⚠⚠ ONE WORD, AND ONLY FOR A BREADCRUMB THIS PANE'S OWN REPORTER LEFT — register item 711. A
     // row is where a scanner spends the least attention, so the three arms that are NOT this
     // reporter's word are silent here and the sentence is left to `reporter_caveats`: a listing that
     // marked `mute` on an eight-hour-old breadcrumb under a reissued number is what sent a watcher to
     // `release-agent` against a healthy reporter.
-    if matches!(trouble.word_from(id), sprag_host::MuteWord::Mute { .. }) {
+    //
+    // ⚠⚠⚠⚠⚠ **ASKED BEFORE THE AUTHORITY GATE, which used to come first — register item 709.** The
+    // gate below returned early for any row without a `source`, on the reasoning that *a scraped
+    // verdict has no reporter to be mute or foreign*. That stopped being true the day a mute reporter
+    // was set aside rather than believed: such a row carries a `rule` and no `source`, and it is the
+    // one row in the listing a reader most needs marked.
+    let mute = matches!(trouble.word_from(id), sprag_host::MuteWord::Mute { .. });
+    if mute {
         flags.push("mute");
     }
-    match sprag_host::wire::reporter_image(agent.build.as_deref(), daemon) {
-        // The one arm that earns silence, and the only one: both halves were read and they agree.
-        sprag_host::wire::ReporterImage::SameImage { .. } => {}
-        sprag_host::wire::ReporterImage::OtherImage { .. } => flags.push("other-build"),
-        sprag_host::wire::ReporterImage::DaemonSilent { .. } => flags.push("daemon-build-unsaid"),
-        sprag_host::wire::ReporterImage::ReporterSilent => flags.push("reporter-build-unsaid"),
+    // The AUTHORITY is the condition for the BUILD comparison, not for the row: a verdict read off a
+    // screen has no reporter whose image could differ from the daemon's, so there is nothing to
+    // compare and nothing to mark.
+    if agent.source.is_some() {
+        match sprag_host::wire::reporter_image(agent.build.as_deref(), daemon) {
+            // The one arm that earns silence, and the only one: both halves were read and they agree.
+            sprag_host::wire::ReporterImage::SameImage { .. } => {}
+            sprag_host::wire::ReporterImage::OtherImage { .. } => flags.push("other-build"),
+            sprag_host::wire::ReporterImage::DaemonSilent { .. } => {
+                flags.push("daemon-build-unsaid");
+            }
+            sprag_host::wire::ReporterImage::ReporterSilent => flags.push("reporter-build-unsaid"),
+        }
     }
     if flags.is_empty() {
         return String::new();

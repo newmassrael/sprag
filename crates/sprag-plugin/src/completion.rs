@@ -1076,6 +1076,7 @@ mod tests {
             noticed: None,
             transcript: None,
             settling: crate::access::Settling::Nothing,
+            reporter: crate::access::ReporterVoice::Speaking,
         }));
         let source = {
             let reported = Arc::clone(&reported);
@@ -1114,6 +1115,7 @@ mod tests {
             noticed: None,
             transcript: None,
             settling: crate::access::Settling::Nothing,
+            reporter: crate::access::ReporterVoice::Speaking,
         }));
         let source = {
             let reported = Arc::clone(&reported);
@@ -2191,6 +2193,7 @@ mod tests {
                 noticed: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
             })));
         let source = {
             let seen = Arc::clone(&seen);
@@ -2280,6 +2283,7 @@ mod tests {
             noticed: None,
             transcript: None,
             settling: crate::access::Settling::Nothing,
+            reporter: crate::access::ReporterVoice::Speaking,
         });
         assert_eq!(
             done.wait(&access, pane, BOUND, None, &RunContext::uncancellable()),

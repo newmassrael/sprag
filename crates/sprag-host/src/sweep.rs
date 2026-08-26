@@ -78,6 +78,15 @@ pub struct SweepReport {
     /// had news. A test asserting the job half must not have to infer it from a wake that an agent
     /// transition could equally have caused.
     pub jobs_changed: usize,
+    /// Panes whose REPORTER's ability to deliver moved — register item 709.
+    ///
+    /// Counted beside [`jobs_changed`](Self::jobs_changed) and for its reason: it is a different
+    /// fact on a different clock, and a gate asserting *this pass noticed the hook go quiet* must not
+    /// have to infer it from a wake that an ordinary verdict change would equally have caused.
+    ///
+    /// ⚠ It counts TRANSITIONS, not mute panes: a reporter that has been mute for an hour moves this
+    /// number once. The steady state — every reporter delivering — is zero.
+    pub reporters_changed: usize,
 }
 
 /// One pass of the sweep: visit every pane, sample its foreground job, evaluate the ones that owe
@@ -172,11 +181,19 @@ pub struct SweepReport {
 /// the churning pass on the same instrument. Thirty rounds of a growing detector, not this change —
 /// and the only reason it was caught is that a number this round moved got a control, which is the
 /// argument for giving one to every number that moves.
+/// ⚠⚠⚠⚠⚠ `mute` IS NAMED BY THE CALLER AND NEVER DERIVED HERE — register item 700's ruling, which
+/// this pass is the third site to obey. The breadcrumb a hook leaves lives in a state directory and
+/// belongs to a daemon GENERATION (item 711), and a pass that resolved both itself would be asserting
+/// whatever host and whichever daemon it happened to run under: two gates already went red on a
+/// developer's machine and green on CI from one commit for exactly that. The one production caller
+/// says [`crate::durability::state_dir`] and [`crate::wire::generation`] out loud, and a fixture that
+/// says nothing does not compile.
 pub fn sweep_once(
     registry: &Mutex<SessionRegistry>,
     agents: &AgentClock,
     jobs: &JobWatch,
     channels: &ChannelRegistry,
+    mute: &crate::hooks::MuteReader<'_>,
     now: Instant,
     discover: bool,
 ) -> SweepReport {
@@ -208,6 +225,21 @@ pub fn sweep_once(
         // What the foreground-job sample needs out of this window, collected UNDER the lock and
         // read OUTSIDE it. See the loop below for why the two halves are split at all.
         let mut children: Vec<(PaneId, Option<u32>)> = Vec::new();
+        // ⚠⚠⚠⚠⚠ AND WHICH PANES HOLD A REPORT — collected under the lock for `children`'s reason,
+        // and the evidence about each read AFTER it drops (register item 709).
+        //
+        // The whole file this pass consults is one `openat` that usually answers ENOENT, and it is
+        // still not read here: the paragraph on this function's own docs is a MEASUREMENT — with the
+        // job sample's `/proc` reads inside this loop a concurrent pane-list reader's median went
+        // from +0.8 us to +687 us, because the sweeper released the lock and immediately re-took it
+        // around a few microseconds of syscalls per pane and `std`'s mutex is not fair. *"The I/O
+        // moved out from under the lock rather than the paragraph being rewritten to excuse it."*
+        //
+        // ⚠ Only panes that HOLD a report are collected: a pane nothing has reported for has no
+        // report to set aside, so asking about its reporter's health is a syscall spent on a question
+        // with no consequence. `reported` is one hash lookup and it is already being taken two lines
+        // below for the release checks.
+        let mut reporters: Vec<PaneId> = Vec::new();
         let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
         for pane in pool.panes() {
             let id = pane.id();
@@ -251,6 +283,26 @@ pub fn sweep_once(
             };
             if reporter_gone {
                 agents.release(id);
+            }
+            // ⚠⚠⚠⚠⚠ **AND THE THIRD WAY A REPORTER CAN STOP SPEAKING, which neither test above can
+            // reach** — register item 709. The two above ask whether the reporter's PROCESS is gone.
+            // A hook whose process is alive and healthy and whose DELIVERY is refused is neither: it
+            // leaves word on the filesystem (`crate::hooks::MuteReader`) precisely because the daemon
+            // it could not reach is the one party that cannot learn this from a report.
+            //
+            // ⚠⚠ THE ANSWER IS NOT A RELEASE, and that is the difference. A release DROPS the report,
+            // so the pane can only regain an authority when a new one arrives — measured on a live
+            // loop, a hook is intermittent (mute at 23:24, released at 23:25, reporting and mute
+            // again at 23:35), which makes a one-shot demotion a state that gets reverted rather than
+            // an expiry. The reading below is re-taken every pass and the report is HELD throughout,
+            // so it comes back on its own the moment the evidence is taken back.
+            //
+            // ⚠ Gated on `discover`, like the job sample and for its stated reason: this is a *what
+            // changed while nobody was asking* fact, so `SWEEP_INTERVAL` is its latency bound. The
+            // recovery direction does not wait for it — `Tracker::report` clears the reading on
+            // arrival, because a report arriving IS the delivery succeeding.
+            if discover && agents.with(|state| state.reported(id)) {
+                reporters.push(id);
             }
             // Three reasons to ask about a pane — due, unknown, stale — and none of them applies to
             // a settled pane under unchanged rules, which is every pane in a quiet workspace.
@@ -322,6 +374,45 @@ pub fn sweep_once(
                     .push(Event::PaneJobChanged(id.0));
             }
         }
+        // AND THE REPORTERS' OWN WORD ABOUT WHETHER THEY CAN STILL DELIVER, off the filesystem and
+        // out from under the lock — register item 709.
+        for id in reporters {
+            // ⚠⚠⚠⚠⚠ **ONLY `Mute` DEMOTES, AND THE THREE OTHER ARMS ARE A DECISION RATHER THAN AN
+            // OVERSIGHT** — the one register item 711 made for the REPORTING surfaces, kept here so
+            // the daemon and those surfaces cannot come to disagree about one fact.
+            //
+            // * `Speaking` — no breadcrumb. Nothing to weigh.
+            // * `Inherited` — a breadcrumb an EARLIER daemon generation left under this number. Its
+            //   subject is a pane that no longer exists; the number was reissued by this daemon's
+            //   counter.
+            // * `Unattributed` — a breadcrumb that names no generation at all, so it could belong to
+            //   any earlier holder of the number.
+            //
+            // Acting on either of the last two is exactly what happened on 2026-08-26: a breadcrumb
+            // from 14:02 was read against a live pane 4 whose child had started at 22:57, and a
+            // watcher took a HEALTHY reporter off its hook. Demoting on them here would be the same
+            // mistake with no watcher in the loop to notice — item 711's gate holds that line, and
+            // this is the daemon end of it.
+            //
+            // ⚠ The residue that decision accepts, stated rather than hidden: a breadcrumb written by
+            // an image older than item 711 names no generation, so a report standing behind it keeps
+            // outranking the screen. That is the class already measured to be lying about live panes,
+            // and the hook and this daemon ship in ONE binary — so the window is a stale build
+            // directory, not a supported pair. It is still a loss, and it is the one 709 does not
+            // close.
+            let mute = matches!(mute.word_from(id.0), crate::hooks::MuteWord::Mute { .. });
+            if agents.set_reporter_mute(id, mute) {
+                report.reporters_changed += 1;
+                // The pane's published verdict is about to be re-derived from its screen, or handed
+                // back to the report that was set aside. Either way what a client holds is stale, and
+                // this is the only thing that will say so: the case is a pane whose screen has
+                // stopped moving, so no output event is coming.
+                woken
+                    .entry(session.clone())
+                    .or_default()
+                    .push(Event::AgentStateChanged(id.0));
+            }
+        }
     }
 
     // A tracker must not outlive its pane. The census is DAEMON-WIDE, which is why it is built here
@@ -352,6 +443,87 @@ mod tests {
     use sprag_detect::{DEFAULT_SETTLE, Report, Ruleset, built_ins};
     use sprag_terminal::CommandBuilder;
 
+    /// **THE GENERATION THESE GATES' PANES BELONG TO** — the second half of a breadcrumb's subject,
+    /// which a fixture has to SUPPLY rather than inherit (register item 711).
+    ///
+    /// A breadcrumb is filed under a pane NUMBER and the next daemon's counter reissues that number,
+    /// so a reader holding only a directory answers about whoever held the number before. The
+    /// production caller says [`crate::wire::generation`]; a fixture has no daemon to mint one, so it
+    /// makes one and stamps its own breadcrumbs with it.
+    const GATE_GENERATION: &str = "sweep-gate.0";
+
+    /// A directory THIS GATE OWNS, standing where the daemon's state directory would be — register
+    /// item 700's ruling, which is why [`sweep_once`] takes the reader instead of deriving it.
+    ///
+    /// Named per gate so two running at once cannot see each other's breadcrumbs, and emptied on
+    /// creation so a previous run's cannot be inherited either.
+    fn nobody_left_word(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sprag-sweep-mute-{}-{label}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory this gate owns");
+        dir
+    }
+
+    /// A reader standing in `dir`, asking about panes of [`GATE_GENERATION`].
+    fn looking_in(dir: &std::path::Path) -> crate::hooks::MuteReader<'_> {
+        crate::hooks::MuteReader::new(dir, Some(GATE_GENERATION))
+    }
+
+    /// A reader over a directory NOBODY HAS LEFT WORD IN — for every gate here whose subject is not
+    /// a reporter's health.
+    ///
+    /// One shared empty directory rather than one per gate, because what these gates need is the
+    /// ABSENCE and an absence cannot collide: nothing here ever writes into it. ⚠ It is still a
+    /// directory this file owns and not the ambient state home — the whole reason [`sweep_once`]
+    /// takes the reader is that a pass which derived it would assert whatever host it ran on
+    /// (register item 700).
+    fn no_word() -> crate::hooks::MuteReader<'static> {
+        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        crate::hooks::MuteReader::new(
+            DIR.get_or_init(|| nobody_left_word("no-word")),
+            Some(GATE_GENERATION),
+        )
+    }
+
+    /// **WHAT IS PUBLISHED FOR ONE PANE**, through the daemon's own door — [`AgentRegistry::observe`]
+    /// over that pane's live screen, which is exactly what a pane-list request runs.
+    ///
+    /// The pass under test does not hand its readings back, and neither does it need to: the
+    /// published verdict is a fact about the registry, and asking the registry for it is what every
+    /// client does. ⚠ A `None` answer means no manifest claims the pane or nothing has settled yet,
+    /// which is never what a gate here means to assert — so it panics rather than being folded into
+    /// an `Option` a caller could forget to check.
+    fn published(
+        reg: &Arc<Mutex<SessionRegistry>>,
+        agents: &AgentClock,
+        session: &str,
+        id: PaneId,
+        now: Instant,
+    ) -> crate::AgentFacts {
+        let pool = {
+            let guard = reg.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.workspace_of(session).expect("the session")
+        };
+        let guard = pool.lock().unwrap_or_else(PoisonError::into_inner);
+        let pane = guard.pane(id).expect("the pane this gate opened");
+        let title = pane.title();
+        pane.pty()
+            .with_screen(|screen| {
+                agents.observe(
+                    id,
+                    screen,
+                    title.as_deref(),
+                    now,
+                    sprag_detect::Hysteresis::default,
+                )
+            })
+            .expect("a pane some manifest claims, with something published for it")
+    }
+
     /// A pane that paints `text` and then blocks on its PTY forever, so nothing it does can land in
     /// the middle of a pass.
     fn painting(text: &str) -> CommandBuilder {
@@ -366,6 +538,231 @@ mod tests {
     /// can MOVE. A plain shell pane's never does, which is what the two-session test needs.
     fn claude_pane() -> CommandBuilder {
         painting("  \u{23f8} manual mode on \u{b7} ? for shortcuts")
+    }
+
+    /// A `claude` pane whose screen a RULE actually answers for — the WORKING footer, so
+    /// `working-footer` fires and the pane has a published state rather than `Unknown`.
+    ///
+    /// ⚠ [`claude_pane`] is claimed by the idle-footer fingerprint and matched by no RULE (its title
+    /// is empty, so `idle-glyph` misses), which reads `Unknown` — and an observation is never
+    /// produced for a pane with no state. A gate that needs the SCREEN to have an answer to fall back
+    /// to has to paint one.
+    ///
+    /// ⚠⚠ And NOT a dialog: a choice list on the screen outranks a standing report all by itself
+    /// (register item 524), which would make *the screen answered* true for a reason that has nothing
+    /// to do with the reporter's health.
+    fn working_claude_pane() -> CommandBuilder {
+        painting("  \u{23f8} esc to interrupt")
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REPORTER THAT LEFT WORD IT CANNOT DELIVER DOES NOT OUTRANK THE SCREEN — AND THE
+    /// REPORT COMES BACK WHEN THE WORD IS TAKEN BACK** — register item 709, both arms on ONE pane.
+    ///
+    /// # The defect, measured before this gate existed
+    ///
+    /// A report outranks the screen and does not expire, so the last thing a reporter MANAGED to say
+    /// stands for ever once its channel breaks. Measured 2026-08-16 on a live run: a pane's screen
+    /// held `MILESTONE REACHED` for over an hour while every surface answered `working
+    /// source=hook:claude`, and the journal repeated *looked, nothing had happened*. The one command
+    /// that freed it was `sprag release-agent`, a PERSON's to call — and running when no person is
+    /// there is this loop's whole purpose. Item 344 named the real defect in one line: **silence is
+    /// not *unknown*, it is the last thing heard.**
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why BOTH arms, and why one of them alone would prove nothing
+    ///
+    /// A build that simply dropped every report would pass arm (a) perfectly. A build that ignored
+    /// the evidence entirely would pass arm (b) perfectly. **The fork is the claim**, and it has to be
+    /// asked of the same pane, in one gate, with nothing between the two but the breadcrumb.
+    ///
+    /// ⚠ And it is why the demotion is not a `release`: a release DROPS the report, so arm (b) could
+    /// only pass if a NEW report arrived. Nothing new arrives here — the word is simply taken back —
+    /// which is what makes this an expiry rather than a one-shot. Measured on a live loop, a hook is
+    /// intermittent (mute at 23:24, released at 23:25, reporting and mute again at 23:35), so a
+    /// one-shot demotion is a state that gets reverted rather than a rule that holds.
+    ///
+    /// # ⚠⚠⚠ The premises are asserted INSIDE, because either one would make this vacuous
+    ///
+    /// * **The screen and the report must DISAGREE.** The screen's own answer is taken first and kept,
+    ///   rather than hard-coded, so *picked the screen* and *picked the report* stay distinguishable
+    ///   whatever the built-in manifests say today — and the gate asserts the two words differ before
+    ///   it asks anything else.
+    /// * **The breadcrumb must really be on disk, and really be gone.** Both are read back from the
+    ///   filesystem, through the path the product writes, in the directory this gate names. A gate
+    ///   that trusted its own `note_mute` calls would pass against a writer that wrote nothing.
+    /// * **The pass must NOTICE.** `reporters_changed` is asserted on each transition: a build that
+    ///   never took the reading would leave it at zero while both arms still agreed by accident.
+    #[test]
+    fn a_mute_reporter_does_not_outrank_the_screen_and_comes_back_when_it_can_deliver() {
+        let dir = nobody_left_word("mute-outranks-nothing");
+        let crumb = dir.join(format!("hook-mute.{}", 0));
+        let reg = registry_with(&[("a", working_claude_pane())]);
+        let agents = clock();
+        let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
+        let base = Instant::now();
+        let id = PaneId(0);
+
+        // ── 0. WHAT THE SCREEN SAYS, taken before anything has reported. Two passes because a
+        //       scrape goes through the settle window and the first one only raises the candidate.
+        sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &looking_in(&dir),
+            base,
+            true,
+        );
+        sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &looking_in(&dir),
+            base + DEFAULT_SETTLE,
+            true,
+        );
+        let screen = published(&reg, &agents, "a", id, base + DEFAULT_SETTLE);
+        assert!(
+            screen.source.is_none() && screen.rule.is_some(),
+            "⚠ THE STAGING: nothing has reported yet, so this pane's answer is its screen's and a \
+             rule has to have fired for there to be an answer to come back to: {screen:?}",
+        );
+        let off_the_screen = screen.state;
+
+        // ── 1. A REPORT IN FORCE, saying something the screen does not.
+        let (outcome, _) = agents.report(
+            id,
+            Report {
+                state: sprag_detect::AgentState::Blocked,
+                agent: Some("claude".to_owned()),
+                source: "hook:claude".to_owned(),
+                seq: Some(1),
+                owner: None,
+                asked: None,
+                said: None,
+                noticed: None,
+                transcript: None,
+                build: None,
+            },
+            sprag_detect::Hysteresis::default,
+        );
+        assert!(outcome.accepted, "the hook's report must be taken");
+        let believed = published(&reg, &agents, "a", id, base + DEFAULT_SETTLE);
+        assert_eq!(
+            believed.source.as_deref(),
+            Some("hook:claude"),
+            "⚠ THE STAGING: a report outranks the screen, which is the behaviour being qualified — \
+             not removed: {believed:?}",
+        );
+        assert_ne!(
+            believed.state, off_the_screen,
+            "⚠⚠ THE PREMISE THAT MAKES BOTH ARMS DISTINGUISHABLE: the report and the screen have to \
+             disagree, or *picked the screen* and *picked the report* are the same assertion",
+        );
+        assert!(
+            !believed.reporter_mute,
+            "and nothing has left word yet — see the arm below for why the FACT is published too",
+        );
+
+        // ── 2. ARM (a): THE REPORTER LEAVES WORD IT COULD NOT DELIVER, through the product's own
+        //       writer and stamped with the generation this gate's reader asks about (item 711).
+        crate::hooks::note_mute(
+            &dir,
+            id.0,
+            Some(GATE_GENERATION),
+            Some("the daemon refused the report: no pane 0 on this host"),
+        );
+        assert!(
+            crumb.exists(),
+            "⚠ THE PREMISE: the breadcrumb has to be on disk at {} — without a file, everything \
+             below is vacuous",
+            crumb.display(),
+        );
+        let noticed = sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &looking_in(&dir),
+            base + DEFAULT_SETTLE,
+            true,
+        );
+        assert_eq!(
+            noticed.reporters_changed, 1,
+            "⚠⚠ THE PASS HAS TO NOTICE. A build that never takes the reading leaves this at zero \
+             while the arms below could still agree by accident",
+        );
+        sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &looking_in(&dir),
+            base + DEFAULT_SETTLE * 3,
+            true,
+        );
+        let demoted = published(&reg, &agents, "a", id, base + DEFAULT_SETTLE * 3);
+        assert_eq!(
+            demoted.state, off_the_screen,
+            "⛔⛔⛔⛔⛔ ARM (a), AND THE WHOLE ITEM: the reporter has left word it cannot deliver, so \
+             the state it last MANAGED to say must stop being the answer and the pane's own screen \
+             must be. An hour of a frozen `MILESTONE REACHED` under a stale `working` is what this \
+             costs when nothing weighs the evidence: {demoted:?}",
+        );
+        assert!(
+            demoted.source.is_none() && demoted.rule.is_some(),
+            "⚠⚠⚠ AND THE AUTHORITY SAYS SO. Publishing a `source` beside the rule that answered \
+             would break this wire's own invariant — every reader derives *this was reported* from \
+             the presence of `source`, so a driver would go on treating a screen reading as exact: \
+             {demoted:?}",
+        );
+        assert!(
+            demoted.reporter_mute,
+            "⚠⚠⚠⚠ AND THE REASON IS CARRIED. Without it the authority changes and nothing anywhere \
+             says what changed it — which is item 709's body: a person could see the cause with one \
+             CLI call and a DRIVER could not see it at all: {demoted:?}",
+        );
+
+        // ── 3. ARM (b): THE WORD IS TAKEN BACK — the same call the hook makes when a delivery
+        //       succeeds — and NOTHING NEW IS REPORTED. The report that was set aside comes back.
+        crate::hooks::note_mute(&dir, id.0, Some(GATE_GENERATION), None);
+        assert!(
+            !crumb.exists(),
+            "⚠ THE OTHER PREMISE: the breadcrumb has to be GONE at {} — a gate that trusted its own \
+             call would pass against a writer that removes nothing",
+            crumb.display(),
+        );
+        let cleared = sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &looking_in(&dir),
+            base + DEFAULT_SETTLE * 3,
+            true,
+        );
+        assert_eq!(
+            cleared.reporters_changed, 1,
+            "the pass has to notice the recovery too, and for the same reason",
+        );
+        let believed_again = published(&reg, &agents, "a", id, base + DEFAULT_SETTLE * 5);
+        assert_eq!(
+            believed_again.source.as_deref(),
+            Some("hook:claude"),
+            "⛔⛔⛔⛔ ARM (b): a DEMOTION THAT CANNOT BE UNDONE IS A ONE-SHOT, NOT AN EXPIRY. Nothing \
+             new has reported here — the word was simply taken back — so a build that dropped the \
+             report instead of setting it aside has nothing to give the pane back, and a hook that \
+             recovers stays disbelieved until it happens to report again: {believed_again:?}",
+        );
+        assert_eq!(
+            believed_again.state, believed.state,
+            "and it is the SAME report, with the state it claimed, rather than a fresh guess",
+        );
+        assert!(
+            !believed_again.reporter_mute,
+            "and the published reason clears with it",
+        );
     }
 
     /// A REPORT dies with its reporter: a pane whose child has exited loses its authority on the next
@@ -438,6 +835,7 @@ mod tests {
             &agents,
             &jobs,
             &channels,
+            &no_word(),
             Instant::now() + DEFAULT_SETTLE * 2,
             true,
         );
@@ -510,7 +908,7 @@ mod tests {
         );
 
         let alive = Instant::now() + DEFAULT_SETTLE * 2;
-        sweep_once(&reg, &agents, &jobs, &channels, alive, true);
+        sweep_once(&reg, &agents, &jobs, &channels, &no_word(), alive, true);
         assert!(
             agents.with(|state| state.reported(id)),
             "CONTROL: the agent is still running, so its report stands",
@@ -524,6 +922,7 @@ mod tests {
             &agents,
             &jobs,
             &channels,
+            &no_word(),
             alive + DEFAULT_SETTLE,
             true,
         );
@@ -570,7 +969,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..3 {
             now += DEFAULT_SETTLE * 2;
-            sweep_once(&reg, &agents, &jobs, &channels, now, true);
+            sweep_once(&reg, &agents, &jobs, &channels, &no_word(), now, true);
         }
         assert!(
             agents.with(|state| state.reported(id)),
@@ -648,7 +1047,7 @@ mod tests {
         let jobs = JobWatch::new();
         let base = Instant::now();
 
-        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        let first = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(first.visited, 2);
         assert_eq!(
             first.evaluated, 2,
@@ -656,7 +1055,7 @@ mod tests {
              can give it a state",
         );
 
-        let second = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        let second = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(second.visited, 2);
         assert_eq!(
             second.evaluated, 0,
@@ -674,15 +1073,15 @@ mod tests {
         let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(
-            sweep_once(&reg, &agents, &jobs, &channels, base, true).evaluated,
+            sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true).evaluated,
             0
         );
 
         agents.with(|state| state.reload(Ruleset::new(built_ins())));
         assert_eq!(
-            sweep_once(&reg, &agents, &jobs, &channels, base, true).evaluated,
+            sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true).evaluated,
             1,
             "the input that moved was not on the pane's screen, so nothing else will bring it back",
         );
@@ -699,7 +1098,7 @@ mod tests {
         let jobs = JobWatch::new();
         let base = Instant::now();
 
-        let due_only = sweep_once(&reg, &agents, &jobs, &channels, base, false);
+        let due_only = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, false);
         assert_eq!(due_only.visited, 1, "it still walks — it just does not ask");
         assert_eq!(
             due_only.evaluated, 0,
@@ -726,7 +1125,7 @@ mod tests {
         let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(agents.with(|state| state.len()), 2);
         assert_eq!(jobs.len(), 2, "and the job watch has met both panes");
 
@@ -741,7 +1140,7 @@ mod tests {
             let _closed = guard.close(gone);
         }
 
-        sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(
             agents.with(|state| state.len()),
             1,
@@ -771,7 +1170,7 @@ mod tests {
 
         // The first pass gives the claude pane a pending candidate; nothing is published yet,
         // because a verdict resting on an ABSENCE has to hold for the settle window.
-        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        let first = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(first.moved, 0, "a candidate is not a publication");
         let (before_a, before_b) = (
             channels.revision("a").current(),
@@ -779,7 +1178,15 @@ mod tests {
         );
 
         // The window closes. Only `a` has anything to say.
-        let settled = sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
+        let settled = sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &no_word(),
+            base + DEFAULT_SETTLE,
+            true,
+        );
         assert_eq!(settled.moved, 1);
         assert!(
             channels.revision("a").current() > before_a,
@@ -806,7 +1213,7 @@ mod tests {
         let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         let cursor_a = channels.revision("a").current();
         let cursor_b = channels.revision("b").current();
         assert!(
@@ -814,7 +1221,15 @@ mod tests {
             "a candidate is not a publication, so it is not a record either",
         );
 
-        sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
+        sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &no_word(),
+            base + DEFAULT_SETTLE,
+            true,
+        );
 
         let recorded = journal_events(&channels, "a", cursor_a);
         assert_eq!(
@@ -845,11 +1260,19 @@ mod tests {
         let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         // What a parked client would be holding: the revision before the publishing pass.
         let parked_at = channels.revision("a").current();
 
-        sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
+        sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &no_word(),
+            base + DEFAULT_SETTLE,
+            true,
+        );
 
         // What the wake answers it with.
         let woken_at = channels.revision("a").current();
@@ -891,7 +1314,7 @@ mod tests {
             wait_for_pgid(&reg, "a", id, |pgid| pgid.is_some()).expect("the shell owns its tty");
         let cursor = channels.revision("a").current();
 
-        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        let first = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(
             first.jobs_changed, 0,
             "CONTROL: nobody had sampled this pane, so its first reading establishes and is not news",
@@ -910,7 +1333,7 @@ mod tests {
         assert_ne!(running, at_rest, "the job owns the terminal while it runs");
 
         let cursor = channels.revision("a").current();
-        let second = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        let second = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(
             second.jobs_changed, 1,
             "the pass that sees the group move is the pass that reports it",
@@ -949,7 +1372,7 @@ mod tests {
             wait_for_pgid(&reg, "a", id, |pgid| pgid.is_some()).expect("the shell owns its tty");
 
         // Pass one: the job is established and the agent gains a candidate. Neither is a publication.
-        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        let first = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(
             first.moved, 0,
             "a candidate is not a publication, and a first reading is not news"
@@ -962,7 +1385,15 @@ mod tests {
         .expect("a foreground job takes the terminal");
 
         let before = channels.revision("a").current();
-        let second = sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
+        let second = sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            &no_word(),
+            base + DEFAULT_SETTLE,
+            true,
+        );
         assert_eq!(second.jobs_changed, 1, "the job moved");
         assert_eq!(second.moved, 1, "one session was woken");
 
