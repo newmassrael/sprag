@@ -676,6 +676,115 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **CAN A NUMBER CROSS AS A `<param>`, AND DO ZERO, NEGATIVE AND NIL STAY TELLABLE
+    /// APART?** — the question register item 470's last three datamodel back doors turn on.
+    ///
+    /// # What is being decided
+    ///
+    /// `expecting()`, `consenting()` and `ready_within()` still read `<data>` straight out of the
+    /// script session with TYPED getters. Shutting those doors the way `service_needle`'s was shut
+    /// means the values arrive as a host act's arguments instead — and a host act's arguments are
+    /// STRINGS. Three distinctions have to survive that crossing or the move destroys meaning:
+    ///
+    /// * **zero is a real answer, not an absence.** `await_person_ms = 0` means NOBODY IS
+    ///   EXPECTED; `handback_still_ms = 0` means a person who takes the pane KEEPS it. Both are
+    ///   decisions the file is entitled to state.
+    /// * **nil is a different real answer** — the document declares no bound of its own.
+    /// * **a negative is refused today**, so it has to stay tellable to be refusable.
+    ///
+    /// ⚠⚠ **A NO IS THE USEFUL ANSWER TOO**, and this module's rule: if the three collapse, the
+    /// doors stay open and the register says WHY on a measurement rather than on a preference.
+    ///
+    /// ⚠ Whatever the engine answers is recorded rather than demanded — the assertions below say
+    /// what was measured, and the one that matters is that the four readings are DISTINCT.
+    #[test]
+    fn a_number_crosses_as_an_argument_and_zero_is_not_nil() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        type Seen = Vec<(String, HashMap<String, Vec<String>>)>;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+        let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Vec::new()));
+        engine.register_event_processor("x-sprag-host", {
+            let seen = Arc::clone(&seen);
+            move |request| {
+                seen.lock()
+                    .expect("the record")
+                    .push((request.event_name.clone(), request.params.clone()));
+                vec![sce_rust_runtime::host_processor::HostSendResponse {
+                    event_name: request.event_name,
+                    event_data: String::new(),
+                }]
+            }
+        });
+        engine.initialize();
+
+        // The numbers are declared on `edged`'s neighbour, so the machine is walked there first.
+        engine.process_event(ProbeSendTypeEvent::ProbeEnter);
+        engine.process_event(ProbeSendTypeEvent::ProbeTake);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        engine.process_event(ProbeSendTypeEvent::ProbeCount);
+        for _ in 0..8 {
+            engine.tick();
+        }
+
+        let after: Seen = seen.lock().expect("the record").clone();
+        let counted: Vec<&(String, HashMap<String, Vec<String>>)> = after
+            .iter()
+            .filter(|(named, _)| named == "carried.count")
+            .collect();
+        assert_eq!(
+            counted.len(),
+            1,
+            "⚠⚠⚠ THE CONTROL: the act must have reached this host at all, or nothing below is \
+             about numbers. Saw {after:?}",
+        );
+        let got = |name: &str| counted[0].1.get(name).map(Vec::as_slice);
+
+        assert_eq!(
+            got("counted"),
+            Some(["42".to_owned()].as_slice()),
+            "⚠⚠⚠⚠ A NUMBER MUST CROSS AS ITS OWN DIGITS. If it arrives as `42.0`, as an empty \
+             string, or not at all, every millisecond bound item 470 wants to move would have to \
+             be re-derived at the parse site. Got {:?}",
+            counted[0].1,
+        );
+        assert_eq!(
+            got("zeroed"),
+            Some(["0".to_owned()].as_slice()),
+            "⚠⚠⚠⚠⚠ **ZERO MUST NOT ARRIVE AS AN ABSENCE.** `await_person_ms = 0` is the file \
+             saying NOBODY IS EXPECTED and `handback_still_ms = 0` is it saying a person who takes \
+             the pane KEEPS it — both real decisions. If zero reads the same as nil here, moving \
+             those keys onto an act would make one of the two answers unsayable from the file that \
+             owns the decision, and the door stays open. Got {:?}",
+            counted[0].1,
+        );
+        assert_eq!(
+            got("negated"),
+            Some(["-1".to_owned()].as_slice()),
+            "⚠⚠⚠ A NEGATIVE MUST STAY TELLABLE, because it is REFUSED today: a reader that could \
+             not see the sign would accept a bound the product rejects. Got {:?}",
+            counted[0].1,
+        );
+        // ⭐ MEASURED 2026-08-26: nil arrives as the EMPTY STRING, `Some([""])`, which is distinct
+        // from zero's `Some(["0"])`. Asserted as a difference rather than as `Some([""])` because
+        // what the road needs is that the two are TELLABLE APART — the exact spelling of nil is the
+        // engine's to choose and a gate pinned to it would go red for a harmless change.
+        assert_ne!(
+            got("blanked"),
+            got("zeroed"),
+            "⚠⚠⚠⚠⚠ **NIL AND ZERO ARRIVED AS THE SAME THING, WHICH CLOSES THE ROAD.** *The \
+             document declares no bound* and *the document declares a bound of zero* are different \
+             instructions, and a crossing that folds them cannot carry `await_person_ms` or \
+             `handback_still_ms` at all. Both read {:?}",
+            got("zeroed"),
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **ONE HOST ACT PRODUCES TWO EVENTS, IN THE ORDER IT NAMED THEM** — consuming SCE
     /// `084dfdbf`, taken from `pinion@38c908b2` as the shared-instance rule requires.
     ///

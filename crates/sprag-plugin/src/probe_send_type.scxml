@@ -103,6 +103,30 @@
       after is blind to exactly that, so what is counted is the ENTRY.
     -->
     <data id="entered" expr="0"/>
+    <!--
+      ⚠⚠⚠⚠⚠ WHAT A NUMBER LOOKS LIKE WHEN IT CROSSES AS A `<param>`.
+
+      Register item 470's stage 2 has three datamodel back doors left, and every
+      one of them reads a NUMBER out of the script session with a typed getter:
+      `await_person_ms`, `handback_still_ms`, `ready_timeout_ms`. Their meaning
+      turns on distinctions a typed read makes and a string might not:
+
+        * ZERO is a real answer and not an absence. `await_person_ms = 0` means
+          NOBODY IS EXPECTED, and `handback_still_ms = 0` means a person who
+          takes the pane KEEPS it. Both are decisions the file is entitled to
+          state, and both would be destroyed by a reader that treated 0 as nil.
+        * NIL is a different real answer: the document declares no bound.
+        * A NEGATIVE number is refused today, so it must stay tellable.
+
+      A host act's arguments arrive as strings. Whether those three stay
+      distinguishable across that crossing is what decides if these doors can be
+      shut the way `service_needle` was, and it is UNMEASURED.
+    -->
+    <data id="counted" expr="42"/>
+    <data id="zeroed" expr="0"/>
+    <data id="negated" expr="-1"/>
+    <!-- ⚠ NO `expr`, so this is nil in the datamodel's own language. -->
+    <data id="blanked"/>
   </datamodel>
 
   <!--
@@ -249,6 +273,19 @@
     </transition>
     <transition event="carried.standing">
       <assign location="standing_landed" expr="standing_landed + 1"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE FIFTH QUESTION: can a NUMBER cross, and do zero, negative and
+      nil stay tellable apart? See the `<data>` block above for why the answer
+      decides whether item 470's last three datamodel back doors can be shut.
+    -->
+    <transition event="probe.count">
+      <send type="x-sprag-host" event="carried.count">
+        <param name="counted" expr="counted"/>
+        <param name="zeroed" expr="zeroed"/>
+        <param name="negated" expr="negated"/>
+        <param name="blanked" expr="blanked"/>
+      </send>
     </transition>
     <!--
       ⚠⚠⚠⚠⚠ THE EDGE CARRIES THE CONTROL, and it has to be HERE rather than
