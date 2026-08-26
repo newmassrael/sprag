@@ -42,8 +42,8 @@
 //! is a decision somebody makes rather than a side effect of creating a file.*
 
 use sprag_gate::loop_shape::{
-    DOCUMENT, HOST_TYPE, StateKeyed, declared_acts, document_states, served_acts, state_keyed,
-    tally,
+    DOCUMENT, HOST_TYPE, StateKeyed, announced_sends, declared_acts, document_states, served_acts,
+    state_keyed, tally,
 };
 use sprag_gate::sources::{rust_sources, workspace_root};
 
@@ -208,7 +208,28 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
 ///
 /// ⚠ So the two numbers moved TOGETHER here (`SERVED_ACTS` 22 → 29, this 11 → 18) and that
 /// agreement is itself the reading: seven acts arrived in seven new blocks, one each.
-const DECLARED_ACTS: usize = 18;
+///
+/// ⛔⛔⛔⛔⛔ **AND THEN IT WENT DOWN, 18 → 14, WHICH IS THE DIRECTION THIS NUMBER EXISTS TO REFUSE**
+/// — 2026-08-26. It is argued here rather than quietly re-pinned, because *"a ceiling on the Rust
+/// alone can be satisfied by DELETING behaviour instead of moving it"* is exactly what a fall looks
+/// like and this one has to be told apart from that.
+///
+/// What went: the document's **last five `<send>`s carrying no `type`** — `screen.begin`,
+/// `notify.human`, `review.begin`, `session.replace`, `redirect.begin`. Four of them were the SOLE
+/// content of their state's `<onentry>`, so four blocks went with them.
+///
+/// ⚠⚠ **NO BEHAVIOUR LEFT WITH THEM, AND THAT IS MEASURABLE RATHER THAN ASSERTED.** Each named an
+/// effect the driver already performs through `pass.do`: `screen`, `review`, `replace`, `attend`
+/// and `redirect` are five of [`SERVED_ACTS`]'s own words. The announcements were RESIDUE — the act
+/// moved in stage 2 and the shout stayed — and nothing listened to any of them: zero
+/// `<transition>`s and, for four of the five, not one Rust reader. The fifth (`session.replace`)
+/// had exactly one, a gate ASSERTING nothing sends it, and that gate's own comment had predicted
+/// this day: *"the day `restarting`'s act moves too, this stops compiling."* It did.
+///
+/// ⚠ [`announced_sends`](sprag_gate::loop_shape::announced_sends) is now pinned at ZERO, which is
+/// what keeps this fall from being repeatable: a state that owes an effect must declare it as an
+/// act the host serves, where a document asking for something nobody performs is REFUSED.
+const DECLARED_ACTS: usize = 14;
 
 /// How many acts `ai_loop.scxml` asks THIS HOST to perform — one per `<send type="x-sprag-host">`.
 ///
@@ -485,6 +506,26 @@ fn the_document_keeps_every_act_it_has_taken_over() {
 /// counts the construct that actually carries a decision out of the file — a `<send>` addressed to
 /// this host — and it is the number that answers *how much of this loop does its own document
 /// decide*.
+#[test]
+fn the_document_announces_nothing_to_a_machine_that_is_not_listening() {
+    let announced = announced_sends(&document());
+
+    assert_eq!(
+        announced, 0,
+        "`{DOCUMENT}` raises {announced} `<send>` with no `type` — a name put on the machine's own \
+         queue that no `<transition>` listens for and no driver reads. It LOOKS like an \
+         instruction and cannot be one: `sprag-plugin`'s \
+         `the_machine_instructs_its_driver_through_its_state_not_through_its_sends` measured that \
+         the event-driven driver those sends imply cannot be written, because the one handle that \
+         looks like a subscription mints a fresh empty queue on every call.\n\
+         ⚠⚠ AND AN ACT NOBODY CARRIES OUT IS INDISTINGUISHABLE FROM ONE THAT WORKED, which is the \
+         silence item 470 exists to end. If this state owes an effect, declare it as an act the \
+         host serves (`<send type=\"{HOST_TYPE}\" …>`) so a document that asks for something \
+         nobody performs is REFUSED where the machine can hear it.",
+    );
+}
+
+/// ⚠⚠⚠⚠ The other side of the same ratchet: acts the host really does perform.
 #[test]
 fn the_document_asks_this_host_for_every_act_it_has_taken_over() {
     let served = served_acts(&document());

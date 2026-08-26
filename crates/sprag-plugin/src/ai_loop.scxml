@@ -2697,9 +2697,6 @@
     hand-answered one look identical.
   -->
   <state id="screening">
-    <onentry>
-      <send event="screen.begin"/>
-    </onentry>
     <!--
       A rule claimed it. The driver refused the call and told the agent what to
       do instead, and the agent is working on that — which is why this edge
@@ -2879,14 +2876,6 @@
     was reading would move the screen out from under them.
   -->
   <state id="awaiting_human">
-    <onentry>
-      <!--
-        The outer loop's own channel to the person. The driver raises a pane
-        attention notification, which sprag surfaces in `list_panes` — so a
-        waiting run is visible without anybody watching the screen for it.
-      -->
-      <send event="notify.human"/>
-    </onentry>
     <!-- The person answered (or typed a turn themselves) and it completed. -->
     <transition event="turn.done" target="judging">
       <assign location="turns" expr="turns + 1"/>
@@ -3803,9 +3792,6 @@
     property a gate has to hold rather than the engine.
   -->
   <state id="reviewing">
-    <onentry>
-      <send event="review.begin"/>
-    </onentry>
     <!--
       The review carried a line for the session that does not exist yet. ⚠ It is
       assigned rather than appended — see `carried`.
@@ -4090,7 +4076,6 @@
         arriving HERE cost a cold start. See `restarts`.
       -->
       <assign location="restarts" expr="restarts + 1"/>
-      <send event="session.replace"/>
     </onentry>
     <!--
       ⚠⚠⚠ THE REPLACEMENT AND THE WAIT ARE TWO STATES, and the reason is this
@@ -4149,9 +4134,6 @@
     business, as it is on `screen.none`; naming them is not counting them.
   -->
   <state id="redirecting">
-    <onentry>
-      <send event="redirect.begin"/>
-    </onentry>
     <transition event="redirect.done" target="working">
       <assign location="redirected" expr="redirected + 1"/>
     </transition>

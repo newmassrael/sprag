@@ -8532,21 +8532,27 @@ mod tests {
              machine that does not accept it from outside is one whose template nothing can fill \
              in, which is exactly the state this round found it in: {ingress:?}",
         );
-        // ⚠⚠⚠⚠ THE NEEDLE MOVED BECAUSE THE NAME LEFT THE DOCUMENT — register item 470, stage 2.
-        // This read `PromptStart` until `priming` stopped announcing a name and began declaring
-        // `<send type="x-sprag-host" event="prompt.say">`; the generated enum stopped minting the
-        // variant and this line stopped compiling. `session.replace` is `restarting`'s announced
-        // send and is the same KIND of thing this assertion is about, which is why it is the
-        // replacement rather than a weaker claim.
-        // ⚠ It is spelled as a variant and not as a string on purpose: the day `restarting`'s act
-        // moves too, this stops compiling instead of going quietly green on a name nothing mints.
-        assert!(
-            !ingress.contains(&AiLoopEvent::SessionReplace),
-            "⚠⚠ and the supposed INSTRUCTION is not an ingress event, which is the machine saying \
-             the same thing from the other side: nobody outside sends `session.replace`, so \
-             nothing outside is meant to receive it either. It is the STATE that instructs: \
-             {ingress:?}",
-        );
+        // ⚠⚠⚠⚠⚠ **THE ASSERTION THAT STOOD HERE IS GONE BECAUSE ITS SUBJECT IS** — register item
+        // 470, and this is the second time this line has been retired by the thing it was about.
+        //
+        // It read `!ingress.contains(&AiLoopEvent::PromptStart)` until `priming` stopped announcing
+        // a name and began declaring `<send type="x-sprag-host" event="prompt.say">`; the generated
+        // enum stopped minting the variant and it stopped compiling. It was rewritten onto
+        // `SessionReplace` — `restarting`'s announced send — with the note *"the day `restarting`'s
+        // act moves too, this stops compiling instead of going quietly green on a name nothing
+        // mints."*
+        //
+        // ⭐ **THAT DAY CAME, AND THE COMPILER IS WHAT SAID SO.** The document's last five untyped
+        // `<send>`s are deleted; every effect they named the driver already performs through
+        // `pass.do`. There is no supposed instruction left to point at, so the claim cannot be
+        // written as *this one is not an ingress event* any more — it is now the stronger and
+        // simpler fact that there are NONE, which is a property of the DOCUMENT and is pinned
+        // where the document is measured: `sprag-gate`'s
+        // `the_document_announces_nothing_to_a_machine_that_is_not_listening`, at zero.
+        //
+        // ⚠ Recorded rather than deleted silently, because this test's whole subject is *the sends
+        // look like instructions and are not* — and the sends being gone is that argument having
+        // been won, not the question going away.
 
         // ── and the state is a complete instruction on its own ──
         //

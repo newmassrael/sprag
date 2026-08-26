@@ -371,6 +371,39 @@ pub fn served_acts(scxml: &str) -> usize {
         .count()
 }
 
+/// **HOW MANY SENDS THE DOCUMENT ANNOUNCES TO A MACHINE THAT IS NOT LISTENING** — every `<send>`
+/// carrying no `type`, which is W3C SCXML 6.2's external event to SELF.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a number to drive to ZERO rather than one to grow
+///
+/// [`served_acts`] counts acts a host PERFORMS and must climb. This counts its opposite: a name
+/// raised onto the machine's own queue that no `<transition>` listens for and no driver reads. It
+/// looks like an instruction and is not one — `sprag-plugin`'s own
+/// `the_machine_instructs_its_driver_through_its_state_not_through_its_sends` established that the
+/// event-driven driver those sends imply **cannot be written**, because the one handle that looks
+/// like a subscription mints a fresh empty queue on every call.
+///
+/// ⚠⚠ **AND AN ANNOUNCEMENT IS EXACTLY THE SILENCE ITEM 470 EXISTS TO END.** A `<send>` nobody
+/// carries out is indistinguishable from one that worked — the failure that module's own
+/// documentation names — so the five this document carried were not documentation of intent, they
+/// were five places a reader could believe an effect was declared where nothing declares it. Every
+/// one of the five had already been replaced by a `pass.do` word the driver really performs.
+///
+/// ⚠ Counted on the UNCOMMENTED text, for [`served_acts`]'s measured reason: this file's house
+/// style is to quote the send a state USED to carry on the round its act moves, and a counter that
+/// read the raw text would find those quotations and report behaviour nobody declares.
+#[must_use]
+pub fn announced_sends(scxml: &str) -> usize {
+    let text = uncommented(scxml);
+    text.match_indices("<send")
+        .filter(|(at, _)| {
+            let rest = &text[*at..];
+            let tag = rest.find('>').map_or(rest, |end| &rest[..end]);
+            !tag.contains("type=")
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
